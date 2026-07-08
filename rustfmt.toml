@@ -1,0 +1,12 @@
+# Keld rustfmt configuration — stable options only, so `cargo fmt --check` behaves
+# identically for every contributor and in CI on the pinned stable toolchain.
+#
+# Deliberately NOT set (nightly-only as of the pinned toolchain, revisit when stable):
+#   imports_granularity = "Module"
+#   group_imports = "StdExternalCrate"
+#   wrap_comments = true
+
+style_edition = "2024"
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true

@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/keld-core",
+    "crates/keld-wv",
+    "crates/keld-ipc",
+    "crates/keld-guard",
+    "crates/keld-native",
+    "crates/keld-runtime",
+    "crates/keld-update",
+    "crates/keld-pack",
+    "crates/keld-compat",
+    "crates/keld-host",
+    "crates/keld-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.93"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gyldlab/keld"
+authors = ["GyldLab"]
+
+[workspace.dependencies]
+keld-core = { path = "crates/keld-core" }
+keld-wv = { path = "crates/keld-wv" }
+keld-ipc = { path = "crates/keld-ipc" }
+keld-guard = { path = "crates/keld-guard" }
+keld-native = { path = "crates/keld-native" }
+keld-runtime = { path = "crates/keld-runtime" }
+keld-update = { path = "crates/keld-update" }
+keld-pack = { path = "crates/keld-pack" }
+keld-compat = { path = "crates/keld-compat" }
+keld-host = { path = "crates/keld-host" }
+keld-cli = { path = "crates/keld-cli" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+# `deny` rather than `forbid` so the two sanctioned locations (`keld-wv` platform
+# backends, `keld-ipc::shm`) can opt in with an explicit, reviewable module-scope
+# `#[allow(unsafe_code)]` + `// SAFETY:` proofs, per AGENTS.md.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Keld crates share the `keld` prefix; repeating it in item names is deliberate.
+module_name_repetitions = "allow"
+# AGENTS.md: no unwrap/expect/panic!/todo! in library code paths. Tests are exempt
+# via clippy.toml (`allow-*-in-tests`); sanctioned uses (keld-cli top level) carry a
+# site-local `#[allow]` stating the invariant.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+
+# The shipped host binary: optimize for size and startup, keep panics abortive.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

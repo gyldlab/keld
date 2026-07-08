@@ -1,0 +1,18 @@
+[package]
+name = "keld-wv"
+description = "Keld's webview engine layer: WKWebView / WebView2 / WebKitGTK / pinned engines behind one trait"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os="macos")'.dependencies]
+tao = "0.35.3"
+wry = "0.55.1"

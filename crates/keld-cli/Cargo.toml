@@ -1,0 +1,20 @@
+[package]
+name = "keld-cli"
+description = "keld: create, dev, build, migrate, doctor — the developer entrypoint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "keld"
+path = "src/main.rs"
+
+[dependencies]
+keld-pack = { workspace = true }
+keld-update = { workspace = true }
+
+[lints]
+workspace = true
