@@ -1,0 +1,95 @@
+# Keld CI — the gates promised in AGENTS.md:
+#   cargo fmt --check · clippy (warnings deny) · cargo nextest run --workspace · rustdoc
+# plus MSRV and supply-chain (cargo-deny) jobs.
+#
+# Toolchain: rust-toolchain.toml pins the exact version and components
+# (rustfmt, clippy); rustup on the runners installs it on first cargo use, so no
+# toolchain action is needed and CI can never drift from local dev.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # CI builds are one-shot; incremental artifacts only bloat the cache.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+
+  check:
+    name: clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One platform failing must not hide results from the others
+      # (keld-wv/keld-native will diverge per platform).
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: clippy (warnings deny)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: taiki-e/install-action@cargo-nextest
+      - name: test
+        run: cargo nextest run --workspace --profile ci
+      - name: rustdoc (warnings deny)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    # Checks the workspace against the declared `rust-version`, read from cargo
+    # metadata so this job can never silently diverge from Cargo.toml. Today the
+    # MSRV equals the pinned toolchain; this gate matters once the pin advances.
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Read MSRV from workspace metadata
+        id: msrv
+        run: |
+          msrv="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')"
+          echo "msrv=${msrv}" >> "$GITHUB_OUTPUT"
+      - name: cargo check on MSRV toolchain
+        run: |
+          rustup toolchain install "${{ steps.msrv.outputs.msrv }}" --profile minimal
+          cargo +${{ steps.msrv.outputs.msrv }} check --workspace --all-targets
+
+  deny:
+    # Licenses, RustSec advisories, source and wildcard bans — see deny.toml.
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

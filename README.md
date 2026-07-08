@@ -1,34 +1,52 @@
 # KELD
 
-**The Ultimate Desktop Framework** — Built for speed, native feel, and developer joy.
+**The desktop framework that replaces Electron without a rewrite.**
+Rust core · Bun-powered JS/TS main process · system webviews · security by default.
+By [GyldLab](https://github.com/gyldlab).
 
-**KELD** is a modern, high-performance desktop application framework that replaces Electron with a much better foundation: **Rust core + Bun runtime**.
+> Status: **pre-alpha** — public repo contains the implementation; research and
+> architecture specs are maintained privately by the GyldLab team.
 
-Say goodbye to bloated bundles, high memory usage, and sluggish performance.
+## The idea in 30 seconds
 
----
-
-## ✨ Why KELD?
-
-- **Blazing Fast** — Rust core delivers true native performance
-- **Tiny Bundle Sizes** — Often 10-20x smaller than Electron apps
-- **Low Memory & Battery Usage** — Built for efficiency
-- **Native Feel** — Deep system integration with custom titlebars, gestures, notifications, and hardware access
-- **JS/TS First** — Full Bun runtime — use your favorite web tech (React, Vue, Svelte, etc.)
-- **Low Friction Migration** — Easy path from Electron with compatibility layer
-- **Agentic & Future-Proof** — Clean APIs designed for both humans and AI agents
-
----
-
-## 🚀 Quick Start
+Every Electron alternative asks you to rewrite your app. Keld doesn't.
 
 ```bash
-# Create new KELD app
-keld create my-app
-cd my-app
+cd my-electron-app
+bunx keld migrate   # analyzes your app, generates config, aliases electron → @keld/electron
+bunx keld dev       # your app runs — no Chromium bundle, no Node, no rewrite
+bunx keld build     # signed installers + kilobyte-scale delta updates
+```
 
-# Run in development
-keld dev
+Under the hood, Keld replaces Electron's architecture, not its API:
 
-# Build for production
-keld build
+- **A prebuilt Rust host** owns windows, webviews, and every native API — you never
+  install a Rust toolchain.
+- **Your JS/TS main process runs on Bun** as a supervised, unprivileged child process —
+  full npm ecosystem, no ambient OS access, crashes don't take your windows down.
+- **System webviews by default** (WebView2 / WKWebView / WebKitGTK) with a polyfill
+  pack and per-platform engine policy.
+- **Typed binary IPC** (schema-first, shared-memory bulk lane, backpressured).
+- **Default-deny permissions** generated from your code, reviewed like a lockfile.
+- **Delta updates (bsdiff+zstd, signed)** and cross-compiled installers.
+
+## Workspace layout
+
+```
+crates/   keld-core · keld-wv · keld-ipc · keld-guard · keld-native · keld-runtime
+          keld-update · keld-pack · keld-compat · keld-host (bin) · keld-cli (bin)
+packages/ @keld/api · @keld/electron · @keld/web · @keld/cli · @keld/schema · create-keld   (upcoming)
+```
+
+## Development
+
+See [`AGENTS.md`](AGENTS.md) for engineering rules and verification gates.
+
+```bash
+cargo nextest run --workspace --profile ci
+just hello    # macOS: open WKWebView hello window (Phase 1 slice)
+```
+
+## License
+
+MIT OR Apache-2.0 (see workspace `Cargo.toml`).

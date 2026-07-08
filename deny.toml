@@ -1,0 +1,57 @@
+# cargo-deny configuration (licenses / advisories / bans / sources).
+# CI gate: .github/workflows/ci.yml `deny` job. Run locally with `cargo deny check`.
+# Policy source: AGENTS.md "Dependencies: minimal, vetted, workspace-pinned."
+
+[graph]
+# Lint the full feature surface, not just the default build.
+all-features = true
+# Ship targets for the 3-OS matrix (gnu + musl on Linux).
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# RustSec advisories are errors by default in v2 config; yanked crates too.
+yanked = "deny"
+# Scope: direct workspace deps only (not all/transitive). Promote to "all" once tree stabilizes.
+unmaintained = "workspace"
+
+[licenses]
+# Keld itself is MIT OR Apache-2.0 (pending final GyldLab licensing call — see
+# ROADMAP Phase 0). Allow-list, never a deny-list: anything new must be added
+# here consciously in the PR that introduces the dependency.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions bloat the (size-budgeted) host binary; keep visible as warnings
+# until the dep tree is big enough to justify hard failures.
+multiple-versions = "warn"
+# Deny version wildcards on crates.io deps (`serde = "*"`). Workspace path deps also
+# match this lint unless every crate sets `publish = false`; warn until KEL-39 wires
+# `publish.workspace = true` through all manifests.
+wildcards = "warn"
+# Workspace path deps use `{ workspace = true }` without a pinned version — expected.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []

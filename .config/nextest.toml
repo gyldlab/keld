@@ -1,0 +1,6 @@
+# cargo-nextest configuration — CI profile with flaky-test retry.
+# Install locally: cargo install cargo-nextest --locked
+# Run: cargo nextest run --workspace --profile ci
+
+[profile.ci]
+retries = 1

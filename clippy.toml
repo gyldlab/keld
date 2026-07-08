@@ -1,0 +1,11 @@
+# Keld clippy configuration.
+#
+# MSRV is NOT set here: clippy defaults to `workspace.package.rust-version`
+# from Cargo.toml, which is the single source of truth.
+
+# AGENTS.md permits unwrap/expect/panic in tests (with messages stating the
+# invariant). These make the workspace-level restriction lints test-aware.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true

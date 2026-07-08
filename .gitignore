@@ -1,0 +1,16 @@
+/target
+**/node_modules
+dist/
+.DS_Store
+*.log
+
+# ── Proprietary IP (local only — never commit) ───────────────────────────────
+# Research corpus, architecture specs, audits, and agent workflow docs stay
+# on maintainer machines. Public repo is code + CI/tooling only.
+
+/competitors/
+/docs/
+
+# Roadmap and agent doc index (reference local docs/)
+/ROADMAP.md
+/llms.txt

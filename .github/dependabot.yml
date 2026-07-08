@@ -1,0 +1,9 @@
+# Keep GitHub Actions pinned versions fresh. Cargo dependencies are deliberately
+# NOT auto-updated: AGENTS.md requires each dependency change to be justified in
+# a PR, and cargo-deny (CI) already alerts on advisories.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

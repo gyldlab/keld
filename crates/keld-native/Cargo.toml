@@ -1,0 +1,15 @@
+[package]
+name = "keld-native"
+description = "Keld native APIs: menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, scoped fs, secrets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+keld-guard = { workspace = true }
+
+[lints]
+workspace = true

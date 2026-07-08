@@ -1,0 +1,19 @@
+[package]
+name = "keld-host"
+description = "The shipping Keld host executable: prebuilt, signed, data-driven"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "keld-host"
+path = "src/main.rs"
+
+[dependencies]
+keld-core = { workspace = true }
+
+[lints]
+workspace = true
