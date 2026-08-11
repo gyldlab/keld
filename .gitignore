@@ -4,12 +4,12 @@ dist/
 .DS_Store
 *.log
 
-# ── Proprietary IP (local only — never commit) ───────────────────────────────
-# Research corpus, architecture specs, audits, and agent workflow docs stay
-# on maintainer machines. Public repo is implementation code only.
+# ── Proprietary / local-only ─────────────────────────────────────────────────
+# Large competitor checkouts stay on maintainer machines (never commit).
+# Architecture, research, specs, and agents docs under docs/ ARE tracked —
+# they are ground truth per AGENTS.md and must not be lost to a local-only ignore.
 
 /competitors/
-/docs/
 
 # Roadmap and agent doc index (reference local docs/)
 /ROADMAP.md
@@ -17,3 +17,4 @@ dist/
 
 # CI — local only until we choose to publish pipelines
 /.github/
+/.claude
