@@ -65,15 +65,21 @@ pub enum DenyReason {
 impl fmt::Display for DenyReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotGranted { capability } => {
-                write!(f, "capability `{capability}` is not granted")
-            }
-            Self::OutOfScope { capability, scope } => {
-                write!(f, "capability `{capability}` denied by scope `{scope}`")
-            }
-            Self::ChannelForbidden { channel } => {
-                write!(f, "channel `{channel}` is not granted to this principal")
-            }
+            Self::NotGranted { capability } => write!(
+                f,
+                "KELD-GUARD001: capability `{capability}` is not granted. \
+                 Add a grant for `{capability}` in keld.permissions.jsonc."
+            ),
+            Self::OutOfScope { capability, scope } => write!(
+                f,
+                "KELD-GUARD002: capability `{capability}` denied by scope `{scope}`. \
+                 Widen that grant's scope in keld.permissions.jsonc so it includes the requested path."
+            ),
+            Self::ChannelForbidden { channel } => write!(
+                f,
+                "KELD-GUARD003: channel `{channel}` is not granted to this principal. \
+                 Add `{channel}` to this principal's channels list in keld.permissions.jsonc."
+            ),
         }
     }
 }
@@ -84,13 +90,37 @@ mod tests {
 
     #[test]
     fn deny_reasons_render_actionable_text() {
+        let not_granted = DenyReason::NotGranted {
+            capability: "fs.read".to_owned(),
+        };
+        let not_granted_msg = not_granted.to_string();
+        assert!(
+            not_granted_msg.contains("KELD-GUARD001"),
+            "{not_granted_msg}"
+        );
+        assert!(
+            not_granted_msg.contains("keld.permissions.jsonc"),
+            "{not_granted_msg}"
+        );
+
         let reason = DenyReason::OutOfScope {
             capability: "fs.read".to_owned(),
             scope: "$APPDATA/**".to_owned(),
         };
         assert_eq!(
             reason.to_string(),
-            "capability `fs.read` denied by scope `$APPDATA/**`"
+            "KELD-GUARD002: capability `fs.read` denied by scope `$APPDATA/**`. \
+             Widen that grant's scope in keld.permissions.jsonc so it includes the requested path."
+        );
+
+        let channel = DenyReason::ChannelForbidden {
+            channel: "fs.readScoped".to_owned(),
+        };
+        let channel_msg = channel.to_string();
+        assert!(channel_msg.contains("KELD-GUARD003"), "{channel_msg}");
+        assert!(
+            channel_msg.contains("keld.permissions.jsonc"),
+            "{channel_msg}"
         );
     }
 

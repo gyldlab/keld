@@ -164,22 +164,24 @@ fn run_ipc_client_echo(args: &[String]) -> Result<(), String> {
         match arg.as_str() {
             "--link" => link = iter.next().cloned(),
             "--message" => {
-                message = iter
-                    .next()
-                    .cloned()
-                    .ok_or_else(|| "KELD-CLI-041: --message requires a value".to_owned())?;
+                message = iter.next().cloned().ok_or_else(|| {
+                    "KELD-CLI-041: --message requires a value. Pass `--message <text>`.".to_owned()
+                })?;
             }
             "--count" => {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| "KELD-CLI-042: --count requires a value".to_owned())?;
-                count = raw
-                    .parse()
-                    .map_err(|_| format!("KELD-CLI-042: --count must be a u32, got `{raw}`"))?;
+                let raw = iter.next().ok_or_else(|| {
+                    "KELD-CLI-042: --count requires a value. Pass `--count <u32>`.".to_owned()
+                })?;
+                count = raw.parse().map_err(|_| {
+                    format!(
+                        "KELD-CLI-042: --count must be a u32, got `{raw}`. Pass `--count <u32>`."
+                    )
+                })?;
             }
             other => {
                 return Err(format!(
-                    "KELD-CLI-043: unknown ipc-client echo flag `{other}`"
+                    "KELD-CLI-043: unknown ipc-client echo flag `{other}`. \
+                     Use only `--link`, `--message`, and `--count`."
                 ));
             }
         }

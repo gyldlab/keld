@@ -61,11 +61,12 @@ impl KeldMcpServer {
         Json(run_findings(root))
     }
 
-    /// Search the embedded `docs/architecture/*` corpus.
+    /// Search the embedded architecture + error-code registry corpus.
     #[tool(
         name = "keld_docs_search",
-        description = "Search Keld architecture docs (offline, embedded corpus). \
-                       Returns ranked {title, source_path, snippet} chunks. Read-only."
+        description = "Search Keld architecture docs and the KELD-* error registry \
+                       (offline, embedded corpus). Returns ranked {title, source_path, \
+                       snippet} chunks. Read-only."
     )]
     // `&self` required by rmcp `#[tool]` instance methods even when unused.
     #[allow(clippy::unused_self)]

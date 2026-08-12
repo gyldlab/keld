@@ -185,16 +185,16 @@ pub struct PermissionsExplainResult {
   note) and is a **prerequisite tracked as its own issue/spec**, not built here.
 - `keld doctor` gains `--json` (emits the `DoctorFinding` array) so CLI and MCP wrap
   identical internals (arch/07 §7); `doctor::Check` gains the optional §2 error.
-- Docs corpus: `docs/architecture/*.md` + the error-code registry (when it exists),
+- Docs corpus: `docs/architecture/*.md` + `docs/engineering/keld-error-codes.md`,
   embedded at compile time (`include_str!` via a small build-time list — no network,
   works from any cwd), chunked by `##` heading, ranked by deterministic keyword score
   (ties broken by path then heading order). No search dependency; std-first.
-- New error codes (registered in the §2 registry when the docs pipeline lands):
-  `KELD-MCP010` manifest not found · `KELD-MCP011` manifest parse error ·
-  `KELD-MCP012` unknown capability/principal in operation · `KELD-MCP020` doctor
-  execution failure · `KELD-MCP030` permissions_explain unavailable (guard evaluate
-  API missing — stub only; MUST NOT invent allow/deny). Tool-level failures return
-  `isError` content with these objects;
+- Error codes in the §2 registry (`docs/engineering/keld-error-codes.md`):
+  `KELD-MCP001`/`002` serve failures · `KELD-MCP020` doctor JSON serialize failure ·
+  `KELD-MCP030` permissions_explain unavailable (guard evaluate API missing — stub
+  only; MUST NOT invent allow/deny). `KELD-MCP010`/`011`/`012` (manifest
+  missing/parse/unknown principal) land when `keld_permissions_explain` reads files.
+  Tool-level failures return `isError` content with these objects;
   JSON-RPC error codes are left to rmcp (reserved range respected).
 
 ### Dependency review gate — rmcp (and tokio)

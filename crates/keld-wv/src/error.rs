@@ -47,7 +47,11 @@ impl fmt::Display for WvError {
                 "KELD-WV-003: failed to create webview — {msg}. \
                  On macOS ensure WKWebView is available (10.13+)."
             ),
-            Self::EventLoop(msg) => write!(f, "KELD-WV-004: event loop error — {msg}."),
+            Self::EventLoop(msg) => write!(
+                f,
+                "KELD-WV-004: event loop error — {msg}. \
+                 Check the window server is running and the event loop was started on the UI thread."
+            ),
             Self::Navigate(msg) => write!(
                 f,
                 "KELD-WV-005: navigation failed — {msg}. \
@@ -97,7 +101,7 @@ mod tests {
             (
                 WvError::EventLoop(String::from("boom")),
                 "KELD-WV-004",
-                "boom",
+                "UI thread",
             ),
             (
                 WvError::Navigate(String::from("boom")),

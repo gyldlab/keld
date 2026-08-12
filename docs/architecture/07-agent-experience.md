@@ -36,15 +36,19 @@ fix       imperative next step: exact manifest patch, config change, or API to u
 docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms-full.txt)
 ```
 
-- Rust: typed errors implement `Display` in this shape; `keld-guard`'s `DenyReason`
-  ("capability `fs.read` denied by scope `$APPDATA/**`") is the floor — it must also
-  say what edit would grant it.
+- Rust: typed errors implement `Display` with `code` + `message` + `fix`. The `docs`
+  URL is carried on the JSON/MCP `KeldErrorObject` (`https://keld.dev/e/<code>`);
+  it is not inlined into every `Display` string. `keld-guard`'s `DenyReason` includes
+  a `KELD-GUARD*` code and the `keld.permissions.jsonc` edit that would grant it.
 - CLI: same objects rendered human-readable by default, `--json` for agents; exit
   codes are stable API.
 - Compat shim: unsupported Electron APIs throw structured errors naming the tier
   status, the tracking issue, and the workaround doc — never a bare "not implemented".
-- The error-code registry lives in the docs pipeline; adding a code without a docs
-  page fails CI. Error messages are tested (exact-match on `fix` text where feasible).
+- The error-code registry is `docs/engineering/keld-error-codes.md` (one heading per
+  code — that heading **is** the docs stub). A `KELD-*` code emitted in `keld-ipc`,
+  `keld-wv`, `keld-cli`, or `keld-guard` without a registry heading fails CI
+  (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
+  Error messages are tested (exact-match on `fix` text where feasible).
 
 ## 3. Docs for agents
 

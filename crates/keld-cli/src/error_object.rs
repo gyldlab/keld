@@ -9,7 +9,7 @@ use serde::Serialize;
 /// doctor findings and MCP `structuredContent` (never into JSON-RPC error codes).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct KeldErrorObject {
-    /// Stable greppable code, e.g. `KELD-MCP010`.
+    /// Stable greppable code, e.g. `KELD-MCP030`.
     pub code: String,
     /// What failed, with the failing value/field named.
     pub message: String,

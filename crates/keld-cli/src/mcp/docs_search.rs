@@ -1,4 +1,4 @@
-//! `keld_docs_search` — embedded architecture corpus + deterministic ranking.
+//! `keld_docs_search` — embedded architecture + error-registry corpus.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -51,9 +51,9 @@ const CAP_MAX: u8 = 20;
 const SNIPPET_CHARS: usize = 280;
 
 const CORPUS_TOPICS_HINT: &str = "corpus topics: overview, ipc, security/capability manifest, electron-compat, \
-     webview, runtime/tooling, agent-experience";
+     webview, runtime/tooling, agent-experience, error-codes";
 
-/// Compile-time corpus: `docs/architecture/*.md`, chunked by `##` headings.
+/// Compile-time corpus: architecture specs + the KELD-* registry, chunked by `##`.
 fn corpus() -> Vec<DocChunkSource> {
     const FILES: &[(&str, &str)] = &[
         (
@@ -83,6 +83,10 @@ fn corpus() -> Vec<DocChunkSource> {
         (
             "docs/architecture/07-agent-experience.md",
             include_str!("../../../../docs/architecture/07-agent-experience.md"),
+        ),
+        (
+            "docs/engineering/keld-error-codes.md",
+            include_str!("../../../../docs/engineering/keld-error-codes.md"),
         ),
     ];
 
@@ -219,6 +223,21 @@ fn snippet(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_registry_code_is_searchable() {
+        let result = search_docs(&DocsSearchArgs {
+            query: "KELD-IPC-004".to_owned(),
+            max_results: Some(5),
+        });
+        assert!(
+            result.results.iter().any(|r| {
+                r.source_path.contains("keld-error-codes") && r.title.contains("KELD-IPC-004")
+            }),
+            "expected registry heading KELD-IPC-004, got {:?}",
+            result.results
+        );
+    }
 
     #[test]
     fn finds_real_architecture_heading() {
