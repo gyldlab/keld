@@ -2,13 +2,23 @@
 
 Desktop framework: Rust host (windows/webviews/native); JS/TS main on supervised Bun child (zero ambient OS authority); kipc IPC; default-deny permissions; Electron compat via `@keld/electron` + `keld migrate`.
 
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in this file, crate `AGENTS.md`, and `docs/agents/` are IETF [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119). They bind agents. Architecture specs (`docs/architecture/*`) stay prose.
+The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in agent-facing docs (this file, crate `AGENTS.md`, `.agents/*`, and `docs/agents/*`) are IETF [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119). They bind agents. Architecture specs (`docs/architecture/*`) stay prose.
 
 ## Ground truth
 - Specs: `docs/architecture/01..07-*.md`. Research: `docs/research/`.
 - Code/spec mismatch is a bug in one; agents MUST fix both in the same PR or state why. Agents MUST NOT silently drift.
 - Features: approved spec (`docs/agents/spec-template.md`) + Linear (KELD). Process: `docs/agents/workflow.md`.
 - Agents MUST read crate `AGENTS.md` before editing that crate.
+
+## Agent playbooks
+- `.agents/index.md` routes tasks to conditional playbooks; agents MUST load only the relevant entries.
+- External research MUST follow `.agents/research.md`: escalate only when local/primary evidence is insufficient and the decision materially depends on current external facts or synthesis.
+
+## Directness and scope
+- Lead with evidence and disagree when code, specs, OS contracts, or primary sources contradict an assumption.
+- State uncertainty, confidence when useful, and the missing proof; MUST NOT present inference as fact.
+- Diagnose the root cause and keep execution scoped; park adjacent cleanup.
+- Ask one focused question only when a user-owned choice would materially change the result; otherwise take the smallest reversible path.
 
 ## Repo map
 | Crate | Role |
@@ -85,6 +95,9 @@ First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 3. Agents MUST protect four uniques only: prebuilt host, supervised Bun with zero ambient OS authority, kipc, default-deny (generated, host-enforced). MUST NOT invent a fifth.
 4. Two YAGNI tests: (a) can Linear Phase 2 (window + kipc echo + crate map) ship without this? (b) does this file exist only to look complete? Either yes → agents MUST NOT land it.
 5. Anti-patterns: crate `AGENTS.md` only when it adds binding rules; agents MUST NOT write an RFC that restates `docs/architecture/` without binary acceptance tests; MUST NOT split toward a 100-crate graph; MUST NOT add a `WebEngine` method until a live backend implements it in the same PR.
+
+No slop (MUST):
+Agents MUST follow `.agents/testing.md`. Tests MUST be falsifiable: a real contract defect must fail the test. Test observable contracts (error code, wire bytes, process status, or OS behavior), not implementation-shaped essays.
 
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.

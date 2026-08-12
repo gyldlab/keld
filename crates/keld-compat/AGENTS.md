@@ -7,3 +7,4 @@ Spec: `docs/architecture/04-electron-compat.md`.
 - Event ordering tested (sequences, not just outcomes): `ready` → `window-all-closed` → `before-quit`, etc.
 - No Electron-isms in `keld-core`/`keld-ipc`; compat pressure stays here via quirks flags.
 - Corpus score = release gate; any score drop = P1 regression.
+- Tests MUST follow repository `.agents/testing.md`.

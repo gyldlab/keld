@@ -9,3 +9,4 @@ Spec: `docs/architecture/03-security.md`. Security boundary; threat model in cra
 - Wildcard grants loud in `keld doctor`. No dev-mode special-case inside engine — profile composed outside, refused in release.
 - Hot path (per kipc frame): no alloc on `Allow`, no locks across handler dispatch.
 - v0 public API: `parse_manifest` / `load_manifest` / `evaluate(manifest, operation, path) -> Decision`. Missing file is `ManifestError`, not Allow.
+- Tests MUST follow repository `.agents/testing.md`.

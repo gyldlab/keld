@@ -8,11 +8,24 @@ hello:
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 ci: agents-md fmt-check clippy test doc deny
 
-# Fail if a crate that opts into unsafe has no crate AGENTS.md (root AGENTS.md § Working rules).
+# Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
     #!/usr/bin/env bash
     set -euo pipefail
     fail=0
+    if [[ ! -f ".agents/index.md" ]]; then
+        echo "error: .agents/index.md is missing (create the agent playbook router)"
+        fail=1
+    fi
+    for playbook in testing.md research.md dependencies.md; do
+        if [[ ! -f ".agents/$playbook" ]]; then
+            echo "error: .agents/$playbook is missing (restore the expected agent playbook)"
+            fail=1
+        elif [[ -f ".agents/index.md" ]] && ! grep -Fq "($playbook)" ".agents/index.md"; then
+            echo "error: .agents/index.md does not link $playbook (add it to the task router)"
+            fail=1
+        fi
+    done
     files=$(grep -R -l -E 'allow\(unsafe_code\)|unsafe[[:space:]]+(fn|impl|trait|\{)' crates --include='*.rs' || true)
     crates=$(printf '%s\n' "$files" | awk -F/ '$1=="crates" && NF>=2 {print $2}' | sort -u)
     for crate in $crates; do
