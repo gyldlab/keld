@@ -12,9 +12,17 @@ authors.workspace = true
 name = "keld"
 path = "src/main.rs"
 
+[lib]
+name = "keld_cli"
+path = "src/lib.rs"
+
 [dependencies]
 keld-pack = { workspace = true }
 keld-update = { workspace = true }
+keld-ipc = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

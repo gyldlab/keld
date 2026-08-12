@@ -97,9 +97,14 @@ pub enum HeaderError {
 impl core::fmt::Display for HeaderError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::BadMagic(m) => write!(f, "bad kipc magic: {m:#06x}"),
-            Self::BadVersion(v) => write!(f, "unsupported kipc version: {v}"),
-            Self::BadKind(k) => write!(f, "unknown kipc frame kind: {k}"),
+            Self::BadMagic(m) => {
+                write!(f, "bad kipc magic: {m:#06x} (expected {MAGIC:#06x} 'KI')")
+            }
+            Self::BadVersion(v) => write!(
+                f,
+                "unsupported kipc version: {v} (expected {PROTOCOL_VERSION})"
+            ),
+            Self::BadKind(k) => write!(f, "unknown kipc frame kind: {k} (valid kinds are 0..=10)"),
         }
     }
 }
@@ -156,6 +161,9 @@ mod tests {
     fn header_is_16_bytes() {
         // The wire size is a protocol constant, independent of struct layout.
         assert_eq!(HEADER_LEN, 16);
+        assert_eq!(core::mem::size_of::<FrameKind>(), 1);
+        assert_eq!(core::mem::size_of::<ChannelId>(), 2);
+        assert_eq!(core::mem::size_of::<CorrelationId>(), 4);
     }
 
     #[test]
@@ -189,6 +197,27 @@ mod tests {
             FrameHeader::decode(&bytes),
             Err(HeaderError::BadMagic(_))
         ));
+    }
+
+    #[test]
+    fn rejects_bad_version() {
+        let mut bytes = FrameHeader {
+            kind: FrameKind::Hello,
+            flags: 0,
+            channel: ChannelId(0),
+            corr: CorrelationId(0),
+            len: 0,
+        }
+        .encode();
+        assert_eq!(bytes[2], PROTOCOL_VERSION);
+        bytes[2] = 99;
+        assert_eq!(
+            FrameHeader::decode(&bytes),
+            Err(HeaderError::BadVersion(99))
+        );
+        let msg = HeaderError::BadVersion(99).to_string();
+        assert!(msg.contains("99"), "{msg}");
+        assert!(msg.contains(&PROTOCOL_VERSION.to_string()), "{msg}");
     }
 
     #[test]

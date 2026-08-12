@@ -29,3 +29,4 @@ small — it is loaded by every agent session.
 - 2026-08-12 [process] IETF RFC 2119 keywords bind agents in AGENTS.md / docs/agents/* only — not architecture prose or Rust comments. (evidence: docs/research/28-post-integration-audit.md, RFC 2119)
 - 2026-08-12 [wv/macos] Unit tests must not call `WkWebViewEngine::new` / tao `EventLoop::new` (starts AppKit). Smoke title/HTML/spec instead; `just hello` is the GUI check. (evidence: KEL-26)
 - 2026-08-12 [wv/macos] tao 0.35 `EventLoopExtMacOS` already defaults to `NSApplicationActivationPolicyRegular`; do not set it again. (evidence: tao-0.35.3 `platform/macos.rs` trait docs)
+- 2026-08-13 [ipc] postcard `from_bytes` ignores trailing bytes; a no-op echo test must assert re-encoded output ≠ input, not expect a codec error. (evidence: crates/keld-ipc/src/echo.rs `echo_roundtrip_copies_fields_not_input_bytes`)
