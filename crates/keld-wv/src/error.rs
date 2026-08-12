@@ -9,6 +9,8 @@ pub enum WvError {
     UnsupportedPlatform {
         /// Host triple at runtime.
         os: &'static str,
+        /// Tracking issue for the missing backend (`KEL-27` Windows, `KEL-28` Linux).
+        issue: &'static str,
     },
     /// Window creation failed.
     Window(String),
@@ -30,10 +32,10 @@ pub enum WvError {
 impl fmt::Display for WvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedPlatform { os } => write!(
+            Self::UnsupportedPlatform { os, issue } => write!(
                 f,
                 "KELD-WV-001: no webview backend for `{os}` yet. \
-                 Track KEL-27 (Windows) / KEL-28 (Linux) or run on macOS."
+                 Track {issue} or run on macOS."
             ),
             Self::Window(msg) => write!(
                 f,
@@ -75,9 +77,12 @@ mod tests {
     fn display_messages_carry_error_codes_and_fix_guidance() {
         let cases: [(WvError, &str, &str); 7] = [
             (
-                WvError::UnsupportedPlatform { os: "freebsd" },
+                WvError::UnsupportedPlatform {
+                    os: "freebsd",
+                    issue: "KEL-27 / KEL-28",
+                },
                 "KELD-WV-001",
-                "KEL-27",
+                "run on macOS",
             ),
             (
                 WvError::Window(String::from("boom")),

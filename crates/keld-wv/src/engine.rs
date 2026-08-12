@@ -103,9 +103,9 @@ impl Default for WebviewSpec {
 
 /// The engine contract every platform backend implements.
 ///
-/// Backends: `crate::wkwebview` (macOS, live); Windows (`webview2`, KEL-27)
-/// and Linux (`webkitgtk`, KEL-28) are not in this crate yet. See the module
-/// docs above for how this v0 surface relates to the spec 05 §1 sketch.
+/// Backends: `crate::wkwebview` (macOS, live); `crate::webview2` (KEL-27)
+/// and `crate::webkitgtk` (KEL-28) are compiled layout slots. See the
+/// module docs above for how this v0 surface relates to the spec 05 §1 sketch.
 /// Trait changes require design review (crate `AGENTS.md`).
 pub trait WebEngine {
     /// Creates a webview (and, in v0, its host window) from `spec`.

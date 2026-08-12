@@ -49,11 +49,22 @@ pub fn run(title: &str, html: &str) -> Result<(), WvError> {
     {
         crate::wkwebview::run_hello(&spec)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = spec;
+        Err(crate::webview2::unavailable())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = spec;
+        Err(crate::webkitgtk::unavailable())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = spec;
         Err(WvError::UnsupportedPlatform {
             os: std::env::consts::OS,
+            issue: "KEL-27 / KEL-28",
         })
     }
 }
@@ -61,7 +72,7 @@ pub fn run(title: &str, html: &str) -> Result<(), WvError> {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_HTML, hello_spec};
-    use crate::engine::{NavTarget, WebviewSpec};
+    use crate::engine::{LogicalSize, NavTarget};
 
     #[test]
     fn hello_html_is_local_document() {
@@ -76,7 +87,13 @@ mod tests {
         let spec = hello_spec("Acme", DEFAULT_HTML);
         assert_eq!(spec.title, "Acme");
         assert_eq!(spec.initial, NavTarget::Html(DEFAULT_HTML.to_owned()));
-        assert_eq!(spec.size, WebviewSpec::default().size);
+        assert_eq!(
+            spec.size,
+            LogicalSize {
+                width: 960.0,
+                height: 640.0
+            }
+        );
     }
 }
 
@@ -87,9 +104,24 @@ mod platform_tests {
     #[test]
     fn hello_window_unsupported_off_macos() {
         let err = run("Keld", DEFAULT_HTML).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::error::WvError::UnsupportedPlatform { .. }
-        ));
+        let msg = err.to_string();
+        assert!(
+            matches!(err, crate::error::WvError::UnsupportedPlatform { .. }),
+            "expected UnsupportedPlatform, got: {msg}"
+        );
+        assert!(msg.contains("KELD-WV-001"), "missing code in: {msg}");
+        #[cfg(target_os = "windows")]
+        {
+            assert!(msg.contains("KEL-27"), "missing Windows issue in: {msg}");
+            assert!(!msg.contains("KEL-28"), "must not name Linux issue: {msg}");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            assert!(msg.contains("KEL-28"), "missing Linux issue in: {msg}");
+            assert!(
+                !msg.contains("KEL-27"),
+                "must not name Windows issue: {msg}"
+            );
+        }
     }
 }

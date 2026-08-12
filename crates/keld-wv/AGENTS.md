@@ -8,3 +8,4 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
 - Platform quirks MUST comment OS + version + source link; uncited workarounds MUST be reverted.
 - Linux: agents MUST probe the GPU stack and apply safe-mode before init — MUST NOT instruct env-var exports. Emit `degraded-rendering`.
 - Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
+- Tests MUST be falsifiable: a real bug in the code under test MUST be able to fail the test.
