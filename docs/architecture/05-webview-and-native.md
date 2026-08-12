@@ -31,6 +31,12 @@ pub trait WebEngine: Send {
 }
 ```
 
+The sketch is the destination API. v0 (KEL-26 hello slice) is the six-method
+contract in `crates/keld-wv/src/engine.rs`: no `Send`, no `HostHooks` /
+`post` / `register_scheme` / `Anchor`, and `set_bounds` / `devtools` /
+`destroy` return `Result` so a stale id is a typed error. Methods from this
+sketch land when a live backend implements them in the same change.
+
 Backends: `wkwebview` (macOS), `webview2` (Windows), `webkitgtk` (Linux) always
 compiled; `cef` behind a feature flag, loaded as a runtime-selected backend when the
 app's engine policy says `pinned` (CEF binaries fetched at *build* time by `keld-pack`,

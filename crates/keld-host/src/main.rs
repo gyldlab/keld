@@ -10,7 +10,9 @@ use std::process;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|a| a == "--hello") {
-        if let Err(err) = keld_core::run_hello_window() {
+        let cwd = env::current_dir().ok();
+        let title = keld_core::resolve_hello_title(&args, cwd.as_deref());
+        if let Err(err) = keld_core::run_hello_window_titled(&title) {
             eprintln!("{err}");
             process::exit(1);
         }

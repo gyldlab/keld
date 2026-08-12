@@ -1,8 +1,10 @@
 //! Hello-world window entry (Phase 1 vertical slice).
+//!
+//! Thin dispatch to the per-OS backend modules: `crate::wkwebview` on
+//! macOS; Windows/Linux return [`WvError::UnsupportedPlatform`] until
+//! KEL-27/KEL-28 land their backends.
 
-#[cfg(target_os = "macos")]
-mod macos;
-
+use crate::engine::{NavTarget, WebviewSpec};
 use crate::error::WvError;
 
 /// Default HTML for the scaffold hello window.
@@ -26,27 +28,60 @@ pub const DEFAULT_HTML: &str = r#"<!DOCTYPE html>
 </body>
 </html>"#;
 
+/// Creation spec for the hello slice: `title`, inline HTML, default 960×640.
+#[must_use]
+pub(crate) fn hello_spec(title: &str, html: &str) -> WebviewSpec {
+    WebviewSpec {
+        title: title.to_owned(),
+        initial: NavTarget::Html(html.to_owned()),
+        ..WebviewSpec::default()
+    }
+}
+
 /// Run the hello-world window until closed. macOS only for now.
 ///
 /// # Errors
 ///
 /// Returns [`WvError`] if the platform backend is unavailable or window/webview creation fails.
 pub fn run(title: &str, html: &str) -> Result<(), WvError> {
+    let spec = hello_spec(title, html);
     #[cfg(target_os = "macos")]
     {
-        macos::run(title, html)
+        crate::wkwebview::run_hello(&spec)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (title, html);
+        let _ = spec;
         Err(WvError::UnsupportedPlatform {
             os: std::env::consts::OS,
         })
     }
 }
 
-#[cfg(all(test, not(target_os = "macos")))]
+#[cfg(test)]
 mod tests {
+    use super::{DEFAULT_HTML, hello_spec};
+    use crate::engine::{NavTarget, WebviewSpec};
+
+    #[test]
+    fn hello_html_is_local_document() {
+        assert!(DEFAULT_HTML.contains("<!DOCTYPE html>"));
+        assert!(DEFAULT_HTML.contains("Hello from WKWebView"));
+        assert!(!DEFAULT_HTML.contains("http://"));
+        assert!(!DEFAULT_HTML.contains("https://"));
+    }
+
+    #[test]
+    fn hello_spec_carries_title_html_and_default_geometry() {
+        let spec = hello_spec("Acme", DEFAULT_HTML);
+        assert_eq!(spec.title, "Acme");
+        assert_eq!(spec.initial, NavTarget::Html(DEFAULT_HTML.to_owned()));
+        assert_eq!(spec.size, WebviewSpec::default().size);
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod platform_tests {
     use super::{DEFAULT_HTML, run};
 
     #[test]
