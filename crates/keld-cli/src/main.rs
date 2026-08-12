@@ -11,8 +11,9 @@ use std::sync::mpsc;
 
 use keld_cli::create::{CreateError, create_project};
 use keld_cli::dev::{find_project_root, run_dev};
-use keld_cli::doctor::{all_ok, run_checks};
+use keld_cli::doctor::{all_ok, findings_all_ok, findings_json, run_checks, run_findings};
 use keld_cli::echo_link::{EchoServer, echo_roundtrip};
+use keld_cli::mcp::run_mcp_serve;
 use keld_core::run_hello_window;
 use keld_ipc::EchoRequest;
 
@@ -38,11 +39,12 @@ fn main() {
         Some("doctor") => match env::current_dir() {
             Ok(cwd) => {
                 let root = find_project_root(&cwd);
-                run_doctor_cmd(root.as_deref());
+                run_doctor_cmd(root.as_deref(), &args[2..]);
                 Ok(())
             }
             Err(e) => Err(e.to_string()),
         },
+        Some("mcp") => run_mcp_cmd(&args[2..]),
         Some("ipc-client") => run_ipc_client(&args[2..]),
         Some(other) => {
             eprintln!("keld: unknown command `{other}`");
@@ -66,7 +68,8 @@ fn print_usage() {
     eprintln!("commands:");
     eprintln!("  create <name>   Scaffold the hello-world template");
     eprintln!("  dev             Run the app (Bun main + IPC echo + window)");
-    eprintln!("  doctor          Check local toolchain and project layout");
+    eprintln!("  doctor [--json] Check local toolchain and project layout");
+    eprintln!("  mcp serve       Speak MCP over stdio (doctor/docs/permissions)");
     eprintln!("  hello           Open the macOS WKWebView hello window");
     eprintln!("  ipc-echo        Run the typed kipc echo round-trip demo");
     eprintln!("  ipc-client      Internal: kipc client helpers for templates");
@@ -87,7 +90,52 @@ fn run_create(args: &[String]) -> Result<(), CreateError> {
     Ok(())
 }
 
-fn run_doctor_cmd(project_root: Option<&Path>) {
+fn print_mcp_usage() {
+    eprintln!("usage: keld mcp serve");
+    eprintln!("  serve    Start the stdio MCP server (MCP 2026-07-28)");
+}
+
+fn run_mcp_cmd(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("serve") => {
+            let cwd = env::current_dir().map_err(|e| e.to_string())?;
+            let root = find_project_root(&cwd);
+            run_mcp_serve(root.as_deref()).map_err(|e| e.to_string())
+        }
+        Some(other) => {
+            eprintln!("keld mcp: unknown subcommand `{other}`");
+            print_mcp_usage();
+            process::exit(2);
+        }
+        None => {
+            eprintln!("keld mcp: missing subcommand");
+            print_mcp_usage();
+            process::exit(2);
+        }
+    }
+}
+
+fn run_doctor_cmd(project_root: Option<&Path>, args: &[String]) {
+    let json = args.iter().any(|a| a == "--json");
+    if json {
+        match findings_json(project_root) {
+            Ok(payload) => {
+                println!("{payload}");
+                if !findings_all_ok(&run_findings(project_root)) {
+                    process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "KELD-MCP020: failed to serialize doctor findings — {e}. \
+                     Re-run `keld doctor` without --json or report a bug."
+                );
+                process::exit(1);
+            }
+        }
+        return;
+    }
+
     let checks = run_checks(project_root);
     for check in &checks {
         let mark = if check.ok { "ok" } else { "FAIL" };

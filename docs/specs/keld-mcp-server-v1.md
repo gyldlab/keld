@@ -1,10 +1,11 @@
 # Spec: keld MCP server v1 (doctor · docs search · permissions explain)
 
-Status: draft
-Linear: KEL-42 · Owner: TBD (human approver) · Updated: 2026-08-11
+Status: **APPROVED** (human approval 2026-08-11)
+Linear: KEL-42 · Owner: TBD (human approver) · Updated: 2026-08-13
 
-> **DRAFT — PENDING HUMAN APPROVAL. Do not implement anything from this spec until
-> Status is `approved` (workflow.md § spec gate).**
+> Status flipped to **APPROVED** on 2026-08-11; implementation may proceed under
+> workflow.md § spec gate. T4 (`keld_permissions_explain` real evaluate) remains
+> blocked on `keld-guard`'s public manifest-parse/evaluate API.
 
 ## 1. Goal & non-goals
 
@@ -191,7 +192,9 @@ pub struct PermissionsExplainResult {
 - New error codes (registered in the §2 registry when the docs pipeline lands):
   `KELD-MCP010` manifest not found · `KELD-MCP011` manifest parse error ·
   `KELD-MCP012` unknown capability/principal in operation · `KELD-MCP020` doctor
-  execution failure. Tool-level failures return `isError` content with these objects;
+  execution failure · `KELD-MCP030` permissions_explain unavailable (guard evaluate
+  API missing — stub only; MUST NOT invent allow/deny). Tool-level failures return
+  `isError` content with these objects;
   JSON-RPC error codes are left to rmcp (reserved range respected).
 
 ### Dependency review gate — rmcp (and tokio)
@@ -265,21 +268,22 @@ shape-check the platform-variant one.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 `keld doctor --json`: add the `DoctorFinding`/§2 error shape to
+- [x] T1 `keld doctor --json`: add the `DoctorFinding`/§2 error shape to
       `doctor::Check` output, `--json` flag, stable exit codes; exact-match tests on
       `fix` text. (Pure CLI slice — useful standalone, and the substrate T2 wraps.
       Includes the arch/07 §8 phasing clarification if the reviewer wants it.)
-- [ ] T2 Dependency + server skeleton + first tool: add pinned `rmcp`/`tokio` to
+- [x] T2 Dependency + server skeleton + first tool: add pinned `rmcp`/`tokio` to
       workspace `Cargo.toml`; `keld mcp serve` verb; `server/discover` +
       dual-version negotiation; `keld_doctor` tool end-to-end; stdio conformance
       harness + schema snapshot tests. (Carries the dependency review gate.)
-- [ ] T3 `keld_docs_search`: compile-time corpus embedding, heading chunker,
+- [x] T3 `keld_docs_search`: compile-time corpus embedding, heading chunker,
       deterministic ranking, `max_results` clamp + truncation hints; snapshot +
       determinism tests.
 - [ ] T4 `keld_permissions_explain`: wraps `keld-guard` public
       manifest-parse/evaluate API (**blocked on that API landing** — sequenced after
       the guard issue, not raced; workflow.md cross-crate rule); patch synthesis,
-      exact-match fix-text tests, read-only assertion test.
+      exact-match fix-text tests, read-only assertion test. Until then the tool is
+      registered and returns structured `KELD-MCP030` / `decision: "unavailable"`.
 - [ ] T5 Agent-facing usage doc (client registration snippet for Claude Code/Cursor,
       tool descriptions with cross-tool ordering hints) + `docs/agents/learnings.md`
       entries + error-code registry entries for `KELD-MCP0xx`.
@@ -328,9 +332,9 @@ CLI size — flag for the reviewer if it exceeds ~2 MiB).
 
 ## 10. Open questions
 
-1. **Sequencing of the `keld-guard` manifest-parse/evaluate API** (blocks T4): is
-   that work folded into this milestone as its own spec, or does this spec ship
-   T1–T3 first and hold T4? Recommendation: ship T1–T3; T4 follows the guard issue.
+1. **Sequencing of the `keld-guard` manifest-parse/evaluate API** (blocks T4):
+   **resolved 2026-08-11** — ship T1–T3 first; T4 follows the guard issue. The
+   registered tool returns `KELD-MCP030` until evaluate exists.
 2. **rmcp pin policy**: exact `=3.1.2` (recommended here, given post-GA wire churn)
    vs `~3.1` with the conformance suite as the bump gate. Human call — dep gate.
 3. **Error-code registry**: `KELD-MCP0xx` codes need docs pages, but the registry/CI
