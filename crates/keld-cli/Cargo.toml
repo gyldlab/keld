@@ -17,6 +17,7 @@ name = "keld_cli"
 path = "src/lib.rs"
 
 [dependencies]
+keld-core = { workspace = true }
 keld-pack = { workspace = true }
 keld-update = { workspace = true }
 keld-ipc = { workspace = true }

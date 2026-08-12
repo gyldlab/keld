@@ -5,10 +5,15 @@
 //! here (cold tooling) per AGENTS.md.
 
 use std::env;
+use std::path::Path;
 use std::process;
 use std::sync::mpsc;
 
+use keld_cli::create::{CreateError, create_project};
+use keld_cli::dev::{find_project_root, run_dev};
+use keld_cli::doctor::{all_ok, run_checks};
 use keld_cli::echo_link::{EchoServer, echo_roundtrip};
+use keld_core::run_hello_window;
 use keld_ipc::EchoRequest;
 
 fn main() {
@@ -20,22 +25,75 @@ fn main() {
             println!("keld {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Some("hello") => run_hello_window().map_err(|e| e.to_string()),
         Some("ipc-echo") => run_ipc_echo_demo().map_err(|e| e.to_string()),
+        Some("create") => run_create(&args[2..]).map_err(|e| e.to_string()),
+        Some("dev") => match env::current_dir() {
+            Ok(cwd) => {
+                let root = find_project_root(&cwd).unwrap_or(cwd);
+                run_dev(&root).map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        Some("doctor") => match env::current_dir() {
+            Ok(cwd) => {
+                let root = find_project_root(&cwd);
+                run_doctor_cmd(root.as_deref());
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        },
         Some("ipc-client") => run_ipc_client(&args[2..]),
         Some(other) => {
-            eprintln!("keld: `{other}` is not implemented yet (pre-alpha). See ROADMAP.md.");
+            eprintln!("keld: unknown command `{other}`");
+            print_usage();
             process::exit(1);
         }
         None => {
-            println!("keld — the desktop framework (pre-alpha)");
-            println!("planned verbs: create · dev · build · migrate · doctor · gen · ext");
-            println!("available: ipc-echo · ipc-client echo");
+            print_usage();
             Ok(())
         }
     };
 
     if let Err(err) = result {
         eprintln!("{err}");
+        process::exit(1);
+    }
+}
+
+fn print_usage() {
+    eprintln!("keld {} (pre-alpha)", env!("CARGO_PKG_VERSION"));
+    eprintln!("commands:");
+    eprintln!("  create <name>   Scaffold the hello-world template");
+    eprintln!("  dev             Run the app (Bun main + IPC echo + window)");
+    eprintln!("  doctor          Check local toolchain and project layout");
+    eprintln!("  hello           Open the macOS WKWebView hello window");
+    eprintln!("  ipc-echo        Run the typed kipc echo round-trip demo");
+    eprintln!("  ipc-client      Internal: kipc client helpers for templates");
+    eprintln!("  --version       Print version");
+}
+
+fn run_create(args: &[String]) -> Result<(), CreateError> {
+    let Some(name) = args.first() else {
+        return Err(CreateError::InvalidName {
+            name: String::new(),
+            reason: "name is empty",
+        });
+    };
+    let cwd = env::current_dir()?;
+    let root = create_project(&cwd, name)?;
+    println!("Created keld project at {}", root.display());
+    println!("Next: cd {name} && keld dev");
+    Ok(())
+}
+
+fn run_doctor_cmd(project_root: Option<&Path>) {
+    let checks = run_checks(project_root);
+    for check in &checks {
+        let mark = if check.ok { "ok" } else { "FAIL" };
+        println!("[{mark}] {} — {}", check.label, check.detail);
+    }
+    if !all_ok(&checks) {
         process::exit(1);
     }
 }
