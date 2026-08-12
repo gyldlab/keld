@@ -9,7 +9,7 @@ use serde::Serialize;
 /// doctor findings and MCP `structuredContent` (never into JSON-RPC error codes).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct KeldErrorObject {
-    /// Stable greppable code, e.g. `KELD-MCP030`.
+    /// Stable greppable code, e.g. `KELD-MCP010`.
     pub code: String,
     /// What failed, with the failing value/field named.
     pub message: String,
@@ -55,9 +55,13 @@ mod tests {
 
     #[test]
     fn docs_url_uses_code() {
-        let err = KeldErrorObject::new("KELD-MCP030", "unavailable", "land guard evaluate");
-        assert_eq!(err.docs, "https://keld.dev/e/KELD-MCP030");
-        assert_eq!(err.fix, "land guard evaluate");
+        let err = KeldErrorObject::new(
+            "KELD-MCP010",
+            "missing manifest",
+            "create keld.permissions.jsonc",
+        );
+        assert_eq!(err.docs, "https://keld.dev/e/KELD-MCP010");
+        assert_eq!(err.fix, "create keld.permissions.jsonc");
         assert!(err.cause.is_none());
     }
 }

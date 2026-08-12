@@ -4,8 +4,8 @@ Status: **APPROVED** (human approval 2026-08-11)
 Linear: KEL-42 · Owner: TBD (human approver) · Updated: 2026-08-13
 
 > Status flipped to **APPROVED** on 2026-08-11; implementation may proceed under
-> workflow.md § spec gate. T4 (`keld_permissions_explain` real evaluate) remains
-> blocked on `keld-guard`'s public manifest-parse/evaluate API.
+> workflow.md § spec gate. T4 (`keld_permissions_explain`) wraps `keld-guard`
+> `load_manifest` / `evaluate` (v0: default-deny path scopes on `app` grants).
 
 ## 1. Goal & non-goals
 
@@ -178,11 +178,12 @@ pub struct PermissionsExplainResult {
 ```
 
 - `keld_permissions_explain` calls `keld-guard`'s public evaluation API
-  (`evaluate(manifest, principal, capability, args) -> Decision`) — it re-implements
-  **nothing**; guard's `DenyReason` display text is the floor and the `fix` adds the
-  patch (guard `AGENTS.md`: "Every `DenyReason`: capability/scope + fix"). That API
-  (manifest parsing + scope matching) does not exist yet (`keld-guard/src/lib.rs` v0
-  note) and is a **prerequisite tracked as its own issue/spec**, not built here.
+  (`evaluate(manifest, operation, path) -> Decision`) — it re-implements
+  **nothing**; guard's `DenyReason` display text is the floor and the `fix` is
+  the exact JSON-pointer patch (guard `AGENTS.md`: "Every `DenyReason`:
+  capability/scope + fix"). v0 evaluate is default-deny path/host scopes on
+  `app` grants; window/plugin principals and `$VARS` resolution are out of this
+  slice.
 - `keld doctor` gains `--json` (emits the `DoctorFinding` array) so CLI and MCP wrap
   identical internals (arch/07 §7); `doctor::Check` gains the optional §2 error.
 - Docs corpus: `docs/architecture/*.md` + `docs/engineering/keld-error-codes.md`,
@@ -191,10 +192,9 @@ pub struct PermissionsExplainResult {
   (ties broken by path then heading order). No search dependency; std-first.
 - Error codes in the §2 registry (`docs/engineering/keld-error-codes.md`):
   `KELD-MCP001`/`002` serve failures · `KELD-MCP020` doctor JSON serialize failure ·
-  `KELD-MCP030` permissions_explain unavailable (guard evaluate API missing — stub
-  only; MUST NOT invent allow/deny). `KELD-MCP010`/`011`/`012` (manifest
-  missing/parse/unknown principal) land when `keld_permissions_explain` reads files.
-  Tool-level failures return `isError` content with these objects;
+  `KELD-MCP010`/`011`/`012` (manifest missing/parse/unknown principal). Deny
+  outcomes use `KELD-GUARD001`/`002` in the §2 `error` object with `isError:
+  false`. Tool-level failures return `isError` content with these objects;
   JSON-RPC error codes are left to rmcp (reserved range respected).
 
 ### Dependency review gate — rmcp (and tokio)
@@ -259,10 +259,11 @@ shape-check the platform-variant one.
 
 - Implement in: `crates/keld-cli` (`src/mcp/` module tree, `src/main.rs` verb
   dispatch, `src/doctor.rs` for `--json`/§2 additions, `tests/`,
-  `crates/keld-cli/Cargo.toml`); workspace `Cargo.toml` **only** to add the pinned
+  `crates/keld-cli/Cargo.toml`); `crates/keld-guard` public `load_manifest` /
+  `evaluate` (v0). Workspace `Cargo.toml` **only** to add the pinned
   `rmcp`/`tokio` workspace deps (single-writer file — human-reviewed dep PR).
-- Must not touch: `keld-guard` internals (T4 *consumes* its public API; building that
-  API is a separate spec/issue), `keld-ipc` (protocol files are single-writer),
+- Must not touch: `keld-guard` internals beyond the public evaluate API,
+  `keld-ipc` (protocol files are single-writer),
   `keld-host`, `keld-core`, `keld-wv`, `docs/architecture/*` (except the optional §8
   phasing line noted in §2), templates, CI workflows.
 
@@ -279,11 +280,10 @@ shape-check the platform-variant one.
 - [x] T3 `keld_docs_search`: compile-time corpus embedding, heading chunker,
       deterministic ranking, `max_results` clamp + truncation hints; snapshot +
       determinism tests.
-- [ ] T4 `keld_permissions_explain`: wraps `keld-guard` public
-      manifest-parse/evaluate API (**blocked on that API landing** — sequenced after
-      the guard issue, not raced; workflow.md cross-crate rule); patch synthesis,
-      exact-match fix-text tests, read-only assertion test. Until then the tool is
-      registered and returns structured `KELD-MCP030` / `decision: "unavailable"`.
+- [x] T4 `keld_permissions_explain`: wraps `keld-guard` public
+      `load_manifest` / `evaluate` (v0 default-deny path scopes); patch
+      synthesis, exact-match fix-text tests, read-only assertion test.
+      Missing file → `isError` + `KELD-MCP010`.
 - [ ] T5 Agent-facing usage doc (client registration snippet for Claude Code/Cursor,
       tool descriptions with cross-tool ordering hints) + `docs/agents/learnings.md`
       entries + error-code registry entries for `KELD-MCP0xx`.
@@ -298,8 +298,8 @@ shape-check the platform-variant one.
 | 4 (doctor fix text) | unit on `DoctorFinding` mapping + integration with `PATH` overridden to a temp dir without `bun`; exact-match on `fix` |
 | 5 (docs_search hit + determinism) | unit: run query 3×, assert identical results; assert source path |
 | 6 (docs_search empty) | unit: nonsense query → empty list + hint |
-| 7 (permissions deny + patch) | integration (post-T4): fixture manifest in temp dir; exact-match on `fix` and `patch.json_pointer`; hash manifest bytes before/after |
-| 8 (manifest missing) | unit: `KELD-MCP010` object, `fix` names the tried path |
+| 7 (permissions deny + patch) | unit + stdio `tools/call`: fixture with no `fs.read`; exact-match on `fix` and `patch.json_pointer`; hash manifest bytes before/after |
+| 8 (manifest missing) | unit + stdio `tools/call`: `KELD-MCP010` object, `isError: true`, `fix` names the tried path |
 | 9 (no HTTP deps) | CI check in T2's PR: `cargo tree -p keld-cli` asserted free of `hyper`/`axum`/`reqwest` (script or `cargo-deny` ban list) |
 | 10 (exit code 2) | integration: `keld mcp bogus` → stderr usage, exit 2 |
 
@@ -333,8 +333,9 @@ CLI size — flag for the reviewer if it exceeds ~2 MiB).
 ## 10. Open questions
 
 1. **Sequencing of the `keld-guard` manifest-parse/evaluate API** (blocks T4):
-   **resolved 2026-08-11** — ship T1–T3 first; T4 follows the guard issue. The
-   registered tool returns `KELD-MCP030` until evaluate exists.
+   **resolved 2026-08-13** — v0 `load_manifest` / `evaluate(manifest, operation, path)`
+   landed; T4 consumes it. KEL-45 (ACL fixture crate + Insta snapshots) remains
+   a follow-up, not this slice.
 2. **rmcp pin policy**: exact `=3.1.2` (recommended here, given post-GA wire churn)
    vs `~3.1` with the conformance suite as the bump gate. Human call — dep gate.
 3. **Error-code registry**: `KELD-MCP0xx` codes need docs pages, but the registry/CI

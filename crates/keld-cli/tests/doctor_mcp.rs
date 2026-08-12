@@ -239,6 +239,73 @@ fn mcp_serve_tools_list_over_stdio() {
 }
 
 #[test]
+fn mcp_permissions_explain_deny_patch_over_stdio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("keld.permissions.jsonc");
+    std::fs::write(&manifest, r#"{"app":{"fs":{"write":["$APPDATA/**"]}}}"#).expect("write");
+    let before = std::fs::read(&manifest).expect("hash before");
+
+    let resp = mcp_tools_call(&serde_json::json!({
+        "name": "keld_permissions_explain",
+        "arguments": {
+            "manifest_path": manifest.to_string_lossy(),
+            "operation": {
+                "principal": "app",
+                "capability": "fs.read",
+                "args": { "path": "$DOCUMENTS/notes.txt" }
+            }
+        }
+    }));
+
+    assert_eq!(resp["id"], 3);
+    let result = &resp["result"];
+    assert_ne!(result.get("isError"), Some(&Value::Bool(true)), "{result}");
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["decision"], "deny");
+    assert_eq!(structured["deny_reason"]["kind"], "not_granted");
+    assert_eq!(
+        structured["error"]["fix"],
+        "Append \"$DOCUMENTS/notes.txt\" to `/app/fs/read` in keld.permissions.jsonc."
+    );
+    assert_eq!(structured["patch"]["json_pointer"], "/app/fs/read");
+    let after = std::fs::read(&manifest).expect("hash after");
+    assert_eq!(before, after, "tool must not write the manifest");
+}
+
+#[test]
+fn mcp_permissions_explain_missing_manifest_is_error_mcp010() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("absent").join("keld.permissions.jsonc");
+
+    let resp = mcp_tools_call(&serde_json::json!({
+        "name": "keld_permissions_explain",
+        "arguments": {
+            "manifest_path": missing.to_string_lossy(),
+            "operation": {
+                "principal": "app",
+                "capability": "fs.read",
+                "args": { "path": "$DOCUMENTS/notes.txt" }
+            }
+        }
+    }));
+
+    assert_eq!(resp["id"], 3);
+    let result = &resp["result"];
+    assert_eq!(result.get("isError"), Some(&Value::Bool(true)), "{result}");
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["code"], "KELD-MCP010");
+    let fix = structured["fix"].as_str().expect("fix");
+    assert!(
+        fix.contains("keld.permissions.jsonc"),
+        "fix must name expected file: {fix}"
+    );
+    assert!(
+        fix.contains(&missing.display().to_string()) || fix.contains("absent"),
+        "fix must name the tried path: {fix}"
+    );
+}
+
+#[test]
 fn keld_cli_dependency_tree_has_no_http_transport_crates() {
     let output = Command::new(env!("CARGO"))
         .args([
@@ -286,4 +353,55 @@ fn read_json_line(reader: &mut BufReader<impl std::io::Read>) -> Value {
     serde_json::from_str(line.trim()).unwrap_or_else(|e| {
         panic!("invalid JSON from mcp serve: {e}; line={line:?}");
     })
+}
+
+/// Initialize a stdio MCP session and `tools/call` once. Awaits complete
+/// JSON-RPC lines (no sleep).
+fn mcp_tools_call(params: &Value) -> Value {
+    let mut child = Command::new(keld_bin())
+        .args(["mcp", "serve"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mcp serve");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": { "name": "keld-test", "version": "0.0.1" }
+        }
+    });
+    writeln!(stdin, "{init}").expect("write init");
+    stdin.flush().expect("flush");
+    let init_resp = read_json_line(&mut reader);
+    assert_eq!(init_resp["id"], 1, "{init_resp}");
+
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    });
+    writeln!(stdin, "{initialized}").expect("write initialized");
+
+    let call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": params
+    });
+    writeln!(stdin, "{call}").expect("write call");
+    stdin.flush().expect("flush");
+    let resp = read_json_line(&mut reader);
+
+    drop(stdin);
+    let _ = child.wait();
+    resp
 }

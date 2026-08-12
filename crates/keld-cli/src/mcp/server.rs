@@ -10,9 +10,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::doctor::{DoctorFinding, run_findings};
+use crate::error_object::KeldErrorObject;
 use crate::mcp::docs_search::{DocsSearchArgs, DocsSearchResult, search_docs};
 use crate::mcp::permissions::{
-    PermissionsExplainArgs, PermissionsExplainUnavailable, permissions_explain_unavailable,
+    PermissionsExplainArgs, PermissionsExplainResult, permissions_explain,
 };
 
 /// Arguments for `keld_doctor`.
@@ -77,19 +78,19 @@ impl KeldMcpServer {
         Json(search_docs(&args))
     }
 
-    /// Explain a permission deny — stub until keld-guard evaluate API exists.
+    /// Explain a permission allow/deny via keld-guard evaluate. Read-only.
     #[tool(
         name = "keld_permissions_explain",
-        description = "Explain a capability deny and suggest a manifest patch. \
-                       Currently returns KELD-MCP030 until keld-guard's public \
-                       evaluate API lands — does not invent allow/deny decisions."
+        description = "Explain a capability allow/deny against keld.permissions.jsonc \
+                       and return the exact manifest patch. Read-only — never writes \
+                       the file. Missing manifest returns KELD-MCP010."
     )]
     #[allow(clippy::unused_self)]
     fn keld_permissions_explain(
         &self,
         Parameters(args): Parameters<PermissionsExplainArgs>,
-    ) -> Json<PermissionsExplainUnavailable> {
-        Json(permissions_explain_unavailable(&args))
+    ) -> Result<Json<PermissionsExplainResult>, Json<KeldErrorObject>> {
+        permissions_explain(&args).map(Json).map_err(Json)
     }
 }
 
@@ -100,7 +101,7 @@ impl ServerHandler for KeldMcpServer {
             .with_server_info(Implementation::new("keld", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Keld MCP server (stdio). Tools: keld_doctor, keld_docs_search, \
-                 keld_permissions_explain (stub until guard evaluate). Offline, read-only.",
+                 keld_permissions_explain. Offline, read-only.",
             )
     }
 

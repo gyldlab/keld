@@ -186,17 +186,29 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: MCP stdio session ended with error
 - fix: Ensure the client speaks MCP over stdio and keeps stdin open.
 
+## KELD-MCP010
+
+- crate: keld-cli
+- message: Permissions manifest not found
+- fix: create keld.permissions.jsonc at the tried path (expected file name: keld.permissions.jsonc)
+
+## KELD-MCP011
+
+- crate: keld-cli
+- message: Permissions manifest is not valid JSONC
+- fix: Fix the JSON (comments are allowed; trailing commas are not).
+
+## KELD-MCP012
+
+- crate: keld-cli
+- message: Unknown principal for permissions explain
+- fix: v0 evaluate only supports principal "app"
+
 ## KELD-MCP020
 
 - crate: keld-cli
 - message: Failed to serialize doctor findings
 - fix: Re-run `keld doctor` without --json or report a bug.
-
-## KELD-MCP030
-
-- crate: keld-cli
-- message: keld_permissions_explain is not available yet
-- fix: land the keld-guard public manifest-parse/evaluate API
 
 ## KELD-GUARD001
 
@@ -215,3 +227,15 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-guard
 - message: Channel is not granted to this principal
 - fix: Add the channel to this principal's channels list in keld.permissions.jsonc.
+
+## KELD-GUARD004
+
+- crate: keld-guard
+- message: Permissions manifest not found or unreadable
+- fix: Create keld.permissions.jsonc at that path.
+
+## KELD-GUARD005
+
+- crate: keld-guard
+- message: Permissions manifest is not valid JSONC
+- fix: Fix the JSON (comments are allowed; trailing commas are not).

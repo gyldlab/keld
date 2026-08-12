@@ -7,7 +7,7 @@ mod server;
 
 pub use docs_search::{DocsSearchArgs, DocsSearchResult, search_docs};
 pub use error::McpServeError;
-pub use permissions::{PermissionsExplainArgs, permissions_explain_unavailable};
+pub use permissions::{PermissionsExplainArgs, PermissionsExplainResult, permissions_explain};
 pub use server::{KeldMcpServer, tool_definitions};
 
 use std::path::{Path, PathBuf};
