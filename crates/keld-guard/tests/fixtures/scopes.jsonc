@@ -1,0 +1,15 @@
+{
+  // The fixture deliberately mixes exact and prefix scopes.
+  "app": {
+    "fs": {
+      "read": [
+        "/foo/exact",
+        "/foo/bar/**",
+        "$APPDATA/**",
+        "https://example.com/a//b",
+        "/foo/*literal*/bar"
+      ],
+      "write": []
+    }
+  }
+}
