@@ -169,58 +169,41 @@ fn mcp_missing_subcommand_exits_2() {
 }
 
 #[test]
-fn mcp_serve_tools_list_over_stdio() {
-    // Drive newline-delimited JSON-RPC over stdio — await complete response lines,
-    // never sleep (AGENTS.md anti-flake).
-    let mut child = Command::new(keld_bin())
-        .args(["mcp", "serve"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn mcp serve");
+fn mcp_server_discover_advertises_versions_and_identity() {
+    let response = mcp_request(
+        "server/discover",
+        &serde_json::json!({
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }),
+    );
 
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
-    let mut reader = BufReader::new(stdout);
+    assert_eq!(response["id"], 2);
+    assert_eq!(response["result"]["resultType"], "complete");
+    assert_eq!(
+        response["result"]["supportedVersions"],
+        serde_json::json!(["2026-07-28", "2025-11-25"])
+    );
+    assert_eq!(
+        response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
+        serde_json::json!({
+            "name": "keld",
+            "version": env!("CARGO_PKG_VERSION")
+        })
+    );
+}
 
-    let init = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-11-25",
-            "capabilities": {},
-            "clientInfo": { "name": "keld-test", "version": "0.0.1" }
-        }
-    });
-    writeln!(stdin, "{init}").expect("write init");
-    stdin.flush().expect("flush");
+#[test]
+fn mcp_tools_list_matches_reviewed_snapshot() {
+    let response = mcp_request("tools/list", &serde_json::json!({}));
+    assert_eq!(response["id"], 2);
+    assert_eq!(response["result"]["resultType"], "complete");
+    assert_eq!(response["result"]["ttlMs"], 0);
+    assert_eq!(response["result"]["cacheScope"], "public");
 
-    let init_resp = read_json_line(&mut reader);
-    assert_eq!(init_resp["id"], 1);
-    assert!(init_resp.get("result").is_some(), "init resp: {init_resp}");
-
-    let initialized = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized"
-    });
-    writeln!(stdin, "{initialized}").expect("write initialized");
-
-    let list = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list",
-        "params": {}
-    });
-    writeln!(stdin, "{list}").expect("write list");
-    stdin.flush().expect("flush");
-
-    let list_resp = read_json_line(&mut reader);
-    assert_eq!(list_resp["id"], 2);
-    let tools = list_resp["result"]["tools"]
-        .as_array()
-        .expect("tools array");
+    let tools = response["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools
         .iter()
         .map(|t| t["name"].as_str().expect("name"))
@@ -234,8 +217,80 @@ fn mcp_serve_tools_list_over_stdio() {
         ]
     );
 
-    drop(stdin);
-    let _ = child.wait();
+    // Canonicalize object-key order through serde_json before the byte comparison;
+    // the wire and checked-in JSON may preserve different insertion orders.
+    let snapshot: Value =
+        serde_json::from_str(include_str!("snapshots/tools_list.json")).expect("parse snapshot");
+    let actual = serde_json::to_string_pretty(&response["result"]).expect("serialize response");
+    let expected = serde_json::to_string_pretty(&snapshot).expect("serialize snapshot");
+    assert_eq!(
+        actual, expected,
+        "tools/list changed; review the public tool schemas and update the snapshot intentionally"
+    );
+}
+
+#[test]
+fn mcp_doctor_matches_cli_json_over_stdio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    // macOS aliases `/var` to `/private/var`; use one canonical spelling so the
+    // subprocess cwd and explicit MCP argument produce byte-identical findings.
+    let project = std::fs::canonicalize(dir.path().join("app")).expect("canonical project");
+
+    let cli = Command::new(keld_bin())
+        .args(["doctor", "--json"])
+        .current_dir(&project)
+        .output()
+        .expect("spawn doctor --json");
+    assert!(
+        matches!(cli.status.code(), Some(0 | 1)),
+        "doctor must return findings, stderr={}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_findings: Value =
+        serde_json::from_slice(&cli.stdout).expect("parse doctor --json output");
+
+    let response = mcp_tools_call(&serde_json::json!({
+        "name": "keld_doctor",
+        "arguments": { "project_root": project }
+    }));
+    let result = &response["result"];
+    assert_eq!(result["resultType"], "complete");
+    assert_eq!(result["structuredContent"], cli_findings);
+
+    let findings = result["structuredContent"]
+        .as_array()
+        .expect("findings array");
+    assert!(!findings.is_empty());
+    for finding in findings {
+        assert!(finding["label"].is_string(), "{finding}");
+        assert!(finding["ok"].is_boolean(), "{finding}");
+        assert!(finding["detail"].is_string(), "{finding}");
+    }
+}
+
+#[test]
+fn mcp_docs_search_returns_real_security_chunk_over_stdio() {
+    let response = mcp_tools_call(&serde_json::json!({
+        "name": "keld_docs_search",
+        "arguments": {
+            "query": "capability manifest",
+            "max_results": 5
+        }
+    }));
+
+    let result = &response["result"];
+    assert_eq!(result["resultType"], "complete");
+    let structured = &result["structuredContent"];
+    let results = structured["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "{structured}");
+    assert!(results.len() <= 5, "{structured}");
+    assert!(
+        results
+            .iter()
+            .any(|chunk| chunk["source_path"] == "docs/architecture/03-security.md"),
+        "wire response must contain a real security-doc chunk: {structured}"
+    );
 }
 
 #[test]
@@ -257,7 +312,7 @@ fn mcp_permissions_explain_deny_patch_over_stdio() {
         }
     }));
 
-    assert_eq!(resp["id"], 3);
+    assert_eq!(resp["id"], 2);
     let result = &resp["result"];
     assert_ne!(result.get("isError"), Some(&Value::Bool(true)), "{result}");
     let structured = &result["structuredContent"];
@@ -289,7 +344,7 @@ fn mcp_permissions_explain_missing_manifest_is_error_mcp010() {
         }
     }));
 
-    assert_eq!(resp["id"], 3);
+    assert_eq!(resp["id"], 2);
     let result = &resp["result"];
     assert_eq!(result.get("isError"), Some(&Value::Bool(true)), "{result}");
     let structured = &result["structuredContent"];
@@ -355,9 +410,17 @@ fn read_json_line(reader: &mut BufReader<impl std::io::Read>) -> Value {
     })
 }
 
-/// Initialize a stdio MCP session and `tools/call` once. Awaits complete
-/// JSON-RPC lines (no sleep).
+/// Initialize a stdio MCP session and `tools/call` once.
 fn mcp_tools_call(params: &Value) -> Value {
+    mcp_request("tools/call", params)
+}
+
+/// Initialize a 2026-07-28 stdio MCP session and send one request.
+///
+/// Awaits complete newline-delimited JSON-RPC frames (no sleep).
+fn mcp_request(method: &str, params: &Value) -> Value {
+    // Drive newline-delimited JSON-RPC over stdio — await complete response lines,
+    // never sleep (AGENTS.md anti-flake).
     let mut child = Command::new(keld_bin())
         .args(["mcp", "serve"])
         .stdin(Stdio::piped())
@@ -375,7 +438,7 @@ fn mcp_tools_call(params: &Value) -> Value {
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2025-11-25",
+            "protocolVersion": "2026-07-28",
             "capabilities": {},
             "clientInfo": { "name": "keld-test", "version": "0.0.1" }
         }
@@ -384,6 +447,15 @@ fn mcp_tools_call(params: &Value) -> Value {
     stdin.flush().expect("flush");
     let init_resp = read_json_line(&mut reader);
     assert_eq!(init_resp["id"], 1, "{init_resp}");
+    assert_eq!(
+        init_resp["result"]["protocolVersion"], "2026-07-28",
+        "{init_resp}"
+    );
+    assert_eq!(init_resp["result"]["serverInfo"]["name"], "keld");
+    assert_eq!(
+        init_resp["result"]["serverInfo"]["version"],
+        env!("CARGO_PKG_VERSION")
+    );
 
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
@@ -393,8 +465,8 @@ fn mcp_tools_call(params: &Value) -> Value {
 
     let call = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
+        "id": 2,
+        "method": method,
         "params": params
     });
     writeln!(stdin, "{call}").expect("write call");
@@ -402,6 +474,7 @@ fn mcp_tools_call(params: &Value) -> Value {
     let resp = read_json_line(&mut reader);
 
     drop(stdin);
-    let _ = child.wait();
+    let status = child.wait().expect("wait for mcp serve");
+    assert!(status.success(), "mcp serve exited {status}");
     resp
 }

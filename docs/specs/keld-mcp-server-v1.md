@@ -284,9 +284,9 @@ shape-check the platform-variant one.
       `load_manifest` / `evaluate` (v0 default-deny path scopes); patch
       synthesis, exact-match fix-text tests, read-only assertion test.
       Missing file → `isError` + `KELD-MCP010`.
-- [ ] T5 Agent-facing usage doc (client registration snippet for Claude Code/Cursor,
+- [x] T5 Agent-facing usage doc (client registration snippet for Claude Code/Cursor,
       tool descriptions with cross-tool ordering hints) + `docs/agents/learnings.md`
-      entries + error-code registry entries for `KELD-MCP0xx`.
+      entry + error-code registry entries for `KELD-MCP0xx`.
 
 ## 7. Test plan
 

@@ -30,3 +30,4 @@ small — it is loaded by every agent session.
 - 2026-08-12 [wv/macos] Unit tests must not call `WkWebViewEngine::new` / tao `EventLoop::new` (starts AppKit). Smoke title/HTML/spec instead; `just hello` is the GUI check. (evidence: KEL-26)
 - 2026-08-12 [wv/macos] tao 0.35 `EventLoopExtMacOS` already defaults to `NSApplicationActivationPolicyRegular`; do not set it again. (evidence: tao-0.35.3 `platform/macos.rs` trait docs)
 - 2026-08-13 [ipc] postcard `from_bytes` ignores trailing bytes; a no-op echo test must assert re-encoded output ≠ input, not expect a codec error. (evidence: crates/keld-ipc/src/echo.rs `echo_roundtrip_copies_fields_not_input_bytes`)
+- 2026-08-13 [cli] rmcp 3.1.2 accepts `server/discover` only after `initialize`, with namespaced `io.modelcontextprotocol/*` metadata keys; unnamespaced keys return JSON-RPC -32602. (evidence: crates/keld-cli/tests/doctor_mcp.rs `mcp_server_discover_advertises_versions_and_identity`)

@@ -1,0 +1,393 @@
+{
+  "resultType": "complete",
+  "ttlMs": 0,
+  "cacheScope": "public",
+  "tools": [
+    {
+      "name": "keld_doctor",
+      "description": "Run Keld environment checks (Bun, project layout, webview). Same findings as `keld doctor --json`. Read-only.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "project_root": {
+            "default": null,
+            "description": "Optional scaffolded project root (layout checks).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "DoctorFinding": {
+            "description": "Serializable finding shared by `keld doctor --json` and MCP `keld_doctor`.",
+            "properties": {
+              "detail": {
+                "description": "Detail line (human-readable).",
+                "type": "string"
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/KeldErrorObject"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Present iff `!ok` — agents read `fix` rather than parsing `detail`."
+              },
+              "label": {
+                "description": "Short label (e.g. `bun`, `project`, `webview`).",
+                "type": "string"
+              },
+              "ok": {
+                "description": "Whether the check passed.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label",
+              "ok",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "KeldErrorObject": {
+            "description": "Structured error payload agents can act on without reading prose.\n\nShape matches `docs/architecture/07-agent-experience.md` §2. Serialized into\ndoctor findings and MCP `structuredContent` (never into JSON-RPC error codes).",
+            "properties": {
+              "cause": {
+                "description": "Specific input/state that triggered the failure, when known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "Stable greppable code, e.g. `KELD-MCP010`.",
+                "type": "string"
+              },
+              "docs": {
+                "description": "Task-oriented docs URL (`https://keld.dev/e/<code>`).",
+                "type": "string"
+              },
+              "fix": {
+                "description": "Imperative next step: exact command, patch, or API to use.",
+                "type": "string"
+              },
+              "message": {
+                "description": "What failed, with the failing value/field named.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "fix",
+              "docs"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "items": {
+          "$ref": "#/$defs/DoctorFinding"
+        },
+        "type": "array"
+      }
+    },
+    {
+      "name": "keld_docs_search",
+      "description": "Search Keld architecture docs and the KELD-* error registry (offline, embedded corpus). Returns ranked {title, source_path, snippet} chunks. Read-only.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_results": {
+            "default": null,
+            "description": "Max results to return (default 5, capped at 20).",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "Free-text query (keywords; case-insensitive).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "DocChunk": {
+            "description": "One ranked search hit.",
+            "properties": {
+              "score": {
+                "description": "Deterministic keyword score (higher is better).",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "snippet": {
+                "description": "Snippet from the section body.",
+                "type": "string"
+              },
+              "source_path": {
+                "description": "Repo-relative path, e.g. `docs/architecture/03-security.md`.",
+                "type": "string"
+              },
+              "title": {
+                "description": "Section heading (or document title).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "source_path",
+              "snippet",
+              "score"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "hint": {
+            "description": "Guidance when truncated or empty.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "results": {
+            "description": "Ranked chunks (deterministic order).",
+            "items": {
+              "$ref": "#/$defs/DocChunk"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "True when more matches existed than `max_results`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "results",
+          "truncated"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "keld_permissions_explain",
+      "description": "Explain a capability allow/deny against keld.permissions.jsonc and return the exact manifest patch. Read-only — never writes the file. Missing manifest returns KELD-MCP010.",
+      "inputSchema": {
+        "$defs": {
+          "DeniedOperation": {
+            "description": "Operation under evaluation (mirrors guard `evaluate` inputs).",
+            "properties": {
+              "args": {
+                "additionalProperties": true,
+                "default": {},
+                "description": "Capability arguments (path, host, etc.).",
+                "type": "object"
+              },
+              "capability": {
+                "description": "Capability id, e.g. `fs.read`.",
+                "type": "string"
+              },
+              "channel": {
+                "default": null,
+                "description": "Optional kipc channel name.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "principal": {
+                "description": "Principal name, e.g. `app`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "principal",
+              "capability"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "manifest_path": {
+            "description": "Path to `keld.permissions.jsonc`.",
+            "type": "string"
+          },
+          "operation": {
+            "$ref": "#/$defs/DeniedOperation",
+            "description": "The operation that was (or would be) denied."
+          }
+        },
+        "required": [
+          "manifest_path",
+          "operation"
+        ],
+        "type": "object"
+      },
+      "outputSchema": {
+        "$defs": {
+          "DenyReasonView": {
+            "description": "MCP view of [`keld_guard::DenyReason`].",
+            "properties": {
+              "capability": {
+                "description": "Capability id when the deny is grant/scope related.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "channel": {
+                "description": "Channel name when `kind` is `channel_forbidden`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "json_pointer": {
+                "description": "Manifest JSON pointer named in the fix.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "description": "`not_granted` | `out_of_scope` | `channel_forbidden`.",
+                "type": "string"
+              },
+              "scope": {
+                "description": "Failing scope text when `kind` is `out_of_scope`.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "KeldErrorObject": {
+            "description": "Structured error payload agents can act on without reading prose.\n\nShape matches `docs/architecture/07-agent-experience.md` §2. Serialized into\ndoctor findings and MCP `structuredContent` (never into JSON-RPC error codes).",
+            "properties": {
+              "cause": {
+                "description": "Specific input/state that triggered the failure, when known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "Stable greppable code, e.g. `KELD-MCP010`.",
+                "type": "string"
+              },
+              "docs": {
+                "description": "Task-oriented docs URL (`https://keld.dev/e/<code>`).",
+                "type": "string"
+              },
+              "fix": {
+                "description": "Imperative next step: exact command, patch, or API to use.",
+                "type": "string"
+              },
+              "message": {
+                "description": "What failed, with the failing value/field named.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "fix",
+              "docs"
+            ],
+            "type": "object"
+          },
+          "ManifestPatch": {
+            "description": "Suggested append at a JSON pointer. The tool never applies this.",
+            "properties": {
+              "json_pointer": {
+                "description": "JSON pointer, e.g. `/app/fs/read`.",
+                "type": "string"
+              },
+              "snippet": {
+                "description": "One-line description of the edit.",
+                "type": "string"
+              },
+              "value": {
+                "description": "Value to append (the requested path/host)."
+              }
+            },
+            "required": [
+              "json_pointer",
+              "value",
+              "snippet"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "decision": {
+            "description": "`\"allow\"` or `\"deny\"`.",
+            "type": "string"
+          },
+          "deny_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DenyReasonView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present iff `decision` is `\"deny\"`."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/KeldErrorObject"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "§2 error whose `fix` is the exact manifest patch (deny only)."
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ManifestPatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "JSON-pointer patch that would grant the operation (deny only)."
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

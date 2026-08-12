@@ -240,11 +240,12 @@ conventions override its baseline.
 
 ## `docs/onboarding/` — this directory
 
-The guided entry layer over everything above:
-[`01-project-summary.md`](01-project-summary.md) (what Keld is, the competitive
-positioning, the performance budgets, the honest current-state ledger, the roadmap in
-plain terms) and this map. Numbering is reserved through `06`; list the directory to see
-which parts have landed.
+The guided entry layer over everything above. Start with
+[`01-project-summary.md`](01-project-summary.md) for the product, performance budgets,
+current-state ledger, and roadmap; use this map to navigate the source-of-truth tiers.
+Agents connecting through MCP should then read
+[`07-mcp-server.md`](07-mcp-server.md) for client registration and the intended
+doctor → docs search → permissions explain workflow.
 
 ## Suggested reading order
 

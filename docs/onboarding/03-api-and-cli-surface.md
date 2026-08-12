@@ -5,7 +5,7 @@ exist as code today:
 
 | Surface | Status | Where it lives |
 |---|---|---|
-| The `keld` CLI | Real: 6 verbs + `--version` | [`crates/keld-cli/src/`](../../crates/keld-cli/src/) |
+| The `keld` CLI | Real: 7 verbs + `--version` | [`crates/keld-cli/src/`](../../crates/keld-cli/src/) |
 | Public Rust crate APIs | Real for `keld-ipc`, `keld-wv`, `keld-core`, `keld-cli`; type-only elsewhere | [`crates/`](../../crates/) |
 | The template app contract (what an app developer writes) | Real, one template | [`crates/keld-cli/templates/hello/`](../../crates/keld-cli/templates/hello/) |
 | `@keld/*` TypeScript packages | **Does not exist.** [`packages/`](../../packages/) is an empty directory | planned in [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §3 |
@@ -49,6 +49,8 @@ from `std::env::args()`.
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
 | `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env, starts echo server, spawns Bun main, opens the window (macOS) |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
+| `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
+| `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
 | `keld hello` | `keld_core::run_hello_window` | opens the WKWebView hello window (macOS) |
 | `keld ipc-echo` | `main.rs::run_ipc_echo_demo` | in-process kipc round-trip demo |
 | `keld ipc-client echo --link <path>` | [`echo_link.rs`](../../crates/keld-cli/src/echo_link.rs) | one echo call against an existing app-link; used by the template |
@@ -73,7 +75,8 @@ keld 0.0.1 (pre-alpha)
 commands:
   create <name>   Scaffold the hello-world template
   dev             Run the app (Bun main + IPC echo + window)
-  doctor          Check local toolchain and project layout
+  doctor [--json] Check local toolchain and project layout
+  mcp serve       Speak MCP over stdio (doctor/docs/permissions)
   hello           Open the macOS WKWebView hello window
   ipc-echo        Run the typed kipc echo round-trip demo
   ipc-client      Internal: kipc client helpers for templates
@@ -228,8 +231,9 @@ $ keld doctor
 [ok] webview — macOS WKWebView hello window available via `keld dev`
 ```
 
-None of the doctor flags in the specs (`--permissions`, `--web-compat`, `--attack`) are
-implemented; `run_checks` takes no options at all.
+`--json` emits the same top-level findings array returned by the MCP `keld_doctor`
+tool. The other doctor flags in the specs (`--permissions`, `--web-compat`, `--attack`)
+are not implemented.
 
 ### 1.8 `keld hello`
 
@@ -281,16 +285,26 @@ KELD-CLI-040: missing --link (set KELD_APP_LINK from `keld dev`)
 On success it prints the same `ipc-echo ok: message=… count=…` line. The message is
 again hardcoded (`"keld"`, count 1) — this verb takes no payload arguments.
 
-### 1.11 Exit codes and machine-readable output
+### 1.11 `keld mcp serve`
+
+Runs the official, read-only MCP server over stdio. It exposes `keld_doctor`,
+`keld_docs_search`, and `keld_permissions_explain` in fixed order. Registration,
+tool-ordering guidance, and request examples are in
+[`07-mcp-server.md`](07-mcp-server.md).
+
+An unknown or missing `mcp` subcommand prints `usage: keld mcp serve` to stderr and
+exits **2**. The server opens no network listener.
+
+### 1.12 Exit codes and machine-readable output
 
 | Today (verified) | Specified target |
 |---|---|
-| `0` success, `1` everything else | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
-| no `--json` on any verb | `--json` on anything with parseable output (same section) |
+| `0` success, `1` general failure, `2` for `keld mcp` misuse | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
+| `keld doctor --json` emits a findings array | `--json` on anything with parseable output (same section) |
 
-Neither is implemented. `main.rs` only ever calls `process::exit(1)`.
+The full target exit-code and machine-readable-output contract is not implemented yet.
 
-### 1.12 Error codes you will see
+### 1.13 Error codes you will see
 
 Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 ([`AGENTS.md`](../../AGENTS.md) → `docs/architecture/07-agent-experience.md` §2).
@@ -332,7 +346,7 @@ the honest mapping:
 | `@keld/electron` aliasing | `keld-compat` contains a single `Tier` enum; no shim | ROADMAP **Phase 2** (Tier 1) / **Phase 4** (Tier 2) |
 | Delta updates, signed installers | `keld-update` is a `Channel` enum; `keld-pack` is a `Format` enum | ROADMAP **Phase 3** |
 | `keld dev` | **Exists**, but as described in §1.6: Bun child + echo round-trip + a fixed hello window, not your renderer | Phase 1 in progress |
-| `keld gen`, `keld ext`, `keld mcp serve` | Not implemented | `06-runtime-and-tooling.md` §2, `07-agent-experience.md` §4 |
+| `keld gen`, `keld ext` | Not implemented | `06-runtime-and-tooling.md` §2 |
 
 The README's workspace-layout block does label the npm packages `(upcoming)`; the
 three-line pitch does not carry the same caveat. Treat the pitch as the product
