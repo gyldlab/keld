@@ -18,6 +18,13 @@ The host mediates everything. That's what makes capability checks, auditing, cra
 isolation, and Electron-compat routing possible. The mediation cost is engineered away
 with binary framing + shm, not avoided by deleting the boundary (Deno's mistake).
 
+**v0 app-link (KEL-60):** Unix is a domain socket inside an owner-only (`0o700`) session
+directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
+section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
+minted by the host and passed to the child in `KELD_APP_LINK` as
+`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. Destination
+Windows transport remains `\\.\pipe\keld-<random>` with a current-user DACL.
+
 ## 2. Wire protocol (control plane)
 
 Little-endian framed binary, versioned at handshake:
@@ -29,6 +36,13 @@ kind   := HELLO | CALL | REPLY | ERR | EVENT | STREAM_* | GRANT | PING
 payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 ```
 
+- **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
+  (KEL-60). It is raw bytes, not postcard. Empty, truncated, or mismatched tokens
+  are `KELD-IPC-007`. The client writes `HELLO` first. The server reads and
+  verifies before writing its own `HELLO`, so a connector that does not already
+  possess the token never learns it from the wire. This proves possession of the
+  session token; it is not a principal id (peers still do not self-identify).
+  Channel-table exchange remains later work.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
   measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
   exists only for `--inspect-ipc` debugging (human dump), never on the hot path.

@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
-use keld_ipc::{EchoRequest, EchoResponse, echo_call, serve_echo_session};
+use keld_ipc::{
+    EchoRequest, EchoResponse, SESSION_TOKEN_LEN, SessionToken, echo_call, format_app_link,
+    parse_app_link, serve_echo_session,
+};
 
 /// Endpoint for the echo server (Unix socket path or TCP port).
 #[derive(Debug, Clone)]
@@ -24,9 +27,7 @@ pub enum EchoEndpoint {
 }
 
 impl EchoEndpoint {
-    /// String form passed to child processes via `KELD_APP_LINK`.
-    #[must_use]
-    pub fn link_env(&self) -> String {
+    fn endpoint_value(&self) -> String {
         #[cfg(unix)]
         {
             let EchoEndpoint::Unix(path) = self;
@@ -38,16 +39,29 @@ impl EchoEndpoint {
             port.to_string()
         }
     }
+
+    /// String form passed to child processes via `KELD_APP_LINK`.
+    #[must_use]
+    pub fn link_env(&self, token: &SessionToken) -> String {
+        format_app_link(&self.endpoint_value(), token)
+    }
 }
 
 /// Handle to a background echo server thread.
 #[derive(Debug)]
 pub struct EchoServer {
     endpoint: EchoEndpoint,
+    token: SessionToken,
     handle: Option<thread::JoinHandle<Result<(), keld_ipc::IpcError>>>,
     /// Owner-only directory that contains the Unix socket; removed on join/Drop.
     #[cfg(unix)]
     session_dir: PathBuf,
+}
+
+fn mint_session_token() -> io::Result<SessionToken> {
+    let mut bytes = [0u8; SESSION_TOKEN_LEN];
+    getrandom::fill(&mut bytes).map_err(|err| io::Error::other(err.to_string()))?;
+    Ok(SessionToken::from_bytes(bytes))
 }
 
 #[cfg(unix)]
@@ -86,40 +100,47 @@ impl EchoServer {
     ///
     /// Returns [`io::Error`] if the loopback listener cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
+        let token = mint_session_token()?;
         #[cfg(unix)]
         {
             let (session_dir, path, listener) = bind_unix_echo()?;
             ready.send(()).ok();
+            let serve_token = token;
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept()?;
-                serve_echo_session(&mut stream)
+                serve_echo_session(&mut stream, &serve_token)
             });
             Ok(Self {
                 endpoint: EchoEndpoint::Unix(path),
+                token,
                 handle: Some(handle),
                 session_dir,
             })
         }
         #[cfg(windows)]
         {
+            // Destination: named pipe + current-user DACL (02-ipc §1). v0 is
+            // loopback TCP; peer auth is the v2 HELLO token (KEL-60).
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
             let port = listener.local_addr()?.port();
             ready.send(()).ok();
+            let serve_token = token;
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept()?;
-                serve_echo_session(&mut stream)
+                serve_echo_session(&mut stream, &serve_token)
             });
             Ok(Self {
                 endpoint: EchoEndpoint::Tcp(port),
+                token,
                 handle: Some(handle),
             })
         }
     }
 
-    /// App-link path/port for clients.
+    /// App-link value for clients (`<endpoint>#<64 hex chars>`).
     #[must_use]
     pub fn link(&self) -> String {
-        self.endpoint.link_env()
+        self.endpoint.link_env(&self.token)
     }
 
     /// Waits for the server thread and removes the Unix session directory.
@@ -194,15 +215,21 @@ pub fn echo_roundtrip(
     link: &str,
     request: &EchoRequest,
 ) -> Result<EchoResponse, keld_ipc::IpcError> {
+    let (endpoint, token) = parse_app_link(link)?;
     #[cfg(unix)]
     {
-        let mut stream = std::os::unix::net::UnixStream::connect(link)?;
-        echo_call(&mut stream, request)
+        let mut stream = std::os::unix::net::UnixStream::connect(endpoint)?;
+        echo_call(&mut stream, request, &token)
     }
     #[cfg(windows)]
     {
-        let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{link}"))?;
-        echo_call(&mut stream, request)
+        let port: u16 = endpoint
+            .parse()
+            .map_err(|_| keld_ipc::IpcError::HelloAuth {
+                detail: "KELD_APP_LINK Windows endpoint must be a TCP port",
+            })?;
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        echo_call(&mut stream, request, &token)
     }
 }
 
@@ -210,10 +237,40 @@ pub fn echo_roundtrip(
 mod tests {
     use super::*;
 
+    fn fixture_token() -> SessionToken {
+        SessionToken::from_bytes([0x11; SESSION_TOKEN_LEN])
+    }
+
+    #[cfg(unix)]
+    fn unix_socket_path(link: &str) -> PathBuf {
+        let (endpoint, _) = parse_app_link(link).expect("KELD_APP_LINK");
+        PathBuf::from(endpoint)
+    }
+
+    #[test]
+    fn missing_hash_is_ipc_007_not_echo() {
+        let err = echo_roundtrip(
+            "/no/such/keld-echo.sock",
+            &EchoRequest {
+                message: "missing".to_owned(),
+                count: 1,
+            },
+        )
+        .expect_err("link without token must fail closed");
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-IPC-007"), "{msg}");
+        assert!(!msg.contains("KELD-IPC-001"), "{msg}");
+        assert!(
+            !msg.contains("message=\"missing\""),
+            "must not fabricate an echo reply: {msg}"
+        );
+    }
+
     #[test]
     fn missing_socket_is_ipc_001() {
+        let token = fixture_token();
         #[cfg(unix)]
-        let link_owned = format!(
+        let endpoint = format!(
             "/no/such/keld-echo-{}-{}.sock",
             std::process::id(),
             std::time::SystemTime::now()
@@ -221,12 +278,11 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
-        #[cfg(unix)]
-        let link = link_owned.as_str();
         #[cfg(windows)]
-        let link = "1"; // port 1: connection refused on loopback
+        let endpoint = "1".to_owned(); // port 1: connection refused on loopback
+        let link = format_app_link(&endpoint, &token);
         let err = echo_roundtrip(
-            link,
+            &link,
             &EchoRequest {
                 message: "missing".to_owned(),
                 count: 1,
@@ -239,6 +295,66 @@ mod tests {
             !msg.contains("message=\"missing\""),
             "must not fabricate an echo reply: {msg}"
         );
+        assert!(
+            !msg.contains(&token.to_hex()),
+            "must not leak the session token: {msg}"
+        );
+    }
+
+    #[test]
+    fn wrong_token_is_ipc_007() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let link = server.link();
+        let (endpoint, token) = parse_app_link(&link).expect("link");
+        let mut foreign = *token.as_bytes();
+        foreign[0] ^= 1;
+        let bad_link = format_app_link(endpoint, &SessionToken::from_bytes(foreign));
+        let err = echo_roundtrip(
+            &bad_link,
+            &EchoRequest {
+                message: "stolen".to_owned(),
+                count: 1,
+            },
+        )
+        .expect_err("foreign token must fail");
+        let server_msg = server
+            .join()
+            .expect_err("host must reject the foreign HELLO")
+            .to_string();
+        assert!(
+            server_msg.contains("KELD-IPC-007"),
+            "host must fail closed with 007, got {server_msg}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("KELD-IPC-001") || msg.contains("KELD-IPC-007"),
+            "client must not complete echo; host closes without sending the token: {msg}"
+        );
+        assert!(
+            !msg.contains("stolen"),
+            "must not fabricate an echo reply: {msg}"
+        );
+        assert!(
+            !msg.contains(&token.to_hex()),
+            "must not leak the session token: {msg}"
+        );
+    }
+
+    #[test]
+    fn minted_session_tokens_differ() {
+        let (ready_a, rx_a) = mpsc::channel();
+        let a = EchoServer::start(&ready_a).expect("bind a");
+        rx_a.recv().expect("a ready");
+        let (ready_b, rx_b) = mpsc::channel();
+        let b = EchoServer::start(&ready_b).expect("bind b");
+        rx_b.recv().expect("b ready");
+        let (_, token_a) = parse_app_link(&a.link()).expect("a");
+        let (_, token_b) = parse_app_link(&b.link()).expect("b");
+        assert_ne!(token_a, token_b, "each session must mint its own token");
+        let _ = a.shutdown();
+        let _ = b.shutdown();
     }
 
     #[test]
@@ -251,6 +367,13 @@ mod tests {
             count: 11,
         };
         let response = echo_roundtrip(&server.link(), &req).expect("echo");
+        let link = server.link();
+        assert!(
+            link.contains('#'),
+            "KELD_APP_LINK must carry the session token: {link}"
+        );
+        let (_, token) = parse_app_link(&link).expect("link");
+        assert_eq!(token.to_hex().len(), 64);
         server.join().expect("join");
         assert_eq!(response.message, "cli-loopback");
         assert_eq!(response.count, 11);
@@ -281,7 +404,7 @@ mod tests {
         let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
         #[cfg(unix)]
-        let session_dir = PathBuf::from(server.link())
+        let session_dir = unix_socket_path(&server.link())
             .parent()
             .expect("socket lives in a session dir")
             .to_path_buf();
@@ -308,7 +431,7 @@ mod tests {
         let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
         let link = server.link();
-        let socket = PathBuf::from(&link);
+        let socket = unix_socket_path(&link);
         let session_dir = socket
             .parent()
             .expect("socket lives in a session dir")
@@ -355,7 +478,7 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::channel();
         let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
-        let session_dir = PathBuf::from(server.link())
+        let session_dir = unix_socket_path(&server.link())
             .parent()
             .expect("socket lives in a session dir")
             .to_path_buf();

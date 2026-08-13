@@ -1261,6 +1261,7 @@ dependencies = [
 name = "keld-cli"
 version = "0.0.1"
 dependencies = [
+ "getrandom 0.4.3",
  "keld-core",
  "keld-guard",
  "keld-ipc",

@@ -5,21 +5,25 @@ use std::io::{ErrorKind, Read, Write};
 use crate::codec::{decode, encode};
 use crate::echo::{ECHO_CHANNEL, EchoRequest, EchoResponse, handle_echo};
 use crate::frame::{CorrelationId, FrameKind};
-use crate::link::{AppLinkDeadlines, handshake, read_frame, write_frame};
+use crate::link::{AppLinkDeadlines, handshake_client, handshake_server, read_frame, write_frame};
+use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, IpcError};
 
 /// Serves one connected app-link peer until the stream closes.
 ///
 /// Applies [`APP_LINK_IO_DEADLINE`] so a silent peer cannot block the host.
+/// `token` is required in the v2 `HELLO` (`handshake_server`) before any `Call`
+/// is dispatched.
 ///
 /// # Errors
 ///
-/// Returns [`IpcError`] on I/O, protocol, handler, or deadline failures.
+/// Returns [`IpcError`] on I/O, protocol, handler, auth, or deadline failures.
 pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
     stream: &mut S,
+    token: &SessionToken,
 ) -> Result<(), IpcError> {
     stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
-    handshake(stream)?;
+    handshake_server(stream, token)?;
     loop {
         let (header, payload) = match read_frame(stream) {
             Ok(frame) => frame,
@@ -53,17 +57,19 @@ pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
 
 /// Sends one echo `Call` and returns the decoded response.
 ///
-/// Applies [`APP_LINK_IO_DEADLINE`] before the handshake.
+/// Applies [`APP_LINK_IO_DEADLINE`] before `handshake_client`. `token` must
+/// match the server's session token.
 ///
 /// # Errors
 ///
-/// Returns [`IpcError`] on I/O, protocol, codec, or deadline failures.
+/// Returns [`IpcError`] on I/O, protocol, codec, auth, or deadline failures.
 pub fn echo_call<S: Read + Write + AppLinkDeadlines>(
     stream: &mut S,
     request: &EchoRequest,
+    token: &SessionToken,
 ) -> Result<EchoResponse, IpcError> {
     stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
-    handshake(stream)?;
+    handshake_client(stream, token)?;
     let payload = encode(request)?;
     let corr = CorrelationId(1);
     write_frame(stream, FrameKind::Call, 0, ECHO_CHANNEL, corr, &payload)?;

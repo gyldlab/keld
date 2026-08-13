@@ -16,11 +16,13 @@ pub mod echo;
 pub mod frame;
 pub mod link;
 pub mod session;
+pub mod token;
 
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use link::AppLinkDeadlines;
 pub use session::{echo_call, serve_echo_session};
+pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).
 ///
@@ -33,7 +35,9 @@ pub const APP_LINK_IO_DEADLINE: Duration = Duration::from_secs(5);
 pub const MAGIC: u16 = u16::from_le_bytes(*b"KI");
 
 /// Current protocol version negotiated in `HELLO`.
-pub const PROTOCOL_VERSION: u8 = 1;
+///
+/// v2 requires a 32-byte session token as the `HELLO` payload (KEL-60).
+pub const PROTOCOL_VERSION: u8 = 2;
 
 /// Fixed size of an encoded frame header in bytes.
 pub const HEADER_LEN: usize = 16;
@@ -61,6 +65,11 @@ pub enum IpcError {
     /// Unexpected frame or state.
     Protocol {
         /// Short explanation for logs/tests.
+        detail: &'static str,
+    },
+    /// `HELLO` session token missing, malformed, or mismatched.
+    HelloAuth {
+        /// Short explanation for logs/tests. Must not contain the token.
         detail: &'static str,
     },
     /// A blocking read or write exceeded [`APP_LINK_IO_DEADLINE`].
@@ -94,6 +103,13 @@ impl core::fmt::Display for IpcError {
                 f,
                 "KELD-IPC-005: protocol error — {detail}. \
                  Check frame kind and channel match the session contract."
+            ),
+            Self::HelloAuth { detail } => write!(
+                f,
+                "KELD-IPC-007: HELLO session token rejected — {detail}. \
+                 Mint the token with the host (`keld dev`) into KELD_APP_LINK \
+                 as `<endpoint>#<64 hex chars>` and send those 32 bytes as the \
+                 HELLO payload; empty or foreign tokens are rejected."
             ),
             Self::Timeout => write!(
                 f,
@@ -152,7 +168,7 @@ mod tests {
         assert_code_and_fix(
             &IpcError::from(HeaderError::BadVersion(99)),
             "KELD-IPC-002",
-            "kipc v1",
+            "kipc v2",
         );
         let codec_err = decode::<EchoRequest>(&[0xff]).expect_err("invalid postcard");
         assert_code_and_fix(&codec_err, "KELD-IPC-003", "postcard");
@@ -163,6 +179,13 @@ mod tests {
             },
             "KELD-IPC-005",
             "session contract",
+        );
+        assert_code_and_fix(
+            &IpcError::HelloAuth {
+                detail: "HELLO session token mismatch",
+            },
+            "KELD-IPC-007",
+            "KELD_APP_LINK",
         );
         assert_code_and_fix(&IpcError::Timeout, "KELD-IPC-006", "deadline");
         assert_code_and_fix(
@@ -187,6 +210,6 @@ mod tests {
     #[test]
     fn magic_is_ki_little_endian() {
         assert_eq!(MAGIC.to_le_bytes(), *b"KI");
-        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 }

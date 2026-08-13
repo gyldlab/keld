@@ -40,7 +40,7 @@ header := magic:u16 | ver:u8 | kind:u8 | flags:u16 | channel:u16 | corr:u32 | le
 | Offset | Size | Field | Type | Source of value | Notes |
 |---:|---:|---|---|---|---|
 | 0 | 2 | `magic` | `u16` LE | Constant `MAGIC` | `u16::from_le_bytes(*b"KI")` = `0x494B`. On the wire the bytes read `4B 49`, i.e. ASCII `K`, `I` |
-| 2 | 1 | `ver` | `u8` | Constant `PROTOCOL_VERSION` | Currently `1` |
+| 2 | 1 | `ver` | `u8` | Constant `PROTOCOL_VERSION` | Currently `2` (v2 HELLO token; KEL-60) |
 | 3 | 1 | `kind` | `u8` | `FrameKind as u8` | See §2. Values `0..=10` |
 | 4 | 2 | `flags` | `u16` LE | `FrameHeader.flags` | Bitfield. Only `FLAG_RAW` (`1 << 0`) is defined |
 | 6 | 2 | `channel` | `u16` LE | `ChannelId.0` | Handle, not a name. See §4 |
@@ -80,7 +80,7 @@ An echo `CALL` carrying `EchoRequest { message: "kipc", count: 3 }` — these by
 running the actual `encode` path, not derived by hand:
 
 ```text
-header   4B 49 01 01 00 00 01 00 01 00 00 00 06 00 00 00
+header   4B 49 02 01 00 00 01 00 01 00 00 00 06 00 00 00
          └─┬─┘ │  │  └─┬─┘ └─┬─┘ └────┬────┘ └────┬────┘
          magic │  │  flags  chan     corr        len
              ver  kind=Call  =0      =1          =6
@@ -93,10 +93,11 @@ payload  04 6B 69 70 63 03
          └─────────────── string length = 4       (postcard varint)
 ```
 
-And the HELLO frame that opens every session — kind `0`, everything else zero:
+And the v2 HELLO frame that opens every session — kind `0`, `len` 32, then 32 token
+bytes (fixture `0xA5` repeated; live tokens are `getrandom`):
 
 ```text
-4B 49 01 00 00 00 00 00 00 00 00 00 00 00 00 00
+4B 49 02 00 00 00 00 00 00 00 00 00 20 00 00 00  a5 × 32
 ```
 
 ---
@@ -234,34 +235,40 @@ error-code taxonomy in §11.
 
 ## 6. The handshake
 
-Both peers open the session by writing a `Hello` frame and then reading one:
+Roles are asymmetric so the host does not disclose the session token to an
+unauthenticated connector. The client (child) already has the token from
+`KELD_APP_LINK` and writes `Hello` first. The server (host) reads and verifies
+before writing its own `Hello`.
 
 ```rust
-// crates/keld-ipc/src/link.rs:58-74
-pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
-    write_frame(stream, FrameKind::Hello, 0,
-                ChannelId(0), CorrelationId(0), &[])?;
-    let (header, _) = read_frame(stream)?;
-    if header.kind != FrameKind::Hello {
-        return Err(IpcError::Protocol { detail: "expected HELLO from peer" });
-    }
-    Ok(())
-}
+// crates/keld-ipc/src/link.rs
+pub fn handshake_client<S: Read + Write>(
+    stream: &mut S,
+    token: &SessionToken,
+) -> Result<(), IpcError>
+pub fn handshake_server<S: Read + Write>(
+    stream: &mut S,
+    token: &SessionToken,
+) -> Result<(), IpcError>
 ```
 
 What this actually establishes, and what it doesn't:
 
-| Spec ([`02` §2](../architecture/02-ipc.md), `frame.rs:23`) | v0 reality |
+| Spec ([`02` §2](../architecture/02-ipc.md), `frame.rs:23`) | v2 reality |
 |---|---|
-| "Handshake: version + channel table exchange" | Version only. **No channel table** — both sides hardcode `ECHO_CHANNEL` |
-| "versioned at handshake" | Strict equality: a peer on any version other than `1` is rejected by `decode` before `handshake` even inspects the frame. No negotiation, no range, no downgrade |
-| HELLO payload | Empty (`&[]`). The channel table will have to live here |
+| "Handshake: version + channel table exchange" | Version + **session token**. **No channel table** — both sides hardcode `ECHO_CHANNEL` |
+| "versioned at handshake" | Strict equality: a peer on any version other than `2` is rejected by `decode` before `handshake_client` / `handshake_server` even inspects the frame. No negotiation, no range, no downgrade |
+| HELLO payload | 32 raw bytes (KEL-60). Empty, truncated, or mismatched tokens are `KELD-IPC-007`. The channel table will still have to live here later |
 
-Both peers write before either reads, which works only because a 16-byte write fits in any socket
-buffer. That is fine for an empty HELLO and will need revisiting when the frame carries a channel
-table of meaningful size.
+The token is minted by the host (`getrandom::fill`) and passed to the child in
+`KELD_APP_LINK` as `<endpoint>#<64 hex chars>`. Unix still also binds inside a `0o700`
+session directory; Windows is still loopback TCP (named-pipe DACL is the destination).
 
-One more current-code quirk: `echo_call` calls `handshake` itself (`session.rs:58`), so it is a
+The client writes 48 bytes (16-byte header plus 32-byte token) first; that
+fits in any socket buffer. The server does not write those bytes until the
+payload matches. A later channel table of meaningful size will need revisiting.
+
+One more current-code quirk: `echo_call` calls `handshake_client` itself, so it is a
 connect-handshake-call-close operation rather than a client you hold open. Calling it twice on one
 stream would send a second HELLO.
 
@@ -382,14 +389,15 @@ rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and operates on a
 |---|---|---|
 | **Spec** ([`02` §1](../architecture/02-ipc.md)) | Unix domain socket | **Named pipe** |
 | **Code** (`echo_link.rs:12-19`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind("127.0.0.1:0")` |
-| Endpoint value | Path: `$TMPDIR/keld-echo-<pid>.sock` | Port number as a string |
+| Endpoint value | Path + `#` + 64 hex chars | Port + `#` + 64 hex chars |
 
-**The Windows transport diverges from the spec.** Loopback TCP is not a named pipe: it is visible
-to any local process that can connect to the port, it interacts with host firewalls, and it has no
-equivalent of a pipe's ACL. This is acceptable for a dev-only echo demo and is not acceptable for
-the shipping app-link. Treat it as a known gap rather than as the design — and note that Electrobun
-choosing localhost WebSockets is called out in the research corpus as one of the things Keld exists
-to do better.
+**The Windows transport still diverges from the spec on the OS object.** Loopback TCP is
+not a named pipe: it is visible to any local process that can connect to the port.
+**v2 closes the empty-HELLO hole:** connecting without the session token fails
+`KELD-IPC-007` before any echo handler runs (KEL-60). A named pipe with a current-user
+DACL remains the destination Windows transport. Electrobun choosing localhost WebSockets
+is still called out in the research corpus as one of the things Keld exists to do
+better.
 
 The Unix side cleans up its socket file on `join()` and best-effort on `Drop`
 (`echo_link.rs:103-119`), which matters because a stale socket file at the same path would make the
@@ -527,7 +535,7 @@ bun.arg("run")
 
 | Variable | Value | Consumed by |
 |---|---|---|
-| `KELD_APP_LINK` | Unix: the UDS path. Windows: the loopback port as a string (`echo_link.rs:38-50`) | The template's `main.ts:6`; absence is a hard error |
+| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (`echo_link.rs`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
 | `KELD_BIN` | `std::env::current_exe()` — the path to the running `keld` binary | `main.ts:14`, to spawn the Rust IPC client |
 
 The child's half of the contract is to refuse to run outside it:
@@ -586,6 +594,7 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-IPC-004` | Payload too large for a kipc frame | `lib.rs:54` |
 | `KELD-IPC-005` | Protocol error — unexpected frame or state | `lib.rs:57` |
 | `KELD-IPC-006` | App-link I/O deadline exceeded | `keld-ipc/src/lib.rs` (`IpcError::Timeout`) |
+| `KELD-IPC-007` | HELLO session token rejected | `keld-ipc/src/lib.rs` (`IpcError::HelloAuth`) |
 | `KELD-WV-001` | No webview backend for this OS | `keld-wv/src/error.rs:33` |
 | `KELD-WV-002` | Window creation failed | `error.rs:38` |
 | `KELD-WV-003` | Webview creation failed | `error.rs:43` |

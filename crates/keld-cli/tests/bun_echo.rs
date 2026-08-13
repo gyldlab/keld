@@ -120,13 +120,38 @@ fn ipc_client_link_flag_without_value_is_cli_040() {
 }
 
 #[test]
-fn ipc_client_missing_socket_is_ipc_001() {
+fn ipc_client_link_without_token_is_ipc_007() {
     let output = Command::new(env!("CARGO_BIN_EXE_keld"))
         .args([
             "ipc-client",
             "echo",
             "--link",
             "/no/such/keld-echo-kel30.sock",
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("KELD-IPC-007"), "{stderr}");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("ipc-echo ok"),
+        "must not print a fabricated reply"
+    );
+}
+
+#[test]
+fn ipc_client_missing_socket_is_ipc_001() {
+    let hex = "11".repeat(32);
+    #[cfg(unix)]
+    let link = format!("/no/such/keld-echo-kel30.sock#{hex}");
+    #[cfg(windows)]
+    let link = format!("1#{hex}");
+    let output = Command::new(env!("CARGO_BIN_EXE_keld"))
+        .args([
+            "ipc-client",
+            "echo",
+            "--link",
+            &link,
             "--message",
             "should-not-echo",
             "--count",

@@ -65,6 +65,18 @@ tokio = { version = "1", default-features = false, features = [
 schemars = "1"
 # Isolated temp dirs for CLI tests (dev-dep; workspace-pinned like other shared crates).
 tempfile = "3"
+# --- Dependency review (KEL-60 / AGENTS.md gate) ---
+# Name: getrandom 0.4
+# Purpose: CSPRNG for the kipc v2 HELLO session token. `std::random` is
+#   unstable on 1.93 (rust-lang/rust#130703). `/dev/urandom` is Unix-only;
+#   Windows ProcessPrng would be `unsafe` in keld-cli (forbidden outside
+#   keld-wv backends / keld-ipc shm).
+# Alternatives rejected: (a) getrandom 0.2 — older `getrandom()` API; 0.4 is
+#   current (`fill`), MSRV 1.85 ≤ 1.93; (b) `rand` — extra surface; (c)
+#   `uuid` — 16 bytes, wrong type; (d) `HashMap` `RandomState` — not a CSPRNG
+#   API. License: MIT OR Apache-2.0 (deny.toml allow-list). Used only to mint
+#   one token per echo session (cold).
+getrandom = "0.4"
 
 [workspace.lints.rust]
 missing_docs = "warn"
