@@ -1962,7 +1962,7 @@ first paint; fill `vs` from blog citations; fake `bench/` CI.
 
 ## Related
 
-- Native Swift fixtures (public): [swift/appkit-wk](https://github.com/gyldlab/keld-benches/tree/main/swift/appkit-wk), [swift/swiftui-wk](https://github.com/gyldlab/keld-benches/tree/main/swift/swiftui-wk) — competitor rows stay local-only until same-protocol Release measurements are public; not in this monorepo
+- Native Swift fixtures (public): [macos/swift/appkit-wk](https://github.com/gyldlab/keld-benches/tree/main/macos/swift/appkit-wk), [macos/swift/swiftui-wk](https://github.com/gyldlab/keld-benches/tree/main/macos/swift/swiftui-wk) — competitor rows stay local-only until same-protocol Release measurements are public; not in this monorepo (`keld-benches` layout is OS-first: `{macos|windows|linux}/<framework>/...`)
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11

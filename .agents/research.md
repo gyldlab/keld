@@ -7,8 +7,10 @@ Edits under `docs/research/` MUST follow root `AGENTS.md` § Private research (n
 `keld-research` checkout; `just research-push` same turn; never stage into Keld).
 
 Hello / installer / RSS competitor fixtures MUST live in
-[`gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) per root `AGENTS.md`
-§ Public benches — never under Keld `docs/` or `competitors/`.
+[`gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) under
+`{macos|windows|linux}/<framework>/...` per root `AGENTS.md` § Public benches —
+never under Keld `docs/` or `competitors/`, and never as OS-agnostic dumps at the
+`keld-benches` repo root.
 
 ## Escalation trigger
 
