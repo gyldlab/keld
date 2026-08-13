@@ -222,12 +222,17 @@ Cite the path **and** an immutable SHA — not only `main`. Not in this monorepo
 Chromium-derived — the macOS WK-vs-Chromium lane split does **not** transfer).
 **Build:** `cargo build --release -p keld-host -p keld-cli`, rustc
 1.93.0-x86_64-pc-windows-msvc.
-**SHA:** `33b28f0` (`agent/kel-27-window-windows-via-webview2`) — the immutable
+**SHA:** `44d23b2` (`agent/kel-27-window-windows-via-webview2`) — the immutable
 commit these binaries were built from; the branch name alone would not stay
 reproducible once it advances.
+**wry:** 0.56.1 on both platforms. Keld's Windows arm was first measured on
+0.55.1 and **re-measured** after KEL-59 bumped macOS to 0.56.1, because pinning
+Windows to 0.55.1 would have reintroduced its camera/mic auto-grant. The bump
+cut Keld startup from 657 ms to ~205 ms — the older figure is superseded.
 **Competitor fixtures:**
 [`gyldlab/keld-benches@f54a3c4`](https://github.com/gyldlab/keld-benches/commit/f54a3c406f861d9f55d2c1518fde89f75e817bf5)
 under `windows/<framework>/hello`. Release builds, median of 3.
+**Session drift:** Keld and Tauri were re-measured together after the wry bump; Electron, Wails, Neutralino and NW.js startup figures are from the earlier session. Absolute `window-visible` numbers drift with cache warmth (Tauri moved 61 -> 31 ms on identical bits), so **compare ratios within a session**, not absolutes across them.
 **RSS method:** `WorkingSet64` 4 s after the window appears; helpers are the
 recursive descendant tree of our own PID only (a global `msedgewebview2` sweep
 counts 6 unrelated WebView2 processes this machine idles with). Main and helper
@@ -236,9 +241,9 @@ RSS stay separate, as in the macOS rows. `window-visible` = first titled `HWND`;
 
 | Stack | Version | Binary | Installer | window-visible | Main RSS | Helper RSS | Procs | Fixture |
 |---|---|---|---|---|---|---|---|---|
-| **Keld** `keld-host --hello` | `agent/kel-27` | **624,128 B** | none (`keld-pack` is a `Format` enum) | 657 ms | **22,656 KB** | 330,400 KB | 7 | this repo |
-| Keld `keld.exe` CLI | same | 2,439,680 B | n/a | — | — | — | — | this repo |
-| Tauri | 2.11.5 | 8,634,880 B | MSI 2,846,720 B; NSIS 1,828,010 B | **61 ms** | 27,436 KB | 337,312 KB | 7 | [`windows/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/tauri/hello) |
+| **Keld** `keld-host --hello` | `44d23b2` | **625,152 B** | none (`keld-pack` is a `Format` enum) | ~205 ms | **21,880 KB** | 333,416 KB | 7 | this repo |
+| Keld `keld.exe` CLI | same | 2,445,312 B | n/a | — | — | — | — | this repo |
+| Tauri | 2.11.5 | 8,634,880 B | MSI 2,846,720 B; NSIS 1,828,010 B | **~31 ms** | 26,700 KB | 337,732 KB | 7 | [`windows/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/tauri/hello) |
 | Neutralino | 6.9.0 | 2,490,880 B | zip 8,291,997 B | 566 ms | 26,548 KB | 351,844 KB | 7 | [`windows/neutralino/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/neutralino/hello) |
 | Wails | v3.0.0-beta.8 | 10,295,296 B | none from `wails3 build` | 766 ms | 30,264 KB | 344,884 KB | 7 | [`windows/wails/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/wails/hello) |
 | Electron | 43.4.0 | forge `package` dir | not made | 185 ms | 89,500 KB | **215,536 KB** | **4** | [`windows/electron/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/electron/hello) |
@@ -249,9 +254,9 @@ RSS stay separate, as in the macOS rows. `window-visible` = first titled `HWND`;
 
 | Claim | Supported? |
 |---|---|
-| Keld has the smallest binary on Windows | **Yes.** 624,128 B is 13.8x under Tauri's exe, 16.5x under Wails'. |
-| Keld has the lowest main-process RSS on Windows | **Yes** — 22,656 KB, lowest of every arm that opened a window, and well under the ≤ 90 MB idle budget. |
-| Keld starts faster than Tauri | **No.** Tauri 61 ms vs Keld 657 ms — roughly 10x against us. Do not publish a startup claim. |
+| Keld has the smallest binary on Windows | **Yes.** 625,152 B is 13.8x under Tauri's exe, 16.5x under Wails'. |
+| Keld has the lowest main-process RSS on Windows | **Yes** — 21,880 KB, lowest of every arm that opened a window, and well under the ≤ 90 MB idle budget. |
+| Keld starts faster than Tauri | **No.** Tauri ~31 ms vs Keld ~205 ms — roughly 6.6x against us. The wry 0.56.1 bump cut Keld 3.2x (657 -> 205 ms) but Tauri measured faster in the same session too (61 -> 31 ms), so the *gap* narrowed less than Keld's own gain suggests. Do not publish a startup claim. See KEL-62. |
 | Keld uses less total memory than Electron | **No.** Electron 305,036 KB total beats every WebView2 arm because it runs 4 processes to WebView2's 7. |
 | Keld beats Tauri on total RSS | **Not meaningfully** — ~3%, inside run-to-run noise. The ~330 MB helper tier is engine-fixed and near-identical across all WebView2 arms. |
 | Electrobun comparison | **No.** Windows `--env=stable` emitted a macOS-shaped bundle and no window opened; the sample is a launcher that never rendered. |
