@@ -319,9 +319,19 @@ mod tests {
             },
         )
         .expect_err("foreign token must fail");
-        let _ = server.shutdown();
+        let server_msg = server
+            .join()
+            .expect_err("host must reject the foreign HELLO")
+            .to_string();
+        assert!(
+            server_msg.contains("KELD-IPC-007"),
+            "host must fail closed with 007, got {server_msg}"
+        );
         let msg = err.to_string();
-        assert!(msg.contains("KELD-IPC-007"), "{msg}");
+        assert!(
+            msg.contains("KELD-IPC-001") || msg.contains("KELD-IPC-007"),
+            "client must not complete echo; host closes without sending the token: {msg}"
+        );
         assert!(
             !msg.contains("stolen"),
             "must not fabricate an echo reply: {msg}"

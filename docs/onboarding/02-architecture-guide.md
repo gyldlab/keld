@@ -607,7 +607,7 @@ The summary table. "Live" means it works and a test proves it.
 | postcard codec for structured payloads | **Live** | `keld-ipc/src/codec.rs`; echo roundtrip test |
 | app-link transport (UDS on unix) | **Live** | `keld-ipc/tests/echo_link.rs`; real socket, real bytes |
 | Windows transport | **Partial / diverges** | Loopback **TCP** plus v2 HELLO token (KEL-60); named-pipe DACL is the destination (`keld-cli/src/echo_link.rs`) |
-| HELLO handshake | **Partial** | Version equality + 32-byte session token. No channel-table exchange, no negotiation |
+| HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |
 | `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (one backend) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |

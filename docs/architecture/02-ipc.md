@@ -38,8 +38,11 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Empty, truncated, or mismatched tokens
-  are `KELD-IPC-007`. This authenticates the local peer; it is not a principal id
-  (peers still do not self-identify). Channel-table exchange remains later work.
+  are `KELD-IPC-007`. The client writes `HELLO` first. The server reads and
+  verifies before writing its own `HELLO`, so a connector that does not already
+  possess the token never learns it from the wire. This proves possession of the
+  session token; it is not a principal id (peers still do not self-identify).
+  Channel-table exchange remains later work.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
   measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
   exists only for `--inspect-ipc` debugging (human dump), never on the hot path.

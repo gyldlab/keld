@@ -429,7 +429,8 @@ Transport and session:
 |---|---|---|
 | `read_frame` | [`link`](../../crates/keld-ipc/src/link.rs) | `<S: Read>(&mut S) -> Result<(FrameHeader, Vec<u8>), IpcError>` |
 | `write_frame` | `link` | `<S: Write>(&mut S, kind, flags, channel, corr, payload) -> Result<(), IpcError>` |
-| `handshake` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — writes `Hello` with the 32-byte token, expects the same token back |
+| `handshake_client` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — writes `Hello` with the 32-byte token, then verifies the server's `Hello` |
+| `handshake_server` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — verifies the client's `Hello` **before** writing the token |
 | `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream` / `TcpStream` |
 | `encode` / `decode` | [`codec`](../../crates/keld-ipc/src/codec.rs) | postcard, over `serde::Serialize` / `DeserializeOwned` |
 | `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write + AppLinkDeadlines>(&mut S, &SessionToken) -> Result<(), IpcError>` — 5s deadline, handshake, then loop until EOF |
@@ -627,10 +628,11 @@ console.log("{{name}}: main process ready (IPC echo ok)");
 Read it as a contract statement in four parts:
 
 1. **The host hands the app process its link through the environment.** `KELD_APP_LINK`
-   (socket path or port) and `KELD_BIN` (path to the `keld` binary) are the entire
-   handshake surface today. The file guards on `KELD_APP_LINK` and fails with a
-   code-carrying message rather than crashing — the framework's error convention applied
-   inside a template.
+   (`<endpoint>#<64 hex chars>` — Unix path or Windows port plus the v2 HELLO token)
+   and `KELD_BIN` (path to the `keld` binary) are the entire handshake surface today.
+   A link without `#<64 hex>` fails closed with `KELD-IPC-007`. The file guards on
+   `KELD_APP_LINK` and fails with a code-carrying message rather than crashing — the
+   framework's error convention applied inside a template.
 2. **The app process is Bun-specific**, not Node-compatible: it uses `Bun.spawn` and
    top-level `await`.
 3. **There is no TypeScript SDK.** The template speaks kipc by shelling out to

@@ -9,7 +9,7 @@ use std::thread;
 
 use keld_ipc::codec::encode;
 use keld_ipc::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
-use keld_ipc::link::{handshake, read_frame, write_frame};
+use keld_ipc::link::{handshake_client, handshake_server, read_frame, write_frame};
 use keld_ipc::{
     ECHO_CHANNEL, EchoRequest, EchoResponse, HEADER_LEN, IpcError, MAGIC, PROTOCOL_VERSION,
     SessionToken, echo_call, serve_echo_session,
@@ -102,7 +102,7 @@ fn echo_empty_message_over_socket() {
 fn echo_reply_is_reply_kind_not_call_echo() {
     let (mut client, server) = connected_pair();
     let handle = spawn_echo_server(server);
-    handshake(&mut client, &test_token()).expect("client hello");
+    handshake_client(&mut client, &test_token()).expect("client hello");
     let req = EchoRequest {
         message: "corr-check".to_owned(),
         count: 7,
@@ -143,7 +143,7 @@ fn handshake_protocol_version_mismatch_is_ipc_002() {
     hello[2] = 99;
     server.write_all(&hello).expect("write bad version hello");
     server.flush().expect("flush");
-    let err = handshake(&mut client, &test_token()).expect_err("v99 must fail");
+    let err = handshake_client(&mut client, &test_token()).expect_err("v99 must fail");
     assert!(
         matches!(err, IpcError::Header(keld_ipc::HeaderError::BadVersion(99))),
         "got {err}"
@@ -159,7 +159,7 @@ fn handshake_protocol_version_mismatch_is_ipc_002() {
 fn call_on_unknown_channel_is_ipc_005() {
     let (mut client, server) = connected_pair();
     let handle = spawn_echo_server(server);
-    handshake(&mut client, &test_token()).expect("hello");
+    handshake_client(&mut client, &test_token()).expect("hello");
     write_frame(
         &mut client,
         FrameKind::Call,
@@ -181,7 +181,7 @@ fn call_on_unknown_channel_is_ipc_005() {
 fn invalid_postcard_call_is_ipc_003() {
     let (mut client, server) = connected_pair();
     let handle = spawn_echo_server(server);
-    handshake(&mut client, &test_token()).expect("hello");
+    handshake_client(&mut client, &test_token()).expect("hello");
     write_frame(
         &mut client,
         FrameKind::Call,
@@ -203,7 +203,7 @@ fn invalid_postcard_call_is_ipc_003() {
 fn echo_call_rejects_reply_on_wrong_channel() {
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        handshake(&mut server, &test_token())?;
+        handshake_server(&mut server, &test_token())?;
         let (header, payload) = read_frame(&mut server)?;
         write_frame(
             &mut server,
@@ -286,6 +286,14 @@ fn empty_hello_is_rejected_before_echo_dispatch() {
     assert!(
         !msg.contains("a5"),
         "must not leak the session token: {msg}"
+    );
+    let leaked = match read_frame(&mut client) {
+        Ok((_, payload)) => payload == TEST_TOKEN_BYTES,
+        Err(_) => false,
+    };
+    assert!(
+        !leaked,
+        "serve_echo_session must not write the token after an empty HELLO"
     );
 }
 

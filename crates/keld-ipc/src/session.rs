@@ -5,14 +5,15 @@ use std::io::{ErrorKind, Read, Write};
 use crate::codec::{decode, encode};
 use crate::echo::{ECHO_CHANNEL, EchoRequest, EchoResponse, handle_echo};
 use crate::frame::{CorrelationId, FrameKind};
-use crate::link::{AppLinkDeadlines, handshake, read_frame, write_frame};
+use crate::link::{AppLinkDeadlines, handshake_client, handshake_server, read_frame, write_frame};
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, IpcError};
 
 /// Serves one connected app-link peer until the stream closes.
 ///
 /// Applies [`APP_LINK_IO_DEADLINE`] so a silent peer cannot block the host.
-/// `token` is required in the v2 `HELLO` before any `Call` is dispatched.
+/// `token` is required in the v2 `HELLO` (`handshake_server`) before any `Call`
+/// is dispatched.
 ///
 /// # Errors
 ///
@@ -22,7 +23,7 @@ pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
     token: &SessionToken,
 ) -> Result<(), IpcError> {
     stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
-    handshake(stream, token)?;
+    handshake_server(stream, token)?;
     loop {
         let (header, payload) = match read_frame(stream) {
             Ok(frame) => frame,
@@ -56,8 +57,8 @@ pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
 
 /// Sends one echo `Call` and returns the decoded response.
 ///
-/// Applies [`APP_LINK_IO_DEADLINE`] before the handshake. `token` must match
-/// the server's session token.
+/// Applies [`APP_LINK_IO_DEADLINE`] before `handshake_client`. `token` must
+/// match the server's session token.
 ///
 /// # Errors
 ///
@@ -68,7 +69,7 @@ pub fn echo_call<S: Read + Write + AppLinkDeadlines>(
     token: &SessionToken,
 ) -> Result<EchoResponse, IpcError> {
     stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
-    handshake(stream, token)?;
+    handshake_client(stream, token)?;
     let payload = encode(request)?;
     let corr = CorrelationId(1);
     write_frame(stream, FrameKind::Call, 0, ECHO_CHANNEL, corr, &payload)?;
