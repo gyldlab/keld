@@ -30,9 +30,12 @@ use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tao::window::{Window, WindowBuilder};
 
+use keld_guard::PermissionsManifest;
+
 use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebView2EngineExt, WebviewSpec};
 use crate::error::WvError;
+use crate::media::with_guarded_media_permissions;
 
 /// Returns the installed `WebView2` Evergreen runtime version.
 ///
@@ -198,6 +201,10 @@ impl WebEngine for WebView2Engine {
         let builder = wry::WebViewBuilder::new();
         #[cfg(debug_assertions)]
         let builder = builder.with_devtools(true);
+        // KEL-59 parity. Without this, WebView2 falls back to its own permission
+        // UI, so a renderer could obtain camera/mic the manifest never granted —
+        // default-ask, not default-deny. Empty manifest → deny everything.
+        let builder = with_guarded_media_permissions(builder, PermissionsManifest::default());
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
