@@ -29,6 +29,7 @@ const WORKFLOW_NEEDLES: &[&str] = &[
     "sha256sum -c",
     "tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+    "toolchain: 1.93.0",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -185,7 +186,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
         if !text.contains(needle) {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
-                 Restore the gitleaks job (checksummed CLI, not the org-licensed Action) \
+                 Restore the gitleaks job (checksummed CLI, not the org-licensed Action), \
+                 `with: toolchain:` on dtolnay/rust-toolchain, \
                  and the hygiene job that compiles this file."
             ));
         }
@@ -289,6 +291,9 @@ mod tests {
                secrets:\n\
                  steps:\n\
              {PINNED_CHECKOUT}\
+                   - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05\n\
+                     with:\n\
+                       toolchain: 1.93.0\n\
                    - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -\n\
                    - run: gitleaks detect --source . --exit-code 1\n\
                hygiene:\n\
@@ -429,6 +434,15 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("verification-gate"), "{error}");
+    }
+
+    #[test]
+    fn missing_toolchain_pin_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace("toolchain: 1.93.0", "");
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
+        assert!(error.contains("toolchain: 1.93.0"), "{error}");
     }
 
     #[test]

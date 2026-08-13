@@ -127,7 +127,8 @@ pub fn resolve_hello_title(args: &[String], project_root: Option<&Path>) -> Stri
 ///
 /// Allowed after argv0: `--hello`, `--title <name>`, `--title=<name>`.
 /// `--title` with no following value is still consumed (title resolution
-/// treats it as absent).
+/// treats it as absent). `--title` followed by a token that starts with `-`
+/// does not consume that token as a title; the token is the unknown arg.
 #[must_use]
 pub fn host_hello_unknown_arg<I, S>(args: I) -> Option<String>
 where
@@ -142,7 +143,13 @@ where
             continue;
         }
         if arg == "--title" {
-            let _ = iter.next();
+            let Some(value) = iter.next() else {
+                continue;
+            };
+            let value = value.as_ref();
+            if value.starts_with('-') {
+                return Some(value.to_owned());
+            }
             continue;
         }
         return Some(arg.to_owned());
@@ -201,6 +208,10 @@ mod tests {
 
     #[test]
     fn host_hello_rejects_unknown_flags() {
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "--title", "--devtools"]),
+            Some(String::from("--devtools"))
+        );
         assert_eq!(
             host_hello_unknown_arg(["keld-host", "--hello", "--devtools"]),
             Some(String::from("--devtools"))

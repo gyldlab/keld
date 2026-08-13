@@ -42,3 +42,4 @@ small — it is loaded by every agent session.
 - 2026-08-13 [cli] `keld create --template` must be `KELD-CLI-044` (closed flag set), not `KELD-CLI-020` invalid name `--template`; extra `keld dev` tokens must fail before tao `EventLoop::run`. (evidence: crates/keld-cli/src/flags.rs, KEL-29)
 - 2026-08-13 [process] `docs/research/` is local-only; tracking it ships 50+ notes in the PR. `git rm --cached` + gitignore, never `git add docs/research`. (evidence: PR #2, `088efc0`)
 - 2026-08-13 [cli] Unix echo sockets in shared `$TMPDIR` are world-connectable; bind inside a unique `0o700` session dir and remove the dir on Drop/shutdown. (evidence: crates/keld-cli/src/echo_link.rs `bind_unix_echo`)
+- 2026-08-13 [ci] dtolnay/rust-toolchain@6c977a6 (2026-08-05) requires `with: toolchain:` even when rust-toolchain.toml exists; omitting it fails every job with 'toolchain' is a required input. (evidence: GitHub CI on PR #2 @ 6ed01b1)

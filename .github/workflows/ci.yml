@@ -2,9 +2,11 @@
 #   cargo fmt --check · clippy (warnings deny) · cargo nextest · rustdoc
 #   + MSRV, cargo-deny, gitleaks, and CODEOWNERS/template hygiene (KEL-39).
 #
-# Toolchain: rust-toolchain.toml pins the version and components. Actions are
-# pinned to full commit SHAs (tag in the trailing comment). Dependabot can bump
-# the github-actions ecosystem weekly.
+# Toolchain: rust-toolchain.toml pins the local rustup channel. The
+# dtolnay/rust-toolchain action still requires `with: toolchain:` (this SHA
+# does not auto-read rust-toolchain.toml). Actions are pinned to full commit
+# SHAs (tag in the trailing comment). Dependabot can bump the github-actions
+# ecosystem weekly.
 #
 # gitleaks: the GitHub Action requires a GITLEAKS_LICENSE on organization
 # repos. This job installs the OSS CLI and verifies the archive checksum.
@@ -36,6 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
 
@@ -50,6 +55,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
@@ -73,6 +81,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Read MSRV from workspace metadata
         id: msrv
@@ -91,6 +102,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -125,6 +139,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
       - name: Contract tests
         run: |
           mkdir -p target/ci-hygiene
