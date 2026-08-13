@@ -1784,6 +1784,8 @@ and competitor hellos. Not the Electron API scoreboard
 
 KEL-25 DoD until `keld-pack` and `bench/` exist. Append rows; do not invent
 numbers, a fifth unique, a `bench/` crate, or CI that does not run.
+Competitor apps live in [`gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches),
+not this monorepo.
 
 ## Byte lanes
 
@@ -1815,9 +1817,9 @@ Regressions > 5% fail the PR once `bench/` lands (KEL-39 parked `bench/` as YAGN
 | Update patch, 1-line JS | ≤ 50 KB | full installer | no updater |
 | `keld dev` cold → window | ≤ 2 s | — | not measured here |
 
-KEL-11 freeze (not same-protocol measurements): Electron hello 85–150 MB /
-150–300 MB RSS / 1–3 s; Tauri 2.5–10 MB / 30–80 MB / 0.2–0.8 s. Re-measure
-before any public claim.
+KEL-11 freeze (survey, not this Mac): Electron 85–150 MB / 150–300 MB RSS / 1–3 s;
+Tauri 2.5–10 MB / 30–80 MB / 0.2–0.8 s. This-Mac Release hellos (2026-08-14)
+fill `vs` Electron/Tauri cells and the landscape table. Do not mix Chromium vs WK.
 
 ## Fairness rules
 
@@ -1828,25 +1830,29 @@ before any public claim.
 | Same engine class | Do not mix WKWebView / Chromium / Skia in one `vs` cell. |
 | Host ≠ product | `keld-host --hello` does **not** spawn Bun; no `.app`/DMG. Hello-without-Bun is a host-lane diagnostic. |
 | RSS lines | Main-process `ps` and engine helpers (`com.apple.WebKit.*` or Chromium GPU/utility) stay separate. |
-| Same-protocol `vs` | Same Mac, same day, official Release packages. Citations do **not** fill `vs` cells. |
+| Same-protocol `vs` | Same Mac, official Release packages. Blog/Hopp/Youngju citations do **not** fill `vs` cells. |
 | Native floor | Swift AppKit/SwiftUI + WKWebView + same `HELLO_HTML`. Not AppKit TextKit / NSTextView. |
+| Electrobun RSS | Launcher-only sample is **incomplete** (Bun child unmatched; WebKit GPU/WebContent not up). Not a vs-WK claim. |
 
-## Competitor landscape (cited, 2026-08-13)
+## Competitor landscape (this Mac)
 
-Not `vs` columns. Citations + confidence. Native Swift rows are **measured**
-this Mac (same day as Keld). Electron is the Chromium ceiling; Native Swift is
-the WKWebView floor. Flutter is a different engine class (one-line caveat only).
+**Machine:** Apple M4, macOS 26.5.1 (25F80), darwin/arm64. RSS = main process
+unless noted. Keld + Native Swift: 2026-08-13 (`b93ebb6`). Competitor hellos:
+2026-08-14, fixtures
+[`gyldlab/keld-benches@0308d55`](https://github.com/gyldlab/keld-benches/commit/0308d55f628797067985247000b30b43ea00cba1).
+Electron/NW.js = Chromium ceiling; Native Swift = WK floor. Flutter = Skia
+(one-line caveat). Electrobun RSS is **not** a vs-WK number.
 
 | Stack | Lane | Disk / bytes | Idle RSS | Engine | Runtime | Conf. | Cite |
 |---|---|---|---|---|---|---|---|
 | **Keld** `b93ebb6` | **host** Mach-O | **1,010,464 B (987K)** | **72.6–77.8 MiB** (host; WebKit helpers not in figure) | system WKWebView | **none** | **high** | Measured rows. No `.app` / DMG. |
 | Keld | host | 5.5M | — | same | none | high | **debug** `just hello` — not for `vs`. |
-| **Electron** v43.4.0 | **runtime** zip | **116.5 MB** `electron-v43.4.0-darwin-arm64.zip` | **150–300 MB** typical | Chromium (in zip) | Node (in zip) | high (zip) / med (`.app`, RSS) | [v43.4.0](https://github.com/electron/electron/releases/tag/v43.4.0). Empty `.app` typically 150–250 MB unpacked. |
-| **Tauri 2** | **installer** `.app` | **8.6 MiB** Hopp; Deno comparison **~2–10 MB** | **30–100 MB** survey | system WKWebView | none | med | [Hopp](https://www.gethopp.app/blog/tauri-vs-electron); [Deno comparison](https://docs.deno.com/runtime/desktop/comparison/). |
-| **Wails** | vendor disk | **~15 MB** | Youngju **60–120 MB** | system webview | none (Go in binary) | med | Vendor [architecture](https://v3.wails.io/concepts/architecture/); Youngju [2026-05-16](https://www.youngju.dev/blog/culture/2026-05-16-cross-platform-desktop-apps-2026-tauri-2-electron-wails-neutralinojs-flutter-desktop-sciter-deep-dive.en). Vendor ~10 MB RSS likely omits WebKit. |
-| **Neutralino** | official / survey | **~2 MB** / **~0.5 MB** compressed | Youngju **40–80 MB** | system webview | none | med | [neutralino.js.org](https://neutralino.js.org/); Youngju RSS. |
-| **NW.js** | zip expected | unmeasured (Chromium class) | unmeasured | Chromium | Node | low | Anecdotal / same class as Electron; not weighed this Mac — no citeable same-protocol row yet. |
-| **Electrobun** | installer vs `.app` | zstd **~14 MB**; uncompressed mac hello `.app` **~72.6 MB** | — | system webview | **Bun** (~60 MB of uncompressed `.app`) | med | [#373](https://github.com/blackboardsh/electrobun/issues/373); vendor zstd ~14 MB. |
+| **Electron** 43.4.0 | zip + wrapping | zip **122,121,746 B**; `.app` **288,448,512 B** | **138,064 KB (~134.8 MiB)** main; GPU 79,760 + util 40,384 + renderer 84,640 KB | Chromium (in zip) | Node (in zip) | **high** | [`macos/electron/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/electron/hello) @ `0308d55`. Forge did not write `out/`; weighed official zip via ditto. Not `electron .`. |
+| **Tauri** 2.11.5 | wrapping | `.app` **8,265,728 B**; exe **8,153,472 B**; DMG **2,910,772 B** | **102,896 KB (~100.5 MiB)**; WebKit XPCs 80,560 KB | system WKWebView | none | **high** | [`macos/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/tauri/hello) @ `0308d55`. vanilla JS `tauri build`. |
+| **Wails** v3.0.0-beta.8 | wrapping | `.app` **9,818,112 B**; exe **8,271,424 B**; UDZO **5,320,599 B** | **95,648 KB (~93.4 MiB)**; WebKit XPCs 73,760 KB | system WKWebView | none (Go in binary) | **high** | [`macos/wails/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/wails/hello) @ `0308d55`. |
+| **Neutralino** 6.9.0 | wrapping | wrapped `.app` **2,953,216 B**; UDZO **1,322,015 B** | **86,336 KB (~84.3 MiB)**; WebKit XPCs 81,200 KB | system WKWebView | none | **high** | [`macos/neutralino/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/neutralino/hello) @ `0308d55`. `neu create` failed; official minimal clone. `--macos-bundle` only renames the Mach-O. |
+| **NW.js** 0.114.1 | zip + wrapping | zip **169,495,010 B**; `.app` **410,271,744 B** | **205,776 KB (~201 MiB)**; Chromium helpers 386,880 KB | Chromium | Node | **high** | [`macos/nwjs/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/nwjs/hello) @ `0308d55`. Runtime zip not in git. |
+| **Electrobun** 1.18.1 | wrapping vs runtime | wrapped `.app` **18,710,528 B**; zstd **18,514,771 B**; extracted **42,360,832 B** (Bun **32,287,232 B**) | launcher **72,032 KB** — **incomplete** | system webview | **Bun** | high (disk) / **low (RSS)** | [`macos/electrobun/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/electrobun/hello) @ `0308d55`. `bundleCEF: false`. Not a vs-WK RSS claim. |
 | **Native Swift** SwiftUI + WK | host + wrapping | **96K** `du` / **92,740 B** file sum; exe **89,696 B**; DMG **31,655 B** | **101,168 KB (~98.8 MiB)** | WKWebView | none | **high** | Measured this Mac, `swiftc -O`. |
 | **Native Swift** AppKit + WK | host + wrapping | **88K** `du` / **80,976 B** file sum; exe **77,936 B**; DMG **29,774 B** | **97,344 KB (~95.1 MiB)** | WKWebView | none | **high** | Closest floor to wry NSWindow+WKWebView. |
 | Flutter macOS | — | unmeasured (survey) | unmeasured (survey) | **Skia — not a webview** | Dart | low | Different engine; do not put on the WKWebView floor. No same-protocol cite for this Mac. |
@@ -1857,29 +1863,32 @@ the WKWebView floor. Flutter is a different engine class (one-line caveat only).
 |---|---|
 | Bare Mach-O vs `.app` vs zip vs zstd/DMG | Different lanes. |
 | Host-only RSS vs engine-inclusive | Keld 72.6–77.8 MiB is host process only. |
-| Vendor RSS that omits WebKit | Wails ~10 MB is Go-side; Youngju 60–120 MB includes engine. |
-| Compressed download vs unpacked `.app` | Electrobun ~14 MB zstd vs ~72.6 MB `.app`; Electron 116.5 MB zip vs 150–250 MB `.app`. |
+| Vendor RSS that omits WebKit | Wails vendor ~10 MB is Go-side; this-Mac Wails main is 95,648 KB plus 73,760 KB XPCs. |
+| Compressed download vs unpacked `.app` | Electrobun zstd 18,514,771 vs wrapped 18,710,528 vs extracted 42,360,832; Electron zip 122,121,746 vs `.app` 288,448,512. |
 | Tiny Swift `.app` vs future Keld installer | 88–96K because WebKit is system. Packed Keld adds Bun. |
 | Swift exe vs Keld Mach-O vs Swift `.app` | Compare exe-to-exe (89,696 / 77,936 vs 1,010,464). |
+| Electrobun launcher RSS vs Tauri/Wails | 72,032 KB is incomplete; Bun child and WebKit GPU/WebContent were not up. |
+| Neutralino `--macos-bundle` vs wrapped `.app` | Official dist name is a renamed Mach-O. Weighed wrapped `.app` 2,953,216 B. |
 
 ## Measured rows (2026-08-13)
 
 **Host:** Apple M4, macOS 26.5.1 (Build 25F80), Darwin 25.5.0, rustc 1.93.0.
-**SHA:** `b93ebb6e0fb557b20ae312f155f3a33713212ccf` (`origin/main`).
+**SHA:** `b93ebb6e0fb557b20ae312f155f3a33713212ccf` (`origin/main` at measure).
 **Build:** `cargo build --release -p keld-host -p keld-cli`.
 **Engine:** system WKWebView (wry+tao). **Not Chromium.** `keld-host --hello` does **not** spawn Bun.
 **First paint:** not instrumented. Do not treat RSS-ready as ≤ 300 ms.
 **Native Swift:** Xcode 26.5 / Swift 6.3.2, `swiftc -O`, `arm64-macos14.0`, ad-hoc, no sandbox; artifacts `/tmp/keld-native-swift-hello`; same `HELLO_HTML` as `crates/keld-wv/src/hello/mod.rs`.
+**Competitor `vs`:** 2026-08-14, same Mac; fixtures `0308d55f628797067985247000b30b43ea00cba1`.
 
 | Phase | Date | SHA | OS+arch | Stack | Artifact | Config | Bytes | Spec budget | vs Electron | vs Tauri | vs SwiftUI+WK | vs AppKit+WK | Notes | Method |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Phase 2 hello | 2026-08-13 | `b93ebb6e0fb557b20ae312f155f3a33713212ccf` | darwin/arm64 | keld | host | release | 1,010,464 | n/a (not an installer; runtimeless budget ≤ 6 MB) | — | — | 89,696 B exe (not vs 96K `.app`) | 77,936 B exe (not vs 88K `.app`) | Mach-O arm64; system WebKit; no `.app`; bundled dylibs **0**; no Bun | `cargo build --release -p keld-host`; `stat` byte size |
+| Phase 2 hello | 2026-08-13 | `b93ebb6e0fb557b20ae312f155f3a33713212ccf` | darwin/arm64 | keld | host | release | 1,010,464 | n/a (not an installer; runtimeless budget ≤ 6 MB) | zip 122,121,746 B; `.app` 288,448,512 B (Chromium+Node — **not host lane**) | exe 8,153,472 B; `.app` 8,265,728 B (wrapping — **not vs host Mach-O**) | 89,696 B exe (not vs 96K `.app`) | 77,936 B exe (not vs 88K `.app`) | Mach-O arm64; system WebKit; no `.app`; bundled dylibs **0**; no Bun | `cargo build --release -p keld-host`; `stat` byte size |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | host | debug | 5,793,368 | n/a | — | — | — | — | `just hello` is **debug**. Not for `vs` | `just hello` / debug `keld-host` |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | cli | release | 2,531,600 | n/a (devtools, not app installer) | — | — | n/a | n/a | `keld` binary | `cargo build --release -p keld-cli` |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | create hello source | — | 1,316 | n/a | — | — | n/a | n/a | File bytes; no `node_modules` | sum of embedded hello template |
-| Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | release | 79,616 then 74,304 KiB (72.6–77.8 MiB) | ≤ 90 MB idle | — | — | 101,168 KB (~98.8 MiB); Keld **lower** | 97,344 KB (~95.1 MiB); Keld **lower** | **Under budget.** Host-only; no Bun; WebKit XPCs excluded | `keld-host --hello` release; `ps -o rss=` after paint |
+| Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | release | 79,616 then 74,304 KiB (72.6–77.8 MiB) | ≤ 90 MB idle | 138,064 KB (~134.8 MiB) Chromium main — **not same engine** | 102,896 KB (~100.5 MiB) WK main; Keld host-only **lower** (no Bun; XPCs excluded) | 101,168 KB (~98.8 MiB); Keld **lower** | 97,344 KB (~95.1 MiB); Keld **lower** | **Under budget.** Host-only; no Bun; WebKit XPCs excluded | `keld-host --hello` release; `ps -o rss=` after paint |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | debug | 73,184 then 70,752 KiB (~70–73 MiB) | ≤ 90 MB | — | — | — | — | Host-only; KEL-26 GUI pass | `just hello` / debug |
-| Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | dmg / .app | — | N/A | ≤ 6 MB runtimeless / ≤ 20 MB w/ Bun | — | — | 96K `.app` / 31,655 B UDZO | 88K `.app` / 29,774 B UDZO | `keld-pack` is a `Format` enum. Tiny Swift `.app` ≠ packed Keld | n/a |
+| Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | dmg / .app | — | N/A | ≤ 6 MB runtimeless / ≤ 20 MB w/ Bun | zip 122,121,746 B; `.app` 288,448,512 B; Keld wrapping N/A | `.app` 8,265,728 B; DMG 2,910,772 B; Keld wrapping N/A | 96K `.app` / 31,655 B UDZO | 88K `.app` / 29,774 B UDZO | `keld-pack` is a `Format` enum. Tiny Swift `.app` ≠ packed Keld | n/a |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | .app | `swiftc -O` | 96K `du` / 92,740 B file sum | native floor | — | — | — | — | WKWebView + loadHTMLString | `/tmp/keld-native-swift-hello` |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | host exe | `swiftc -O` | 89,696 | native floor | — | — | — | — | `Contents/MacOS` | same |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | rss | `swiftc -O` | 101,168 KB (~98.8 MiB) | native floor | — | — | — | — | Main process; WebKit XPCs extra | same |
@@ -1898,10 +1907,11 @@ Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 |---|---|
 | Keld `.app` / DMG | `keld-pack` has no authoring code |
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
-| Electron / Tauri `vs` cells | Need same-day official-scaffold Release packages on this Mac |
+| Electrobun complete RSS | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
 | First paint ≤ 300 ms | Not instrumented |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
+| Windows / Linux competitor hellos | keld-benches stubs; not this machine |
 
 ## Byte / RSS autopsy
 
@@ -1948,16 +1958,16 @@ Four uniques only — no fifth.
 | # | Lane | Score | Why |
 |---|---|---|---|
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
-| 2 | Idle RSS vs Swift ~95 MiB / Electron 150–300 / Tauri survey | **can win with work** | Host-only 72.6–77.8 MiB under Swift main and ≤90 MB — not the product (no Bun, no XPCs). Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
-| 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG → Tauri’s 2.5–10 MB band. **Cannot** claim smallest shell vs Swift 88K / Neutralino ~2 MB. |
-| 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = ~16.1 MB for Bun alone — full installer size is unmeasured. Electrobun ~14 MB zstd is the compressed ceiling to beat once packed. |
+| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. Electrobun 72,032 KB launcher is incomplete. Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
+| 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
+| 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
 | 5 | Cold start first paint (≤300 ms) | **can win with work** | Unmeasured. WK class can beat Electron 1–3 s. |
-| 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk. Spec 01 §6: no CEF-by-default. |
+| 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk (this-Mac Electron `.app` 288,448,512; NW.js `.app` 410,271,744). Spec 01 §6: no CEF-by-default. |
 | 7 | Default-deny / crash isolation / zero ambient OS authority | **can win with work** | The product bet (architecture 01 §1). Specified, not enforced on hello. |
 | 8 | Flutter Skia hello | **cannot win honestly** | Different engine. Spec 01 §6: not a UI toolkit. |
 
-Zero lanes are **already winning** as a public claim. Host-only RSS vs Swift is a
-labeled diagnostic, not a launch tweet.
+Zero lanes are **already winning** as a public claim. Host-only RSS vs Swift/Tauri
+is a labeled diagnostic, not a launch tweet.
 
 **Spec tension:** architecture 01 §5 ≤20 MB with Bun vs architecture 06 §1
 compressed Bun ~25–35 MB — the 20 MB budget is a **compressor choice** (zstd vs
@@ -1965,11 +1975,16 @@ UDZO), not a host-trim project.
 
 **Refuse:** CEF-by-default; drop Bun to win installer; count hello-without-Bun as
 the product; mix WK/Chromium/Skia in one `vs`; debug 5.5M in `vs`; time-to-RSS as
-first paint; fill `vs` from blog citations; fake `bench/` CI.
+first paint; fill `vs` from blog citations; treat Electrobun launcher RSS as
+vs-WK; fake `bench/` CI.
 
 ## Related
 
-- Native Swift fixtures (public @ `646be79`): [macos/swift/appkit-wk](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/appkit-wk), [macos/swift/swiftui-wk](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/swiftui-wk) — competitor rows stay local-only until same-protocol Release measurements are public; not in this monorepo (`keld-benches` layout is OS-first: `{macos|windows|linux}/<framework>/...`)
+Fixtures are public and OS-first (`{macos|windows|linux}/<framework>/...`).
+Cite the path **and** an immutable SHA — not only `main`. Not in this monorepo.
+
+- Competitor hellos @ [`0308d55`](https://github.com/gyldlab/keld-benches/commit/0308d55f628797067985247000b30b43ea00cba1) ([MEASUREMENTS.md](https://github.com/gyldlab/keld-benches/blob/0308d55f628797067985247000b30b43ea00cba1/MEASUREMENTS.md)): [`macos/electron/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/electron/hello), [`macos/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/tauri/hello), [`macos/neutralino/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/neutralino/hello), [`macos/wails/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/wails/hello), [`macos/nwjs/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/nwjs/hello), [`macos/electrobun/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/electrobun/hello)
+- Native Swift @ [`646be79`](https://github.com/gyldlab/keld-benches/commit/646be7972706158ff744a1cb33547eddfe127445): [`macos/swift/appkit-wk`](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/appkit-wk), [`macos/swift/swiftui-wk`](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/swiftui-wk)
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11
