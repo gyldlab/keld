@@ -1,8 +1,8 @@
 //! Hello-world window entry (Phase 1 vertical slice).
 //!
-//! Thin dispatch to the per-OS backend modules: `crate::wkwebview` on
-//! macOS; Windows/Linux return [`WvError::UnsupportedPlatform`] until
-//! KEL-27/KEL-28 land their backends.
+//! Thin dispatch to the per-OS backend modules: `crate::wkwebview` on macOS
+//! and `crate::webview2` on Windows; Linux returns
+//! [`WvError::UnsupportedPlatform`] until KEL-28 lands its backend.
 
 use crate::engine::{NavTarget, WebviewSpec};
 use crate::error::WvError;
@@ -23,7 +23,7 @@ pub const DEFAULT_HTML: &str = r#"<!DOCTYPE html>
 <body>
   <div>
     <h1>Keld</h1>
-    <p>Hello from WKWebView — Phase 1 window-on-screen vertical slice.</p>
+    <p>Hello from Keld — Phase 1 window-on-screen vertical slice.</p>
   </div>
 </body>
 </html>"#;
@@ -51,8 +51,7 @@ pub fn run(title: &str, html: &str) -> Result<(), WvError> {
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = spec;
-        Err(crate::webview2::unavailable())
+        crate::webview2::run_hello(&spec)
     }
     #[cfg(target_os = "linux")]
     {
@@ -77,7 +76,9 @@ mod tests {
     #[test]
     fn hello_html_is_local_document() {
         assert!(DEFAULT_HTML.contains("<!DOCTYPE html>"));
-        assert!(DEFAULT_HTML.contains("Hello from WKWebView"));
+        // Engine-neutral on purpose: the same const backs WKWebView on macOS
+        // and WebView2 on Windows, so it must not name one engine.
+        assert!(DEFAULT_HTML.contains("Hello from Keld"));
         assert!(!DEFAULT_HTML.contains("http://"));
         assert!(!DEFAULT_HTML.contains("https://"));
     }
@@ -97,12 +98,15 @@ mod tests {
     }
 }
 
-#[cfg(all(test, not(target_os = "macos")))]
+// macOS (KEL-26) and Windows (KEL-27) have live backends, so `run` opens a
+// window there and cannot be asserted headlessly. Only the platforms still
+// without a backend are expected to refuse.
+#[cfg(all(test, not(any(target_os = "macos", target_os = "windows"))))]
 mod platform_tests {
     use super::{DEFAULT_HTML, run};
 
     #[test]
-    fn hello_window_unsupported_off_macos() {
+    fn hello_window_unsupported_without_a_backend() {
         let err = run("Keld", DEFAULT_HTML).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -110,17 +114,12 @@ mod platform_tests {
             "expected UnsupportedPlatform, got: {msg}"
         );
         assert!(msg.contains("KELD-WV-001"), "missing code in: {msg}");
-        #[cfg(target_os = "windows")]
-        {
-            assert!(msg.contains("KEL-27"), "missing Windows issue in: {msg}");
-            assert!(!msg.contains("KEL-28"), "must not name Linux issue: {msg}");
-        }
         #[cfg(target_os = "linux")]
         {
             assert!(msg.contains("KEL-28"), "missing Linux issue in: {msg}");
             assert!(
                 !msg.contains("KEL-27"),
-                "must not name Windows issue: {msg}"
+                "must not name the Windows issue, which has shipped: {msg}"
             );
         }
     }

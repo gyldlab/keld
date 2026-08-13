@@ -103,6 +103,25 @@ First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 No slop (MUST):
 Agents MUST follow `.agents/testing.md`. Tests MUST be falsifiable: a real contract defect must fail the test. Test observable contracts (error code, wire bytes, process status, or OS behavior), not implementation-shaped essays.
 
+No workarounds (MUST):
+Agents MUST fix causes, not symptoms — in code, tests, builds, docs, and tooling alike. When something resists, the reflex MUST be "why is this happening", never "how do I get past this". Agents MUST NOT make the signal fit the change.
+
+Forbidden in general:
+- Special-casing an input, hardcoding a value, or branching on a specific case to make one caller work, when the underlying rule is what is wrong.
+- Papering over a failure: swallowing an error, `unwrap_or_default()` on a real fault, retrying a deterministic failure, or widening a type/scope so a mismatch stops being visible.
+- Sleeping instead of awaiting a condition; the anti-flake rules above are a special case of this.
+- Duplicating a helper because the shared one does not quite fit. Fix the shared one — for a security control this is not slop but a defect, since the copies drift.
+- Reaching for a bigger permission, a wider scope, or a looser default because the correct one is inconvenient. Default-deny is not negotiable for convenience.
+- Declaring work done on a platform, path, or condition that was never exercised. Say plainly what was not run.
+
+Forbidden when a test, gate, or check fails:
+- Weakening, narrowing, `#[ignore]`-ing, or deleting a failing test so a change can land. If a test is genuinely wrong, say so, state why, and get human sign-off — do not edit it silently in the same commit it blocks.
+- `allow`-ing a lint, `--no-verify`, `--force` past a gate, or skipping a CI job to go green.
+- Regenerating or hand-editing a generated artifact until a check passes without confirming the generator itself is current. A stale generator can emit a self-consistent wrong artifact that satisfies a staleness check and still fails the content test. Rebuild the generator from the working tree first.
+- Treating a red gate as noise. Reproduce it locally, find the cause, then fix.
+
+When the real fix is genuinely out of scope, agents MUST stop and say so — name the cause, propose the fix, and let a human choose. A disclosed limitation is acceptable; a silent workaround is not. Merging with a failing required check MUST have explicit human approval, and the reason MUST be recorded on the PR.
+
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
 - Agents MUST NOT add hollow stubs; MUST NOT add files for skeletons (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`, `keld-pack`, `keld-host`); MUST NOT add one for `keld-cli` (`expect` already sanctioned in § Rust); MUST NOT add `packages/` until TS exists. Point at the spec in the repo-map table instead.

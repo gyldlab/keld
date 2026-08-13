@@ -27,6 +27,14 @@ pub enum WvError {
         /// The stale or never-issued id.
         id: u32,
     },
+    /// The `WebView2` Evergreen runtime is absent or too old (Windows).
+    ///
+    /// Defined on every platform so the enum stays platform-neutral and
+    /// workspace-wide clippy sees it; only `crate::webview2` constructs it.
+    WebView2RuntimeMissing {
+        /// Probe failure text from `GetAvailableCoreWebView2BrowserVersionString`.
+        detail: String,
+    },
 }
 
 impl fmt::Display for WvError {
@@ -35,7 +43,7 @@ impl fmt::Display for WvError {
             Self::UnsupportedPlatform { os, issue } => write!(
                 f,
                 "KELD-WV-001: no webview backend for `{os}` yet. \
-                 Track {issue} or run on macOS."
+                 Track {issue} or run on macOS or Windows."
             ),
             Self::Window(msg) => write!(
                 f,
@@ -45,7 +53,8 @@ impl fmt::Display for WvError {
             Self::Webview(msg) => write!(
                 f,
                 "KELD-WV-003: failed to create webview — {msg}. \
-                 On macOS ensure WKWebView is available (10.13+)."
+                 On macOS ensure WKWebView is available (10.13+); \
+                 on Windows ensure the WebView2 runtime is installed."
             ),
             Self::EventLoop(msg) => write!(
                 f,
@@ -67,6 +76,13 @@ impl fmt::Display for WvError {
                 "KELD-WV-007: no webview with id {id}. \
                  Create one with `WebEngine::create` and drop stale ids after `destroy`."
             ),
+            Self::WebView2RuntimeMissing { detail } => write!(
+                f,
+                "KELD-WV-008: the WebView2 runtime is unavailable — {detail}. \
+                 Install the Evergreen Runtime from \
+                 https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. \
+                 Keld will not download or execute an installer for you."
+            ),
         }
     }
 }
@@ -79,7 +95,7 @@ mod tests {
 
     #[test]
     fn display_messages_carry_error_codes_and_fix_guidance() {
-        let cases: [(WvError, &str, &str); 7] = [
+        let cases: [(WvError, &str, &str); 8] = [
             (
                 WvError::UnsupportedPlatform {
                     os: "freebsd",
@@ -117,6 +133,13 @@ mod tests {
                 WvError::UnknownWebview { id: 7 },
                 "KELD-WV-007",
                 "WebEngine::create",
+            ),
+            (
+                WvError::WebView2RuntimeMissing {
+                    detail: String::from("boom"),
+                },
+                "KELD-WV-008",
+                "Evergreen Runtime",
             ),
         ];
         for (err, code, fix_hint) in cases {

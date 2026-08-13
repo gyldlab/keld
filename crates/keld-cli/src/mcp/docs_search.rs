@@ -140,24 +140,63 @@ pub fn search_docs(args: &DocsSearchArgs) -> DocsSearchResult {
         };
     }
 
+    // Lowercase once per chunk: the haystacks are needed twice (document
+    // frequency, then scoring) and the corpus is re-parsed on every call.
+    let haystacks: Vec<(String, String, String, DocChunkSource)> = corpus()
+        .into_iter()
+        .map(|chunk| {
+            (
+                chunk.title.to_ascii_lowercase(),
+                chunk.body.to_ascii_lowercase(),
+                chunk.source_path.to_ascii_lowercase(),
+                chunk,
+            )
+        })
+        .collect();
+
+    // Rarity weight per term (integer IDF).
+    //
+    // Without this the score was raw occurrence count, so one common word
+    // repeated often outranked a chunk matching several rare words: the query
+    // "Windows transport diverges" returned the Windows scoreboard section
+    // (which says "Windows" constantly and neither other term) above the IPC
+    // doc that actually discusses a diverging transport. Frequency is also
+    // capped below, so repetition can add emphasis but cannot dominate.
+    let total_chunks = u32::try_from(haystacks.len()).unwrap_or(u32::MAX).max(1);
+    let weights: Vec<u32> = terms
+        .iter()
+        .map(|term| {
+            let df = u32::try_from(
+                haystacks
+                    .iter()
+                    .filter(|(t, b, p, _)| t.contains(term) || b.contains(term) || p.contains(term))
+                    .count(),
+            )
+            .unwrap_or(u32::MAX);
+            // A term in every chunk carries no signal (weight 1); a term in one
+            // chunk is maximally discriminating. Capped so a single rare word
+            // cannot swamp an otherwise better match.
+            (total_chunks / df.max(1)).clamp(1, 8)
+        })
+        .collect();
+
     let mut scored: Vec<(u32, usize, DocChunk)> = Vec::new();
-    for (idx, chunk) in corpus().into_iter().enumerate() {
-        let hay_title = chunk.title.to_ascii_lowercase();
-        let hay_body = chunk.body.to_ascii_lowercase();
-        let hay_path = chunk.source_path.to_ascii_lowercase();
+    for (idx, (hay_title, hay_body, hay_path, chunk)) in haystacks.into_iter().enumerate() {
         let mut score = 0u32;
-        for term in &terms {
+        for (term, weight) in terms.iter().zip(&weights) {
             if hay_title.contains(term) {
-                score = score.saturating_add(10);
+                score = score.saturating_add(10 * weight);
             }
             if hay_path.contains(term) {
-                score = score.saturating_add(4);
+                score = score.saturating_add(4 * weight);
             }
             if hay_body.contains(term) {
-                score = score.saturating_add(2);
+                score = score.saturating_add(2 * weight);
+                // Cap the frequency bonus: matching three distinct query terms
+                // must beat repeating one of them thirty times.
                 let hits =
                     u32::try_from(hay_body.matches(term.as_str()).count()).unwrap_or(u32::MAX);
-                score = score.saturating_add(hits);
+                score = score.saturating_add(hits.min(3) * weight);
             }
         }
         if score == 0 {
