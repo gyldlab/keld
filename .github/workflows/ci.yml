@@ -64,7 +64,16 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - name: clippy (warnings deny)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.9.4
+      # v2.9.4 tar'd nextest into `%CARGO_HOME%\bin` using a Git-bash
+      # `C:\...` path (`C\:\\Users\...`: Cannot open). Create the dir for
+      # all OSes (pwsh is on ubuntu/macos/windows runners) and pin v2.85+
+      # which extracts into `dirname $(type -P cargo)` on Windows.
+      - name: Ensure cargo bin dir exists
+        shell: pwsh
+        run: |
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
+          New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: nextest
       - name: test

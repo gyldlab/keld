@@ -45,3 +45,4 @@ small — it is loaded by every agent session.
 - 2026-08-13 [ci] dtolnay/rust-toolchain@6c977a6 (2026-08-05) requires `with: toolchain:` even when rust-toolchain.toml exists; omitting it fails every job with 'toolchain' is a required input. (evidence: GitHub CI on PR #2 @ 6ed01b1)
 - 2026-08-13 [ci] Windows clippy `-D warnings` fails on unused `std::sync::mpsc` in keld-ipc `echo_link` tests; gate Unix-only test imports with `cfg(unix)`. (evidence: crates/keld-ipc/tests/echo_link.rs, PR #2 windows-latest)
 - 2026-08-13 [ci] rustdoc `-D warnings` fails on public docs linking private items (`rustdoc::private-intra-doc-links`); backtick error codes instead of `[`const`]` when the module is private. (evidence: crates/keld-cli/src/mcp/permissions.rs, PR #2 ubuntu rustdoc)
+- 2026-08-13 [ci] taiki-e/install-action on windows-latest fails if `%CARGO_HOME%\bin` is missing (tar: Cannot open: No such file). Create the dir before install. (evidence: GHA 31708711822)

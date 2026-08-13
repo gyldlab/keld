@@ -402,6 +402,63 @@ mod tests {
     }
 
     #[test]
+    fn read_frame_timeout_mid_header_leaves_stream_unusable() {
+        // Partial header + deadline must error; leftover bytes are consumed.
+        // A later complete frame on the same stream must not be returned as
+        // Ok — docs on `read_frame`: Timeout makes the link unusable.
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_deadlines(Some(Duration::from_millis(200)))
+            .expect("deadline");
+
+        let header = header_with_len(0);
+        writer.write_all(&header[..8]).expect("partial header");
+        writer.flush().expect("flush");
+
+        let (first_tx, first_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let (second_tx, second_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let first = read_frame(&mut reader);
+            let _ = first_tx.send(first);
+            if go_rx.recv().is_err() {
+                return;
+            }
+            let second = read_frame(&mut reader);
+            let _ = second_tx.send(second);
+        });
+
+        let first = first_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("partial header must hit the I/O deadline, not hang");
+        let err = first.expect_err("partial header + deadline is not a frame");
+        assert!(
+            matches!(err, IpcError::Timeout),
+            "deadline must be KELD-IPC-006, got {err}"
+        );
+        assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
+
+        writer.write_all(&header[8..]).expect("header rest");
+        write_frame(
+            &mut writer,
+            FrameKind::Ping,
+            0,
+            ChannelId(7),
+            CorrelationId(9),
+            b"later",
+        )
+        .expect("later valid frame");
+        go_tx.send(()).expect("reader still waiting to retry");
+
+        let second = second_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("retry after Timeout must not hang");
+        second.expect_err(
+            "stream is unusable after Timeout; must not return a spliced or later frame",
+        );
+    }
+
+    #[test]
     fn handshake_silent_peer_is_ipc_006() {
         let (mut client, _server) = connected_pair();
         client
