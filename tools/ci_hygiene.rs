@@ -27,7 +27,7 @@ const PR_NEEDLES: &[&str] = &["Review gates", "cargo fmt", "clippy", "nextest"];
 const WORKFLOW_NEEDLES: &[&str] = &[
     "gitleaks detect",
     "sha256sum -c",
-    "tools/ci_hygiene.rs",
+    "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
     "toolchain: 1.93.0",
     "tools/llms_docs.rs",
@@ -104,11 +104,22 @@ fn uses_spec(trimmed: &str) -> Option<&str> {
     Some(rest.trim())
 }
 
+fn uses_action_ref(spec: &str) -> &str {
+    let without_comment = spec
+        .split_once('#')
+        .map(|(before, _)| before)
+        .unwrap_or(spec)
+        .trim();
+    without_comment
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim()
+}
+
 fn is_pinned_sha(spec: &str) -> bool {
-    let Some((_, after_at)) = spec.rsplit_once('@') else {
+    let action_ref = uses_action_ref(spec);
+    let Some((_, sha)) = action_ref.rsplit_once('@') else {
         return false;
     };
-    let sha = after_at.split_whitespace().next().unwrap_or("");
     sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -302,7 +313,7 @@ mod tests {
                hygiene:\n\
                  steps:\n\
              {PINNED_CHECKOUT}\
-                   - run: rustc --edition=2024 tools/ci_hygiene.rs\n\
+                   - run: rustc --edition=2024 --test tools/ci_hygiene.rs\n\
                    - run: rustc --edition=2024 tools/llms_docs.rs\n\
                    - run: llms-docs check .\n"
         )
@@ -461,6 +472,43 @@ mod tests {
         assert!(
             error.contains("tools/llms_docs.rs") || error.contains("llms-docs check"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn workflow_mentioning_hygiene_file_without_test_flag_fails() {
+        let temp = complete_fixture();
+        let workflow =
+            valid_workflow().replace("--test tools/ci_hygiene.rs", "tools/ci_hygiene.rs");
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("compile-only hygiene step must fail");
+        assert!(error.contains("--test tools/ci_hygiene.rs"), "{error}");
+    }
+
+    #[test]
+    fn comment_at_sign_does_not_false_report_unpinned() {
+        assert!(is_pinned_sha(
+            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # pin @v4.4.0"
+        ));
+        let workflow = format!("jobs:\n  x:\n    steps:\n{PINNED_CHECKOUT}");
+        let with_comment_at = workflow.replace("# v4.4.0", "# pin @v4.4.0");
+        assert!(
+            action_uses_unpinned(&with_comment_at).is_empty(),
+            "{:?}",
+            action_uses_unpinned(&with_comment_at)
+        );
+    }
+
+    #[test]
+    fn quoted_uses_spec_sha_is_pinned() {
+        assert!(is_pinned_sha(
+            r#""actions/checkout@11d5960a326750d5838078e36cf38b85af677262""#
+        ));
+        let workflow = "jobs:\n  x:\n    steps:\n      - uses: \"actions/checkout@11d5960a326750d5838078e36cf38b85af677262\"\n";
+        assert!(
+            action_uses_unpinned(workflow).is_empty(),
+            "{:?}",
+            action_uses_unpinned(workflow)
         );
     }
 

@@ -52,8 +52,10 @@ pub struct EchoServer {
 
 #[cfg(unix)]
 fn bind_unix_echo() -> io::Result<(PathBuf, PathBuf, std::os::unix::net::UnixListener)> {
+    // `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). Long TMPDIR
+    // plus `keld-echo-{pid}-{nanos}/echo.sock` overflows (ENAMETOOLONG).
     let session_dir = std::env::temp_dir().join(format!(
-        "keld-echo-{}-{}",
+        "ke-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -65,7 +67,7 @@ fn bind_unix_echo() -> io::Result<(PathBuf, PathBuf, std::os::unix::net::UnixLis
         let _ = fs::remove_dir(&session_dir);
         return Err(err);
     }
-    let path = session_dir.join("echo.sock");
+    let path = session_dir.join("e.sock");
     match std::os::unix::net::UnixListener::bind(&path) {
         Ok(listener) => Ok((session_dir, path, listener)),
         Err(err) => {
@@ -314,7 +316,7 @@ mod tests {
 
         assert_eq!(
             socket.file_name().and_then(|name| name.to_str()),
-            Some("echo.sock")
+            Some("e.sock")
         );
         assert_ne!(session_dir, std::env::temp_dir());
         assert!(

@@ -1,6 +1,6 @@
 //! `keld doctor` — environment checks (KEL-29 / KEL-42 `--json`).
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use keld_core::{DEFAULT_RENDERER, read_config_renderer};
@@ -96,6 +96,31 @@ pub fn renderer_path_problem(renderer: &str) -> Option<&'static str> {
     }
 }
 
+/// Strips a Windows verbatim prefix so displayed paths match `current_dir`.
+///
+/// `fs::canonicalize` on Windows yields `\\?\C:\...` (and `\\?\UNC\server\share`
+/// for UNC). MCP may pass that as `project_root`; CLI `doctor --json` from cwd
+/// does not. Doctor JSON is a human/`current_dir` path (`C:\...`), not the NT
+/// namespace prefix.
+#[must_use]
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[must_use]
+fn display_project_path(path: &Path) -> String {
+    strip_verbatim_prefix(path).display().to_string()
+}
+
 /// Runs environment checks for local development.
 #[must_use]
 pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
@@ -176,11 +201,12 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
     };
     let has_config = root.join("keld.config.ts").is_file();
     let has_main = root.join("src/main.ts").is_file();
+    let shown = display_project_path(root);
     if has_config && has_main {
         Check {
             label: "project",
             ok: true,
-            detail: format!("keld project at {}", root.display()),
+            detail: format!("keld project at {shown}"),
             error: None,
         }
     } else {
@@ -192,10 +218,10 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
             error: Some(
                 KeldErrorObject::new(
                     PROJECT_LAYOUT_CODE,
-                    format!("project layout incomplete at {}", root.display()),
+                    format!("project layout incomplete at {shown}"),
                     fix,
                 )
-                .with_cause(root.display().to_string()),
+                .with_cause(shown),
             ),
         }
     }
@@ -422,6 +448,24 @@ mod tests {
         assert_eq!(
             traversal.error.as_ref().map(|e| e.code.as_str()),
             Some(RENDERER_LOAD_CODE)
+        );
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_disk_and_unc() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\foo")),
+            PathBuf::from(r"C:\foo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+        let ordinary = Path::new("/var/tmp/app");
+        assert_eq!(strip_verbatim_prefix(ordinary), ordinary);
+        assert_eq!(
+            display_project_path(Path::new(r"\\?\C:\Users\runneradmin\app")),
+            r"C:\Users\runneradmin\app"
         );
     }
 
