@@ -182,7 +182,7 @@ research-push message="chore: sync research notes":
         exit 0
     }
     DEST="$ROOT/docs/research"
-    MSG='{{message}}'
+    MSG={{quote(message)}}
 
     if [[ ! -d "$DEST/.git" ]]; then
         echo "warning: research-push: docs/research/ is not a nested git checkout; nothing pushed" >&2

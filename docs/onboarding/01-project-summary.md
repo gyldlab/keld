@@ -158,7 +158,8 @@ hello-world app on an M-series Mac / mid-range Windows laptop:
 | Update patch, 1-line JS change | ≤ 50 KB | full installer |
 | `keld dev` cold to window | ≤ 2 s | — |
 
-A regression greater than 5% fails the PR, or needs a written waiver with benchmarks
+These are **target budgets**, not live gates. Once `bench/` exists, a regression greater
+than 5% fails the PR or needs a written waiver with benchmarks
 ([`AGENTS.md`](../../AGENTS.md) § Security & performance). **Not yet real:** the `bench/`
 directory does not exist, so none of these are currently gated. Living measured rows
 (hello host/CLI/RSS; no DMG yet) are in

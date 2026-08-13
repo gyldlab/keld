@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# After checkout: refresh local-only research + competitor clones.
+# After branch checkout: refresh local-only research + competitor clones.
 # Soft-skip on missing just / no private-repo access — never fail the checkout.
-# Args from git: previous HEAD, new HEAD, branch(1)/file(0) flag — ignored.
+# Args from git: previous HEAD, new HEAD, branch(1)/file(0) flag.
 set -uo pipefail
+
+# File checkouts (flag 0) should not re-sync trees.
+if [[ "${3:-0}" != "1" ]]; then
+  exit 0
+fi
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$ROOT" || exit 0
@@ -12,9 +17,11 @@ if ! command -v just >/dev/null 2>&1; then
   exit 0
 fi
 
-just research-sync || true
-just competitors-sync || {
+if ! just research-sync; then
+  echo "warning: research-sync failed; research tree may be stale (checkout succeeded)" >&2
+fi
+if ! just competitors-sync; then
   echo "warning: competitors-sync failed; checkout succeeded (local-only trees unchanged)" >&2
-}
+fi
 
 exit 0

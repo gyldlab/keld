@@ -11,9 +11,11 @@ if ! command -v just >/dev/null 2>&1; then
   exit 0
 fi
 
-just research-sync || true
-just competitors-sync || {
+if ! just research-sync; then
+  echo "warning: research-sync failed; research tree may be stale (pull succeeded)" >&2
+fi
+if ! just competitors-sync; then
   echo "warning: competitors-sync failed; pull succeeded (local-only trees unchanged)" >&2
-}
+fi
 
 exit 0

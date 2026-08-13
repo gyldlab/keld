@@ -170,7 +170,7 @@ Four uniques only — no fifth.
 | # | Lane | Score | Why |
 |---|---|---|---|
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
-| 2 | Idle RSS vs Swift ~95 MiB / Electron 150–300 / Tauri survey | **can win with work** | Host-only 72.6–77.8 MiB under Swift main and ≤90 MB — not the product (no Bun, no XPCs). ~12 MB headroom for Bun. |
+| 2 | Idle RSS vs Swift ~95 MiB / Electron 150–300 / Tauri survey | **can win with work** | Host-only 72.6–77.8 MiB under Swift main and ≤90 MB — not the product (no Bun, no XPCs). Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG → Tauri’s 2.5–10 MB band. **Cannot** claim smallest shell vs Swift 88K / Neutralino ~2 MB. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = ~16.1 MB (budget legal if artifact is zstd). Electrobun ~14 MB zstd is the compressed ceiling. |
 | 5 | Cold start first paint (≤300 ms) | **can win with work** | Unmeasured. WK class can beat Electron 1–3 s. |
@@ -191,7 +191,7 @@ first paint; fill `vs` from blog citations; fake `bench/` CI.
 
 ## Related
 
-- Fixture home (public): [gyldlab/keld-benches](https://github.com/gyldlab/keld-benches) — hello / installer / RSS apps for Swift and competitors; not in this monorepo
+- Native Swift fixtures (public): [swift/appkit-wk](https://github.com/gyldlab/keld-benches/tree/main/swift/appkit-wk), [swift/swiftui-wk](https://github.com/gyldlab/keld-benches/tree/main/swift/swiftui-wk) — competitor rows stay local-only until same-protocol Release measurements are public; not in this monorepo
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11
