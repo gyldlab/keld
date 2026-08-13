@@ -6,10 +6,11 @@ dist/
 
 # ── Proprietary / local-only ─────────────────────────────────────────────────
 # Large competitor checkouts stay on maintainer machines (never commit).
-# Architecture, research, specs, and agents docs under docs/ ARE tracked —
-# they are ground truth per AGENTS.md and must not be lost to a local-only ignore.
+# Architecture, specs, engineering, and agents docs under docs/ ARE tracked.
+# Numbered research stays local-only — never commit `docs/research/`.
 
 /competitors/
+/docs/research/
 
 # Roadmap remains local; agent docs outputs are tracked and stale-checked.
 /ROADMAP.md

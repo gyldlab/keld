@@ -30,10 +30,10 @@ Two rules that follow directly from that table, both from
 
 Documentation under `/docs/` is tracked, along with generated `llms.txt` and
 `llms-full.txt`. [`.gitignore`](../../.gitignore) keeps `/competitors/`, `/ROADMAP.md`,
-and `/.claude/` local-only. `.github/` is tracked (KEL-39). The generated corpus is
-narrower than the tracked docs tree: its ordered allowlist excludes research and all
-unlisted documents. The engineering decision log is on that allowlist; numbered
-research is not.
+`/docs/research/`, and `/.claude/` local-only. `.github/` is tracked (KEL-39). The
+generated corpus is narrower than the tracked docs tree: its ordered allowlist excludes
+research and all unlisted documents. The engineering decision log is on that allowlist;
+numbered research is not.
 
 ## Root files
 

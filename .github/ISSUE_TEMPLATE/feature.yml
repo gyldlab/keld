@@ -32,7 +32,7 @@ body:
     id: acceptance
     attributes:
       label: Acceptance (binary)
-      description: Given / when / then items that can become tests. Include the verification gate (`cargo fmt --check`, clippy `-D warnings`, `cargo nextest run --workspace --profile ci`).
+      description: Given / when / then items that can become tests. Include the verification gate (`cargo fmt --all --check`, clippy `-D warnings`, `cargo nextest run --workspace --profile ci`).
     validations:
       required: true
   - type: checkboxes

@@ -324,9 +324,8 @@ Every PR carries a `## Review gates` section listing which of these it triggers.
 apply, you write **"none"** — the section is never omitted, because "no gates listed"
 and "author did not think about gates" must not look identical to a reviewer. CODEOWNERS
 is intended to enforce human approval on `keld-guard`, the `keld-ipc` protocol files, and
-the workspace manifests (`docs/agents/workflow.md`); note that no `CODEOWNERS` file
-exists in `.github/` yet, so today this is a convention you follow, not a mechanism that
-stops you.
+the workspace manifests (`docs/agents/workflow.md`). `.github/CODEOWNERS` is tracked
+(KEL-39) and requests review on those paths.
 
 ---
 

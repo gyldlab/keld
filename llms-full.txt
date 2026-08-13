@@ -782,8 +782,8 @@ global install. Host + runtime binaries fetched signed, verified, cached.
 - `keld dev` cold → window ≤ 2 s (host prebuilt, Bun start ~10 ms class, webview init
   dominates); warm app-process restart ≤ 300 ms with renderer preserved.
 - Unified logs: host (tracing, JSON), app process (stdout), renderer (console capture)
-  interleaved in one stream with principal tags; `keld dev --inspect-ipc` dumps decoded
-  kipc frames (JSON codec debug mode).
+  interleaved in one stream with principal tags; `keld dev --inspect-ipc` is **planned**
+  (decoded kipc JSON dump). Today the flag is `KELD-CLI-044` (not live).
 - DevTools: system engines expose what they have (CDP on WebView2, Safari inspector on
   macOS, WebKitGTK inspector); `keld dev` prints exact attach instructions per OS —
   no pretending parity exists where it doesn't.

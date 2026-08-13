@@ -181,7 +181,7 @@ pub fn run_dev_echo(project_root: &Path, keld_bin: &Path) -> Result<DevEchoResul
         )));
     }
 
-    server.join()?;
+    server.shutdown()?;
 
     Ok(DevEchoResult {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

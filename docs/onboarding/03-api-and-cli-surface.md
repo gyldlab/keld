@@ -377,7 +377,7 @@ the honest mapping:
 | `bunx keld …` | No npm package resolves a `keld` binary. `packages/` is empty | `@keld/cli` with per-platform `optionalDependencies`; spec `06-runtime-and-tooling.md` §2, ROADMAP **Phase 1** exit ("runs on macOS+Windows from `bunx keld dev`") |
 | `@keld/electron` aliasing | `keld-compat` contains a single `Tier` enum; no shim | ROADMAP **Phase 2** (Tier 1) / **Phase 4** (Tier 2) |
 | Delta updates, signed installers | `keld-update` is a `Channel` enum; `keld-pack` is a `Format` enum | ROADMAP **Phase 3** |
-| `keld dev` | **Exists**, but as described in §1.6: Bun child + echo round-trip + a fixed hello window, not your renderer | Phase 1 in progress |
+| `keld dev` | **Exists**: Bun echo round-trip, then the project renderer HTML (`index.html` or `renderer` in `keld.config.ts`) in the hello window. `--watch` / `--inspect-ipc` are `KELD-CLI-044`. | Phase 1 in progress |
 | `keld gen`, `keld ext` | **`KELD-CLI-045`** (exit 2) — reserved, not live | `06-runtime-and-tooling.md` §2 |
 
 The README's workspace-layout block does label the npm packages `(upcoming)`; the
