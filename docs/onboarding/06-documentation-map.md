@@ -24,12 +24,10 @@ Two rules that follow directly from that table, both from
 
 ### A note on what is actually in the git repo
 
-[`.gitignore`](../../.gitignore) excludes `/docs/`, `/competitors/`, `/ROADMAP.md`,
-`/llms.txt`, and `/.github/` — "Proprietary IP (local only — never commit) … Public repo
-is implementation code only." Almost everything this map describes exists on maintainer
-machines and not in the pushed repository. `.claude/` and `task.md` are not ignored but
-are currently untracked. If you clone the public repo, you get the crates, `README.md`,
-`AGENTS.md`, and the build/lint configs — nothing else on this page.
+Documentation under `/docs/` is tracked, along with generated `llms.txt` and
+`llms-full.txt`. [`.gitignore`](../../.gitignore) keeps `/competitors/`, `/ROADMAP.md`,
+`/.github/`, and `/.claude/` local-only. The generated corpus is narrower than the
+tracked docs tree: its ordered allowlist excludes research and all unlisted documents.
 
 ## Root files
 
@@ -38,7 +36,7 @@ are currently untracked. If you clone the public repo, you get the crates, `READ
 | [`AGENTS.md`](../../AGENTS.md) | **The single most important file in the repo.** Ground truth, crate map, the three-command verification gate, Rust rules (`unsafe` policy, no `unwrap`/`expect`/`panic!` in libs, typed errors, hot-path discipline, dependency review), TypeScript rules, naming, security/perf rules, the five human review gates, working rules, the mandatory self-improvement rule, and commit/PR format. | Before your first line of code, and again whenever you're unsure whether something is allowed. |
 | [`README.md`](../../README.md) | The 30-second pitch, the intended `migrate → dev → build` flow, the workspace layout, and the two commands that work today. | First five minutes. |
 | [`ROADMAP.md`](../../ROADMAP.md) | Phases 0–4 with exit criteria (gated on criteria, not dates) plus standing tracks. Checkbox state is meaningful — unchecked items are genuinely open. | When you want to know whether the thing you're about to build is in scope *now*. |
-| [`llms.txt`](../../llms.txt) | A short machine-readable index of the repo's docs for LLM consumers: one-line project description plus links to `AGENTS.md`, architecture 01–07, research 00–09, and the agent workflow docs. Note it stops at research `09` and does not list `10–17` or the drafts — it is a snapshot, not a live index. | When wiring up agent tooling, or as a fast link sheet. |
+| [`llms.txt`](../../llms.txt) · [`llms-full.txt`](../../llms-full.txt) | Generated agent-readable documentation: a compact curated index and the corresponding concatenated corpus. `tools/llms_docs.rs` fixes source order and excludes research/local-only paths; `just llms-check` rejects drift. | When wiring up agent tooling, bulk-ingesting the authoritative docs corpus, or checking what the official MCP docs search embeds. |
 | [`task.md`](../../task.md) | A **ledger** of a Linear harness run dated 2026-07-10: issue inventory by status, per-ticket blueprints and acceptance criteria, execution order, gate commands, and the results at the time (12/12 tests then). Historical, not a live to-do list. | When you need to know why a Linear issue was closed, or what "COMPLETE" meant for a given ticket. |
 | [`justfile`](../../justfile) · [`Cargo.toml`](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml) · [`deny.toml`](../../deny.toml) · [`rustfmt.toml`](../../rustfmt.toml) · [`rust-toolchain.toml`](../../rust-toolchain.toml) · [`.config/nextest.toml`](../../.config/nextest.toml) | Not prose, but they are the enforcement layer behind `AGENTS.md`. `just ci` runs every gate CI would run. Workspace lints (pedantic clippy, `missing_docs`, `unsafe_code = "deny"`) live in `Cargo.toml`, with comments explaining each choice. | When a lint fails and you want to know whether it's negotiable (it usually isn't). |
 

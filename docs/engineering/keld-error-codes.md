@@ -8,8 +8,8 @@ error website in v0; `KeldErrorObject.docs` still uses the
 CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
-- A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` `src`
-  (plus `keld-cli` templates) that has no heading here fails the test.
+- A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` `src`,
+  `keld-cli` templates, or workspace `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -239,3 +239,33 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-guard
 - message: Permissions manifest is not valid JSONC
 - fix: Fix the JSON (comments are allowed; trailing commas are not).
+
+## KELD-DOCS001
+
+- crate: llms-docs
+- message: Required documentation source is missing
+- fix: Restore the source or remove its entry from the generator source list.
+
+## KELD-DOCS002
+
+- crate: llms-docs
+- message: Required documentation source is empty
+- fix: Add authoritative Markdown content or remove its source-list entry.
+
+## KELD-DOCS003
+
+- crate: llms-docs
+- message: Documentation source is outside the authoritative corpus
+- fix: Remove it from the source list and include only reviewed public Markdown.
+
+## KELD-DOCS004
+
+- crate: llms-docs
+- message: Generated documentation output is missing or stale
+- fix: Run `just llms` and commit both generated outputs.
+
+## KELD-DOCS005
+
+- crate: llms-docs
+- message: Documentation generator invocation or file I/O failed
+- fix: Follow the command-specific fix, correct the path or permissions, and rerun the generator.

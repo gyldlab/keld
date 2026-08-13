@@ -6,6 +6,9 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 
 ## Ground truth
 - Specs: `docs/architecture/01..07-*.md`. Research: `docs/research/`.
+- Agent-readable docs: [`llms.txt`](llms.txt) is the generated compact index;
+  [`llms-full.txt`](llms-full.txt) is its ordered authoritative corpus. Run
+  `just llms-check` after changing an included source.
 - Code/spec mismatch is a bug in one; agents MUST fix both in the same PR or state why. Agents MUST NOT silently drift.
 - Features: approved spec (`docs/agents/spec-template.md`) + Linear (KELD). Process: `docs/agents/workflow.md`.
 - Agents MUST read crate `AGENTS.md` before editing that crate.
@@ -46,6 +49,7 @@ cargo fmt --all                                    # before done
 cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo nextest run --workspace --profile ci    # verification gate — all three before "done"
 cargo nextest run -p <crate> [-- <filter>]         # single crate/test
+just llms-check                                    # generated docs are current
 # Fallback: cargo test --workspace
 ```
 

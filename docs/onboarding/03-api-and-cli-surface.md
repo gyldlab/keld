@@ -678,6 +678,7 @@ the contract asserted in code.
 | Engineering rules and review gates | [`AGENTS.md`](../../AGENTS.md) plus the per-crate `AGENTS.md` files |
 | Phase ordering for what does not exist yet | [`ROADMAP.md`](../../ROADMAP.md) |
 
-Note that `docs/`, `ROADMAP.md`, `competitors/`, `llms.txt`, and `.github/` are all
-excluded by [`.gitignore`](../../.gitignore) as maintainer-local material — see
-[`05-development-guide.md`](./05-development-guide.md) §11.
+Tracked documentation includes `docs/`, `llms.txt`, and `llms-full.txt`. The generated
+files contain only the authoritative allowlist defined by `tools/llms_docs.rs`;
+`ROADMAP.md`, `competitors/`, `.github/`, and `.claude/` remain local-only under
+[`.gitignore`](../../.gitignore).

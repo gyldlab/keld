@@ -6,7 +6,7 @@ hello:
     cargo run -p keld-host -- --hello
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
-ci: agents-md fmt-check clippy test doc deny
+ci: agents-md llms-test llms-check fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -36,6 +36,24 @@ agents-md:
     done
     if [[ "$fail" -ne 0 ]]; then exit 1; fi
     echo "agents-md ok"
+
+# Generate the checked-in agent-readable docs index and full corpus.
+llms:
+    mkdir -p target/llms-docs
+    rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
+    target/llms-docs/llms-docs generate .
+
+# CI gate: generated docs must match their authoritative Markdown sources.
+llms-check:
+    mkdir -p target/llms-docs
+    rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
+    target/llms-docs/llms-docs check .
+
+# Contract tests for ordering, determinism, stale detection, and exclusions.
+llms-test:
+    mkdir -p target/llms-docs
+    rustc --edition=2024 -D warnings --test tools/llms_docs.rs -o target/llms-docs/llms-docs-test
+    target/llms-docs/llms-docs-test
 
 # Format the workspace in place.
 fmt:

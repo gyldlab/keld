@@ -1,4 +1,4 @@
-//! `keld_docs_search` — embedded architecture + error-registry corpus.
+//! `keld_docs_search` — embedded generated documentation corpus.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -50,48 +50,17 @@ const DEFAULT_MAX: u8 = 5;
 const CAP_MAX: u8 = 20;
 const SNIPPET_CHARS: usize = 280;
 
-const CORPUS_TOPICS_HINT: &str = "corpus topics: overview, ipc, security/capability manifest, electron-compat, \
-     webview, runtime/tooling, agent-experience, error-codes";
+const CORPUS_TOPICS_HINT: &str = "corpus topics: quickstart, overview, ipc, security/capability manifest, \
+     electron-compat, webview, runtime/tooling, agent-experience, error-codes";
 
-/// Compile-time corpus: architecture specs + the KELD-* registry, chunked by `##`.
+/// Compile-time `llms-full.txt` corpus, chunked by source marker and `##`.
 fn corpus() -> Vec<DocChunkSource> {
-    const FILES: &[(&str, &str)] = &[
-        (
-            "docs/architecture/01-overview.md",
-            include_str!("../../../../docs/architecture/01-overview.md"),
-        ),
-        (
-            "docs/architecture/02-ipc.md",
-            include_str!("../../../../docs/architecture/02-ipc.md"),
-        ),
-        (
-            "docs/architecture/03-security.md",
-            include_str!("../../../../docs/architecture/03-security.md"),
-        ),
-        (
-            "docs/architecture/04-electron-compat.md",
-            include_str!("../../../../docs/architecture/04-electron-compat.md"),
-        ),
-        (
-            "docs/architecture/05-webview-and-native.md",
-            include_str!("../../../../docs/architecture/05-webview-and-native.md"),
-        ),
-        (
-            "docs/architecture/06-runtime-and-tooling.md",
-            include_str!("../../../../docs/architecture/06-runtime-and-tooling.md"),
-        ),
-        (
-            "docs/architecture/07-agent-experience.md",
-            include_str!("../../../../docs/architecture/07-agent-experience.md"),
-        ),
-        (
-            "docs/engineering/keld-error-codes.md",
-            include_str!("../../../../docs/engineering/keld-error-codes.md"),
-        ),
-    ];
-
+    const FULL_CORPUS: &str = include_str!("../../../../llms-full.txt");
     let mut chunks = Vec::new();
-    for &(path, text) in FILES {
+    for document in FULL_CORPUS.split("\n## Source: `").skip(1) {
+        let Some((path, text)) = document.split_once("`\n\n") else {
+            continue;
+        };
         chunks.extend(chunk_markdown(path, text));
     }
     chunks
@@ -235,6 +204,22 @@ mod tests {
                 r.source_path.contains("keld-error-codes") && r.title.contains("KELD-IPC-004")
             }),
             "expected registry heading KELD-IPC-004, got {:?}",
+            result.results
+        );
+    }
+
+    #[test]
+    fn generated_corpus_includes_compat_scoreboard_placeholder() {
+        let result = search_docs(&DocsSearchArgs {
+            query: "Migration corpus not available".to_owned(),
+            max_results: Some(5),
+        });
+        assert!(
+            result
+                .results
+                .iter()
+                .any(|r| r.source_path.contains("compat-scoreboard")),
+            "expected generated scoreboard source, got {:?}",
             result.results
         );
     }

@@ -624,7 +624,7 @@ The summary table. "Live" means it works and a test proves it.
 | Packaging, signing, delta updates | **Specified, not implemented** | Two enums |
 | Perf budgets in CI | **Specified, not implemented** | `bench/` does not exist; ROADMAP Phase 0 open item |
 | CI: fmt + clippy + nextest on 3 OSes, cargo-deny, MSRV | **Live** | `.github/workflows/ci.yml`; mirrored locally by `just ci` |
-| llms.txt | **Partial** | Exists at the repo root but is hand-maintained; [`07` §3](../architecture/07-agent-experience.md) requires CI generation |
+| `llms.txt` + `llms-full.txt` | **Live** | Deterministically generated from an ordered allowlist by `tools/llms_docs.rs`; `just llms-check` rejects stale output |
 
 Roughly: **the wire format and the macOS window are real; the security model, the runtime
 supervisor, the native API surface, the bulk lanes, and everything TypeScript are not.**

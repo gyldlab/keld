@@ -3,12 +3,12 @@
 //! The registry file is the docs stub. These tests fail when:
 //! - a code is listed twice
 //! - an entry is missing `crate` / `message` / `fix`
-//! - `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` emit a code that is not listed
-//! - the registry lists a code those crates do not emit
+//! - scanned crates or workspace tools emit a code that is not listed
+//! - the registry lists a code the scanned sources do not emit
 //!
 //! Why: a deleted uniqueness check, an empty `fix`, or a new `KELD-WV-008` in
-//! `error.rs` without a heading must fail CI. Scanning only those four trees
-//! (not the whole repo) is the v0 scraper.
+//! `error.rs` without a heading must fail CI. Scanning only developer-facing source
+//! trees (not the whole repo) is the v0 scraper.
 
 #![allow(clippy::expect_used, clippy::panic)]
 
@@ -24,6 +24,7 @@ const SCAN_REL: &[&str] = &[
     "crates/keld-cli/src",
     "crates/keld-cli/templates",
     "crates/keld-guard/src",
+    "tools",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,12 +322,12 @@ fn scanned_source_codes_match_registry() {
     let missing: Vec<&String> = emitted.difference(&registered).collect();
     assert!(
         missing.is_empty(),
-        "codes emitted in keld-ipc/keld-wv/keld-cli/keld-guard but missing from {REGISTRY_REL}: {missing:?}"
+        "codes emitted in scanned crates/tools but missing from {REGISTRY_REL}: {missing:?}"
     );
 
     let extra: Vec<&String> = registered.difference(&emitted).collect();
     assert!(
         extra.is_empty(),
-        "codes in {REGISTRY_REL} not emitted in scanned crates (remove or emit them): {extra:?}"
+        "codes in {REGISTRY_REL} not emitted in scanned crates/tools (remove or emit them): {extra:?}"
     );
 }

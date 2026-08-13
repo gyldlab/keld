@@ -11,9 +11,8 @@ dist/
 
 /competitors/
 
-# Roadmap and agent doc index (reference local docs/)
+# Roadmap remains local; agent docs outputs are tracked and stale-checked.
 /ROADMAP.md
-/llms.txt
 
 # CI — local only until we choose to publish pipelines
 /.github/

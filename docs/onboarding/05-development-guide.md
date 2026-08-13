@@ -467,15 +467,11 @@ reach for them:
 There is no `.claude/project-calibration.json` and no `project-conventions` skill in this
 repo — if something points you at one, it is describing a different project.
 
-> **These files are local-only.** [`.gitignore`](../../.gitignore) excludes `/docs/`,
-> `/competitors/`, `/ROADMAP.md`, `/llms.txt`, and `/.github/` under the heading
-> "Proprietary IP (local only — never commit)", and `git ls-files` returns zero tracked
-> files under `docs/`. The README states the same policy: "public repo contains the
-> implementation; research and architecture specs are maintained privately by the GyldLab
-> team." So the specs, the roadmap, the CI workflow, and this onboarding set live on
-> maintainer machines, not in a public clone — if you cloned from GitHub and these paths
-> are missing, that is by design; get them from the team. `AGENTS.md` (root and
-> per-crate), the `justfile`, `deny.toml`, and everything under `crates/` *are* tracked.
+> **Tracked versus local-only.** Architecture, onboarding, agent, engineering, and
+> research docs under `docs/` are tracked, as are the generated `llms.txt` and
+> `llms-full.txt`. The generated corpus deliberately excludes research and every
+> unlisted source. `/competitors/`, `/ROADMAP.md`, `/.github/`, and `/.claude/` remain
+> local-only under [`.gitignore`](../../.gitignore).
 
 ---
 

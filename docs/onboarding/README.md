@@ -33,7 +33,7 @@ works today.
 
 ```bash
 cargo build --workspace
-cargo nextest run --workspace --profile ci   # 17 tests, all passing
+cargo nextest run --workspace --profile ci
 just hello                                   # macOS only: opens the WKWebView window
 cargo run -p keld-cli -- doctor
 ```
@@ -47,10 +47,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-## A note on where these files live
+## Agent-readable documentation
 
-`/docs/` is gitignored ([`.gitignore:12`](../../.gitignore)) as deliberate policy — the
-public repo carries implementation code only, while research, specs, and audits stay on
-maintainer machines. These onboarding documents inherit that: they are local to your
-checkout and will not appear in a public clone. If any of them should ship publicly, that
-is a policy decision, not an oversight to fix by moving the files.
+Tracked authoritative docs are projected into [`llms.txt`](../../llms.txt) and
+[`llms-full.txt`](../../llms-full.txt). The compact index defines the exact corpus;
+exploratory research and local-only material are excluded. After changing an included
+source, run `just llms` and verify it with `just llms-check`.
