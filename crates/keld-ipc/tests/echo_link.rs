@@ -3,6 +3,7 @@
 #![allow(clippy::expect_used, clippy::needless_pass_by_value)] // extra test crate: expect is the assertion oracle; listen_and_serve owns PathBuf for the worker
 
 use std::io::Write;
+#[cfg(unix)]
 use std::sync::mpsc;
 use std::thread;
 

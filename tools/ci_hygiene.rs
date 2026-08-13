@@ -30,6 +30,8 @@ const WORKFLOW_NEEDLES: &[&str] = &[
     "tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
     "toolchain: 1.93.0",
+    "tools/llms_docs.rs",
+    "llms-docs check",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -188,7 +190,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
                  Restore the gitleaks job (checksummed CLI, not the org-licensed Action), \
                  `with: toolchain:` on dtolnay/rust-toolchain, \
-                 and the hygiene job that compiles this file."
+                 the hygiene job that compiles this file, \
+                 and the hygiene step that compiles `tools/llms_docs.rs` and runs `llms-docs check`."
             ));
         }
     }
@@ -299,7 +302,9 @@ mod tests {
                hygiene:\n\
                  steps:\n\
              {PINNED_CHECKOUT}\
-                   - run: rustc --edition=2024 tools/ci_hygiene.rs\n"
+                   - run: rustc --edition=2024 tools/ci_hygiene.rs\n\
+                   - run: rustc --edition=2024 tools/llms_docs.rs\n\
+                   - run: llms-docs check .\n"
         )
     }
 
@@ -443,6 +448,20 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
         assert!(error.contains("toolchain: 1.93.0"), "{error}");
+    }
+
+    #[test]
+    fn missing_llms_docs_check_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow()
+            .replace("tools/llms_docs.rs", "")
+            .replace("llms-docs check .", "");
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("workflow without llms-docs check must fail");
+        assert!(
+            error.contains("tools/llms_docs.rs") || error.contains("llms-docs check"),
+            "{error}"
+        );
     }
 
     #[test]

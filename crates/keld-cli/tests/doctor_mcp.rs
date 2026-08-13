@@ -3,8 +3,10 @@
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use keld_cli::create::create_project;
 use keld_cli::doctor::{
@@ -436,12 +438,35 @@ fn keld_cli_dependency_tree_has_no_http_transport_crates() {
     }
 }
 
+/// Kill switch for a missing MCP newline (not sleep-sync). A hung `mcp serve`
+/// must fail the test instead of blocking the runner forever.
+const MCP_LINE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Reads the next non-empty stdout line as JSON.
 ///
-/// Blocks on a complete newline-delimited frame from the MCP server (no sleep).
-fn read_json_line(reader: &mut BufReader<impl std::io::Read>) -> Value {
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("read line");
+/// Awaits a complete newline-delimited frame from the reader thread. Times out
+/// and kills `child` if MCP never emits a newline.
+fn read_json_line(rx: &mpsc::Receiver<std::io::Result<String>>, child: &mut Child) -> Value {
+    let line = match rx.recv_timeout(MCP_LINE_TIMEOUT) {
+        Ok(Ok(line)) => line,
+        Ok(Err(e)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("mcp serve stdout read failed: {e}");
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "mcp serve did not emit a JSON-RPC line within {MCP_LINE_TIMEOUT:?}; killed child"
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("mcp serve stdout closed before a JSON-RPC line");
+        }
+    };
     assert!(
         !line.trim().is_empty(),
         "expected JSON-RPC response line from mcp serve"
@@ -478,7 +503,26 @@ fn mcp_request(method: &str, params: &Value) -> Value {
         let _ = stderr.read_to_end(&mut buf);
         buf
     });
-    let mut reader = BufReader::new(stdout);
+    let (line_tx, line_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) if line.trim().is_empty() => {}
+                Ok(_) => {
+                    if line_tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = line_tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
 
     let init = serde_json::json!({
         "jsonrpc": "2.0",
@@ -492,7 +536,7 @@ fn mcp_request(method: &str, params: &Value) -> Value {
     });
     writeln!(stdin, "{init}").expect("write init");
     stdin.flush().expect("flush");
-    let init_resp = read_json_line(&mut reader);
+    let init_resp = read_json_line(&line_rx, &mut child);
     assert_eq!(init_resp["id"], 1, "{init_resp}");
     assert_eq!(
         init_resp["result"]["protocolVersion"], "2026-07-28",
@@ -518,7 +562,7 @@ fn mcp_request(method: &str, params: &Value) -> Value {
     });
     writeln!(stdin, "{call}").expect("write call");
     stdin.flush().expect("flush");
-    let resp = read_json_line(&mut reader);
+    let resp = read_json_line(&line_rx, &mut child);
 
     drop(stdin);
     let status = child.wait().expect("wait for mcp serve");
