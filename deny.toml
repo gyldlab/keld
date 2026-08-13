@@ -41,7 +41,7 @@ allow = [
 # option-ext is MPL-2.0 (file-level copyleft). Do NOT add MPL-2.0 to `allow` —
 # that would accept any future MPL crate without review (KEL-54).
 # Chain (unconditional; no wry / keld-wv feature removes it; wry 0.56 still has it):
-#   keld-wv → wry 0.55.1 → dirs 6.0.0 → dirs-sys 0.5.0 → option-ext 0.2.0
+#   keld-wv → wry 0.56.1 → dirs 6.0.0 → dirs-sys 0.5.0 → option-ext 0.2.0
 # Keld does not modify or vendor option-ext. MPL permits static linking into a
 # Larger Work under MIT OR Apache-2.0; it does not relicense Keld. Distributed
 # binaries MUST preserve notices and offer the exact corresponding MPL-covered

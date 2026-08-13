@@ -81,6 +81,13 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless
    `web.devtools: true`.
+   **v0:** camera and microphone requests are default-deny: the macOS backend
+   installs wry `with_permission_handler` and calls `keld-guard::evaluate` on
+   `web.camera` / `web.microphone` with requested resource `*` (wry 0.56's
+   handler is `Fn(PermissionKind)` and does not pass origin). Grant with
+   `"web": { "camera": ["*"] }` / `"microphone": ["*"]`. CSP injection,
+   `keld://` isolation, navigation allow-lists, and `web.devtools` are not in
+   this slice.
 4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9
    lesson); host binaries + updates are ed25519-signed with a TUF-style rotating root;
    `keld.lock` pins host/Bun/polyfill-pack versions.

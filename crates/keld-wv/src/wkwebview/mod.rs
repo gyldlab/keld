@@ -23,9 +23,12 @@ use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tao::window::{Window, WindowBuilder};
 
+use keld_guard::PermissionsManifest;
+
 use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
+use crate::media::{MediaPermission, media_permission_allowed};
 
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
@@ -144,6 +147,9 @@ impl WebEngine for WkWebViewEngine {
         let builder = wry::WebViewBuilder::new();
         #[cfg(debug_assertions)]
         let builder = builder.with_devtools(true);
+        // KEL-59: wry 0.56 still auto-grants camera/mic when this handler is
+        // omitted (`WKPermissionDecision::Grant`). Empty manifest → default-deny.
+        let builder = with_guarded_media_permissions(builder, PermissionsManifest::default());
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
@@ -204,6 +210,39 @@ impl WebEngine for WkWebViewEngine {
 
 impl WkWebViewEngineExt for WkWebViewEngine {}
 
+/// Maps wry's permission kinds onto Keld capabilities. Unknown kinds fail closed.
+fn wry_media_kind(kind: wry::PermissionKind) -> MediaPermission {
+    match kind {
+        wry::PermissionKind::Camera => MediaPermission::Camera,
+        wry::PermissionKind::Microphone => MediaPermission::Microphone,
+        _ => MediaPermission::Other,
+    }
+}
+
+/// Guard decision for one wry permission request. Deny is fail-closed.
+fn media_permission_response(
+    manifest: &PermissionsManifest,
+    kind: wry::PermissionKind,
+) -> wry::PermissionResponse {
+    if media_permission_allowed(manifest, wry_media_kind(kind)) {
+        wry::PermissionResponse::Allow
+    } else {
+        wry::PermissionResponse::Deny
+    }
+}
+
+/// Installs a default-deny media-capture handler backed by `keld-guard`.
+///
+/// wry 0.56.1 `wry_web_view_ui_delegate.rs` still returns `Grant` when
+/// `permission_handler` is `None`. The media-module test
+/// `macos_backend_installs_guarded_handler` asserts this helper is called.
+fn with_guarded_media_permissions(
+    builder: wry::WebViewBuilder<'_>,
+    manifest: PermissionsManifest,
+) -> wry::WebViewBuilder<'_> {
+    builder.with_permission_handler(move |kind| media_permission_response(&manifest, kind))
+}
+
 /// Opens a window from `spec` and runs until the user closes it.
 ///
 /// Thin wrapper for the Phase 1 hello slice: builds a [`WkWebViewEngine`],
@@ -216,4 +255,72 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
     let mut engine = WkWebViewEngine::new();
     engine.create(spec)?;
     engine.run_until_closed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{media_permission_response, with_guarded_media_permissions, wry_media_kind};
+    use crate::media::MediaPermission;
+    use keld_guard::parse_manifest;
+
+    #[test]
+    fn wry_kinds_map_to_keld_media_permissions() {
+        assert_eq!(
+            wry_media_kind(wry::PermissionKind::Camera),
+            MediaPermission::Camera
+        );
+        assert_eq!(
+            wry_media_kind(wry::PermissionKind::Microphone),
+            MediaPermission::Microphone
+        );
+        assert_eq!(
+            wry_media_kind(wry::PermissionKind::DisplayCapture),
+            MediaPermission::Other
+        );
+        assert_eq!(
+            wry_media_kind(wry::PermissionKind::Other),
+            MediaPermission::Other
+        );
+    }
+
+    #[test]
+    fn empty_manifest_returns_wry_deny_not_allow_or_default() {
+        let empty = parse_manifest("{}").expect("empty");
+        assert_eq!(
+            media_permission_response(&empty, wry::PermissionKind::Camera),
+            wry::PermissionResponse::Deny
+        );
+        assert_eq!(
+            media_permission_response(&empty, wry::PermissionKind::Microphone),
+            wry::PermissionResponse::Deny
+        );
+        assert_eq!(
+            media_permission_response(&empty, wry::PermissionKind::DisplayCapture),
+            wry::PermissionResponse::Deny
+        );
+        assert_ne!(
+            media_permission_response(&empty, wry::PermissionKind::Camera),
+            wry::PermissionResponse::Allow,
+            "KEL-59: Allow here is wry's unfixed auto-grant"
+        );
+        assert_ne!(
+            media_permission_response(&empty, wry::PermissionKind::Camera),
+            wry::PermissionResponse::Default,
+            "Default on macOS continues the platform prompt; v0 must Deny"
+        );
+    }
+
+    #[test]
+    fn camera_grant_allows_only_camera() {
+        let granted = parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("grant");
+        assert_eq!(
+            media_permission_response(&granted, wry::PermissionKind::Camera),
+            wry::PermissionResponse::Allow
+        );
+        assert_eq!(
+            media_permission_response(&granted, wry::PermissionKind::Microphone),
+            wry::PermissionResponse::Deny
+        );
+        let _ = with_guarded_media_permissions(wry::WebViewBuilder::new(), granted);
+    }
 }

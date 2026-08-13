@@ -316,7 +316,8 @@ flowchart TD
     core --> wv[keld-wv]
     native[keld-native] --> guard
     runtime[keld-runtime] --> ipc
-    wv -.->|macOS only| ext["tao 0.35.3<br/>wry 0.55.1"]
+    wv --> guard
+    wv -.->|macOS only| ext["tao 0.35.3<br/>wry 0.56.1"]
     ipc -.-> pc["postcard · serde"]
 
     classDef live fill:#1b5e20,stroke:#a5d6a7,color:#fff
@@ -372,7 +373,7 @@ but written down next to the code with the reason and the milestone that closes 
 | Crate | Lines | Status | Role | Spec | What's actually in it |
 |---|---|---|---|---|---|
 | `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
-| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. Host crates declare the dependency; privileged IPC still does not call it. `$VARS`/symlink resolution is not in this slice. |
+| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain` and the macOS webview media-capture handler call it; privileged IPC still does not. `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | 25 | Skeleton | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules (`window`, `menu`, `tray`, `dialog`, `notify`, `clipboard`, `shortcut`, `screen`, `power`, `shell`, `fs`, `secrets`, `deeplink`, `autostart`, `dock`). Zero implementations |
 | `keld-runtime` | 25 | Skeleton | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `RestartPolicy { max_crashes: 3, window_secs: 30 }`. Nothing reads it; the actual spawn is in `keld-cli/src/dev.rs` |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
@@ -613,8 +614,8 @@ The summary table. "Live" means it works and a test proves it.
 | Windows / Linux webview backends | **Skeleton** | Typed `unavailable()` errors naming KEL-27 / KEL-28 |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; `dev` runs echo and window side by side, not integrated |
-| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` calls them; host IPC does not |
-| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; host IPC still does not call them. `$VARS` matched literally in v0 |
+| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` and macOS `web.camera`/`web.microphone` capture call them; host IPC does not |
+| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is live default-deny; host IPC still does not call them. `$VARS` matched literally in v0 |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash-loop breaker) | **Specified, not implemented** | `RestartPolicy` exists; the spawn is in the CLI and unsupervised |

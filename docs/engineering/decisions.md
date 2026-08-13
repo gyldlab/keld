@@ -65,10 +65,11 @@ framework-owned agent stack, CEF-by-default, …) would be architecture theater 
 it changes who owns a handle, who can crash whom, or who can mint a principal.
 
 **Implemented vs specified.** The four uniques are the design. Today the tree is a
-macOS hello window plus a kipc echo slice. `keld-guard::evaluate` exists and
-`keld_permissions_explain` calls it; `keld-core` / `keld-native` do not invoke the
-guard on privileged IPC. `keld-runtime` is still a `RestartPolicy` struct;
-`keld dev` spawns `bun` from the CLI. Hold both facts.
+macOS hello window plus a kipc echo slice. `keld-guard::evaluate` exists;
+`keld_permissions_explain` and the macOS webview media-capture handler call it;
+`keld-core` / `keld-native` do not invoke the guard on privileged IPC.
+`keld-runtime` is still a `RestartPolicy` struct; `keld dev` spawns `bun` from the
+CLI. Hold both facts.
 
 **Next.** Keep shipping Linear Phase 2 (window + kipc echo + crate map) on these four.
 Do not add a fifth unique to look complete.
@@ -77,11 +78,16 @@ Do not add a fifth unique to look complete.
 
 ## 2. Webview: wry+tao scaffolding, spec 05 destination
 
-**Chose (2026-07-08, still true).** The live macOS backend is tao 0.35.3 + wry 0.55.1
-(`devtools` feature) in `crates/keld-wv/src/wkwebview/mod.rs`. Module comment: interim
-implementation, replace with direct objc2 bindings per architecture 05 §1.
-Windows/Linux modules are compiled layout slots that return `KELD-WV-001` and name
-KEL-27 / KEL-28.
+**Chose (2026-07-08, still true; wry pin updated 2026-08-14 for KEL-59).** The live
+macOS backend is tao 0.35.3 + wry 0.56.1 (`devtools` feature) in
+`crates/keld-wv/src/wkwebview/mod.rs`. Module comment: interim implementation,
+replace with direct objc2 bindings per architecture 05 §1. Windows/Linux modules
+are compiled layout slots that return `KELD-WV-001` and name KEL-27 / KEL-28.
+
+wry 0.55.1 auto-granted camera/mic (`request_media_capture_permission` → `Grant`)
+and had no `with_permission_handler`. 0.56.1 adds the handler; Keld installs it
+and default-denies via `keld-guard` (`web.camera` / `web.microphone`). tao stays
+0.35.3: wry 0.56 `build` takes `raw_window_handle::HasWindowHandle`.
 
 **Destination (architecture 05 §1).** `keld-wv` is Keld's own `WebEngine` layer over
 WKWebView (**objc2**), WebView2 (**windows-rs** + WebView2 COM), and WebKitGTK
@@ -93,14 +99,15 @@ stabilizes.”
 **Why wry now.** Phase 2 needs a window on screen. wry already talks to WKWebView
 through tao's event loop. Replacing it does not change who owns the handle, who can
 crash whom, or who can mint a principal — so it fails the first-principles test in
-`AGENTS.md` until wry is missing a hook we actually need.
+`AGENTS.md` until wry is missing a hook we actually need. KEL-59 was that case for
+camera/mic: bump to 0.56.1 for `with_permission_handler`, do not rewrite the backend.
 
 **Why not treat wry as the product.** Architecture 05 lists hooks wry does not
 prioritize (scheme-streaming as bulk IPC, principal identity per navigation, engine
 policy switching, `webContents`-grade control). The host is prebuilt, so wry's
 “works in any downstream cargo build” constraint does not apply.
 
-**MPL is not wry's license.** wry 0.55.1 is Apache-2.0 OR MIT; tao 0.35.3 is
+**MPL is not wry's license.** wry 0.56.1 is Apache-2.0 OR MIT; tao 0.35.3 is
 Apache-2.0. The MPL-2.0 crate in the graph is **`option-ext` 0.2.0**, reached
 `keld-wv → wry → dirs → dirs-sys → option-ext` (`deny.toml`,
 [`third-party-licenses.md`](./third-party-licenses.md), learnings 2026-08-13). Do not

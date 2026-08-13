@@ -479,6 +479,9 @@ Supporting types:
 - `NavTarget::{ Html(String), Url(String) }`
 - `LogicalSize { width: f64, height: f64 }`, `Rect { x, y, width, height }` (logical points)
 - `DevtoolsAction::{ Open, Close }`
+- `MediaPermission::{ Camera, Microphone, Other }`, `WEB_CAMERA` / `WEB_MICROPHONE` /
+  `WEB_MEDIA_ORIGIN`, `media_permission_allowed` — default-deny camera/mic policy
+  (KEL-59). v0 requested resource is `*` because wry's handler does not pass origin.
 - `WebviewId(pub u32)`, `EnginePolicy::{ System (default), Pinned }` (declared in
   [`lib.rs`](../../crates/keld-wv/src/lib.rs); nothing reads `EnginePolicy` yet)
 - `WvError` — seven variants, codes `KELD-WV-001..007`
@@ -492,7 +495,7 @@ Backends:
 
 | Module | Platform | State |
 |---|---|---|
-| `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`; the only `WebEngine` impl in the tree. Built on tao 0.35 + wry 0.55 as interim scaffolding, to be replaced by direct objc2 bindings |
+| `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`; the only `WebEngine` impl in the tree. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Stub.** One function, `unavailable() -> WvError`, pointing at KEL-27 |
 | [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Stub.** Same shape, pointing at KEL-28 |
 
@@ -543,7 +546,7 @@ subsystems:
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`, `parse_manifest` / `load_manifest` / `evaluate`. Host IPC still does not call evaluate; MCP `keld_permissions_explain` does. |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`, `parse_manifest` / `load_manifest` / `evaluate`. Host IPC still does not call evaluate; MCP `keld_permissions_explain` and the macOS webview media-capture handler do. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_runtime` | `RestartPolicy { max_crashes: 3, window_secs: 30 }` (via `Default`). No supervisor |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
