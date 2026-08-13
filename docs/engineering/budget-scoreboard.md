@@ -289,7 +289,8 @@ reproduces the instrumented binaries.
 | Electron 43.4.0 | **not measured** | 125 ms | — |
 
 Raw first-paint runs (ms): Keld 906 / 943 / 867 / 857 / 977 · Tauri 504 / 568 /
-464 / 500 / 510.
+464 / 500 / 510. Full method and per-arm notes:
+[`keld-benches@f0d042d` MEASUREMENTS.md](https://github.com/gyldlab/keld-benches/blob/f0d042dea36f99b448a01be03b679a07eb9e4c80/MEASUREMENTS.md).
 
 **Both arms miss the budget.** Keld 906 ms is 3.0x over ≤ 300 ms; Tauri 504 ms is
 1.7x over. Tauri also failing is not a defence — the budget is not graded on a

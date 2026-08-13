@@ -83,6 +83,31 @@ pub fn runtime_version() -> Result<String, WvError> {
     })
 }
 
+/// Identifier the `WebView2` profile directory is named after.
+///
+/// v0 constant. It becomes the app's `identifier` from `keld.config.ts` when
+/// that plumbing exists — deliberately not built yet (YAGNI), because the hello
+/// slice has no config to read and a fake indirection would not make the path
+/// any more correct.
+const PROFILE_IDENTIFIER: &str = "dev.keld";
+
+/// Directory `WebView2` keeps its profile in.
+///
+/// Without this wry defaults to `<exe-name>.WebView2\` **beside the
+/// executable** (KEL-63). A shipped app lives in `C:\Program Files\<App>\`,
+/// which a standard user cannot write, so first launch would fail there while
+/// working fine from `target\release\`. It is also per-install-path rather than
+/// per-user, so two OS users would share one cookie/localStorage store.
+///
+/// `%LOCALAPPDATA%` is per-user and writable by design. If it is somehow
+/// missing we fall back to the OS temp dir: a profile that does not survive
+/// reboot is bad, but a webview that cannot start is worse.
+fn user_data_dir() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+        .join(PROFILE_IDENTIFIER)
+}
+
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
     window: Window,
@@ -97,6 +122,9 @@ struct View {
 pub struct WebView2Engine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<()>>,
+    /// Owns the `WebView2` profile directory. Held for the engine's whole life
+    /// because every webview built from it shares that environment.
+    web_context: wry::WebContext,
     views: BTreeMap<u32, View>,
     next_id: u32,
 }
@@ -129,6 +157,7 @@ impl WebView2Engine {
         runtime_version()?;
         Ok(Self {
             event_loop: Some(EventLoop::new()),
+            web_context: wry::WebContext::new(Some(user_data_dir())),
             views: BTreeMap::new(),
             next_id: 1,
         })
@@ -197,8 +226,11 @@ impl WebEngine for WebView2Engine {
             .build(event_loop)
             .map_err(|e| WvError::Window(e.to_string()))?;
 
+        // Borrow the context only after the window exists, so the immutable
+        // `event_loop` borrow above has already ended.
+        //
         // Developer extras are debug-only until keld-guard owns `web.devtools`.
-        let builder = wry::WebViewBuilder::new();
+        let builder = wry::WebViewBuilder::new_with_web_context(&mut self.web_context);
         #[cfg(debug_assertions)]
         let builder = builder.with_devtools(true);
         // KEL-59 parity. Without this, WebView2 falls back to its own permission
@@ -332,5 +364,40 @@ mod tests {
     fn unknown_webview_id_is_typed_not_panic() {
         let err = WvError::UnknownWebview { id: 3 };
         assert!(err.to_string().contains("KELD-WV-007"));
+    }
+
+    /// KEL-63: the profile must be per-user, not beside the executable.
+    ///
+    /// wry's default is `<exe>.WebView2\` next to the binary, which a standard
+    /// user cannot create under `C:\Program Files\`. This asserts we are not on
+    /// that default and that the directory is user-scoped.
+    #[test]
+    fn profile_dir_is_user_scoped_not_next_to_the_exe() {
+        let dir = super::user_data_dir();
+        assert!(
+            dir.ends_with(super::PROFILE_IDENTIFIER),
+            "profile must be namespaced by identifier, got: {}",
+            dir.display()
+        );
+
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        if let Some(exe_dir) = exe_dir {
+            assert!(
+                !dir.starts_with(&exe_dir),
+                "KEL-63: profile lands beside the executable ({}); \
+                 that path is read-only under Program Files",
+                dir.display()
+            );
+        }
+
+        // Whatever %LOCALAPPDATA% is, the path has to be absolute or WebView2
+        // resolves it against the process CWD, which `keld dev` changes.
+        assert!(
+            dir.is_absolute(),
+            "profile dir must be absolute, got: {}",
+            dir.display()
+        );
     }
 }
