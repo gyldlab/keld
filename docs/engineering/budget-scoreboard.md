@@ -221,7 +221,10 @@ Cite the path **and** an immutable SHA — not only `main`. Not in this monorepo
 **Engine:** WebView2 Evergreen **151.0.4129.78** (system webview on Windows is
 Chromium-derived — the macOS WK-vs-Chromium lane split does **not** transfer).
 **Build:** `cargo build --release -p keld-host -p keld-cli`, rustc
-1.93.0-x86_64-pc-windows-msvc. **Branch:** `agent/kel-27-window-windows-via-webview2`.
+1.93.0-x86_64-pc-windows-msvc.
+**SHA:** `33b28f0` (`agent/kel-27-window-windows-via-webview2`) — the immutable
+commit these binaries were built from; the branch name alone would not stay
+reproducible once it advances.
 **Competitor fixtures:**
 [`gyldlab/keld-benches@f54a3c4`](https://github.com/gyldlab/keld-benches/commit/f54a3c406f861d9f55d2c1518fde89f75e817bf5)
 under `windows/<framework>/hello`. Release builds, median of 3.

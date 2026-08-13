@@ -3,7 +3,7 @@
     "context7": {
       "type": "stdio",
       "command": "bunx",
-      "args": ["-y", "@upstash/context7-mcp"]
+      "args": ["-y", "@upstash/context7-mcp@4.0.2"]
     },
     "linear": {
       "url": "https://mcp.linear.app/mcp"
