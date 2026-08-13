@@ -1,0 +1,4 @@
+# Normalize text to LF on checkout so compile-time corpus markers in
+# `llms-full.txt` / `llms.txt` stay splitable. `docs_search::parse_corpus`
+# is still CRLF-tolerant; this keeps working trees consistent.
+* text=auto eol=lf

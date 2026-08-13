@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DocChunkSource {
     title: String,
-    source_path: &'static str,
+    source_path: String,
     body: String,
 }
 
@@ -57,8 +57,16 @@ const CORPUS_TOPICS_HINT: &str = "corpus topics: quickstart, overview, ipc, secu
 /// Compile-time `llms-full.txt` corpus, chunked by source marker and `##`.
 fn corpus() -> Vec<DocChunkSource> {
     const FULL_CORPUS: &str = include_str!("../../../../llms-full.txt");
+    parse_corpus(FULL_CORPUS)
+}
+
+/// Split `llms-full.txt` (or a test fixture) on `## Source:` markers.
+///
+/// GitHub Windows checkouts may yield CRLF; normalize before the LF markers.
+fn parse_corpus(raw: &str) -> Vec<DocChunkSource> {
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
     let mut chunks = Vec::new();
-    for document in FULL_CORPUS.split("\n## Source: `").skip(1) {
+    for document in normalized.split("\n## Source: `").skip(1) {
         let Some((path, text)) = document.split_once("`\n\n") else {
             continue;
         };
@@ -67,7 +75,7 @@ fn corpus() -> Vec<DocChunkSource> {
     chunks
 }
 
-fn chunk_markdown(source_path: &'static str, text: &str) -> Vec<DocChunkSource> {
+fn chunk_markdown(source_path: &str, text: &str) -> Vec<DocChunkSource> {
     let mut title = text
         .lines()
         .find_map(|line| line.strip_prefix("# ").map(str::trim))
@@ -98,7 +106,7 @@ fn chunk_markdown(source_path: &'static str, text: &str) -> Vec<DocChunkSource> 
 fn push_chunk(
     chunks: &mut Vec<DocChunkSource>,
     title: String,
-    source_path: &'static str,
+    source_path: &str,
     body_lines: &[&str],
 ) {
     let body = body_lines.join("\n").trim().to_owned();
@@ -107,7 +115,7 @@ fn push_chunk(
     }
     chunks.push(DocChunkSource {
         title,
-        source_path,
+        source_path: source_path.to_owned(),
         body,
     });
 }
@@ -160,7 +168,7 @@ pub fn search_docs(args: &DocsSearchArgs) -> DocsSearchResult {
             idx,
             DocChunk {
                 title: chunk.title,
-                source_path: chunk.source_path.to_owned(),
+                source_path: chunk.source_path,
                 snippet: snippet(&chunk.body),
                 score,
             },
@@ -352,6 +360,43 @@ mod tests {
         assert!(
             chunks.iter().any(|c| c.body.contains("intro body")),
             "preamble must still be searchable: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn corpus_parses_crlf_source_markers() {
+        // GitHub windows-latest checkouts yield CRLF; LF-only split markers
+        // must not be the only path that produces chunks (KEL-54 / PR #2).
+        let lf = concat!(
+            "# Keld full documentation corpus\n\n",
+            "## Source: `docs/architecture/03-security.md`\n\n",
+            "# Security\n\n",
+            "The capability manifest is default-deny.\n",
+            "\n## Source: `docs/architecture/07-agent-experience.md`\n\n",
+            "# Agent experience\n\n",
+            "## Official Keld MCP server\n\n",
+            "Search hits include KELD-IPC-004.\n",
+        );
+        let crlf = lf.replace('\n', "\r\n");
+        assert!(
+            crlf.contains("\r\n## Source: `"),
+            "fixture must contain CRLF source markers"
+        );
+
+        let chunks = parse_corpus(&crlf);
+        assert!(
+            chunks.iter().any(|c| {
+                c.source_path.contains("03-security") && c.body.contains("capability manifest")
+            }),
+            "CRLF corpus must yield 03-security.md, got {chunks:?}"
+        );
+        assert!(
+            chunks.iter().any(|c| {
+                c.source_path.contains("07-agent-experience")
+                    && c.title.contains("Official Keld MCP server")
+                    && c.body.contains("KELD-IPC-004")
+            }),
+            "CRLF corpus must yield 07-agent-experience.md heading, got {chunks:?}"
         );
     }
 }
