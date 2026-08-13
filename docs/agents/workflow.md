@@ -44,8 +44,10 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
 - **Hard gates (block merge, no exceptions):** fmt · clippy `-D warnings` · full test
   suite · secret scan · no `todo!()`/`unimplemented!()` on the diff.
 - **Review gates (block until a human signs off):** the five in root `AGENTS.md`
-  (unsafe, public API, permissions, dependencies, wire protocol). CODEOWNERS enforces
-  human approval on `keld-guard`, `keld-ipc` protocol files, and workspace manifests.
+  (unsafe, public API, permissions, dependencies, wire protocol). `.github/CODEOWNERS`
+  requests human review on `keld-guard`, `keld-ipc`, workspace manifests, and CI
+  workflows. Secret scan is the checksum-pinned `gitleaks` CLI job in
+  `.github/workflows/ci.yml` (not the org-licensed GitHub Action).
 - **Human review is architectural:** intent, boundaries, spec conformance, API shape —
   not line-by-line style (lints own style). A PR too large to review architecturally
   gets split, not skimmed.

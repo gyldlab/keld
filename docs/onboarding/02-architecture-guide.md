@@ -256,7 +256,7 @@ sequenceDiagram
     participant Sub as keld ipc-client echo<br/>(a second Rust process)
     participant Win as WKWebView window
 
-    CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts present?
+    CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts?<br/>renderer HTML present and project-relative?
     CLI->>Srv: EchoServer::start() → bind UDS, wait for ready
     CLI->>Bun: spawn, env KELD_APP_LINK=<sock> KELD_BIN=<path>
     Bun->>Sub: Bun.spawn([keld, "ipc-client", "echo", "--link", link])
@@ -265,7 +265,7 @@ sequenceDiagram
     Sub->>Srv: CALL on ECHO_CHANNEL (postcard EchoRequest)
     Srv-->>Sub: REPLY (postcard EchoResponse)
     Sub-->>Bun: prints "ipc-echo ok"
-    CLI->>Win: run_hello_window() — static HTML, no IPC
+    CLI->>Win: run_hello_window_html — project renderer HTML, no IPC in the webview
     Note over Win: blocks the main thread<br/>until the user closes it
 ```
 
@@ -276,9 +276,10 @@ The honest reading of that diagram:
   `main.ts` shells out to a *Rust* subprocess that speaks kipc on its behalf
   (`crates/keld-cli/templates/hello/src/main.ts:15-19`). Every JS-side arrow in §4a is
   currently a `Bun.spawn`.
-- **The window and the IPC session are unrelated.** `run_hello_window()` renders
-  `keld_wv::HELLO_HTML` — a hardcoded string in `crates/keld-wv/src/hello/mod.rs:10-28`. The
-  project's own `index.html`, which `keld create` writes, is never loaded by anything.
+- **The window and the IPC session are sequential, not concurrent.** `keld dev` reaps
+  the Bun echo child, then opens a window with the project's `renderer` file as inline
+  HTML (`load_dev_window_html` → `run_hello_window_html`). The webview still has no
+  kipc. `keld hello` keeps compiled `keld_wv::HELLO_HTML`.
 - **No guard check happens anywhere.** `serve_echo_session` (`crates/keld-ipc/src/session.rs:16-47`)
   goes straight from frame decode to handler. `keld-guard` is not called by any crate.
 - **`keld-runtime` does not supervise anything.** The Bun spawn lives in `keld-cli/src/dev.rs`,
@@ -371,14 +372,14 @@ but written down next to the code with the reason and the milestone that closes 
 | Crate | Lines | Status | Role | Spec | What's actually in it |
 |---|---|---|---|---|---|
 | `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
-| `keld-guard` | 109 | Skeleton | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `Principal`, `Decision`, `DenyReason` + `Display` impls and 2 tests. **No manifest parsing, no scope matching, no `check()` function, and no caller anywhere in the workspace** — `keld-core` and `keld-native` declare it in their `Cargo.toml`, so the dependency edge exists, but no code path invokes it. `serde`/`serde_json` are declared as dependencies but unused |
+| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. Host crates declare the dependency; privileged IPC still does not call it. `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | 25 | Skeleton | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules (`window`, `menu`, `tray`, `dialog`, `notify`, `clipboard`, `shortcut`, `screen`, `power`, `shell`, `fs`, `secrets`, `deeplink`, `autostart`, `dock`). Zero implementations |
 | `keld-runtime` | 25 | Skeleton | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `RestartPolicy { max_crashes: 3, window_secs: 30 }`. Nothing reads it; the actual spawn is in `keld-cli/src/dev.rs` |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
 | `keld-pack` | 25 | Skeleton | Packaging, signing, cross-compilation | [`06` §3](../architecture/06-runtime-and-tooling.md) | A `Format` enum (`App`, `Dmg`, `Nsis`, `Msi`, `Deb`, `Rpm`, `AppImage`) |
 | `keld-compat` | 18 | Skeleton | Host-side Electron emulation (what JS can't fake) | [`04` §3](../architecture/04-electron-compat.md) | A `Tier` enum (`One`/`Two`/`Three`) |
 | `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` handles `--hello` and otherwise prints a pre-alpha message. Does not parse config or start an event loop |
-| `keld-cli` | 719 | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor`, `hello`, `ipc-echo`, `ipc-client`. Absent: `build`, `migrate`, `gen`, `ext`, `mcp`, and the `--json` output mode that [`07` §7](../architecture/07-agent-experience.md) requires of every verb |
+| `keld-cli` | — | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`. Absent: `build`, `migrate`, `gen`, `ext`, and `--json` on every verb |
 
 Each skeleton crate's `lib.rs` opens with a module doc naming its spec section. Those docs are
 accurate about intent and say nothing about status — which is why this table exists.
@@ -612,15 +613,16 @@ The summary table. "Live" means it works and a test proves it.
 | Windows / Linux webview backends | **Skeleton** | Typed `unavailable()` errors naming KEL-27 / KEL-28 |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; `dev` runs echo and window side by side, not integrated |
-| `keld-guard` types (Principal, Decision, DenyReason) | **Skeleton** | Compile and test; **no caller in the workspace** |
-| Capability enforcement, manifest, scopes, recorder | **Specified, not implemented** | Nothing parses `keld.permissions.jsonc`; the file does not exist |
+| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` calls them; host IPC does not |
+| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; host IPC still does not call them. `$VARS` matched literally in v0 |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash-loop breaker) | **Specified, not implemented** | `RestartPolicy` exists; the spawn is in the CLI and unsupervised |
 | `keld-native` modules (window, menu, tray, dialog, …) | **Specified, not implemented** | A list of 15 names |
 | Electron compat (`@keld/electron`, tiers, conformance suite) | **Specified, not implemented** | A `Tier` enum. `packages/` is empty |
 | `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | `packages/` is empty |
-| `keld build` / `migrate` / `gen` / `ext` / `mcp`, `--json` output | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |
+| `keld build` / `migrate` / `gen` / `ext` | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |
+| `keld mcp serve`, `keld doctor --json`, error registry | **Live** | `crates/keld-cli/src/mcp/`, `doctor --json`, `docs/engineering/keld-error-codes.md` |
 | Packaging, signing, delta updates | **Specified, not implemented** | Two enums |
 | Perf budgets in CI | **Specified, not implemented** | `bench/` does not exist; ROADMAP Phase 0 open item |
 | CI: fmt + clippy + nextest on 3 OSes, cargo-deny, MSRV | **Live** | `.github/workflows/ci.yml`; mirrored locally by `just ci` |

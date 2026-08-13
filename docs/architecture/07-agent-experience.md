@@ -113,11 +113,14 @@ pinned models/harnesses, run nightly and per docs/API-touching PR:
   API issue (rule §1.5). The harness is how AX claims stay honest — same philosophy as
   the compat scoreboard.
 
-## 6. Guardrails for vibe-coded apps (secure even unreviewed)
+## 6. Guardrails for vibe-coded apps (Keld-enforced APIs)
 
 Threat model: the app author's agent wrote code nobody carefully read (research/07 §6:
 secrets leak ~2× human rate, ~55% of unguided AI code fails security checks, missing
-authz is endemic). Keld's stance — the framework holds even when review doesn't:
+authz is endemic). Keld's stance — **Keld-enforced APIs** hold even when review
+doesn't. That is the host-checked capability manifest, network allowlist, webview
+policy, and pack-time secret scan. Application logic the agent writes is not
+covered:
 
 1. **Authority is generated, visible, and enforced** (spec 03): default-deny manifest
    generated from recorded/static usage; enforced in the host, not in the app's own
@@ -149,6 +152,11 @@ prompt would exist), `--json` on anything with output worth parsing, stable exit
 tricks in `--json` mode. `keld dev` centralizes host/app/renderer logs into one
 principal-tagged stream (the thing agents actually read). The CLI is the de-facto MCP
 for agents that don't speak MCP; both surfaces wrap the same internals.
+Spec-named verbs that are not in this binary (`build`, `migrate`, `gen`, `ext`)
+are `KELD-CLI-045` (exit 2): tracking issue plus the Phase 2 workaround — never a
+bare "unknown command" or "not implemented". Garbage verbs are `KELD-CLI-046`
+(exit 2). Extra tokens on `keld create` / `keld dev` are `KELD-CLI-044` (exit 2);
+`--template`, `--watch`, and `--inspect-ipc` are not live.
 
 ## 8. Rollout (tracked in ROADMAP + Linear)
 

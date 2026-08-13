@@ -40,9 +40,11 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
 }
 ```
 
-- **Path scopes** use the vetted-pattern matcher in the host (no regex injection;
-  `$VARS` resolved by host, symlink/`..` traversal normalized *after* resolution —
-  the classic scope-bypass bugs are test fixtures).
+- **Path scopes** use the vetted-pattern matcher in the host (no regex injection).
+  **Destination:** `$VARS` resolved by the host, then symlink/`..` traversal
+  normalized after resolution — the classic scope-bypass bugs are test fixtures.
+  **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
+  not in this slice.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **CSP injection** by default on every webview (`default` = self + keld:// + declared
@@ -52,9 +54,10 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
 
 - `keld dev` runs with a **dev-permissive profile + recorder**: every would-be denial
   is allowed but recorded with a stack.
-- `keld doctor --permissions` (and `keld build`) diffs recorded usage against the
-  manifest and prints exact JSON patches ("your app called fs.read('~/Library/…'):
-  add `$APPDATA/**` or change the call").
+- `keld doctor --permissions` (and `keld build`) is **planned**: diffs recorded
+  usage against the manifest and prints exact JSON patches ("your app called
+  fs.read('~/Library/…'): add `$APPDATA/**` or change the call"). v0 `keld doctor`
+  rejects unknown flags (`KELD-CLI-044`, exit 2); `--permissions` is not live.
 - `keld migrate` seeds the manifest from static analysis of Electron API usage
   (dialog → fs read of chosen paths, autoUpdater → net to feed URL, etc.).
 - CI mode (`keld build --frozen-permissions`) fails on any manifest drift — the

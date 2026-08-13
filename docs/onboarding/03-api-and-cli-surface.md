@@ -54,7 +54,8 @@ from `std::env::args()`.
 | `keld hello` | `keld_core::run_hello_window` | opens the WKWebView hello window (macOS) |
 | `keld ipc-echo` | `main.rs::run_ipc_echo_demo` | in-process kipc round-trip demo |
 | `keld ipc-client echo --link <path>` | [`echo_link.rs`](../../crates/keld-cli/src/echo_link.rs) | one echo call against an existing app-link; used by the template |
-| anything else | `main.rs` | ``keld: unknown command `<x>` ``, usage, exit **1** |
+| `keld build` / `migrate` / `gen` / `ext` | [`verb.rs`](../../crates/keld-cli/src/verb.rs) | **`KELD-CLI-045`**, usage, exit **2** — reserved, not live |
+| anything else | [`verb.rs`](../../crates/keld-cli/src/verb.rs) | **`KELD-CLI-046`**, usage, exit **2** |
 
 ### 1.3 `keld --version`
 
@@ -81,11 +82,13 @@ commands:
   ipc-echo        Run the typed kipc echo round-trip demo
   ipc-client      Internal: kipc client helpers for templates
   --version       Print version
+reserved (not live): build, migrate, gen, ext
 ```
 
 Two things worth knowing: the usage block goes to **stderr**, not stdout, and running
-with no arguments exits **0**. An unknown verb prints ``keld: unknown command `bogus` ``
-first, then the same block, and exits **1**.
+with no arguments exits **0**. A reserved verb (`migrate`, `build`, `gen`, `ext`)
+prints **`KELD-CLI-045`** first, then the same block, and exits **2**. A garbage verb
+prints **`KELD-CLI-046`** first, then the same block, and exits **2**.
 
 ### 1.5 `keld create <name>`
 
@@ -118,6 +121,11 @@ KELD-CLI-020: invalid project name — use only lowercase letters, digits, and h
 
 (The doubled "use lowercase…" is the real message: `CreateError::InvalidName` appends a
 generic hint after the specific `reason`.)
+
+Extra tokens — including `--template`, a second name, or `--yes` — are
+**`KELD-CLI-044`**, exit **2**, and must not scaffold. `keld create --template`
+must not be treated as an invalid project name (`KELD-CLI-020`). Template
+selection is not live; the binary writes the vanilla-ts hello only.
 
 An existing directory is refused rather than merged into:
 
@@ -152,16 +160,22 @@ The one verb that ties everything together. Sequence, from
    - `KELD_APP_LINK` — the socket path (Unix) or port number (Windows).
    - `KELD_BIN` — `std::env::current_exe()`, i.e. the same `keld` binary, so the child
      can call back into `keld ipc-client`.
-5. **Open the window** (macOS only) via `keld_core::run_hello_window()`.
+5. **Open the window** (macOS only) via `keld_core::run_hello_window_html`, rendering
+   the project's `renderer` file (default `index.html`) as inline HTML. Echo has
+   already finished; tao `EventLoop::run` never returns.
 
-Real output from a session in a freshly scaffolded `my-app` (a native window opens at
-the same time; these are the lines the Bun child prints):
+Real output from a session in a freshly scaffolded `my-app` (the native window opens
+*after* these lines; echo is not live while the window is up):
 
 ```bash
 $ keld dev
 ipc-echo ok: message="keld" count=1
 my-app: main process ready (IPC echo ok)
 ```
+
+Extra tokens — including spec-named `--watch` and `--inspect-ipc` — are
+**`KELD-CLI-044`**, exit **2**, before doctor / Bun / the tao event loop. Watch
+mode and IPC inspect dumps are not live.
 
 The doctor-failure path, verified in a directory holding a `keld.config.ts` but no
 `src/main.ts`:
@@ -171,6 +185,7 @@ $ keld dev
 KELD-CLI-032: environment checks failed:
   [ok] bun — found bun 1.4.0
   [FAIL] project — missing keld.config.ts or src/main.ts — run `keld create <name>` first
+  [FAIL] renderer — KELD-CLI-035: cannot load renderer `index.html` — file is missing. Set `renderer` in keld.config.ts to a project-relative HTML file (no `..` or absolute paths) and create it.
   [ok] webview — macOS WKWebView hello window available via `keld dev`
 
 # exit 1
@@ -178,30 +193,31 @@ KELD-CLI-032: environment checks failed:
 
 Three behaviors that will surprise you if you only read the ROADMAP:
 
-- **The window does not render your `index.html`.** It renders
-  `keld_wv::HELLO_HTML`, a constant compiled into the crate
-  ([`crates/keld-wv/src/hello/mod.rs`](../../crates/keld-wv/src/hello/mod.rs)). Nothing
-  in the Rust tree reads the project's `index.html` — grep it and you will find only the
-  template writer and its test.
+- **The window renders the project's renderer file, not `HELLO_HTML`.** `keld dev`
+  reads `renderer` from `keld.config.ts` (default `index.html`), rejects `..` /
+  absolute paths (`KELD-CLI-035`), and passes the file contents as
+  `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
+  `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
 - **Closing the window ends the process.** The macOS backend hands the thread to tao's
   `EventLoop::run`, which never returns and exits the process itself
   ([`wkwebview/mod.rs::run_until_closed`](../../crates/keld-wv/src/wkwebview/mod.rs)).
-  The Bun exit-code check after the window call in `run_dev` is therefore unreachable on
-  macOS.
-- **Off macOS there is no window at all.** `run_dev` prints
-  `keld dev: webview window not available on this OS yet; waiting for Bun…` and blocks
-  on the Bun child instead, propagating its exit code as `KELD-CLI-031`.
+  That is why echo runs to completion *before* the window opens.
+- **Off macOS there is no window at all.** After echo, `run_dev` prints
+  `keld dev: webview window not available on this OS yet; IPC echo already completed.`
+  and returns success. The renderer file is still loaded and validated first.
 
 ### 1.7 `keld doctor`
 
 Runs the checks in [`doctor.rs::run_checks`](../../crates/keld-cli/src/doctor.rs) and
 prints one line each, format `[ok|FAIL] <label> — <detail>`. Exit is **1** if any check
-failed, **0** otherwise. There are two checks on every platform and a third on macOS:
+failed, **0** otherwise. Bun and project run everywhere; renderer runs when a project
+root is present; webview is macOS-only:
 
 | Label | Passes when | Detail on failure |
 |---|---|---|
 | `bun` | `bun --version` runs and exits 0 | ``install Bun from https://bun.sh and ensure `bun` is on PATH`` |
 | `project` | no project root found **or** the root has both `keld.config.ts` and `src/main.ts` | ``missing keld.config.ts or src/main.ts — run `keld create <name>` first`` |
+| `renderer` (project root only) | configured `renderer` (default `index.html`) is a project-relative file that exists | `KELD-CLI-035` — set `renderer` to a project-relative HTML file and create it |
 | `webview` (macOS only) | always | n/a — informational, never fails |
 
 Outside a project:
@@ -219,6 +235,7 @@ Inside a scaffolded project:
 $ cd my-app && keld doctor
 [ok] bun — found bun 1.4.0
 [ok] project — keld project at /tmp/demo/my-app
+[ok] renderer — renderer `index.html` readable
 [ok] webview — macOS WKWebView hello window available via `keld dev`
 ```
 
@@ -228,19 +245,27 @@ A half-scaffolded project (config present, `src/main.ts` missing) — exit 1:
 $ keld doctor
 [ok] bun — found bun 1.4.0
 [FAIL] project — missing keld.config.ts or src/main.ts — run `keld create <name>` first
+[FAIL] renderer — KELD-CLI-035: cannot load renderer `index.html` — file is missing. Set `renderer` in keld.config.ts to a project-relative HTML file (no `..` or absolute paths) and create it.
 [ok] webview — macOS WKWebView hello window available via `keld dev`
 ```
 
+Config + `src/main.ts` without the renderer HTML also exits 1 (`[ok] project`,
+`[FAIL] renderer`, `KELD-CLI-035`). `keld dev` uses the same checks, so a missing
+renderer fails as `KELD-CLI-032` *before* Bun echo, not after.
+
 `--json` emits the same top-level findings array returned by the MCP `keld_doctor`
-tool. The other doctor flags in the specs (`--permissions`, `--web-compat`, `--attack`)
-are not implemented.
+tool. Any other flag — including the planned `--permissions`, `--web-compat`, and
+`--attack` — is `KELD-CLI-044` on stderr and exit **2**. Those verbs are not live;
+`keld doctor --permissions` must not succeed as a no-op.
 
 ### 1.8 `keld hello`
 
 Calls `keld_core::run_hello_window()`, which opens a 960×640 window titled "Keld"
 rendering `HELLO_HTML`, and blocks until you close it. Equivalent to
 `just hello` / `cargo run -p keld-host -- --hello`, which goes through the host binary
-instead of the CLI.
+instead of the CLI. Extra arguments are `KELD-CLI-044` (exit 2) so a typo cannot
+open the tao event loop. `keld-host --hello` accepts optional `--title <name>` /
+`--title=<name>` and rejects anything else the same way.
 
 This document did not run it (it blocks on a window). Off macOS the call returns
 `WvError::UnsupportedPlatform`, whose `Display` impl in
@@ -268,22 +293,26 @@ The request is hardcoded in `main.rs`: `EchoRequest { message: "keld", count: 1 
 ### 1.10 `keld ipc-client echo --link <path>`
 
 The client half, split out so the Bun template can invoke it as a child process. It is
-listed in the usage text as "Internal", and the only flag it understands is `--link`
-(parsed by a hand-rolled loop over the argument slice — `--link=<path>` is *not*
+listed in the usage text as "Internal". Flags are `--link` (required), `--message`,
+and `--count` (parsed by a hand-rolled loop over the argument slice — `--link=<path>` is *not*
 supported, it must be two arguments).
 
 ```bash
 $ keld ipc-client
-usage: keld ipc-client echo --link <path>
+usage: keld ipc-client echo --link <path> [--message TEXT] [--count N]
 # exit 1
 
 $ keld ipc-client echo
 KELD-CLI-040: missing --link (set KELD_APP_LINK from `keld dev`)
 # exit 1
+
+$ keld ipc-client echo --link
+KELD-CLI-040: --link requires a value. Pass `--link <path>`.
+# exit 1
 ```
 
-On success it prints the same `ipc-echo ok: message=… count=…` line. The message is
-again hardcoded (`"keld"`, count 1) — this verb takes no payload arguments.
+On success it prints the same `ipc-echo ok: message=… count=…` line. Defaults are
+`message="keld"` and `count=1` when those flags are omitted.
 
 ### 1.11 `keld mcp serve`
 
@@ -299,7 +328,7 @@ exits **2**. The server opens no network listener.
 
 | Today (verified) | Specified target |
 |---|---|
-| `0` success, `1` general failure, `2` for `keld mcp` misuse | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
+| `0` success, `1` general failure, `2` for `keld mcp` misuse, unknown `create`/`dev`/`doctor`/`hello` flags (`KELD-CLI-044`), reserved verbs (`KELD-CLI-045`), and unknown verbs (`KELD-CLI-046`) | `0` ok · `1` failure · `2` misuse · `3` environment ([`docs/architecture/07-agent-experience.md`](../architecture/07-agent-experience.md) §7) |
 | `keld doctor --json` emits a findings array | `--json` on anything with parseable output (same section) |
 
 The full target exit-code and machine-readable-output contract is not implemented yet.
@@ -315,7 +344,10 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-020/021/022` | `create.rs` | invalid name / directory exists / template write failed |
 | `KELD-CLI-030/031/032` | `dev.rs` | dev I/O error / dev session failed / environment checks failed |
 | `KELD-CLI-040` | `main.rs` | `ipc-client echo` called without `--link` |
-| `KELD-IPC-001..005` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error |
+| `KELD-CLI-044` | `flags.rs` | unknown `create` / `dev` / `doctor` / `hello` flag (exit 2); `--template` / `--watch` / `--permissions` are not live |
+| `KELD-CLI-045` | `verb.rs` | reserved verb `build` / `migrate` / `gen` / `ext` is not implemented (exit 2) |
+| `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
+| `KELD-IPC-001..006` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline |
 | `KELD-WV-001..007` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id |
 
 The `KELD-WV-*` messages are covered by a test that asserts both the code and the fix
@@ -340,13 +372,13 @@ the honest mapping:
 
 | README claim | Reality in this repo | Where it is planned |
 |---|---|---|
-| `keld migrate` | No `migrate` arm in `main.rs`; no analyzer code anywhere | ROADMAP **Phase 2** exit criterion ("electron-quick-start runs unmodified via `keld migrate && keld dev`"); spec [`04-electron-compat.md`](../architecture/04-electron-compat.md), [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §2 |
-| `keld build` | No `build` arm; `keld-pack` is an enum of installer formats with no code behind it | ROADMAP **Phase 3** (`keld-pack` + `keld-update`); spec `06-runtime-and-tooling.md` §2–3 |
+| `keld migrate` | **`KELD-CLI-045`** (exit 2) — reserved, names KEL-17; no analyzer code | ROADMAP **Phase 2** exit criterion ("electron-quick-start runs unmodified via `keld migrate && keld dev`"); spec [`04-electron-compat.md`](../architecture/04-electron-compat.md), [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §2 |
+| `keld build` | **`KELD-CLI-045`** (exit 2) — reserved, names KEL-19; `keld-pack` is an enum of installer formats with no code behind it | ROADMAP **Phase 3** (`keld-pack` + `keld-update`); spec `06-runtime-and-tooling.md` §2–3 |
 | `bunx keld …` | No npm package resolves a `keld` binary. `packages/` is empty | `@keld/cli` with per-platform `optionalDependencies`; spec `06-runtime-and-tooling.md` §2, ROADMAP **Phase 1** exit ("runs on macOS+Windows from `bunx keld dev`") |
 | `@keld/electron` aliasing | `keld-compat` contains a single `Tier` enum; no shim | ROADMAP **Phase 2** (Tier 1) / **Phase 4** (Tier 2) |
 | Delta updates, signed installers | `keld-update` is a `Channel` enum; `keld-pack` is a `Format` enum | ROADMAP **Phase 3** |
 | `keld dev` | **Exists**, but as described in §1.6: Bun child + echo round-trip + a fixed hello window, not your renderer | Phase 1 in progress |
-| `keld gen`, `keld ext` | Not implemented | `06-runtime-and-tooling.md` §2 |
+| `keld gen`, `keld ext` | **`KELD-CLI-045`** (exit 2) — reserved, not live | `06-runtime-and-tooling.md` §2 |
 
 The README's workspace-layout block does label the npm packages `(upcoming)`; the
 three-line pitch does not carry the same caveat. Treat the pitch as the product
@@ -397,16 +429,17 @@ Transport and session:
 | `read_frame` | [`link`](../../crates/keld-ipc/src/link.rs) | `<S: Read>(&mut S) -> Result<(FrameHeader, Vec<u8>), IpcError>` |
 | `write_frame` | `link` | `<S: Write>(&mut S, kind, flags, channel, corr, payload) -> Result<(), IpcError>` |
 | `handshake` | `link` | `<S: Read + Write>(&mut S) -> Result<(), IpcError>` — writes `Hello`, expects `Hello` |
+| `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream` / `TcpStream` |
 | `encode` / `decode` | [`codec`](../../crates/keld-ipc/src/codec.rs) | postcard, over `serde::Serialize` / `DeserializeOwned` |
-| `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write>(&mut S) -> Result<(), IpcError>` — handshake, then loop until EOF |
-| `echo_call` | `session` | `<S: Read + Write>(&mut S, &EchoRequest) -> Result<EchoResponse, IpcError>` |
+| `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write + AppLinkDeadlines>(&mut S) -> Result<(), IpcError>` — 5s deadline, handshake, then loop until EOF |
+| `echo_call` | `session` | `<S: Read + Write + AppLinkDeadlines>(&mut S, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 
 The echo vertical slice ([`echo.rs`](../../crates/keld-ipc/src/echo.rs)):
 `ECHO_CHANNEL: ChannelId = ChannelId(1)`, `EchoRequest { message: String, count: u32 }`,
 `EchoResponse { message: String, count: u32 }`, and `handle_echo(&[u8]) -> Result<Vec<u8>, IpcError>`.
 
-`IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }` — codes
-`KELD-IPC-001..005`. Note this crate hand-writes `Display`/`Error` rather than deriving
+`IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }`, `Timeout` — codes
+`KELD-IPC-001..006`. Note this crate hand-writes `Display`/`Error` rather than deriving
 `thiserror`, and has exactly two dependencies (`postcard`, `serde`).
 
 Not built yet, despite being named all over the specs: channel-name resolution at
@@ -469,15 +502,17 @@ Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-bac
 `#![allow(unsafe_code)]` with a SAFETY comment explaining the UI-thread invariant. That
 is one of the two sanctioned locations in the whole repo.
 
-### 3.3 `keld_core` — the host runtime (two public items)
+### 3.3 `keld_core` — the host runtime
 
 ```rust
-pub fn run_hello_window() -> Result<(), keld_wv::WvError>  // delegates to keld_wv::run_hello_window("Keld", HELLO_HTML)
+pub fn run_hello_window() -> Result<(), keld_wv::WvError>  // "Keld" + HELLO_HTML
+pub fn run_hello_window_titled(title: &str) -> Result<(), keld_wv::WvError>  // title + HELLO_HTML
+pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // keld dev
 pub const VERSION: &str                                    // = CARGO_PKG_VERSION
 ```
 
-That is the entire public surface today
-([`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs)). The event loop,
+Hello-window and config-title helpers live in
+[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The event loop,
 window registry, lifecycle, and kipc↔native dispatch described in spec 01 do not exist
 yet.
 
@@ -492,11 +527,13 @@ subcommands can call in. Five modules:
 | `create` | `CreateError::{InvalidName, Exists, Io}`, `validate_name(&str)`, `create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>` |
 | `dev` | `DevError::{Doctor, Io, Runtime}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>` |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
-| `echo_link` | `EchoEndpoint` (`Unix(PathBuf)` on unix, `Tcp(u16)` on windows), `EchoServer::{start, link, join}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
+| `echo_link` | `EchoEndpoint` (`Unix(PathBuf)` on unix, `Tcp(u16)` on windows), `EchoServer::{start -> io::Result, link, join}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
 
 `EchoServer` is single-shot by design: it binds, signals ready over an `mpsc::Sender<()>`,
-accepts one connection, serves it, and removes the Unix socket on `join()` or `Drop`.
+accepts one connection, serves it, and on `join()` or `Drop` closes the listener, joins
+the worker, then removes the Unix socket. `start` returns `io::Result` (bind failure is
+not a process invariant).
 
 ### 3.5 Placeholder crates — types only, no behavior
 
@@ -505,7 +542,7 @@ subsystems:
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`. **There is no `check()` function** — the capability engine does not exist yet |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`, `parse_manifest` / `load_manifest` / `evaluate`. Host IPC still does not call evaluate; MCP `keld_permissions_explain` does. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_runtime` | `RestartPolicy { max_crashes: 3, window_secs: 30 }` (via `Default`). No supervisor |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
@@ -548,7 +585,7 @@ developer API".
 ```
 my-app/
 ├─ .gitignore        node_modules/ and .keld/
-├─ index.html        renderer document (see caveat below)
+├─ index.html        renderer document loaded by `keld dev`
 ├─ keld.config.ts    app config (see caveat below)
 ├─ package.json      name, private, type: module, start script
 └─ src/main.ts       the app main process — the only file with behavior
@@ -606,7 +643,7 @@ KELD-CLI-010: KELD_APP_LINK is unset — run the app with `keld dev`, not `bun` 
 # exit 1
 ```
 
-### 5.2 `keld.config.ts` — declared, not yet parsed
+### 5.2 `keld.config.ts` — name and renderer are parsed
 
 ```ts
 /** Keld app config — compiled by the CLI at dev/build time. */
@@ -617,12 +654,15 @@ export default {
 } as const;
 ```
 
-Be precise about what this does today: **nothing reads its contents.** Grep the crates
-and the only uses are `root.join("keld.config.ts").is_file()` in
-[`dev.rs`](../../crates/keld-cli/src/dev.rs) and
-[`doctor.rs`](../../crates/keld-cli/src/doctor.rs). The file is a *project-root marker*.
-`entry` is ignored — `run_dev` hardcodes `src/main.ts`. `renderer` is ignored — the
-window renders `keld_wv::HELLO_HTML`. Changing the values changes no behavior.
+Be precise about what this does today:
+
+- `name` is the window title (`title_from_config_ts` / `hello_title_for_project`).
+- `renderer` is the HTML `keld dev` loads (`renderer_from_config_ts` /
+  `load_dev_window_html`). Default is `index.html` when the field is omitted.
+- `entry` is **not** consulted — `run_dev` still hardcodes `src/main.ts`.
+- `find_project_root` walks up looking for the file; `keld doctor` confirms it is
+  present (plus `src/main.ts`). This is not the arch/04 §2 `defineConfig` schema
+  (`@keld/cli` does not exist; `packages/` is empty).
 
 `keld.config.ts` is nonetheless one of only four config filenames the project permits
 (`keld.config.ts`, `keld.permissions.jsonc`, `keld.build.ts`, `keld.compat.ts` — see
@@ -630,10 +670,11 @@ window renders `keld_wv::HELLO_HTML`. Changing the values changes no behavior.
 
 ### 5.3 `index.html` and `package.json`
 
-`index.html` is a plain document titled `{{name}}`; it is written to disk and never
-loaded by anything. `package.json` declares `type: "module"` and a `start` script
-(`bun run src/main.ts`) — which, run directly, hits the `KELD-CLI-010` guard above. There
-are no dependencies to install, so `bun install` is not part of the flow yet.
+`index.html` is a plain document titled `{{name}}`. `keld dev` reads it (or whatever
+`renderer` names) and shows it in the hello window. `package.json` declares `type: "module"`
+and a `start` script (`bun run src/main.ts`) — which, run directly, hits the
+`KELD-CLI-010` guard above. There are no dependencies to install, so `bun install` is
+not part of the flow yet.
 
 ### 5.4 The full loop, end to end
 
@@ -647,7 +688,7 @@ sequenceDiagram
     participant Win as WKWebView window
 
     Dev->>CLI: keld dev
-    CLI->>CLI: run_checks() — bun, project layout
+    CLI->>CLI: run_checks() — bun, project layout, renderer HTML
     CLI->>Echo: EchoServer::start() — UDS path or 127.0.0.1 port
     Echo-->>CLI: ready (mpsc signal)
     CLI->>Bun: bun run src/main.ts + KELD_APP_LINK, KELD_BIN
@@ -656,7 +697,7 @@ sequenceDiagram
     Echo-->>Client: HELLO, then REPLY (EchoResponse)
     Client-->>Bun: ipc-echo ok: message=keld count=1
     Bun-->>Dev: my-app: main process ready (IPC echo ok)
-    CLI->>Win: run_hello_window() renders HELLO_HTML and blocks
+    CLI->>Win: run_hello_window_html(title, project renderer HTML) and blocks
 ```
 
 The integration test [`crates/keld-cli/tests/bun_echo.rs`](../../crates/keld-cli/tests/bun_echo.rs)
@@ -680,5 +721,5 @@ the contract asserted in code.
 
 Tracked documentation includes `docs/`, `llms.txt`, and `llms-full.txt`. The generated
 files contain only the authoritative allowlist defined by `tools/llms_docs.rs`;
-`ROADMAP.md`, `competitors/`, `.github/`, and `.claude/` remain local-only under
-[`.gitignore`](../../.gitignore).
+`ROADMAP.md`, `competitors/`, and `.claude/` remain local-only under
+[`.gitignore`](../../.gitignore). `.github/` is tracked (KEL-39).

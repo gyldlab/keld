@@ -210,9 +210,9 @@ Verified on macOS, 2026-08-10:
 | Command | What it really does |
 |---|---|
 | `just hello` / `cargo run -p keld-host -- --hello` | Opens a macOS WKWebView window with static HTML |
-| `keld create <name>` | Writes a 5-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names |
-| `keld doctor` | Two checks everywhere (is `bun` on PATH; does the project have `keld.config.ts` + `src/main.ts`) plus a macOS-only webview line |
-| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK`/`KELD_BIN`, then opens the macOS hello window |
+| `keld create <name>` | Writes a 5-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
+| `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a macOS-only webview line |
+| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK`/`KELD_BIN`, then opens the macOS hello window; extra tokens including `--watch` are `KELD-CLI-044` |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
 | `cargo nextest run --workspace --profile ci` | 17 tests, all green |
 
@@ -229,9 +229,9 @@ on main — but it is a slice, not the system.
 | `keld-ipc` | [02-ipc](../architecture/02-ipc.md) | 16-byte little-endian frame header, 11 `FrameKind`s, `HELLO` handshake, postcard codec, blocking framed read/write, one hardcoded `echo` channel | shm bulk lane, credit-window backpressure, streams/cancel, schema-driven channel registry, codegen, fuzzing |
 | `keld-wv` | [05-webview-and-native](../architecture/05-webview-and-native.md) | `WebEngine` trait + per-platform extension traits; macOS backend built on tao + wry as **interim scaffolding** (to be replaced by direct objc2 bindings); `webview2`/`webkitgtk` modules compile everywhere and return a typed `KELD-WV-001` error naming their tracking issue | real Windows (KEL-27) and Linux (KEL-28) backends, `keld://` scheme, `window.keld` bridge, CEF, GPU probe / safe mode |
 | `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `keld-host --hello` opens it, otherwise prints a pre-alpha notice | event loop ownership, command queue, window registry, booting from compiled `keld.config.ts` |
-| `keld-guard` | [03-security](../architecture/03-security.md) | The types only: `Principal` (app process / webview with rotating generation / plugin), `Decision`, `DenyReason` with actionable `Display` | manifest parsing, scope matching, any enforcement anywhere, dev recorder, audit log |
+| `keld-guard` | [03-security](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for `app.<group>.<action>` path scopes; `Principal`, `Decision`, `DenyReason` | host-side enforcement on privileged IPC, `$VARS`/symlink canonicalization, channel grants, recorder, audit log |
 | `keld-runtime` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §1 | A `RestartPolicy` struct (3 crashes / 30 s window) | Bun discovery and pinning, spawn, health, restart, stdio capture — `keld dev` currently spawns `bun` directly from the CLI |
-| `keld-cli` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §2 | `create`, `dev`, `doctor`, `hello`, `ipc-echo`, `ipc-client` | `build`, `migrate`, `gen`, `ext`; `--json` output; stable exit codes; delegated dev server |
+| `keld-cli` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §2 | `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client` | `build`, `migrate`, `gen`, `ext`; `--json` on every verb; stable exit codes 0/1/2/3; delegated dev server |
 | `keld-native` | [05-webview-and-native](../architecture/05-webview-and-native.md) §3 | A `MODULES` constant naming the 15 planned modules | every module |
 | `keld-compat` | [04-electron-compat](../architecture/04-electron-compat.md) | A `Tier` enum | the entire emulation layer |
 | `keld-pack` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §3 | A `Format` enum (app/dmg/nsis/msi/deb/rpm/AppImage) | all packaging and signing |
@@ -244,20 +244,17 @@ should land).
 
 ### The CI situation, precisely
 
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) exists and is real: rustfmt,
-then clippy + nextest + rustdoc across `ubuntu-latest`/`macos-latest`/`windows-latest`,
-plus an MSRV job and a `cargo-deny` supply-chain job. Two caveats:
-
-- `.gitignore` excludes `/.github/` ("CI — local only until we choose to publish
-  pipelines"), so the workflow is not part of the repo as pushed. Nothing runs on push
-  today.
-- The agent-PR hard gates promised in [`ROADMAP.md`](../../ROADMAP.md) Phase 0 — secret
-  scan, no-placeholder check, CODEOWNERS on guard/ipc/workspace files — are not in the
-  workflow, and there is no CODEOWNERS file. That roadmap line is correctly still
-  unchecked.
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) exists and is tracked
+(KEL-39): rustfmt, clippy + nextest + rustdoc across
+`ubuntu-latest`/`macos-latest`/`windows-latest`, plus MSRV, `cargo-deny`, checksum-pinned
+gitleaks, and a CODEOWNERS/template hygiene job. `.github/` is **not** gitignored.
+Local `ROADMAP.md` remains gitignored; the tracked map is
+[`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md).
+A `bench/` harness is still absent (YAGNI until a live microbench).
 
 [`justfile`](../../justfile) mirrors the gates locally: `just ci` runs
-fmt-check → clippy → test → doc → deny.
+agents-md → llms → hygiene → fmt-check → clippy → test → doc → deny (gitleaks stays
+GitHub-only).
 
 ## The roadmap in plain terms
 
@@ -267,7 +264,7 @@ Phases gate on **exit criteria, not dates** ([`ROADMAP.md`](../../ROADMAP.md)).
 |---|---|---|---|
 | **0 — Foundation** | Know the field, fix the architecture, make the repo buildable and agent-safe | `cargo test --workspace` green on 3 OSes **in CI** | Research, architecture v0, workspace, and the agent system are done. Open: CI on real runners with agent-PR gates, and a `bench/` harness with a first IPC microbenchmark |
 | **1 — Window on screen (v0.1)** | A real host binary that boots a config and shows a window driven by a supervised Bun process | hello-world app (Bun main + Vite renderer) runs on macOS **and** Windows via `bunx keld dev`; killing the app process leaves the renderer alive and auto-reconnects | Partially done as a macOS-only slice. No Windows backend, no supervisor, no `@keld/api`, no config boot |
-| **2 — The plane and the guard (v0.2)** | The IPC bulk lane, schema codegen, permission enforcement, native APIs, Electron compat Tier 1, the MCP server | `electron-quick-start` runs unmodified via `keld migrate && keld dev` on macOS+Windows; IPC RTT p99 ≤ 100 µs on bench hardware | Not started (types only) |
+| **2 — The plane and the guard (v0.2)** | The IPC bulk lane, schema codegen, permission enforcement, native APIs, Electron compat Tier 1, the MCP server | `electron-quick-start` runs unmodified via `keld migrate && keld dev` on macOS+Windows; IPC RTT p99 ≤ 100 µs on bench hardware | Partial: MCP v1 (`keld mcp serve`) and guard `evaluate` exist; bulk lane, native APIs, and Electron compat are not started |
 | **3 — Ship it (v0.3)** | Installers, signing, delta updates, Linux hardening, OS sandbox v1, templates | a real app ships to beta users on all 3 OSes with ≤ 50 KB delta updates | Not started |
 | **4 — Compat depth & pinned engine (v0.4–0.6)** | Electron Tier 2, public compat scoreboard from a 20-app corpus, CEF backend, stable-ABI plugins | ≥ 80% median call-site compat across the corpus, and one production Electron app migrated with config-only changes — **the thesis test** | Not started |
 

@@ -24,6 +24,10 @@ This file is generated from tracked authoritative Markdown by `tools/llms_docs.r
 
 - [07 — Agent experience](docs/architecture/07-agent-experience.md): Agent-facing errors, docs, MCP tools, evals, and CLI contracts.
 
+## Engineering
+
+- [Decision log](docs/engineering/decisions.md): What we chose, why, what we rejected, and what is not next.
+
 ## Reference
 
 - [KELD error registry](docs/engineering/keld-error-codes.md): Stable developer-facing error codes with messages and fixes.

@@ -31,6 +31,19 @@
 | `keld gen` | schema → TS/Rust codegen (also runs inside dev/build) |
 | `keld ext` | plugin scaffolding/build (the only cargo touchpoint, plugin authors only) |
 
+v0 live verbs: `create`, `dev`, `doctor`, `mcp`, `hello`, `ipc-echo`, `ipc-client`.
+`keld doctor` checks Bun on PATH, hello-template layout (`keld.config.ts` +
+`src/main.ts`), the configured renderer HTML (default `index.html`; missing or
+non-project-relative is `KELD-CLI-035`), and a macOS webview info line.
+Native-module DB, permission diffs, `--web-compat`, and the Linux GPU probe are
+not live. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
+`doctor`, `hello`) are `KELD-CLI-044` (exit 2). `keld create` takes one project
+name; `--template` is not live (vanilla-ts hello only). `keld dev` takes no
+flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
+`migrate` / `gen` / `ext` are `KELD-CLI-045` (exit 2) with a tracking issue and
+the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
+command". Garbage verbs are `KELD-CLI-046` (exit 2).
+
 Distribution: `@keld/cli` npm package with per-platform binaries under
 `optionalDependencies` (esbuild pattern); `bunx keld` / `npx keld` work with zero
 global install. Host + runtime binaries fetched signed, verified, cached.

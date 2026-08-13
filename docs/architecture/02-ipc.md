@@ -118,4 +118,7 @@ compromised keeps the host's threat model uniform).
   restarts with backoff; channels re-handshake; in-flight CALLs reject with `E_RESTART`.
 - Webview navigation: principal id rotates; pending replies to the old principal drop;
   guard re-evaluates capabilities (origin-scoped grants).
-- Host never blocks on either peer; every await point has a deadline.
+- Host never blocks on either peer; every await point has a deadline. v0 app-link
+  applies a 5-second `SO_RCVTIMEO`/`SO_SNDTIMEO` on the connected stream; expiry is
+  `KELD-IPC-006`. That is an OS socket timeout, not an async timer. The readiness-driven
+  reader (and credit windows) remain later work.

@@ -136,60 +136,30 @@ $ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
                                             # exit 0
 
 $ cargo deny check
-advisories FAILED, bans ok, licenses FAILED, sources ok
-                                            # exit 4  ← FAILING
+advisories ... (yanked crates may still fail independently), bans ok, licenses ok, sources ok
 ```
 
-**`cargo deny check` currently fails on two independent counts, and you should know why
-before you touch either.**
+**`cargo deny check` licenses pass on this branch** with a *per-crate* MPL exception
+for `option-ext@0.2.0` (KEL-54). Do not add MPL-2.0 to the global `allow` list.
 
-*1 — `licenses`: an MPL-2.0 crate arrives transitively through wry.*
-
-```
-error[rejected]: failed to satisfy license requirements
-   ┌─ ~/.cargo/registry/.../option-ext-0.2.0/Cargo.toml:21:12
-21 │ license = "MPL-2.0"
-   │            rejected: license is not explicitly allowed
-
-option-ext v0.2.0
-  └── dirs-sys v0.5.0
-      └── dirs v6.0.0
-          └── wry v0.55.1
-              └── keld-wv v0.0.1
-```
-
-MPL-2.0 is not in the allow-list in [`deny.toml`](../../deny.toml). This is **not** caused
-by the uncommitted work — `wry` was already a dependency at `HEAD` (`git diff
-crates/keld-wv/Cargo.toml` shows only the `devtools` feature being added).
-
-*2 — `advisories`: a yanked crate in the lockfile, reached through our own `postcard` pin.*
+*1 — `licenses`: `option-ext` 0.2.0 is MPL-2.0, reached through wry → dirs → dirs-sys.*
+Packed binaries must preserve notices and offer that crate's corresponding source
+([`docs/engineering/third-party-licenses.md`](../engineering/third-party-licenses.md)).
+The exception is pinned in [`deny.toml`](../../deny.toml):
 
 ```
-error[yanked]: detected yanked crate (try `cargo update -p spin`)
-    ┌─ Cargo.lock:144:1
-144 │ spin 0.9.8 registry+https://github.com/rust-lang/crates.io-index
-    │            yanked version
-
-spin v0.9.8
-  └── heapless v0.7.17
-      └── postcard v1.1.3
-          └── keld-ipc v0.0.1
+exceptions = [
+  { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
+]
 ```
 
-This one is time-sensitive: `cargo deny` checks the live RustSec/crates.io yank data, so
-this gate can go red without any change to the tree. `postcard` is a workspace-pinned
-dependency of `keld-ipc` (the kipc codec), so the fix path runs through `Cargo.lock`
-rather than through anything in `crates/`.
+*2 — `advisories`: a yanked crate in the lockfile may still fail independently,*
+reached through `postcard` → `heapless` → `spin`. That gate tracks live RustSec data
+and is unrelated to the MPL pin. Resolving a yanked crate is a dependency review gate,
+not a drive-by lockfile bump.
 
-`bans` and `sources` pass. The rest of the output is warnings (two duplicate-version
-crates, wildcard-path warnings that `deny.toml` deliberately leaves at `warn`).
-
-Resolving either failure — widening the allow-list, removing a dependency path, or moving
-a pin — is a licensing and dependency decision, i.e. a **review gate** (§5), not something
-to silently patch in a drive-by commit. Note also that `deny.toml`'s `[graph] targets`
-includes both Darwin triples, so CI's Ubuntu `deny` job evaluates the same macOS
-dependency set; expect both to reproduce there. (Observed locally 2026-08-10; not verified
-against a CI run.)
+`bans` and `sources` pass. `deny.toml`'s `[graph] targets` includes Darwin triples, so
+CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 
 ### 3.3 `just` targets, and the raw commands if you skip `just`
 
@@ -260,7 +230,7 @@ the code they cover, and a comment explaining *why* a non-obvious assertion exis
 
 ## 5. What CI runs on your PR
 
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), four jobs, on every push to
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), six jobs, on every push to
 `main` and every pull request:
 
 | Job | Runner(s) | What it does |
@@ -269,12 +239,14 @@ the code they cover, and a comment explaining *why* a non-obvious assertion exis
 | `clippy + test` | ubuntu **and** macos **and** windows, `fail-fast: false` | `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo nextest run --workspace --profile ci`; plus `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS: -D warnings` on ubuntu only |
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
 | `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |
+| `gitleaks` | ubuntu | checksum-pinned OSS CLI 8.30.1 (`gitleaks detect`), not the org-licensed GitHub Action |
+| `CODEOWNERS + templates` | ubuntu | compile+run `tools/ci_hygiene.rs` |
 
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
-other two, because `keld-wv` and `keld-native` diverge per platform by design. Caching is
-`Swatinem/rust-cache@v2`; nextest comes from `taiki-e/install-action@cargo-nextest`;
-deny from `EmbarkStudios/cargo-deny-action@v2`. No toolchain action is used — the runners
-pick up `rust-toolchain.toml` on first `cargo` use.
+other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions
+are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`,
+`EmbarkStudios/cargo-deny-action`). Toolchain comes from `rust-toolchain.toml` via the
+toolchain action, not from an unpinned `cargo` on a random runner image.
 
 ---
 
@@ -460,7 +432,7 @@ reach for them:
 | How do I write a spec? | [`docs/agents/spec-template.md`](../agents/spec-template.md) |
 | What has already bitten someone? | [`docs/agents/learnings.md`](../agents/learnings.md) |
 | What is the system supposed to be? | [`docs/architecture/01..07-*.md`](../architecture/) |
-| Why is it designed that way? | [`docs/research/`](../research/) (the numbered docs are the citable corpus; `from-outside/` are raw inputs) |
+| Why did we choose this? | [`docs/engineering/decisions.md`](../engineering/decisions.md) (engineering narrative, not RFC 2119). [`AGENTS.md`](../../AGENTS.md) still binds. Numbered `docs/research/` is exploratory evidence, not required reading. |
 | When does feature X land? | [`ROADMAP.md`](../../ROADMAP.md) |
 | Which of these actually binds me? | [`06-documentation-map.md`](./06-documentation-map.md) |
 
@@ -470,8 +442,8 @@ repo — if something points you at one, it is describing a different project.
 > **Tracked versus local-only.** Architecture, onboarding, agent, engineering, and
 > research docs under `docs/` are tracked, as are the generated `llms.txt` and
 > `llms-full.txt`. The generated corpus deliberately excludes research and every
-> unlisted source. `/competitors/`, `/ROADMAP.md`, `/.github/`, and `/.claude/` remain
-> local-only under [`.gitignore`](../../.gitignore).
+> unlisted source. `/competitors/`, `/ROADMAP.md`, and `/.claude/` remain
+> local-only under [`.gitignore`](../../.gitignore). `.github/` is tracked (KEL-39).
 
 ---
 

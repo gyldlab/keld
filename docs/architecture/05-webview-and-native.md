@@ -19,7 +19,7 @@ its custom-protocol design shape, and tao's event-loop patterns. This is "from s
 the way wry itself is from scratch: direct platform bindings, ~15–20k LOC, no engine forks.
 
 ```rust
-pub trait WebEngine: Send {
+pub trait WebEngine {
     fn create(&mut self, spec: &WebviewSpec, host: HostHooks) -> Result<WebviewId, WvError>;
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError>;
     fn eval(&mut self, id: WebviewId, script: ScriptRef<'_>, cb: EvalCallback);
@@ -31,15 +31,23 @@ pub trait WebEngine: Send {
 }
 ```
 
+Backends hold UI-thread-only platform handles (`WKWebView` today). All engine and
+window mutations run on that thread (tao's main-thread event loop now; later
+keld-core's command queue). The trait is therefore not `Send`. A `Send` bound
+returns only with the command-queue design review.
+
 The sketch is the destination API. v0 (KEL-26 hello slice) is the six-method
 contract in `crates/keld-wv/src/engine.rs`: no `Send`, no `HostHooks` /
 `post` / `register_scheme` / `Anchor`, and `set_bounds` / `devtools` /
 `destroy` return `Result` so a stale id is a typed error. Methods from this
 sketch land when a live backend implements them in the same change.
 
-Backends: `wkwebview` (macOS), `webview2` (Windows), `webkitgtk` (Linux) always
-compiled; `cef` behind a feature flag, loaded as a runtime-selected backend when the
-app's engine policy says `pinned` (CEF binaries fetched at *build* time by `keld-pack`,
+Backends: `wkwebview` is the live macOS backend (`#[cfg(target_os = "macos")]`).
+`webview2` and `webkitgtk` ship as compiled layout slots (`unavailable()` →
+`KELD-WV-001`) until KEL-27 / KEL-28; they are not live engines on every target.
+Platform extension traits are platform-neutral and compiled everywhere. `cef`
+is behind a feature flag, loaded as a runtime-selected backend when the app's
+engine policy says `pinned` (CEF binaries fetched at *build* time by `keld-pack`,
 never at user runtime). Verso/Servo tracked as a fifth backend the day embedding
 stabilizes — the trait is the insurance policy.
 

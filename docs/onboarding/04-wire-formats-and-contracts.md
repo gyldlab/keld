@@ -167,24 +167,16 @@ that the format could be pinned down and tested before the hot-path work begins.
 
 ### What decoding does not check
 
-`FrameHeader::decode` validates magic, version, and kind. It does not — and by design cannot —
-validate anything about the payload. The gap worth knowing before you touch this path:
+`FrameHeader::decode` validates magic, version, and kind. It does not validate the
+payload bytes. `read_frame` **does** reject a declared `header.len` above
+[`MAX_FRAME_LEN`](../../crates/keld-ipc/src/lib.rs) (**16 MiB**) *before* allocating the
+payload `Vec` (`ensure_payload_len` → `KELD-IPC-004`). A forged `u32` must not become a
+multi-GiB allocation. The 4 GiB “allocate verbatim” story is stale.
 
-```rust
-// crates/keld-ipc/src/link.rs:16-20
-let header = FrameHeader::decode(&header_bytes).map_err(IpcError::Header)?;
-let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
-let mut payload = vec![0u8; len];
-```
-
-On every target Keld builds for, `usize::try_from(u32)` is infallible, so `PayloadTooLarge` is
-effectively unreachable on the read path and a peer's declared `len` is allocated verbatim — up to
-just under 4 GiB. `IpcError::PayloadTooLarge`'s own doc comment says "Payload length exceeds `u32`
-**or policy limit**"; the policy-limit half has no implementation yet. The crate rules already name
-the remedy — "Fuzz decode paths — malformed webview input is expected, not a bug" — and a per-link
-maximum frame size belongs with that work. Until then, the read path assumes a well-behaved peer,
-which is true of today's only peer (a Keld-built process on a local socket) and will stop being
-true the moment a webview is on the other end.
+What remains parked (crate `AGENTS.md`, not this slice): a `Vec` per frame instead of a
+caller-owned bounded buffer. Blocking `read_exact`/`write_all` now have a 5s OS deadline
+(`AppLinkDeadlines` / `KELD-IPC-006`); do not treat `link.rs` as the eventual hot-path
+reader. Fuzz decode paths — malformed webview input is expected.
 
 ---
 
@@ -277,13 +269,18 @@ stream would send a second HELLO.
 
 ## 7. The codec: postcard
 
-Structured payloads are [postcard](https://docs.rs/postcard) over `serde`. The whole codec module
-is 23 lines:
+Structured payloads are [postcard](https://docs.rs/postcard) over `serde`. Decode
+rejects leftover bytes (`take_from_bytes` plus an empty remainder):
 
 ```rust
-// crates/keld-ipc/src/codec.rs:12-23
+// crates/keld-ipc/src/codec.rs
 pub fn decode<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, IpcError> {
-    from_bytes(payload).map_err(IpcError::Codec)
+    let (value, rest) = take_from_bytes(payload).map_err(IpcError::Codec)?;
+    if rest.is_empty() {
+        Ok(value)
+    } else {
+        Err(IpcError::Codec(postcard::Error::DeserializeBadEncoding))
+    }
 }
 pub fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
     to_allocvec(value).map_err(IpcError::Codec)
@@ -473,31 +470,33 @@ Compare that with the sketch in [`04` §2](../architecture/04-electron-compat.md
 `defineConfig` from `@keld/cli` and carries `app`, `runtime`, `windows`, `web`, `compat`, and `dev`
 sections. Three honest observations about the gap:
 
-1. **Nothing parses this file.** Every reference to it in Rust is an existence check —
-   `find_project_root` walks up looking for it (`dev.rs:46-56`) and `keld doctor` confirms it is
-   present (`doctor.rs:59`). Its contents are read exactly once in the workspace, by a test
-   asserting the name substitution happened.
-2. **Its two path fields are ignored.** `entry: "src/main.ts"` is not consulted — `dev.rs:87`
-   hardcodes `project_root.join("src/main.ts")`. `renderer: "index.html"` is not consulted either;
-   the window renders `keld_wv::HELLO_HTML`, a hardcoded string in
-   `crates/keld-wv/src/hello/mod.rs:10-28`, so the `index.html` that `keld create` writes is
-   currently loaded by nothing.
-3. **`defineConfig` cannot exist yet**, because `@keld/cli` — like every other `@keld/*` package —
-   has no code. `packages/` is an empty directory.
+1. **Parsing is name + renderer for the hello slice.** `keld-core`
+   (`title_from_config_ts` / `renderer_from_config_ts`) and `keld dev`
+   (`hello_title_for_project` / `load_dev_window_html`) read those two fields.
+   `find_project_root` still walks up looking for the file; `keld doctor` confirms it is
+   present. Other keys are not a config schema yet.
+2. **`entry` is still ignored.** `dev.rs` hardcodes `project_root.join("src/main.ts")`.
+   `renderer` is consulted: the window loads that file as inline HTML (default
+   `index.html`). `keld hello` still uses `HELLO_HTML`.
+3. **`defineConfig` cannot exist yet**, because `@keld/cli` — like every other `@keld/*`
+   package — has no code. `packages/` is an empty directory.
 
 ### The permission manifest
 
-`keld.permissions.jsonc` is the highest-stakes contract in the system and has no implementation.
-Its shape is normative in [`03` §2](../architecture/03-security.md): per-principal grants for `fs`
-read/write path scopes, `net` connect hosts, `shell` open/spawn, `system` capabilities, and
-`secrets` namespaces; a `windows` block granting channel patterns and CSP policy per window; and an
-`audit` setting. Wildcards are allowed but linted loudly.
+`keld.permissions.jsonc` is the highest-stakes contract in the system. Its shape is
+normative in [`03` §2](../architecture/03-security.md). v0 code is
+`parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
+`app.<group>.<action>`). Recorder, `keld doctor --permissions`, and host IPC still
+calling `evaluate` on every privileged frame are not this slice.
 
-The two rules to internalize before anyone implements it: `$VARS`, symlinks, and `..` traversal are
-resolved and normalized **before** scope matching, never after; and a channel's declared capability
-set — derived from its `.k.ts` contract, not hand-entered — must be a subset of the caller's grants.
-`crates/keld-guard/AGENTS.md` makes the bypass fixtures (traversal, symlink swap, case folding,
-wildcard-swallow) permanent test requirements rather than one-time checks.
+**v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
+scope; symlink canonicalization is not in this slice. That is not an Allow.
+**Destination** (spec 03): host resolves `$VARS`, then normalizes symlink/`..`
+before matching. A channel's declared capability set — derived from its `.k.ts`
+contract — must be a subset of the caller's grants; that grant-shape rule is still
+the destination. `crates/keld-guard/AGENTS.md` documents the v0 exception and keeps
+bypass fixtures (traversal, symlink swap, case folding, wildcard-swallow) as
+permanent tests for when the destination matcher lands.
 
 ---
 
@@ -583,6 +582,7 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-IPC-003` | Codec error (postcard) | `lib.rs:53` |
 | `KELD-IPC-004` | Payload too large for a kipc frame | `lib.rs:54` |
 | `KELD-IPC-005` | Protocol error — unexpected frame or state | `lib.rs:57` |
+| `KELD-IPC-006` | App-link I/O deadline exceeded | `keld-ipc/src/lib.rs` (`IpcError::Timeout`) |
 | `KELD-WV-001` | No webview backend for this OS | `keld-wv/src/error.rs:33` |
 | `KELD-WV-002` | Window creation failed | `error.rs:38` |
 | `KELD-WV-003` | Webview creation failed | `error.rs:43` |
@@ -598,6 +598,9 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-CLI-031` | Dev session failed | `dev.rs:31` |
 | `KELD-CLI-032` | Environment checks failed | `dev.rs:71` |
 | `KELD-CLI-040` | Missing `--link` argument | `keld-cli/src/main.rs:111` |
+| `KELD-CLI-044` | Unknown `create` / `dev` / `doctor` / `hello` flag (exit 2) | `keld-cli/src/flags.rs` |
+| `KELD-CLI-045` | Reserved verb `build` / `migrate` / `gen` / `ext` (exit 2) | `keld-cli/src/verb.rs` |
+| `KELD-CLI-046` | Unknown command (exit 2) | `keld-cli/src/verb.rs` |
 
 ### The "errors state the fix" rule, demonstrated
 
@@ -634,12 +637,13 @@ Worth knowing before you mint a new code, because both are cheap to fix now and 
   more greppable; the spec has not been updated to match.
 - **Docs URLs and the registry.** The standard requires each code to resolve at
   `https://keld.dev/e/KELD-<area><nnn>`, and requires CI to fail when a code is added without a docs
-  page. No error message currently carries a URL, and the registry does not exist.
+  page. Error text does not yet carry that URL. The registry lives at
+  [`docs/engineering/keld-error-codes.md`](../engineering/keld-error-codes.md) and is
+  checked 1:1 against scanned sources by `crates/keld-cli/tests/error_registry.rs`.
 
-The CLI half of the contract from [`07` §7](../architecture/07-agent-experience.md) — `--json` on
-every verb with output, stable exit codes (0 ok · 1 failure · 2 misuse · 3 environment), no TTY
-tricks in JSON mode — is also unimplemented: `keld-cli/src/main.rs` exits `1` for every failure and
-has no `--json` flag.
+The CLI half of the contract from [`07` §7](../architecture/07-agent-experience.md) is
+partially implemented: `keld doctor --json` emits the findings array, and `keld mcp`
+misuse exits `2`. Other verbs still exit `1` on failure and have no `--json` flag.
 
 ---
 

@@ -36,8 +36,8 @@ Three principals, three trust levels:
 2. **App process** (Bun child): the developer's "main process." Full npm/Node-compat
    world, but **zero ambient OS authority** — every privileged operation is a typed IPC
    call into the host, checked by the capability engine. Crashable and restartable
-   without tearing down windows (host keeps webviews alive; renderer gets a `app-process-
-   restarted` event).
+   without tearing down windows (host keeps webviews alive; renderer gets an
+   `app-process-restarted` event).
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 

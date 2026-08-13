@@ -3,22 +3,26 @@
 > Keld has far more documentation than code (see
 > [`01-project-summary.md`](01-project-summary.md) for why that matters). Without a map,
 > the natural failure mode is reading a research doc, mistaking it for a decision, and
-> building the wrong thing. This file tells you which documents are **normative**, which
-> are **exploratory**, and which are **point-in-time records**.
+> building the wrong thing. This file tells you which documents are **binding**, which
+> are **normative specs**, which are **engineering narrative** (why, not a new rule
+> layer), which are **exploratory**, and which are **point-in-time records**.
 
-## The three tiers, up front
+## The tiers, up front
 
 | Tier | What it means | Where it lives |
 |---|---|---|
-| **Binding rules** | You must follow these. Violating one means the rule change is the PR, not the violation. | [`AGENTS.md`](../../AGENTS.md), per-crate `crates/*/AGENTS.md`, [`docs/agents/workflow.md`](../agents/workflow.md) |
+| **Binding rules** | You must follow these. Violating one means the rule change is the PR, not the violation. | [`AGENTS.md`](../../AGENTS.md), per-crate `crates/*/AGENTS.md`, [`docs/agents/workflow.md`](../agents/workflow.md), [`docs/engineering/keld-error-codes.md`](../engineering/keld-error-codes.md) (CI-enforced `KELD-*` registry) |
 | **Normative specs** | The agreed design for v0.x. Changing one requires a design PR. Code that disagrees with a spec is a bug in one of the two — fix both in the same PR or state why. | [`docs/architecture/01..07-*.md`](../architecture/) |
-| **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), [`docs/engineering/`](../engineering/), [`task.md`](../../task.md) |
+| **Engineering narrative** | What we chose, why, what we rejected, and what is not next. **Not** RFC 2119 — [`AGENTS.md`](../../AGENTS.md) still binds. Onboarding pointer for “why.” | [`docs/engineering/decisions.md`](../engineering/decisions.md) |
+| **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), other [`docs/engineering/`](../engineering/) audits, [`task.md`](../../task.md) |
 
 Two rules that follow directly from that table, both from
 [`docs/agents/learnings.md`](../agents/learnings.md) and [`AGENTS.md`](../../AGENTS.md):
 
 - **Never cite `docs/research/from-outside/` in your work.** Those are raw external
-  research exports. The polished numbered docs in `docs/research/` are the citable corpus.
+  research exports. Numbered `docs/research/` notes are exploratory evidence, not
+  required onboarding — the why-pointer is
+  [`docs/engineering/decisions.md`](../engineering/decisions.md).
 - **Numbered docs are paths.** If you renumber a doc, you must update every reference to
   it across the repo.
 
@@ -26,8 +30,10 @@ Two rules that follow directly from that table, both from
 
 Documentation under `/docs/` is tracked, along with generated `llms.txt` and
 `llms-full.txt`. [`.gitignore`](../../.gitignore) keeps `/competitors/`, `/ROADMAP.md`,
-`/.github/`, and `/.claude/` local-only. The generated corpus is narrower than the
-tracked docs tree: its ordered allowlist excludes research and all unlisted documents.
+and `/.claude/` local-only. `.github/` is tracked (KEL-39). The generated corpus is
+narrower than the tracked docs tree: its ordered allowlist excludes research and all
+unlisted documents. The engineering decision log is on that allowlist; numbered
+research is not.
 
 ## Root files
 
@@ -35,7 +41,7 @@ tracked docs tree: its ordered allowlist excludes research and all unlisted docu
 |---|---|---|
 | [`AGENTS.md`](../../AGENTS.md) | **The single most important file in the repo.** Ground truth, crate map, the three-command verification gate, Rust rules (`unsafe` policy, no `unwrap`/`expect`/`panic!` in libs, typed errors, hot-path discipline, dependency review), TypeScript rules, naming, security/perf rules, the five human review gates, working rules, the mandatory self-improvement rule, and commit/PR format. | Before your first line of code, and again whenever you're unsure whether something is allowed. |
 | [`README.md`](../../README.md) | The 30-second pitch, the intended `migrate → dev → build` flow, the workspace layout, and the two commands that work today. | First five minutes. |
-| [`ROADMAP.md`](../../ROADMAP.md) | Phases 0–4 with exit criteria (gated on criteria, not dates) plus standing tracks. Checkbox state is meaningful — unchecked items are genuinely open. | When you want to know whether the thing you're about to build is in scope *now*. |
+| [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Tracked phase map between Linear project numbers and the local `ROADMAP.md` (gitignored). Use this, not an untracked file, as required reading for “what is in scope now.” | When you want to know whether the thing you're about to build is in scope *now*. |
 | [`llms.txt`](../../llms.txt) · [`llms-full.txt`](../../llms-full.txt) | Generated agent-readable documentation: a compact curated index and the corresponding concatenated corpus. `tools/llms_docs.rs` fixes source order and excludes research/local-only paths; `just llms-check` rejects drift. | When wiring up agent tooling, bulk-ingesting the authoritative docs corpus, or checking what the official MCP docs search embeds. |
 | [`task.md`](../../task.md) | A **ledger** of a Linear harness run dated 2026-07-10: issue inventory by status, per-ticket blueprints and acceptance criteria, execution order, gate commands, and the results at the time (12/12 tests then). Historical, not a live to-do list. | When you need to know why a Linear issue was closed, or what "COMPLETE" meant for a given ticket. |
 | [`justfile`](../../justfile) · [`Cargo.toml`](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml) · [`deny.toml`](../../deny.toml) · [`rustfmt.toml`](../../rustfmt.toml) · [`rust-toolchain.toml`](../../rust-toolchain.toml) · [`.config/nextest.toml`](../../.config/nextest.toml) | Not prose, but they are the enforcement layer behind `AGENTS.md`. `just ci` runs every gate CI would run. Workspace lints (pedantic clippy, `missing_docs`, `unsafe_code = "deny"`) live in `Cargo.toml`, with comments explaining each choice. | When a lint fails and you want to know whether it's negotiable (it usually isn't). |
@@ -59,6 +65,8 @@ on day one; read the others when you touch their area.
 
 Evidence, not requirements. Every doc carries a research date. Where research and
 architecture disagree, architecture wins (and the disagreement is worth raising).
+This directory is **not** required onboarding; the why-pointer is
+[`docs/engineering/decisions.md`](../engineering/decisions.md).
 
 ### Competitor teardowns
 
@@ -145,10 +153,19 @@ learnings into `AGENTS.md` or the relevant spec. The last clause matters as much
 first: if a rule in an `AGENTS.md` has gone stale, correcting it *is* the task, not a
 distraction from it.
 
-## `docs/engineering/` — point-in-time audits
+## `docs/engineering/` — error registry, decision log, and dated audits
+
+[`keld-error-codes.md`](../engineering/keld-error-codes.md) is **binding**: CI
+(`crates/keld-cli/tests/error_registry.rs`) requires a 1:1 match with scanned `KELD-*`
+sources. [`decisions.md`](../engineering/decisions.md) is **engineering narrative**
+(not RFC 2119): what we chose, why, what we rejected, and what is not next.
+[`AGENTS.md`](../../AGENTS.md) still binds. Other files in this directory are dated
+audits.
 
 | Doc | What's in it | When you'd read it |
 |---|---|---|
+| [`keld-error-codes.md`](../engineering/keld-error-codes.md) | Canonical `KELD-*` registry. Adding a code without this file + the registry test is a bug. | When you add or change an error code. |
+| [`decisions.md`](../engineering/decisions.md) | Decision log for humans: four uniques, wry vs spec 05, `KELD-*` errors, verification/CI, cargo-deny, nested `AGENTS.md`, `llms.txt` corpus, MCP/`$VARS`, review gates, and what is explicitly not next. | When you need “why we chose this” without treating research as a spec. Day-one why-pointer. |
 | [`alignment-audit-2026-07-08.md`](../engineering/alignment-audit-2026-07-08.md) | A read-only audit across vision, research, architecture, `AGENTS.md`, roadmap, tooling/CI, Linear, crates, and `competitors/` hygiene. Verdict: "MOSTLY ALIGNED" — the technical story is coherent end to end; drift is concentrated in program tracking. Contains a scorecard, contradictions with suggested fixes, gaps, Linear drift, verification output, and prioritized actions. | When something feels inconsistent between docs, check whether the audit already named it. |
 | [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | The translation table between Linear's project numbering and `ROADMAP.md`'s phase numbering — they do not match. | Every time you link an issue to a roadmap milestone. |
 | [`tooling-audit.md`](../engineering/tooling-audit.md) | Senior-engineer review of the toolchain: what was thin at audit start, findings on the workspace and each config file, CI compared against competitors, changes applied, recommendations to adopt later, verification, and open questions. Explains *why* each lint and config choice exists. | Before changing anything in `Cargo.toml` lints, `clippy.toml`, `deny.toml`, or CI. |
@@ -204,7 +221,7 @@ than repeating them.
 |---|---|
 | [`crates/keld-ipc/AGENTS.md`](../../crates/keld-ipc/AGENTS.md) | The wire is a versioned protocol — any frame-layout/`FrameKind`/flag/handshake change means a version bump plus the wire review gate plus a spec §2 update, in one PR. Test wire constants as facts (`HEADER_LEN == 16`), not struct layout. State-machine readers/writers, no async, no steady-state allocation. Credit-window backpressure, no unbounded queues. `unsafe` only in the future `shm` module. postcard on the hot path; JSON only for `--inspect-ipc`. Fuzz the decode paths — malformed webview input is expected, not a bug. |
 | [`crates/keld-wv/AGENTS.md`](../../crates/keld-wv/AGENTS.md) | `unsafe` is allowed here, in platform backends only, with `deny(unsafe_op_in_unsafe_fn)` and a `// SAFETY:` comment citing the platform contract. All engine/window mutations on the UI thread via the command queue; never platform handles from I/O or pool threads. `WebEngine` trait changes are a design review. Platform quirks need OS + version + source link, or they get reverted. Linux: probe the GPU stack and apply safe mode before init — never tell users to export env vars. |
-| [`crates/keld-guard/AGENTS.md`](../../crates/keld-guard/AGENTS.md) | This is *the* security boundary. Default-deny: unknown capability, channel, or scope, or a missing manifest → `Deny`, with no interim allow. Principals are host-minted and unforgeable; webview principals rotate on navigation. Deny text is API — every `DenyReason` names the capability/scope and the fix, and that text is tested. Scope matching resolves `$VARS`, symlinks, and `..` before matching, with permanent bypass fixtures (traversal, symlink swap, case folding, wildcard-swallow). No dev-mode special case inside the engine. No allocation on the `Allow` path. |
+| [`crates/keld-guard/AGENTS.md`](../../crates/keld-guard/AGENTS.md) | This is *the* security boundary. Default-deny: unknown capability, channel, or scope, or a missing manifest → `Deny`, with no interim allow. Principals are host-minted and unforgeable; webview principals rotate on navigation. Deny text is API — every `DenyReason` names the capability/scope and the fix, and that text is tested. Destination matching resolves `$VARS`, symlinks, and `..` before matching; **v0** matches `$VARS` as literals and rejects `..` (not an Allow). No dev-mode special case inside the engine. No allocation on the `Allow` path. |
 | [`crates/keld-compat/AGENTS.md`](../../crates/keld-compat/AGENTS.md) | Electron's documented behavior is the oracle; the conformance entry citing a doc or fixture comes *before* implementation. Divergence must be explicit — a `keld.compat.ts` quirks flag or a scoreboard mark, chosen in the PR. Event **ordering** is tested as sequences, not just outcomes. No Electron-isms leak into `keld-core`/`keld-ipc`. A corpus score drop is a P1 regression. |
 
 The other seven crates (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`,
@@ -255,12 +272,16 @@ doctor → docs search → permissions explain workflow.
 3. [`AGENTS.md`](../../AGENTS.md) — in full. It is the shortest high-value file in the repo.
 4. [`docs/architecture/01-overview.md`](../architecture/01-overview.md) — in full. The
    diagram, the eight principles, the crate topology, the budgets, the non-goals.
-5. [`docs/research/00-landscape.md`](../research/00-landscape.md) — the five structural
-   problems and the head-to-head matrix. This is *why* the architecture looks like it does.
-6. [`ROADMAP.md`](../../ROADMAP.md) — where the project is and what gates the next step.
-7. [`docs/agents/learnings.md`](../agents/learnings.md) — six lines, all load-bearing.
+5. [`docs/engineering/decisions.md`](../engineering/decisions.md) — why current
+   engineering looks like this (four uniques, wry scaffolding, errors, CI, what is
+   not next). Narrative, not a new rule layer; [`AGENTS.md`](../../AGENTS.md) still
+   binds.
+6. [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md)
+   — Linear vs local `ROADMAP.md` numbering; the gitignored file is not required reading.
+7. [`docs/agents/learnings.md`](../agents/learnings.md) — the gotcha log; load-bearing
+   and short.
 8. Run it: `cargo nextest run --workspace --profile ci`, then `just hello` on macOS. Seeing
-   17 tests pass and one window open tells you more about the state of the project than
+   tests pass and one window open tells you more about the state of the project than
    another hour of reading.
 
 ### First week
@@ -268,8 +289,11 @@ doctor → docs search → permissions explain workflow.
 9. [`docs/agents/workflow.md`](../agents/workflow.md) and
    [`docs/agents/spec-template.md`](../agents/spec-template.md) — how a change gets from
    issue to merge here.
-10. [`docs/research/14-phase0-synthesis.md`](../research/14-phase0-synthesis.md) — ranked
-    opportunities and risks; the fastest way to understand what the team believes matters.
+10. Numbered [`docs/research/`](../research/) (starting with
+    [`00-landscape.md`](../research/00-landscape.md) and
+    [`14-phase0-synthesis.md`](../research/14-phase0-synthesis.md) if they are in your
+    tree) — exploratory evidence behind the architecture, not required reading and not
+    a substitute for [`decisions.md`](../engineering/decisions.md).
 11. The two architecture docs closest to your first task — most likely
     [`02-ipc.md`](../architecture/02-ipc.md) and
     [`05-webview-and-native.md`](../architecture/05-webview-and-native.md), since those are

@@ -66,6 +66,12 @@ const SOURCES: &[Source] = &[
         description: "Agent-facing errors, docs, MCP tools, evals, and CLI contracts.",
     },
     Source {
+        section: "Engineering",
+        title: "Decision log",
+        path: "docs/engineering/decisions.md",
+        description: "What we chose, why, what we rejected, and what is not next.",
+    },
+    Source {
         section: "Reference",
         title: "KELD error registry",
         path: "docs/engineering/keld-error-codes.md",
@@ -126,28 +132,55 @@ fn normalize_newlines(contents: &str) -> String {
     normalized
 }
 
+fn canonical_root(root: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(root).map_err(|error| {
+        format!(
+            "KELD-DOCS005: failed to resolve workspace root `{}`: {error}. \
+             Pass an existing directory, then rerun the generator.",
+            root.display()
+        )
+    })
+}
+
+fn resolve_source_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    validate_source_path(relative)?;
+    let joined = root.join(relative);
+    let canonical = match fs::canonicalize(&joined) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(format!(
+                "KELD-DOCS001: required docs source `{relative}` is missing. \
+                 Restore the file or remove its entry from `tools/llms_docs.rs`."
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "KELD-DOCS005: failed to read docs source `{relative}`: {error}. \
+                 Check that the file is readable, then rerun the generator."
+            ));
+        }
+    };
+    if !canonical.starts_with(root) {
+        return Err(format!(
+            "KELD-DOCS003: source path `{relative}` is outside the authoritative docs corpus. \
+             Remove it from the source list; include only reviewed public documentation."
+        ));
+    }
+    Ok(canonical)
+}
+
 fn load_sources(root: &Path, sources: &[Source]) -> Result<Vec<LoadedSource>, String> {
+    let root = canonical_root(root)?;
     let mut loaded = Vec::with_capacity(sources.len());
     for &source in sources {
-        validate_source_path(source.path)?;
-        let path = root.join(source.path);
-        let contents = match fs::read_to_string(&path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Err(format!(
-                    "KELD-DOCS001: required docs source `{}` is missing. \
-                     Restore the file or remove its entry from `tools/llms_docs.rs`.",
-                    source.path
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "KELD-DOCS005: failed to read docs source `{}`: {error}. \
-                     Check that the file is readable, then rerun the generator.",
-                    source.path
-                ));
-            }
-        };
+        let path = resolve_source_file(&root, source.path)?;
+        let contents = fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "KELD-DOCS005: failed to read docs source `{}`: {error}. \
+                 Check that the file is readable, then rerun the generator.",
+                source.path
+            )
+        })?;
         if contents.trim().is_empty() {
             return Err(format!(
                 "KELD-DOCS002: required docs source `{}` is empty. \
@@ -228,7 +261,8 @@ fn write_output(path: &Path, contents: &str) -> Result<(), String> {
 }
 
 fn generate(root: &Path, sources: &[Source]) -> Result<(), String> {
-    let (index, full) = render(root, sources)?;
+    let root = canonical_root(root)?;
+    let (index, full) = render(&root, sources)?;
     write_output(&root.join(INDEX_OUTPUT), &index)?;
     write_output(&root.join(FULL_OUTPUT), &full)?;
     Ok(())
@@ -253,7 +287,8 @@ fn check_one(path: &Path, expected: &str) -> Result<(), String> {
 }
 
 fn check(root: &Path, sources: &[Source]) -> Result<(), String> {
-    let (index, full) = render(root, sources)?;
+    let root = canonical_root(root)?;
+    let (index, full) = render(&root, sources)?;
     check_one(&root.join(INDEX_OUTPUT), &index)?;
     check_one(&root.join(FULL_OUTPUT), &full)?;
     Ok(())
@@ -428,6 +463,22 @@ mod tests {
         let error = render(temp.path(), &forbidden).expect_err("forbidden path must fail");
         assert!(error.contains("KELD-DOCS003"), "{error}");
         assert!(error.contains("authoritative docs corpus"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_outside_root_is_docs003() {
+        let temp = fixture();
+        let outside = TempDir::new();
+        outside.write("secret.md", "OUTSIDE_SENTINEL\n");
+        let link = temp.path().join(FIXTURE_SOURCES[0].path);
+        fs::remove_file(&link).expect("remove fixture file before replacing with symlink");
+        std::os::unix::fs::symlink(outside.path().join("secret.md"), &link).expect("symlink");
+
+        let error = render(temp.path(), FIXTURE_SOURCES)
+            .expect_err("symlink pointing outside the root must fail");
+        assert!(error.contains("KELD-DOCS003"), "{error}");
+        assert!(error.contains(FIXTURE_SOURCES[0].path), "{error}");
     }
 
     #[test]
