@@ -277,7 +277,7 @@ does not already bind (for example `keld-ipc` shm `unsafe`, or a real
 fails on drift (`KELD-DOCS004`). Architecture 07 §3 requires both from day one.
 
 Allowlist today: onboarding README, architecture 01–07, this file, the KELD error
-registry, the Electron compat scoreboard placeholder. `validate_source_path`
+registry, the size/RSS scoreboard, the Electron compat scoreboard placeholder. `validate_source_path`
 rejects `docs/research`, `competitors`, `.claude`, `private`, `.private`,
 parent-dir components, non-`.md` paths, and symlink escape.
 
@@ -432,7 +432,9 @@ test (a): Linear Phase 2 (window + kipc echo + crate map) ships without them.
 Also parked, for the same YAGNI reason: `bench/` perf CI (budgets exist in
 architecture 01 §5; the directory does not), `keld build` / `keld migrate` /
 `packages/@keld/*`, OS sandbox on the Bun child (architecture 03 §4, v0.3 target),
-and attack-mode `keld doctor` (architecture 07 §6, Phase 3).
+and attack-mode `keld doctor` (architecture 07 §6, Phase 3). Until `bench/`
+exists, measured hello/installer/RSS rows live in
+[`budget-scoreboard.md`](./budget-scoreboard.md) (markdown, not CI).
 
 **What *is* next in this slice:** keep the four uniques, keep the window+echo path
 honest, generate the docs corpus, enforce the verification gate, and do not mark
@@ -467,6 +469,7 @@ list. `docs/agents/workflow.md`: CI is the arbiter; humans are the architects
 | Bindings for agents | [`AGENTS.md`](../../AGENTS.md), crate `AGENTS.md`, [`docs/agents/workflow.md`](../agents/workflow.md) |
 | Design target | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Error codes | [`keld-error-codes.md`](./keld-error-codes.md) |
+| Hello size / RSS / installer | [`budget-scoreboard.md`](./budget-scoreboard.md) |
 | Licenses for binaries | [`third-party-licenses.md`](./third-party-licenses.md) |
 | Toolchain history | [`tooling-audit.md`](./tooling-audit.md) |
 | Linear vs ROADMAP phases | [`linear-roadmap-mapping.md`](./linear-roadmap-mapping.md) |

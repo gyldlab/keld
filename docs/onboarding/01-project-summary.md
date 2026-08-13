@@ -160,8 +160,10 @@ hello-world app on an M-series Mac / mid-range Windows laptop:
 
 A regression greater than 5% fails the PR, or needs a written waiver with benchmarks
 ([`AGENTS.md`](../../AGENTS.md) § Security & performance). **Not yet real:** the `bench/`
-directory does not exist, so none of these are currently measured or gated. Building it
-is an open Phase 0 item in [`ROADMAP.md`](../../ROADMAP.md).
+directory does not exist, so none of these are currently gated. Living measured rows
+(hello host/CLI/RSS; no DMG yet) are in
+[`docs/engineering/budget-scoreboard.md`](../engineering/budget-scoreboard.md). Building
+`bench/` CI is parked (KEL-39 YAGNI).
 
 ## What Keld is deliberately not (v1 non-goals)
 

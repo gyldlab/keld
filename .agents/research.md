@@ -3,6 +3,9 @@
 Load this playbook only for a material decision that may depend on current external
 evidence.
 
+Edits under `docs/research/` MUST follow root `AGENTS.md` § Private research (nested
+`keld-research` checkout; `just research-push` same turn; never stage into Keld).
+
 ## Escalation trigger
 
 Agents MUST ask the user to run one copy-ready external-research prompt only when all

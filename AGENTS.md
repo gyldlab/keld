@@ -115,6 +115,9 @@ Non-obvious gotcha (>10 min saved) → agents MUST append ONE line to `docs/agen
 ```
 Agents MUST grep first (no dupes/opinions). Stale rule here → fixing it *is* the task.
 
+## Private research
+`docs/research/` is a nested git checkout of `https://github.com/0monish/keld-research.git` (not the Keld monorepo index). When an agent creates or edits files under `docs/research/`, it MUST commit inside that nested repo and push with `just research-push` (or `git -C docs/research push`) in the same turn, unless push soft-fails for no access (then warn the user). Agents MUST NOT `git add docs/research` from the Keld repo root / MUST NOT commit research into Keld.
+
 ## Commits & PRs
 - Conventional: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
 - PR MUST include: Summary · Spec refs · Review gates · Tests · Platforms · Perf impact (or none).
