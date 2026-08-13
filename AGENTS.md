@@ -103,6 +103,14 @@ First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 No slop (MUST):
 Agents MUST follow `.agents/testing.md`. Tests MUST be falsifiable: a real contract defect must fail the test. Test observable contracts (error code, wire bytes, process status, or OS behavior), not implementation-shaped essays.
 
+No workarounds (MUST):
+When a test, gate, or check fails, agents MUST fix the cause. Agents MUST NOT make the signal fit the change. Specifically forbidden:
+- Weakening, narrowing, `#[ignore]`-ing, or deleting a failing test so a change can land. If a test is genuinely wrong, say so, state why, and get human sign-off — do not edit it silently in the same commit that it blocks.
+- `allow`-ing a lint, `--no-verify`, `--force` past a gate, or skipping a CI job to go green.
+- Regenerating or hand-editing a generated artifact until a check passes without confirming the generator itself is current. A stale generator can emit a self-consistent wrong artifact that satisfies a staleness check and still fails the content test. Rebuild the generator from the working tree first.
+- Treating a red gate as noise. Reproduce it locally, find the cause, then fix.
+Merging with a failing required check MUST have explicit human approval, and the reason MUST be recorded on the PR.
+
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
 - Agents MUST NOT add hollow stubs; MUST NOT add files for skeletons (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`, `keld-pack`, `keld-host`); MUST NOT add one for `keld-cli` (`expect` already sanctioned in § Rust); MUST NOT add `packages/` until TS exists. Point at the spec in the repo-map table instead.
