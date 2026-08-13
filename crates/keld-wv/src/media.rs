@@ -6,11 +6,12 @@
 //! [`keld_guard::evaluate`] on `web.camera` / `web.microphone`.
 //!
 //! wry's handler is `Fn(PermissionKind) -> PermissionResponse` and does not pass
-//! origin. v0 therefore evaluates the requested resource as [`WEB_MEDIA_ORIGIN`]
-//! (`*`). Origin-scoped grants are not enforceable until the handler grows an
-//! origin argument.
+//! origin or a webview principal. v0 therefore evaluates as
+//! [`Principal::AppProcess`] with requested resource [`WEB_MEDIA_ORIGIN`]
+//! (`*`). Origin-scoped and window-principal grants are not enforceable until
+//! the handler grows those arguments.
 
-use keld_guard::{Decision, PermissionsManifest, evaluate};
+use keld_guard::{Decision, PermissionsManifest, Principal, evaluate};
 
 /// Capability id for camera capture (`getUserMedia` video).
 pub const WEB_CAMERA: &str = "web.camera";
@@ -52,13 +53,19 @@ impl MediaPermission {
 /// Whether `kind` is allowed by `manifest`.
 ///
 /// Unknown kinds fail closed without consulting the manifest. Camera and
-/// microphone use [`evaluate`] against [`WEB_MEDIA_ORIGIN`].
+/// microphone use [`evaluate`] as [`Principal::AppProcess`] against
+/// [`WEB_MEDIA_ORIGIN`] — wry's callback cannot name the requesting webview.
 #[must_use]
 pub fn media_permission_allowed(manifest: &PermissionsManifest, kind: MediaPermission) -> bool {
     let Some(capability) = kind.capability() else {
         return false;
     };
-    evaluate(manifest, capability, WEB_MEDIA_ORIGIN) == Decision::Allow
+    evaluate(
+        manifest,
+        Principal::AppProcess,
+        capability,
+        WEB_MEDIA_ORIGIN,
+    ) == Decision::Allow
 }
 
 #[cfg(test)]
@@ -77,7 +84,12 @@ mod tests {
             !media_permission_allowed(&manifest, MediaPermission::Microphone),
             "empty manifest must default-deny microphone"
         );
-        match evaluate(&manifest, WEB_CAMERA, WEB_MEDIA_ORIGIN) {
+        match evaluate(
+            &manifest,
+            Principal::AppProcess,
+            WEB_CAMERA,
+            WEB_MEDIA_ORIGIN,
+        ) {
             Decision::Deny(DenyReason::NotGranted {
                 capability,
                 json_pointer,

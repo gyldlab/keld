@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use keld_guard::{
-    Decision, DenyReason, ManifestError, PermissionsManifest, evaluate, load_manifest,
+    Decision, DenyReason, ManifestError, PermissionsManifest, Principal, evaluate, load_manifest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -165,7 +165,7 @@ fn load_fixture(name: &str) -> PermissionsManifest {
 }
 
 fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
-    let actual = evaluate(manifest, case.operation, case.path);
+    let actual = evaluate(manifest, Principal::AppProcess, case.operation, case.path);
     match (case.expected, actual) {
         (ExpectedDecision::Allow, Decision::Allow) => "allow".to_owned(),
         (
@@ -232,7 +232,7 @@ fn fixture_decision_matrix_matches_authority_contract() {
 fn empty_manifest_defaults_to_not_granted() {
     let manifest = load_fixture("empty.jsonc");
     let requested = "/foo/bar/notes.txt";
-    let decision = evaluate(&manifest, "fs.read", requested);
+    let decision = evaluate(&manifest, Principal::AppProcess, "fs.read", requested);
 
     match decision {
         Decision::Deny(DenyReason::NotGranted {
@@ -352,4 +352,36 @@ fn every_denial_reason_variant_has_a_stable_contract() {
         "KELD-GUARD003: channel `notes.unknown` is not granted to this principal. \
          Add `notes.unknown` to this principal's channels list in keld.permissions.jsonc."
     );
+
+    let not_app = DenyReason::NotAppProcess {
+        principal: Principal::Webview {
+            id: 1,
+            generation: 2,
+        },
+    };
+    assert_eq!(not_app.code(), "KELD-GUARD006");
+    assert_eq!(not_app.kind(), "not_app_process");
+    assert!(
+        !not_app.fix().contains("/app/"),
+        "must not recommend applying app scopes: {}",
+        not_app.fix()
+    );
+    let not_app_msg = not_app.to_string();
+    assert!(not_app_msg.contains("KELD-GUARD006"), "{not_app_msg}");
+    assert!(not_app_msg.contains("webview"), "{not_app_msg}");
+}
+
+#[test]
+fn in_scope_app_path_does_not_allow_webview_principal() {
+    let manifest = load_fixture("scopes.jsonc");
+    let webview = Principal::Webview {
+        id: 1,
+        generation: 1,
+    };
+    match evaluate(&manifest, webview, "fs.read", "/foo/exact") {
+        Decision::Deny(DenyReason::NotAppProcess { principal }) => {
+            assert_eq!(principal, webview);
+        }
+        other => panic!("in-scope app path must not allow a webview principal: {other:?}"),
+    }
 }

@@ -9,5 +9,9 @@ Spec: `docs/architecture/03-security.md`. Security boundary; threat model in cra
 - v0 exception: `$VARS` match as literals; `..` is rejected; symlink canonicalization is not in this slice. That is not an Allow. Host resolution is the destination (spec 03), not a silent weaken of default-deny.
 - Wildcard grants loud in `keld doctor`. No dev-mode special-case inside engine — profile composed outside, refused in release.
 - Hot path (per kipc frame): no alloc on `Allow`, no locks across handler dispatch.
-- v0 public API: `parse_manifest` / `load_manifest` / `evaluate(manifest, operation, path) -> Decision`. Missing file is `ManifestError`, not Allow.
+- v0 public API: `parse_manifest` / `load_manifest` /
+  `evaluate(manifest, principal, operation, path) -> Decision`.
+  Non-`AppProcess` principals are `DenyReason::NotAppProcess` (`KELD-GUARD006`)
+  before grant lookup — agents MUST NOT apply `/app` scopes to a webview or
+  plugin. Missing file is `ManifestError`, not Allow.
 - Tests MUST follow repository `.agents/testing.md`.

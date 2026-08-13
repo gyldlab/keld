@@ -283,8 +283,9 @@ does not already bind (for example `keld-ipc` shm `unsafe`, or a real
 `tools/llms_docs.rs` owns the allowlist. `just llms` writes; `just llms-check`
 fails on drift (`KELD-DOCS004`). Architecture 07 §3 requires both from day one.
 
-Allowlist today: onboarding README, architecture 01–07, this file, the KELD error
-registry, the size/RSS scoreboard, the Electron compat scoreboard placeholder. `validate_source_path`
+Allowlist today: onboarding README, onboarding 04 (wire formats — KEL-61),
+architecture 01–07, this file, the KELD error registry, the size/RSS scoreboard,
+the Electron compat scoreboard placeholder. `validate_source_path`
 rejects `docs/research`, `competitors`, `.claude`, `private`, `.private`,
 parent-dir components, non-`.md` paths, and symlink escape.
 

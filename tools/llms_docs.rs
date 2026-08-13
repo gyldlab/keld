@@ -24,6 +24,12 @@ const SOURCES: &[Source] = &[
         description: "Set up the workspace, run the implemented commands, and verify a change.",
     },
     Source {
+        section: "Start here",
+        title: "Wire formats and contracts",
+        path: "docs/onboarding/04-wire-formats-and-contracts.md",
+        description: "Byte-level kipc frames, handshake, codec, and implemented-vs-specified gaps.",
+    },
+    Source {
         section: "Architecture",
         title: "01 — Overview",
         path: "docs/architecture/01-overview.md",

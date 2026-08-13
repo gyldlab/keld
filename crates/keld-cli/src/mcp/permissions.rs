@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use keld_guard::{Decision, DenyReason, ManifestError, evaluate, load_manifest};
+use keld_guard::{Decision, DenyReason, ManifestError, Principal, evaluate, load_manifest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -141,7 +141,12 @@ pub fn permissions_explain(
 
     let manifest = load_manifest(&args.manifest_path).map_err(|e| manifest_error(&e))?;
     let path = operation_path(&args.operation.args);
-    match evaluate(&manifest, &args.operation.capability, path) {
+    match evaluate(
+        &manifest,
+        Principal::AppProcess,
+        &args.operation.capability,
+        path,
+    ) {
         Decision::Allow => Ok(PermissionsExplainResult {
             decision: "allow".to_owned(),
             deny_reason: None,
@@ -210,7 +215,7 @@ fn deny_result(reason: &DenyReason) -> PermissionsExplainResult {
             value: serde_json::Value::String(requested.clone()),
             snippet: format!("append {requested:?} to `{json_pointer}`"),
         }),
-        DenyReason::ChannelForbidden { .. } => None,
+        DenyReason::ChannelForbidden { .. } | DenyReason::NotAppProcess { .. } => None,
     };
     PermissionsExplainResult {
         decision: "deny".to_owned(),
@@ -254,6 +259,13 @@ impl From<&DenyReason> for DenyReasonView {
                 capability: None,
                 scope: None,
                 channel: Some(channel.clone()),
+                json_pointer: None,
+            },
+            DenyReason::NotAppProcess { .. } => Self {
+                kind: reason.kind().to_owned(),
+                capability: None,
+                scope: None,
+                channel: None,
                 json_pointer: None,
             },
         }
