@@ -13,6 +13,7 @@
 mod engine;
 mod error;
 mod hello;
+mod media;
 pub mod webkitgtk;
 pub mod webview2;
 #[cfg(target_os = "macos")]
@@ -24,6 +25,9 @@ pub use engine::{
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};
+pub use media::{
+    MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WEB_MICROPHONE, media_permission_allowed,
+};
 
 /// Identifies a webview instance owned by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

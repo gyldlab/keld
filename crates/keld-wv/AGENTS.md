@@ -9,3 +9,6 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
 - Linux: agents MUST probe the GPU stack and apply safe-mode before init — MUST NOT instruct env-var exports. Emit `degraded-rendering`.
 - Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
 - Tests MUST follow repository `.agents/testing.md`.
+- Camera/microphone capture MUST go through `keld-guard` (`web.camera` /
+  `web.microphone`). Agents MUST NOT omit wry `with_permission_handler` on a live
+  `WebViewBuilder` — wry 0.56 auto-grants when the handler is `None`.

@@ -353,10 +353,12 @@ pub struct EchoResponse {
 | Clean EOF | Loop exits, session ends `Ok` |
 | **Anything else** — including a `Call` on a different channel | `IpcError::Protocol`, session terminates |
 
-Note what is *not* in that path: there is no capability check. The frame goes from decode straight
-to handler. `keld-guard` has no caller anywhere in the workspace, so the "every privileged
-operation passes the guard" property described in
-[`03` §1](../architecture/03-security.md) is a property of the design, not yet of the code.
+Note what is *not* in that path: there is no capability check. The echo frame goes from
+decode straight to handler. `keld-guard::evaluate` is live for MCP
+`keld_permissions_explain` and for macOS webview camera/microphone capture; it is
+still not called on privileged kipc frames, so the "every privileged operation
+passes the guard" property in [`03` §1](../architecture/03-security.md) is not yet
+true of IPC.
 
 Coverage: `crates/keld-ipc/tests/echo_link.rs` exercises the round trip over a real socket, and
 `crates/keld-cli/tests/bun_echo.rs` does it with a real Bun process in the loop.
@@ -487,7 +489,8 @@ sections. Three honest observations about the gap:
 normative in [`03` §2](../architecture/03-security.md). v0 code is
 `parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
 `app.<group>.<action>`). Recorder, `keld doctor --permissions`, and host IPC still
-calling `evaluate` on every privileged frame are not this slice.
+calling `evaluate` on every privileged frame are not this slice. Webview camera and
+microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59).
 
 **v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
 scope; symlink canonicalization is not in this slice. That is not an Allow.

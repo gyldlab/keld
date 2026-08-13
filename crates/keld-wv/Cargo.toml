@@ -9,6 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`
+# on the live WKWebView permission callback. Sibling crate, not an upward edge.
+keld-guard = { workspace = true }
 
 [lints]
 workspace = true
@@ -18,4 +21,18 @@ tao = "0.35.3"
 # `devtools` keeps `open_devtools`/`close_devtools` compiled in release builds
 # so `WebEngine::devtools` is not debug-only (wry gates them behind
 # `cfg(any(debug_assertions, feature = "devtools"))`).
-wry = { version = "0.55.1", features = ["devtools"] }
+#
+# Dependency review (KEL-59 / AGENTS.md gate):
+# Name: wry 0.56.1 (was 0.55.1)
+# Purpose: `WebViewBuilder::with_permission_handler` — 0.55.1 auto-grants
+#   camera/mic in `request_media_capture_permission` and has no handler API.
+# Alternatives rejected: (a) stay on 0.55.1 and ship a Keld WKUIDelegate —
+#   extra `unsafe` before the objc2 rewrite; (b) hardcoded Deny without
+#   `keld-guard` — ticket requires capability wiring; (c) bump tao to 0.36 —
+#   wry 0.56 `build` takes `HasWindowHandle`, so tao 0.35.3 still fits.
+# Breaking: macOS/iOS `transparent`/`fullscreen` features removed (always on);
+#   `protocol` feature removed (always on). Keld used neither flag.
+# License: Apache-2.0 OR MIT (unchanged). MSRV 1.77 < Keld 1.93.
+# Pin 0.56.1 not 0.56.0: macOS 11 debug_assertion skip for the media-capture
+#   delegate method (wry #1781).
+wry = { version = "0.56.1", features = ["devtools"] }

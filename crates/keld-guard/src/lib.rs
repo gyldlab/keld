@@ -542,4 +542,49 @@ mod tests {
             other => panic!("non-string grant must fail closed, got {other:?}"),
         }
     }
+
+    #[test]
+    fn web_camera_and_microphone_default_deny() {
+        let empty = parse_manifest("{}").expect("empty object");
+        match evaluate(&empty, "web.camera", "*") {
+            Decision::Deny(DenyReason::NotGranted {
+                capability,
+                json_pointer,
+                requested,
+            }) => {
+                assert_eq!(capability, "web.camera");
+                assert_eq!(json_pointer, "/app/web/camera");
+                assert_eq!(requested, "*");
+            }
+            other => panic!("empty manifest must default-deny web.camera, got {other:?}"),
+        }
+        match evaluate(&empty, "web.microphone", "*") {
+            Decision::Deny(DenyReason::NotGranted { capability, .. }) => {
+                assert_eq!(capability, "web.microphone");
+            }
+            other => panic!("empty manifest must default-deny web.microphone, got {other:?}"),
+        }
+
+        let camera_only =
+            parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
+        assert_eq!(
+            evaluate(&camera_only, "web.camera", "*"),
+            Decision::Allow,
+            "in-scope web.camera must allow — inverted deny/allow would fail this"
+        );
+        assert!(
+            matches!(
+                evaluate(&camera_only, "web.microphone", "*"),
+                Decision::Deny(DenyReason::NotGranted { .. })
+            ),
+            "camera grant must not imply microphone"
+        );
+        assert!(
+            matches!(
+                evaluate(&camera_only, "web.camera", "https://evil.example"),
+                Decision::Deny(DenyReason::OutOfScope { .. })
+            ),
+            "v0 media sentinel is exact `*`, not an origin glob"
+        );
+    }
 }

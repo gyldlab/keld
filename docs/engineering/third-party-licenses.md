@@ -23,13 +23,13 @@ future MPL crate that appears in the graph.
 ### Why the crate is in the tree
 
 ```
-keld-wv → wry 0.55.1 → dirs 6.0.0 → dirs-sys 0.5.0 → option-ext 0.2.0
+keld-wv → wry 0.56.1 → dirs 6.0.0 → dirs-sys 0.5.0 → option-ext 0.2.0
 ```
 
 - crates.io: <https://crates.io/crates/option-ext/0.2.0> (latest, not yanked,
   published 2023-01-11, license `MPL-2.0`).
 - Upstream still 0.2.0: <https://codeberg.org/soc/option-ext>
-- `wry` 0.55.1 (and 0.56.0) depends on `dirs = "6"` unconditionally for Apple and
+- `wry` 0.56.1 (and 0.56.0) depends on `dirs = "6"` unconditionally for Apple and
   Linux/BSD. Keld's `devtools` feature does not control that edge.
 - `dirs-sys` 0.5.0 depends on `option-ext = "0.2.0"` unconditionally (Linux XDG
   parser uses `OptionExt::contains`).
