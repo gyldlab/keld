@@ -252,11 +252,19 @@ fn run_dev_echo_uses_project_name_and_reaps_socket() {
     );
     #[cfg(unix)]
     {
+        let socket = Path::new(&result.link);
         assert!(
-            !Path::new(&result.link).exists(),
+            !socket.exists(),
             "echo socket must be removed on teardown: {}",
             result.link
         );
+        if let Some(dir) = socket.parent() {
+            assert!(
+                !dir.exists(),
+                "echo session dir must be removed on teardown: {}",
+                dir.display()
+            );
+        }
     }
 }
 

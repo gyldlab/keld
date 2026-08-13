@@ -47,9 +47,18 @@ fn github_dir_is_ignored(gitignore: &str) -> bool {
         if line.is_empty() || line.starts_with('#') {
             return false;
         }
+        // `/.github/*` ignores children of `.github/` (CODEOWNERS, workflows/,
+        // ISSUE_TEMPLATE/), which is enough for GitHub to never see CI files.
         matches!(
             line,
-            "/.github/" | "/.github" | ".github/" | ".github" | "/.github/**"
+            "/.github/"
+                | "/.github"
+                | ".github/"
+                | ".github"
+                | "/.github/**"
+                | "/.github/*"
+                | ".github/**"
+                | ".github/*"
         )
     })
 }
@@ -327,6 +336,37 @@ mod tests {
         assert!(error.contains("CI-HYGIENE"), "{error}");
         assert!(error.contains("/.github/"), "{error}");
         assert!(error.contains("Remove that ignore"), "{error}");
+    }
+
+    #[test]
+    fn ignoring_github_star_pattern_fails() {
+        let temp = complete_fixture();
+        temp.write(".gitignore", "/target\n/.github/*\n");
+        let error = check(temp.path()).expect_err("/.github/* must count as ignoring .github");
+        assert!(error.contains("CI-HYGIENE"), "{error}");
+        assert!(error.contains("Remove that ignore"), "{error}");
+    }
+
+    #[test]
+    fn github_dir_ignore_patterns() {
+        for pattern in [
+            "/.github/",
+            "/.github",
+            ".github/",
+            ".github",
+            "/.github/**",
+            "/.github/*",
+            ".github/**",
+            ".github/*",
+        ] {
+            assert!(
+                github_dir_is_ignored(&format!("/target\n{pattern}\n")),
+                "{pattern} must be treated as ignoring .github"
+            );
+        }
+        assert!(!github_dir_is_ignored("/target\n/.claude\n"));
+        assert!(!github_dir_is_ignored("# /.github/*\n/target\n"));
+        assert!(!github_dir_is_ignored("/.github/workflows/ci.yml\n"));
     }
 
     #[test]

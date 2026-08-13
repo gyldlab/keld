@@ -1,6 +1,10 @@
 //! Loopback app-link helpers shared by `ipc-echo` and `ipc-client`.
 
+#[cfg(unix)]
+use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -41,6 +45,34 @@ impl EchoEndpoint {
 pub struct EchoServer {
     endpoint: EchoEndpoint,
     handle: Option<thread::JoinHandle<Result<(), keld_ipc::IpcError>>>,
+    /// Owner-only directory that contains the Unix socket; removed on join/Drop.
+    #[cfg(unix)]
+    session_dir: PathBuf,
+}
+
+#[cfg(unix)]
+fn bind_unix_echo() -> io::Result<(PathBuf, PathBuf, std::os::unix::net::UnixListener)> {
+    let session_dir = std::env::temp_dir().join(format!(
+        "keld-echo-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    fs::DirBuilder::new().mode(0o700).create(&session_dir)?;
+    if let Err(err) = fs::set_permissions(&session_dir, fs::Permissions::from_mode(0o700)) {
+        let _ = fs::remove_dir(&session_dir);
+        return Err(err);
+    }
+    let path = session_dir.join("echo.sock");
+    match std::os::unix::net::UnixListener::bind(&path) {
+        Ok(listener) => Ok((session_dir, path, listener)),
+        Err(err) => {
+            let _ = fs::remove_dir_all(&session_dir);
+            Err(err)
+        }
+    }
 }
 
 impl EchoServer {
@@ -54,16 +86,7 @@ impl EchoServer {
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            let path = std::env::temp_dir().join(format!(
-                "keld-echo-{}-{}.sock",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            ));
-            let _ = std::fs::remove_file(&path);
-            let listener = std::os::unix::net::UnixListener::bind(&path)?;
+            let (session_dir, path, listener) = bind_unix_echo()?;
             ready.send(()).ok();
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept()?;
@@ -72,6 +95,7 @@ impl EchoServer {
             Ok(Self {
                 endpoint: EchoEndpoint::Unix(path),
                 handle: Some(handle),
+                session_dir,
             })
         }
         #[cfg(windows)]
@@ -96,7 +120,7 @@ impl EchoServer {
         self.endpoint.link_env()
     }
 
-    /// Waits for the server thread and removes any Unix socket file.
+    /// Waits for the server thread and removes the Unix session directory.
     ///
     /// # Errors
     ///
@@ -145,8 +169,7 @@ impl EchoServer {
     fn cleanup_socket(&self) {
         #[cfg(unix)]
         {
-            let EchoEndpoint::Unix(path) = &self.endpoint;
-            let _ = std::fs::remove_file(path);
+            let _ = fs::remove_dir_all(&self.session_dir);
         }
     }
 }
@@ -252,6 +275,11 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::channel();
         let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
+        #[cfg(unix)]
+        let session_dir = PathBuf::from(server.link())
+            .parent()
+            .expect("socket lives in a session dir")
+            .to_path_buf();
         let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
             drop(server);
@@ -260,5 +288,77 @@ mod tests {
         done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("Drop must close the listener and join; timeout means accept() leaked");
+        #[cfg(unix)]
+        assert!(
+            !session_dir.exists(),
+            "Drop must remove the owner-only session dir: {}",
+            session_dir.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_session_dir_is_owner_only_and_removed_on_join() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let link = server.link();
+        let socket = PathBuf::from(&link);
+        let session_dir = socket
+            .parent()
+            .expect("socket lives in a session dir")
+            .to_path_buf();
+
+        assert_eq!(
+            socket.file_name().and_then(|name| name.to_str()),
+            Some("echo.sock")
+        );
+        assert_ne!(session_dir, std::env::temp_dir());
+        assert!(
+            session_dir.starts_with(std::env::temp_dir()),
+            "session dir must be under temp: {}",
+            session_dir.display()
+        );
+        let mode = fs::metadata(&session_dir)
+            .expect("session dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "session dir must be owner-only, got {mode:#o}");
+
+        let req = EchoRequest {
+            message: "session-dir".to_owned(),
+            count: 1,
+        };
+        echo_roundtrip(&link, &req).expect("echo");
+        server.join().expect("join");
+        assert!(
+            !socket.exists(),
+            "socket must be removed: {}",
+            socket.display()
+        );
+        assert!(
+            !session_dir.exists(),
+            "session dir must be removed: {}",
+            session_dir.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_removes_unix_session_dir() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let session_dir = PathBuf::from(server.link())
+            .parent()
+            .expect("socket lives in a session dir")
+            .to_path_buf();
+        let _ = server.shutdown();
+        assert!(
+            !session_dir.exists(),
+            "shutdown must remove the owner-only session dir: {}",
+            session_dir.display()
+        );
     }
 }

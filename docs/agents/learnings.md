@@ -41,3 +41,4 @@ small — it is loaded by every agent session.
 - 2026-08-13 [cli] Spec-named verbs that are not live (`build`/`migrate`/`gen`/`ext`) must be `KELD-CLI-045` exit 2, not a bare `unknown command` exit 1 — README agents otherwise have no tracking issue. (evidence: crates/keld-cli/src/verb.rs, KEL-29)
 - 2026-08-13 [cli] `keld create --template` must be `KELD-CLI-044` (closed flag set), not `KELD-CLI-020` invalid name `--template`; extra `keld dev` tokens must fail before tao `EventLoop::run`. (evidence: crates/keld-cli/src/flags.rs, KEL-29)
 - 2026-08-13 [process] `docs/research/` is local-only; tracking it ships 50+ notes in the PR. `git rm --cached` + gitignore, never `git add docs/research`. (evidence: PR #2, `088efc0`)
+- 2026-08-13 [cli] Unix echo sockets in shared `$TMPDIR` are world-connectable; bind inside a unique `0o700` session dir and remove the dir on Drop/shutdown. (evidence: crates/keld-cli/src/echo_link.rs `bind_unix_echo`)

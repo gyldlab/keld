@@ -91,8 +91,7 @@ struct LoadedSource {
     contents: String,
 }
 
-fn validate_source_path(path: &str) -> Result<(), String> {
-    let candidate = Path::new(path);
+fn path_escapes_corpus(candidate: &Path) -> bool {
     let forbidden = [
         Path::new("docs/research"),
         Path::new("competitors"),
@@ -100,17 +99,24 @@ fn validate_source_path(path: &str) -> Result<(), String> {
         Path::new("private"),
         Path::new(".private"),
     ];
-
-    if candidate.is_absolute()
+    candidate.is_absolute()
         || candidate
             .components()
             .any(|component| matches!(component, Component::ParentDir))
         || forbidden.iter().any(|prefix| candidate.starts_with(prefix))
-    {
-        return Err(format!(
-            "KELD-DOCS003: source path `{path}` is outside the authoritative docs corpus. \
-             Remove it from the source list; include only reviewed public documentation."
-        ));
+}
+
+fn docs003(path: &str) -> String {
+    format!(
+        "KELD-DOCS003: source path `{path}` is outside the authoritative docs corpus. \
+         Remove it from the source list; include only reviewed public documentation."
+    )
+}
+
+fn validate_source_path(path: &str) -> Result<(), String> {
+    let candidate = Path::new(path);
+    if path_escapes_corpus(candidate) {
+        return Err(docs003(path));
     }
     if candidate
         .extension()
@@ -160,11 +166,13 @@ fn resolve_source_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
             ));
         }
     };
-    if !canonical.starts_with(root) {
-        return Err(format!(
-            "KELD-DOCS003: source path `{relative}` is outside the authoritative docs corpus. \
-             Remove it from the source list; include only reviewed public documentation."
-        ));
+    let Ok(stripped) = canonical.strip_prefix(root) else {
+        return Err(docs003(relative));
+    };
+    // Re-check after canonicalize so a symlink cannot land in a forbidden
+    // directory that is still inside the workspace (e.g. docs/research).
+    if path_escapes_corpus(stripped) {
+        return Err(docs003(relative));
     }
     Ok(canonical)
 }
@@ -477,6 +485,22 @@ mod tests {
 
         let error = render(temp.path(), FIXTURE_SOURCES)
             .expect_err("symlink pointing outside the root must fail");
+        assert!(error.contains("KELD-DOCS003"), "{error}");
+        assert!(error.contains(FIXTURE_SOURCES[0].path), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_into_forbidden_docs_dir_is_docs003() {
+        let temp = fixture();
+        temp.write("docs/research/secret.md", "RESEARCH_SENTINEL\n");
+        let link = temp.path().join(FIXTURE_SOURCES[0].path);
+        fs::remove_file(&link).expect("remove fixture file before replacing with symlink");
+        std::os::unix::fs::symlink(temp.path().join("docs/research/secret.md"), &link)
+            .expect("symlink into forbidden dir");
+
+        let error = render(temp.path(), FIXTURE_SOURCES)
+            .expect_err("symlink into docs/research must fail even though the allowlist path looks safe");
         assert!(error.contains("KELD-DOCS003"), "{error}");
         assert!(error.contains(FIXTURE_SOURCES[0].path), "{error}");
     }
