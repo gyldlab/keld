@@ -70,7 +70,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: No webview backend for this OS
-- fix: Track KEL-27 (Windows) / KEL-28 (Linux) or run on macOS.
+- fix: Track KEL-28 (Linux) or run on macOS or Windows.
 
 ## KELD-WV-002
 
@@ -82,7 +82,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: Webview creation failed
-- fix: On macOS ensure WKWebView is available (10.13+).
+- fix: On macOS ensure WKWebView is available (10.13+); on Windows ensure the WebView2 runtime is installed.
 
 ## KELD-WV-004
 
@@ -107,6 +107,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-wv
 - message: Unknown webview id
 - fix: Create one with `WebEngine::create` and drop stale ids after `destroy`.
+
+## KELD-WV-008
+
+- crate: keld-wv
+- message: WebView2 runtime unavailable
+- fix: Install the Evergreen Runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. Keld will not download or execute an installer for you.
 
 ## KELD-CLI-010
 

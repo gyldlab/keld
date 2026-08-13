@@ -28,7 +28,7 @@ fn main() {
 
     // Phase 1 (ROADMAP): parse compiled config, start event loop, open window.
     eprintln!(
-        "keld-host {} (pre-alpha). Run with --hello for the WKWebView window slice.",
+        "keld-host {} (pre-alpha). Run with --hello for the window slice.",
         keld_core::VERSION
     );
 }

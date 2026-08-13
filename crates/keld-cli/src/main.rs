@@ -99,7 +99,7 @@ fn print_usage() {
     eprintln!("  dev             Run the app (Bun main + IPC echo + window)");
     eprintln!("  doctor [--json] Check local toolchain and project layout");
     eprintln!("  mcp serve       Speak MCP over stdio (doctor/docs/permissions)");
-    eprintln!("  hello           Open the macOS WKWebView hello window");
+    eprintln!("  hello           Open the hello window (WKWebView on macOS, WebView2 on Windows)");
     eprintln!("  ipc-echo        Run the typed kipc echo round-trip demo");
     eprintln!("  ipc-client      Internal: kipc client helpers for templates");
     eprintln!("  --version       Print version");

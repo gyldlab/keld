@@ -36,3 +36,22 @@ tao = "0.35.3"
 # Pin 0.56.1 not 0.56.0: macOS 11 debug_assertion skip for the media-capture
 #   delegate method (wry #1781).
 wry = { version = "0.56.1", features = ["devtools"] }
+
+[target.'cfg(target_os="windows")'.dependencies]
+tao = "0.35.3"
+# Same wry version as macOS on purpose. 0.55.1 is the release whose
+# `request_media_capture_permission` auto-grants with no handler API (KEL-59);
+# pinning Windows to it would reintroduce on a new platform the exact default
+# macOS just closed, and would make cargo build two wry copies. 0.56.1 keeps
+# `webview2-com = "0.38"` / `windows = "0.61"`, so the probe deps below are
+# unchanged by the bump.
+wry = { version = "0.56.1", features = ["devtools"] }
+# KEL-27 runtime probe. `GetAvailableCoreWebView2BrowserVersionString` is the
+# API Microsoft documents for Evergreen detection; the registry layout it reads
+# is an implementation detail that differs across runtime channels, so we do not
+# read those keys ourselves. Same version wry pins, so cargo unifies.
+webview2-com = "0.38"
+# `CoTaskMemFree` releases the version string the probe allocates. wry already
+# depends on `windows` 0.61 with `Win32_System_Com`, so this adds an explicit
+# path to a crate already in the graph rather than a second copy.
+windows = { version = "0.61", features = ["Win32_System_Com"] }
