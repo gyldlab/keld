@@ -1,6 +1,9 @@
 # Keld task runner — mirrors the CI gates in .github/workflows/ci.yml.
 # `just ci` before pushing == what CI will run (minus the 3-OS matrix).
 
+# Shebang recipes can use "$@" for *args without collapsing spaces.
+set positional-arguments
+
 # Open hello window (macOS only, Phase 1 slice).
 hello:
     cargo run -p keld-host -- --hello
@@ -29,31 +32,34 @@ agents-md:
     done
     matcher='allow\([[:space:]]*unsafe_code[[:space:]]*\)|unsafe[[:space:]]*(extern|fn|impl|trait|\{)'
     # String fixtures — do not plant unsafe in crates/ just to exercise the matcher.
-    while IFS= read -r sample; do
+    # Arrays (not heredocs): just 1.58+ still lexes heredoc bodies as justfile syntax.
+    must_match=(
+        '#[allow(unsafe_code)]'
+        '#[allow( unsafe_code )]'
+        'unsafe extern "C" fn f()'
+        'unsafe fn f()'
+        'unsafe impl Foo {}'
+        'unsafe trait Bar {}'
+        'unsafe { }'
+        'unsafe{'
+    )
+    for sample in "${must_match[@]}"; do
         if ! printf '%s\n' "$sample" | grep -E -q "$matcher"; then
             echo "error: agents-md matcher missed fixture: $sample"
             fail=1
         fi
-    done <<'EOF'
-#[allow(unsafe_code)]
-#[allow( unsafe_code )]
-unsafe extern "C" fn f()
-unsafe fn f()
-unsafe impl Foo {}
-unsafe trait Bar {}
-unsafe { }
-unsafe{
-EOF
-    while IFS= read -r sample; do
+    done
+    must_not_match=(
+        'fn safe() {}'
+        '#[allow(dead_code)]'
+        'extern "C" fn f()'
+    )
+    for sample in "${must_not_match[@]}"; do
         if printf '%s\n' "$sample" | grep -E -q "$matcher"; then
             echo "error: agents-md matcher false-positive: $sample"
             fail=1
         fi
-    done <<'EOF'
-fn safe() {}
-#[allow(dead_code)]
-extern "C" fn f()
-EOF
+    done
     files=$(grep -R -l -E "$matcher" crates --include='*.rs' || true)
     crates=$(printf '%s\n' "$files" | awk -F/ '$1=="crates" && NF>=2 {print $2}' | sort -u)
     for crate in $crates; do
@@ -114,3 +120,154 @@ doc:
 # Supply-chain checks (requires `cargo install cargo-deny --locked`).
 deny:
     cargo deny check
+
+# ── Maintainer local-only sync (never CI; trees stay gitignored) ─────────────
+
+# Clone or ff-only pull private research into gitignored docs/research/.
+# HTTPS first, SSH fallback. No access → warn on stderr and exit 0 (hooks-safe).
+research-sync:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "warning: research-sync: not inside a git work tree; skip" >&2
+        exit 0
+    }
+    DEST="$ROOT/docs/research"
+    HTTPS="https://github.com/0monish/keld-research.git"
+    SSH="git@github.com:0monish/keld-research.git"
+
+    warn_skip() {
+        echo "warning: research-sync: $1" >&2
+        exit 0
+    }
+
+    research_origin_ok() {
+        local origin normalized
+        origin="$(git -C "$DEST" remote get-url origin 2>/dev/null)" || return 1
+        normalized="${origin%.git}"
+        case "$normalized" in
+            https://github.com/0monish/keld-research|git@github.com:0monish/keld-research|ssh://git@github.com/0monish/keld-research)
+                return 0
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+
+    if [[ -d "$DEST/.git" ]]; then
+        nested="$(git -C "$DEST" rev-parse --show-toplevel 2>/dev/null)" || warn_skip "cannot read nested git root"
+        parent="$(cd "$ROOT" && pwd -P)"
+        nested_p="$(cd "$nested" && pwd -P)"
+        if [[ "$nested_p" == "$parent" ]]; then
+            warn_skip "docs/research/ is not a separate git checkout; refusing to pull into the Keld monorepo"
+        fi
+        if ! research_origin_ok; then
+            warn_skip "docs/research origin is not 0monish/keld-research (HTTPS or SSH). Fix remote or re-clone; left unchanged."
+        fi
+        if git -C "$DEST" pull --ff-only; then
+            echo "research-sync: updated $DEST"
+            exit 0
+        fi
+        warn_skip "git pull --ff-only failed (no access, auth, or non-ff). Left docs/research/ unchanged."
+    fi
+
+    if [[ -e "$DEST" ]]; then
+        warn_skip "docs/research/ exists but is not a git checkout; not overwriting. Init/convert to a clone of keld-research, or remove and re-run."
+    fi
+
+    mkdir -p "$(dirname "$DEST")"
+    err="$(mktemp)"
+    if git clone "$HTTPS" "$DEST" 2>"$err"; then
+        rm -f "$err"
+        echo "research-sync: cloned $HTTPS → $DEST"
+        exit 0
+    fi
+    if git clone "$SSH" "$DEST" 2>>"$err"; then
+        rm -f "$err"
+        echo "research-sync: cloned $SSH → $DEST"
+        exit 0
+    fi
+    detail="$(tr '\n' ' ' <"$err" | head -c 240)"
+    rm -f "$err"
+    warn_skip "cannot clone keld-research via HTTPS or SSH (${detail:-auth/network}). Private repo — grant access or skip."
+
+# Commit + push inside the nested docs/research/ checkout only (never the Keld parent).
+# Optional: just research-push "your message"
+research-push message="chore: sync research notes":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "warning: research-push: not inside a git work tree; skip" >&2
+        exit 0
+    }
+    DEST="$ROOT/docs/research"
+    MSG={{quote(message)}}
+
+    if [[ ! -d "$DEST/.git" ]]; then
+        echo "warning: research-push: docs/research/ is not a nested git checkout; nothing pushed" >&2
+        exit 0
+    fi
+
+    nested="$(git -C "$DEST" rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "warning: research-push: cannot read nested git root; nothing pushed" >&2
+        exit 0
+    }
+    parent="$(cd "$ROOT" && pwd -P)"
+    nested_p="$(cd "$nested" && pwd -P)"
+    if [[ "$nested_p" == "$parent" ]]; then
+        echo "error: research-push: refusing — docs/research resolves to the Keld monorepo. Nested private checkout required." >&2
+        exit 1
+    fi
+    origin="$(git -C "$DEST" remote get-url origin 2>/dev/null)" || {
+        echo "error: research-push: docs/research has no origin remote. Point origin at 0monish/keld-research." >&2
+        exit 1
+    }
+    normalized="${origin%.git}"
+    case "$normalized" in
+        https://github.com/0monish/keld-research|git@github.com:0monish/keld-research|ssh://git@github.com/0monish/keld-research)
+            ;;
+        *)
+            echo "error: research-push: refusing — origin is \`$origin\`, not 0monish/keld-research. Fix remote; Keld parent untouched." >&2
+            exit 1
+            ;;
+    esac
+
+    if [[ -n "$(git -C "$DEST" status --porcelain 2>/dev/null)" ]]; then
+        # Stage/commit only inside the nested repo (cwd = DEST).
+        git -C "$DEST" add -A
+        if ! git -C "$DEST" commit -m "$MSG"; then
+            echo "error: research-push: commit failed inside docs/research/ (Keld parent untouched)." >&2
+            exit 1
+        fi
+        echo "research-push: committed inside $DEST"
+    else
+        echo "research-push: no local changes in $DEST"
+    fi
+
+    if git -C "$DEST" push; then
+        echo "research-push: pushed $DEST"
+        exit 0
+    fi
+    echo "error: research-push: git push failed (auth or network). Nested repo only; Keld parent untouched." >&2
+    exit 1
+
+# Shallow clone/update framework reference trees from competitors.lock.toml → competitors/.
+# Pass --dry-run / --force as separate args (positional-arguments preserves spaces).
+competitors-sync *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="$(git rev-parse --show-toplevel)"
+    mkdir -p "$ROOT/target/competitors-sync"
+    rustc --edition=2024 -D warnings "$ROOT/tools/competitors_sync.rs" \
+        -o "$ROOT/target/competitors-sync/competitors-sync"
+    "$ROOT/target/competitors-sync/competitors-sync" "$@" "$ROOT"
+
+# Point this clone at tracked .githooks/ (local config only — not --global).
+hooks-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT="$(git rev-parse --show-toplevel)"
+    git -C "$ROOT" config core.hooksPath .githooks
+    chmod +x "$ROOT/.githooks/post-merge" "$ROOT/.githooks/post-checkout"
+    echo "hooks-install: core.hooksPath=.githooks (local). pull/checkout will run research-sync then competitors-sync."

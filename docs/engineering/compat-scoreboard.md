@@ -3,7 +3,10 @@
 > **Placeholder:** Keld does not publish compatibility scores yet. Do not infer API
 > support from the planned tiers below.
 
-The public scoreboard contract is defined by
+Installer size, host bytes, and idle RSS are a different board:
+[`budget-scoreboard.md`](./budget-scoreboard.md).
+
+The public **API** scoreboard contract is defined by
 [`docs/architecture/04-electron-compat.md` §4](../architecture/04-electron-compat.md#4-compat-tiers--the-public-scoreboard):
 
 - per-API status: compatible, compatible with caveats, or unsupported, with notes;

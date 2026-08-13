@@ -79,6 +79,12 @@ const SOURCES: &[Source] = &[
     },
     Source {
         section: "Reference",
+        title: "Size, RSS, and installer scoreboard",
+        path: "docs/engineering/budget-scoreboard.md",
+        description: "Living hello-to-apps measurements against architecture 01 §5 budgets and competitors.",
+    },
+    Source {
+        section: "Reference",
         title: "Electron compatibility scoreboard",
         path: "docs/engineering/compat-scoreboard.md",
         description: "Current measurement status and the future public scoreboard contract.",

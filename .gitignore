@@ -8,6 +8,8 @@ dist/
 # Large competitor checkouts stay on maintainer machines (never commit).
 # Architecture, specs, engineering, and agents docs under docs/ ARE tracked.
 # Numbered research stays local-only — never commit `docs/research/`.
+# Sync: `just research-sync` / `just competitors-sync` (see CONTRIBUTING.md).
+# Tracked: competitors.lock.toml, .githooks/ — do not ignore those.
 
 /competitors/
 /docs/research/

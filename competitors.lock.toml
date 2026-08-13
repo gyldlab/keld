@@ -1,0 +1,48 @@
+# Shallow reference clones for maintainer machines only.
+# Trees land under gitignored `competitors/` (never commit those trees).
+# kind = "competitor"       → competitors/<name>
+# kind = "migration-oracle" → competitors/migration/<name>
+# Optional `sha` pins a commit after shallow fetch; omit to track `branch`.
+
+[[repo]]
+name = "electron"
+kind = "competitor"
+url = "https://github.com/electron/electron.git"
+branch = "main"
+
+[[repo]]
+name = "tauri"
+kind = "competitor"
+url = "https://github.com/tauri-apps/tauri.git"
+branch = "dev"
+
+[[repo]]
+name = "wails"
+kind = "competitor"
+url = "https://github.com/wailsapp/wails.git"
+branch = "master"
+
+[[repo]]
+name = "neutralino"
+kind = "competitor"
+url = "https://github.com/neutralinojs/neutralinojs.git"
+branch = "main"
+
+[[repo]]
+name = "nwjs"
+kind = "competitor"
+url = "https://github.com/nwjs/nw.js.git"
+branch = "main"
+
+[[repo]]
+name = "electrobun"
+kind = "competitor"
+url = "https://github.com/blackboardsh/electrobun.git"
+branch = "main"
+
+# Flagship Electron app — migration/compat oracle, not a framework competitor.
+[[repo]]
+name = "vscode"
+kind = "migration-oracle"
+url = "https://github.com/microsoft/vscode.git"
+branch = "main"

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# After merge (e.g. git pull): refresh local-only research + competitor clones.
+# Soft-skip on missing just / no private-repo access — never fail the pull.
+# competitors-sync is backgrounded so pull is not blocked on shallow clones.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+if ! command -v just >/dev/null 2>&1; then
+  echo "warning: just not found; skip research-sync / competitors-sync" >&2
+  exit 0
+fi
+
+if ! just research-sync; then
+  echo "warning: research-sync failed; research tree may be stale (pull succeeded)" >&2
+fi
+
+(
+  if ! just competitors-sync; then
+    echo "warning: competitors-sync failed; pull succeeded (local-only trees unchanged)" >&2
+  fi
+) &
+
+exit 0
