@@ -28,3 +28,8 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
     navigation MUST present the `GuardInstalled` proof; agents MUST NOT add a
     second navigation path that bypasses it.
   Agents MUST NOT pass `AppProcess` to inherit `/app` media grants.
+- First paint (architecture 01 §5) is wry `PageLoadEvent::Finished`, not
+  `WindowBuilder::build` / titled HWND / `window-visible`. Agents MUST NOT
+  treat window creation as first paint (KEL-62). Dump phases with
+  `KELD_STARTUP_TRACE=1`. The `startup` module is macOS-only; do not compile
+  it on Linux/Windows (CodeRabbit #10).

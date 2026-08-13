@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
@@ -31,6 +32,7 @@ use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
+use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
 /// One live webview and the host window it fills (v0: one per window).
 #[repr(C)]
@@ -49,6 +51,8 @@ pub struct WkWebViewEngine {
     event_loop: Option<EventLoop<()>>,
     views: BTreeMap<u32, View>,
     next_id: u32,
+    /// KEL-62: first paint is wry `PageLoadEvent::Finished`, not window create.
+    startup: Arc<Mutex<StartupTrace>>,
 }
 
 impl fmt::Debug for WkWebViewEngine {
@@ -68,15 +72,19 @@ impl WkWebViewEngine {
     /// contract, enforced by tao (which aborts otherwise).
     #[must_use]
     pub fn new() -> Self {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let event_loop = EventLoop::new();
+        mark_startup(&startup, StartupPhase::EventLoop);
         Self {
-            event_loop: Some(EventLoop::new()),
+            event_loop: Some(event_loop),
             views: BTreeMap::new(),
             next_id: 1,
+            startup,
         }
     }
 
     /// Runs the event loop until the user closes the last window, then
-    /// returns so the caller can tear down host-owned app-link state.
+    /// returns so the caller can reap supervised children after the last window closes.
     ///
     /// # Errors
     ///
@@ -152,6 +160,7 @@ impl WebEngine for WkWebViewEngine {
             .with_closable(true)
             .build(event_loop)
             .map_err(|e| WvError::Window(e.to_string()))?;
+        mark_startup(&self.startup, StartupPhase::WindowCreated);
 
         // Developer extras are debug-only until keld-guard owns `web.devtools`.
         let builder = wry::WebViewBuilder::new();
@@ -166,6 +175,8 @@ impl WebEngine for WkWebViewEngine {
             PermissionsManifest::default(),
             webview_media_principal(WebviewId(id)),
         );
+        // KEL-62: first paint is PageLoadEvent::Finished, not titled HWND.
+        let builder = with_first_paint_trace(builder, Arc::clone(&self.startup));
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
@@ -173,6 +184,7 @@ impl WebEngine for WkWebViewEngine {
         let webview = builder
             .build(&window)
             .map_err(|e| WvError::Webview(e.to_string()))?;
+        mark_startup(&self.startup, StartupPhase::WebviewAttached);
 
         self.next_id += 1;
         self.views.insert(id, View { webview, window });
@@ -225,6 +237,39 @@ impl WebEngine for WkWebViewEngine {
 
 impl WkWebViewEngineExt for WkWebViewEngine {}
 
+fn mark_startup(startup: &Mutex<StartupTrace>, phase: StartupPhase) {
+    let mut guard = match startup.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.mark(phase);
+}
+
+fn wry_page_load(event: &wry::PageLoadEvent) -> PageLoad {
+    match event {
+        wry::PageLoadEvent::Started => PageLoad::Started,
+        wry::PageLoadEvent::Finished => PageLoad::Finished,
+    }
+}
+
+/// KEL-62: wry Finished → first paint. Started is navigation begin, not paint.
+fn with_first_paint_trace(
+    builder: wry::WebViewBuilder<'_>,
+    startup: Arc<Mutex<StartupTrace>>,
+) -> wry::WebViewBuilder<'_> {
+    builder.with_on_page_load_handler(move |event, _url| {
+        let mut guard = match startup.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let already = guard.offset(StartupPhase::FirstPaint).is_some();
+        guard.on_page_load(wry_page_load(&event));
+        if !already && guard.offset(StartupPhase::FirstPaint).is_some() && trace_enabled() {
+            eprintln!("{}", guard.report());
+        }
+    })
+}
+
 /// Opens a window from `spec` and runs until the user closes it.
 ///
 /// Thin wrapper for the Phase 1 hello slice: builds a [`WkWebViewEngine`],
@@ -247,5 +292,47 @@ mod view_drop_order_tests {
     #[test]
     fn view_declares_webview_before_window() {
         assert_wry_view_field_order!(View);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{with_first_paint_trace, wry_page_load};
+    use crate::startup::{StartupPhase, StartupTrace, phase_for_page_load};
+
+    #[test]
+    fn wry_finished_maps_to_first_paint_started_does_not() {
+        assert_eq!(
+            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Finished)),
+            Some(StartupPhase::FirstPaint)
+        );
+        assert_eq!(
+            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Started)),
+            None,
+            "KEL-62: Started is navigation begin, not first paint"
+        );
+    }
+
+    #[test]
+    fn macos_backend_installs_first_paint_trace() {
+        let src = include_str!("mod.rs");
+        assert!(
+            src.contains("with_first_paint_trace"),
+            "KEL-62: omitting the page-load handler leaves first paint unmeasured"
+        );
+        assert!(
+            src.contains("with_on_page_load_handler"),
+            "KEL-62: the helper must call wry's page-load handler"
+        );
+        assert!(
+            src.contains("PageLoadEvent::Finished"),
+            "KEL-62: first paint must be Finished, not window create"
+        );
+        let _ = with_first_paint_trace(
+            wry::WebViewBuilder::new(),
+            Arc::new(Mutex::new(StartupTrace::new())),
+        );
     }
 }
