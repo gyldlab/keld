@@ -213,3 +213,43 @@ Cite the path **and** an immutable SHA — not only `main`. Not in this monorepo
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11
 - Electron API scores: [`compat-scoreboard.md`](./compat-scoreboard.md)
 - Linear: KEL-11, KEL-25, KEL-26, KEL-39
+
+
+## Windows measured rows (2026-08-13)
+
+**Machine:** Windows 11 Home Single Language 10.0.26200, x64.
+**Engine:** WebView2 Evergreen **151.0.4129.78** (system webview on Windows is
+Chromium-derived — the macOS WK-vs-Chromium lane split does **not** transfer).
+**Build:** `cargo build --release -p keld-host -p keld-cli`, rustc
+1.93.0-x86_64-pc-windows-msvc. **Branch:** `agent/kel-27-window-windows-via-webview2`.
+**Competitor fixtures:**
+[`gyldlab/keld-benches@f54a3c4`](https://github.com/gyldlab/keld-benches/commit/f54a3c406f861d9f55d2c1518fde89f75e817bf5)
+under `windows/<framework>/hello`. Release builds, median of 3.
+**RSS method:** `WorkingSet64` 4 s after the window appears; helpers are the
+recursive descendant tree of our own PID only (a global `msedgewebview2` sweep
+counts 6 unrelated WebView2 processes this machine idles with). Main and helper
+RSS stay separate, as in the macOS rows. `window-visible` = first titled `HWND`;
+**not** first paint, and not comparable to the macOS rows.
+
+| Stack | Version | Binary | Installer | window-visible | Main RSS | Helper RSS | Procs | Fixture |
+|---|---|---|---|---|---|---|---|---|
+| **Keld** `keld-host --hello` | `agent/kel-27` | **624,128 B** | none (`keld-pack` is a `Format` enum) | 657 ms | **22,656 KB** | 330,400 KB | 7 | this repo |
+| Keld `keld.exe` CLI | same | 2,439,680 B | n/a | — | — | — | — | this repo |
+| Tauri | 2.11.5 | 8,634,880 B | MSI 2,846,720 B; NSIS 1,828,010 B | **61 ms** | 27,436 KB | 337,312 KB | 7 | [`windows/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/tauri/hello) |
+| Neutralino | 6.9.0 | 2,490,880 B | zip 8,291,997 B | 566 ms | 26,548 KB | 351,844 KB | 7 | [`windows/neutralino/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/neutralino/hello) |
+| Wails | v3.0.0-beta.8 | 10,295,296 B | none from `wails3 build` | 766 ms | 30,264 KB | 344,884 KB | 7 | [`windows/wails/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/wails/hello) |
+| Electron | 43.4.0 | forge `package` dir | not made | 185 ms | 89,500 KB | **215,536 KB** | **4** | [`windows/electron/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/electron/hello) |
+| NW.js | 0.114.1 | runtime zip 209,290,666 B | unpacked 552,990,288 B | 926 ms | 143,456 KB | 248,940 KB | 6 | [`windows/nwjs/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/nwjs/hello) |
+| Electrobun | 1.18.1 | Setup.exe 423,936 B | `.tar.zst` 33,164,123 B | **never opened** | 9,396 KB | 553,416 KB | 8 | [`windows/electrobun/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/electrobun/hello) |
+
+### What these rows do and do not support
+
+| Claim | Supported? |
+|---|---|
+| Keld has the smallest binary on Windows | **Yes.** 624,128 B is 13.8x under Tauri's exe, 16.5x under Wails'. |
+| Keld has the lowest main-process RSS on Windows | **Yes** — 22,656 KB, lowest of every arm that opened a window, and well under the ≤ 90 MB idle budget. |
+| Keld starts faster than Tauri | **No.** Tauri 61 ms vs Keld 657 ms — roughly 10x against us. Do not publish a startup claim. |
+| Keld uses less total memory than Electron | **No.** Electron 305,036 KB total beats every WebView2 arm because it runs 4 processes to WebView2's 7. |
+| Keld beats Tauri on total RSS | **Not meaningfully** — ~3%, inside run-to-run noise. The ~330 MB helper tier is engine-fixed and near-identical across all WebView2 arms. |
+| Electrobun comparison | **No.** Windows `--env=stable` emitted a macOS-shaped bundle and no window opened; the sample is a launcher that never rendered. |
+| Installer-to-installer vs Tauri MSI / NW.js zip | **No.** Keld has no installer; `keld-host --hello` is a host-lane diagnostic and does not spawn Bun. |
