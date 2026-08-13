@@ -10,5 +10,7 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
 - Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
 - Tests MUST follow repository `.agents/testing.md`.
 - Camera/microphone capture MUST go through `keld-guard` (`web.camera` /
-  `web.microphone`). Agents MUST NOT omit wry `with_permission_handler` on a live
-  `WebViewBuilder` — wry 0.56 auto-grants when the handler is `None`.
+  `web.microphone`) as `Principal::AppProcess` in v0 — wry 0.56's handler
+  has no origin or webview id. Agents MUST NOT omit wry `with_permission_handler`
+  on a live `WebViewBuilder` — wry 0.56 auto-grants when the handler is `None`.
+  Agents MUST NOT pass a `Webview` principal to inherit `/app` media grants.

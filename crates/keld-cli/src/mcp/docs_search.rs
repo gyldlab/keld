@@ -51,7 +51,7 @@ const DEFAULT_MAX: u8 = 5;
 const CAP_MAX: u8 = 20;
 const SNIPPET_CHARS: usize = 280;
 
-const CORPUS_TOPICS_HINT: &str = "corpus topics: quickstart, overview, ipc, security/capability manifest, \
+const CORPUS_TOPICS_HINT: &str = "corpus topics: quickstart, wire-formats, overview, ipc, security/capability manifest, \
      electron-compat, webview, runtime/tooling, agent-experience, error-codes";
 
 /// Compile-time `llms-full.txt` corpus, chunked by source marker and `##`.
@@ -275,6 +275,36 @@ mod tests {
                 .any(|r| r.source_path.contains("03-security")),
             "expected a hit from 03-security.md, got {:?}",
             result.results
+        );
+    }
+
+    #[test]
+    fn wire_formats_doc_is_in_generated_corpus() {
+        let result = search_docs(&DocsSearchArgs {
+            query: "Windows transport diverges".to_owned(),
+            max_results: Some(5),
+        });
+        assert!(
+            result.results.iter().any(|r| {
+                r.source_path.contains("04-wire-formats-and-contracts")
+                    && (r.snippet.contains("diverges")
+                        || r.snippet.contains("named pipe")
+                        || r.snippet.contains("Loopback TCP"))
+            }),
+            "KEL-61: onboarding/04 must be searchable in llms-full.txt, got {:?}",
+            result.results
+        );
+        let no_guard = search_docs(&DocsSearchArgs {
+            query: "no capability check".to_owned(),
+            max_results: Some(5),
+        });
+        assert!(
+            no_guard
+                .results
+                .iter()
+                .any(|r| r.source_path.contains("04-wire-formats-and-contracts")),
+            "KEL-61: echo-path honesty ledger must be retrievable, got {:?}",
+            no_guard.results
         );
     }
 

@@ -361,8 +361,10 @@ pub struct EchoResponse {
 | **Anything else** — including a `Call` on a different channel | `IpcError::Protocol`, session terminates |
 
 Note what is *not* in that path: there is no capability check. The echo frame goes from
-decode straight to handler. `keld-guard::evaluate` is live for MCP
-`keld_permissions_explain` and for macOS webview camera/microphone capture; it is
+decode straight to handler. `keld-guard::evaluate` takes a `Principal` and
+default-denies anything other than `AppProcess` (`KELD-GUARD006`); it is live for
+MCP `keld_permissions_explain` and for macOS webview camera/microphone capture
+(explicitly as `AppProcess`, because wry's handler has no webview id). It is
 still not called on privileged kipc frames, so the "every privileged operation
 passes the guard" property in [`03` §1](../architecture/03-security.md) is not yet
 true of IPC.

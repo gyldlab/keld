@@ -185,12 +185,13 @@ pub struct PermissionsExplainResult {
 ```
 
 - `keld_permissions_explain` calls `keld-guard`'s public evaluation API
-  (`evaluate(manifest, operation, path) -> Decision`) — it re-implements
+  (`evaluate(manifest, principal, operation, path) -> Decision`) — it re-implements
   **nothing**; guard's `DenyReason` display text is the floor and the `fix` is
   the exact JSON-pointer patch (guard `AGENTS.md`: "Every `DenyReason`:
   capability/scope + fix"). v0 evaluate is default-deny path/host scopes on
-  `app` grants; window/plugin principals and `$VARS` resolution are out of this
-  slice.
+  `AppProcess` grants; window/plugin principals are `KELD-GUARD006` inside
+  the engine and `KELD-MCP012` at this tool (string principal ≠ `"app"`).
+  `$VARS` resolution is out of this slice.
 - `keld doctor` gains `--json` (emits the `DoctorFinding` array) so CLI and MCP wrap
   identical internals (arch/07 §7); `doctor::Check` gains the optional §2 error.
 - Docs corpus: `docs/architecture/*.md` + `docs/engineering/keld-error-codes.md`,
@@ -345,9 +346,10 @@ CLI size — flag for the reviewer if it exceeds ~2 MiB).
 ## 10. Open questions
 
 1. **Sequencing of the `keld-guard` manifest-parse/evaluate API** (blocks T4):
-   **resolved 2026-08-13** — v0 `load_manifest` / `evaluate(manifest, operation, path)`
+   **resolved 2026-08-13** — v0 `load_manifest` / `evaluate(manifest, principal, operation, path)`
    landed; T4 consumes it. KEL-45 (ACL fixture crate + Insta snapshots) remains
-   a follow-up, not this slice.
+   a follow-up, not this slice. KEL-61 added the `Principal` argument
+   (`KELD-GUARD006` for non-`AppProcess`).
 2. **rmcp pin policy**: exact `=3.1.2` (recommended here, given post-GA wire churn)
    vs `~3.1` with the conformance suite as the bump gate. Human call — dep gate.
 3. **Error-code registry**: `KELD-MCP0xx` codes need docs pages, but the registry/CI

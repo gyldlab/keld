@@ -288,6 +288,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Permissions manifest is not valid JSONC
 - fix: Fix the JSON (comments are allowed; trailing commas are not).
 
+## KELD-GUARD006
+
+- crate: keld-guard
+- message: v0 evaluate does not apply app grants to this principal
+- fix: Do not apply `/app` scopes to a webview or plugin principal; window-level grants are not in this slice.
+
 ## KELD-DOCS001
 
 - crate: llms-docs

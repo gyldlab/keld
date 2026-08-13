@@ -17,6 +17,13 @@ enforcement, no per-window separation. Keld's job: Tauri's rigor with zero-confi
 Every kipc frame carries the sender's principal id (minted by the host, unforgeable —
 peers never self-identify). The guard (`keld-guard`) evaluates
 `(principal, channel, args) → allow | deny(reason)` before any handler runs.
+**Destination:** host-minted principal on every frame; guard-before-handler for
+every privileged call.
+**v0:** `FrameHeader` is `{kind, flags, channel, corr, len}` — there is no
+principal field on the wire. `keld-guard::evaluate` takes a `Principal` and
+default-denies anything other than `AppProcess` (`KELD-GUARD006`) so `app`
+scopes cannot be applied to a webview or plugin by accident. Channel grants
+are not evaluated. Echo dispatch does not call the guard.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 
@@ -82,12 +89,13 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
    granted, navigation policy hooks (allow-list), devtools off in release unless
    `web.devtools: true`.
    **v0:** camera and microphone requests are default-deny: the macOS backend
-   installs wry `with_permission_handler` and calls `keld-guard::evaluate` on
-   `web.camera` / `web.microphone` with requested resource `*` (wry 0.56's
-   handler is `Fn(PermissionKind)` and does not pass origin). Grant with
+   installs wry `with_permission_handler` and calls `keld-guard::evaluate` as
+   `Principal::AppProcess` on `web.camera` / `web.microphone` with requested
+   resource `*` (wry 0.56's handler is `Fn(PermissionKind)` and does not pass
+   origin or a webview principal). Grant with
    `"web": { "camera": ["*"] }` / `"microphone": ["*"]`. CSP injection,
-   `keld://` isolation, navigation allow-lists, and `web.devtools` are not in
-   this slice.
+   `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
+   and `web.devtools` are not in this slice.
 4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9
    lesson); host binaries + updates are ed25519-signed with a TUF-style rotating root;
    `keld.lock` pins host/Bun/polyfill-pack versions.

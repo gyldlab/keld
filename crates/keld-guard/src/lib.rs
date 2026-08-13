@@ -5,9 +5,12 @@
 //! `docs/architecture/03-security.md`.
 //!
 //! v0: parse `keld.permissions.jsonc` and default-deny `evaluate` for
-//! dotted capabilities (`fs.read`) against path/host scopes. Principals,
-//! `$VARS` resolution, symlink/`..` canonicalization beyond rejecting a
-//! `..` segment, and channel grants are not in this slice.
+//! dotted capabilities (`fs.read`) against path/host scopes.
+//! [`evaluate`] requires a [`Principal`] and denies anything other than
+//! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
+//! or plugin by omitting identity. `$VARS` resolution, symlink/`..`
+//! canonicalization beyond rejecting a `..` segment, and channel grants are
+//! not in this slice.
 
 mod jsonc;
 
@@ -41,6 +44,18 @@ pub enum Principal {
         /// Registration index in load order.
         id: u16,
     },
+}
+
+impl Principal {
+    /// Stable short name used in deny text (`app` / `webview` / `plugin`).
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::AppProcess => "app",
+            Self::Webview { .. } => "webview",
+            Self::Plugin { .. } => "plugin",
+        }
+    }
 }
 
 /// The outcome of a guard check.
@@ -80,6 +95,11 @@ pub enum DenyReason {
         /// The kipc channel name.
         channel: String,
     },
+    /// v0 evaluate implements [`Principal::AppProcess`] grants only.
+    NotAppProcess {
+        /// The principal that was presented (never [`Principal::AppProcess`]).
+        principal: Principal,
+    },
 }
 
 impl DenyReason {
@@ -90,6 +110,7 @@ impl DenyReason {
             Self::NotGranted { .. } => "KELD-GUARD001",
             Self::OutOfScope { .. } => "KELD-GUARD002",
             Self::ChannelForbidden { .. } => "KELD-GUARD003",
+            Self::NotAppProcess { .. } => "KELD-GUARD006",
         }
     }
 
@@ -100,6 +121,7 @@ impl DenyReason {
             Self::NotGranted { .. } => "not_granted",
             Self::OutOfScope { .. } => "out_of_scope",
             Self::ChannelForbidden { .. } => "channel_forbidden",
+            Self::NotAppProcess { .. } => "not_app_process",
         }
     }
 
@@ -129,6 +151,11 @@ impl DenyReason {
             Self::ChannelForbidden { channel } => format!(
                 "Add `{channel}` to this principal's channels list in keld.permissions.jsonc."
             ),
+            Self::NotAppProcess { principal } => format!(
+                "v0 keld-guard only evaluates AppProcess grants; `{}` principals are denied. \
+                 Do not apply `/app` scopes to a webview or plugin — window-level grants are not in this slice.",
+                principal.label()
+            ),
         }
     }
 }
@@ -151,6 +178,12 @@ impl fmt::Display for DenyReason {
             Self::ChannelForbidden { channel } => write!(
                 f,
                 "KELD-GUARD003: channel `{channel}` is not granted to this principal. {}",
+                self.fix()
+            ),
+            Self::NotAppProcess { principal } => write!(
+                f,
+                "KELD-GUARD006: v0 evaluate does not apply app grants to principal `{}`. {}",
+                principal.label(),
                 self.fix()
             ),
         }
@@ -285,13 +318,27 @@ fn parse_manifest_at(
 
 /// Default-deny check of `operation` (capability id, e.g. `fs.read`) against `path`.
 ///
+/// `principal` is required so callers cannot apply `app` scopes by omitting
+/// identity. v0 implements [`Principal::AppProcess`] grants only; any other
+/// principal is [`DenyReason::NotAppProcess`] (`KELD-GUARD006`) even when the
+/// path is in scope for `app`. That check runs before grant lookup so an empty
+/// manifest cannot collapse into "add a grant at `/app/…`".
+///
 /// v0 matching: exact string, or a pattern ending in `/**` (the prefix itself
 /// or `prefix/` + remainder). A `..` path segment is always out of scope.
 /// `$VARS` are matched literally.
 ///
 /// The `Allow` path does not allocate (`json_pointer_for` and `Vec` are deny-only).
 #[must_use]
-pub fn evaluate(manifest: &PermissionsManifest, operation: &str, path: &str) -> Decision {
+pub fn evaluate(
+    manifest: &PermissionsManifest,
+    principal: Principal,
+    operation: &str,
+    path: &str,
+) -> Decision {
+    if principal != Principal::AppProcess {
+        return Decision::Deny(DenyReason::NotAppProcess { principal });
+    }
     let Some(node) = grant_node(manifest, operation) else {
         return deny_not_granted(operation, path);
     };
@@ -408,6 +455,26 @@ mod tests {
             channel_msg.contains("keld.permissions.jsonc"),
             "{channel_msg}"
         );
+
+        let webview = Principal::Webview {
+            id: 1,
+            generation: 1,
+        };
+        let not_app = DenyReason::NotAppProcess { principal: webview };
+        let not_app_msg = not_app.to_string();
+        assert!(not_app_msg.contains("KELD-GUARD006"), "{not_app_msg}");
+        assert!(not_app_msg.contains("webview"), "{not_app_msg}");
+        assert!(
+            !not_app.fix().contains("/app/"),
+            "must not recommend applying app scopes to a webview: {}",
+            not_app.fix()
+        );
+        assert_eq!(not_app.code(), "KELD-GUARD006");
+        assert_eq!(not_app.kind(), "not_app_process");
+    }
+
+    fn eval_app(manifest: &PermissionsManifest, operation: &str, path: &str) -> Decision {
+        evaluate(manifest, Principal::AppProcess, operation, path)
     }
 
     #[test]
@@ -439,7 +506,7 @@ mod tests {
     #[test]
     fn empty_manifest_denies() {
         let manifest = parse_manifest("{}").expect("empty object");
-        let decision = evaluate(&manifest, "fs.read", "$DOCUMENTS/notes.txt");
+        let decision = eval_app(&manifest, "fs.read", "$DOCUMENTS/notes.txt");
         match decision {
             Decision::Deny(reason) => {
                 assert_eq!(reason.kind(), "not_granted");
@@ -454,7 +521,7 @@ mod tests {
     fn unknown_operation_is_not_granted() {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
-        let decision = evaluate(&manifest, "fs.write", "$APPDATA/x");
+        let decision = eval_app(&manifest, "fs.write", "$APPDATA/x");
         match decision {
             Decision::Deny(DenyReason::NotGranted { capability, .. }) => {
                 assert_eq!(capability, "fs.write");
@@ -467,7 +534,7 @@ mod tests {
     fn path_outside_scope_is_denied() {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
-        let decision = evaluate(&manifest, "fs.read", "$DOCUMENTS/notes.txt");
+        let decision = eval_app(&manifest, "fs.read", "$DOCUMENTS/notes.txt");
         match decision {
             Decision::Deny(DenyReason::OutOfScope {
                 scope, requested, ..
@@ -477,12 +544,12 @@ mod tests {
             }
             other => panic!("expected OutOfScope, got {other:?}"),
         }
-        let swallowed = evaluate(&manifest, "fs.read", "$APPDATAevil/x");
+        let swallowed = eval_app(&manifest, "fs.read", "$APPDATAevil/x");
         assert!(
             matches!(swallowed, Decision::Deny(DenyReason::OutOfScope { .. })),
             "prefix without slash must not match /**: {swallowed:?}"
         );
-        let traversal = evaluate(&manifest, "fs.read", "$APPDATA/../secret");
+        let traversal = eval_app(&manifest, "fs.read", "$APPDATA/../secret");
         assert!(
             matches!(traversal, Decision::Deny(DenyReason::OutOfScope { .. })),
             ".. segment must not ride a prefix grant: {traversal:?}"
@@ -494,13 +561,13 @@ mod tests {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
         assert_eq!(
-            evaluate(&manifest, "fs.read", "$APPDATA/notes.txt"),
+            eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
             Decision::Allow,
             "in-scope path must allow — inverted deny/allow would fail this"
         );
-        assert_eq!(evaluate(&manifest, "fs.read", "$APPDATA"), Decision::Allow);
+        assert_eq!(eval_app(&manifest, "fs.read", "$APPDATA"), Decision::Allow);
         assert_ne!(
-            evaluate(&manifest, "fs.read", "$DOCUMENTS/notes.txt"),
+            eval_app(&manifest, "fs.read", "$DOCUMENTS/notes.txt"),
             Decision::Allow
         );
     }
@@ -522,7 +589,7 @@ mod tests {
         );
         let manifest = parse_manifest(text).expect("jsonc with comments");
         assert_eq!(
-            evaluate(&manifest, "fs.read", "https://example.com/x"),
+            eval_app(&manifest, "fs.read", "https://example.com/x"),
             Decision::Allow,
             "https:// inside a string must survive comment stripping"
         );
@@ -537,7 +604,7 @@ mod tests {
     #[test]
     fn non_string_scope_is_not_granted() {
         let manifest = parse_manifest(r#"{"app":{"fs":{"read":[1]}}}"#).expect("manifest");
-        match evaluate(&manifest, "fs.read", "$APPDATA/x") {
+        match eval_app(&manifest, "fs.read", "$APPDATA/x") {
             Decision::Deny(DenyReason::NotGranted { .. }) => {}
             other => panic!("non-string grant must fail closed, got {other:?}"),
         }
@@ -546,7 +613,7 @@ mod tests {
     #[test]
     fn web_camera_and_microphone_default_deny() {
         let empty = parse_manifest("{}").expect("empty object");
-        match evaluate(&empty, "web.camera", "*") {
+        match eval_app(&empty, "web.camera", "*") {
             Decision::Deny(DenyReason::NotGranted {
                 capability,
                 json_pointer,
@@ -558,7 +625,7 @@ mod tests {
             }
             other => panic!("empty manifest must default-deny web.camera, got {other:?}"),
         }
-        match evaluate(&empty, "web.microphone", "*") {
+        match eval_app(&empty, "web.microphone", "*") {
             Decision::Deny(DenyReason::NotGranted { capability, .. }) => {
                 assert_eq!(capability, "web.microphone");
             }
@@ -568,23 +635,90 @@ mod tests {
         let camera_only =
             parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
         assert_eq!(
-            evaluate(&camera_only, "web.camera", "*"),
+            eval_app(&camera_only, "web.camera", "*"),
             Decision::Allow,
             "in-scope web.camera must allow — inverted deny/allow would fail this"
         );
         assert!(
             matches!(
-                evaluate(&camera_only, "web.microphone", "*"),
+                eval_app(&camera_only, "web.microphone", "*"),
                 Decision::Deny(DenyReason::NotGranted { .. })
             ),
             "camera grant must not imply microphone"
         );
         assert!(
             matches!(
-                evaluate(&camera_only, "web.camera", "https://evil.example"),
+                eval_app(&camera_only, "web.camera", "https://evil.example"),
                 Decision::Deny(DenyReason::OutOfScope { .. })
             ),
             "v0 media sentinel is exact `*`, not an origin glob"
         );
+    }
+
+    #[test]
+    fn webview_does_not_inherit_app_grants() {
+        let manifest =
+            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+        assert_eq!(
+            eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
+            Decision::Allow,
+            "control: AppProcess must still allow the in-scope path"
+        );
+        let webview = Principal::Webview {
+            id: 7,
+            generation: 1,
+        };
+        match evaluate(&manifest, webview, "fs.read", "$APPDATA/notes.txt") {
+            Decision::Deny(reason @ DenyReason::NotAppProcess { principal }) => {
+                assert_eq!(principal, webview);
+                assert_eq!(principal.label(), "webview");
+                assert_eq!(reason.code(), "KELD-GUARD006");
+                assert_eq!(reason.kind(), "not_app_process");
+                assert!(
+                    !reason.fix().contains("/app/fs/read"),
+                    "must not recommend applying app scopes: {}",
+                    reason.fix()
+                );
+            }
+            other => panic!("webview must not inherit app grants, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plugin_does_not_inherit_app_grants() {
+        let manifest =
+            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+        let plugin = Principal::Plugin { id: 3 };
+        match evaluate(&manifest, plugin, "fs.read", "$APPDATA/notes.txt") {
+            Decision::Deny(DenyReason::NotAppProcess { principal }) => {
+                assert_eq!(principal, plugin);
+                assert_eq!(principal.label(), "plugin");
+            }
+            other => panic!("plugin must not inherit app grants, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_app_principal_is_denied_before_grant_lookup() {
+        let empty = parse_manifest("{}").expect("empty object");
+        match evaluate(
+            &empty,
+            Principal::Webview {
+                id: 0,
+                generation: 0,
+            },
+            "fs.read",
+            "$APPDATA/x",
+        ) {
+            Decision::Deny(DenyReason::NotAppProcess { .. }) => {}
+            other => panic!(
+                "empty-manifest webview must be KELD-GUARD006, not NotGranted \
+                 (that fix would say to add `/app` scopes): {other:?}"
+            ),
+        }
+        match eval_app(&empty, "fs.read", "$APPDATA/x") {
+            Decision::Deny(DenyReason::NotGranted { .. }) => {}
+            other => panic!("AppProcess + empty manifest must stay NotGranted, got {other:?}"),
+        }
     }
 }
