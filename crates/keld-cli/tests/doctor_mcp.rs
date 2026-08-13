@@ -404,6 +404,41 @@ fn mcp_permissions_explain_missing_manifest_is_error_mcp010() {
 }
 
 #[test]
+fn mcp_permissions_explain_channel_is_error_mcp014_not_allow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manifest = dir.path().join("keld.permissions.jsonc");
+    std::fs::write(&manifest, r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("write");
+    let before = std::fs::read(&manifest).expect("hash before");
+
+    let resp = mcp_tools_call(&serde_json::json!({
+        "name": "keld_permissions_explain",
+        "arguments": {
+            "manifest_path": manifest.to_string_lossy(),
+            "operation": {
+                "principal": "app",
+                "capability": "fs.read",
+                "args": { "path": "$APPDATA/notes.txt" },
+                "channel": "echo"
+            }
+        }
+    }));
+
+    assert_eq!(resp["id"], 2);
+    let result = &resp["result"];
+    assert_eq!(result.get("isError"), Some(&Value::Bool(true)), "{result}");
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["code"], "KELD-MCP014");
+    assert_ne!(
+        structured.get("decision"),
+        Some(&Value::String("allow".into()))
+    );
+    let fix = structured["fix"].as_str().expect("fix");
+    assert!(fix.contains("omit `channel`"), "{fix}");
+    let after = std::fs::read(&manifest).expect("hash after");
+    assert_eq!(before, after, "tool must not write the manifest");
+}
+
+#[test]
 fn keld_cli_dependency_tree_has_no_http_transport_crates() {
     let output = Command::new(env!("CARGO"))
         .args([

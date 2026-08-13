@@ -349,6 +349,7 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
 | `KELD-IPC-001..006` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline |
 | `KELD-WV-001..007` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id |
+| `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |
 
 The `KELD-WV-*` messages are covered by a test that asserts both the code and the fix
 hint are present (`error::tests::display_messages_carry_error_codes_and_fix_guidance`) —

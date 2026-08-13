@@ -28,7 +28,7 @@ pub struct DeniedOperation {
     /// Capability arguments (path, host, etc.).
     #[serde(default)]
     pub args: HashMap<String, serde_json::Value>,
-    /// Optional kipc channel name.
+    /// Optional kipc channel name. Omit in v0 — a present value returns `KELD-MCP014`.
     #[serde(default)]
     pub channel: Option<String>,
 }
@@ -52,7 +52,7 @@ pub struct PermissionsExplainResult {
 /// MCP view of [`keld_guard::DenyReason`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DenyReasonView {
-    /// `not_granted` | `out_of_scope` | `channel_forbidden`.
+    /// `not_granted` | `out_of_scope` (v0). `channel_forbidden` is not produced.
     pub kind: String,
     /// Capability id when the deny is grant/scope related.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,7 +60,7 @@ pub struct DenyReasonView {
     /// Failing scope text when `kind` is `out_of_scope`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// Channel name when `kind` is `channel_forbidden`.
+    /// Unused in v0 (`evaluate` does not return `ChannelForbidden`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
     /// Manifest JSON pointer named in the fix.
@@ -87,18 +87,21 @@ pub const MANIFEST_UNREADABLE_CODE: &str = "KELD-MCP013";
 pub const MANIFEST_PARSE_CODE: &str = "KELD-MCP011";
 /// Principal is not `app` (v0 evaluate is app-process grants only).
 pub const UNKNOWN_PRINCIPAL_CODE: &str = "KELD-MCP012";
+/// `channel` was set; v0 evaluate does not cover channel grants.
+pub const CHANNEL_UNSUPPORTED_CODE: &str = "KELD-MCP014";
 
 const APP_PRINCIPAL: &str = "app";
 
 /// Explains allow/deny for `args` by calling `keld-guard` evaluate.
 ///
-/// Missing/unreadable/invalid manifests and unknown principals are `Err`
-/// (MCP `isError: true`). Allow and deny are `Ok` — deny is a normal result.
+/// Missing/unreadable/invalid manifests, unknown principals, and a present
+/// `channel` are `Err` (MCP `isError: true`). Allow and deny are `Ok` — deny
+/// is a normal result.
 ///
 /// # Errors
 ///
-/// Returns a §2 object: `KELD-MCP010`, `KELD-MCP013`, `KELD-MCP011`, or
-/// `KELD-MCP012`.
+/// Returns a §2 object: `KELD-MCP010`, `KELD-MCP013`, `KELD-MCP011`,
+/// `KELD-MCP012`, or `KELD-MCP014`.
 pub fn permissions_explain(
     args: &PermissionsExplainArgs,
 ) -> Result<PermissionsExplainResult, KeldErrorObject> {
@@ -116,6 +119,20 @@ pub fn permissions_explain(
         )
         .with_cause(format!(
             "requested principal={} capability={} manifest_path={}",
+            args.operation.principal,
+            args.operation.capability,
+            args.manifest_path.display()
+        )));
+    }
+
+    if let Some(channel) = args.operation.channel.as_deref() {
+        return Err(KeldErrorObject::new(
+            CHANNEL_UNSUPPORTED_CODE,
+            format!("channel grants are not evaluated in v0 (`{channel}`)"),
+            "omit `channel` — v0 evaluate covers app path/host scopes only",
+        )
+        .with_cause(format!(
+            "requested principal={} capability={} channel={channel} manifest_path={}",
             args.operation.principal,
             args.operation.capability,
             args.manifest_path.display()
@@ -374,6 +391,52 @@ mod tests {
         .expect_err("unknown principal");
         assert_eq!(err.code, UNKNOWN_PRINCIPAL_CODE);
         assert!(err.fix.contains("app"), "{}", err.fix);
+    }
+
+    #[test]
+    fn channel_on_in_scope_path_is_mcp014_not_allow() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keld.permissions.jsonc");
+        fs::write(&path, r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("write");
+        let mut explain = args(dir.path(), "fs.read", "$APPDATA/notes.txt");
+        explain.operation.channel = Some("echo".to_owned());
+        let err = permissions_explain(&explain)
+            .expect_err("channel must fail closed instead of evaluating the path");
+        assert_eq!(err.code, CHANNEL_UNSUPPORTED_CODE);
+        assert_ne!(err.code, UNKNOWN_PRINCIPAL_CODE);
+        assert!(err.message.contains("echo"), "{}", err.message);
+        assert!(
+            err.fix.contains("omit `channel`"),
+            "fix must tell the caller to omit channel: {}",
+            err.fix
+        );
+    }
+
+    #[test]
+    fn empty_channel_string_is_mcp014() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut explain = args(dir.path(), "fs.read", "$APPDATA/x");
+        explain.operation.channel = Some(String::new());
+        let err = permissions_explain(&explain).expect_err("empty channel is still present");
+        assert_eq!(err.code, CHANNEL_UNSUPPORTED_CODE);
+    }
+
+    #[test]
+    fn channel_present_is_mcp014_before_missing_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = permissions_explain(&PermissionsExplainArgs {
+            manifest_path: dir.path().join("absent").join("keld.permissions.jsonc"),
+            operation: DeniedOperation {
+                principal: APP_PRINCIPAL.to_owned(),
+                capability: "fs.read".to_owned(),
+                args: HashMap::new(),
+                channel: Some("notes.save".to_owned()),
+            },
+        })
+        .expect_err("unimplemented channel must not fall through to manifest I/O");
+        assert_eq!(err.code, CHANNEL_UNSUPPORTED_CODE);
+        assert_ne!(err.code, MANIFEST_MISSING_CODE);
+        assert!(err.message.contains("notes.save"), "{}", err.message);
     }
 
     #[test]

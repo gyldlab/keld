@@ -112,7 +112,8 @@ principal, capability, and arguments:
 A denial is a normal result, not a protocol failure. Read `deny_reason`, then present
 the returned `patch` and `error.fix` for human review. The tool never applies the patch.
 A missing manifest is a tool error with code `KELD-MCP010`; its fix names the path that
-was tried.
+was tried. Omit `operation.channel` in v0 — a present value is `KELD-MCP014` (channel
+grants are not evaluated; the tool must not answer the path question).
 
 ## Supported protocol surface
 
