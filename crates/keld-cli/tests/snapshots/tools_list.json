@@ -189,7 +189,7 @@
     },
     {
       "name": "keld_permissions_explain",
-      "description": "Explain a capability allow/deny against keld.permissions.jsonc and return the exact manifest patch. Read-only — never writes the file. Missing manifest returns KELD-MCP010.",
+      "description": "Explain a capability allow/deny against keld.permissions.jsonc and return the exact manifest patch. Read-only — never writes the file. Missing manifest returns KELD-MCP010. A present `channel` returns KELD-MCP014 (v0 does not evaluate channel grants).",
       "inputSchema": {
         "$defs": {
           "DeniedOperation": {
@@ -207,7 +207,7 @@
               },
               "channel": {
                 "default": null,
-                "description": "Optional kipc channel name.",
+                "description": "Optional kipc channel name. Omit in v0 — a present value returns `KELD-MCP014`.",
                 "type": [
                   "string",
                   "null"
@@ -255,7 +255,7 @@
                 ]
               },
               "channel": {
-                "description": "Channel name when `kind` is `channel_forbidden`.",
+                "description": "Unused in v0 (`evaluate` does not return `ChannelForbidden`).",
                 "type": [
                   "string",
                   "null"
@@ -269,7 +269,7 @@
                 ]
               },
               "kind": {
-                "description": "`not_granted` | `out_of_scope` | `channel_forbidden`.",
+                "description": "`not_granted` | `out_of_scope` (v0). `channel_forbidden` is not produced.",
                 "type": "string"
               },
               "scope": {

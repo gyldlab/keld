@@ -1699,6 +1699,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Permissions manifest exists but cannot be read
 - fix: Check that the path is a readable file (not a directory) and retry.
 
+## KELD-MCP014
+
+- crate: keld-cli
+- message: Channel grants are not evaluated in v0
+- fix: omit `channel` — v0 evaluate covers app path/host scopes only
+
 ## KELD-MCP020
 
 - crate: keld-cli

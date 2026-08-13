@@ -83,7 +83,8 @@ impl KeldMcpServer {
         name = "keld_permissions_explain",
         description = "Explain a capability allow/deny against keld.permissions.jsonc \
                        and return the exact manifest patch. Read-only — never writes \
-                       the file. Missing manifest returns KELD-MCP010."
+                       the file. Missing manifest returns KELD-MCP010. A present \
+                       `channel` returns KELD-MCP014 (v0 does not evaluate channel grants)."
     )]
     #[allow(clippy::unused_self)] // `&self` required by rmcp `#[tool]` instance methods even when unused.
     fn keld_permissions_explain(

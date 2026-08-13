@@ -103,6 +103,12 @@ Non-goals (explicit, per `docs/research/21-mcp-standard.md`):
    with stdio-transport + server features only.
 10. Given `keld mcp` with an unknown sub-verb, when invoked, then usage is printed to
     stderr and the exit code is `2` (misuse, per arch/07 §7).
+11. Error case: given a fixture that would **allow** `fs.read` on `$APPDATA/notes.txt`
+    and `operation.channel` set to any string (including `""`), when
+    `keld_permissions_explain` runs, then the tool returns `isError: true` content
+    embedding §2 error `KELD-MCP014` whose `fix` tells the caller to omit `channel`
+    — not `decision: "allow"`. `channel?` stays in the input schema (approved v1
+    shape); v0 fails closed on it. `channel_forbidden` is not a v0 deny kind.
 
 ## 4. Design
 
@@ -167,11 +173,12 @@ pub struct DocsSearchResult {
 pub struct PermissionsExplainArgs {
     pub manifest_path: PathBuf,      // keld.permissions.jsonc
     pub operation: DeniedOperation,  // { principal, capability, args, channel? }
+                                     // channel present → KELD-MCP014 in v0 (fail closed)
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PermissionsExplainResult {
     pub decision: String,                 // "allow" | "deny"
-    pub deny_reason: Option<DenyReasonView>, // mirrors keld_guard::DenyReason
+    pub deny_reason: Option<DenyReasonView>, // v0: not_granted | out_of_scope
     pub error: Option<KeldErrorObject>,   // fix = exact manifest patch
     pub patch: Option<ManifestPatch>,     // { json_pointer, value, snippet }
 }
@@ -192,10 +199,13 @@ pub struct PermissionsExplainResult {
   (ties broken by path then heading order). No search dependency; std-first.
 - Error codes in the §2 registry (`docs/engineering/keld-error-codes.md`):
   `KELD-MCP001`/`002` serve failures · `KELD-MCP020` doctor JSON serialize failure ·
-  `KELD-MCP010`/`011`/`012` (manifest missing/parse/unknown principal). Deny
+  `KELD-MCP010`/`011`/`012`/`013`/`014` (manifest missing/parse/unknown principal/
+  unreadable/channel not evaluated). Deny
   outcomes use `KELD-GUARD001`/`002` in the §2 `error` object with `isError:
   false`. Tool-level failures return `isError` content with these objects;
   JSON-RPC error codes are left to rmcp (reserved range respected).
+  v0 `evaluate` covers app path/host scopes only: a present `operation.channel`
+  is `KELD-MCP014` (fail closed), not an allow/deny for the path question.
 
 ### Dependency review gate — rmcp (and tokio)
 
@@ -283,7 +293,8 @@ shape-check the platform-variant one.
 - [x] T4 `keld_permissions_explain`: wraps `keld-guard` public
       `load_manifest` / `evaluate` (v0 default-deny path scopes); patch
       synthesis, exact-match fix-text tests, read-only assertion test.
-      Missing file → `isError` + `KELD-MCP010`.
+      Missing file → `isError` + `KELD-MCP010`. Present `channel` →
+      `isError` + `KELD-MCP014` (v0 does not evaluate channel grants).
 - [x] T5 Agent-facing usage doc (client registration snippet for Claude Code/Cursor,
       tool descriptions with cross-tool ordering hints) + `docs/agents/learnings.md`
       entry + error-code registry entries for `KELD-MCP0xx`.
@@ -302,6 +313,7 @@ shape-check the platform-variant one.
 | 8 (manifest missing) | unit + stdio `tools/call`: `KELD-MCP010` object, `isError: true`, `fix` names the tried path |
 | 9 (no HTTP deps) | CI check in T2's PR: `cargo tree -p keld-cli` asserted free of `hyper`/`axum`/`reqwest` (script or `cargo-deny` ban list) |
 | 10 (exit code 2) | integration: `keld mcp bogus` → stderr usage, exit 2 |
+| 11 (channel fail-closed) | unit + stdio `tools/call`: in-scope path + `channel` → `KELD-MCP014`, `isError: true`, not `decision: "allow"` |
 
 Anti-flake (workflow.md + root `AGENTS.md` rules applied): **no sleeps** — the stdio
 harness reads until a complete JSON-RPC frame (length/newline-delimited per rmcp
