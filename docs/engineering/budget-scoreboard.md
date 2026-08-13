@@ -191,6 +191,7 @@ first paint; fill `vs` from blog citations; fake `bench/` CI.
 
 ## Related
 
+- Fixture home (public): [gyldlab/keld-benches](https://github.com/gyldlab/keld-benches) — hello / installer / RSS apps for Swift and competitors; not in this monorepo
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11

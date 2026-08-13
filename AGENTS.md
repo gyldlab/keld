@@ -118,6 +118,9 @@ Agents MUST grep first (no dupes/opinions). Stale rule here → fixing it *is* t
 ## Private research
 `docs/research/` is a nested git checkout of `https://github.com/0monish/keld-research.git` (not the Keld monorepo index). When an agent creates or edits files under `docs/research/`, it MUST commit inside that nested repo and push with `just research-push` (or `git -C docs/research push`) in the same turn, unless push soft-fails for no access (then warn the user). Agents MUST NOT `git add docs/research` from the Keld repo root / MUST NOT commit research into Keld.
 
+## Public benches
+Hello-window / installer / RSS fixtures for competitor frameworks and native Swift live in [`https://github.com/gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) (public). When an agent creates or updates such benchmark apps, it MUST commit and push to `gyldlab/keld-benches`, not into the Keld monorepo. Agents MUST NOT add Electron / Tauri / Wails / Neutralino / NW.js / Electrobun / Swift hello apps under Keld `docs/`, `competitors/` (shallow reference clones from the lockfile), or `/tmp`-only without pushing to `keld-benches`. Measured numbers MAY be recorded in `docs/engineering/budget-scoreboard.md` (Keld) with a link to the fixture path in `keld-benches`.
+
 ## Commits & PRs
 - Conventional: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
 - PR MUST include: Summary · Spec refs · Review gates · Tests · Platforms · Perf impact (or none).
