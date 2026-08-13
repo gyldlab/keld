@@ -8,8 +8,6 @@ This file is generated from tracked authoritative Markdown by `tools/llms_docs.r
 
 - [Quickstart](docs/onboarding/README.md): Set up the workspace, run the implemented commands, and verify a change.
 
-- [Wire formats and contracts](docs/onboarding/04-wire-formats-and-contracts.md): Byte-level kipc frames, handshake, codec, and implemented-vs-specified gaps.
-
 ## Architecture
 
 - [01 — Overview](docs/architecture/01-overview.md): System boundaries, design principles, crate topology, and performance budgets.
