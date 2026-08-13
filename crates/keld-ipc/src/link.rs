@@ -47,6 +47,10 @@ fn ensure_payload_len(len: usize) -> Result<(), IpcError> {
 /// Rejects `header.len` above [`MAX_FRAME_LEN`] before allocating the payload
 /// buffer (forged `u32` lengths must not become multi-GiB `Vec`s).
 ///
+/// After [`IpcError::Timeout`] or [`IpcError::Io`], the stream is unusable: a
+/// partial header or payload may already have been consumed. Close the link;
+/// do not retry on the same stream.
+///
 /// # Errors
 ///
 /// Returns [`IpcError`] on I/O failure, bad header, oversized payload, or

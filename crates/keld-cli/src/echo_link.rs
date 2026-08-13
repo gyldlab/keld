@@ -166,6 +166,7 @@ impl EchoServer {
         }
     }
 
+    #[cfg_attr(windows, allow(clippy::unused_self))] // Unix unlinks `self.session_dir`; Windows TCP has no socket file.
     fn cleanup_socket(&self) {
         #[cfg(unix)]
         {
@@ -210,7 +211,7 @@ mod tests {
     #[test]
     fn missing_socket_is_ipc_001() {
         #[cfg(unix)]
-        let link = format!(
+        let link_owned = format!(
             "/no/such/keld-echo-{}-{}.sock",
             std::process::id(),
             std::time::SystemTime::now()
@@ -218,10 +219,12 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         );
+        #[cfg(unix)]
+        let link = link_owned.as_str();
         #[cfg(windows)]
         let link = "1"; // port 1: connection refused on loopback
         let err = echo_roundtrip(
-            &link,
+            link,
             &EchoRequest {
                 message: "missing".to_owned(),
                 count: 1,

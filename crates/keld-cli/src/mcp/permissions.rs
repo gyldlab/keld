@@ -97,8 +97,8 @@ const APP_PRINCIPAL: &str = "app";
 ///
 /// # Errors
 ///
-/// Returns a §2 object: [`MANIFEST_MISSING_CODE`], [`MANIFEST_UNREADABLE_CODE`],
-/// [`MANIFEST_PARSE_CODE`], or [`UNKNOWN_PRINCIPAL_CODE`].
+/// Returns a §2 object: `KELD-MCP010`, `KELD-MCP013`, `KELD-MCP011`, or
+/// `KELD-MCP012`.
 pub fn permissions_explain(
     args: &PermissionsExplainArgs,
 ) -> Result<PermissionsExplainResult, KeldErrorObject> {
