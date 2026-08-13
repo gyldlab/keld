@@ -12,7 +12,7 @@ use keld_ipc::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use keld_ipc::link::{handshake, read_frame, write_frame};
 use keld_ipc::{
     ECHO_CHANNEL, EchoRequest, EchoResponse, HEADER_LEN, IpcError, MAGIC, PROTOCOL_VERSION,
-    echo_call, serve_echo_session,
+    SessionToken, echo_call, serve_echo_session,
 };
 
 #[cfg(unix)]
@@ -36,8 +36,14 @@ fn connected_pair() -> (Stream, Stream) {
     (client, server)
 }
 
+const TEST_TOKEN_BYTES: [u8; 32] = [0xA5; 32];
+
+fn test_token() -> SessionToken {
+    SessionToken::from_bytes(TEST_TOKEN_BYTES)
+}
+
 fn spawn_echo_server(mut server: Stream) -> thread::JoinHandle<Result<(), IpcError>> {
-    thread::spawn(move || serve_echo_session(&mut server))
+    thread::spawn(move || serve_echo_session(&mut server, &test_token()))
 }
 
 #[cfg(unix)]
@@ -50,7 +56,7 @@ fn listen_and_serve(
         let listener = std::os::unix::net::UnixListener::bind(&endpoint)?;
         ready.send(()).expect("ready");
         let (mut stream, _) = listener.accept()?;
-        serve_echo_session(&mut stream)
+        serve_echo_session(&mut stream, &test_token())
     })
 }
 
@@ -62,7 +68,7 @@ fn echo_over_app_link_copies_request_fields() {
         message: "hello kipc".to_owned(),
         count: 42,
     };
-    let response = echo_call(&mut client, &req).expect("echo");
+    let response = echo_call(&mut client, &req, &test_token()).expect("echo");
     drop(client);
     handle.join().expect("server thread").expect("serve");
     assert_eq!(response.message, "hello kipc");
@@ -83,6 +89,7 @@ fn echo_empty_message_over_socket() {
             message: String::new(),
             count: 0,
         },
+        &test_token(),
     )
     .expect("echo empty");
     drop(client);
@@ -95,7 +102,7 @@ fn echo_empty_message_over_socket() {
 fn echo_reply_is_reply_kind_not_call_echo() {
     let (mut client, server) = connected_pair();
     let handle = spawn_echo_server(server);
-    handshake(&mut client).expect("client hello");
+    handshake(&mut client, &test_token()).expect("client hello");
     let req = EchoRequest {
         message: "corr-check".to_owned(),
         count: 7,
@@ -136,7 +143,7 @@ fn handshake_protocol_version_mismatch_is_ipc_002() {
     hello[2] = 99;
     server.write_all(&hello).expect("write bad version hello");
     server.flush().expect("flush");
-    let err = handshake(&mut client).expect_err("v99 must fail");
+    let err = handshake(&mut client, &test_token()).expect_err("v99 must fail");
     assert!(
         matches!(err, IpcError::Header(keld_ipc::HeaderError::BadVersion(99))),
         "got {err}"
@@ -152,7 +159,7 @@ fn handshake_protocol_version_mismatch_is_ipc_002() {
 fn call_on_unknown_channel_is_ipc_005() {
     let (mut client, server) = connected_pair();
     let handle = spawn_echo_server(server);
-    handshake(&mut client).expect("hello");
+    handshake(&mut client, &test_token()).expect("hello");
     write_frame(
         &mut client,
         FrameKind::Call,
@@ -174,7 +181,7 @@ fn call_on_unknown_channel_is_ipc_005() {
 fn invalid_postcard_call_is_ipc_003() {
     let (mut client, server) = connected_pair();
     let handle = spawn_echo_server(server);
-    handshake(&mut client).expect("hello");
+    handshake(&mut client, &test_token()).expect("hello");
     write_frame(
         &mut client,
         FrameKind::Call,
@@ -196,7 +203,7 @@ fn invalid_postcard_call_is_ipc_003() {
 fn echo_call_rejects_reply_on_wrong_channel() {
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        handshake(&mut server)?;
+        handshake(&mut server, &test_token())?;
         let (header, payload) = read_frame(&mut server)?;
         write_frame(
             &mut server,
@@ -214,6 +221,7 @@ fn echo_call_rejects_reply_on_wrong_channel() {
             message: "cross-channel".to_owned(),
             count: 1,
         },
+        &test_token(),
     )
     .expect_err("REPLY on another channel must not decode as echo");
     drop(client);
@@ -246,6 +254,7 @@ fn echo_over_uds_path() {
             message: "uds".to_owned(),
             count: 1,
         },
+        &test_token(),
     )
     .expect("echo");
     drop(stream);
@@ -253,6 +262,31 @@ fn echo_over_uds_path() {
     let _ = std::fs::remove_file(&endpoint);
     assert_eq!(response.message, "uds");
     assert_eq!(response.count, 1);
+}
+
+#[test]
+fn empty_hello_is_rejected_before_echo_dispatch() {
+    let (mut client, server) = connected_pair();
+    let handle = spawn_echo_server(server);
+    write_frame(
+        &mut client,
+        FrameKind::Hello,
+        0,
+        ChannelId(0),
+        CorrelationId(0),
+        &[],
+    )
+    .expect("client writes empty HELLO");
+    let err = handle
+        .join()
+        .expect("server thread")
+        .expect_err("empty HELLO must not reach echo");
+    let msg = err.to_string();
+    assert!(msg.contains("KELD-IPC-007"), "{msg}");
+    assert!(
+        !msg.contains("a5"),
+        "must not leak the session token: {msg}"
+    );
 }
 
 #[test]
@@ -290,6 +324,24 @@ fn hello_frame_bytes_are_pinned() {
 }
 
 #[test]
+fn hello_token_payload_len_is_pinned() {
+    assert_eq!(PROTOCOL_VERSION, 2);
+    let bytes = FrameHeader {
+        kind: FrameKind::Hello,
+        flags: 0,
+        channel: ChannelId(0),
+        corr: CorrelationId(0),
+        len: 32,
+    }
+    .encode();
+    assert_eq!(
+        bytes,
+        [b'K', b'I', 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0]
+    );
+    assert_eq!(test_token().as_bytes().len(), 32);
+}
+
+#[test]
 fn echo_call_header_bytes_are_pinned() {
     let payload = encode(&EchoRequest {
         message: "kipc".to_owned(),
@@ -307,6 +359,6 @@ fn echo_call_header_bytes_are_pinned() {
     .encode();
     assert_eq!(
         header,
-        [b'K', b'I', 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 6, 0, 0, 0]
+        [b'K', b'I', 2, 1, 0, 0, 1, 0, 1, 0, 0, 0, 6, 0, 0, 0]
     );
 }

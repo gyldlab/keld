@@ -34,7 +34,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: Bad kipc frame header
-- fix: Peers must speak kipc v1 with magic 'KI'.
+- fix: Peers must speak kipc v2 with magic 'KI'.
 
 ## KELD-IPC-003
 
@@ -59,6 +59,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-ipc
 - message: App-link I/O deadline exceeded
 - fix: Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.
+
+## KELD-IPC-007
+
+- crate: keld-ipc
+- message: HELLO session token rejected
+- fix: Mint the token with the host (`keld dev`) into KELD_APP_LINK as `<endpoint>#<64 hex chars>` and send those 32 bytes as the HELLO payload; empty or foreign tokens are rejected.
 
 ## KELD-WV-001
 

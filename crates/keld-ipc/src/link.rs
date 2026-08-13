@@ -4,6 +4,7 @@ use std::io::{self, Read, Write};
 use std::time::Duration;
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
+use crate::token::SessionToken;
 use crate::{HEADER_LEN, IpcError, MAX_FRAME_LEN};
 
 /// Connected app-link streams that can bound a blocking read or write.
@@ -100,20 +101,25 @@ pub fn write_frame<S: Write>(
     Ok(())
 }
 
-/// Performs the v0 `HELLO` exchange (empty payloads).
+/// Performs the v2 `HELLO` exchange (32-byte session token payload).
+///
+/// Each peer writes `Hello` with `token` and then reads the other side's
+/// `Hello`. The payloads must match exactly (`KELD-IPC-007` on mismatch,
+/// empty, or wrong length). Channel and correlation id stay 0.
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`, or
+/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`,
+/// [`IpcError::HelloAuth`] if the token is missing or wrong, or
 /// [`IpcError::Timeout`] if the peer stays silent past the stream deadline.
-pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
+pub fn handshake<S: Read + Write>(stream: &mut S, token: &SessionToken) -> Result<(), IpcError> {
     write_frame(
         stream,
         FrameKind::Hello,
         0,
         ChannelId(0),
         CorrelationId(0),
-        &[],
+        token.as_bytes(),
     )?;
     let (header, payload) = read_frame(stream)?;
     if header.kind != FrameKind::Hello {
@@ -121,9 +127,15 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
             detail: "expected HELLO from peer",
         });
     }
-    if !payload.is_empty() || header.channel != ChannelId(0) || header.corr != CorrelationId(0) {
+    if header.channel != ChannelId(0) || header.corr != CorrelationId(0) {
         return Err(IpcError::Protocol {
-            detail: "HELLO must have empty payload and reserved channel/corr 0",
+            detail: "HELLO must have reserved channel/corr 0",
+        });
+    }
+    let peer = SessionToken::try_from_slice(&payload)?;
+    if peer != *token {
+        return Err(IpcError::HelloAuth {
+            detail: "HELLO session token mismatch",
         });
     }
     Ok(())
@@ -138,6 +150,13 @@ mod tests {
 
     use super::*;
     use crate::frame::HeaderError;
+    use crate::token::SessionToken;
+
+    const TEST_TOKEN_BYTES: [u8; 32] = [0xA5; 32];
+
+    fn test_token() -> SessionToken {
+        SessionToken::from_bytes(TEST_TOKEN_BYTES)
+    }
 
     #[cfg(unix)]
     fn connected_pair() -> (
@@ -315,7 +334,7 @@ mod tests {
             &[],
         )
         .expect("peer writes ping instead of hello");
-        let err = handshake(&mut client).expect_err("ping must not satisfy HELLO");
+        let err = handshake(&mut client, &test_token()).expect_err("ping must not satisfy HELLO");
         assert!(
             matches!(err, IpcError::Protocol { detail } if detail.contains("HELLO")),
             "got {err}"
@@ -324,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_rejects_nonempty_hello_payload() {
+    fn handshake_rejects_empty_hello_payload() {
         let (mut client, mut server) = connected_pair();
         write_frame(
             &mut server,
@@ -332,15 +351,71 @@ mod tests {
             0,
             ChannelId(0),
             CorrelationId(0),
-            b"x",
+            &[],
         )
-        .expect("peer writes HELLO with payload");
-        let err = handshake(&mut client).expect_err("non-empty HELLO must fail");
+        .expect("peer writes empty HELLO");
+        let err = handshake(&mut client, &test_token()).expect_err("empty HELLO must fail");
         assert!(
-            matches!(err, IpcError::Protocol { detail } if detail.contains("empty payload")),
+            matches!(err, IpcError::HelloAuth { detail } if detail.contains("32-byte")),
             "got {err}"
         );
-        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-IPC-007"), "{msg}");
+        assert!(
+            !msg.contains("a5"),
+            "must not leak the expected token: {msg}"
+        );
+    }
+
+    #[test]
+    fn handshake_rejects_wrong_length_hello_payload() {
+        let (mut client, mut server) = connected_pair();
+        write_frame(
+            &mut server,
+            FrameKind::Hello,
+            0,
+            ChannelId(0),
+            CorrelationId(0),
+            &[0xA5; 31],
+        )
+        .expect("peer writes 31-byte HELLO");
+        let err = handshake(&mut client, &test_token()).expect_err("31-byte HELLO must fail");
+        assert!(matches!(err, IpcError::HelloAuth { .. }), "got {err}");
+        assert!(err.to_string().contains("KELD-IPC-007"), "{err}");
+    }
+
+    #[test]
+    fn handshake_rejects_mismatched_token() {
+        let (mut client, mut server) = connected_pair();
+        let mut foreign = TEST_TOKEN_BYTES;
+        foreign[0] ^= 1;
+        write_frame(
+            &mut server,
+            FrameKind::Hello,
+            0,
+            ChannelId(0),
+            CorrelationId(0),
+            &foreign,
+        )
+        .expect("peer writes foreign token");
+        let err = handshake(&mut client, &test_token()).expect_err("foreign token must fail");
+        assert!(
+            matches!(err, IpcError::HelloAuth { detail } if detail.contains("mismatch")),
+            "got {err}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-IPC-007"), "{msg}");
+        assert!(!msg.contains("a5"), "must not leak the token: {msg}");
+    }
+
+    #[test]
+    fn handshake_accepts_matching_token() {
+        let (mut client, mut server) = connected_pair();
+        let server_token = test_token();
+        let client_token = test_token();
+        let handle = thread::spawn(move || handshake(&mut server, &server_token));
+        handshake(&mut client, &client_token).expect("client hello");
+        handle.join().expect("server thread").expect("server hello");
     }
 
     #[test]
@@ -355,7 +430,7 @@ mod tests {
             &[],
         )
         .expect("peer writes HELLO on channel 1");
-        let err = handshake(&mut client).expect_err("reserved channel must be 0");
+        let err = handshake(&mut client, &test_token()).expect_err("reserved channel must be 0");
         assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
     }
 
@@ -466,7 +541,7 @@ mod tests {
             .expect("deadline");
         let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
-            let result = handshake(&mut client);
+            let result = handshake(&mut client, &test_token());
             let _ = done_tx.send(result);
         });
         let result = done_rx

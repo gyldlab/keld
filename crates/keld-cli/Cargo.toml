@@ -28,6 +28,7 @@ schemars = { workspace = true }
 # MCP stdio server — see workspace Cargo.toml dependency review comment.
 rmcp = { workspace = true }
 tokio = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -157,7 +157,7 @@ The one verb that ties everything together. Sequence, from
    The server accepts exactly **one** connection.
 4. **Spawn Bun**: `bun run <root>/src/main.ts`, cwd set to the project root, stdout and
    stderr inherited, with two environment variables set:
-   - `KELD_APP_LINK` — the socket path (Unix) or port number (Windows).
+   - `KELD_APP_LINK` — `<endpoint>#<64 hex chars>` (Unix path or Windows port, plus the v2 HELLO token).
    - `KELD_BIN` — `std::env::current_exe()`, i.e. the same `keld` binary, so the child
      can call back into `keld ipc-client`.
 5. **Open the window** (macOS only) via `keld_core::run_hello_window_html`, rendering
@@ -347,7 +347,7 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-044` | `flags.rs` | unknown `create` / `dev` / `doctor` / `hello` flag (exit 2); `--template` / `--watch` / `--permissions` are not live |
 | `KELD-CLI-045` | `verb.rs` | reserved verb `build` / `migrate` / `gen` / `ext` is not implemented (exit 2) |
 | `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
-| `KELD-IPC-001..006` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline |
+| `KELD-IPC-001..007` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline · HELLO session token |
 | `KELD-WV-001..007` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id |
 | `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |
 
@@ -404,7 +404,7 @@ Constants ([`lib.rs`](../../crates/keld-ipc/src/lib.rs)):
 | Item | Value | Note |
 |---|---|---|
 | `MAGIC: u16` | `u16::from_le_bytes(*b"KI")` | first two header bytes |
-| `PROTOCOL_VERSION: u8` | `1` | mismatch → `HeaderError::BadVersion` |
+| `PROTOCOL_VERSION: u8` | `2` | mismatch → `HeaderError::BadVersion`; v2 HELLO carries a 32-byte session token |
 | `HEADER_LEN: usize` | `16` | asserted as a protocol fact, independent of struct layout |
 
 Framing ([`frame.rs`](../../crates/keld-ipc/src/frame.rs)) — 16 bytes, little-endian:
@@ -429,19 +429,20 @@ Transport and session:
 |---|---|---|
 | `read_frame` | [`link`](../../crates/keld-ipc/src/link.rs) | `<S: Read>(&mut S) -> Result<(FrameHeader, Vec<u8>), IpcError>` |
 | `write_frame` | `link` | `<S: Write>(&mut S, kind, flags, channel, corr, payload) -> Result<(), IpcError>` |
-| `handshake` | `link` | `<S: Read + Write>(&mut S) -> Result<(), IpcError>` — writes `Hello`, expects `Hello` |
+| `handshake` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — writes `Hello` with the 32-byte token, expects the same token back |
 | `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream` / `TcpStream` |
 | `encode` / `decode` | [`codec`](../../crates/keld-ipc/src/codec.rs) | postcard, over `serde::Serialize` / `DeserializeOwned` |
-| `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write + AppLinkDeadlines>(&mut S) -> Result<(), IpcError>` — 5s deadline, handshake, then loop until EOF |
-| `echo_call` | `session` | `<S: Read + Write + AppLinkDeadlines>(&mut S, &EchoRequest) -> Result<EchoResponse, IpcError>` |
+| `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write + AppLinkDeadlines>(&mut S, &SessionToken) -> Result<(), IpcError>` — 5s deadline, handshake, then loop until EOF |
+| `echo_call` | `session` | `<S: Read + Write + AppLinkDeadlines>(&mut S, &EchoRequest, &SessionToken) -> Result<EchoResponse, IpcError>` |
 
 The echo vertical slice ([`echo.rs`](../../crates/keld-ipc/src/echo.rs)):
 `ECHO_CHANNEL: ChannelId = ChannelId(1)`, `EchoRequest { message: String, count: u32 }`,
 `EchoResponse { message: String, count: u32 }`, and `handle_echo(&[u8]) -> Result<Vec<u8>, IpcError>`.
 
-`IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }`, `Timeout` — codes
-`KELD-IPC-001..006`. Note this crate hand-writes `Display`/`Error` rather than deriving
-`thiserror`, and has exactly two dependencies (`postcard`, `serde`).
+`IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }`, `HelloAuth { detail }`, `Timeout` — codes
+`KELD-IPC-001..007`. Note this crate hand-writes `Display`/`Error` rather than deriving
+`thiserror`, and has exactly two dependencies (`postcard`, `serde`). The HELLO token is
+minted in `keld-cli` via `getrandom` (cold path).
 
 Not built yet, despite being named all over the specs: channel-name resolution at
 handshake, the shm bulk lane, credit-window backpressure, cancellation, streaming, and
