@@ -173,7 +173,7 @@ research-sync:
     warn_skip "cannot clone keld-research via HTTPS or SSH (${detail:-auth/network}). Private repo — grant access or skip."
 
 # Commit + push inside the nested docs/research/ checkout only (never the Keld parent).
-# Optional: just research-push message="your message"
+# Optional: just research-push "your message"
 research-push message="chore: sync research notes":
     #!/usr/bin/env bash
     set -uo pipefail
