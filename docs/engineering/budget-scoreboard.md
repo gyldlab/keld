@@ -68,11 +68,11 @@ the WKWebView floor. Flutter is a different engine class (one-line caveat only).
 | **Tauri 2** | **installer** `.app` | **8.6 MiB** Hopp; Deno comparison **~2–10 MB** | **30–100 MB** survey | system WKWebView | none | med | [Hopp](https://www.gethopp.app/blog/tauri-vs-electron); [Deno comparison](https://docs.deno.com/runtime/desktop/comparison/). |
 | **Wails** | vendor disk | **~15 MB** | Youngju **60–120 MB** | system webview | none (Go in binary) | med | Vendor [architecture](https://v3.wails.io/concepts/architecture/); Youngju [2026-05-16](https://www.youngju.dev/blog/culture/2026-05-16-cross-platform-desktop-apps-2026-tauri-2-electron-wails-neutralinojs-flutter-desktop-sciter-deep-dive.en). Vendor ~10 MB RSS likely omits WebKit. |
 | **Neutralino** | official / survey | **~2 MB** / **~0.5 MB** compressed | Youngju **40–80 MB** | system webview | none | med | [neutralino.js.org](https://neutralino.js.org/); Youngju RSS. |
-| **NW.js** | zip expected | **~110–200 MB** | — | Chromium | Node | low–med | Same Chromium class as Electron; not weighed this Mac. |
+| **NW.js** | zip expected | unmeasured (Chromium class) | unmeasured | Chromium | Node | low | Anecdotal / same class as Electron; not weighed this Mac — no citeable same-protocol row yet. |
 | **Electrobun** | installer vs `.app` | zstd **~14 MB**; uncompressed mac hello `.app` **~72.6 MB** | — | system webview | **Bun** (~60 MB of uncompressed `.app`) | med | [#373](https://github.com/blackboardsh/electrobun/issues/373); vendor zstd ~14 MB. |
 | **Native Swift** SwiftUI + WK | host + wrapping | **96K** `du` / **92,740 B** file sum; exe **89,696 B**; DMG **31,655 B** | **101,168 KB (~98.8 MiB)** | WKWebView | none | **high** | Measured this Mac, `swiftc -O`. |
 | **Native Swift** AppKit + WK | host + wrapping | **88K** `du` / **80,976 B** file sum; exe **77,936 B**; DMG **29,774 B** | **97,344 KB (~95.1 MiB)** | WKWebView | none | **high** | Closest floor to wry NSWindow+WKWebView. |
-| Flutter macOS | — | ~25–50 MB survey | ~90–150 MB survey | **Skia — not a webview** | Dart | med | Different engine; do not put on the WKWebView floor. |
+| Flutter macOS | — | unmeasured (survey) | unmeasured (survey) | **Skia — not a webview** | Dart | low | Different engine; do not put on the WKWebView floor. No same-protocol cite for this Mac. |
 
 **Do not misread:**
 
@@ -132,7 +132,8 @@ Same SHA (`b93ebb6`). `nm` split used an unstripped rebuild; shipped host is
 `strip = "symbols"`. `bloaty` / `cargo-bloat` were not installed.
 
 **987K vs 78K is static Rust + tao/wry + URL, not Keld logic.** Own crates are
-~2% of `__text`. Shipped disk is dominated by Bun, not the host Mach-O.
+~2% of `__text`. A future Bun-packed installer may be dominated by Bun; no Keld
+installer is measured yet.
 
 | | Keld release host | Swift AppKit exe | Ratio |
 |---|---:|---:|---|
@@ -172,7 +173,7 @@ Four uniques only — no fifth.
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
 | 2 | Idle RSS vs Swift ~95 MiB / Electron 150–300 / Tauri survey | **can win with work** | Host-only 72.6–77.8 MiB under Swift main and ≤90 MB — not the product (no Bun, no XPCs). Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG → Tauri’s 2.5–10 MB band. **Cannot** claim smallest shell vs Swift 88K / Neutralino ~2 MB. |
-| 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = ~16.1 MB (budget legal if artifact is zstd). Electrobun ~14 MB zstd is the compressed ceiling. |
+| 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = ~16.1 MB for Bun alone — full installer size is unmeasured. Electrobun ~14 MB zstd is the compressed ceiling to beat once packed. |
 | 5 | Cold start first paint (≤300 ms) | **can win with work** | Unmeasured. WK class can beat Electron 1–3 s. |
 | 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk. Spec 01 §6: no CEF-by-default. |
 | 7 | Default-deny / crash isolation / zero ambient OS authority | **can win with work** | The product bet (architecture 01 §1). Specified, not enforced on hello. |
@@ -191,7 +192,7 @@ first paint; fill `vs` from blog citations; fake `bench/` CI.
 
 ## Related
 
-- Native Swift fixtures (public): [macos/swift/appkit-wk](https://github.com/gyldlab/keld-benches/tree/main/macos/swift/appkit-wk), [macos/swift/swiftui-wk](https://github.com/gyldlab/keld-benches/tree/main/macos/swift/swiftui-wk) — competitor rows stay local-only until same-protocol Release measurements are public; not in this monorepo (`keld-benches` layout is OS-first: `{macos|windows|linux}/<framework>/...`)
+- Native Swift fixtures (public @ `646be79`): [macos/swift/appkit-wk](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/appkit-wk), [macos/swift/swiftui-wk](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/swiftui-wk) — competitor rows stay local-only until same-protocol Release measurements are public; not in this monorepo (`keld-benches` layout is OS-first: `{macos|windows|linux}/<framework>/...`)
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11

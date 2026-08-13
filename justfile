@@ -1,6 +1,9 @@
 # Keld task runner — mirrors the CI gates in .github/workflows/ci.yml.
 # `just ci` before pushing == what CI will run (minus the 3-OS matrix).
 
+# Shebang recipes can use "$@" for *args without collapsing spaces.
+set positional-arguments
+
 # Open hello window (macOS only, Phase 1 slice).
 hello:
     cargo run -p keld-host -- --hello
@@ -138,12 +141,29 @@ research-sync:
         exit 0
     }
 
+    research_origin_ok() {
+        local origin normalized
+        origin="$(git -C "$DEST" remote get-url origin 2>/dev/null)" || return 1
+        normalized="${origin%.git}"
+        case "$normalized" in
+            https://github.com/0monish/keld-research|git@github.com:0monish/keld-research|ssh://git@github.com/0monish/keld-research)
+                return 0
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+
     if [[ -d "$DEST/.git" ]]; then
         nested="$(git -C "$DEST" rev-parse --show-toplevel 2>/dev/null)" || warn_skip "cannot read nested git root"
         parent="$(cd "$ROOT" && pwd -P)"
         nested_p="$(cd "$nested" && pwd -P)"
         if [[ "$nested_p" == "$parent" ]]; then
             warn_skip "docs/research/ is not a separate git checkout; refusing to pull into the Keld monorepo"
+        fi
+        if ! research_origin_ok; then
+            warn_skip "docs/research origin is not 0monish/keld-research (HTTPS or SSH). Fix remote or re-clone; left unchanged."
         fi
         if git -C "$DEST" pull --ff-only; then
             echo "research-sync: updated $DEST"
@@ -199,6 +219,19 @@ research-push message="chore: sync research notes":
         echo "error: research-push: refusing — docs/research resolves to the Keld monorepo. Nested private checkout required." >&2
         exit 1
     fi
+    origin="$(git -C "$DEST" remote get-url origin 2>/dev/null)" || {
+        echo "error: research-push: docs/research has no origin remote. Point origin at 0monish/keld-research." >&2
+        exit 1
+    }
+    normalized="${origin%.git}"
+    case "$normalized" in
+        https://github.com/0monish/keld-research|git@github.com:0monish/keld-research|ssh://git@github.com/0monish/keld-research)
+            ;;
+        *)
+            echo "error: research-push: refusing — origin is \`$origin\`, not 0monish/keld-research. Fix remote; Keld parent untouched." >&2
+            exit 1
+            ;;
+    esac
 
     if [[ -n "$(git -C "$DEST" status --porcelain 2>/dev/null)" ]]; then
         # Stage/commit only inside the nested repo (cwd = DEST).
@@ -220,7 +253,7 @@ research-push message="chore: sync research notes":
     exit 1
 
 # Shallow clone/update framework reference trees from competitors.lock.toml → competitors/.
-# Pass --dry-run to parse + print planned paths without cloning.
+# Pass --dry-run / --force as separate args (positional-arguments preserves spaces).
 competitors-sync *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -228,7 +261,7 @@ competitors-sync *args:
     mkdir -p "$ROOT/target/competitors-sync"
     rustc --edition=2024 -D warnings "$ROOT/tools/competitors_sync.rs" \
         -o "$ROOT/target/competitors-sync/competitors-sync"
-    "$ROOT/target/competitors-sync/competitors-sync" {{args}} "$ROOT"
+    "$ROOT/target/competitors-sync/competitors-sync" "$@" "$ROOT"
 
 # Point this clone at tracked .githooks/ (local config only — not --global).
 hooks-install:

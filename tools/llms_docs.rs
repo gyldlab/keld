@@ -79,7 +79,7 @@ const SOURCES: &[Source] = &[
     },
     Source {
         section: "Reference",
-        title: "Size and RSS scoreboard",
+        title: "Size, RSS, and installer scoreboard",
         path: "docs/engineering/budget-scoreboard.md",
         description: "Living hello-to-apps measurements against architecture 01 §5 budgets and competitors.",
     },

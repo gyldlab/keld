@@ -32,7 +32,7 @@ This file is generated from tracked authoritative Markdown by `tools/llms_docs.r
 
 - [KELD error registry](docs/engineering/keld-error-codes.md): Stable developer-facing error codes with messages and fixes.
 
-- [Size and RSS scoreboard](docs/engineering/budget-scoreboard.md): Living hello-to-apps measurements against architecture 01 §5 budgets and competitors.
+- [Size, RSS, and installer scoreboard](docs/engineering/budget-scoreboard.md): Living hello-to-apps measurements against architecture 01 §5 budgets and competitors.
 
 - [Electron compatibility scoreboard](docs/engineering/compat-scoreboard.md): Current measurement status and the future public scoreboard contract.
 
