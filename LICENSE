@@ -1,0 +1,13 @@
+Keld is dual-licensed under MIT OR Apache-2.0, matching
+`Cargo.toml` `[workspace.package] license`.
+
+Copyright (c) 2026 GyldLab.
+
+You may use this software under either license, at your option:
+
+- MIT: `LICENSE-MIT`
+- Apache-2.0: `LICENSE-APACHE`
+
+The SPDX expression in `Cargo.toml` is the crate-level source of truth.
+Contributor rules live in `AGENTS.md`.
+

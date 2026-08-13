@@ -1,0 +1,14 @@
+# Single-writer paths from AGENTS.md / docs/agents/workflow.md (KEL-39).
+# Last matching pattern wins. GitHub org `gyldlab` has no teams yet, so current
+# repository admins are listed; replace this owner set with
+# `@gyldlab/keld-maintainers` once that team exists (otherwise CODEOWNERS is a
+# no-op for unknown teams).
+#
+# Any one listed owner can satisfy the review request.
+
+/Cargo.toml                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/Cargo.lock                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/rust-toolchain.toml                @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/.github/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/crates/keld-guard/                 @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/crates/keld-ipc/                   @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish

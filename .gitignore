@@ -4,16 +4,16 @@ dist/
 .DS_Store
 *.log
 
-# ── Proprietary IP (local only — never commit) ───────────────────────────────
-# Research corpus, architecture specs, audits, and agent workflow docs stay
-# on maintainer machines. Public repo is implementation code only.
+# ── Proprietary / local-only ─────────────────────────────────────────────────
+# Large competitor checkouts stay on maintainer machines (never commit).
+# Architecture, specs, engineering, and agents docs under docs/ ARE tracked.
+# Numbered research stays local-only — never commit `docs/research/`.
 
 /competitors/
-/docs/
+/docs/research/
 
-# Roadmap and agent doc index (reference local docs/)
+# Roadmap remains local; agent docs outputs are tracked and stale-checked.
 /ROADMAP.md
-/llms.txt
 
-# CI — local only until we choose to publish pipelines
-/.github/
+# CI workflows, CODEOWNERS, and templates are tracked (KEL-39).
+/.claude

@@ -1,0 +1,8 @@
+{
+  // Comments are valid, but the missing array terminator is not.
+  "app": {
+    "fs": {
+      "read": ["/foo/bar/**"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+exact path: allow
+exact path child: deny KELD-GUARD002 out_of_scope
+prefix root: allow
+prefix child: allow
+sibling prefix: deny KELD-GUARD002 out_of_scope
+slash traversal: deny KELD-GUARD002 out_of_scope
+backslash traversal: deny KELD-GUARD002 out_of_scope
+dot segment inside prefix: allow
+dot segment before prefix: deny KELD-GUARD002 out_of_scope
+repeated separator inside prefix: allow
+repeated separator before prefix: deny KELD-GUARD002 out_of_scope
+variable-looking literal: allow
+resolved-looking variable value: deny KELD-GUARD002 out_of_scope
+line-comment marker inside string: allow
+block-comment marker inside string: allow
+unknown operation: deny KELD-GUARD001 not_granted
+empty grant: deny KELD-GUARD001 not_granted

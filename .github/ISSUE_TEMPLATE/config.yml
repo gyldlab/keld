@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Linear (KEL-n)
+    url: https://linear.app/gyldlab-keld
+    about: Implementation work is tracked in Linear. Use GitHub issues for public bugs and questions.

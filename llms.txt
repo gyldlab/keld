@@ -1,0 +1,39 @@
+# Keld
+
+> Keld is a desktop framework with a Rust host, supervised Bun app process, system webviews, typed kipc, and host-enforced default-deny permissions.
+
+This file is generated from tracked authoritative Markdown by `tools/llms_docs.rs`; do not edit it by hand. The full ordered corpus is in [llms-full.txt](llms-full.txt).
+
+## Start here
+
+- [Quickstart](docs/onboarding/README.md): Set up the workspace, run the implemented commands, and verify a change.
+
+## Architecture
+
+- [01 — Overview](docs/architecture/01-overview.md): System boundaries, design principles, crate topology, and performance budgets.
+
+- [02 — IPC](docs/architecture/02-ipc.md): kipc topology, framing, codecs, channels, and lifecycle semantics.
+
+- [03 — Security](docs/architecture/03-security.md): Principals, capabilities, default-deny enforcement, and update security.
+
+- [04 — Electron compatibility](docs/architecture/04-electron-compat.md): Migration flow, compatibility tiers, native modules, and corpus measurement.
+
+- [05 — Webview and native](docs/architecture/05-webview-and-native.md): WebEngine policy, renderer bridge, native APIs, and plugin boundaries.
+
+- [06 — Runtime and tooling](docs/architecture/06-runtime-and-tooling.md): Supervised Bun runtime, CLI, packaging, updates, and development loop.
+
+- [07 — Agent experience](docs/architecture/07-agent-experience.md): Agent-facing errors, docs, MCP tools, evals, and CLI contracts.
+
+## Engineering
+
+- [Decision log](docs/engineering/decisions.md): What we chose, why, what we rejected, and what is not next.
+
+## Reference
+
+- [KELD error registry](docs/engineering/keld-error-codes.md): Stable developer-facing error codes with messages and fixes.
+
+- [Electron compatibility scoreboard](docs/engineering/compat-scoreboard.md): Current measurement status and the future public scoreboard contract.
+
+## Corpus policy
+
+`llms-full.txt` contains exactly the sources listed above, in this order. Exploratory research, local-only material, generated outputs, and every unlisted document are excluded.

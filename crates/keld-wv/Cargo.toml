@@ -15,4 +15,7 @@ workspace = true
 
 [target.'cfg(target_os="macos")'.dependencies]
 tao = "0.35.3"
-wry = "0.55.1"
+# `devtools` keeps `open_devtools`/`close_devtools` compiled in release builds
+# so `WebEngine::devtools` is not debug-only (wry gates them behind
+# `cfg(any(debug_assertions, feature = "devtools"))`).
+wry = { version = "0.55.1", features = ["devtools"] }

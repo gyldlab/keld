@@ -49,4 +49,6 @@ just hello    # macOS: open WKWebView hello window (Phase 1 slice)
 
 ## License
 
-MIT OR Apache-2.0 (see workspace `Cargo.toml`).
+MIT OR Apache-2.0 — [`LICENSE`](LICENSE), [`LICENSE-MIT`](LICENSE-MIT),
+[`LICENSE-APACHE`](LICENSE-APACHE), and workspace `Cargo.toml`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).

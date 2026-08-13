@@ -37,6 +37,34 @@ keld-cli = { path = "crates/keld-cli" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
+
+# --- Dependency review (KEL-42 / AGENTS.md gate) ---
+# Name: rmcp =3.1.2 (official modelcontextprotocol/rust-sdk)
+# Purpose: MCP 2026-07-28 wire (server/discover, dual-version negotiation,
+#   SEP-2549 cache hints, JSON Schema tool schemas) for `keld mcp serve`.
+# Alternatives rejected: (a) hand-rolled JSON-RPC/stdio — own conformance across
+#   five revisions; (b) TS SDK in a Bun sidecar — second runtime, breaks single
+#   binary; (c) community crates — not official, no 2026-07-28 confirmed.
+# Features: server + macros + transport-io (stdio) ONLY — no
+#   transport-streamable-http*, no reqwest/auth. Exact pin: wire churn post-GA.
+rmcp = { version = "=3.1.2", default-features = false, features = [
+    "server",
+    "macros",
+    "transport-io",
+] }
+# Tokio only on the MCP serve cold path (AGENTS.md: async only in cli tooling).
+# No net: stdio only. `io-util`/`sync` are what rmcp's stdio transport needs.
+tokio = { version = "1", default-features = false, features = [
+    "rt",
+    "io-std",
+    "io-util",
+    "sync",
+    "time",
+] }
+schemars = "1"
+# Isolated temp dirs for CLI tests (dev-dep; workspace-pinned like other shared crates).
+tempfile = "3"
 
 [workspace.lints.rust]
 missing_docs = "warn"

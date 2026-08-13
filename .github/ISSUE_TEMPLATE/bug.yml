@@ -1,0 +1,43 @@
+name: Bug
+description: Something does not match a spec, test, or documented command.
+title: "[bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Implementation work lives in Linear (`KEL-n`). Use this form for a public defect.
+        A bug fix needs a regression test before the change (`AGENTS.md`).
+  - type: input
+    id: linear
+    attributes:
+      label: Linear issue
+      description: Existing KEL-n if this is already tracked. Leave blank if none.
+      placeholder: KEL-00
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: Spec section, error code, or command output that should happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What happened, including the exact KELD-* code or exit status.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduce
+      description: Commands and platform (OS + version). Bind port 0 / temp dirs if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: gate
+    attributes:
+      label: Verification gate
+      description: Output of `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo nextest run --workspace --profile ci` if you ran them.
+      render: shell

@@ -12,9 +12,25 @@ authors.workspace = true
 name = "keld"
 path = "src/main.rs"
 
+[lib]
+name = "keld_cli"
+path = "src/lib.rs"
+
 [dependencies]
+keld-core = { workspace = true }
 keld-pack = { workspace = true }
 keld-update = { workspace = true }
+keld-ipc = { workspace = true }
+keld-guard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+# MCP stdio server — see workspace Cargo.toml dependency review comment.
+rmcp = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
