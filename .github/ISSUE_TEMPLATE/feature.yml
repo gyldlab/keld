@@ -1,0 +1,44 @@
+name: Feature
+description: Propose new behavior. Larger than a bug fix needs an approved spec first.
+title: "[feat] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not implement from an unapproved spec (`docs/agents/workflow.md`).
+        Prefer a Linear `KEL-n` for in-tree work.
+  - type: input
+    id: linear
+    attributes:
+      label: Linear issue
+      description: Existing KEL-n if this is already tracked. Leave blank if none.
+      placeholder: KEL-00
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: Observable outcome, not a file list. Name who this is for.
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Spec refs
+      description: Architecture sections or `docs/specs/`. Write "needs spec" if none exists yet.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance (binary)
+      description: Given / when / then items that can become tests. Include the verification gate (`cargo fmt --check`, clippy `-D warnings`, `cargo nextest run --workspace --profile ci`).
+    validations:
+      required: true
+  - type: checkboxes
+    id: yagni
+    attributes:
+      label: YAGNI
+      options:
+        - label: Phase 2 (window + kipc echo + crate map) cannot ship without this
+          required: true

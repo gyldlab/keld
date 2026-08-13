@@ -14,6 +14,5 @@ dist/
 # Roadmap remains local; agent docs outputs are tracked and stale-checked.
 /ROADMAP.md
 
-# CI — local only until we choose to publish pipelines
-/.github/
+# CI workflows, CODEOWNERS, and templates are tracked (KEL-39).
 /.claude
