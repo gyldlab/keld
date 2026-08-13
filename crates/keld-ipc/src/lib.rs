@@ -8,6 +8,9 @@
 //! - Frames are little-endian, fixed 16-byte header, versioned at handshake.
 //! - Channel names never travel per-call; they resolve to `ChannelId` handles.
 
+use std::io::ErrorKind;
+use std::time::Duration;
+
 pub mod codec;
 pub mod echo;
 pub mod frame;
@@ -16,7 +19,15 @@ pub mod session;
 
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
+pub use link::AppLinkDeadlines;
 pub use session::{echo_call, serve_echo_session};
+
+/// Deadline for one blocking app-link read or write (arch/02 §7).
+///
+/// v0 sets `SO_RCVTIMEO`/`SO_SNDTIMEO` on the connected stream — not an async
+/// timer and not the eventual readiness-driven reader. Expiry is
+/// [`IpcError::Timeout`] (`KELD-IPC-006`).
+pub const APP_LINK_IO_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Protocol magic: `b"KI"` little-endian.
 pub const MAGIC: u16 = u16::from_le_bytes(*b"KI");
@@ -52,6 +63,8 @@ pub enum IpcError {
         /// Short explanation for logs/tests.
         detail: &'static str,
     },
+    /// A blocking read or write exceeded [`APP_LINK_IO_DEADLINE`].
+    Timeout,
 }
 
 impl core::fmt::Display for IpcError {
@@ -82,6 +95,12 @@ impl core::fmt::Display for IpcError {
                 "KELD-IPC-005: protocol error — {detail}. \
                  Check frame kind and channel match the session contract."
             ),
+            Self::Timeout => write!(
+                f,
+                "KELD-IPC-006: app-link I/O deadline exceeded. \
+                 Check the peer is still running and sending kipc frames; \
+                 a silent or wedged process will not be waited on forever."
+            ),
         }
     }
 }
@@ -90,7 +109,13 @@ impl core::error::Error for IpcError {}
 
 impl From<std::io::Error> for IpcError {
     fn from(err: std::io::Error) -> Self {
-        Self::Io(err)
+        match err.kind() {
+            // Darwin/Linux `SO_RCVTIMEO`: EAGAIN → WouldBlock. Windows: TimedOut.
+            // v0 sockets are blocking; WouldBlock after a deadline is not a
+            // readiness poll (that reader is not this slice).
+            ErrorKind::TimedOut | ErrorKind::WouldBlock => Self::Timeout,
+            _ => Self::Io(err),
+        }
     }
 }
 
@@ -138,6 +163,24 @@ mod tests {
             },
             "KELD-IPC-005",
             "session contract",
+        );
+        assert_code_and_fix(&IpcError::Timeout, "KELD-IPC-006", "deadline");
+        assert_code_and_fix(
+            &IpcError::from(std::io::Error::from(ErrorKind::TimedOut)),
+            "KELD-IPC-006",
+            "silent or wedged",
+        );
+        assert_code_and_fix(
+            &IpcError::from(std::io::Error::from(ErrorKind::WouldBlock)),
+            "KELD-IPC-006",
+            "silent or wedged",
+        );
+        assert!(
+            !matches!(
+                IpcError::from(std::io::Error::from(ErrorKind::UnexpectedEof)),
+                IpcError::Timeout
+            ),
+            "EOF is a close, not a deadline"
         );
     }
 

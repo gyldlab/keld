@@ -53,24 +53,12 @@ mod tests {
         };
         let mut bytes = encode(&req).expect("encode");
         bytes.push(0x00); // trailing garbage a no-op handler would return unchanged
-        match handle_echo(&bytes) {
-            Err(err) => {
-                assert!(
-                    err.to_string().contains("KELD-IPC-003"),
-                    "expected codec error, got {err}"
-                );
-            }
-            Ok(out) => {
-                assert_ne!(
-                    out, bytes,
-                    "no-op echo would return the input including trailing bytes"
-                );
-                let res: EchoResponse = decode(&out).expect("decode");
-                assert_eq!(res.message, "kipc");
-                assert_eq!(res.count, 3);
-                assert_eq!(out, encode(&res).expect("re-encode"));
-            }
-        }
+        let err = handle_echo(&bytes)
+            .expect_err("decode must reject leftover postcard bytes (stricter than from_bytes)");
+        assert!(
+            err.to_string().contains("KELD-IPC-003"),
+            "expected codec error, got {err}"
+        );
 
         let clean = encode(&req).expect("encode");
         let out = handle_echo(&clean).expect("handle");
@@ -78,6 +66,7 @@ mod tests {
         assert_eq!(res.message, "kipc");
         assert_eq!(res.count, 3);
         assert_eq!(out, encode(&res).expect("re-encode"));
+        assert_ne!(out, bytes, "trailing-byte input must not be echoed as-is");
     }
 
     #[test]

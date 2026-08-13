@@ -86,13 +86,17 @@ impl WkWebViewEngine {
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
             if let Event::WindowEvent {
+                window_id,
                 event: WindowEvent::CloseRequested,
                 ..
             } = event
             {
-                // Tear the webviews/windows down before tao exits the process.
-                views.clear();
-                *control_flow = ControlFlow::Exit;
+                // v0 hello is one window. Drop by id so a second window would
+                // not tear down every view; exit when the map is empty.
+                views.retain(|_, view| view.window.id() != window_id);
+                if views.is_empty() {
+                    *control_flow = ControlFlow::Exit;
+                }
             }
         });
     }
@@ -136,9 +140,10 @@ impl WebEngine for WkWebViewEngine {
             .build(event_loop)
             .map_err(|e| WvError::Window(e.to_string()))?;
 
-        // Developer extras stay on in v0 so `DevtoolsAction` works; gating
-        // per app policy arrives with keld-guard integration (spec 03).
-        let builder = wry::WebViewBuilder::new().with_devtools(true);
+        // Developer extras are debug-only until keld-guard owns `web.devtools`.
+        let builder = wry::WebViewBuilder::new();
+        #[cfg(debug_assertions)]
+        let builder = builder.with_devtools(true);
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),

@@ -1,6 +1,7 @@
 //! `keld create` — scaffold the hello-world template (KEL-29).
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::template::HELLO_TEMPLATE;
@@ -100,10 +101,13 @@ pub fn validate_name(name: &str) -> Result<(), CreateError> {
 pub fn create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError> {
     validate_name(name)?;
     let root = parent.join(name);
-    if root.exists() {
-        return Err(CreateError::Exists(root));
+    match fs::create_dir(&root) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            return Err(CreateError::Exists(root));
+        }
+        Err(e) => return Err(e.into()),
     }
-    fs::create_dir_all(&root)?;
     for file in HELLO_TEMPLATE {
         let rendered = file.contents.replace("{{name}}", name);
         let dest = root.join(file.path);
@@ -203,6 +207,17 @@ mod tests {
             original,
             "existing project must not be overwritten"
         );
+    }
+
+    #[test]
+    fn existing_file_at_destination_is_cli_021() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("app");
+        fs::write(&dest, "x").expect("file where the project dir would go");
+        let err = create_project(dir.path(), "app").expect_err("file must not be overwritten");
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-CLI-021"), "{msg}");
+        assert_eq!(fs::read_to_string(&dest).expect("reread"), "x");
     }
 
     #[test]

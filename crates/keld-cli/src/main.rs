@@ -13,7 +13,9 @@ use keld_cli::create::{CreateError, create_project};
 use keld_cli::dev::{find_project_root, run_dev};
 use keld_cli::doctor::{all_ok, findings_all_ok, findings_json, run_checks, run_findings};
 use keld_cli::echo_link::{EchoServer, echo_roundtrip};
+use keld_cli::flags::{parse_create_args, parse_dev_flags, parse_doctor_flags, parse_hello_flags};
 use keld_cli::mcp::run_mcp_serve;
+use keld_cli::verb::{ReservedVerb, ReservedVerbError, UnknownVerbError};
 use keld_core::run_hello_window;
 use keld_ipc::EchoRequest;
 
@@ -26,15 +28,33 @@ fn main() {
             println!("keld {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some("hello") => run_hello_window().map_err(|e| e.to_string()),
-        Some("ipc-echo") => run_ipc_echo_demo().map_err(|e| e.to_string()),
-        Some("create") => run_create(&args[2..]).map_err(|e| e.to_string()),
-        Some("dev") => match env::current_dir() {
-            Ok(cwd) => {
-                let root = find_project_root(&cwd).unwrap_or(cwd);
-                run_dev(&root).map_err(|e| e.to_string())
+        Some("hello") => match parse_hello_flags(&args[2..]) {
+            Ok(()) => run_hello_window().map_err(|e| e.to_string()),
+            Err(err) => {
+                eprintln!("{err}");
+                process::exit(2);
             }
-            Err(e) => Err(e.to_string()),
+        },
+        Some("ipc-echo") => run_ipc_echo_demo().map_err(|e| e.to_string()),
+        Some("create") => match parse_create_args(&args[2..]) {
+            Ok(name) => run_create(name.unwrap_or("")).map_err(|e| e.to_string()),
+            Err(err) => {
+                eprintln!("{err}");
+                process::exit(2);
+            }
+        },
+        Some("dev") => match parse_dev_flags(&args[2..]) {
+            Ok(()) => match env::current_dir() {
+                Ok(cwd) => {
+                    let root = find_project_root(&cwd).unwrap_or(cwd);
+                    run_dev(&root).map_err(|e| e.to_string())
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            Err(err) => {
+                eprintln!("{err}");
+                process::exit(2);
+            }
         },
         Some("doctor") => match env::current_dir() {
             Ok(cwd) => {
@@ -47,9 +67,18 @@ fn main() {
         Some("mcp") => run_mcp_cmd(&args[2..]),
         Some("ipc-client") => run_ipc_client(&args[2..]),
         Some(other) => {
-            eprintln!("keld: unknown command `{other}`");
+            if let Some(verb) = ReservedVerb::parse(other) {
+                eprintln!("{}", ReservedVerbError { verb });
+            } else {
+                eprintln!(
+                    "{}",
+                    UnknownVerbError {
+                        verb: other.to_owned(),
+                    }
+                );
+            }
             print_usage();
-            process::exit(1);
+            process::exit(2);
         }
         None => {
             print_usage();
@@ -74,15 +103,16 @@ fn print_usage() {
     eprintln!("  ipc-echo        Run the typed kipc echo round-trip demo");
     eprintln!("  ipc-client      Internal: kipc client helpers for templates");
     eprintln!("  --version       Print version");
+    eprintln!("reserved (not live): build, migrate, gen, ext");
 }
 
-fn run_create(args: &[String]) -> Result<(), CreateError> {
-    let Some(name) = args.first() else {
+fn run_create(name: &str) -> Result<(), CreateError> {
+    if name.is_empty() {
         return Err(CreateError::InvalidName {
             name: String::new(),
             reason: "name is empty",
         });
-    };
+    }
     let cwd = env::current_dir()?;
     let root = create_project(&cwd, name)?;
     println!("Created keld project at {}", root.display());
@@ -116,7 +146,13 @@ fn run_mcp_cmd(args: &[String]) -> Result<(), String> {
 }
 
 fn run_doctor_cmd(project_root: Option<&Path>, args: &[String]) {
-    let json = args.iter().any(|a| a == "--json");
+    let json = match parse_doctor_flags(args) {
+        Ok(json) => json,
+        Err(err) => {
+            eprintln!("{err}");
+            process::exit(2);
+        }
+    };
     if json {
         match findings_json(project_root) {
             Ok(payload) => {
@@ -162,7 +198,11 @@ fn run_ipc_client_echo(args: &[String]) -> Result<(), String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--link" => link = iter.next().cloned(),
+            "--link" => {
+                link = Some(iter.next().cloned().ok_or_else(|| {
+                    "KELD-CLI-040: --link requires a value. Pass `--link <path>`.".to_owned()
+                })?);
+            }
             "--message" => {
                 message = iter.next().cloned().ok_or_else(|| {
                     "KELD-CLI-041: --message requires a value. Pass `--message <text>`.".to_owned()
@@ -201,7 +241,7 @@ fn run_ipc_client_echo(args: &[String]) -> Result<(), String> {
 /// Runs echo server + client on a loopback app-link (KEL-30 slice).
 fn run_ipc_echo_demo() -> Result<(), Box<dyn std::error::Error>> {
     let (ready_tx, ready_rx) = mpsc::channel();
-    let server = EchoServer::start(ready_tx);
+    let server = EchoServer::start(&ready_tx)?;
     ready_rx.recv()?;
 
     let link = server.link();

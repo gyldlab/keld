@@ -1,16 +1,19 @@
 //! `keld dev` — run the hello template with IPC echo + window (KEL-29).
 
 use std::fmt::Write as _;
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
 #[cfg(target_os = "macos")]
-use keld_core::run_hello_window_titled;
-use keld_core::{DEFAULT_HELLO_TITLE, read_config_title};
+use keld_core::run_hello_window_html;
+use keld_core::{DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title};
 
-use crate::doctor::{all_ok, run_checks};
+use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 use crate::echo_link::EchoServer;
+
+pub use crate::doctor::RENDERER_LOAD_CODE;
 
 /// Errors starting a dev session.
 #[derive(Debug)]
@@ -21,6 +24,13 @@ pub enum DevError {
     Io(io::Error),
     /// IPC or host failure surfaced as text.
     Runtime(String),
+    /// Project renderer HTML could not be loaded.
+    Renderer {
+        /// Configured or defaulted relative path.
+        path: PathBuf,
+        /// Why loading failed.
+        reason: &'static str,
+    },
 }
 
 impl std::fmt::Display for DevError {
@@ -37,6 +47,9 @@ impl std::fmt::Display for DevError {
                 "KELD-CLI-031: dev session failed — {msg}. \
                  Re-run `keld doctor` and fix the reported checks."
             ),
+            Self::Renderer { path, reason } => {
+                write!(f, "{}", renderer_load_message(path, reason))
+            }
         }
     }
 }
@@ -78,6 +91,41 @@ pub fn hello_title_for_project(project_root: &Path) -> String {
     read_config_title(project_root).unwrap_or_else(|| DEFAULT_HELLO_TITLE.to_owned())
 }
 
+/// HTML the hello window will render: the project's `renderer` file contents.
+///
+/// Defaults to [`DEFAULT_RENDERER`] (`index.html`) when the config omits `renderer`.
+/// Paths must be relative to `project_root` with no `..` segment. Contents are
+/// passed as inline HTML (`NavTarget::Html`); this is not a `file://` load.
+///
+/// # Errors
+///
+/// Returns [`DevError::Renderer`] (`KELD-CLI-035`) for a missing file or unsafe
+/// path, or [`DevError::Io`] when the file exists but cannot be read.
+pub fn load_dev_window_html(project_root: &Path) -> Result<String, DevError> {
+    let renderer =
+        read_config_renderer(project_root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
+    let rel = validate_renderer_relpath(&renderer)?;
+    let path = project_root.join(rel);
+    match fs::read_to_string(&path) {
+        Ok(html) => Ok(html),
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(DevError::Renderer {
+            path: PathBuf::from(&renderer),
+            reason: "file is missing",
+        }),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
+    if let Some(reason) = renderer_path_problem(renderer) {
+        return Err(DevError::Renderer {
+            path: PathBuf::from(renderer.trim()),
+            reason,
+        });
+    }
+    Ok(Path::new(renderer.trim()))
+}
+
 /// Resolves the `keld` binary path for child processes (`KELD_BIN`).
 fn current_keld_bin() -> io::Result<PathBuf> {
     std::env::current_exe()
@@ -104,7 +152,7 @@ pub fn run_dev_echo(project_root: &Path, keld_bin: &Path) -> Result<DevEchoResul
     }
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let server = EchoServer::start(ready_tx);
+    let server = EchoServer::start(&ready_tx)?;
     ready_rx
         .recv()
         .map_err(|_| DevError::Runtime("echo server failed to start".to_owned()))?;
@@ -124,15 +172,16 @@ pub fn run_dev_echo(project_root: &Path, keld_bin: &Path) -> Result<DevEchoResul
     io::stdout().write_all(&output.stdout)?;
     io::stderr().write_all(&output.stderr)?;
 
-    server.join()?;
-
     if !output.status.success() {
+        let _ = server.shutdown();
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(DevError::Runtime(format!(
             "bun exited with status {}. stderr: {stderr}",
             output.status.code().unwrap_or(1)
         )));
     }
+
+    server.join()?;
 
     Ok(DevEchoResult {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -153,13 +202,14 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 fn open_dev_window(project_root: &Path) -> Result<(), DevError> {
     let title = hello_title_for_project(project_root);
+    let html = load_dev_window_html(project_root)?;
     #[cfg(target_os = "macos")]
     {
-        run_hello_window_titled(&title).map_err(|e| DevError::Runtime(e.to_string()))
+        run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = title;
+        let _ = (title, html);
         eprintln!(
             "keld dev: webview window not available on this OS yet; IPC echo already completed."
         );
@@ -254,6 +304,25 @@ mod tests {
     }
 
     #[test]
+    fn run_dev_echo_missing_renderer_is_cli_032() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let err = run_dev_echo(dir.path(), Path::new("/nonexistent/keld"))
+            .expect_err("missing renderer must fail before spawn");
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-CLI-032"), "{msg}");
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+        assert!(msg.contains("[FAIL] renderer"), "{msg}");
+        assert!(msg.contains("index.html"), "{msg}");
+        assert!(
+            !msg.contains("bun child"),
+            "must fail at doctor, not at spawn: {msg}"
+        );
+    }
+
+    #[test]
     fn window_title_comes_from_config_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(
@@ -270,6 +339,110 @@ mod tests {
         fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
         assert_eq!(hello_title_for_project(dir.path()), DEFAULT_HELLO_TITLE);
         assert_eq!(DEFAULT_HELLO_TITLE, "Keld");
+    }
+
+    #[test]
+    fn load_dev_window_html_uses_created_index_not_hello_constant() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = crate::create::create_project(dir.path(), "demo").expect("create");
+        let html = load_dev_window_html(&root).expect("renderer");
+        assert!(html.contains("<h1>demo</h1>"), "{html}");
+        assert!(html.contains("<title>demo</title>"), "{html}");
+        assert!(html.contains("Rendered by the Keld host webview"), "{html}");
+        assert!(
+            !html.contains("Hello from WKWebView"),
+            "must not substitute HELLO_HTML: {html}"
+        );
+        assert!(
+            !html.contains("Phase 1 window-on-screen"),
+            "must not substitute HELLO_HTML: {html}"
+        );
+    }
+
+    #[test]
+    fn load_dev_window_html_follows_config_renderer_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default {\n  name: \"custom\",\n  renderer: \"ui/app.html\",\n} as const;\n",
+        )
+        .expect("config");
+        fs::create_dir_all(dir.path().join("ui")).expect("ui");
+        fs::write(
+            dir.path().join("ui/app.html"),
+            "<!DOCTYPE html><h1>kel29-renderer-marker</h1>\n",
+        )
+        .expect("html");
+        let html = load_dev_window_html(dir.path()).expect("renderer");
+        assert!(html.contains("kel29-renderer-marker"), "{html}");
+        assert!(!html.contains("Hello from WKWebView"), "{html}");
+    }
+
+    #[test]
+    fn load_dev_window_html_defaults_to_index_when_renderer_omitted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
+        fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><p>default-index</p>\n",
+        )
+        .expect("html");
+        let html = load_dev_window_html(dir.path()).expect("renderer");
+        assert!(html.contains("default-index"), "{html}");
+    }
+
+    #[test]
+    fn load_dev_window_html_missing_file_is_cli_035() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default {\n  renderer: \"index.html\",\n} as const;\n",
+        )
+        .expect("config");
+        let err = load_dev_window_html(dir.path()).expect_err("missing renderer");
+        let msg = err.to_string();
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+        assert!(msg.contains("index.html"), "{msg}");
+        assert!(msg.contains("missing"), "{msg}");
+        assert!(msg.contains("keld.config.ts"), "{msg}");
+        assert!(
+            !msg.contains("Hello from WKWebView"),
+            "must not fall back to HELLO_HTML: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_dev_window_html_rejects_parent_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default {\n  renderer: \"../outside.html\",\n} as const;\n",
+        )
+        .expect("config");
+        let err = load_dev_window_html(dir.path()).expect_err("traversal must fail");
+        let msg = err.to_string();
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+        assert!(msg.contains("relative"), "{msg}");
+        assert!(msg.contains("../outside.html"), "{msg}");
+    }
+
+    #[test]
+    fn load_dev_window_html_rejects_absolute_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        let abs = "/tmp/keld-dev-abs.html";
+        #[cfg(windows)]
+        let abs = r"C:\keld-dev-abs.html";
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            format!("export default {{\n  renderer: \"{abs}\",\n}} as const;\n"),
+        )
+        .expect("config");
+        let err = load_dev_window_html(dir.path()).expect_err("absolute must fail");
+        let msg = err.to_string();
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+        assert!(msg.contains("relative"), "{msg}");
+        assert!(msg.contains(abs), "{msg}");
     }
 
     #[test]

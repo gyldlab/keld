@@ -1,9 +1,39 @@
 //! Framed read/write on a byte stream (app-link control plane v0).
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
+use std::time::Duration;
 
-use crate::frame::{FrameHeader, FrameKind};
+use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use crate::{HEADER_LEN, IpcError, MAX_FRAME_LEN};
+
+/// Connected app-link streams that can bound a blocking read or write.
+///
+/// Spec: `docs/architecture/02-ipc.md` §7. v0 uses socket timeouts, not an
+/// async runtime.
+pub trait AppLinkDeadlines {
+    /// Sets read and write timeouts. `None` restores blocking-forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the OS rejects the timeout (should not on
+    /// connected `UnixStream` / `TcpStream`).
+    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+#[cfg(unix)]
+impl AppLinkDeadlines for std::os::unix::net::UnixStream {
+    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)?;
+        self.set_write_timeout(timeout)
+    }
+}
+
+impl AppLinkDeadlines for std::net::TcpStream {
+    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)?;
+        self.set_write_timeout(timeout)
+    }
+}
 
 fn ensure_payload_len(len: usize) -> Result<(), IpcError> {
     if len > MAX_FRAME_LEN {
@@ -19,7 +49,8 @@ fn ensure_payload_len(len: usize) -> Result<(), IpcError> {
 ///
 /// # Errors
 ///
-/// Returns [`IpcError`] on I/O failure, bad header, or oversized payload length.
+/// Returns [`IpcError`] on I/O failure, bad header, oversized payload, or
+/// deadline (`KELD-IPC-006`) when the stream has an I/O timeout set.
 pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), IpcError> {
     let mut header_bytes = [0u8; HEADER_LEN];
     stream.read_exact(&mut header_bytes)?;
@@ -37,8 +68,9 @@ pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), Ipc
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Io`] on write failure or [`IpcError::PayloadTooLarge`] if
-/// `payload.len()` exceeds [`MAX_FRAME_LEN`] (or does not fit in `u32`).
+/// Returns [`IpcError::Io`] or [`IpcError::Timeout`] on write failure, or
+/// [`IpcError::PayloadTooLarge`] if `payload.len()` exceeds [`MAX_FRAME_LEN`]
+/// (or does not fit in `u32`).
 pub fn write_frame<S: Write>(
     stream: &mut S,
     kind: FrameKind,
@@ -68,20 +100,26 @@ pub fn write_frame<S: Write>(
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`.
+/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`, or
+/// [`IpcError::Timeout`] if the peer stays silent past the stream deadline.
 pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
     write_frame(
         stream,
         FrameKind::Hello,
         0,
-        crate::frame::ChannelId(0),
-        crate::frame::CorrelationId(0),
+        ChannelId(0),
+        CorrelationId(0),
         &[],
     )?;
-    let (header, _) = read_frame(stream)?;
+    let (header, payload) = read_frame(stream)?;
     if header.kind != FrameKind::Hello {
         return Err(IpcError::Protocol {
             detail: "expected HELLO from peer",
+        });
+    }
+    if !payload.is_empty() || header.channel != ChannelId(0) || header.corr != CorrelationId(0) {
+        return Err(IpcError::Protocol {
+            detail: "HELLO must have empty payload and reserved channel/corr 0",
         });
     }
     Ok(())
@@ -90,9 +128,12 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, ErrorKind, Write as _};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
 
     use super::*;
-    use crate::frame::{ChannelId, CorrelationId, HeaderError};
+    use crate::frame::HeaderError;
 
     #[cfg(unix)]
     fn connected_pair() -> (
@@ -279,6 +320,42 @@ mod tests {
     }
 
     #[test]
+    fn handshake_rejects_nonempty_hello_payload() {
+        let (mut client, mut server) = connected_pair();
+        write_frame(
+            &mut server,
+            FrameKind::Hello,
+            0,
+            ChannelId(0),
+            CorrelationId(0),
+            b"x",
+        )
+        .expect("peer writes HELLO with payload");
+        let err = handshake(&mut client).expect_err("non-empty HELLO must fail");
+        assert!(
+            matches!(err, IpcError::Protocol { detail } if detail.contains("empty payload")),
+            "got {err}"
+        );
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
+    }
+
+    #[test]
+    fn handshake_rejects_hello_on_nonzero_channel() {
+        let (mut client, mut server) = connected_pair();
+        write_frame(
+            &mut server,
+            FrameKind::Hello,
+            0,
+            ChannelId(1),
+            CorrelationId(0),
+            &[],
+        )
+        .expect("peer writes HELLO on channel 1");
+        let err = handshake(&mut client).expect_err("reserved channel must be 0");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
+    }
+
+    #[test]
     fn shutdown_mid_header_is_ipc_001() {
         let (mut reader, mut writer) = connected_pair();
         writer
@@ -289,5 +366,53 @@ mod tests {
         let err = read_frame(&mut reader).expect_err("peer closed mid-header");
         assert!(matches!(err, IpcError::Io(ref e) if e.kind() == ErrorKind::UnexpectedEof));
         assert!(err.to_string().contains("KELD-IPC-001"), "{err}");
+    }
+
+    #[test]
+    fn read_frame_silent_peer_is_ipc_006() {
+        let (mut reader, _writer) = connected_pair();
+        reader
+            .set_app_link_deadlines(Some(Duration::from_millis(200)))
+            .expect("deadline");
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame(&mut reader);
+            let _ = done_tx.send(result);
+        });
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("silent peer must hit the I/O deadline, not hang");
+        let err = result.expect_err("no bytes from a live peer is not a frame");
+        assert!(
+            matches!(err, IpcError::Timeout),
+            "deadline must be KELD-IPC-006, got {err}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-IPC-006"), "{msg}");
+        assert!(msg.contains("deadline"), "{msg}");
+        assert!(msg.contains("silent or wedged"), "{msg}");
+        assert!(
+            !msg.contains("KELD-IPC-001"),
+            "must not classify a live silent peer as a generic I/O close: {msg}"
+        );
+    }
+
+    #[test]
+    fn handshake_silent_peer_is_ipc_006() {
+        let (mut client, _server) = connected_pair();
+        client
+            .set_app_link_deadlines(Some(Duration::from_millis(200)))
+            .expect("deadline");
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = handshake(&mut client);
+            let _ = done_tx.send(result);
+        });
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("handshake with a silent peer must hit the deadline, not hang");
+        let err = result.expect_err("peer never sent HELLO");
+        assert!(matches!(err, IpcError::Timeout), "got {err}");
+        assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
     }
 }

@@ -16,8 +16,9 @@ struct DocChunkSource {
 pub struct DocsSearchArgs {
     /// Free-text query (keywords; case-insensitive).
     pub query: String,
-    /// Max results to return (default 5, capped at 20).
+    /// Max results to return (default 5, 1..=20).
     #[serde(default)]
+    #[schemars(range(min = 1, max = 20))]
     pub max_results: Option<u8>,
 }
 
@@ -78,24 +79,37 @@ fn chunk_markdown(source_path: &'static str, text: &str) -> Vec<DocChunkSource> 
 
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("## ") {
-            chunks.push(DocChunkSource {
-                title: title.clone(),
+            push_chunk(
+                &mut chunks,
+                std::mem::take(&mut title),
                 source_path,
-                body: body_lines.join("\n").trim().to_owned(),
-            });
-            title.clear();
+                &body_lines,
+            );
             title.push_str(rest.trim());
             body_lines.clear();
         } else {
             body_lines.push(line);
         }
     }
+    push_chunk(&mut chunks, title, source_path, &body_lines);
+    chunks
+}
+
+fn push_chunk(
+    chunks: &mut Vec<DocChunkSource>,
+    title: String,
+    source_path: &'static str,
+    body_lines: &[&str],
+) {
+    let body = body_lines.join("\n").trim().to_owned();
+    if body.is_empty() {
+        return;
+    }
     chunks.push(DocChunkSource {
         title,
         source_path,
-        body: body_lines.join("\n").trim().to_owned(),
+        body,
     });
-    chunks
 }
 
 /// Searches the embedded corpus. Ranking is deterministic: score desc, then
@@ -211,7 +225,7 @@ mod tests {
     #[test]
     fn generated_corpus_includes_compat_scoreboard_placeholder() {
         let result = search_docs(&DocsSearchArgs {
-            query: "Migration corpus not available".to_owned(),
+            query: "compat-scoreboard".to_owned(),
             max_results: Some(5),
         });
         assert!(
@@ -313,5 +327,31 @@ mod tests {
             Some("raise `max_results` or narrow the query")
         );
         assert_eq!(result.results.len(), 1);
+    }
+
+    #[test]
+    fn empty_heading_chunks_are_skipped() {
+        let chunks = chunk_markdown(
+            "docs/x.md",
+            "# Doc\n\nintro body\n\n## Empty\n\n## Full\n\nbody here\n",
+        );
+        assert!(
+            chunks.iter().all(|c| !c.body.is_empty()),
+            "empty bodies must not become hits: {chunks:?}"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.title == "Full" && c.body.contains("body here")),
+            "{chunks:?}"
+        );
+        assert!(
+            !chunks.iter().any(|c| c.title == "Empty"),
+            "empty heading must not occupy a result slot: {chunks:?}"
+        );
+        assert!(
+            chunks.iter().any(|c| c.body.contains("intro body")),
+            "preamble must still be searchable: {chunks:?}"
+        );
     }
 }

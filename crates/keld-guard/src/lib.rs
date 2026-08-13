@@ -288,35 +288,32 @@ fn parse_manifest_at(
 /// v0 matching: exact string, or a pattern ending in `/**` (the prefix itself
 /// or `prefix/` + remainder). A `..` path segment is always out of scope.
 /// `$VARS` are matched literally.
+///
+/// The `Allow` path does not allocate (`json_pointer_for` and `Vec` are deny-only).
 #[must_use]
 pub fn evaluate(manifest: &PermissionsManifest, operation: &str, path: &str) -> Decision {
-    let pointer = json_pointer_for(operation);
-    let Some(scopes) = grant_scopes(manifest, operation) else {
-        return Decision::Deny(DenyReason::NotGranted {
-            capability: operation.to_owned(),
-            json_pointer: pointer,
-            requested: path.to_owned(),
-        });
+    let Some(node) = grant_node(manifest, operation) else {
+        return deny_not_granted(operation, path);
     };
-    if scopes.is_empty() {
-        return Decision::Deny(DenyReason::NotGranted {
-            capability: operation.to_owned(),
-            json_pointer: pointer,
-            requested: path.to_owned(),
-        });
+    let Some(arr) = node.as_array() else {
+        return deny_not_granted(operation, path);
+    };
+    if arr.is_empty() || arr.iter().any(|value| !value.is_string()) {
+        return deny_not_granted(operation, path);
     }
-    if path_has_dotdot(path) || !scopes.iter().any(|scope| path_in_scope(path, scope)) {
-        return Decision::Deny(DenyReason::OutOfScope {
-            capability: operation.to_owned(),
-            scope: scopes.join(", "),
-            json_pointer: pointer,
-            requested: path.to_owned(),
-        });
+    if path_has_dotdot(path)
+        || !arr.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|scope| path_in_scope(path, scope))
+        })
+    {
+        return deny_out_of_scope(operation, path, arr);
     }
     Decision::Allow
 }
 
-fn grant_scopes<'a>(manifest: &'a PermissionsManifest, capability: &str) -> Option<Vec<&'a str>> {
+fn grant_node<'a>(manifest: &'a PermissionsManifest, capability: &str) -> Option<&'a Value> {
     if capability.is_empty() {
         return None;
     }
@@ -326,12 +323,25 @@ fn grant_scopes<'a>(manifest: &'a PermissionsManifest, capability: &str) -> Opti
     for segment in segments {
         node = node.as_object()?.get(segment)?;
     }
-    let arr = node.as_array()?;
-    let mut out = Vec::with_capacity(arr.len());
-    for value in arr {
-        out.push(value.as_str()?);
-    }
-    Some(out)
+    Some(node)
+}
+
+fn deny_not_granted(operation: &str, path: &str) -> Decision {
+    Decision::Deny(DenyReason::NotGranted {
+        capability: operation.to_owned(),
+        json_pointer: json_pointer_for(operation),
+        requested: path.to_owned(),
+    })
+}
+
+fn deny_out_of_scope(operation: &str, path: &str, arr: &[Value]) -> Decision {
+    let scopes: Vec<&str> = arr.iter().filter_map(Value::as_str).collect();
+    Decision::Deny(DenyReason::OutOfScope {
+        capability: operation.to_owned(),
+        scope: scopes.join(", "),
+        json_pointer: json_pointer_for(operation),
+        requested: path.to_owned(),
+    })
 }
 
 fn path_has_dotdot(path: &str) -> bool {
@@ -522,5 +532,14 @@ mod tests {
     fn json_pointer_for_dotted_capability() {
         assert_eq!(json_pointer_for("fs.read"), "/app/fs/read");
         assert_eq!(json_pointer_for(""), "/app");
+    }
+
+    #[test]
+    fn non_string_scope_is_not_granted() {
+        let manifest = parse_manifest(r#"{"app":{"fs":{"read":[1]}}}"#).expect("manifest");
+        match evaluate(&manifest, "fs.read", "$APPDATA/x") {
+            Decision::Deny(DenyReason::NotGranted { .. }) => {}
+            other => panic!("non-string grant must fail closed, got {other:?}"),
+        }
     }
 }

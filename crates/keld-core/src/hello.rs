@@ -12,6 +12,9 @@ use keld_wv::{HELLO_HTML, WvError, run_hello_window as wv_run_hello};
 /// Window title when config/args do not supply one.
 pub const DEFAULT_HELLO_TITLE: &str = "Keld";
 
+/// Renderer path when `keld.config.ts` has no `renderer` field.
+pub const DEFAULT_RENDERER: &str = "index.html";
+
 /// Opens the default Keld hello window until the user closes it.
 ///
 /// # Errors
@@ -27,7 +30,19 @@ pub fn run_hello_window() -> Result<(), WvError> {
 ///
 /// Forwards [`keld_wv::WvError`] from the webview layer.
 pub fn run_hello_window_titled(title: &str) -> Result<(), WvError> {
-    wv_run_hello(title, HELLO_HTML)
+    run_hello_window_html(title, HELLO_HTML)
+}
+
+/// Opens a window with `title` rendering inline `html` until the user closes it.
+///
+/// Used by `keld dev` with the project's renderer file contents. `keld hello`
+/// and `keld-host --hello` keep the compiled `HELLO_HTML` constant.
+///
+/// # Errors
+///
+/// Forwards [`keld_wv::WvError`] from the webview layer.
+pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), WvError> {
+    wv_run_hello(title, html)
 }
 
 /// `--title <name>` or `--title=<name>` from argv (binary name included is fine).
@@ -58,11 +73,9 @@ where
     None
 }
 
-/// Reads `name: "..."` from a hello-template `keld.config.ts`.
-#[must_use]
-pub fn title_from_config_ts(source: &str) -> Option<String> {
+fn quoted_config_field(source: &str, prefix: &str) -> Option<String> {
     for line in source.lines() {
-        let Some(rest) = line.trim().strip_prefix("name:") else {
+        let Some(rest) = line.trim().strip_prefix(prefix) else {
             continue;
         };
         let rest = rest.trim().trim_end_matches(',').trim();
@@ -76,11 +89,30 @@ pub fn title_from_config_ts(source: &str) -> Option<String> {
     None
 }
 
+/// Reads `name: "..."` from a hello-template `keld.config.ts`.
+#[must_use]
+pub fn title_from_config_ts(source: &str) -> Option<String> {
+    quoted_config_field(source, "name:")
+}
+
+/// Reads `renderer: "..."` from a hello-template `keld.config.ts`.
+#[must_use]
+pub fn renderer_from_config_ts(source: &str) -> Option<String> {
+    quoted_config_field(source, "renderer:")
+}
+
 /// `name` from `project_root/keld.config.ts`, if the file exists and parses.
 #[must_use]
 pub fn read_config_title(project_root: &Path) -> Option<String> {
     let source = fs::read_to_string(project_root.join("keld.config.ts")).ok()?;
     title_from_config_ts(&source)
+}
+
+/// `renderer` from `project_root/keld.config.ts`, if the file exists and parses.
+#[must_use]
+pub fn read_config_renderer(project_root: &Path) -> Option<String> {
+    let source = fs::read_to_string(project_root.join("keld.config.ts")).ok()?;
+    renderer_from_config_ts(&source)
 }
 
 /// `--title` wins; else config `name`; else [`DEFAULT_HELLO_TITLE`].
@@ -91,10 +123,38 @@ pub fn resolve_hello_title(args: &[String], project_root: Option<&Path>) -> Stri
         .unwrap_or_else(|| DEFAULT_HELLO_TITLE.to_owned())
 }
 
+/// First argv token `keld-host --hello` does not accept.
+///
+/// Allowed after argv0: `--hello`, `--title <name>`, `--title=<name>`.
+/// `--title` with no following value is still consumed (title resolution
+/// treats it as absent).
+#[must_use]
+pub fn host_hello_unknown_arg<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut iter = args.into_iter();
+    let _argv0 = iter.next();
+    while let Some(arg) = iter.next() {
+        let arg = arg.as_ref();
+        if arg == "--hello" || arg.starts_with("--title=") {
+            continue;
+        }
+        if arg == "--title" {
+            let _ = iter.next();
+            continue;
+        }
+        return Some(arg.to_owned());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_HELLO_TITLE, hello_title_from_args, resolve_hello_title, title_from_config_ts,
+        DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, hello_title_from_args, host_hello_unknown_arg,
+        renderer_from_config_ts, resolve_hello_title, title_from_config_ts,
     };
 
     #[test]
@@ -123,6 +183,39 @@ mod tests {
     }
 
     #[test]
+    fn host_hello_accepts_title_flags() {
+        assert_eq!(host_hello_unknown_arg(["keld-host", "--hello"]), None);
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "--title", "Acme"]),
+            None
+        );
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "--title=Acme"]),
+            None
+        );
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "--title"]),
+            None
+        );
+    }
+
+    #[test]
+    fn host_hello_rejects_unknown_flags() {
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "--devtools"]),
+            Some(String::from("--devtools"))
+        );
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "--permissions"]),
+            Some(String::from("--permissions"))
+        );
+        assert_eq!(
+            host_hello_unknown_arg(["keld-host", "--hello", "extra"]),
+            Some(String::from("extra"))
+        );
+    }
+
+    #[test]
     fn config_name_from_hello_template_shape() {
         let source = r#"export default {
   name: "demo-app",
@@ -131,12 +224,23 @@ mod tests {
 } as const;
 "#;
         assert_eq!(title_from_config_ts(source).as_deref(), Some("demo-app"));
+        assert_eq!(
+            renderer_from_config_ts(source).as_deref(),
+            Some("index.html")
+        );
     }
 
     #[test]
     fn config_name_ignores_missing_or_empty() {
         assert_eq!(title_from_config_ts("export default {}"), None);
         assert_eq!(title_from_config_ts("name: \"\""), None);
+        assert_eq!(renderer_from_config_ts("export default {}"), None);
+        assert_eq!(renderer_from_config_ts("renderer: \"\""), None);
+    }
+
+    #[test]
+    fn default_renderer_is_index_html() {
+        assert_eq!(DEFAULT_RENDERER, "index.html");
     }
 
     #[test]

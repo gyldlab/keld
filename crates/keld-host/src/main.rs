@@ -10,6 +10,13 @@ use std::process;
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|a| a == "--hello") {
+        if let Some(flag) = keld_core::host_hello_unknown_arg(&args) {
+            eprintln!(
+                "KELD-CLI-044: unknown hello flag `{flag}`. \
+                 Use `--hello` and optional `--title <name>`."
+            );
+            process::exit(2);
+        }
         let cwd = env::current_dir().ok();
         let title = keld_core::resolve_hello_title(&args, cwd.as_deref());
         if let Err(err) = keld_core::run_hello_window_titled(&title) {

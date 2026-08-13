@@ -1,6 +1,6 @@
 //! Dev session integration: Bun main + kipc echo (no window).
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
 use std::process::Command;
 use std::sync::mpsc;
@@ -39,7 +39,7 @@ console.log("kel30: main process ready (IPC echo ok)");
     .expect("write main.ts");
 
     let (ready_tx, ready_rx) = mpsc::channel();
-    let server = EchoServer::start(ready_tx);
+    let server = EchoServer::start(&ready_tx).expect("bind echo server");
     ready_rx.recv().expect("server ready");
     let link = server.link();
 
@@ -108,6 +108,18 @@ fn ipc_client_missing_link_is_cli_040() {
 }
 
 #[test]
+fn ipc_client_link_flag_without_value_is_cli_040() {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld"))
+        .args(["ipc-client", "echo", "--link"])
+        .output()
+        .expect("spawn");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("KELD-CLI-040"), "{stderr}");
+    assert!(stderr.contains("requires a value"), "{stderr}");
+}
+
+#[test]
 fn ipc_client_missing_socket_is_ipc_001() {
     let output = Command::new(env!("CARGO_BIN_EXE_keld"))
         .args([
@@ -138,7 +150,7 @@ fn created_template_main_runs_ipc_echo() {
     let project = dir.path().join("app");
 
     let (ready_tx, ready_rx) = mpsc::channel();
-    let server = EchoServer::start(ready_tx);
+    let server = EchoServer::start(&ready_tx).expect("bind echo server");
     ready_rx.recv().expect("server ready");
     let link = server.link();
 

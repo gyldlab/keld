@@ -5,5 +5,7 @@ pub mod dev;
 pub mod doctor;
 pub mod echo_link;
 pub mod error_object;
+pub mod flags;
 pub mod mcp;
 pub mod template;
+pub mod verb;

@@ -7,8 +7,9 @@
 mod hello;
 
 pub use hello::{
-    DEFAULT_HELLO_TITLE, hello_title_from_args, read_config_title, resolve_hello_title,
-    run_hello_window, run_hello_window_titled, title_from_config_ts,
+    DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, hello_title_from_args, host_hello_unknown_arg,
+    read_config_renderer, read_config_title, renderer_from_config_ts, resolve_hello_title,
+    run_hello_window, run_hello_window_html, run_hello_window_titled, title_from_config_ts,
 };
 
 /// Crate version, re-exported for host handshake reporting.

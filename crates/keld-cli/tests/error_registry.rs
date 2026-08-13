@@ -10,7 +10,7 @@
 //! `error.rs` without a heading must fail CI. Scanning only developer-facing source
 //! trees (not the whole repo) is the v0 scraper.
 
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;

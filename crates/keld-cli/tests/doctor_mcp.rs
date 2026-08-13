@@ -1,12 +1,15 @@
 //! Integration tests for `keld doctor --json` and `keld mcp` (KEL-42).
 
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
+use std::thread;
 
 use keld_cli::create::create_project;
-use keld_cli::doctor::{BUN_MISSING_CODE, BUN_MISSING_FIX, PROJECT_LAYOUT_CODE, run_findings};
+use keld_cli::doctor::{
+    BUN_MISSING_CODE, BUN_MISSING_FIX, PROJECT_LAYOUT_CODE, RENDERER_LOAD_CODE, run_findings,
+};
 use serde_json::Value;
 
 fn keld_bin() -> &'static str {
@@ -30,8 +33,9 @@ fn doctor_json_emits_findings_array_matching_library() {
         .expect("spawn doctor --json");
 
     assert!(
-        output.status.success(),
-        "doctor --json failed: {}",
+        output.status.code() == Some(0) || output.status.code() == Some(1),
+        "doctor --json must exit 0 (all ok) or 1 (findings failed); got {:?}: {}",
+        output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -137,6 +141,43 @@ fn doctor_json_project_layout_code_when_files_missing() {
         .and_then(Value::as_str)
         .expect("fix");
     assert!(fix.contains("keld create"), "{fix}");
+}
+
+#[test]
+fn doctor_json_renderer_code_when_html_missing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
+    std::fs::create_dir_all(dir.path().join("src")).expect("src");
+    std::fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+    let output = Command::new(keld_bin())
+        .args(["doctor", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn doctor");
+    assert_eq!(output.status.code(), Some(1));
+    let value: Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    let arr = value.as_array().expect("array");
+    let project = arr
+        .iter()
+        .find(|f| f.get("label") == Some(&Value::String("project".into())))
+        .expect("project finding");
+    assert_eq!(project.get("ok"), Some(&Value::Bool(true)));
+    let renderer = arr
+        .iter()
+        .find(|f| f.get("label") == Some(&Value::String("renderer".into())))
+        .expect("renderer finding");
+    assert_eq!(renderer.get("ok"), Some(&Value::Bool(false)));
+    assert_eq!(
+        renderer.pointer("/error/code").and_then(Value::as_str),
+        Some(RENDERER_LOAD_CODE)
+    );
+    let fix = renderer
+        .pointer("/error/fix")
+        .and_then(Value::as_str)
+        .expect("fix");
+    assert!(fix.contains("keld.config.ts"), "{fix}");
+    assert!(fix.contains("relative"), "{fix}");
 }
 
 #[test]
@@ -431,6 +472,12 @@ fn mcp_request(method: &str, params: &Value) -> Value {
 
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
+    let mut stderr = child.stderr.take().expect("stderr");
+    let stderr_drain = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
     let mut reader = BufReader::new(stdout);
 
     let init = serde_json::json!({
@@ -475,6 +522,11 @@ fn mcp_request(method: &str, params: &Value) -> Value {
 
     drop(stdin);
     let status = child.wait().expect("wait for mcp serve");
-    assert!(status.success(), "mcp serve exited {status}");
+    let stderr_buf = stderr_drain.join().unwrap_or_default();
+    assert!(
+        status.success(),
+        "mcp serve exited {status}; stderr={}",
+        String::from_utf8_lossy(&stderr_buf)
+    );
     resp
 }

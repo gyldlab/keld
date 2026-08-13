@@ -47,36 +47,46 @@ impl EchoServer {
     /// Binds the endpoint and starts accepting one echo session on a worker thread.
     ///
     /// `ready` fires after the listener is bound (safe for clients to connect).
-    #[must_use]
-    #[allow(clippy::expect_used)] // ephemeral loopback bind is a CLI process invariant
-    pub fn start(ready: mpsc::Sender<()>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the loopback listener cannot be bound.
+    pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            let endpoint = EchoEndpoint::Unix(std::env::temp_dir().join(format!(
+            let path = std::env::temp_dir().join(format!(
                 "keld-echo-{}-{}.sock",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
                     .unwrap_or(0)
-            )));
-            let endpoint_for_thread = endpoint.clone();
-            let handle = thread::spawn(move || serve_unix(endpoint_for_thread, &ready));
-            Self {
-                endpoint,
+            ));
+            let _ = std::fs::remove_file(&path);
+            let listener = std::os::unix::net::UnixListener::bind(&path)?;
+            ready.send(()).ok();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept()?;
+                serve_echo_session(&mut stream)
+            });
+            Ok(Self {
+                endpoint: EchoEndpoint::Unix(path),
                 handle: Some(handle),
-            }
+            })
         }
         #[cfg(windows)]
         {
-            let listener =
-                std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback for echo server");
-            let port = listener.local_addr().expect("local addr").port();
-            let handle = thread::spawn(move || serve_tcp(listener, &ready));
-            Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let port = listener.local_addr()?.port();
+            ready.send(()).ok();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept()?;
+                serve_echo_session(&mut stream)
+            });
+            Ok(Self {
                 endpoint: EchoEndpoint::Tcp(port),
                 handle: Some(handle),
-            }
+            })
         }
     }
 
@@ -90,22 +100,46 @@ impl EchoServer {
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] if the session failed.
-    ///
-    /// # Panics
-    ///
-    /// If the server thread panicked (should not happen in normal operation).
+    /// Returns [`io::Error`] if the session failed or the worker panicked.
     pub fn join(mut self) -> io::Result<()> {
-        if let Some(handle) = self.handle.take() {
-            #[allow(clippy::expect_used)]
-            let result = handle.join().expect("echo server thread");
-            if let Err(err) = result {
-                self.cleanup_socket();
-                return Err(io::Error::other(err.to_string()));
-            }
+        self.finish(false)
+    }
+
+    /// Closes the listener so `accept` unblocks, then joins and unlinks.
+    ///
+    /// Used when the client never connects (failed Bun child, Drop).
+    pub(crate) fn shutdown(mut self) -> io::Result<()> {
+        self.finish(true)
+    }
+
+    fn finish(&mut self, interrupt: bool) -> io::Result<()> {
+        if interrupt {
+            self.interrupt_accept();
         }
+        let result = if let Some(handle) = self.handle.take() {
+            match handle.join() {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(err)) => Err(io::Error::other(err.to_string())),
+                Err(_) => Err(io::Error::other("echo server thread panicked")),
+            }
+        } else {
+            Ok(())
+        };
         self.cleanup_socket();
-        Ok(())
+        result
+    }
+
+    fn interrupt_accept(&self) {
+        #[cfg(unix)]
+        {
+            let EchoEndpoint::Unix(path) = &self.endpoint;
+            let _ = std::os::unix::net::UnixStream::connect(path);
+        }
+        #[cfg(windows)]
+        {
+            let EchoEndpoint::Tcp(port) = &self.endpoint;
+            let _ = std::net::TcpStream::connect(("127.0.0.1", *port));
+        }
     }
 
     fn cleanup_socket(&self) {
@@ -119,30 +153,10 @@ impl EchoServer {
 
 impl Drop for EchoServer {
     fn drop(&mut self) {
-        if self.handle.take().is_some() {
-            self.cleanup_socket();
+        if self.handle.is_some() {
+            let _ = self.finish(true);
         }
     }
-}
-
-#[cfg(unix)]
-fn serve_unix(endpoint: EchoEndpoint, ready: &mpsc::Sender<()>) -> Result<(), keld_ipc::IpcError> {
-    let EchoEndpoint::Unix(path) = endpoint;
-    let _ = std::fs::remove_file(&path);
-    let listener = std::os::unix::net::UnixListener::bind(&path)?;
-    ready.send(()).ok();
-    let (mut stream, _) = listener.accept()?;
-    serve_echo_session(&mut stream)
-}
-
-#[cfg(windows)]
-fn serve_tcp(
-    listener: std::net::TcpListener,
-    ready: &mpsc::Sender<()>,
-) -> Result<(), keld_ipc::IpcError> {
-    ready.send(()).ok();
-    let (mut stream, _) = listener.accept()?;
-    serve_echo_session(&mut stream)
 }
 
 /// Performs one echo round-trip against `link` (`KELD_APP_LINK` value).
@@ -202,7 +216,7 @@ mod tests {
     #[test]
     fn roundtrip_over_loopback_copies_fields() {
         let (ready_tx, ready_rx) = mpsc::channel();
-        let server = EchoServer::start(ready_tx);
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
         let req = EchoRequest {
             message: "cli-loopback".to_owned(),
@@ -212,5 +226,39 @@ mod tests {
         server.join().expect("join");
         assert_eq!(response.message, "cli-loopback");
         assert_eq!(response.count, 11);
+    }
+
+    #[test]
+    fn shutdown_without_client_unblocks() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = server.shutdown();
+            let _ = done_tx.send(result);
+        });
+        let result = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("shutdown must close the listener and join; timeout means accept() leaked");
+        assert!(
+            result.is_err(),
+            "interrupt connect is not a kipc session: {result:?}"
+        );
+    }
+
+    #[test]
+    fn drop_without_client_unblocks() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            drop(server);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("Drop must close the listener and join; timeout means accept() leaked");
     }
 }

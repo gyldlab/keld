@@ -81,6 +81,8 @@ pub struct ManifestPatch {
 
 /// Missing `keld.permissions.jsonc` (spec AC8).
 pub const MANIFEST_MISSING_CODE: &str = "KELD-MCP010";
+/// Manifest exists but cannot be read.
+pub const MANIFEST_UNREADABLE_CODE: &str = "KELD-MCP013";
 /// Manifest is not valid JSONC.
 pub const MANIFEST_PARSE_CODE: &str = "KELD-MCP011";
 /// Principal is not `app` (v0 evaluate is app-process grants only).
@@ -95,8 +97,8 @@ const APP_PRINCIPAL: &str = "app";
 ///
 /// # Errors
 ///
-/// Returns a §2 object: [`MANIFEST_MISSING_CODE`], [`MANIFEST_PARSE_CODE`],
-/// or [`UNKNOWN_PRINCIPAL_CODE`].
+/// Returns a §2 object: [`MANIFEST_MISSING_CODE`], [`MANIFEST_UNREADABLE_CODE`],
+/// [`MANIFEST_PARSE_CODE`], or [`UNKNOWN_PRINCIPAL_CODE`].
 pub fn permissions_explain(
     args: &PermissionsExplainArgs,
 ) -> Result<PermissionsExplainResult, KeldErrorObject> {
@@ -141,22 +143,28 @@ fn operation_path(args: &HashMap<String, serde_json::Value>) -> &str {
 
 fn manifest_error(err: &ManifestError) -> KeldErrorObject {
     match err {
-        ManifestError::NotFound { path } | ManifestError::Read { path, .. } => {
-            KeldErrorObject::new(
-                MANIFEST_MISSING_CODE,
-                format!("permissions manifest not found at `{}`", path.display()),
-                format!(
-                    "create keld.permissions.jsonc at {} (expected file name: keld.permissions.jsonc)",
-                    path.display()
-                ),
-            )
-            .with_cause(err.to_string())
-        }
+        ManifestError::NotFound { path } => KeldErrorObject::new(
+            MANIFEST_MISSING_CODE,
+            format!("permissions manifest not found at `{}`", path.display()),
+            format!(
+                "create keld.permissions.jsonc at {} (expected file name: keld.permissions.jsonc)",
+                path.display()
+            ),
+        )
+        .with_cause(err.to_string()),
+        ManifestError::Read { path, detail } => KeldErrorObject::new(
+            MANIFEST_UNREADABLE_CODE,
+            format!("cannot read permissions manifest at `{}`", path.display()),
+            format!(
+                "check that `{}` is a readable file (not a directory) and retry — {detail}",
+                path.display()
+            ),
+        )
+        .with_cause(err.to_string()),
         ManifestError::Parse { path, detail } => {
-            let tried = path.as_ref().map_or_else(
-                || "<memory>".to_owned(),
-                |p| p.display().to_string(),
-            );
+            let tried = path
+                .as_ref()
+                .map_or_else(|| "<memory>".to_owned(), |p| p.display().to_string());
             KeldErrorObject::new(
                 MANIFEST_PARSE_CODE,
                 format!("permissions manifest at `{tried}` is not valid JSONC"),
@@ -280,6 +288,27 @@ mod tests {
             err.fix
         );
         assert!(err.fix.contains("keld.permissions.jsonc"), "{}", err.fix);
+    }
+
+    #[test]
+    fn unreadable_manifest_is_mcp013_not_mcp010() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keld.permissions.jsonc");
+        fs::create_dir(&path).expect("directory where a file is required");
+        let err = permissions_explain(&args(dir.path(), "fs.read", "$APPDATA/x"))
+            .expect_err("directory manifest must fail as unreadable, not missing");
+        assert_eq!(err.code, MANIFEST_UNREADABLE_CODE);
+        assert_ne!(err.code, MANIFEST_MISSING_CODE);
+        assert!(
+            err.fix.contains(&path.display().to_string()),
+            "fix must name the tried path: {}",
+            err.fix
+        );
+        assert!(
+            !err.fix.contains("create keld.permissions.jsonc"),
+            "must not tell the caller to create a file that already exists: {}",
+            err.fix
+        );
     }
 
     #[test]

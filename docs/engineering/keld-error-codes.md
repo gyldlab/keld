@@ -54,6 +54,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Unexpected kipc frame or session state
 - fix: Check frame kind and channel match the session contract.
 
+## KELD-IPC-006
+
+- crate: keld-ipc
+- message: App-link I/O deadline exceeded
+- fix: Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.
+
 ## KELD-WV-001
 
 - crate: keld-wv
@@ -150,6 +156,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Project layout incomplete
 - fix: missing keld.config.ts or src/main.ts — run `keld create <name>` first
 
+## KELD-CLI-035
+
+- crate: keld-cli
+- message: Cannot load renderer
+- fix: Set `renderer` in keld.config.ts to a project-relative HTML file (no `..` or absolute paths) and create it.
+
 ## KELD-CLI-040
 
 - crate: keld-cli
@@ -173,6 +185,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-cli
 - message: Unknown ipc-client echo flag
 - fix: Use only `--link`, `--message`, and `--count`.
+
+## KELD-CLI-044
+
+- crate: keld-cli
+- message: Unknown CLI flag
+- fix: Use only the flags that verb documents (`keld doctor --json`; `keld create <name>` / `keld hello` / `keld dev` take none besides create's name).
+
+## KELD-CLI-045
+
+- crate: keld-cli
+- message: Reserved CLI verb is not implemented
+- fix: Use `keld create <name>` then `keld dev` (Phase 2). Track KEL-17 (migrate), KEL-19 (build/ext), or KEL-13 (gen).
+
+## KELD-CLI-046
+
+- crate: keld-cli
+- message: Unknown CLI command
+- fix: Use a live verb: create, dev, doctor, mcp, hello, ipc-echo, ipc-client.
 
 ## KELD-MCP001
 
@@ -203,6 +233,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-cli
 - message: Unknown principal for permissions explain
 - fix: v0 evaluate only supports principal "app"
+
+## KELD-MCP013
+
+- crate: keld-cli
+- message: Permissions manifest exists but cannot be read
+- fix: Check that the path is a readable file (not a directory) and retry.
 
 ## KELD-MCP020
 

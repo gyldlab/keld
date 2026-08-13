@@ -2,18 +2,23 @@
 
 use std::io::{ErrorKind, Read, Write};
 
-use crate::IpcError;
 use crate::codec::{decode, encode};
 use crate::echo::{ECHO_CHANNEL, EchoRequest, EchoResponse, handle_echo};
 use crate::frame::{CorrelationId, FrameKind};
-use crate::link::{handshake, read_frame, write_frame};
+use crate::link::{AppLinkDeadlines, handshake, read_frame, write_frame};
+use crate::{APP_LINK_IO_DEADLINE, IpcError};
 
 /// Serves one connected app-link peer until the stream closes.
 ///
+/// Applies [`APP_LINK_IO_DEADLINE`] so a silent peer cannot block the host.
+///
 /// # Errors
 ///
-/// Returns [`IpcError`] on I/O, protocol, or handler failures.
-pub fn serve_echo_session<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
+/// Returns [`IpcError`] on I/O, protocol, handler, or deadline failures.
+pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
+    stream: &mut S,
+) -> Result<(), IpcError> {
+    stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
     handshake(stream)?;
     loop {
         let (header, payload) = match read_frame(stream) {
@@ -48,19 +53,22 @@ pub fn serve_echo_session<S: Read + Write>(stream: &mut S) -> Result<(), IpcErro
 
 /// Sends one echo `Call` and returns the decoded response.
 ///
+/// Applies [`APP_LINK_IO_DEADLINE`] before the handshake.
+///
 /// # Errors
 ///
-/// Returns [`IpcError`] on I/O, protocol, or codec failures.
-pub fn echo_call<S: Read + Write>(
+/// Returns [`IpcError`] on I/O, protocol, codec, or deadline failures.
+pub fn echo_call<S: Read + Write + AppLinkDeadlines>(
     stream: &mut S,
     request: &EchoRequest,
 ) -> Result<EchoResponse, IpcError> {
+    stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
     handshake(stream)?;
     let payload = encode(request)?;
     let corr = CorrelationId(1);
     write_frame(stream, FrameKind::Call, 0, ECHO_CHANNEL, corr, &payload)?;
     let (header, payload) = read_frame(stream)?;
-    if header.kind != FrameKind::Reply || header.corr != corr {
+    if header.kind != FrameKind::Reply || header.corr != corr || header.channel != ECHO_CHANNEL {
         return Err(IpcError::Protocol {
             detail: "expected REPLY for echo CALL",
         });

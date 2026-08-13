@@ -1,16 +1,25 @@
 //! Postcard payload encoding (hot-path codec per spec §2).
 
-use postcard::{from_bytes, to_allocvec};
+use postcard::{take_from_bytes, to_allocvec};
 
 use crate::IpcError;
 
 /// Decodes a structured payload from postcard bytes.
 ///
+/// Rejects leftover bytes after `T` so a truncated-or-padded buffer cannot
+/// silently decode (postcard `from_bytes` ignores trailing data).
+///
 /// # Errors
 ///
-/// Returns [`IpcError::Codec`] if the bytes are not valid postcard for `T`.
+/// Returns [`IpcError::Codec`] if the bytes are not valid postcard for `T`,
+/// or if bytes remain after `T`.
 pub fn decode<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, IpcError> {
-    from_bytes(payload).map_err(IpcError::Codec)
+    let (value, rest) = take_from_bytes(payload).map_err(IpcError::Codec)?;
+    if rest.is_empty() {
+        Ok(value)
+    } else {
+        Err(IpcError::Codec(postcard::Error::DeserializeBadEncoding))
+    }
 }
 
 /// Encodes a value to postcard bytes.
@@ -46,6 +55,19 @@ mod tests {
         let err = decode::<EchoRequest>(&[]).expect_err("empty payload must not decode");
         let msg = err.to_string();
         assert!(msg.contains("KELD-IPC-003"), "{msg}");
+        assert!(matches!(err, IpcError::Codec(_)));
+    }
+
+    #[test]
+    fn trailing_bytes_are_codec_error() {
+        let req = EchoRequest {
+            message: "kipc".to_owned(),
+            count: 3,
+        };
+        let mut bytes = encode(&req).expect("encode");
+        bytes.push(0x00);
+        let err = decode::<EchoRequest>(&bytes).expect_err("trailing bytes must not decode");
+        assert!(err.to_string().contains("KELD-IPC-003"), "{err}");
         assert!(matches!(err, IpcError::Codec(_)));
     }
 

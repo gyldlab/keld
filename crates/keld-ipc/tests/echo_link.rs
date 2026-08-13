@@ -1,6 +1,6 @@
 //! End-to-end echo over a real app-link transport (KEL-30).
 
-#![allow(clippy::expect_used, clippy::needless_pass_by_value)]
+#![allow(clippy::expect_used, clippy::needless_pass_by_value)] // extra test crate: expect is the assertion oracle; listen_and_serve owns PathBuf for the worker
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -189,6 +189,39 @@ fn invalid_postcard_call_is_ipc_003() {
         .expect("server thread")
         .expect_err("garbage payload must fail handle_echo");
     assert!(err.to_string().contains("KELD-IPC-003"), "{err}");
+}
+
+#[test]
+fn echo_call_rejects_reply_on_wrong_channel() {
+    let (mut client, mut server) = connected_pair();
+    let handle = thread::spawn(move || {
+        handshake(&mut server)?;
+        let (header, payload) = read_frame(&mut server)?;
+        write_frame(
+            &mut server,
+            FrameKind::Reply,
+            0,
+            ChannelId(99),
+            header.corr,
+            &payload,
+        )?;
+        Ok::<(), IpcError>(())
+    });
+    let err = echo_call(
+        &mut client,
+        &EchoRequest {
+            message: "cross-channel".to_owned(),
+            count: 1,
+        },
+    )
+    .expect_err("REPLY on another channel must not decode as echo");
+    drop(client);
+    let _ = handle.join();
+    assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
+    assert!(
+        !err.to_string().contains("cross-channel"),
+        "must not surface the payload as a successful echo: {err}"
+    );
 }
 
 #[cfg(unix)]

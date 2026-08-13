@@ -48,7 +48,7 @@ impl KeldMcpServer {
     /// Environment checks — same payload as `keld doctor --json`.
     #[tool(
         name = "keld_doctor",
-        description = "Run Keld environment checks (Bun, project layout, webview). \
+        description = "Run Keld environment checks (Bun, project layout, renderer, webview). \
                        Same findings as `keld doctor --json`. Read-only."
     )]
     fn keld_doctor(
@@ -85,7 +85,7 @@ impl KeldMcpServer {
                        and return the exact manifest patch. Read-only — never writes \
                        the file. Missing manifest returns KELD-MCP010."
     )]
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self)] // `&self` required by rmcp `#[tool]` instance methods even when unused.
     fn keld_permissions_explain(
         &self,
         Parameters(args): Parameters<PermissionsExplainArgs>,

@@ -5,7 +5,7 @@
   "tools": [
     {
       "name": "keld_doctor",
-      "description": "Run Keld environment checks (Bun, project layout, webview). Same findings as `keld doctor --json`. Read-only.",
+      "description": "Run Keld environment checks (Bun, project layout, renderer, webview). Same findings as `keld doctor --json`. Read-only.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -41,7 +41,7 @@
                 "description": "Present iff `!ok` — agents read `fix` rather than parsing `detail`."
               },
               "label": {
-                "description": "Short label (e.g. `bun`, `project`, `webview`).",
+                "description": "Short label (e.g. `bun`, `project`, `renderer`, `webview`).",
                 "type": "string"
               },
               "ok": {
@@ -107,10 +107,10 @@
         "properties": {
           "max_results": {
             "default": null,
-            "description": "Max results to return (default 5, capped at 20).",
+            "description": "Max results to return (default 5, 1..=20).",
             "format": "uint8",
-            "maximum": 255,
-            "minimum": 0,
+            "maximum": 20,
+            "minimum": 1,
             "type": [
               "integer",
               "null"

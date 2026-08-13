@@ -1,8 +1,9 @@
 //! `keld doctor` — environment checks (KEL-29 / KEL-42 `--json`).
 
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
 
+use keld_core::{DEFAULT_RENDERER, read_config_renderer};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -16,6 +17,13 @@ pub const BUN_MISSING_CODE: &str = "KELD-CLI-033";
 
 /// Code on the project finding when layout files are missing.
 pub const PROJECT_LAYOUT_CODE: &str = "KELD-CLI-034";
+
+/// Code when the project renderer HTML is missing or not a project-relative path.
+pub const RENDERER_LOAD_CODE: &str = "KELD-CLI-035";
+
+/// Registry `fix` for [`RENDERER_LOAD_CODE`] (also `keld dev` `DevError::Renderer`).
+pub const RENDERER_LOAD_FIX: &str = "Set `renderer` in keld.config.ts to a project-relative HTML file \
+     (no `..` or absolute paths) and create it.";
 
 /// One doctor check result (human-oriented CLI form).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +41,7 @@ pub struct Check {
 /// Serializable finding shared by `keld doctor --json` and MCP `keld_doctor`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DoctorFinding {
-    /// Short label (e.g. `bun`, `project`, `webview`).
+    /// Short label (e.g. `bun`, `project`, `renderer`, `webview`).
     pub label: String,
     /// Whether the check passed.
     pub ok: bool,
@@ -55,12 +63,50 @@ impl From<&Check> for DoctorFinding {
     }
 }
 
+/// Full `KELD-CLI-035` message used by doctor findings and `keld dev`.
+#[must_use]
+pub fn renderer_load_message(path: &Path, reason: &str) -> String {
+    format!(
+        "{RENDERER_LOAD_CODE}: cannot load renderer `{}` — {reason}. {RENDERER_LOAD_FIX}",
+        path.display()
+    )
+}
+
+/// Why `renderer` cannot be used as a project-relative HTML path, if it cannot.
+///
+/// Shared with `keld dev` so doctor and window load reject the same tokens.
+#[must_use]
+pub fn renderer_path_problem(renderer: &str) -> Option<&'static str> {
+    let trimmed = renderer.trim();
+    if trimmed.is_empty() {
+        return Some("path is empty");
+    }
+    let path = Path::new(trimmed);
+    let unsafe_path = path.is_absolute()
+        || path.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        });
+    if unsafe_path {
+        Some("path must be relative to the project root")
+    } else {
+        None
+    }
+}
+
 /// Runs environment checks for local development.
 #[must_use]
 pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
     let mut checks = vec![check_bun(), check_project_layout(project_root)];
+    if let Some(root) = project_root {
+        checks.push(check_renderer(root));
+    }
     #[cfg(target_os = "macos")]
-    checks.push(check_macos_hello());
+    {
+        checks.push(check_macos_hello());
+    }
     checks
 }
 
@@ -155,6 +201,41 @@ fn check_project_layout(project_root: Option<&Path>) -> Check {
     }
 }
 
+fn check_renderer(root: &Path) -> Check {
+    let renderer = read_config_renderer(root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
+    let rel = renderer.trim();
+    let reason = renderer_path_problem(&renderer).or_else(|| {
+        if root.join(rel).is_file() {
+            None
+        } else {
+            Some("file is missing")
+        }
+    });
+    if let Some(reason) = reason {
+        let path = Path::new(rel);
+        Check {
+            label: "renderer",
+            ok: false,
+            detail: renderer_load_message(path, reason),
+            error: Some(
+                KeldErrorObject::new(
+                    RENDERER_LOAD_CODE,
+                    format!("cannot load renderer `{rel}` — {reason}"),
+                    RENDERER_LOAD_FIX,
+                )
+                .with_cause(rel.to_owned()),
+            ),
+        }
+    } else {
+        Check {
+            label: "renderer",
+            ok: true,
+            detail: format!("renderer `{rel}` readable"),
+            error: None,
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn check_macos_hello() -> Check {
     Check {
@@ -177,6 +258,13 @@ mod tests {
             .expect("project check is always present")
     }
 
+    fn renderer_check(root: &Path) -> Check {
+        run_checks(Some(root))
+            .into_iter()
+            .find(|c| c.label == "renderer")
+            .expect("renderer check runs when a project root is passed")
+    }
+
     #[test]
     fn outside_project_layout_is_ok() {
         let check = project_check(None);
@@ -187,6 +275,10 @@ mod tests {
             check.detail
         );
         assert!(check.error.is_none());
+        assert!(
+            run_checks(None).iter().all(|c| c.label != "renderer"),
+            "no project root must not emit a renderer finding"
+        );
     }
 
     #[test]
@@ -195,6 +287,7 @@ mod tests {
         fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
         fs::create_dir_all(dir.path().join("src")).expect("src");
         fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        fs::write(dir.path().join("index.html"), "<!DOCTYPE html><p>ok</p>\n").expect("html");
         let check = project_check(Some(dir.path()));
         assert!(check.ok, "{check:?}");
         assert!(
@@ -202,10 +295,20 @@ mod tests {
             "{}",
             check.detail
         );
+        let renderer = renderer_check(dir.path());
+        assert!(renderer.ok, "{renderer:?}");
+        assert!(
+            renderer.detail.contains("index.html"),
+            "{}",
+            renderer.detail
+        );
         let checks = run_checks(Some(dir.path()));
         let bun = checks.iter().find(|c| c.label == "bun").expect("bun check");
         if bun.ok {
-            assert!(all_ok(&checks), "project+bun ok must make all_ok true");
+            assert!(
+                all_ok(&checks),
+                "project+renderer+bun ok must make all_ok true"
+            );
         } else {
             assert!(!all_ok(&checks), "missing bun must make all_ok false");
         }
@@ -247,6 +350,79 @@ mod tests {
         assert!(!all_ok(&checks), "all_ok must be false when project fails");
         let err = project.error.as_ref().expect("§2 error");
         assert_eq!(err.code, PROJECT_LAYOUT_CODE);
+    }
+
+    #[test]
+    fn renderer_fails_when_index_html_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let project = project_check(Some(dir.path()));
+        assert!(project.ok, "config+main is still a project: {project:?}");
+        let renderer = renderer_check(dir.path());
+        assert!(!renderer.ok, "missing index.html must fail: {renderer:?}");
+        let msg = renderer.detail.clone();
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+        assert!(msg.contains("index.html"), "{msg}");
+        assert!(msg.contains("missing"), "{msg}");
+        assert!(msg.contains("keld.config.ts"), "{msg}");
+        let err = renderer.error.as_ref().expect("§2 error");
+        assert_eq!(err.code, RENDERER_LOAD_CODE);
+        assert_eq!(err.fix, RENDERER_LOAD_FIX);
+        let checks = run_checks(Some(dir.path()));
+        assert!(
+            !all_ok(&checks),
+            "missing renderer must make all_ok false even when project is ok"
+        );
+    }
+
+    #[test]
+    fn renderer_follows_config_path_and_rejects_traversal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default {\n  renderer: \"ui/app.html\",\n} as const;\n",
+        )
+        .expect("config");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let missing = renderer_check(dir.path());
+        assert!(!missing.ok, "{missing:?}");
+        assert!(missing.detail.contains("ui/app.html"), "{}", missing.detail);
+        assert!(
+            missing.detail.contains(RENDERER_LOAD_CODE),
+            "{}",
+            missing.detail
+        );
+
+        fs::create_dir_all(dir.path().join("ui")).expect("ui");
+        fs::write(dir.path().join("ui/app.html"), "<!DOCTYPE html><p>ok</p>\n").expect("html");
+        let ok = renderer_check(dir.path());
+        assert!(ok.ok, "{ok:?}");
+        assert!(ok.detail.contains("ui/app.html"), "{}", ok.detail);
+
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default {\n  renderer: \"../outside.html\",\n} as const;\n",
+        )
+        .expect("rewrite config");
+        let traversal = renderer_check(dir.path());
+        assert!(!traversal.ok, "{traversal:?}");
+        assert!(
+            traversal.detail.contains("relative"),
+            "{}",
+            traversal.detail
+        );
+        assert!(
+            traversal.detail.contains("../outside.html"),
+            "{}",
+            traversal.detail
+        );
+        assert_eq!(
+            traversal.error.as_ref().map(|e| e.code.as_str()),
+            Some(RENDERER_LOAD_CODE)
+        );
     }
 
     #[test]
