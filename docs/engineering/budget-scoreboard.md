@@ -131,7 +131,7 @@ Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 | Keld `.app` / DMG | `keld-pack` has no authoring code |
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
 | Electrobun complete RSS | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
-| First paint ≤ 300 ms | Not instrumented |
+| First paint ≤ 300 ms | **Windows: measured 2026-08-14 — Keld 906 ms, 3.0x over budget** (see the Windows rows). macOS/Linux: still not instrumented. |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
 | Windows / Linux competitor hellos | keld-benches stubs; not this machine |
@@ -184,7 +184,7 @@ Four uniques only — no fifth.
 | 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. Electrobun 72,032 KB launcher is incomplete. Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
-| 5 | Cold start first paint (≤300 ms) | **can win with work** | Unmeasured. WK class can beat Electron 1–3 s. |
+| 5 | Cold start first paint (≤300 ms) | **can win with work** — **losing today** | First real measurement (Windows, 2026-08-14): Keld **906 ms**, Tauri 504 ms — both over budget, Keld 1.8x behind Tauri. Electron arm not measured (stale package). macOS still uninstrumented. WK class can beat Electron 1–3 s, but that is not yet a measured Keld claim. |
 | 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk (this-Mac Electron `.app` 288,448,512; NW.js `.app` 410,271,744). Spec 01 §6: no CEF-by-default. |
 | 7 | Default-deny / crash isolation / zero ambient OS authority | **can win with work** | The product bet (architecture 01 §1). Specified, not enforced on hello. |
 | 8 | Flutter Skia hello | **cannot win honestly** | Different engine. Spec 01 §6: not a UI toolkit. |
@@ -197,9 +197,9 @@ compressed Bun ~25–35 MB — the 20 MB budget is a **compressor choice** (zstd
 UDZO), not a host-trim project.
 
 **Refuse:** CEF-by-default; drop Bun to win installer; count hello-without-Bun as
-the product; mix WK/Chromium/Skia in one `vs`; debug 5.5M in `vs`; time-to-RSS as
-first paint; fill `vs` from blog citations; treat Electrobun launcher RSS as
-vs-WK; fake `bench/` CI.
+the product; mix WK/Chromium/Skia in one `vs`; debug 5.5M in `vs`; time-to-RSS or
+time-to-titled-`HWND` as first paint; fill `vs` from blog citations; treat
+Electrobun launcher RSS as vs-WK; fake `bench/` CI.
 
 ## Related
 
@@ -237,9 +237,11 @@ under `windows/<framework>/hello`. Release builds, median of 3.
 recursive descendant tree of our own PID only (a global `msedgewebview2` sweep
 counts 6 unrelated WebView2 processes this machine idles with). Main and helper
 RSS stay separate, as in the macOS rows. `window-visible` = first titled `HWND`;
-**not** first paint, and not comparable to the macOS rows.
+**not** first paint, not comparable to the macOS rows, and — see
+[Time to first paint](#time-to-first-paint-2026-08-14-median-of-5) — **not
+comparable across frameworks either**. Kept for continuity only.
 
-| Stack | Version | Binary | Installer | window-visible | Main RSS | Helper RSS | Procs | Fixture |
+| Stack | Version | Binary | Installer | window-visible (weak) | Main RSS | Helper RSS | Procs | Fixture |
 |---|---|---|---|---|---|---|---|---|
 | **Keld** `keld-host --hello` | `44d23b2` | **625,152 B** | none (`keld-pack` is a `Format` enum) | ~205 ms | **21,880 KB** | 333,416 KB | 7 | this repo |
 | Keld `keld.exe` CLI | same | 2,445,312 B | n/a | — | — | — | — | this repo |
@@ -250,13 +252,68 @@ RSS stay separate, as in the macOS rows. `window-visible` = first titled `HWND`;
 | NW.js | 0.114.1 | runtime zip 209,290,666 B | unpacked 552,990,288 B | 926 ms | 143,456 KB | 248,940 KB | 6 | [`windows/nwjs/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/nwjs/hello) |
 | Electrobun | 1.18.1 | Setup.exe 423,936 B | `.tar.zst` 33,164,123 B | **never opened** | 9,396 KB | 553,416 KB | 8 | [`windows/electrobun/hello`](https://github.com/gyldlab/keld-benches/tree/f54a3c406f861d9f55d2c1518fde89f75e817bf5/windows/electrobun/hello) |
 
+### Time to first paint (2026-08-14, median of 5)
+
+`window-visible` above is a **weak** metric. Frameworks differ in *when* they
+present the window relative to webview construction, so a titled `HWND` can
+appear before, during, or after the engine has anything to show — the column
+compares presentation policy, not speed, and is **not comparable across
+frameworks**. It is also not the metric
+[`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5 budgets.
+That metric is **cold start → first paint ≤ 300 ms**, and this is it.
+
+**Instrumentation — identical for every arm.** Every arm serves byte-identical
+hello HTML (M-01). The page fires an image beacon —
+`new Image().src = "http://127.0.0.1:45877/painted"` — from inside a double
+`requestAnimationFrame`, i.e. after the first frame has been composited. A
+single local `HttpListener` timestamps arrival, so **every arm shares one clock**
+and none gets privileged in-process instrumentation the others lack.
+
+**Image beacon, not `fetch()`.** The hello page runs on an opaque origin (wry
+`with_html` / WebView2 `NavigateToString`), so `fetch()` is CORS-restricted;
+`<img>` is not.
+
+**`document.title` does not work — do not retry it.** Setting the document title
+and watching for the native window caption is a dead end in an embedded webview:
+the native window title is owned by the framework, not the document. That attempt
+failed on **every** arm.
+
+The beacon HTML was injected for the measurement session only and reverted
+afterwards. It is **not** in product code, and by construction no committed SHA
+reproduces the instrumented binaries.
+
+| Stack | first paint (budgeted metric) | titled `HWND` (weak) | vs ≤ 300 ms budget |
+|---|---|---|---|
+| **Keld** `keld-host --hello` | **906 ms** | 433 ms | **over** — 3.0x |
+| Tauri 2.11.5 | **504 ms** | 32 ms | **over** — 1.7x |
+| Electron 43.4.0 | **not measured** | 125 ms | — |
+
+Raw first-paint runs (ms): Keld 906 / 943 / 867 / 857 / 977 · Tauri 504 / 568 /
+464 / 500 / 510.
+
+**Both arms miss the budget.** Keld 906 ms is 3.0x over ≤ 300 ms; Tauri 504 ms is
+1.7x over. Tauri also failing is not a defence — the budget is not graded on a
+curve.
+
+**The Electron first paint is missing, not fast.** `electron-forge package` had
+already baked `out/` before the fixture HTML was edited, so the packaged app
+served a stale copy of the page without the beacon. Reproducing this row needs a
+repackage.
+
+Titled-`HWND` medians are not stable across sessions either: Keld's moved
+205 -> 433 ms between the 2026-08-13 and 2026-08-14 sessions while Tauri's held
+(31 -> 32 ms). Run count differs (3 vs 5) and the instrumented tree carries the
+beacon, so read that as session drift rather than a regression — and as one more
+reason not to build a claim on that column.
+
 ### What these rows do and do not support
 
 | Claim | Supported? |
 |---|---|
 | Keld has the smallest binary on Windows | **Yes.** 625,152 B is 13.8x under Tauri's exe, 16.5x under Wails'. |
 | Keld has the lowest main-process RSS on Windows | **Yes** — 21,880 KB, lowest of every arm that opened a window, and well under the ≤ 90 MB idle budget. |
-| Keld starts faster than Tauri | **No.** Tauri ~31 ms vs Keld ~205 ms — roughly 6.6x against us. The wry 0.56.1 bump cut Keld 3.2x (657 -> 205 ms) but Tauri measured faster in the same session too (61 -> 31 ms), so the *gap* narrowed less than Keld's own gain suggests. Do not publish a startup claim. See KEL-62. |
+| Keld starts faster than Tauri | **No.** On the budgeted metric — cold start → first paint — Tauri is **504 ms against Keld's 906 ms: 1.8x against us** (2026-08-14, median of 5). The earlier entry here said 6.6x; that figure came from titled-`HWND` times and was **inflated by a metric artifact** — that column times when a framework chooses to present its window, not when either renders. Fixing the metric shrinks the gap; it does **not** close it. Keld is still ~400 ms behind Tauri. Do not publish a startup claim. See KEL-62. |
+| Keld meets the ≤ 300 ms first-paint budget | **No.** 906 ms — 3.0x over architecture 01 §5. Tauri misses it too (504 ms, 1.7x over); that is context, not an excuse. |
 | Keld uses less total memory than Electron | **No.** Electron 305,036 KB total beats every WebView2 arm because it runs 4 processes to WebView2's 7. |
 | Keld beats Tauri on total RSS | **Not meaningfully** — ~3%, inside run-to-run noise. The ~330 MB helper tier is engine-fixed and near-identical across all WebView2 arms. |
 | Electrobun comparison | **No.** Windows `--env=stable` emitted a macOS-shaped bundle and no window opened; the sample is a launcher that never rendered. |
