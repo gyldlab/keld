@@ -319,3 +319,35 @@ reason not to build a claim on that column.
 | Keld beats Tauri on total RSS | **Not meaningfully** — ~3%, inside run-to-run noise. The ~330 MB helper tier is engine-fixed and near-identical across all WebView2 arms. |
 | Electrobun comparison | **No.** Windows `--env=stable` emitted a macOS-shaped bundle and no window opened; the sample is a launcher that never rendered. |
 | Installer-to-installer vs Tauri MSI / NW.js zip | **No.** Keld has no installer; `keld-host --hello` is a host-lane diagnostic and does not spawn Bun. |
+
+
+## Windows first paint, reproducible harness (2026-08-14)
+
+Supersedes the 2026-08-14 ad-hoc first-paint figures above. Those came from a
+throwaway fixed-port beacon that was reverted, so they were not reproducible.
+Re-measured with the committed harness
+[`windows/bench/Measure-FirstPaint.ps1`](https://github.com/gyldlab/keld-benches/blob/e3f65f4/windows/bench/Measure-FirstPaint.ps1)
+at [`gyldlab/keld-benches@e3f65f4`](https://github.com/gyldlab/keld-benches/commit/e3f65f4);
+raw samples (git SHAs, exe SHA-256, versions, exact command) in
+`windows/bench/windows-first-paint.json`. Median of 5, same machine/session.
+
+| Stack | first paint | main RSS | helper RSS | total RSS | procs |
+|---|---|---|---|---|---|
+| **Electron** 43.4.0 | **444 ms** | 87,088 KB | **217,284 KB** | **304,372 KB** | **4** |
+| Tauri 2.11.5 | 688 ms | 24,584 KB | 336,852 KB | 361,436 KB | 7 |
+| **Keld** `keld-host --hello` | **1,289 ms** | **19,860 KB** | 337,192 KB | 357,052 KB | 7 |
+
+### What these rows support
+
+| Claim | Supported? |
+|---|---|
+| Keld has the lowest main-process RSS on Windows | **Yes** — 19,860 KB, lowest of all three, under the ≤ 90 MB idle budget. |
+| Keld has the smallest binary | **Yes** — unchanged; 625,152 B, 13.8x under Tauri. |
+| Keld starts fast | **No. Keld is the slowest arm measured** — 1,289 ms, 1.87x Tauri on the *same* WebView2 engine and 2.9x Electron. Not an engine cost; it is Keld's own startup path. See KEL-62. |
+| Keld meets the ≤ 300 ms cold-start-to-first-paint budget (arch 01 §5) | **No** — 4.3x over. Tauri (2.3x) and Electron (1.5x) also miss it, which is context, not an excuse. |
+| Keld uses less total memory than Electron | **No** — Electron's 4-process tree beats both 7-process WebView2 arms. |
+| Keld beats Tauri on total RSS | **Not meaningfully** — ~1%, inside noise. The ~337 MB helper tier is engine-fixed. |
+
+Absolutes here run higher than the earlier ad-hoc pass (Keld 906 ms, Tauri
+504 ms) on the same machine; the **ratio** is stable at ~1.8x. Compare within a
+session, never across.
