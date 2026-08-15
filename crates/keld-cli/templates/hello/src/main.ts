@@ -1,7 +1,11 @@
 /**
  * App main process — supervised Bun child (KEL-29 hello template).
- * Full typed bridge codegen lands in @keld/api; this slice uses the CLI client.
+ * Speaks kipc directly (KEL-30): Bun opens the app-link socket itself and
+ * does the HELLO handshake + echo Call/Reply — no shelling out to a second
+ * Rust process. Full schema-driven codegen (`keld gen`, `@keld/schema`) is a
+ * later slice; `./kipc.ts` is the hand-written, wire-exact v0 client.
  */
+import { echoRoundtrip } from "./kipc";
 
 const link = process.env.KELD_APP_LINK;
 if (!link) {
@@ -11,16 +15,7 @@ if (!link) {
   process.exit(1);
 }
 
-const keld = process.env.KELD_BIN ?? "keld";
-const proc = Bun.spawn([keld, "ipc-client", "echo", "--link", link], {
-  stdout: "inherit",
-  stderr: "inherit",
-  env: process.env,
-});
-
-const code = await proc.exited;
-if (code !== 0) {
-  process.exit(code);
-}
+const response = await echoRoundtrip(link, { message: "keld", count: 1 });
+console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
 
 console.log("{{name}}: main process ready (IPC echo ok)");

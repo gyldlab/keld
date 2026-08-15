@@ -533,9 +533,12 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes five files (`crates/keld-cli/src/template.rs:13-34`):
-`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `.gitignore`. The config is this, in
-full, with `{{name}}` substituted at scaffold time:
+`keld create <name>` writes six files (`crates/keld-cli/src/template.rs:13-40`):
+`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`.
+`src/kipc.ts` is the hand-written kipc v2 client `main.ts` imports (§12 below) — the sixth file is
+new as of KEL-30; `HELLO_TEMPLATE` is an explicit allow-list, not a directory glob, so
+`src/kipc.test.ts` (the golden-vector tests living beside it) is deliberately not embedded. The
+config is this, in full, with `{{name}}` substituted at scaffold time:
 
 ```ts
 /** Keld app config — compiled by the CLI at dev/build time. */
@@ -592,13 +595,12 @@ because Bun has no stable embedding C API.
 ### What the code actually passes
 
 ```rust
-// crates/keld-cli/src/dev.rs:88-95
+// crates/keld-cli/src/dev.rs (run_dev_echo)
 let mut bun = Command::new("bun");
 bun.arg("run")
     .arg(&bun_main)
     .current_dir(project_root)
     .env("KELD_APP_LINK", &link)
-    .env("KELD_BIN", &keld_bin)
     .stdout(Stdio::inherit())
     .stderr(Stdio::inherit());
 ```
@@ -606,7 +608,11 @@ bun.arg("run")
 | Variable | Value | Consumed by |
 |---|---|---|
 | `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (`echo_link.rs`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
-| `KELD_BIN` | `std::env::current_exe()` — the path to the running `keld` binary | `main.ts:14`, to spawn the Rust IPC client |
+
+`KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
+Bun child could shell out to `keld ipc-client` — it was removed in KEL-30 once `main.ts` started
+speaking kipc itself via `src/kipc.ts`, so `run_dev_echo` no longer takes a `keld_bin` parameter at
+all. `keld ipc-client echo` still exists as a standalone CLI utility; nothing spawns it anymore.
 
 The child's half of the contract is to refuse to run outside it:
 
@@ -633,7 +639,7 @@ resolving the first time anyone implements the real spawn path:
 |---|---|
 | [`01` §4](../architecture/01-overview.md) | `KELD_IPC_FD` / pipe name, plus a `keld.app.json` contract file |
 | [`06` §1](../architecture/06-runtime-and-tooling.md) | `KELD_LINK={fd\|pipe}`, `KELD_SHM={handle}`, `KELD_CONTRACT=keld.app.json` |
-| Code (`dev.rs:92-93`) | `KELD_APP_LINK`, `KELD_BIN` |
+| Code (`dev.rs::run_dev_echo`) | `KELD_APP_LINK` only, since KEL-30 |
 
 Grepping the workspace for `KELD_IPC_FD`, `KELD_LINK`, `KELD_SHM`, `KELD_CONTRACT`, or
 `keld.app.json` returns nothing outside those two spec files. **`keld.app.json` does not exist in
@@ -641,9 +647,10 @@ any form** — no schema, no writer, no reader. Per root `AGENTS.md`, the two sp
 each other is itself a bug to be fixed in the same PR as whichever one gets implemented, and picking
 a winner is a wire-protocol decision subject to the review gate.
 
-Note also that `KELD_BIN` is an artifact of the current shape rather than part of the intended
-contract: it exists only because the Bun child has no `@keld/api` and must shell out to a Rust
-subprocess to speak kipc. It should disappear when the JS client lands.
+`KELD_BIN` predicted this exact resolution and can be crossed off: the paragraph used to live here
+noting it "should disappear when the JS client lands" — `src/kipc.ts` (KEL-30) is that JS client,
+and `KELD_BIN` is gone from `run_dev_echo`. One fewer name in play, though the three-way
+`KELD_APP_LINK` vs. `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT` disagreement above is unchanged.
 
 ---
 
@@ -1453,7 +1460,8 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
 v0 live verbs: `create`, `dev`, `doctor`, `mcp`, `hello`, `ipc-echo`, `ipc-client`.
 `keld doctor` checks Bun on PATH, hello-template layout (`keld.config.ts` +
 `src/main.ts`), the configured renderer HTML (default `index.html`; missing or
-non-project-relative is `KELD-CLI-035`), and a macOS webview info line.
+non-project-relative is `KELD-CLI-035`), and a webview info line on macOS and
+Windows (the two live `WebEngine` backends; none on Linux yet, KEL-28).
 Native-module DB, permission diffs, `--web-compat`, and the Linux GPU probe are
 not live. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
 `doctor`, `hello`) are `KELD-CLI-044` (exit 2). `keld create` takes one project
@@ -1462,6 +1470,19 @@ flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
 `migrate` / `gen` / `ext` are `KELD-CLI-045` (exit 2) with a tracking issue and
 the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
 command". Garbage verbs are `KELD-CLI-046` (exit 2).
+
+**v0 env var is `KELD_APP_LINK`, not `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.**
+§1's contract above is the destination shape for the real `keld-runtime`
+supervisor (still a skeleton — no spawn/backoff/crash-loop code exists).
+What `keld dev` actually spawns today (`crates/keld-cli/src/dev.rs`
+`run_dev_echo`) is a bare `Command::new("bun")` with one env var,
+`KELD_APP_LINK=<endpoint>#<64 hex chars>` (`docs/architecture/02-ipc.md` §1).
+The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
+hand-written, wire-exact v0 client (postcard framing, `HELLO` handshake);
+`keld gen`/`@keld/schema` codegen (KEL-13) is not built, so this is the actual
+"Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
+pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
+useful standalone; the template no longer shells out to it.
 
 Distribution: `@keld/cli` npm package with per-platform binaries under
 `optionalDependencies` (esbuild pattern); `bunx keld` / `npx keld` work with zero

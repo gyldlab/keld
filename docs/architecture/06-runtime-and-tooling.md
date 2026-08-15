@@ -34,7 +34,8 @@
 v0 live verbs: `create`, `dev`, `doctor`, `mcp`, `hello`, `ipc-echo`, `ipc-client`.
 `keld doctor` checks Bun on PATH, hello-template layout (`keld.config.ts` +
 `src/main.ts`), the configured renderer HTML (default `index.html`; missing or
-non-project-relative is `KELD-CLI-035`), and a macOS webview info line.
+non-project-relative is `KELD-CLI-035`), and a webview info line on macOS and
+Windows (the two live `WebEngine` backends; none on Linux yet, KEL-28).
 Native-module DB, permission diffs, `--web-compat`, and the Linux GPU probe are
 not live. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
 `doctor`, `hello`) are `KELD-CLI-044` (exit 2). `keld create` takes one project
@@ -43,6 +44,19 @@ flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
 `migrate` / `gen` / `ext` are `KELD-CLI-045` (exit 2) with a tracking issue and
 the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
 command". Garbage verbs are `KELD-CLI-046` (exit 2).
+
+**v0 env var is `KELD_APP_LINK`, not `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.**
+§1's contract above is the destination shape for the real `keld-runtime`
+supervisor (still a skeleton — no spawn/backoff/crash-loop code exists).
+What `keld dev` actually spawns today (`crates/keld-cli/src/dev.rs`
+`run_dev_echo`) is a bare `Command::new("bun")` with one env var,
+`KELD_APP_LINK=<endpoint>#<64 hex chars>` (`docs/architecture/02-ipc.md` §1).
+The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
+hand-written, wire-exact v0 client (postcard framing, `HELLO` handshake);
+`keld gen`/`@keld/schema` codegen (KEL-13) is not built, so this is the actual
+"Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
+pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
+useful standalone; the template no longer shells out to it.
 
 Distribution: `@keld/cli` npm package with per-platform binaries under
 `optionalDependencies` (esbuild pattern); `bunx keld` / `npx keld` work with zero

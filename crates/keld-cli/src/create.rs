@@ -224,7 +224,7 @@ mod tests {
     fn writes_expected_file_contents() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = create_project(dir.path(), "demo").expect("create");
-        assert_eq!(file_count(&root), 5, "hello template is exactly five files");
+        assert_eq!(file_count(&root), 6, "hello template is exactly six files");
 
         let config = fs::read_to_string(root.join("keld.config.ts")).expect("config");
         assert!(config.contains("name: \"demo\""), "{config}");
@@ -245,12 +245,23 @@ mod tests {
         let main = fs::read_to_string(root.join("src/main.ts")).expect("main");
         assert!(main.contains("KELD-CLI-010"), "{main}");
         assert!(main.contains("KELD_APP_LINK"), "{main}");
-        assert!(main.contains("ipc-client"), "{main}");
+        assert!(main.contains("echoRoundtrip"), "{main}");
+        assert!(
+            !main.contains("ipc-client"),
+            "KEL-30: template must speak kipc directly, not shell out: {main}"
+        );
         assert!(
             main.contains("demo: main process ready (IPC echo ok)"),
             "{main}"
         );
         assert!(!main.contains("{{name}}"), "{main}");
+
+        let kipc = fs::read_to_string(root.join("src/kipc.ts")).expect("kipc");
+        assert!(
+            kipc.contains("export async function echoRoundtrip"),
+            "{kipc}"
+        );
+        assert!(kipc.contains("Bun.connect"), "{kipc}");
 
         let gitignore = fs::read_to_string(root.join(".gitignore")).expect("gitignore");
         assert!(gitignore.contains("node_modules/"), "{gitignore}");

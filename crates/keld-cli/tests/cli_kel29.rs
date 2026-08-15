@@ -3,6 +3,7 @@
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc;
@@ -230,7 +231,7 @@ fn run_dev_echo_uses_project_name_and_reaps_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("t{}", std::process::id());
     let root = create_project(dir.path(), &name).expect("create");
-    let result = run_dev_echo(&root, Path::new(keld_bin())).expect("dev echo");
+    let result = run_dev_echo(&root).expect("dev echo");
     assert!(
         result
             .stdout
@@ -275,9 +276,8 @@ fn run_dev_echo_bun_nonzero_without_connect_does_not_hang() {
     fs::write(root.join("src/main.ts"), "process.exit(7);\n").expect("overwrite main");
 
     let (done_tx, done_rx) = mpsc::channel();
-    let keld_bin = keld_bin().to_owned();
     thread::spawn(move || {
-        let result = run_dev_echo(&root, Path::new(&keld_bin));
+        let result = run_dev_echo(&root);
         let _ = done_tx.send(result);
     });
     let result = done_rx

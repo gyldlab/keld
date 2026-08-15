@@ -252,19 +252,17 @@ sequenceDiagram
     autonumber
     participant CLI as keld dev<br/>(keld-cli)
     participant Srv as EchoServer thread<br/>(keld-cli/echo_link.rs)
-    participant Bun as bun run src/main.ts
-    participant Sub as keld ipc-client echo<br/>(a second Rust process)
-    participant Win as WKWebView window
+    participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30)
+    participant Win as WKWebView / WebView2 window
 
     CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts?<br/>renderer HTML present and project-relative?
-    CLI->>Srv: EchoServer::start() → bind UDS, wait for ready
-    CLI->>Bun: spawn, env KELD_APP_LINK=<sock> KELD_BIN=<path>
-    Bun->>Sub: Bun.spawn([keld, "ipc-client", "echo", "--link", link])
-    Sub->>Srv: connect + HELLO
-    Srv-->>Sub: HELLO
-    Sub->>Srv: CALL on ECHO_CHANNEL (postcard EchoRequest)
-    Srv-->>Sub: REPLY (postcard EchoResponse)
-    Sub-->>Bun: prints "ipc-echo ok"
+    CLI->>Srv: EchoServer::start() → bind UDS or loopback port, wait for ready
+    CLI->>Bun: spawn, env KELD_APP_LINK=<endpoint>#<token>
+    Bun->>Srv: Bun.connect (./kipc.ts) + HELLO
+    Srv-->>Bun: HELLO
+    Bun->>Srv: CALL on ECHO_CHANNEL (postcard EchoRequest)
+    Srv-->>Bun: REPLY (postcard EchoResponse)
+    Bun-->>Bun: prints "ipc-echo ok"
     CLI->>Win: run_hello_window_html — project renderer HTML, no IPC in the webview
     Note over Win: blocks the main thread<br/>until the user closes it
 ```

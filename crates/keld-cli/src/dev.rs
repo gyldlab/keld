@@ -6,9 +6,10 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
-#[cfg(target_os = "macos")]
-use keld_core::run_hello_window_html;
-use keld_core::{DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title};
+use keld_core::{
+    DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title,
+    run_hello_window_html,
+};
 
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 use crate::echo_link::EchoServer;
@@ -126,21 +127,15 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
     Ok(Path::new(renderer.trim()))
 }
 
-/// Resolves the `keld` binary path for child processes (`KELD_BIN`).
-fn current_keld_bin() -> io::Result<PathBuf> {
-    std::env::current_exe()
-}
-
 /// Doctor checks, then one Bun IPC echo round-trip. Does not open a window.
 ///
-/// `keld_bin` is passed to the child as `KELD_BIN` so the template can spawn
-/// `keld ipc-client`. Tests pass `CARGO_BIN_EXE_keld`; `keld dev` passes
-/// [`std::env::current_exe`].
+/// The template speaks kipc directly (`src/kipc.ts`, KEL-30) — Bun needs only
+/// `KELD_APP_LINK`, not a `keld` binary path to shell out to.
 ///
 /// # Errors
 ///
 /// Returns [`DevError`] when checks fail, Bun cannot be spawned, or echo fails.
-pub fn run_dev_echo(project_root: &Path, keld_bin: &Path) -> Result<DevEchoResult, DevError> {
+pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     let checks = run_checks(Some(project_root));
     if !all_ok(&checks) {
         let mut msg = String::from("KELD-CLI-032: environment checks failed:\n");
@@ -164,7 +159,6 @@ pub fn run_dev_echo(project_root: &Path, keld_bin: &Path) -> Result<DevEchoResul
         .arg(&bun_main)
         .current_dir(project_root)
         .env("KELD_APP_LINK", &link)
-        .env("KELD_BIN", keld_bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -195,26 +189,14 @@ pub fn run_dev_echo(project_root: &Path, keld_bin: &Path) -> Result<DevEchoResul
 ///
 /// Returns [`DevError`] when checks fail, Bun exits non-zero, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    let keld_bin = current_keld_bin()?;
-    let _echo = run_dev_echo(project_root, &keld_bin)?;
+    let _echo = run_dev_echo(project_root)?;
     open_dev_window(project_root)
 }
 
 fn open_dev_window(project_root: &Path) -> Result<(), DevError> {
     let title = hello_title_for_project(project_root);
     let html = load_dev_window_html(project_root)?;
-    #[cfg(target_os = "macos")]
-    {
-        run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (title, html);
-        eprintln!(
-            "keld dev: webview window not available on this OS yet; IPC echo already completed."
-        );
-        Ok(())
-    }
+    run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()))
 }
 
 /// Kills and reaps a child if the session is dropped before `wait`.
@@ -291,8 +273,7 @@ mod tests {
     #[test]
     fn run_dev_echo_missing_config_is_cli_032() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let err = run_dev_echo(dir.path(), Path::new("/nonexistent/keld"))
-            .expect_err("missing config must fail before spawn");
+        let err = run_dev_echo(dir.path()).expect_err("missing config must fail before spawn");
         let msg = err.to_string();
         assert!(msg.contains("KELD-CLI-032"), "{msg}");
         assert!(msg.contains("keld.config.ts"), "{msg}");
@@ -309,8 +290,7 @@ mod tests {
         fs::write(dir.path().join("keld.config.ts"), "export default {}\n").expect("config");
         fs::create_dir_all(dir.path().join("src")).expect("src");
         fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
-        let err = run_dev_echo(dir.path(), Path::new("/nonexistent/keld"))
-            .expect_err("missing renderer must fail before spawn");
+        let err = run_dev_echo(dir.path()).expect_err("missing renderer must fail before spawn");
         let msg = err.to_string();
         assert!(msg.contains("KELD-CLI-032"), "{msg}");
         assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
