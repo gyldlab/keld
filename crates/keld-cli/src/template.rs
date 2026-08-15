@@ -28,7 +28,31 @@ pub const HELLO_TEMPLATE: &[TemplateFile] = &[
         contents: include_str!("../templates/hello/src/main.ts"),
     },
     TemplateFile {
+        path: "src/kipc.ts",
+        contents: include_str!("../templates/hello/src/kipc.ts"),
+    },
+    TemplateFile {
         path: ".gitignore",
         contents: include_str!("../templates/hello/.gitignore"),
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::HELLO_TEMPLATE;
+
+    /// `kipc.test.ts` is scaffold-internal test coverage, not app code a
+    /// created project should carry. `HELLO_TEMPLATE` is an explicit
+    /// allow-list (not a directory glob) specifically so files like this can
+    /// live beside `kipc.ts` without shipping.
+    #[test]
+    fn template_does_not_embed_test_files() {
+        for file in HELLO_TEMPLATE {
+            assert!(
+                !file.path.ends_with(".test.ts"),
+                "KEL-30: {} must not be embedded in keld create's scaffold output",
+                file.path
+            );
+        }
+    }
+}

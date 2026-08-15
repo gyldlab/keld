@@ -198,27 +198,32 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **Closing the window ends the process.** The macOS backend hands the thread to tao's
+- **Closing the window ends the process.** Both live backends hand the thread to tao's
   `EventLoop::run`, which never returns and exits the process itself
-  ([`wkwebview/mod.rs::run_until_closed`](../../crates/keld-wv/src/wkwebview/mod.rs)).
+  ([`wkwebview/mod.rs::run_until_closed`](../../crates/keld-wv/src/wkwebview/mod.rs),
+  [`webview2/mod.rs::run_until_closed`](../../crates/keld-wv/src/webview2/mod.rs)).
   That is why echo runs to completion *before* the window opens.
-- **Off macOS there is no window at all.** After echo, `run_dev` prints
-  `keld dev: webview window not available on this OS yet; IPC echo already completed.`
-  and returns success. The renderer file is still loaded and validated first.
+- **On Linux `keld dev` fails, it does not silently no-op.** `run_hello_window_html`
+  is the same cross-platform call on every OS; Linux has no live `WebEngine` backend
+  yet (KEL-28), so it returns `WvError::UnsupportedPlatform` and `run_dev` surfaces
+  it as `DevError::Runtime` — a real non-zero exit naming the tracking issue, not a
+  printed "not available yet" line with exit 0. The renderer file is still loaded
+  and validated first, same as the two live backends.
 
 ### 1.7 `keld doctor`
 
 Runs the checks in [`doctor.rs::run_checks`](../../crates/keld-cli/src/doctor.rs) and
 prints one line each, format `[ok|FAIL] <label> — <detail>`. Exit is **1** if any check
 failed, **0** otherwise. Bun and project run everywhere; renderer runs when a project
-root is present; webview is macOS-only:
+root is present; webview runs on macOS and Windows (the two live `WebEngine` backends;
+Linux has none yet, KEL-28, so no `webview` line appears there):
 
 | Label | Passes when | Detail on failure |
 |---|---|---|
 | `bun` | `bun --version` runs and exits 0 | ``install Bun from https://bun.sh and ensure `bun` is on PATH`` |
 | `project` | no project root found **or** the root has both `keld.config.ts` and `src/main.ts` | ``missing keld.config.ts or src/main.ts — run `keld create <name>` first`` |
 | `renderer` (project root only) | configured `renderer` (default `index.html`) is a project-relative file that exists | `KELD-CLI-035` — set `renderer` to a project-relative HTML file and create it |
-| `webview` (macOS only) | always | n/a — informational, never fails |
+| `webview` (macOS/Windows only) | always | n/a — informational, never fails |
 
 Outside a project:
 

@@ -128,9 +128,9 @@ pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
     if let Some(root) = project_root {
         checks.push(check_renderer(root));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        checks.push(check_macos_hello());
+        checks.push(check_webview_hello());
     }
     checks
 }
@@ -262,12 +262,20 @@ fn check_renderer(root: &Path) -> Check {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn check_macos_hello() -> Check {
+/// Informational only — the hello window backend is live on this OS
+/// (macOS `WKWebView`, Windows `WebView2`), so `keld dev` can open a window.
+/// Never fails: a missing runtime (e.g. `WebView2` Evergreen) surfaces as
+/// `KELD-WV-008` from `keld dev` itself, not from doctor.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn check_webview_hello() -> Check {
+    #[cfg(target_os = "macos")]
+    let detail = "macOS WKWebView hello window available via `keld dev`";
+    #[cfg(target_os = "windows")]
+    let detail = "Windows WebView2 hello window available via `keld dev`";
     Check {
         label: "webview",
         ok: true,
-        detail: "macOS WKWebView hello window available via `keld dev`".to_owned(),
+        detail: detail.to_owned(),
         error: None,
     }
 }
@@ -289,6 +297,21 @@ mod tests {
             .into_iter()
             .find(|c| c.label == "renderer")
             .expect("renderer check runs when a project root is passed")
+    }
+
+    /// KEL-29/KEL-30: `keld dev` opens a real Windows window via `WebView2`
+    /// (KEL-27, direct COM since KEL-65) — doctor must say so, not stay
+    /// silent as if webview were still macOS-only.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_webview_check_is_ok_and_present() {
+        let check = run_checks(None)
+            .into_iter()
+            .find(|c| c.label == "webview")
+            .expect("windows must report a webview check");
+        assert!(check.ok, "{check:?}");
+        assert!(check.detail.contains("WebView2"), "{}", check.detail);
+        assert!(check.error.is_none());
     }
 
     #[test]
