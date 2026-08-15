@@ -253,6 +253,19 @@ impl WebEngine for WebView2Engine {
             other => WvError::Webview(other.to_string()),
         })?;
 
+        // KEL-62: give the controller its initial bounds. wry only calls
+        // `SetBounds` from its WM_SIZE subclass hook, so a webview that is
+        // never resized after attach keeps a zero-sized controller until some
+        // unrelated window event finally delivers one, and Chromium does not
+        // composite a zero-sized surface — measured as ~640 ms of dead time
+        // between load-finished and first paint on the hello window. Ignore
+        // the result: failing to size early is exactly the state we are in
+        // without this call, and the resize hook still applies later.
+        let size = window.inner_size();
+        let _ = webview.set_bounds(wry::Rect {
+            position: tao::dpi::PhysicalPosition::new(0, 0).into(),
+            size: size.into(),
+        });
         let id = self.next_id;
         self.next_id += 1;
         self.views.insert(id, View { window, webview });

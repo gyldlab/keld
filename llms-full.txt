@@ -2869,6 +2869,45 @@ Absolutes here run higher than the earlier ad-hoc pass (Keld 906 ms, Tauri
 504 ms) on the same machine; the **ratio** is stable at ~1.8x. Compare within a
 session, never across.
 
+
+## Windows first paint after the controller-bounds fix (2026-08-14, median of 7)
+
+Supersedes the table above. Two defects moved every number:
+
+1. **Product (Keld):** wry sets WebView2 controller bounds only from its WM_SIZE
+   hook, so Keld's never-resized webview stayed 0x0 and Chromium deferred the
+   first composited frame ~640 ms. Fixed on `agent/kel-62-initial-controller-bounds`
+   by sizing the controller once at attach.
+2. **Harness (all arms):** PowerShell `Start-Process` costs 450-700 ms between
+   the call and the child's `main()` (measured by a wall clock printed at child
+   entry). Replaced with .NET `Process.Start` (~11-47 ms), and the spawn wall
+   time is now recorded per sample.
+
+Harness at [`gyldlab/keld-benches` `windows/bench/`](https://github.com/gyldlab/keld-benches/tree/main/windows/bench)
+(raw samples `windows-first-paint.json`, spawn wall clock included per run).
+
+| Stack | first paint | main RSS | helper RSS | procs |
+|---|---|---|---|---|
+| **Electron** 43.4.0 | **395 ms** | 92,140 KB | 226,908 KB | **4** |
+| **Keld** `b935830` | **590 ms** | **23,084 KB** | 351,680 KB | 7 |
+| Tauri 2.11.5 | 596 ms | 28,280 KB | 354,316 KB | 7 |
+
+Raw (ms): Keld 759/627/527/573/558/555/590 · Tauri 912/585/596/565/614/584/589 ·
+Electron 1165/395/321/333/410/317/372. First run of each arm is cold. 7/7 valid.
+
+### Claims this changes
+
+| Claim | Now |
+|---|---|
+| "Keld first-paints 1.87x slower than Tauri" | **Retired.** 590 vs 596 ms is a statistical tie on the identical engine. The published gap was the bounds defect plus harness spawn overhead, both fixed. |
+| Keld starts fast | **Parity with Tauri, not leadership.** Electron still first-paints ~1.5x faster than both WebView2 arms. |
+| ≤ 300 ms first-paint budget (arch 01 §5) | **Still missed** — Keld and Tauri ~2x over, Electron ~1.3x over. The remaining Keld cost is `WebViewBuilder::build` (~550 ms: WebView2 environment + controller creation), which is engine-inherent on this path. Tracked on KEL-62. |
+| Keld has the lowest main-process RSS | **Yes** — unchanged (23,084 KB this session; absolutes drift with machine warmth, ordering does not). |
+
+Absolutes in this table are lower than the previous one for every arm because the
+spawn overhead left the measurement. Ratios between arms are the durable signal;
+never compare absolutes across sessions.
+
 ---
 
 ## Source: `docs/engineering/compat-scoreboard.md`
