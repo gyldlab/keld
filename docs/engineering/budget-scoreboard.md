@@ -33,7 +33,7 @@ Regressions > 5% fail the PR once `bench/` lands (KEL-39 parked `bench/` as YAGN
 |---|---|---|---|
 | Installer (runtime = bun) | ≤ 20 MB | 85–150 MB | N/A — Bun not packed |
 | Installer (runtime = none) | ≤ 6 MB | — | N/A — no `.app` / DMG |
-| Cold start → first paint | ≤ 300 ms | 1–3 s | **unmeasured** (no load-finished on v0) |
+| Cold start → first paint | ≤ 300 ms | 1–3 s | macOS **unmeasured**; Windows **472 ms** (2026-08-15 session, direct-COM backend) — ~1.6x over, floor is Chromium boot in controller creation |
 | Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB | **72.6–77.8 MiB** host-only (under budget; no Bun; WebKit XPCs excluded) |
 | kipc small-message p99 | ≤ 100 µs | ~ms-class | echo exists; not bench'd |
 | kipc bulk (shm) | ≥ 1 GB/s | n/a | no shm |
@@ -131,7 +131,7 @@ Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 | Keld `.app` / DMG | `keld-pack` has no authoring code |
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
 | Electrobun complete RSS | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
-| First paint ≤ 300 ms | **Windows: measured 2026-08-14 — Keld 906 ms, 3.0x over budget** (see the Windows rows). macOS/Linux: still not instrumented. |
+| First paint ≤ 300 ms | **Windows: 472 ms (2026-08-15 controlled session), ~1.6x over budget** — floor is Chromium boot inside controller creation (see the direct-COM A/B section). macOS/Linux: still not instrumented. |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
 | Windows / Linux competitor hellos | keld-benches stubs; not this machine |
@@ -184,7 +184,7 @@ Four uniques only — no fifth.
 | 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. Electrobun 72,032 KB launcher is incomplete. Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
-| 5 | Cold start first paint (≤300 ms) | **can win with work** — **losing today** | First real measurement (Windows, 2026-08-14): Keld **906 ms**, Tauri 504 ms — both over budget, Keld 1.8x behind Tauri. Electron arm not measured (stale package). macOS still uninstrumented. WK class can beat Electron 1–3 s, but that is not yet a measured Keld claim. |
+| 5 | Cold start first paint (≤300 ms) | **can win with work** — **fastest WebView2 arm, budget still missed** | Latest controlled session (Windows, 2026-08-15): Keld **472 ms** ahead of Tauri 483/506 in both same-session runs; Electron 278 leads absolutes. Budget missed ~1.6x; the floor is Chromium boot inside `CreateCoreWebView2Controller` (Microsoft-confirmed not app-reducible). macOS still uninstrumented. See "Windows first paint on the direct-COM backend". |
 | 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk (this-Mac Electron `.app` 288,448,512; NW.js `.app` 410,271,744). Spec 01 §6: no CEF-by-default. |
 | 7 | Default-deny / crash isolation / zero ambient OS authority | **can win with work** | The product bet (architecture 01 §1). Specified, not enforced on hello. |
 | 8 | Flutter Skia hello | **cannot win honestly** | Different engine. Spec 01 §6: not a UI toolkit. |
@@ -390,3 +390,41 @@ Electron 1165/395/321/333/410/317/372. First run of each arm is cold. 7/7 valid.
 Absolutes in this table are lower than the previous one for every arm because the
 spawn overhead left the measurement. Ratios between arms are the durable signal;
 never compare absolutes across sessions.
+
+## Windows first paint on the direct-COM backend (2026-08-15, controlled A/B, median of 7)
+
+KEL-65 replaced wry with direct `webview2-com` calls on Windows. Instrumentation
+had shown wry blocking the UI thread 96–109 ms injecting its unused `window.ipc`
+bridge, predicting ~100 ms of first-paint win. **The controlled same-session A/B
+refuted the prediction** — that time overlapped renderer boot and was never on
+the paint critical path:
+
+| Stack | Run A (direct COM `39be9cc`) | Run B (wry baseline `137633f`) |
+|---|---|---|
+| Electron 43.4.0 | 278 ms | 294 ms |
+| **Keld** | **472 ms** | **467 ms** |
+| Tauri 2.11.5 | 483 ms | 506 ms |
+
+Both runs: [`windows/bench/`](https://github.com/gyldlab/keld-benches/tree/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a/windows/bench)
+@ `686d1ab` (raw samples `windows-first-paint-kel65-*.json`). Every arm sits
+~110–120 ms below the 2026-08-14 session — session conditions, which is why
+absolutes are never compared across sessions.
+
+What the rewrite *did* measurably change:
+
+| Metric | wry backend | direct COM |
+|---|---|---|
+| `keld-host.exe` (release) | 625,152 B | **484,864 B** (−24%) |
+| Effective browser args | `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` | **none** (SmartScreen on, KEL-66) — live cmdline verified |
+| SmartScreen cost | — | ON 472 ms vs OFF 466 ms: **free** (noise) |
+| UI-thread block before navigate | 96–109 ms (bridge injection) | ~0 (matters for input responsiveness and future multi-webview creation, not paint) |
+
+### Claims this changes
+
+| Claim | Now |
+|---|---|
+| "Dropping wry's bridge injection speeds first paint ~100 ms" | **Refuted by the A/B.** The blocking wait overlapped renderer boot. First paint is engine-floor-bound: `CreateCoreWebView2Controller` is "the bulk of starting a WebView2 control" (Microsoft, WebView2Feedback #1536) and not reducible from app code; environment creation is 3–6 ms. |
+| Keld vs Tauri | **Keld led in both same-session runs** (472 vs 483; 467 vs 506). Margin 11–39 ms is small against noise — claim "consistently ahead this session", not a ratio. |
+| Keld ships SmartScreen-disabled (inherited wry default) | **Fixed and free** — no browser args, verified on the live process; 0 measurable startup cost. |
+| Smallest Windows binary of the measured stacks | **Strengthened** — 484,864 B vs Tauri 8,634,880 B (17.8x) and the Electron ~120 MB class. |
+| ≤ 300 ms first-paint budget (arch 01 §5) | **Still missed** (~1.6x this session). The floor is Chromium process boot inside controller creation. Supported levers per Microsoft: early env creation (already done, 3–6 ms), hidden-webview prewarm + `put_ParentWindow` reparent (a memory-for-latency trade that fits real apps with init work, not the hello bench). Tracked on KEL-62. |

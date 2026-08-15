@@ -78,11 +78,12 @@ Do not add a fifth unique to look complete.
 
 ## 2. Webview: wry+tao scaffolding, spec 05 destination
 
-**Chose (2026-07-08, still true; wry pin updated 2026-08-14 for KEL-59).** The live
-macOS backend is tao 0.35.3 + wry 0.56.1 (`devtools` feature) in
-`crates/keld-wv/src/wkwebview/mod.rs`. Module comment: interim implementation,
-replace with direct objc2 bindings per architecture 05 §1. Windows/Linux modules
-are compiled layout slots that return `KELD-WV-001` and name KEL-27 / KEL-28.
+**Chose (2026-07-08; wry pin updated 2026-08-14 for KEL-59; Windows superseded
+2026-08-15 — see the update below).** The live macOS backend is tao 0.35.3 +
+wry 0.56.1 (`devtools` feature) in `crates/keld-wv/src/wkwebview/mod.rs`.
+Module comment: interim implementation, replace with direct objc2 bindings per
+architecture 05 §1. Linux remains a compiled layout slot returning
+`KELD-WV-001` and naming KEL-28.
 
 wry 0.55.1 auto-granted camera/mic (`request_media_capture_permission` → `Grant`)
 and had no `with_permission_handler`. 0.56.1 adds the handler; Keld installs it
@@ -101,6 +102,20 @@ through tao's event loop. Replacing it does not change who owns the handle, who 
 crash whom, or who can mint a principal — so it fails the first-principles test in
 `AGENTS.md` until wry is missing a hook we actually need. KEL-59 was that case for
 camera/mic: bump to 0.56.1 for `with_permission_handler`, do not rewrite the backend.
+
+**Update (2026-08-15, KEL-65): Windows create path is now direct windows-rs COM.**
+wry crossed the "missing a hook" line on Windows three ways at once: it blocks the
+UI thread 96–109 ms injecting a `window.ipc` bridge Keld never uses (reported
+upstream, tauri-apps/wry#1813), it ships default browser arguments that disable
+SmartScreen (KEL-66), and it owns the environment options Keld needs to control.
+`crates/keld-wv/src/webview2/mod.rs` now drives `webview2-com` directly —
+environment, controller, `add_PermissionRequested` guard before first navigation
+(compile-enforced), bounds, navigate — with tao still providing window + event
+loop. wry stays the macOS interim and a quirks catalog. Honest ledger: a
+controlled same-session A/B showed first paint unchanged (472 vs 467 ms — the
+bridge wait overlapped renderer boot), so the rewrite is carried by security
+(SmartScreen on, at 0 measured cost), binary size (−24%, 625,152 → 484,864 B),
+and owning the create sequence — not by a speed claim.
 
 **Why not treat wry as the product.** Architecture 05 lists hooks wry does not
 prioritize (scheme-streaming as bulk IPC, principal identity per navigation, engine

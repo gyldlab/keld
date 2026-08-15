@@ -1,41 +1,79 @@
-//! Windows backend: `WebView2` via tao + wry scaffolding (KEL-27).
+//! Windows backend: `WebView2` via direct windows-rs COM bindings (KEL-65).
 //!
-//! Interim implementation — replace with direct windows-rs + `WebView2` COM
-//! bindings per `docs/architecture/05-webview-and-native.md` §1, the same way
-//! `crate::wkwebview` is interim until direct objc2 bindings land. Layout
-//! mirrors wry's `competitors/wry/src/webview2/` per-platform module pattern.
+//! This is the `docs/architecture/05-webview-and-native.md` §1 destination for
+//! the create path — environment, controller, permission handler, and
+//! navigation are Keld-owned COM calls through `webview2-com` — with tao still
+//! providing the window and event loop until keld-core owns the command queue.
+//! wry remains the interim scaffolding on macOS only; Windows no longer links
+//! it. Layout still mirrors wry's `competitors/wry/src/webview2/` per-platform
+//! module pattern.
+//!
+//! Why direct COM instead of wry's `InnerWebView` (measured under KEL-65):
+//! wry 0.56.1 unconditionally injects its `window.ipc` bridge script through
+//! a **blocking** cross-process `AddScriptToExecuteOnDocumentCreated`
+//! round-trip against a renderer that is still booting — 96–109 ms for a bridge
+//! Keld never uses (kipc has its own transport design). Owning the environment
+//! also drops wry's default `AdditionalBrowserArguments`, which disabled
+//! `SmartScreen` (KEL-66), and makes the KEL-62 initial-bounds fix structural:
+//! the controller gets its size before the first navigation, so Chromium never
+//! composites a zero-sized surface.
+//!
+//! Ordering contract inside `create`: **guard permission handler → devtools
+//! policy → bounds + visibility → navigate**. Content must never run before
+//! the `keld-guard` handler is registered (crate `AGENTS.md`), which the
+//! compiler enforces: `navigate_initial` demands the `GuardInstalled` proof
+//! only `install_guarded_media_permissions` can mint.
 //!
 //! Unlike the macOS backend this module owns one extra Windows-only concern:
 //! the Evergreen runtime is a separate redistributable that may be absent.
 //! [`runtime_version`] probes for it up front so the failure is a typed
-//! `KELD-WV-008` with install guidance, not an opaque COM `HRESULT` surfaced
-//! from deep inside wry (`wry::Error::WebView2Error`).
+//! `KELD-WV-008` with install guidance, not an opaque COM `HRESULT`.
 //!
-// SAFETY: this module calls two WebView2/COM C ABI functions.
-// `GetAvailableCoreWebView2BrowserVersionString` is a pure query — it takes a
-// browser-executable folder (null = use the installed Evergreen runtime) and
-// writes an owned, COM-allocated UTF-16 string we must release with
-// `CoTaskMemFree`. Both calls are confined to `runtime_version`, which owns the
-// pointer for its whole lifetime and never hands it out. No COM apartment
-// initialization is required for this function; wry initializes the apartment
-// it needs when the webview is actually created. Every mutation of engine and
-// window state happens on the main thread inside tao's event loop, satisfying
-// the crate `AGENTS.md` "UI-thread-only mutations" invariant.
+// SAFETY: this module speaks to WebView2 over COM. The WebView2 threading
+// contract is a single-threaded apartment: the environment, controller, and
+// webview are created on the process main thread (tao's event-loop thread),
+// and every later use — resize, navigate, eval, devtools, drop — happens on
+// that same thread inside engine methods or tao's event loop, satisfying both
+// the COM contract and the crate `AGENTS.md` "UI-thread-only mutations"
+// invariant. Async completions are delivered by `webview2_com::wait_with_pump`,
+// which pumps this thread's message queue — the documented WebView2 callback
+// mechanism (learn.microsoft.com, "Threading model for WebView2 apps").
+// `GetAvailableCoreWebView2BrowserVersionString` is a pure query whose
+// COM-allocated out-string is released exactly once with `CoTaskMemFree`.
 #![allow(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::mpsc;
 
+use tao::dpi::PhysicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
+use tao::platform::windows::WindowExtWindows;
 use tao::window::{Window, WindowBuilder};
+
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, COREWEBVIEW2_PERMISSION_KIND,
+    COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY,
+    CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2Controller,
+    ICoreWebView2Environment, ICoreWebView2EnvironmentOptions,
+};
+use webview2_com::{
+    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
+    CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
+    PermissionRequestedEventHandler, wait_with_pump,
+};
+use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, RECT};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::core::HSTRING;
 
 use keld_guard::PermissionsManifest;
 
 use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebView2EngineExt, WebviewSpec};
 use crate::error::WvError;
-use crate::media::with_guarded_media_permissions;
+use crate::media::{media_permission_allowed, webview2_media_kind};
 
 /// Returns the installed `WebView2` Evergreen runtime version.
 ///
@@ -93,11 +131,12 @@ const PROFILE_IDENTIFIER: &str = "dev.keld";
 
 /// Directory `WebView2` keeps its profile in.
 ///
-/// Without this wry defaults to `<exe-name>.WebView2\` **beside the
-/// executable** (KEL-63). A shipped app lives in `C:\Program Files\<App>\`,
-/// which a standard user cannot write, so first launch would fail there while
-/// working fine from `target\release\`. It is also per-install-path rather than
-/// per-user, so two OS users would share one cookie/localStorage store.
+/// Without an explicit user-data folder the loader defaults to
+/// `<exe-name>.WebView2\` **beside the executable** (KEL-63). A shipped app
+/// lives in `C:\Program Files\<App>\`, which a standard user cannot write, so
+/// first launch would fail there while working fine from `target\release\`. It
+/// is also per-install-path rather than per-user, so two OS users would share
+/// one cookie/localStorage store.
 ///
 /// `%LOCALAPPDATA%` is per-user and writable by design. If it is somehow
 /// missing we fall back to the OS temp dir: a profile that does not survive
@@ -108,10 +147,200 @@ fn user_data_dir() -> std::path::PathBuf {
         .join(PROFILE_IDENTIFIER)
 }
 
+/// Creates the shared `WebView2` environment for this engine.
+///
+/// Options are Keld-owned and deliberately the `webview2-com` defaults, which
+/// means **empty** `AdditionalBrowserArguments`: wry's default disabled
+/// `SmartScreen` via `--disable-features=…,msSmartScreenProtection` (KEL-66),
+/// and Keld does not inherit that. Environment creation is cheap (3–6 ms
+/// measured) — it only resolves the runtime; the browser process launches at
+/// first controller creation (`learn.microsoft.com`, `WebView2` process
+/// model).
+fn create_environment() -> Result<ICoreWebView2Environment, WvError> {
+    let options = CoreWebView2EnvironmentOptions::default();
+    let user_data = HSTRING::from(user_data_dir().as_os_str());
+    let (tx, rx) = mpsc::channel();
+
+    // SAFETY: called on the engine thread with a live STA (module note). The
+    // handler is a one-shot completion callback delivered via this thread's
+    // message pump; `tx` outlives the wait below because `rx` blocks in
+    // `wait_with_pump` until the send happens or the loader fails the call.
+    let launched = unsafe {
+        CreateCoreWebView2EnvironmentWithOptions(
+            windows::core::PCWSTR::null(),
+            &user_data,
+            &ICoreWebView2EnvironmentOptions::from(options),
+            &CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
+                move |result, environment| {
+                    let environment = result
+                        .and(environment.ok_or_else(|| windows::core::Error::from(E_POINTER)));
+                    tx.send(environment)
+                        .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+                },
+            )),
+        )
+    };
+    if let Err(err) = launched {
+        return Err(WvError::WebView2RuntimeMissing {
+            detail: err.to_string(),
+        });
+    }
+
+    let environment = wait_with_pump(rx).map_err(|err| WvError::WebView2RuntimeMissing {
+        detail: err.to_string(),
+    })?;
+    environment.map_err(|err| WvError::WebView2RuntimeMissing {
+        detail: err.to_string(),
+    })
+}
+
+/// Creates the controller that hosts one webview inside `hwnd`.
+///
+/// This is where the runtime processes actually launch — 313–506 ms measured,
+/// and per Microsoft "the bulk of starting a `WebView2` control"
+/// (`WebView2Feedback` #1536). Everything Keld controls happens around it, not
+/// inside it.
+fn create_controller(
+    environment: &ICoreWebView2Environment,
+    hwnd: HWND,
+) -> Result<ICoreWebView2Controller, WvError> {
+    let (tx, rx) = mpsc::channel();
+
+    // SAFETY: `environment` was created on this thread (STA) and `hwnd` is a
+    // live tao window owned by the caller for the duration of the call. The
+    // completion handler is one-shot and delivered via this thread's pump.
+    let launched = unsafe {
+        environment.CreateCoreWebView2Controller(
+            hwnd,
+            &CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
+                move |result, controller| {
+                    let controller =
+                        result.and(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
+                    tx.send(controller)
+                        .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+                },
+            )),
+        )
+    };
+    if let Err(err) = launched {
+        return Err(WvError::WebView2RuntimeMissing {
+            detail: err.to_string(),
+        });
+    }
+
+    let controller = wait_with_pump(rx).map_err(|err| WvError::WebView2RuntimeMissing {
+        detail: err.to_string(),
+    })?;
+    controller.map_err(|err| WvError::WebView2RuntimeMissing {
+        detail: err.to_string(),
+    })
+}
+
+/// Proof that the `keld-guard` permission handler is registered on a webview.
+///
+/// [`navigate_initial`] demands it, so "content ran before the guard existed"
+/// is a compile error rather than a review catch. Only
+/// [`install_guarded_media_permissions`] mints one.
+struct GuardInstalled(());
+
+/// Registers the default-deny media-capture handler backed by `keld-guard`
+/// (KEL-59 parity with the macOS backend).
+///
+/// Without a handler `WebView2` falls back to its own **user prompt** —
+/// default-ask, not default-deny. A prompt lets a renderer obtain capture the
+/// manifest never granted, and the manifest is the authority
+/// (`docs/architecture/03-security.md` §1). Kinds without a Keld capability
+/// (geolocation, notifications, …) are denied outright: there is no v0
+/// capability for them, and fail-closed is the crate rule.
+fn install_guarded_media_permissions(
+    webview: &ICoreWebView2,
+    manifest: PermissionsManifest,
+) -> Result<GuardInstalled, WvError> {
+    // Built outside the registration's `unsafe` block so the COM calls inside
+    // the callback carry their own SAFETY proofs instead of inheriting one
+    // lexically.
+    let handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+        // Fail closed: without args no state can be set, and `Ok(())` would
+        // silently hand the decision back to WebView2's own prompt
+        // (default-ask). An error at least refuses to report success.
+        let Some(args) = args else {
+            return Err(windows::core::Error::from(E_POINTER));
+        };
+
+        let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+        // SAFETY: `args` is live for the duration of the callback; the
+        // out-pointer is valid.
+        unsafe { args.PermissionKind(&raw mut kind) }?;
+
+        let state = if media_permission_allowed(&manifest, webview2_media_kind(kind)) {
+            COREWEBVIEW2_PERMISSION_STATE_ALLOW
+        } else {
+            COREWEBVIEW2_PERMISSION_STATE_DENY
+        };
+        // SAFETY: same liveness as above; `SetState` takes the enum by value.
+        unsafe { args.SetState(state) }
+    }));
+
+    let mut token = 0_i64;
+    // SAFETY: `webview` lives on this thread (module note). The handler runs
+    // on this same thread for the webview's whole life — WebView2 raises
+    // events on the creating thread.
+    let registered = unsafe { webview.add_PermissionRequested(&handler, &raw mut token) };
+    registered.map_err(|err| WvError::Webview(format!("permission handler: {err}")))?;
+    Ok(GuardInstalled(()))
+}
+
+/// Performs the first navigation of a freshly created webview.
+///
+/// Takes [`GuardInstalled`] so the type system enforces the crate rule that no
+/// content runs before the permission guard is registered.
+fn navigate_initial(
+    webview: &ICoreWebView2,
+    _guard: &GuardInstalled,
+    target: &NavTarget,
+) -> Result<(), WvError> {
+    // SAFETY: `webview` lives on this thread; both calls take an HSTRING by
+    // reference that outlives the call.
+    let loaded = match target {
+        NavTarget::Html(html) => unsafe { webview.NavigateToString(&HSTRING::from(html.as_str())) },
+        NavTarget::Url(url) => unsafe { webview.Navigate(&HSTRING::from(url.as_str())) },
+    };
+    loaded.map_err(|err| WvError::Navigate(err.to_string()))
+}
+
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
     window: Window,
-    webview: wry::WebView,
+    controller: ICoreWebView2Controller,
+    webview: ICoreWebView2,
+}
+
+impl View {
+    /// Sizes the controller to fill the window's client area.
+    ///
+    /// Best-effort by design: a transient failure during a live resize must
+    /// not tear down the event loop, and the next resize event re-applies the
+    /// correct bounds anyway.
+    fn fit_controller(&self, size: PhysicalSize<u32>) {
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: i32::try_from(size.width).unwrap_or(i32::MAX),
+            bottom: i32::try_from(size.height).unwrap_or(i32::MAX),
+        };
+        // SAFETY: controller was created on this thread and `RECT` is plain
+        // data passed by value.
+        let _ = unsafe { self.controller.SetBounds(rect) };
+    }
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        // SAFETY: dropped on the engine thread (module note). `Close` releases
+        // the browser-side resources deterministically instead of waiting for
+        // COM refcounts.
+        let _ = unsafe { self.controller.Close() };
+    }
 }
 
 /// The Windows [`WebEngine`] backend.
@@ -122,9 +351,9 @@ struct View {
 pub struct WebView2Engine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<()>>,
-    /// Owns the `WebView2` profile directory. Held for the engine's whole life
-    /// because every webview built from it shares that environment.
-    web_context: wry::WebContext,
+    /// One environment per engine: every webview shares its profile directory
+    /// and browser process (`learn.microsoft.com`, `WebView2` process model).
+    environment: ICoreWebView2Environment,
     views: BTreeMap<u32, View>,
     next_id: u32,
 }
@@ -140,10 +369,10 @@ impl fmt::Debug for WebView2Engine {
 }
 
 impl WebView2Engine {
-    /// Creates the engine and its event loop.
+    /// Creates the engine, its event loop, and the shared environment.
     ///
     /// Must be called on the process main thread: tao pumps the Win32 message
-    /// loop, and `WebView2` controllers are affine to the thread that created
+    /// loop, and `WebView2` objects are affine to the thread that created
     /// them.
     ///
     /// # Errors
@@ -155,9 +384,18 @@ impl WebView2Engine {
         // Probe first: a missing runtime is a user-fixable setup problem, and
         // reporting it before any window exists avoids a flash of empty chrome.
         runtime_version()?;
+        // The event loop comes before any COM object: tao declares the
+        // process DPI awareness in `EventLoop::new`, and that must precede
+        // window (and WebView2 helper-window) creation.
+        let event_loop = EventLoop::new();
+        // SAFETY: first COM init on this thread, or an S_FALSE no-op if tao's
+        // OLE init already made it an STA — both fine, so the result is
+        // deliberately ignored (the pattern wry uses for the same call).
+        let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let environment = create_environment()?;
         Ok(Self {
-            event_loop: Some(EventLoop::new()),
-            web_context: wry::WebContext::new(Some(user_data_dir())),
+            event_loop: Some(event_loop),
+            environment,
             views: BTreeMap::new(),
             next_id: 1,
         })
@@ -178,20 +416,37 @@ impl WebView2Engine {
         let mut views = std::mem::take(&mut self.views);
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
-            if let Event::WindowEvent {
-                window_id,
-                event: WindowEvent::CloseRequested,
-                ..
-            } = event
-            {
-                // v0 hello is one window. Drop by id so a second window would
-                // not tear down every view; exit when the map is empty. On
-                // Windows, closing the last window quits — the platform
-                // convention, and what KEL-57 V1-10 will assert.
-                views.retain(|_, view| view.window.id() != window_id);
-                if views.is_empty() {
-                    *control_flow = ControlFlow::Exit;
+            match event {
+                // Keld drives the controller size itself — there is no wry
+                // WM_SIZE subclass anymore, and tao already delivers resizes
+                // (DPI changes arrive as a scale-factor event followed by this
+                // same `Resized`).
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::Resized(size),
+                    ..
+                } => {
+                    for view in views.values() {
+                        if view.window.id() == window_id {
+                            view.fit_controller(size);
+                        }
+                    }
                 }
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    // v0 hello is one window. Drop by id so a second window
+                    // would not tear down every view; exit when the map is
+                    // empty. On Windows, closing the last window quits — the
+                    // platform convention, and what KEL-57 V1-10 will assert.
+                    views.retain(|_, view| view.window.id() != window_id);
+                    if views.is_empty() {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+                _ => {}
             }
         });
     }
@@ -226,89 +481,133 @@ impl WebEngine for WebView2Engine {
             .build(event_loop)
             .map_err(|e| WvError::Window(e.to_string()))?;
 
-        // Borrow the context only after the window exists, so the immutable
-        // `event_loop` borrow above has already ended.
-        //
-        // Developer extras are debug-only until keld-guard owns `web.devtools`.
-        let builder = wry::WebViewBuilder::new_with_web_context(&mut self.web_context);
-        #[cfg(debug_assertions)]
-        let builder = builder.with_devtools(true);
-        // KEL-59 parity. Without this, WebView2 falls back to its own permission
-        // UI, so a renderer could obtain camera/mic the manifest never granted —
-        // default-ask, not default-deny. Empty manifest → deny everything.
-        let builder = with_guarded_media_permissions(builder, PermissionsManifest::default());
-        let builder = match &spec.initial {
-            NavTarget::Html(html) => builder.with_html(html),
-            NavTarget::Url(url) => builder.with_url(url),
+        let hwnd = HWND(window.hwnd() as _);
+        let controller = create_controller(&self.environment, hwnd)?;
+        // SAFETY: controller was created on this thread a moment ago.
+        let webview = unsafe { controller.CoreWebView2() }
+            .map_err(|err| WvError::Webview(format!("controller returned no webview: {err}")))?;
+        // Into a `View` before any further fallible step: its `Drop` closes the
+        // controller, so an early `?` return below cannot leak the browser-side
+        // resources behind a half-built webview.
+        let view = View {
+            window,
+            controller,
+            webview,
         };
-        // On Windows wry parents the WebView2 controller to the window and
-        // auto-resizes it, so v0 needs no explicit bounds plumbing here.
-        let webview = builder.build(&window).map_err(|e| match e {
-            // A runtime that disappears between the probe and here (uninstalled
-            // mid-run, or a controller the loader refuses) still reports as a
-            // setup problem rather than a generic webview failure.
-            wry::Error::WebView2Error(inner) => WvError::WebView2RuntimeMissing {
-                detail: inner.to_string(),
-            },
-            other => WvError::Webview(other.to_string()),
-        })?;
 
-        // KEL-62: give the controller its initial bounds. wry only calls
-        // `SetBounds` from its WM_SIZE subclass hook, so a webview that is
-        // never resized after attach keeps a zero-sized controller until some
-        // unrelated window event finally delivers one, and Chromium does not
-        // composite a zero-sized surface — measured as ~640 ms of dead time
-        // between load-finished and first paint on the hello window. Ignore
-        // the result: failing to size early is exactly the state we are in
-        // without this call, and the resize hook still applies later.
-        let size = window.inner_size();
-        let _ = webview.set_bounds(wry::Rect {
-            position: tao::dpi::PhysicalPosition::new(0, 0).into(),
-            size: size.into(),
-        });
+        // Guard before content: nothing may load until default-deny is wired.
+        // Empty manifest → deny everything (KEL-59).
+        let guard =
+            install_guarded_media_permissions(&view.webview, PermissionsManifest::default())?;
+
+        // Devtools follow the build profile, like the macOS backend: wired in
+        // debug, off in release until keld-guard owns `web.devtools`. WebView2
+        // defaults them to on, so release must opt out explicitly.
+        // SAFETY: settings object is used and dropped on this thread.
+        let devtools = unsafe {
+            view.webview
+                .Settings()
+                .and_then(|settings| settings.SetAreDevToolsEnabled(cfg!(debug_assertions)))
+        };
+        devtools.map_err(|err| WvError::Webview(format!("devtools setting: {err}")))?;
+
+        // KEL-62: bounds before navigation. WebView2 starts with a zero-sized
+        // controller, and Chromium does not composite a zero-sized surface —
+        // measured as ~640 ms of dead time when the size arrived only from a
+        // later window event. This is create-time wiring, so a failure here is
+        // a real error, unlike the best-effort live resizes.
+        let size = view.window.inner_size();
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: i32::try_from(size.width).unwrap_or(i32::MAX),
+            bottom: i32::try_from(size.height).unwrap_or(i32::MAX),
+        };
+        // SAFETY: controller lives on this thread; `RECT` is plain data, and
+        // `SetIsVisible` takes a BOOL by value.
+        let shown = unsafe {
+            view.controller
+                .SetBounds(rect)
+                .and_then(|()| view.controller.SetIsVisible(true))
+        };
+        shown.map_err(|err| WvError::Webview(format!("initial bounds: {err}")))?;
+
+        navigate_initial(&view.webview, &guard, &spec.initial)?;
+
+        // Keyboard focus lands in the page, matching what wry's build did and
+        // what a single-webview window should do.
+        // SAFETY: controller lives on this thread; best-effort like a resize.
+        let _ = unsafe {
+            view.controller
+                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+        };
+
         let id = self.next_id;
         self.next_id += 1;
-        self.views.insert(id, View { window, webview });
+        self.views.insert(id, view);
         Ok(WebviewId(id))
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
         let view = self.view(id)?;
-        match target {
-            NavTarget::Html(html) => view.webview.load_html(&html),
-            NavTarget::Url(url) => view.webview.load_url(&url),
-        }
-        .map_err(|e| WvError::Navigate(e.to_string()))
+        // The guard handler registered at create time lives for the webview's
+        // whole life, so later navigations need no new proof.
+        // SAFETY: webview lives on this thread; HSTRINGs outlive the calls.
+        let loaded = match target {
+            NavTarget::Html(html) => unsafe {
+                view.webview.NavigateToString(&HSTRING::from(html.as_str()))
+            },
+            NavTarget::Url(url) => unsafe { view.webview.Navigate(&HSTRING::from(url.as_str())) },
+        };
+        loaded.map_err(|err| WvError::Navigate(err.to_string()))
     }
 
     fn eval(&mut self, id: WebviewId, script: &str) -> Result<(), WvError> {
-        self.view(id)?
-            .webview
-            .evaluate_script(script)
-            .map_err(|e| WvError::Script(e.to_string()))
+        let view = self.view(id)?;
+        // Fire-and-forget per the trait contract: the completion handler only
+        // satisfies the COM signature. Result plumbing belongs to the
+        // command-queue design (engine.rs module docs).
+        // SAFETY: webview lives on this thread; the handler is dropped after
+        // the script completes on this same thread.
+        let queued = unsafe {
+            view.webview.ExecuteScript(
+                &HSTRING::from(script),
+                &ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(()))),
+            )
+        };
+        queued.map_err(|err| WvError::Script(err.to_string()))
     }
 
     fn set_bounds(&mut self, id: WebviewId, rect: Rect) -> Result<(), WvError> {
         let view = self.view(id)?;
-        // v0 webviews fill their host window, so bounds apply to the window.
+        // v0 webviews fill their host window, so bounds apply to the window…
         view.window
             .set_outer_position(tao::dpi::LogicalPosition::new(rect.x, rect.y));
         view.window
             .set_inner_size(tao::dpi::LogicalSize::new(rect.width, rect.height));
+        // …and the controller follows immediately. Before the run loop starts
+        // no resize event fires, so waiting for one would leave a stale
+        // controller size; `inner_size` reads back what the move actually
+        // produced (the OS may clamp).
+        view.fit_controller(view.window.inner_size());
         Ok(())
     }
 
     fn devtools(&mut self, id: WebviewId, action: DevtoolsAction) -> Result<(), WvError> {
         let view = self.view(id)?;
         match action {
-            DevtoolsAction::Open => view.webview.open_devtools(),
-            DevtoolsAction::Close => view.webview.close_devtools(),
+            // SAFETY: webview lives on this thread.
+            DevtoolsAction::Open => unsafe { view.webview.OpenDevToolsWindow() }
+                .map_err(|err| WvError::Webview(format!("devtools open: {err}"))),
+            // WebView2 has no close-devtools API (wry no-ops here too); the
+            // window is the user's to close. Not an error: the contract is
+            // "the inspector is not open afterwards because of us".
+            DevtoolsAction::Close => Ok(()),
         }
-        Ok(())
     }
 
     fn destroy(&mut self, id: WebviewId) -> Result<(), WvError> {
-        // Dropping the `View` releases the webview, then closes the window.
+        // Dropping the `View` closes the controller, then the window.
         self.views
             .remove(&id.0)
             .map(|_| ())
@@ -381,9 +680,9 @@ mod tests {
 
     /// KEL-63: the profile must be per-user, not beside the executable.
     ///
-    /// wry's default is `<exe>.WebView2\` next to the binary, which a standard
-    /// user cannot create under `C:\Program Files\`. This asserts we are not on
-    /// that default and that the directory is user-scoped.
+    /// The loader default is `<exe>.WebView2\` next to the binary, which a
+    /// standard user cannot create under `C:\Program Files\`. This asserts we
+    /// are not on that default and that the directory is user-scoped.
     #[test]
     fn profile_dir_is_user_scoped_not_next_to_the_exe() {
         let dir = super::user_data_dir();
@@ -411,6 +710,32 @@ mod tests {
             dir.is_absolute(),
             "profile dir must be absolute, got: {}",
             dir.display()
+        );
+    }
+
+    /// KEL-66: the environment options this backend ships must not carry
+    /// wry's SmartScreen-disabling browser arguments. `webview2-com` defaults
+    /// to an empty argument string; if that default ever changes, or someone
+    /// adds `--disable-features` here, this fails.
+    #[test]
+    fn environment_options_do_not_disable_smartscreen() {
+        let options = webview2_com::CoreWebView2EnvironmentOptions::default();
+        // SAFETY: reading the freshly constructed options object on this
+        // thread; no COM aggregate exists yet.
+        let args = unsafe { options.additional_browser_arguments() };
+        assert!(
+            args.is_empty(),
+            "expected no default browser arguments, got: {args}"
+        );
+        // The options setter is the only way to hand the browser extra flags;
+        // the module docs quote wry's old flag string, so scan for the API
+        // call rather than the flag text.
+        let src = include_str!("mod.rs");
+        assert_eq!(
+            src.matches("set_additional_browser_arguments").count(),
+            1,
+            "KEL-66: this backend must not pass browser arguments \
+             (the one hit is this test's own scan string)"
         );
     }
 }

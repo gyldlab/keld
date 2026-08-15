@@ -39,19 +39,21 @@ wry = { version = "0.56.1", features = ["devtools"] }
 
 [target.'cfg(target_os="windows")'.dependencies]
 tao = "0.35.3"
-# Same wry version as macOS on purpose. 0.55.1 is the release whose
-# `request_media_capture_permission` auto-grants with no handler API (KEL-59);
-# pinning Windows to it would reintroduce on a new platform the exact default
-# macOS just closed, and would make cargo build two wry copies. 0.56.1 keeps
-# `webview2-com = "0.38"` / `windows = "0.61"`, so the probe deps below are
-# unchanged by the bump.
-wry = { version = "0.56.1", features = ["devtools"] }
-# KEL-27 runtime probe. `GetAvailableCoreWebView2BrowserVersionString` is the
-# API Microsoft documents for Evergreen detection; the registry layout it reads
-# is an implementation detail that differs across runtime channels, so we do not
-# read those keys ourselves. Same version wry pins, so cargo unifies.
+# --- Dependency review (KEL-65 / AGENTS.md gate) ---
+# Name: webview2-com 0.38 (was probe-only; now the whole Windows backend)
+# Purpose: direct WebView2 COM — environment/controller creation, the
+#   PermissionRequested guard (KEL-59), navigation, and the runtime probe
+#   (`GetAvailableCoreWebView2BrowserVersionString`, the API Microsoft
+#   documents for Evergreen detection; the registry layout it reads differs
+#   across runtime channels, so we do not read those keys ourselves).
+# Alternatives rejected: (a) wry 0.56.1 — unconditionally injects its
+#   `window.ipc` bridge through a blocking cross-process round-trip (96–109 ms
+#   measured, KEL-65) and ships browser args that disable SmartScreen
+#   (KEL-66); (b) hand-rolled COM vtables over `windows` alone — reimplements
+#   what this crate exists to provide. Same version wry pinned, so the
+#   macOS-side lockfile entry is unchanged.
 webview2-com = "0.38"
-# `CoTaskMemFree` releases the version string the probe allocates. wry already
-# depends on `windows` 0.61 with `Win32_System_Com`, so this adds an explicit
-# path to a crate already in the graph rather than a second copy.
-windows = { version = "0.61", features = ["Win32_System_Com"] }
+# HWND/RECT/HRESULT constants (Win32_Foundation), CoInitializeEx/CoTaskMemFree
+# (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
+# to a crate already in the graph rather than a second copy.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"] }

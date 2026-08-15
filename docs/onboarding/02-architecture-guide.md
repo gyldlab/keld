@@ -610,11 +610,12 @@ The summary table. "Live" means it works and a test proves it.
 | HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |
-| `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (one backend) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |
-| Windows / Linux webview backends | **Skeleton** | Typed `unavailable()` errors naming KEL-27 / KEL-28 |
+| Windows window + WebView2 | **Live** | `keld-wv/src/webview2/`, direct `webview2-com` COM since KEL-65 (wry not linked on Windows); tao for window + event loop; `KELD-WV-008` probe |
+| `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (two backends) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |
+| Linux webview backend | **Skeleton** | Typed `unavailable()` error naming KEL-28 |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; `dev` runs echo and window side by side, not integrated |
-| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` and macOS `web.camera`/`web.microphone` capture call them; host IPC does not |
+| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` and macOS + Windows `web.camera`/`web.microphone` capture call them; host IPC does not |
 | Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is live default-deny; host IPC still does not call them. `$VARS` matched literally in v0 |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
