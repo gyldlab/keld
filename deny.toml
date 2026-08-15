@@ -23,7 +23,7 @@ yanked = "deny"
 unmaintained = "workspace"
 
 [licenses]
-# Keld itself is MIT OR Apache-2.0 (pending final GyldLab licensing call — see
+# Keld itself is MIT OR Apache-2.0 (pending final GYLDLAB licensing call — see
 # ROADMAP Phase 0). Allow-list, never a deny-list: anything new must be added
 # here consciously in the PR that introduces the dependency.
 allow = [

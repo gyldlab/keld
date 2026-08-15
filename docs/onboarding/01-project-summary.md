@@ -6,7 +6,7 @@
 
 ## The one-paragraph version
 
-Keld is a desktop application framework built by [GyldLab](https://github.com/gyldlab)
+Keld is a desktop application framework built by [GYLDLAB](https://github.com/gyldlab)
 to replace Electron **without asking anyone to rewrite their app**. A prebuilt, signed
 Rust host owns every OS resource (windows, webviews, native APIs, keys, updater); the
 developer's JS/TS "main process" runs on **Bun as a supervised, unprivileged child

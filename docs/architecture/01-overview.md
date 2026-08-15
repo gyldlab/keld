@@ -1,6 +1,6 @@
 # Keld Architecture — Overview
 
-> Keld (GyldLab): a Rust-core desktop framework with a Bun-powered JS/TS main process,
+> Keld (GYLDLAB): a Rust-core desktop framework with a Bun-powered JS/TS main process,
 > system webviews by default, and a first-class Electron compatibility layer.
 > This document is normative for v0.x. Changes go through a design PR.
 

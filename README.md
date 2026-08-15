@@ -2,10 +2,10 @@
 
 **The desktop framework that replaces Electron without a rewrite.**
 Rust core · Bun-powered JS/TS main process · system webviews · security by default.
-By [GyldLab](https://github.com/gyldlab).
+By [GYLDLAB](https://github.com/gyldlab).
 
 > Status: **pre-alpha** — public repo contains the implementation; research and
-> architecture specs are maintained privately by the GyldLab team.
+> architecture specs are maintained privately by the GYLDLAB team.
 
 ## The idea in 30 seconds
 
