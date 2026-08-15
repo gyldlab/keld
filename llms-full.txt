@@ -1134,11 +1134,13 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless
    `web.devtools: true`.
-   **v0:** camera and microphone requests are default-deny: the macOS backend
-   installs wry `with_permission_handler` and calls `keld-guard::evaluate` as
-   `Principal::AppProcess` on `web.camera` / `web.microphone` with requested
-   resource `*` (wry 0.56's handler is `Fn(PermissionKind)` and does not pass
-   origin or a webview principal). Grant with
+   **v0:** camera and microphone requests are default-deny on both live
+   backends: macOS installs wry `with_permission_handler`; Windows registers
+   the `WebView2` `add_PermissionRequested` handler before the first
+   navigation (KEL-65 direct COM — the ordering is compile-enforced). Both
+   call `keld-guard::evaluate` as `Principal::AppProcess` on `web.camera` /
+   `web.microphone` with requested resource `*` (neither platform callback
+   passes an origin or a webview principal). Grant with
    `"web": { "camera": ["*"] }` / `"microphone": ["*"]`. CSP injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.
@@ -1769,11 +1771,12 @@ Do not add a fifth unique to look complete.
 
 ## 2. Webview: wry+tao scaffolding, spec 05 destination
 
-**Chose (2026-07-08, still true; wry pin updated 2026-08-14 for KEL-59).** The live
-macOS backend is tao 0.35.3 + wry 0.56.1 (`devtools` feature) in
-`crates/keld-wv/src/wkwebview/mod.rs`. Module comment: interim implementation,
-replace with direct objc2 bindings per architecture 05 §1. Windows/Linux modules
-are compiled layout slots that return `KELD-WV-001` and name KEL-27 / KEL-28.
+**Chose (2026-07-08; wry pin updated 2026-08-14 for KEL-59; Windows superseded
+2026-08-15 — see the update below).** The live macOS backend is tao 0.35.3 +
+wry 0.56.1 (`devtools` feature) in `crates/keld-wv/src/wkwebview/mod.rs`.
+Module comment: interim implementation, replace with direct objc2 bindings per
+architecture 05 §1. Linux remains a compiled layout slot returning
+`KELD-WV-001` and naming KEL-28.
 
 wry 0.55.1 auto-granted camera/mic (`request_media_capture_permission` → `Grant`)
 and had no `with_permission_handler`. 0.56.1 adds the handler; Keld installs it
@@ -1792,6 +1795,20 @@ through tao's event loop. Replacing it does not change who owns the handle, who 
 crash whom, or who can mint a principal — so it fails the first-principles test in
 `AGENTS.md` until wry is missing a hook we actually need. KEL-59 was that case for
 camera/mic: bump to 0.56.1 for `with_permission_handler`, do not rewrite the backend.
+
+**Update (2026-08-15, KEL-65): Windows create path is now direct windows-rs COM.**
+wry crossed the "missing a hook" line on Windows three ways at once: it blocks the
+UI thread 96–109 ms injecting a `window.ipc` bridge Keld never uses (reported
+upstream, tauri-apps/wry#1813), it ships default browser arguments that disable
+SmartScreen (KEL-66), and it owns the environment options Keld needs to control.
+`crates/keld-wv/src/webview2/mod.rs` now drives `webview2-com` directly —
+environment, controller, `add_PermissionRequested` guard before first navigation
+(compile-enforced), bounds, navigate — with tao still providing window + event
+loop. wry stays the macOS interim and a quirks catalog. Honest ledger: a
+controlled same-session A/B showed first paint unchanged (472 vs 467 ms — the
+bridge wait overlapped renderer boot), so the rewrite is carried by security
+(SmartScreen on, at 0 measured cost), binary size (−24%, 625,152 → 484,864 B),
+and owning the create sequence — not by a speed claim.
 
 **Why not treat wry as the product.** Architecture 05 lists hooks wry does not
 prioritize (scheme-streaming as bulk IPC, principal identity per navigation, engine
@@ -2648,7 +2665,7 @@ Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 | Keld `.app` / DMG | `keld-pack` has no authoring code |
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
 | Electrobun complete RSS | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
-| First paint ≤ 300 ms | **Windows: measured 2026-08-14 — Keld 906 ms, 3.0x over budget** (see the Windows rows). macOS/Linux: still not instrumented. |
+| First paint ≤ 300 ms | **Windows: 472 ms (2026-08-15 controlled session), ~1.6x over budget** — floor is Chromium boot inside controller creation (see the direct-COM A/B section). macOS/Linux: still not instrumented. |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
 | Windows / Linux competitor hellos | keld-benches stubs; not this machine |

@@ -267,7 +267,7 @@ mod tests {
             "KEL-59: webview2 guard must consult the shared policy, not a constant"
         );
         assert!(
-            webview2.contains("navigate_initial(&webview, &guard"),
+            webview2.contains("navigate_initial(&view.webview, &guard"),
             "KEL-65: the first navigation must present the GuardInstalled proof"
         );
     }

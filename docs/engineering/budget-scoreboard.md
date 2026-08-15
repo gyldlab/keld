@@ -131,7 +131,7 @@ Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 | Keld `.app` / DMG | `keld-pack` has no authoring code |
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
 | Electrobun complete RSS | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
-| First paint ≤ 300 ms | **Windows: measured 2026-08-14 — Keld 906 ms, 3.0x over budget** (see the Windows rows). macOS/Linux: still not instrumented. |
+| First paint ≤ 300 ms | **Windows: 472 ms (2026-08-15 controlled session), ~1.6x over budget** — floor is Chromium boot inside controller creation (see the direct-COM A/B section). macOS/Linux: still not instrumented. |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
 | Windows / Linux competitor hellos | keld-benches stubs; not this machine |

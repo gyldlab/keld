@@ -260,7 +260,12 @@ fn install_guarded_media_permissions(
     // the callback carry their own SAFETY proofs instead of inheriting one
     // lexically.
     let handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
-        let Some(args) = args else { return Ok(()) };
+        // Fail closed: without args no state can be set, and `Ok(())` would
+        // silently hand the decision back to WebView2's own prompt
+        // (default-ask). An error at least refuses to report success.
+        let Some(args) = args else {
+            return Err(windows::core::Error::from(E_POINTER));
+        };
 
         let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
         // SAFETY: `args` is live for the duration of the callback; the
@@ -481,17 +486,26 @@ impl WebEngine for WebView2Engine {
         // SAFETY: controller was created on this thread a moment ago.
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|err| WvError::Webview(format!("controller returned no webview: {err}")))?;
+        // Into a `View` before any further fallible step: its `Drop` closes the
+        // controller, so an early `?` return below cannot leak the browser-side
+        // resources behind a half-built webview.
+        let view = View {
+            window,
+            controller,
+            webview,
+        };
 
         // Guard before content: nothing may load until default-deny is wired.
         // Empty manifest → deny everything (KEL-59).
-        let guard = install_guarded_media_permissions(&webview, PermissionsManifest::default())?;
+        let guard =
+            install_guarded_media_permissions(&view.webview, PermissionsManifest::default())?;
 
         // Devtools follow the build profile, like the macOS backend: wired in
         // debug, off in release until keld-guard owns `web.devtools`. WebView2
         // defaults them to on, so release must opt out explicitly.
         // SAFETY: settings object is used and dropped on this thread.
         let devtools = unsafe {
-            webview
+            view.webview
                 .Settings()
                 .and_then(|settings| settings.SetAreDevToolsEnabled(cfg!(debug_assertions)))
         };
@@ -502,7 +516,7 @@ impl WebEngine for WebView2Engine {
         // measured as ~640 ms of dead time when the size arrived only from a
         // later window event. This is create-time wiring, so a failure here is
         // a real error, unlike the best-effort live resizes.
-        let size = window.inner_size();
+        let size = view.window.inner_size();
         let rect = RECT {
             left: 0,
             top: 0,
@@ -512,29 +526,25 @@ impl WebEngine for WebView2Engine {
         // SAFETY: controller lives on this thread; `RECT` is plain data, and
         // `SetIsVisible` takes a BOOL by value.
         let shown = unsafe {
-            controller
+            view.controller
                 .SetBounds(rect)
-                .and_then(|()| controller.SetIsVisible(true))
+                .and_then(|()| view.controller.SetIsVisible(true))
         };
         shown.map_err(|err| WvError::Webview(format!("initial bounds: {err}")))?;
 
-        navigate_initial(&webview, &guard, &spec.initial)?;
+        navigate_initial(&view.webview, &guard, &spec.initial)?;
 
         // Keyboard focus lands in the page, matching what wry's build did and
         // what a single-webview window should do.
         // SAFETY: controller lives on this thread; best-effort like a resize.
-        let _ = unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) };
+        let _ = unsafe {
+            view.controller
+                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+        };
 
         let id = self.next_id;
         self.next_id += 1;
-        self.views.insert(
-            id,
-            View {
-                window,
-                controller,
-                webview,
-            },
-        );
+        self.views.insert(id, view);
         Ok(WebviewId(id))
     }
 

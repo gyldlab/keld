@@ -88,11 +88,13 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless
    `web.devtools: true`.
-   **v0:** camera and microphone requests are default-deny: the macOS backend
-   installs wry `with_permission_handler` and calls `keld-guard::evaluate` as
-   `Principal::AppProcess` on `web.camera` / `web.microphone` with requested
-   resource `*` (wry 0.56's handler is `Fn(PermissionKind)` and does not pass
-   origin or a webview principal). Grant with
+   **v0:** camera and microphone requests are default-deny on both live
+   backends: macOS installs wry `with_permission_handler`; Windows registers
+   the `WebView2` `add_PermissionRequested` handler before the first
+   navigation (KEL-65 direct COM — the ordering is compile-enforced). Both
+   call `keld-guard::evaluate` as `Principal::AppProcess` on `web.camera` /
+   `web.microphone` with requested resource `*` (neither platform callback
+   passes an origin or a webview principal). Grant with
    `"web": { "camera": ["*"] }` / `"microphone": ["*"]`. CSP injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.

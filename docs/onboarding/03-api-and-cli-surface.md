@@ -483,7 +483,8 @@ Supporting types:
 - `DevtoolsAction::{ Open, Close }`
 - `MediaPermission::{ Camera, Microphone, Other }`, `WEB_CAMERA` / `WEB_MICROPHONE` /
   `WEB_MEDIA_ORIGIN`, `media_permission_allowed` — default-deny camera/mic policy
-  (KEL-59). v0 requested resource is `*` because wry's handler does not pass origin.
+  (KEL-59). v0 requested resource is `*` because neither platform callback passes
+  an origin (wry's handler on macOS, `PermissionRequested` args on Windows).
 - `WebviewId(pub u32)`, `EnginePolicy::{ System (default), Pinned }` (declared in
   [`lib.rs`](../../crates/keld-wv/src/lib.rs); nothing reads `EnginePolicy` yet)
 - `WvError` — seven variants, codes `KELD-WV-001..007`
@@ -497,16 +498,18 @@ Backends:
 
 | Module | Platform | State |
 |---|---|---|
-| `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`; the only `WebEngine` impl in the tree. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
-| [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Stub.** One function, `unavailable() -> WvError`, pointing at KEL-27 |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Stub.** Same shape, pointing at KEL-28 |
+| `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
+| [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Stub.** `unavailable() -> WvError`, pointing at KEL-28 |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
-"Hello from WKWebView" document) and `run_hello_window(title: &str, html: &str)`.
+"Hello from Keld" document — engine-neutral on purpose, one const backs both live
+backends) and `run_hello_window(title: &str, html: &str)`.
 
-`unsafe_code` is `deny` workspace-wide; `wkwebview/mod.rs` carries a module-scope
-`#![allow(unsafe_code)]` with a SAFETY comment explaining the UI-thread invariant. That
-is one of the two sanctioned locations in the whole repo.
+`unsafe_code` is `deny` workspace-wide; `wkwebview/mod.rs` and `webview2/mod.rs` carry
+module-scope `#![allow(unsafe_code)]` with SAFETY comments citing the platform threading
+contracts. keld-wv platform backends are one of the two sanctioned locations in the
+whole repo (the other is `keld-ipc` shm).
 
 ### 3.3 `keld_core` — the host runtime
 
