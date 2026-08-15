@@ -22,6 +22,8 @@ const MAGIC_BYTES = new Uint8Array([0x4b, 0x49]); // "KI", matches Rust `u16::fr
 const PROTOCOL_VERSION = 2;
 const HEADER_LEN = 16;
 const ECHO_CHANNEL = 1;
+/** Control-plane frame payload cap — mirrors `keld_ipc::MAX_FRAME_LEN` (16 MiB). */
+const MAX_FRAME_LEN = 16 * 1024 * 1024;
 
 /** Frame kinds carried in the header's `kind` byte — mirrors `keld_ipc::FrameKind`. */
 export const FrameKind = {
@@ -38,15 +40,19 @@ export const FrameKind = {
   Ping: 10,
 } as const;
 
+export type FrameKindValue = (typeof FrameKind)[keyof typeof FrameKind];
+
+const KNOWN_FRAME_KINDS: ReadonlySet<number> = new Set(Object.values(FrameKind));
+
 export interface FrameHeader {
-  kind: number;
+  kind: FrameKindValue;
   flags: number;
   channel: number;
   corr: number;
   len: number;
 }
 
-interface DecodedFrame {
+export interface DecodedFrame {
   header: FrameHeader;
   payload: Uint8Array;
 }
@@ -81,6 +87,12 @@ export function encodeHeader(h: FrameHeader): Uint8Array {
 }
 
 export function decodeHeader(bytes: Uint8Array): FrameHeader {
+  if (bytes.length < HEADER_LEN) {
+    throw kipcError(
+      "KELD-IPC-002",
+      `short frame header: ${bytes.length} bytes (expected ${HEADER_LEN})`,
+    );
+  }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes[0] !== MAGIC_BYTES[0] || bytes[1] !== MAGIC_BYTES[1]) {
     const magic = view.getUint16(0, true);
@@ -96,8 +108,12 @@ export function decodeHeader(bytes: Uint8Array): FrameHeader {
       `unsupported kipc version: ${version} (expected ${PROTOCOL_VERSION})`,
     );
   }
+  const kindByte = bytes[3];
+  if (!KNOWN_FRAME_KINDS.has(kindByte)) {
+    throw kipcError("KELD-IPC-002", `unknown kipc frame kind: ${kindByte} (valid kinds are 0..=10)`);
+  }
   return {
-    kind: bytes[3],
+    kind: kindByte as FrameKindValue,
     flags: view.getUint16(4, true),
     channel: view.getUint16(6, true),
     corr: view.getUint32(8, true),
@@ -220,10 +236,14 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 /**
  * Buffers socket chunks and resolves one `readFrame()` call per complete
- * frame. v0 usage is strictly sequential (write, then await one reply), so a
+ * frame. Exported for `kipc.test.ts` to feed it untrusted byte sequences
+ * directly (oversized `len`, malformed headers) without a live socket — not
+ * meant as a public transport API.
+ *
+ * v0 usage is strictly sequential (write, then await one reply), so a
  * single pending waiter is enough — no queue needed.
  */
-class FrameReader {
+export class FrameReader {
   #buf = new Uint8Array(0);
   #pending: { resolve: (f: DecodedFrame) => void; reject: (e: Error) => void } | null = null;
   #closed = false;
@@ -247,7 +267,30 @@ class FrameReader {
 
   #tryResolve(): void {
     if (!this.#pending || this.#buf.length < HEADER_LEN) return;
-    const header = decodeHeader(this.#buf);
+    let header: FrameHeader;
+    try {
+      header = decodeHeader(this.#buf);
+    } catch (err) {
+      // A malformed header is unrecoverable — later bytes cannot be
+      // reinterpreted as a fresh frame boundary. Fail the whole reader
+      // instead of throwing out of a socket `data` callback, matching how
+      // `fail()` is used for every other terminal transport error.
+      this.fail(err instanceof Error ? err : kipcError("KELD-IPC-002", String(err)));
+      return;
+    }
+    if (header.len > MAX_FRAME_LEN) {
+      // Same guard as `keld_ipc::link::ensure_payload_len`: reject before
+      // waiting for that many bytes to arrive, so a forged length cannot
+      // wedge the reader waiting on data that will never come.
+      this.fail(
+        kipcError(
+          "KELD-IPC-004",
+          `frame payload exceeds MAX_FRAME_LEN (${MAX_FRAME_LEN} bytes). ` +
+            "Shrink the payload or move large transfers to the bulk plane.",
+        ),
+      );
+      return;
+    }
     const total = HEADER_LEN + header.len;
     if (this.#buf.length < total) return;
     const payload = this.#buf.slice(HEADER_LEN, total);
@@ -295,7 +338,7 @@ interface KipcSocket {
 async function writeFrame(
   socket: KipcSocket,
   drain: DrainSignal,
-  kind: FrameKind,
+  kind: FrameKindValue,
   flags: number,
   channel: number,
   corr: number,

@@ -213,9 +213,9 @@ Verified on macOS, 2026-08-10:
 | Command | What it really does |
 |---|---|
 | `just hello` / `cargo run -p keld-host -- --hello` | Opens a macOS WKWebView window with static HTML |
-| `keld create <name>` | Writes a 5-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
-| `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a macOS-only webview line |
-| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK`/`KELD_BIN`, then opens the macOS hello window; extra tokens including `--watch` are `KELD-CLI-044` |
+| `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
+| `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS and Windows |
+| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows (Linux fails closed, KEL-28); extra tokens including `--watch` are `KELD-CLI-044` |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
 | `cargo nextest run --workspace --profile ci` | 17 tests, all green |
 

@@ -13,6 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   FrameKind,
+  FrameReader,
   decodeEchoResponse,
   decodeHeader,
   decodeVarint,
@@ -60,6 +61,17 @@ describe("frame header", () => {
     })();
     expect(err?.message).toContain("KELD-IPC-002");
     expect(err?.message).toContain("99");
+  });
+
+  test("rejects a header shorter than 16 bytes", () => {
+    const full = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+    expect(() => decodeHeader(full.subarray(0, 8))).toThrow("KELD-IPC-002");
+  });
+
+  test("rejects an unknown frame kind (11 is one past the valid range)", () => {
+    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+    encoded[3] = 11;
+    expect(() => decodeHeader(encoded)).toThrow("KELD-IPC-002");
   });
 });
 
@@ -155,5 +167,51 @@ describe("parseAppLink", () => {
     const hex = "A5".repeat(32);
     const { token } = parseAppLink(`/tmp/e.sock#${hex}`);
     expect(Array.from(token)).toEqual(new Array(32).fill(0xa5));
+  });
+});
+
+describe("FrameReader — untrusted peer bytes", () => {
+  test("resolves once a complete frame has been pushed, even split across chunks", async () => {
+    const reader = new FrameReader();
+    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 7, corr: 9, len: 3 });
+    const framePromise = reader.readFrame();
+    reader.push(encoded.subarray(0, 10)); // partial header
+    reader.push(encoded.subarray(10)); // rest of header, no payload yet
+    reader.push(new Uint8Array([1, 2, 3])); // payload arrives in its own chunk
+    const frame = await framePromise;
+    expect(frame.header.kind).toBe(FrameKind.Ping);
+    expect(frame.header.channel).toBe(7);
+    expect(Array.from(frame.payload)).toEqual([1, 2, 3]);
+  });
+
+  test("rejects a peer-claimed length above MAX_FRAME_LEN instead of waiting forever", async () => {
+    const reader = new FrameReader();
+    const framePromise = reader.readFrame();
+    // 16 MiB + 1 — one byte over the protocol cap, claimed by the header
+    // alone; no payload bytes are ever sent, matching a hostile or buggy
+    // peer that sends a header and stalls.
+    const encoded = encodeHeader({
+      kind: FrameKind.Reply,
+      flags: 0,
+      channel: 1,
+      corr: 1,
+      len: 16 * 1024 * 1024 + 1,
+    });
+    reader.push(encoded);
+    await expect(framePromise).rejects.toThrow("KELD-IPC-004");
+  });
+
+  test("a malformed header rejects the pending readFrame(), not an uncaught throw", async () => {
+    const reader = new FrameReader();
+    const framePromise = reader.readFrame();
+    const garbage = new Uint8Array(16).fill(0xff); // bad magic, bad everything
+    reader.push(garbage);
+    await expect(framePromise).rejects.toThrow("KELD-IPC-002");
+  });
+
+  test("fail() rejects a readFrame() call made after the reader is already closed", async () => {
+    const reader = new FrameReader();
+    reader.fail(new Error("KELD-IPC-001: connection closed by peer"));
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
   });
 });

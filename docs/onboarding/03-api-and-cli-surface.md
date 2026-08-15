@@ -151,18 +151,20 @@ The one verb that ties everything together. Sequence, from
 2. **Run the doctor checks.** Any failure aborts with `KELD-CLI-032` and the full check
    list, before any process is spawned.
 3. **Start the echo server** on a fresh loopback endpoint, and block until it signals
-   ready (an `mpsc` channel, not a sleep). On Unix that endpoint is
-   `$TMPDIR/keld-echo-<pid>.sock`; on Windows it is an ephemeral `127.0.0.1` TCP port
-   ([`echo_link.rs::EchoEndpoint::ephemeral`](../../crates/keld-cli/src/echo_link.rs)).
+   ready (an `mpsc` channel, not a sleep). On Unix that endpoint is an owner-only
+   session dir under the OS temp dir (`ke-<pid>-<nanos>/e.sock`); on Windows it is an
+   ephemeral `127.0.0.1` TCP port
+   ([`echo_link.rs::EchoServer::start`](../../crates/keld-cli/src/echo_link.rs)).
    The server accepts exactly **one** connection.
 4. **Spawn Bun**: `bun run <root>/src/main.ts`, cwd set to the project root, stdout and
-   stderr inherited, with two environment variables set:
+   stderr inherited, with one environment variable set:
    - `KELD_APP_LINK` — `<endpoint>#<64 hex chars>` (Unix path or Windows port, plus the v2 HELLO token).
-   - `KELD_BIN` — `std::env::current_exe()`, i.e. the same `keld` binary, so the child
-     can call back into `keld ipc-client`.
-5. **Open the window** (macOS only) via `keld_core::run_hello_window_html`, rendering
-   the project's `renderer` file (default `index.html`) as inline HTML. Echo has
-   already finished; tao `EventLoop::run` never returns.
+   Bun speaks kipc itself from here (`src/kipc.ts`, KEL-30) — no second `keld` process
+   is spawned, so `KELD_BIN` is not set.
+5. **Open the window** on macOS and Windows via `keld_core::run_hello_window_html`,
+   rendering the project's `renderer` file (default `index.html`) as inline HTML.
+   Echo has already finished; tao `EventLoop::run` never returns. Linux fails with
+   `WvError::UnsupportedPlatform` instead (KEL-28 — see below).
 
 Real output from a session in a freshly scaffolded `my-app` (the native window opens
 *after* these lines; echo is not live while the window is up):
@@ -593,7 +595,7 @@ hand-edited.
 
 ## 5. The template app contract — what an app developer actually writes
 
-`keld create <name>` produces exactly five files. This is, today, the whole "app
+`keld create <name>` produces exactly six files. This is, today, the whole "app
 developer API".
 
 ```
@@ -602,14 +604,22 @@ my-app/
 ├─ index.html        renderer document loaded by `keld dev`
 ├─ keld.config.ts    app config (see caveat below)
 ├─ package.json      name, private, type: module, start script
-└─ src/main.ts       the app main process — the only file with behavior
+└─ src/
+   ├─ main.ts        the app main process
+   └─ kipc.ts        hand-written kipc v2 client (KEL-30) — main.ts's only import
 ```
+
+`src/kipc.test.ts` (golden-vector tests for `kipc.ts`, run with `bun test`) lives beside it in the
+repo but is **not** one of the six: `HELLO_TEMPLATE` in `template.rs` is an explicit allow-list, not
+a directory glob, so test files can sit next to what they test without shipping to end users.
 
 ### 5.1 `src/main.ts` — the main process
 
 Source: [`crates/keld-cli/templates/hello/src/main.ts`](../../crates/keld-cli/templates/hello/src/main.ts).
 
 ```ts
+import { echoRoundtrip } from "./kipc";
+
 const link = process.env.KELD_APP_LINK;
 if (!link) {
   console.error(
@@ -618,17 +628,8 @@ if (!link) {
   process.exit(1);
 }
 
-const keld = process.env.KELD_BIN ?? "keld";
-const proc = Bun.spawn([keld, "ipc-client", "echo", "--link", link], {
-  stdout: "inherit",
-  stderr: "inherit",
-  env: process.env,
-});
-
-const code = await proc.exited;
-if (code !== 0) {
-  process.exit(code);
-}
+const response = await echoRoundtrip(link, { message: "keld", count: 1 });
+console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
 
 console.log("{{name}}: main process ready (IPC echo ok)");
 ```
@@ -636,17 +637,21 @@ console.log("{{name}}: main process ready (IPC echo ok)");
 Read it as a contract statement in four parts:
 
 1. **The host hands the app process its link through the environment.** `KELD_APP_LINK`
-   (`<endpoint>#<64 hex chars>` — Unix path or Windows port plus the v2 HELLO token)
-   and `KELD_BIN` (path to the `keld` binary) are the entire handshake surface today.
-   A link without `#<64 hex>` fails closed with `KELD-IPC-007`. The file guards on
-   `KELD_APP_LINK` and fails with a code-carrying message rather than crashing — the
-   framework's error convention applied inside a template.
-2. **The app process is Bun-specific**, not Node-compatible: it uses `Bun.spawn` and
-   top-level `await`.
-3. **There is no TypeScript SDK.** The template speaks kipc by shelling out to
-   `keld ipc-client echo`. The file's own comment says so: "Full typed bridge codegen
-   lands in `@keld/api`; this slice uses the CLI client." Expect this whole file to be
-   replaced by `import { … } from "@keld/api"` once that package exists.
+   (`<endpoint>#<64 hex chars>` — Unix path or Windows port plus the v2 HELLO token) is
+   the entire handshake surface today. A link without `#<64 hex>` fails closed with
+   `KELD-IPC-007`. The file guards on `KELD_APP_LINK` and fails with a code-carrying
+   message rather than crashing — the framework's error convention applied inside a
+   template.
+2. **The app process is Bun-specific**, not Node-compatible: it uses `Bun.connect`
+   (via `./kipc`) and top-level `await`.
+3. **There is still no schema-driven TypeScript SDK** (`@keld/api`, `keld gen`, KEL-13
+   remain unbuilt), but as of KEL-30 the template no longer shells out to a second
+   process to fake one. `./kipc.ts` is a hand-written client speaking the real kipc v2
+   wire format — frame header, postcard `EchoRequest`/`EchoResponse`, the `HELLO`
+   handshake — pinned byte-for-byte against `keld-ipc`'s own Rust tests. It is the
+   actual "Bun to Rust and back" vertical slice, not a placeholder for one. Expect it to
+   be replaced by generated code once `@keld/api` exists; until then it is real, tested
+   transport, not a stub.
 4. **`{{name}}` is substituted at scaffold time**, so a project called `my-app` prints
    `my-app: main process ready (IPC echo ok)`.
 
@@ -698,26 +703,23 @@ sequenceDiagram
     participant Dev as You
     participant CLI as keld dev (parent)
     participant Echo as EchoServer thread
-    participant Bun as Bun (src/main.ts)
-    participant Client as keld ipc-client (child)
-    participant Win as WKWebView window
+    participant Bun as Bun (src/main.ts + kipc.ts)
+    participant Win as WKWebView / WebView2 window
 
     Dev->>CLI: keld dev
     CLI->>CLI: run_checks() — bun, project layout, renderer HTML
     CLI->>Echo: EchoServer::start() — UDS path or 127.0.0.1 port
     Echo-->>CLI: ready (mpsc signal)
-    CLI->>Bun: bun run src/main.ts + KELD_APP_LINK, KELD_BIN
-    Bun->>Client: Bun.spawn KELD_BIN ipc-client echo --link KELD_APP_LINK
-    Client->>Echo: HELLO, then CALL on ECHO_CHANNEL (postcard EchoRequest)
-    Echo-->>Client: HELLO, then REPLY (EchoResponse)
-    Client-->>Bun: ipc-echo ok: message=keld count=1
-    Bun-->>Dev: my-app: main process ready (IPC echo ok)
+    CLI->>Bun: bun run src/main.ts + KELD_APP_LINK
+    Bun->>Echo: HELLO (Bun.connect, ./kipc.ts), then CALL on ECHO_CHANNEL (postcard EchoRequest)
+    Echo-->>Bun: HELLO, then REPLY (EchoResponse)
+    Bun-->>Dev: ipc-echo ok: message=keld count=1, then my-app: main process ready (IPC echo ok)
     CLI->>Win: run_hello_window_html(title, project renderer HTML) and blocks
 ```
 
 The integration test [`crates/keld-cli/tests/bun_echo.rs`](../../crates/keld-cli/tests/bun_echo.rs)
-exercises everything in that diagram except the window, and is the fastest way to see
-the contract asserted in code.
+exercises everything in that diagram except the window, against the real `kipc.ts` client (not a
+mock), and is the fastest way to see the contract asserted in code.
 
 ---
 
