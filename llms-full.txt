@@ -2805,7 +2805,8 @@ The fixture/harness source was
 | Tauri 2.11.5 | **11/11** | **361.355 / 732.112 ms** | **204,800 / 205,280 KiB** | Full foreground/session proof passed; one 736.827 ms cold outlier remains visible in p90. |
 | Wails v3.0.0-beta.8 | **11/11** | **341.356 / 366.036 ms** | **207,136 / 207,648 KiB** | Valid standalone diagnostic run; foreground/session proof and cleanup passed. |
 | NW.js 0.114.1 | **11/11** | **425.380 / 442.879 ms** | **682,304 / 682,848 KiB** | Per-run `--user-data-dir` avoided the shared-profile singleton; one 2,788.511 ms cold maximum is retained. |
-| Neutralino 6.9.0 | **0/11** | not reportable | not reportable | Fail-closed: canonical HTML was served, but its beacon reported `document.hasFocus() = false` despite target-app activation. Stock macOS Neutralino makes the window key without making its WKWebView first responder; this requires an upstream runtime fix, not a synthetic click or relaxed oracle. |
+| Neutralino 6.9.0 (stock) | **0/11** | not reportable | not reportable | Fail-closed: canonical HTML was served, but its beacon reported `document.hasFocus() = false` despite target-app activation. Stock macOS Neutralino makes the window key without making its WKWebView first responder; this requires a runtime fix, not a synthetic click or relaxed oracle. |
+| Neutralino 6.9.0 + local macOS focus patch | **11/11** | **595.975 / 625.097 ms** | **206,976 / 207,216 KiB** | Patched-runtime proof only, not a stock or upstream-release score. The one-call patch makes the `WKWebView` first responder after Neutralino's existing macOS bring-to-front/restore handling inside `window.focus()`. Every arm accepted the visible/focused double-rAF beacon and passed foreground continuity, restoration, and tail seal. |
 | Electrobun 1.18.1 | **11/11** | **709.551 / 732.686 ms** | **311,312 / 311,840 KiB** | Hidden window is shown and activated before canonical navigation; full foreground/session proof passed. |
 | Electron 43.4.0 | **11/11** | **276.784 / 295.568 ms** | **373,104 / 373,296 KiB** | Startup arguments select Chromium's basic/mock keychain, preventing SecurityAgent from taking foreground before the beacon; full foreground/session proof passed. |
 
@@ -2821,17 +2822,24 @@ Raw local evidence: `/tmp/keld-kel64-final-keld-20260817.json`,
 `/tmp/keld-kel64-final-wails-current-harness-20260817.json`,
 `/tmp/keld-kel64-final-nwjs-20260817.json`,
 `/tmp/keld-kel64-neutralino-direct-url-one-20260817.json`,
+`/tmp/keld-kel64-neutralino-focus-onecall-20260817.json`,
+`/tmp/keld-kel64-neutralino-focus-repro-one-20260817.json`,
 `/tmp/keld-kel64-final-electrobun-20260817.json`, and
 `/tmp/keld-kel64-final-electron-valid-20260817.json`.
 
 Neutralino's direct `--url` diagnostic bypassed fixture navigation and still
 returned the unfocused beacon. In upstream
 [v6.9.0](https://github.com/neutralinojs/neutralinojs/tree/2cec764ac5e3ccc5b1b44d046d6e6d6c85c3099e),
-the macOS backend sets the WKWebView as the content view and makes the window
-key, but does not make that view the first responder; `window.focus()` repeats
-only app activation and window-keying. An upstream patch must set/reassert the
-WKWebView first responder and pass this same double-rAF test before this row can
-receive a score.
+the macOS `window.focus()` path activates the application and restores or brings
+the window forward, but does not make the runtime `WKWebView` first responder. The independent
+Context-7 audit confirmed the canonical beacon's focus check is the correct
+contract: active app, key window, and first responder are distinct AppKit state.
+The minimal, reproducibly built local patch is recorded at
+[`gyldlab/keld-benches@4666d0a`](https://github.com/gyldlab/keld-benches/commit/4666d0a):
+it calls `makeFirstResponder:` for the existing web view after the current macOS
+bring-to-front/restore branch. A clean v6.9.0 source rebuild also passed a fresh
+focused-beacon run. This establishes a patch proof, **not** a replacement stock
+score or an assertion that upstream has accepted the change.
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | debug | 73,184 then 70,752 KiB (~70–73 MiB) | ≤ 90 MB | — | — | — | — | Host-only; KEL-26 GUI pass | `just hello` / debug |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | dmg / .app | — | N/A | ≤ 6 MB runtimeless / ≤ 20 MB w/ Bun | zip 122,121,746 B; `.app` 288,448,512 B; Keld wrapping N/A | `.app` 8,265,728 B; DMG 2,910,772 B; Keld wrapping N/A | 96K `.app` / 31,655 B UDZO | 88K `.app` / 29,774 B UDZO | `keld-pack` is a `Format` enum. Tiny Swift `.app` ≠ packed Keld | n/a |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | .app | `swiftc -O` | 96K `du` / 92,740 B file sum | native floor | — | — | — | — | WKWebView + loadHTMLString | `/tmp/keld-native-swift-hello` |
