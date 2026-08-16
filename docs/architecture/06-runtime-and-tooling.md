@@ -34,10 +34,13 @@
 v0 live verbs: `create`, `dev`, `doctor`, `mcp`, `hello`, `ipc-echo`, `ipc-client`.
 `keld doctor` checks Bun on PATH, hello-template layout (`keld.config.ts` +
 `src/main.ts`), the configured renderer HTML (default `index.html`; missing or
-non-project-relative is `KELD-CLI-035`), and a webview info line on macOS and
-Windows (the two live `WebEngine` backends; none on Linux yet, KEL-28).
-Native-module DB, permission diffs, `--web-compat`, and the Linux GPU probe are
-not live. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
+non-project-relative is `KELD-CLI-035`), and a webview info line on macOS,
+Windows, and Linux (all three live `WebEngine` backends as of KEL-28).
+Native-module DB, permission diffs, and `--web-compat` are
+not live. The Linux GPU-stack probe (`webkitgtk::probe_gpu_stack`, KEL-28) runs
+automatically at engine creation and applies NVIDIA+Wayland safe-mode
+internally; it is not yet its own `keld doctor` line — the `webview` check only
+reports backend availability, not safe-mode state. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
 `doctor`, `hello`) are `KELD-CLI-044` (exit 2). `keld create` takes one project
 name; `--template` is not live (vanilla-ts hello only). `keld dev` takes no
 flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /

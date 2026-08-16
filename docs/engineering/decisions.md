@@ -80,11 +80,10 @@ Do not add a fifth unique to look complete.
 ## 2. Webview: wry+tao scaffolding, spec 05 destination
 
 **Chose (2026-07-08; wry pin updated 2026-08-14 for KEL-59; Windows superseded
-2026-08-15 — see the update below).** The live macOS backend is tao 0.35.3 +
-wry 0.56.1 (`devtools` feature) in `crates/keld-wv/src/wkwebview/mod.rs`.
-Module comment: interim implementation, replace with direct objc2 bindings per
-architecture 05 §1. Linux remains a compiled layout slot returning
-`KELD-WV-001` and naming KEL-28.
+2026-08-15; Linux landed 2026-08-16 — see the updates below).** The live macOS
+backend is tao 0.35.3 + wry 0.56.1 (`devtools` feature) in
+`crates/keld-wv/src/wkwebview/mod.rs`. Module comment: interim implementation,
+replace with direct objc2 bindings per architecture 05 §1.
 
 wry 0.55.1 auto-granted camera/mic (`request_media_capture_permission` → `Grant`)
 and had no `with_permission_handler`. 0.56.1 adds the handler; Keld installs it
@@ -118,6 +117,40 @@ bridge wait overlapped renderer boot), so the rewrite is carried by security
 (SmartScreen on, at 0 measured cost), binary size (−24%, 625,152 → 484,864 B),
 and owning the create sequence — not by a speed claim.
 
+**Update (2026-08-16, KEL-28): Linux create path is wry, same interim step
+macOS/Windows started with.** `crates/keld-wv/src/webkitgtk/mod.rs` drives wry's
+GTK3 + WebKit2GTK 4.1 backend (`default = ["os-webview", "x11"]` — no extra
+feature flags needed for the hello slice), mirroring `wkwebview/mod.rs`
+structurally, with one deliberate deviation: `WebViewBuilderExtUnix::build_gtk`
+against the tao-owned GTK window, not the plain cross-platform `build()`, which
+wry's own docs say is X11-only. KEL-28's DoD requires Wayland too. One
+Linux-only addition crate `AGENTS.md` requires: `probe_gpu_stack()` detects
+NVIDIA + Wayland (`/proc/driver/nvidia/version` + `WAYLAND_DISPLAY`) and sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` on the process's own environment before any
+GTK/WebKit call — never by asking a developer to export a shell variable —
+mitigating the documented DMA-BUF crash/flicker class on `WebKitGTK` ≤ 2.54
+(tauri-apps/tauri#9394, #14924). Detection is split from the mutation
+(`detect_gpu_safe_mode`, pure, vs. `probe_gpu_stack`, which also applies it) so
+`keld doctor` can read the state later without side effects. Media-permission
+guard (KEL-59) reuses the existing wry helpers unchanged (`media.rs` widened
+from macOS-only to `any(macos, linux)`), since Linux's default without a
+handler is also "show the platform's own prompt," same category as the old
+Windows default.
+
+Verification: compiled, clippy-clean, and 225 tests green (including live
+Bun↔Rust kipc integration) on real Ubuntu 26.04 (GTK3/WebKit2GTK 4.1 dev libs
+via apt) in WSL. That same WSL sandbox has no display reachable through WSLg
+(`gtk::init()` fails there directly: "Failed to initialize GTK"), so a plain
+`keld-host --hello` could not be watched — but `Xvfb` + a window manager
+(`fluxbox`) + `xdotool search --name Keld` **does** find a real, correctly
+titled X11 window within 0.5 s of launch, zero stderr, exactly the headless
+smoke test KEL-28's own spec asked for. A root-window screenshot without a WM
+running came back blank (no compositor to map the child window for capture);
+with `fluxbox` running the window exists per `xdotool` but a follow-up
+screenshot attempt did not land it either — worth another pass, not blocking.
+Nobody has watched pixels render on a real desktop yet; confirm on Linux
+hardware/VM with eyes on the screen before calling this fully closed.
+
 **Why not treat wry as the product.** Architecture 05 lists hooks wry does not
 prioritize (scheme-streaming as bulk IPC, principal identity per navigation, engine
 policy switching, `webContents`-grade control). The host is prebuilt, so wry's
@@ -129,9 +162,11 @@ Apache-2.0. The MPL-2.0 crate in the graph is **`option-ext` 0.2.0**, reached
 [`third-party-licenses.md`](./third-party-licenses.md), learnings 2026-08-13). Do not
 describe wry as MPL.
 
-**Next.** Keep the Phase 2 window on wry+tao. Rewrite a backend to objc2/windows-rs/
-webkitgtk when that backend needs a wry-missing hook, or when landing KEL-27/KEL-28
-on a machine that actually runs that OS — not as a macOS-week rewrite. See §11.
+**Next.** Keep macOS and Linux on wry+tao. Rewrite a backend to objc2/webkit6-gtk4
+when that backend needs a wry-missing hook (as happened for Windows, KEL-65), or
+when someone can run the smoke on that OS with a real display — not as a
+same-week rewrite. Visually confirm the Linux window on real hardware/VM before
+claiming KEL-28 fully done. See §11.
 
 ---
 
@@ -450,7 +485,7 @@ test (a): Linear Phase 2 (window + kipc echo + crate map) ships without them.
 | **Servo / Verso backend** | Spec 05 tracks them as a fifth `WebEngine` the day embedding stabilizes. That is a later backend, not a wry replacement for the hello window. | architecture 05 §1 |
 | **Wrapping SaaS / OAuth MCP** | v1 is stdio, zero listeners, no HTTP transport, no auth crate. Architecture 07 §9: no bespoke agent protocol; we do not host developers' agent identity. | `Cargo.toml` rmcp comment; architecture 07 §4, §9; onboarding 07 |
 | **objc2 rewrite this week** | Destination is spec 05; current macOS path is wry+tao scaffolding. The rewrite does not move Phase 2. | architecture 05 §1; `wkwebview/mod.rs`; `AGENTS.md` YAGNI (a) |
-| **KEL-27 / KEL-28 on a Mac** | WebView2 and WebKitGTK slots compile everywhere and return `KELD-WV-001`. A live backend needs that OS's window server and a machine that can run the smoke. Implementing them on macOS as if they were done would be a stub, which `AGENTS.md` forbids on main. | `crates/keld-wv/src/webview2/mod.rs`, `webkitgtk/mod.rs`; architecture 05 §1 |
+| **Watching the KEL-28 Linux window with eyes on a screen** | Windows (KEL-27) and Linux (KEL-28) backends are both implemented and built/tested on their real OS (WSL Ubuntu for Linux, not cross-compiled from macOS as-if-done — `AGENTS.md` forbids that shortcut). Xvfb + `xdotool` confirms a real, correctly titled X11 window exists (§2 above) — the headless smoke test KEL-28's own spec asked for. What's still open: nobody has watched pixels render on a real desktop. Confirm on Linux hardware/VM with a display before calling KEL-28 fully closed. | `crates/keld-wv/src/webkitgtk/mod.rs`; architecture 05 §1 |
 | **Six-framework notes-app bench** | Same app in Keld / Electron / Electrobun / Tauri / Wails / Swift is a later epic. Fair score is **v1** (search, GFM preview, custom-scheme images, native menus, second window, PDF-exists, file watch, autosave) — not v0 CRUD. Keld cannot host that without guard-on-IPC and host `fs.read`/`fs.write`. Bun `node:fs` is not a default-deny test. | architecture 01 §5; this file §11; research 43 / 43a (exploratory, not required) |
 
 Also parked, for the same YAGNI reason: `bench/` perf CI (budgets exist in

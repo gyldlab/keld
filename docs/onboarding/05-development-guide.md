@@ -50,16 +50,23 @@ just hello                       # == cargo run -p keld-host -- --hello
 cargo run -p keld-cli -- doctor
 ```
 
-`just hello` opens a 960×640 WKWebView window titled "Keld" and blocks until you close
-it. **macOS only.** On Windows and Linux the webview backends are stubs — a single
-`unavailable()` function returning `WvError::UnsupportedPlatform`
-([`crates/keld-wv/src/webview2/mod.rs`](../../crates/keld-wv/src/webview2/mod.rs),
-[`webkitgtk/mod.rs`](../../crates/keld-wv/src/webkitgtk/mod.rs)) — so you get
-`KELD-WV-001` and exit 1, pointing at KEL-27 / KEL-28. Everything else in the
+`just hello` opens a 960×640 window titled "Keld" and blocks until you close it. Live
+backends exist on all three platforms now: macOS (`WKWebView`), Windows (`WebView2`,
+direct COM since KEL-65), and Linux (`WebKitGTK`, wry interim since KEL-28) —
+([`crates/keld-wv/src/wkwebview/mod.rs`](../../crates/keld-wv/src/wkwebview/mod.rs),
+[`webview2/mod.rs`](../../crates/keld-wv/src/webview2/mod.rs),
+[`webkitgtk/mod.rs`](../../crates/keld-wv/src/webkitgtk/mod.rs)). The Linux backend
+compiles, passes its unit tests, and its full crate/workspace suite is green on a real
+Ubuntu box (GTK3 + `libwebkit2gtk-4.1-dev`) — but a real window opening has **not**
+been visually verified anywhere yet (KEL-28 landed from a sandbox with no display
+server; `gtk::init()` fails there with "Failed to initialize GTK", not a code defect).
+Confirm on real Linux hardware/VM with a display before relying on it. `WvError::UnsupportedPlatform`
+(`KELD-WV-001`) still exists for any other target. Everything else in the
 workspace (kipc, the CLI, `create`, `doctor`, the echo tests) is cross-platform and
-builds and tests on all three.
+builds and tests on all three today.
 
-Expected `doctor` output outside a project:
+Expected `doctor` output outside a project (macOS shown; Windows/Linux differ only in
+the `webview` line's detail text — "Windows WebView2..." / "Linux WebKitGTK..."):
 
 ```
 [ok] bun — found bun 1.4.0
@@ -78,7 +85,10 @@ cd /tmp && "$KELD" create my-app && cd my-app
 ```
 
 which prints `ipc-echo ok: …` and `my-app: main process ready (IPC echo ok)` and opens
-the window. Close the window (or Ctrl-C the terminal) to end the session.
+the window. Close the window (or Ctrl-C the terminal) to end the session. Confirmed on
+macOS and Windows with a real display; on Linux confirmed at the X11 level under Xvfb +
+a window manager (`xdotool search --name Keld` finds a real, correctly-titled window —
+KEL-28), but not yet watched on a real desktop with eyes on the screen.
 
 ---
 
@@ -206,7 +216,7 @@ Where the tests live:
 | Echo payload round-trip | `crates/keld-ipc/src/echo.rs` |
 | Project-name validation, template file writing | `crates/keld-cli/src/create.rs` |
 | `WebviewSpec` default, `NavTarget` variants, `WvError` messages carry code + fix | `crates/keld-wv/src/{engine,error}.rs` |
-| Backend stubs point at their tracking issues | `crates/keld-wv/src/{webview2,webkitgtk}/mod.rs` |
+| GPU-stack probe applies safe-mode, never instructs env-var exports | `crates/keld-wv/src/webkitgtk/mod.rs` `probe_gpu_stack` |
 
 Two things to expect:
 

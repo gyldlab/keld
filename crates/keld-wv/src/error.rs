@@ -43,7 +43,7 @@ impl fmt::Display for WvError {
             Self::UnsupportedPlatform { os, issue } => write!(
                 f,
                 "KELD-WV-001: no webview backend for `{os}` yet. \
-                 Track {issue} or run on macOS or Windows."
+                 Track {issue} or run on macOS, Windows, or Linux."
             ),
             Self::Window(msg) => write!(
                 f,
@@ -99,10 +99,10 @@ mod tests {
             (
                 WvError::UnsupportedPlatform {
                     os: "freebsd",
-                    issue: "KEL-27 / KEL-28",
+                    issue: "architecture spec 05 §1 (no backend planned)",
                 },
                 "KELD-WV-001",
-                "run on macOS",
+                "run on macOS, Windows, or Linux",
             ),
             (
                 WvError::Window(String::from("boom")),

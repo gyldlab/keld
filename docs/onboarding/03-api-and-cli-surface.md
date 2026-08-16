@@ -161,10 +161,10 @@ The one verb that ties everything together. Sequence, from
    - `KELD_APP_LINK` — `<endpoint>#<64 hex chars>` (Unix path or Windows port, plus the v2 HELLO token).
    Bun speaks kipc itself from here (`src/kipc.ts`, KEL-30) — no second `keld` process
    is spawned, so `KELD_BIN` is not set.
-5. **Open the window** on macOS and Windows via `keld_core::run_hello_window_html`,
-   rendering the project's `renderer` file (default `index.html`) as inline HTML.
-   Echo has already finished; tao `EventLoop::run` never returns. Linux fails with
-   `WvError::UnsupportedPlatform` instead (KEL-28 — see below).
+5. **Open the window** on macOS, Windows, and Linux (KEL-28) via
+   `keld_core::run_hello_window_html`, rendering the project's `renderer` file
+   (default `index.html`) as inline HTML. Echo has already finished; tao
+   `EventLoop::run` never returns.
 
 Real output from a session in a freshly scaffolded `my-app` (the native window opens
 *after* these lines; echo is not live while the window is up):
@@ -200,32 +200,36 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **Closing the window ends the process.** Both live backends hand the thread to tao's
-  `EventLoop::run`, which never returns and exits the process itself
+- **Closing the window ends the process.** All three live backends hand the thread to
+  tao's `EventLoop::run`, which never returns and exits the process itself
   ([`wkwebview/mod.rs::run_until_closed`](../../crates/keld-wv/src/wkwebview/mod.rs),
-  [`webview2/mod.rs::run_until_closed`](../../crates/keld-wv/src/webview2/mod.rs)).
+  [`webview2/mod.rs::run_until_closed`](../../crates/keld-wv/src/webview2/mod.rs),
+  [`webkitgtk/mod.rs::run_until_closed`](../../crates/keld-wv/src/webkitgtk/mod.rs)).
   That is why echo runs to completion *before* the window opens.
-- **On Linux `keld dev` fails, it does not silently no-op.** `run_hello_window_html`
-  is the same cross-platform call on every OS; Linux has no live `WebEngine` backend
-  yet (KEL-28), so it returns `WvError::UnsupportedPlatform` and `run_dev` surfaces
-  it as `DevError::Runtime` — a real non-zero exit naming the tracking issue, not a
-  printed "not available yet" line with exit 0. The renderer file is still loaded
-  and validated first, same as the two live backends.
+- **Linux has a live backend too, as of KEL-28.** `run_hello_window_html` is the
+  same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
+  `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
+  dispatches to a real backend instead of an `unavailable()` stub. Compiled,
+  clippy-clean, and test-green on real Ubuntu; `Xvfb` + `xdotool` confirms a
+  real, correctly titled X11 window opens (a plain WSL sandbox has no display
+  at all — `gtk::init()` fails outright there). Not yet watched on a real
+  desktop with eyes on the screen. `WvError::UnsupportedPlatform` remains the
+  fallback for any other target.
 
 ### 1.7 `keld doctor`
 
 Runs the checks in [`doctor.rs::run_checks`](../../crates/keld-cli/src/doctor.rs) and
 prints one line each, format `[ok|FAIL] <label> — <detail>`. Exit is **1** if any check
 failed, **0** otherwise. Bun and project run everywhere; renderer runs when a project
-root is present; webview runs on macOS and Windows (the two live `WebEngine` backends;
-Linux has none yet, KEL-28, so no `webview` line appears there):
+root is present; webview runs on macOS, Windows, and Linux (all three live
+`WebEngine` backends as of KEL-28):
 
 | Label | Passes when | Detail on failure |
 |---|---|---|
 | `bun` | `bun --version` runs and exits 0 | ``install Bun from https://bun.sh and ensure `bun` is on PATH`` |
 | `project` | no project root found **or** the root has both `keld.config.ts` and `src/main.ts` | ``missing keld.config.ts or src/main.ts — run `keld create <name>` first`` |
 | `renderer` (project root only) | configured `renderer` (default `index.html`) is a project-relative file that exists | `KELD-CLI-035` — set `renderer` to a project-relative HTML file and create it |
-| `webview` (macOS/Windows only) | always | n/a — informational, never fails |
+| `webview` (macOS/Windows/Linux) | always | n/a — informational, never fails |
 
 Outside a project:
 
@@ -274,12 +278,12 @@ instead of the CLI. Extra arguments are `KELD-CLI-044` (exit 2) so a typo cannot
 open the tao event loop. `keld-host --hello` accepts optional `--title <name>` /
 `--title=<name>` and rejects anything else the same way.
 
-This document did not run it (it blocks on a window). Off macOS the call returns
-`WvError::UnsupportedPlatform`, whose `Display` impl in
+This document did not run it (it blocks on a window). Off macOS/Windows/Linux the call
+returns `WvError::UnsupportedPlatform`, whose `Display` impl in
 [`crates/keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) renders as:
 
 ```
-KELD-WV-001: no webview backend for `linux` yet. Track KEL-27 (Windows) / KEL-28 (Linux) or run on macOS.
+KELD-WV-001: no webview backend for `freebsd` yet. Track architecture spec 05 §1 (no backend planned) or run on macOS, Windows, or Linux.
 ```
 
 (with the runtime `std::env::consts::OS` substituted), and `main.rs` exits 1.
@@ -507,7 +511,7 @@ Backends:
 |---|---|---|
 | `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Stub.** `unavailable() -> WvError`, pointing at KEL-28 |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. `probe_gpu_stack()` applies NVIDIA+Wayland safe-mode before any GTK/WebKit call — split from the pure `detect_gpu_safe_mode()` so `keld doctor` can read it side-effect-free. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms a real X11 window opens with the right title — not yet watched on a real desktop. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live

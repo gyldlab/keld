@@ -70,7 +70,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: No webview backend for this OS
-- fix: Track KEL-28 (Linux) or run on macOS or Windows.
+- fix: Track the named issue, or run on macOS, Windows, or Linux — all three have live backends since KEL-28 (2026-08-16).
 
 ## KELD-WV-002
 
