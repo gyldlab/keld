@@ -57,3 +57,23 @@ webview2-com = "0.38"
 # (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
 # to a crate already in the graph rather than a second copy.
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"] }
+
+[target.'cfg(target_os="linux")'.dependencies]
+tao = "0.35.3"
+# --- Dependency review (KEL-28 / AGENTS.md gate) ---
+# Name: wry 0.56.1 (same version/pin as macOS)
+# Purpose: interim WebKitGTK backend — same "wry now, direct bindings later
+#   only when wry is missing a hook" policy as macOS/Windows started with
+#   (`docs/engineering/decisions.md` §2). `default = ["os-webview", "x11"]`
+#   pulls in webkit2gtk 2.0.2 (v2_38) + gtk 0.18 (GTK3) + javascriptcore-rs +
+#   soup3 — no linux-specific feature flags needed for the hello slice.
+# Alternatives rejected: (a) direct webkit6/gtk4 bindings now — architecture
+#   05 §1's destination, but skipping the wry-interim step here would be
+#   inconsistent with how KEL-26/27 actually landed and would duplicate
+#   wry's already-solved platform quirks for no reason (first-principles
+#   test in root AGENTS.md); (b) a newer wry targeting GTK4/webkitgtk-6.0 —
+#   0.56.1 does not offer one, and chasing it is out of scope for KEL-28.
+# System deps (WSL Ubuntu 26.04, apt): libgtk-3-dev, libwebkit2gtk-4.1-dev,
+#   libjavascriptcoregtk-4.1-dev, libsoup-3.0-dev, pkg-config, build-essential.
+# License: Apache-2.0 OR MIT (unchanged from macOS's pin).
+wry = { version = "0.56.1", features = ["devtools"] }

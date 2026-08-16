@@ -128,7 +128,7 @@ pub fn run_checks(project_root: Option<&Path>) -> Vec<Check> {
     if let Some(root) = project_root {
         checks.push(check_renderer(root));
     }
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         checks.push(check_webview_hello());
     }
@@ -263,15 +263,18 @@ fn check_renderer(root: &Path) -> Check {
 }
 
 /// Informational only — the hello window backend is live on this OS
-/// (macOS `WKWebView`, Windows `WebView2`), so `keld dev` can open a window.
-/// Never fails: a missing runtime (e.g. `WebView2` Evergreen) surfaces as
-/// `KELD-WV-008` from `keld dev` itself, not from doctor.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// (macOS `WKWebView`, Windows `WebView2`, Linux `WebKitGTK`), so `keld dev`
+/// can open a window. Never fails: a missing runtime (e.g. `WebView2`
+/// Evergreen, or GTK's own init failure with no display server on Linux)
+/// surfaces as its own error from `keld dev` itself, not from doctor.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn check_webview_hello() -> Check {
     #[cfg(target_os = "macos")]
     let detail = "macOS WKWebView hello window available via `keld dev`";
     #[cfg(target_os = "windows")]
     let detail = "Windows WebView2 hello window available via `keld dev`";
+    #[cfg(target_os = "linux")]
+    let detail = "Linux WebKitGTK hello window available via `keld dev`";
     Check {
         label: "webview",
         ok: true,
@@ -311,6 +314,20 @@ mod tests {
             .expect("windows must report a webview check");
         assert!(check.ok, "{check:?}");
         assert!(check.detail.contains("WebView2"), "{}", check.detail);
+        assert!(check.error.is_none());
+    }
+
+    /// KEL-28: `keld dev` has a live Linux `WebKitGTK` backend now — doctor
+    /// must say so, not stay silent as if webview were macOS/Windows-only.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_webview_check_is_ok_and_present() {
+        let check = run_checks(None)
+            .into_iter()
+            .find(|c| c.label == "webview")
+            .expect("linux must report a webview check");
+        assert!(check.ok, "{check:?}");
+        assert!(check.detail.contains("WebKitGTK"), "{}", check.detail);
         assert!(check.error.is_none());
     }
 

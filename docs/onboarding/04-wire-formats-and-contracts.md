@@ -630,13 +630,18 @@ that each of the seven variants renders both its code and a fix hint, so a messa
 a bare description fails CI:
 
 ```rust
-// crates/keld-wv/src/error.rs:33-37
-Self::UnsupportedPlatform { os } => write!(
+// crates/keld-wv/src/error.rs (Display for WvError)
+Self::UnsupportedPlatform { os, issue } => write!(
     f,
     "KELD-WV-001: no webview backend for `{os}` yet. \
-     Track KEL-27 (Windows) / KEL-28 (Linux) or run on macOS."
+     Track {issue} or run on macOS, Windows, or Linux."
 ),
 ```
+
+`os`/`issue` are almost never both live now — macOS (KEL-26), Windows (KEL-27), and Linux
+(KEL-28) all have real backends as of 2026-08-16. This variant still exists for any other
+target (`hello/mod.rs`'s fallback arm), naming architecture spec 05 §1 instead of a closed
+ticket.
 
 `keld-cli` follows the same shape (`KELD-CLI-021` names the colliding path *and* says "Choose
 another name or remove the folder").

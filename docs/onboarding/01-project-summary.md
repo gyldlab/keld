@@ -212,25 +212,27 @@ Verified on macOS, 2026-08-10:
 
 | Command | What it really does |
 |---|---|
-| `just hello` / `cargo run -p keld-host -- --hello` | Opens a macOS WKWebView window with static HTML |
+| `just hello` / `cargo run -p keld-host -- --hello` | Opens a `WKWebView`/`WebView2`/`WebKitGTK` window with static HTML (macOS/Windows/Linux, KEL-28) |
 | `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
-| `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS and Windows |
-| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows (Linux fails closed, KEL-28); extra tokens including `--watch` are `KELD-CLI-044` |
+| `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS, Windows, and Linux |
+| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows/Linux; extra tokens including `--watch` are `KELD-CLI-044` |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
 | `cargo nextest run --workspace --profile ci` | 17 tests, all green |
 
 Note how far `keld dev` is from the target architecture: there is no host process, no
-supervisor, no `@keld/api`. The template's `src/main.ts` proves the link by shelling out
-to `keld ipc-client echo`. It is an honest vertical slice, deliberately built end-to-end
-rather than stubbed — [`AGENTS.md`](../../AGENTS.md) forbids `todo!()`/`unimplemented!()`
-on main — but it is a slice, not the system.
+supervisor, no `@keld/api`. The template's `src/main.ts` proves the link by speaking
+kipc itself, through `src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30);
+schema-driven codegen (`keld gen`, `@keld/schema`) is a later slice. It is an honest
+vertical slice, deliberately built end-to-end rather than stubbed —
+[`AGENTS.md`](../../AGENTS.md) forbids `todo!()`/`unimplemented!()` on main — but it
+is a slice, not the system.
 
 ### Per-subsystem ledger
 
 | Crate | Governing spec | On disk today | Not yet built |
 |---|---|---|---|
 | `keld-ipc` | [02-ipc](../architecture/02-ipc.md) | 16-byte little-endian frame header, 11 `FrameKind`s, `HELLO` handshake, postcard codec, blocking framed read/write, one hardcoded `echo` channel | shm bulk lane, credit-window backpressure, streams/cancel, schema-driven channel registry, codegen, fuzzing |
-| `keld-wv` | [05-webview-and-native](../architecture/05-webview-and-native.md) | `WebEngine` trait + per-platform extension traits; macOS backend built on tao + wry as **interim scaffolding** (to be replaced by direct objc2 bindings); `webview2`/`webkitgtk` modules compile everywhere and return a typed `KELD-WV-001` error naming their tracking issue | real Windows (KEL-27) and Linux (KEL-28) backends, `keld://` scheme, `window.keld` bridge, CEF, GPU probe / safe mode |
+| `keld-wv` | [05-webview-and-native](../architecture/05-webview-and-native.md) | `WebEngine` trait + per-platform extension traits; all three backends live — macOS + Linux on tao + wry as **interim scaffolding** (macOS to be replaced by direct objc2 bindings, Linux by webkit6/gtk4), Windows on direct `webview2-com` since KEL-65; Linux GPU-stack probe (NVIDIA+Wayland safe-mode) built in | `keld://` scheme, `window.keld` bridge, CEF, `keld doctor` line for GPU safe-mode, visual confirmation of a real Linux window (built/tested on a display-less sandbox) |
 | `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `keld-host --hello` opens it, otherwise prints a pre-alpha notice | event loop ownership, command queue, window registry, booting from compiled `keld.config.ts` |
 | `keld-guard` | [03-security](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for `app.<group>.<action>` path scopes; `Principal`, `Decision`, `DenyReason` | host-side enforcement on privileged IPC, `$VARS`/symlink canonicalization, channel grants, recorder, audit log |
 | `keld-runtime` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §1 | A `RestartPolicy` struct (3 crashes / 30 s window) | Bun discovery and pinning, spawn, health, restart, stdio capture — `keld dev` currently spawns `bun` directly from the CLI |
@@ -281,7 +283,7 @@ error-message, or API bug*.
 
 - **Linear** is the issue tracker: workspace `gyldlab-keld`, team/project **KELD**, issues
   numbered **KEL-\***. You will see these IDs everywhere in the code — `KEL-27` and
-  `KEL-28` are cited inside `keld-wv`'s unimplemented-backend errors, `KEL-29`/`KEL-30`
+  `KEL-28` head the Windows and Linux `keld-wv` backend modules, `KEL-29`/`KEL-30`
   head the CLI and IPC modules. Grepping a KEL number is a fast way to find every file
   that participates in a work item.
 - **Linear's project numbering does not match `ROADMAP.md`'s phase numbering.** Use

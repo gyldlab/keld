@@ -42,19 +42,23 @@ contract in `crates/keld-wv/src/engine.rs`: no `Send`, no `HostHooks` /
 `destroy` return `Result` so a stale id is a typed error. Methods from this
 sketch land when a live backend implements them in the same change.
 
-Backends: `wkwebview` is the live macOS backend (`#[cfg(target_os = "macos")]`).
-`webview2` and `webkitgtk` ship as compiled layout slots (`unavailable()` →
-`KELD-WV-001`) until KEL-27 / KEL-28; they are not live engines on every target.
-Platform extension traits are platform-neutral and compiled everywhere. `cef`
-is behind a feature flag, loaded as a runtime-selected backend when the app's
-engine policy says `pinned` (CEF binaries fetched at *build* time by `keld-pack`,
-never at user runtime). Verso/Servo tracked as a fifth backend the day embedding
-stabilizes — the trait is the insurance policy.
+Backends: `wkwebview` (macOS, `#[cfg(target_os = "macos")]`), `webview2` (Windows,
+direct COM since KEL-65), and `webkitgtk` (Linux, KEL-28) are all live now.
+`WvError::UnsupportedPlatform` (`KELD-WV-001`) is the fallback for any other
+target. Platform extension traits are platform-neutral and compiled everywhere.
+`cef` is behind a feature flag, loaded as a runtime-selected backend when the
+app's engine policy says `pinned` (CEF binaries fetched at *build* time by
+`keld-pack`, never at user runtime). Verso/Servo tracked as a fifth backend the
+day embedding stabilizes — the trait is the insurance policy.
 
-Linux resilience (research/06): GPU-driver probe at startup (NVIDIA + Wayland + WebKitGTK
-version matrix) → auto-apply safe-mode (`WEBKIT_DISABLE_DMABUF_RENDERER` equivalent set
-programmatically before engine init, not by asking users to export env vars), emit a
-structured `degraded-rendering` event apps can surface, and record it in `keld doctor`.
+Linux resilience (research/06): GPU-driver probe at startup → auto-apply
+safe-mode. **Implemented (KEL-28):** `webkitgtk::probe_gpu_stack` detects
+NVIDIA + Wayland and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` programmatically
+before any GTK/WebKit call — never by asking users to export env vars — and
+returns a `GpuSafeMode` apps can read (`is_degraded()` / `reason()`) as the
+structured degraded-rendering fact. **Not yet built:** a `keld doctor` line
+surfacing that result, and the fuller version-matrix probe research/06
+describes (today's probe is driver + session type only).
 
 ## 2. Renderer bridge contract (`window.keld`)
 

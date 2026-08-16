@@ -609,8 +609,8 @@ The summary table. "Live" means it works and a test proves it.
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |
 | Windows window + WebView2 | **Live** | `keld-wv/src/webview2/`, direct `webview2-com` COM since KEL-65 (wry not linked on Windows); tao for window + event loop; `KELD-WV-008` probe |
-| `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (two backends) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |
-| Linux webview backend | **Skeleton** | Typed `unavailable()` error naming KEL-28 |
+| `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (three backends) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |
+| Linux webview backend | **Live (KEL-28)** | `keld-wv/src/webkitgtk/`, wry interim (GTK3 + WebKit2GTK 4.1) mirroring how macOS/Windows started; GPU-stack probe (NVIDIA+Wayland safe-mode) built in |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; `dev` runs echo and window side by side, not integrated |
 | `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` and macOS + Windows `web.camera`/`web.microphone` capture call them; host IPC does not |

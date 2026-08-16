@@ -1,8 +1,7 @@
 //! Hello-world window entry (Phase 1 vertical slice).
 //!
-//! Thin dispatch to the per-OS backend modules: `crate::wkwebview` on macOS
-//! and `crate::webview2` on Windows; Linux returns
-//! [`WvError::UnsupportedPlatform`] until KEL-28 lands its backend.
+//! Thin dispatch to the per-OS backend modules: `crate::wkwebview` on macOS,
+//! `crate::webview2` on Windows, `crate::webkitgtk` on Linux.
 
 use crate::engine::{NavTarget, WebviewSpec};
 use crate::error::WvError;
@@ -38,7 +37,7 @@ pub(crate) fn hello_spec(title: &str, html: &str) -> WebviewSpec {
     }
 }
 
-/// Run the hello-world window until closed. macOS only for now.
+/// Run the hello-world window until closed.
 ///
 /// # Errors
 ///
@@ -55,15 +54,18 @@ pub fn run(title: &str, html: &str) -> Result<(), WvError> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = spec;
-        Err(crate::webkitgtk::unavailable())
+        crate::webkitgtk::run_hello(&spec)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = spec;
+        // macOS, Windows, and Linux all have live backends (KEL-26/27/28);
+        // this arm is the true "nothing planned" case, so it names the spec
+        // rather than citing tickets that would mislead a reader into
+        // thinking there is one to follow.
         Err(WvError::UnsupportedPlatform {
             os: std::env::consts::OS,
-            issue: "KEL-27 / KEL-28",
+            issue: "architecture spec 05 §1 (no backend planned)",
         })
     }
 }
@@ -76,8 +78,8 @@ mod tests {
     #[test]
     fn hello_html_is_local_document() {
         assert!(DEFAULT_HTML.contains("<!DOCTYPE html>"));
-        // Engine-neutral on purpose: the same const backs WKWebView on macOS
-        // and WebView2 on Windows, so it must not name one engine.
+        // Engine-neutral on purpose: the same const backs WKWebView, WebView2,
+        // and WebKitGTK, so it must not name one engine.
         assert!(DEFAULT_HTML.contains("Hello from Keld"));
         assert!(!DEFAULT_HTML.contains("http://"));
         assert!(!DEFAULT_HTML.contains("https://"));
@@ -98,10 +100,15 @@ mod tests {
     }
 }
 
-// macOS (KEL-26) and Windows (KEL-27) have live backends, so `run` opens a
-// window there and cannot be asserted headlessly. Only the platforms still
-// without a backend are expected to refuse.
-#[cfg(all(test, not(any(target_os = "macos", target_os = "windows"))))]
+// macOS (KEL-26), Windows (KEL-27), and Linux (KEL-28) all have live
+// backends now, so `run` opens a window on every platform this workspace
+// targets and cannot be asserted headlessly. This module keeps the shape for
+// whatever platform is next in line to lose its backend (BSD, etc.) —
+// nothing in this workspace's CI matrix hits it today.
+#[cfg(all(
+    test,
+    not(any(target_os = "macos", target_os = "windows", target_os = "linux"))
+))]
 mod platform_tests {
     use super::{DEFAULT_HTML, run};
 
@@ -114,13 +121,5 @@ mod platform_tests {
             "expected UnsupportedPlatform, got: {msg}"
         );
         assert!(msg.contains("KELD-WV-001"), "missing code in: {msg}");
-        #[cfg(target_os = "linux")]
-        {
-            assert!(msg.contains("KEL-28"), "missing Linux issue in: {msg}");
-            assert!(
-                !msg.contains("KEL-27"),
-                "must not name the Windows issue, which has shipped: {msg}"
-            );
-        }
     }
 }

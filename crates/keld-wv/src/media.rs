@@ -2,11 +2,14 @@
 //!
 //! One policy, two install mechanisms:
 //!
-//! - **macOS (wry interim)**: wry 0.56 auto-grants camera and microphone when
-//!   `WebViewBuilder::with_permission_handler` is omitted
-//!   (`WKPermissionDecision::Grant` in `wry_web_view_ui_delegate.rs`). Keld
-//!   installs `with_guarded_media_permissions` (cfg-gated to macOS, so no
-//!   intra-doc link).
+//! - **macOS + Linux (wry interim)**: wry's `with_permission_handler` is the
+//!   same builder call on both — omitting it means auto-grant on macOS
+//!   (`WKPermissionDecision::Grant` in `wry_web_view_ui_delegate.rs`) or
+//!   `WebKitGTK`'s own prompt on Linux (`competitors/wry/src/webkitgtk/mod.rs`
+//!   permission-request handler, KEL-28) — different platform defaults,
+//!   same wrong-for-Keld direction. Keld installs
+//!   `with_guarded_media_permissions` on both (cfg-gated, so no intra-doc
+//!   link).
 //! - **Windows (direct COM, KEL-65)**: without a handler `WebView2` falls back
 //!   to its own user prompt — default-ask, not default-deny. The backend
 //!   registers `add_PermissionRequested` before the first navigation and maps
@@ -102,10 +105,10 @@ pub fn webview2_media_kind(
 
 /// Maps wry's permission kinds onto Keld capabilities. Unknown kinds fail closed.
 ///
-/// macOS-only since KEL-65: Windows maps `WebView2` kinds directly via
-/// `webview2_media_kind` (cfg-gated, so no intra-doc link) and no longer
+/// macOS and Linux only since KEL-65: Windows maps `WebView2` kinds directly
+/// via `webview2_media_kind` (cfg-gated, so no intra-doc link) and no longer
 /// links wry.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[must_use]
 pub fn wry_media_kind(kind: wry::PermissionKind) -> MediaPermission {
     match kind {
@@ -116,7 +119,7 @@ pub fn wry_media_kind(kind: wry::PermissionKind) -> MediaPermission {
 }
 
 /// Guard decision for one wry permission request. Deny is fail-closed.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[must_use]
 pub fn media_permission_response(
     manifest: &PermissionsManifest,
@@ -131,17 +134,18 @@ pub fn media_permission_response(
 
 /// Installs a default-deny media-capture handler backed by `keld-guard`.
 ///
-/// Omitting wry's handler on macOS means wry 0.56.1
-/// (`wry_web_view_ui_delegate.rs`) returns `Grant` unconditionally — camera
-/// and mic with no prompt at all. The manifest is the authority
-/// (`docs/architecture/03-security.md` §1), so `Deny` here is deliberate:
-/// default-deny, not default-ask.
+/// Omitting wry's handler means wry 0.56.1 auto-grants on macOS
+/// (`wry_web_view_ui_delegate.rs` returns `Grant` unconditionally) or shows
+/// `WebKitGTK`'s own prompt on Linux (`competitors/wry/src/webkitgtk/mod.rs`:
+/// an unhandled request "let[s] `WebKitGTK` show default prompt"). The
+/// manifest is the authority (`docs/architecture/03-security.md` §1), so
+/// `Deny` here is deliberate on both: default-deny, not default-ask.
 ///
 /// The `backends_install_guarded_handler` test asserts every live backend
 /// wires its platform mechanism; dropping the call silently restores the
 /// platform default. Windows registers `add_PermissionRequested` directly in
 /// `webview2/mod.rs` (`install_guarded_media_permissions`) since KEL-65.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[must_use]
 pub fn with_guarded_media_permissions(
     builder: wry::WebViewBuilder<'_>,
@@ -239,8 +243,8 @@ mod tests {
             wkwebview.contains("with_guarded_media_permissions"),
             "KEL-59: wkwebview omits the guarded handler, restoring wry's auto-grant"
         );
-        // The macOS helper must still reach wry and the guard, or the backend
-        // above would be calling a no-op.
+        // The wry helper must still reach wry and the guard, or the backends
+        // above and below would be calling a no-op.
         let helper = include_str!("media.rs");
         assert!(
             helper.contains("with_permission_handler"),
@@ -249,6 +253,13 @@ mod tests {
         assert!(
             helper.contains("media_permission_response"),
             "KEL-59: the handler must call media_permission_response, not a constant Allow"
+        );
+
+        // Linux (wry interim, KEL-28): same wry mechanism as macOS.
+        let webkitgtk = include_str!("webkitgtk/mod.rs");
+        assert!(
+            webkitgtk.contains("with_guarded_media_permissions"),
+            "KEL-28/KEL-59: webkitgtk omits the guarded handler, restoring `WebKitGTK`'s default prompt"
         );
 
         // Windows (direct COM, KEL-65): the backend must register the guarded
@@ -337,9 +348,9 @@ mod webview2_tests {
     }
 }
 
-/// wry-facing tests for the shared helpers. macOS-only since KEL-65: Windows
-/// no longer links wry.
-#[cfg(all(test, target_os = "macos"))]
+/// wry-facing tests for the shared helpers. macOS and Linux since KEL-65:
+/// Windows no longer links wry.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod wry_tests {
     use super::{
         MediaPermission, media_permission_response, with_guarded_media_permissions, wry_media_kind,
@@ -389,7 +400,7 @@ mod wry_tests {
         assert_ne!(
             media_permission_response(&empty, wry::PermissionKind::Camera),
             wry::PermissionResponse::Default,
-            "Default continues the platform behaviour — macOS auto-grants, Windows prompts. \n             v0 must Deny on both."
+            "Default continues the platform behaviour — macOS auto-grants, Linux/Windows prompt. \n             v0 must Deny on all three."
         );
     }
 
