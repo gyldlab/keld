@@ -15,6 +15,8 @@ Written 2026-08-10 against commit `6d642c4` plus the uncommitted working tree.
 | 04 | [Wire formats and contracts](04-wire-formats-and-contracts.md) | When you touch kipc, config files, or anything on the wire. Byte-level frame layout, handshake, codec, error taxonomy. |
 | 05 | [Development guide](05-development-guide.md) | Day one setup, and every day after. Prerequisites, the three-command verification gate, review gates, PR conventions, troubleshooting. |
 | 06 | [Documentation map](06-documentation-map.md) | When you're lost. Every document in the repo, what's normative vs exploratory, and a reading order. |
+| 07 | [Use Keld from an MCP client](07-mcp-server.md) | When registering Keld's shipped local, read-only, three-tool MCP server. |
+| 08 | [Optional agent memory for Keld contributors](08-optional-agent-memory.md) | Only when evaluating the external, opt-in KEL-67 contributor pilot. It is not a Keld product feature. |
 
 ## The short version
 

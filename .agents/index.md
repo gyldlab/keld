@@ -20,6 +20,7 @@ do not silently choose the less restrictive rule.
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |
 | Material decision needs current external facts, sentiment, unpublished changes, or cross-source synthesis and local/primary evidence is insufficient | [`research.md`](research.md) |
 | Add, bump, remove, migrate, or make a current-version claim about a Cargo or Bun dependency | [`dependencies.md`](dependencies.md) |
+| Configure, use, review, upgrade, or remove an approved external contributor-memory service; or encounter recalled material or a memory result unexpectedly | [`memory.md`](memory.md) |
 
 Load only matched rows. When touched paths or scope expand, route again before editing
 the newly reached domain.

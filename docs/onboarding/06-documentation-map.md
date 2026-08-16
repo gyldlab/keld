@@ -4,15 +4,16 @@
 > [`01-project-summary.md`](01-project-summary.md) for why that matters). Without a map,
 > the natural failure mode is reading a research doc, mistaking it for a decision, and
 > building the wrong thing. This file tells you which documents are **binding**, which
-> are **normative specs**, which are **engineering narrative** (why, not a new rule
+> are **architecture or approved feature specs**, which are **engineering narrative** (why, not a new rule
 > layer), which are **exploratory**, and which are **point-in-time records**.
 
 ## The tiers, up front
 
 | Tier | What it means | Where it lives |
 |---|---|---|
-| **Binding rules** | You must follow these. Violating one means the rule change is the PR, not the violation. | [`AGENTS.md`](../../AGENTS.md), per-crate `crates/*/AGENTS.md`, [`docs/agents/workflow.md`](../agents/workflow.md), [`docs/engineering/keld-error-codes.md`](../engineering/keld-error-codes.md) (CI-enforced `KELD-*` registry) |
-| **Normative specs** | The agreed design for v0.x. Changing one requires a design PR. Code that disagrees with a spec is a bug in one of the two — fix both in the same PR or state why. | [`docs/architecture/01..07-*.md`](../architecture/) |
+| **Binding rules** | You must follow these. Violating one means the rule change is the PR, not the violation. Topic playbooks bind only when their route matches the task. | [`AGENTS.md`](../../AGENTS.md), per-crate `crates/*/AGENTS.md`, [`.agents/index.md`](../../.agents/index.md), matched `.agents/*.md`, [`docs/agents/workflow.md`](../agents/workflow.md), [`docs/engineering/keld-error-codes.md`](../engineering/keld-error-codes.md) (CI-enforced `KELD-*` registry) |
+| **Architecture specs** | The agreed design for v0.x. Changing one requires a design PR. Code that disagrees with a spec is a bug in one of the two — fix both in the same PR or state why. | [`docs/architecture/01..07-*.md`](../architecture/) |
+| **Feature specs** | A scoped implementation contract created from the approved template and tied to Linear. `approved`, `implementing`, and `done` specs may govern work at their stated phase; `draft` specs do not authorize implementation. | [`docs/specs/`](../specs/) |
 | **Engineering narrative** | What we chose, why, what we rejected, and what is not next. **Not** RFC 2119 — [`AGENTS.md`](../../AGENTS.md) still binds. Onboarding pointer for “why.” | [`docs/engineering/decisions.md`](../engineering/decisions.md) |
 | **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), other [`docs/engineering/`](../engineering/) audits, [`task.md`](../../task.md) |
 
@@ -28,8 +29,9 @@ Two rules that follow directly from that table, both from
 
 ### A note on what is actually in the git repo
 
-Documentation under `/docs/` is tracked, along with generated `llms.txt` and
-`llms-full.txt`. [`.gitignore`](../../.gitignore) keeps `/competitors/`, `/ROADMAP.md`,
+Documentation under `/docs/` is tracked, including status-bearing feature contracts in
+`docs/specs/`, along with generated `llms.txt` and `llms-full.txt`.
+[`.gitignore`](../../.gitignore) keeps `/competitors/`, `/ROADMAP.md`,
 `/docs/research/`, and `/.claude/` local-only. `.github/` is tracked (KEL-39). The
 generated corpus is narrower than the tracked docs tree: its ordered allowlist excludes
 research and all unlisted documents. The engineering decision log is on that allowlist;
@@ -60,6 +62,20 @@ on day one; read the others when you touch their area.
 | [`05-webview-and-native.md`](../architecture/05-webview-and-native.md) | Why `keld-wv` is Keld's own binding layer (wry-informed, not wry-bound), the `WebEngine` trait, the `window.keld` renderer bridge contract, the `keld-native` API surface, and the `keld-ext` plugin path. | Any `keld-wv` or `keld-native` work. |
 | [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) | Bun as a *supervised child*, never embedded (§1, with the reasoning); the CLI verb-by-verb contract (§2); `keld-pack` packaging and cross-compilation; `keld-update` delta updates; and dev-loop targets. | CLI, packaging, updater, or runtime-supervisor work. |
 | [`07-agent-experience.md`](../architecture/07-agent-experience.md) | Agents as a first-class user persona: the framework-wide "errors state the fix" standard with the `KELD-<area><nnn>` code shape (§2), docs-for-agents rules, the official MCP server design, the agent-eval harness as a CI metric, guardrails for vibe-coded apps, and the CLI contract for agents. | Before designing any error type, CLI output, or public API. §2 governs error messages everywhere in the codebase. |
+
+## `docs/specs/` — scoped feature designs
+
+Feature specs use [`docs/agents/spec-template.md`](../agents/spec-template.md), name the
+owning Linear issue, expose a visible status, and turn acceptance criteria into tests.
+`Status: draft` is design work only. `approved` authorizes the ordered implementation;
+`implementing` means approved slices are in progress; `done` means the spec's entire
+contract has landed and passed its gates. Read the current status and task checklist—do
+not infer completion from the file merely existing.
+
+The directory currently includes approved or implementing contracts such as the shipped
+Keld MCP server and the external, optional developer-agent memory pilot. A feature spec
+does not silently rewrite `docs/architecture/`: if a feature needs an architecture
+change, that design change is part of the review.
 
 ## `docs/research/` — exploratory, dated, does not bind
 
@@ -135,8 +151,17 @@ cite the polished numbered doc that consumed it.
 | Doc | What's in it |
 |---|---|
 | [`workflow.md`](../agents/workflow.md) | The development loop, binding on humans and agents alike: pick up a Linear issue → spec gate (never implement from an unapproved spec) → isolate in a git worktree (`../keld-<issue>`, branch `agent/<issue>-<slug>`, one issue per tree) → implement with tests → run the verification gate → adversarial self-review of the full diff → PR. Plus parallelism rules (3–7 concurrent agents, disjoint crates, single-writer foundational files), the split between hard CI gates and human review gates, and failure etiquette ("a failing test you didn't write is signal, not noise"; "partial + accurate > complete + vague"). |
-| [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<kebab-name>.md`: goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only at `Status: approved`. Note `docs/specs/` does not exist yet — you may be the first. |
+| [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<kebab-name>.md`: goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only after human approval; an approved spec may then move to `Status: implementing`. |
 | [`learnings.md`](../agents/learnings.md) | The **append-only gotcha log**. Read it before starting a task; it is deliberately kept small because every agent session loads it. |
+
+### `.agents/` — conditional playbooks
+
+[`.agents/index.md`](../../.agents/index.md) is the router. Load only the rows matching
+the task; a topic playbook is not a second always-on root rules file. In particular,
+[`.agents/memory.md`](../../.agents/memory.md) applies only when configuring, using,
+reviewing, upgrading, or removing an **approved external** contributor-memory service.
+It does not apply to ordinary Keld work and does not authorize installing, starting, or
+authenticating such a service.
 
 ### The self-improvement rule (mandatory)
 
@@ -166,7 +191,7 @@ audits.
 |---|---|---|
 | [`keld-error-codes.md`](../engineering/keld-error-codes.md) | Canonical `KELD-*` registry. Adding a code without this file + the registry test is a bug. | When you add or change an error code. |
 | [`budget-scoreboard.md`](../engineering/budget-scoreboard.md) | Measured hello size/RSS/installer vs architecture 01 §5 budgets, competitors, and Native Swift WKWebView floors. Win-conditions and byte autopsy. No `bench/` CI yet. | When recording or citing installer size, host bytes, or idle RSS. |
-| [`decisions.md`](../engineering/decisions.md) | Decision log for humans: four uniques, wry vs spec 05, `KELD-*` errors, verification/CI, cargo-deny, nested `AGENTS.md`, `llms.txt` corpus, MCP/`$VARS`, review gates, and what is explicitly not next. | When you need “why we chose this” without treating research as a spec. Day-one why-pointer. |
+| [`decisions.md`](../engineering/decisions.md) | Decision log for humans: four uniques, wry vs spec 05, `KELD-*` errors, verification/CI, cargo-deny, nested `AGENTS.md`, `llms.txt` corpus, MCP/`$VARS`, review gates, the external-only memory boundary, and what is explicitly not next. | When you need “why we chose this” without treating research as a spec. Day-one why-pointer. |
 | [`alignment-audit-2026-07-08.md`](../engineering/alignment-audit-2026-07-08.md) | A read-only audit across vision, research, architecture, `AGENTS.md`, roadmap, tooling/CI, Linear, crates, and `competitors/` hygiene. Verdict: "MOSTLY ALIGNED" — the technical story is coherent end to end; drift is concentrated in program tracking. Contains a scorecard, contradictions with suggested fixes, gaps, Linear drift, verification output, and prioritized actions. | When something feels inconsistent between docs, check whether the audit already named it. |
 | [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | The translation table between Linear's project numbering and `ROADMAP.md`'s phase numbering — they do not match. | Every time you link an issue to a roadmap milestone. |
 | [`tooling-audit.md`](../engineering/tooling-audit.md) | Senior-engineer review of the toolchain: what was thin at audit start, findings on the workspace and each config file, CI compared against competitors, changes applied, recommendations to adopt later, verification, and open questions. Explains *why* each lint and config choice exists. | Before changing anything in `Cargo.toml` lints, `clippy.toml`, `deny.toml`, or CI. |
@@ -261,7 +286,9 @@ The guided entry layer over everything above. Start with
 current-state ledger, and roadmap; use this map to navigate the source-of-truth tiers.
 Agents connecting through MCP should then read
 [`07-mcp-server.md`](07-mcp-server.md) for client registration and the intended
-doctor → docs search → permissions explain workflow.
+doctor → docs search → permissions explain workflow. Contributors explicitly evaluating
+the optional external KEL-67 memory pilot should also read
+[`08-optional-agent-memory.md`](08-optional-agent-memory.md); everyone else can skip it.
 
 ## Suggested reading order
 
@@ -317,4 +344,6 @@ doctor → docs search → permissions explain workflow.
 `10–13` (open the one matching your domain); `drafts/16a–16d` (before platform-backend
 work); `08-competitor-source-audit.md` (before reading competitor source);
 `docs/research/from-outside/` (rarely — and never as a citation);
-[`task.md`](../../task.md) (when you need the history of a Linear issue).
+[`07-mcp-server.md`](07-mcp-server.md) (when registering the official Keld MCP);
+[`08-optional-agent-memory.md`](08-optional-agent-memory.md) (only for the approved
+external pilot); [`task.md`](../../task.md) (when you need the history of a Linear issue).
