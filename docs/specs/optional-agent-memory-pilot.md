@@ -537,8 +537,8 @@ notebook can make development worse, which is why every entry points back to liv
 
 ### Approved setup sequence
 
-After the five decisions in §10 are approved, the operator guide will provide exact
-commands for this sequence:
+The five decisions in §11 are approved. T4's operator guide will provide exact commands
+for this sequence:
 
 1. Create a vendor directory outside Keld and clone the official repository there.
 2. Check out the reviewed commit and confirm `git rev-parse HEAD` matches it exactly.
