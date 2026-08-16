@@ -81,6 +81,12 @@ directory that:
    or profile file; and
 8. includes an exact uninstall manifest whose targets and recovery impact are reviewed.
 
+It must also keep approval outside the coding agent's identity. In workshop terms, the
+notebook needs a stamp held by the crew chief, not another pen in the robot's toolbox.
+The reviewer signer and admission ledger therefore use a distinct human-authenticated
+OS or hardware boundary; a same-user file, command, socket, or keychain item that the
+agent can reach does not count.
+
 The first allowed deployment is single-user, loopback-only, and synthetic-only. Real
 Keld data and team use remain blocked until the Core/Proxy authentication incompatibility
 is fixed end to end or a separately reviewed isolation boundary removes direct access to
@@ -155,9 +161,10 @@ If T4–T6 eventually pass, a contributor's session should remain simple:
 Authorization must filter project, owner, visibility, current team membership, and
 allowed-agent membership before similarity ranking. If another project appears, the
 service has failed isolation and the contributor stops using it.
-Before ranking or using a record, the adapter must also validate the complete §4.5
-schema, current status, exact record hash, and approved admission receipt. Changing a
-claim after its receipt was created must make the record unusable.
+Before ranking or using a record, the adapter must authorize it through the trusted
+admission index, fetch only its exact bound locator, and validate the complete §4.5
+schema, allowed status, canonical hashes, reviewer signature, and approved receipt.
+Changing a claim after its receipt was created must make the record unusable.
 
 Recalled text can never approve a scope change, grant a permission, authorize a command,
 bypass a gate, settle a code/spec mismatch, or mark a ticket complete. Every action is
