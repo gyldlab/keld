@@ -136,27 +136,45 @@ unresolved (`foreground_target_generation_unavailable`) and has no metric row.
 
 ### Fresh rerun after benchmark-process cleanup (2026-08-17)
 
-Before this rerun, no Keld/Tauri/Wails/NW.js/Neutralino/Electrobun/Electron
-fixture process remained. The only matching background process was VS Code's
-ordinary Electron crashpad helper, which was left running because it belongs to
-the user's IDE. GUI arms were run sequentially, never concurrently.
+Before every arm, no matching benchmark process remained; the harness then
+activated Finder as its measured-session anchor. GUI arms ran sequentially,
+never concurrently. VS Code and its ordinary Electron helper were left alone.
+The fixture/harness source was
+[`495ae15`](https://github.com/gyldlab/keld-benches/commit/495ae156604a14e33b485ca4a6c5e967c2be35ba).
 
 | Framework | Valid samples | Double-rAF median / p90 | Coalition RSS median / p90 | Fresh result |
 |---|---:|---:|---:|---|
-| Keld adapter (`--hello`) | **11/11** | **321.400 / 334.668 ms** | **200,560 / 201,040 KiB** | Full foreground session and tail seal passed in the 22-arm run. |
-| Tauri 2.11.5 | **11/11** | **337.103 / 343.532 ms** | **204,864 / 205,248 KiB** | Full foreground session and tail seal passed in the 22-arm run. |
-| Wails v3.0.0-beta.8 | **11/11** | **341.002 / 356.209 ms** | **207,040 / 210,064 KiB** | Valid standalone diagnostic run; publication metadata still not bound. |
-| NW.js 0.114.1 | **1/11** | not reportable | not reportable | Same round-2 foreign-foreground loss; fail-closed. |
-| Neutralino 6.9.0 | **0/11** | not reportable | not reportable | Beacon remained hidden/unfocused; timeout; fail-closed. |
-| Electrobun 1.18.1 | **0/11** | not reportable | not reportable | HTML served, but focused/visible beacon rejected; fail-closed. |
-| Electron 43.4.0 | **0/11** | not reportable | not reportable | Launch target generation unresolved before the first sample. |
+| Keld adapter (`--hello`) | **11/11** | **351.717 / 765.689 ms** | **200,464 / 201,024 KiB** | Foreground session, exact restoration, and tail seal passed. The p90 includes one 873.803 ms cold outlier. |
+| Tauri 2.11.5 | **11/11** | **361.355 / 732.112 ms** | **204,800 / 205,280 KiB** | Full foreground/session proof passed; one 736.827 ms cold outlier remains visible in p90. |
+| Wails v3.0.0-beta.8 | **11/11** | **341.356 / 366.036 ms** | **207,136 / 207,648 KiB** | Valid standalone diagnostic run; foreground/session proof and cleanup passed. |
+| NW.js 0.114.1 | **11/11** | **425.380 / 442.879 ms** | **682,304 / 682,848 KiB** | Per-run `--user-data-dir` avoided the shared-profile singleton; one 2,788.511 ms cold maximum is retained. |
+| Neutralino 6.9.0 | **0/11** | not reportable | not reportable | Fail-closed: canonical HTML was served, but its beacon reported `document.hasFocus() = false` despite target-app activation. Stock macOS Neutralino makes the window key without making its WKWebView first responder; this requires an upstream runtime fix, not a synthetic click or relaxed oracle. |
+| Electrobun 1.18.1 | **11/11** | **709.551 / 732.686 ms** | **311,312 / 311,840 KiB** | Hidden window is shown and activated before canonical navigation; full foreground/session proof passed. |
+| Electron 43.4.0 | **11/11** | **276.784 / 295.568 ms** | **373,104 / 373,296 KiB** | Startup arguments select Chromium's basic/mock keychain, preventing SecurityAgent from taking foreground before the beacon; full foreground/session proof passed. |
 
-Evidence files: `/tmp/keld-vs-tauri-20260817-corrected.json`,
-`/tmp/tauri-kel64-oracle-20260817-fresh.json`,
-`/tmp/wails-kel64-oracle-20260816-fresh.json`,
-`/tmp/nwjs-kel64-oracle-20260816-fresh.json`,
-`/tmp/neutralino-kel64-oracle-20260816-fresh.json`, and
-`/tmp/electrobun-kel64-oracle-20260816-fresh.json`.
+These are valid measurement samples but **diagnostic, not publish-eligible**:
+the public bench checkout contains the pre-existing generated Wails `Assets.car`
+change, and the competitor artifact provenance contracts are not yet bound into
+the publication schema. They must not be compared as a single warmed-session
+league table: cold starts are deliberately retained and each framework was run
+in its own sequential arm.
+
+Raw local evidence: `/tmp/keld-kel64-final-keld-20260817.json`,
+`/tmp/keld-kel64-final-tauri-20260817.json`,
+`/tmp/keld-kel64-final-wails-current-harness-20260817.json`,
+`/tmp/keld-kel64-final-nwjs-20260817.json`,
+`/tmp/keld-kel64-neutralino-direct-url-one-20260817.json`,
+`/tmp/keld-kel64-final-electrobun-20260817.json`, and
+`/tmp/keld-kel64-final-electron-valid-20260817.json`.
+
+Neutralino's direct `--url` diagnostic bypassed fixture navigation and still
+returned the unfocused beacon. In upstream
+[v6.9.0](https://github.com/neutralinojs/neutralinojs/tree/2cec764ac5e3ccc5b1b44d046d6e6d6c85c3099e),
+the macOS backend sets the WKWebView as the content view and makes the window
+key, but does not make that view the first responder; `window.focus()` repeats
+only app activation and window-keying. An upstream patch must set/reassert the
+WKWebView first responder and pass this same double-rAF test before this row can
+receive a score.
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | debug | 73,184 then 70,752 KiB (~70–73 MiB) | ≤ 90 MB | — | — | — | — | Host-only; KEL-26 GUI pass | `just hello` / debug |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | dmg / .app | — | N/A | ≤ 6 MB runtimeless / ≤ 20 MB w/ Bun | zip 122,121,746 B; `.app` 288,448,512 B; Keld wrapping N/A | `.app` 8,265,728 B; DMG 2,910,772 B; Keld wrapping N/A | 96K `.app` / 31,655 B UDZO | 88K `.app` / 29,774 B UDZO | `keld-pack` is a `Format` enum. Tiny Swift `.app` ≠ packed Keld | n/a |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | .app | `swiftc -O` | 96K `du` / 92,740 B file sum | native floor | — | — | — | — | WKWebView + loadHTMLString | `/tmp/keld-native-swift-hello` |
