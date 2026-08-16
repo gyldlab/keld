@@ -114,6 +114,25 @@ Electron/NW.js = Chromium ceiling; Native Swift = WK floor. Flutter = Skia
 | KEL-64 app oracle | 2026-08-16 | [`9e7c83d1`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b) | darwin/arm64 | **tauri 2.11.5 + WKWebView** | `.app` | release; Tauri source/recipe `9e7c83d1` | **8,292,272 B** file sum / 8,108K `du` | n/a (oracle artifact; no Bun) | — | — | — | — | **11/11 publish-eligible samples.** Coalition RSS median **204,624 KiB** (min 203,744; max 207,840), including host + WebKit helpers; Tauri-only run, not the aborted mixed handoff run. Double-rAF proxy median **378.758 ms**, p90 **749.492 ms**. | KEL-64 Swift oracle `--publish`; exact source/recipe commits and byte-bound harness |
 | KEL-64 interleaved oracle | 2026-08-16 | [`9e7c83d1`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b) | darwin/arm64 | **keld adapter + WKWebView** | `.app` | release; Keld source `5ba4672` | **1,043,880 B** file sum / 1,024K `du` | n/a | — | — | — | — | **11/11 in one 22-arm publish-eligible interleaving.** Coalition RSS median **199,968 KiB** (min 196,496; max 200,480), including host + WebKit helpers. Double-rAF proxy median **342.911 ms**, p90 **393.103 ms**. | KEL-64 Swift oracle `--publish`; `/tmp/keld-vs-tauri-20260816d.json`; exact source/recipe commits |
 | KEL-64 interleaved oracle | 2026-08-16 | [`9e7c83d1`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b) | darwin/arm64 | **tauri 2.11.5 + WKWebView** | `.app` | release; Tauri source/recipe `9e7c83d1` | **8,292,272 B** file sum / 8,108K `du` | n/a | — | — | — | — | **11/11 in one 22-arm publish-eligible interleaving.** Coalition RSS median **205,024 KiB** (min 199,264; max 206,032), including host + WebKit helpers. Double-rAF proxy median **346.034 ms**, p90 **353.070 ms**. | KEL-64 Swift oracle `--publish`; `/tmp/keld-vs-tauri-20260816d.json`; exact source/recipe commits |
+
+### KEL-64 competitor extension (same oracle, 2026-08-16)
+
+These runs use the same canonical `hello.html`, loopback beacon, 11-arm
+foreground session, exact-anchor restoration, and coalition RSS accounting. They
+are intentionally kept separate from the publish-eligible Keld/Tauri rows until
+competitor fixture provenance is bound into the publication schema.
+
+| Framework | Samples | Double-rAF proxy | Coalition RSS | Result | Evidence |
+|---|---:|---:|---:|---|---|
+| Wails v3.0.0-beta.8 | **11/11** | median **340.984 ms**, p90 **353.263 ms** | median **206,976 KiB**, p90 **207,776 KiB** | Diagnostic run complete; foreground/session proof and cleanup passed. Publication remained false only for repository/harness/fixture provenance reasons. | `/tmp/wails-kel64-oracle-20260816.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
+| NW.js 0.114.1 | **1/11** | not reportable | not reportable | Fail-closed: round 2 lost foreground to a foreign process before beacon; no 11-sample metric. | `/tmp/nwjs-kel64-oracle-20260816.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
+| Neutralino 6.9.0 | **0/11** | not reportable | not reportable | Fail-closed: canonical HTML served, but beacon was rejected as hidden/unfocused and the sample timed out. | `/tmp/neutralino-kel64-oracle-20260816.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
+| Electrobun 1.18.1 | **0/11** | not reportable | not reportable | Fail-closed: HTML served, but no valid focused/visible beacon; cleanup drained the app. | `/tmp/keld-electrobun-kel64-*.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
+
+The failed rows are not “slow scores.” They are proof that this Mac/fixture
+launch path did not satisfy the measurement contract, so publishing a number
+would be misleading. Electron 43.4.0 likewise remained launch-ownership
+unresolved (`foreground_target_generation_unavailable`) and has no metric row.
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | debug | 73,184 then 70,752 KiB (~70–73 MiB) | ≤ 90 MB | — | — | — | — | Host-only; KEL-26 GUI pass | `just hello` / debug |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | dmg / .app | — | N/A | ≤ 6 MB runtimeless / ≤ 20 MB w/ Bun | zip 122,121,746 B; `.app` 288,448,512 B; Keld wrapping N/A | `.app` 8,265,728 B; DMG 2,910,772 B; Keld wrapping N/A | 96K `.app` / 31,655 B UDZO | 88K `.app` / 29,774 B UDZO | `keld-pack` is a `Format` enum. Tiny Swift `.app` ≠ packed Keld | n/a |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | .app | `swiftc -O` | 96K `du` / 92,740 B file sum | native floor | — | — | — | — | WKWebView + loadHTMLString | `/tmp/keld-native-swift-hello` |
