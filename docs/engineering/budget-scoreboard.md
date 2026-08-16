@@ -124,10 +124,10 @@ competitor fixture provenance is bound into the publication schema.
 
 | Framework | Samples | Double-rAF proxy | Coalition RSS | Result | Evidence |
 |---|---:|---:|---:|---|---|
-| Wails v3.0.0-beta.8 | **11/11** | median **340.984 ms**, p90 **353.263 ms** | median **206,976 KiB**, p90 **207,776 KiB** | Diagnostic run complete; foreground/session proof and cleanup passed. Publication remained false only for repository/harness/fixture provenance reasons. | `/tmp/wails-kel64-oracle-20260816.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
-| NW.js 0.114.1 | **1/11** | not reportable | not reportable | Fail-closed: round 2 lost foreground to a foreign process before beacon; no 11-sample metric. | `/tmp/nwjs-kel64-oracle-20260816.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
-| Neutralino 6.9.0 | **0/11** | not reportable | not reportable | Fail-closed: canonical HTML served, but beacon was rejected as hidden/unfocused and the sample timed out. | `/tmp/neutralino-kel64-oracle-20260816.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
-| Electrobun 1.18.1 | **0/11** | not reportable | not reportable | Fail-closed: HTML served, but no valid focused/visible beacon; cleanup drained the app. | `/tmp/keld-electrobun-kel64-*.json`; fixture recipe [`e40b5c7`](https://github.com/gyldlab/keld-benches/commit/e40b5c7) |
+| Wails v3.0.0-beta.8 | **11/11** | median **340.984 ms**, p90 **353.263 ms** | median **206,976 KiB**, p90 **207,776 KiB** | Diagnostic run complete; foreground/session proof and cleanup passed. Publication remained false only for repository/harness/fixture provenance reasons. | `/tmp/wails-kel64-oracle-20260816.json`; fixture recipe [`91fd3e6`](https://github.com/gyldlab/keld-benches/commit/91fd3e6) |
+| NW.js 0.114.1 | **1/11** | not reportable | not reportable | Fail-closed: round 2 lost foreground to a foreign process before beacon; no 11-sample metric. | `/tmp/nwjs-kel64-oracle-20260816.json`; fixture recipe [`91fd3e6`](https://github.com/gyldlab/keld-benches/commit/91fd3e6) |
+| Neutralino 6.9.0 | **0/11** | not reportable | not reportable | Fail-closed: canonical HTML served, but beacon was rejected as hidden/unfocused and the sample timed out. | `/tmp/neutralino-kel64-oracle-20260816.json`; fixture recipe [`91fd3e6`](https://github.com/gyldlab/keld-benches/commit/91fd3e6) |
+| Electrobun 1.18.1 | **0/11** | not reportable | not reportable | Fail-closed: HTML served, but no valid focused/visible beacon; cleanup drained the app. | `/tmp/keld-electrobun-kel64-*.json`; fixture recipe [`91fd3e6`](https://github.com/gyldlab/keld-benches/commit/91fd3e6) |
 
 The failed rows are not “slow scores.” They are proof that this Mac/fixture
 launch path did not satisfy the measurement contract, so publishing a number
