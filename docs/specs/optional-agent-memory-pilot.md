@@ -1,5 +1,5 @@
 # Spec: Optional developer-agent memory pilot
-Status: draft
+Status: approved
 Linear: KEL-67 · Owner: GYLDLAB · Updated: 2026-08-16
 
 ## 1. Goal & non-goals
@@ -36,7 +36,7 @@ Non-goals:
   narrow; no agent runtime or developer-session telemetry enters Keld applications.
 - `docs/specs/keld-mcp-server-v1.md`: its exact three-tool, stdio, offline contract is a
   negative boundary test for this pilot.
-- `docs/agents/workflow.md`: this draft requires human approval before implementation.
+- `docs/agents/workflow.md`: human approval was recorded before implementation.
 - `docs/agents/learnings.md`: verified reusable Keld facts still move into the tracked
   learning log; external memory does not replace that promotion path.
 - Linear KEL-20 governs the agent workflow. Linear KEL-44 owns the agent-evaluation
@@ -404,9 +404,10 @@ it is not smuggled into the product-facing corpus through this spec.
 
 - [x] T1 — KEL-67 research: identify the exact product/releases, inspect the pinned
   source and deployment defaults, map Keld boundaries and current standards, create this
-  draft, and record the non-obvious deployment gotcha.
-- [ ] T2 — Human approval: choose the recommended self-hosted, synthetic-only,
-  Codex-CLI-first pilot and approve this spec. No implementation precedes this step.
+  design, and record the non-obvious deployment gotcha.
+- [x] T2 — Human approval: the recommended self-hosted, synthetic-only,
+  Codex-CLI-first pilot and this spec were approved on 2026-08-16. No implementation
+  preceded this step.
 - [ ] T3 — Policy/docs slice: add the human onboarding guide, conditional agent
   playbook, routing/index links, and boundary decision. Include no runnable launcher or
   credentials.
@@ -464,7 +465,7 @@ run `just llms` first and then `just llms-check` and `just llms-test`.
 
 ## 8. Review gates triggered
 
-Draft proposal: none.
+Approved design slice: none.
 
 Future implementation: dependency addition (an external developer service) requires
 human sign-off even though Cargo and npm remain unchanged. No unsafe, Keld public API,
@@ -485,25 +486,28 @@ controlled A/B evidence.
 
 ## 10. Open questions
 
-Human approval is required for all five recommended choices:
+None.
+
+## 11. Approved decisions
+
+Human approval was recorded on 2026-08-16 for all five recommended choices:
 
 1. Approve an optional external developer-tool boundary, with no Keld runtime or MCP
-   integration? **Recommended: yes.**
+   integration? **Approved: yes.**
 2. Approve `v2.0.1-beta.2` only for a disposable, synthetic-data pilot while stable lacks
-   Codex support? **Recommended: yes; no real Keld data yet.**
+   Codex support? **Approved: yes; no real Keld data yet.**
 3. Require the Core/Proxy Bearer-auth incompatibility to be fixed or isolated before real
-   Keld prompts or team use? **Recommended: yes.**
+   Keld prompts or team use? **Approved: yes.**
 4. Limit the first compatibility claim to the official Codex CLI on the exercised host,
-   leaving the current desktop/IDE client and Windows unverified? **Recommended: yes.**
+   leaving the current desktop/IDE client and Windows unverified? **Approved: yes.**
 5. Allow a later, separately reviewed external pilot launcher and dedicated Codex
-   profile, while keeping the default provider untouched? **Recommended: yes.**
+   profile, while keeping the default provider untouched? **Approved: yes.**
 
 ## Appendix A — future developer handbook (proposal)
 
 This appendix is the content contract for
-`docs/onboarding/08-optional-agent-memory.md` after approval. It is deliberately not a
-runnable installation guide while this spec is draft and the image digests are not yet
-reviewed.
+`docs/onboarding/08-optional-agent-memory.md`. It is deliberately not a runnable
+installation guide until the image digests are reviewed in T4.
 
 ### What it is, in ordinary language
 
