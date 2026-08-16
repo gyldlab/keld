@@ -1,5 +1,5 @@
 # Spec: Optional developer-agent memory pilot
-Status: approved
+Status: implementing
 Linear: KEL-67 · Owner: GYLDLAB · Updated: 2026-08-16
 
 ## 1. Goal & non-goals
@@ -408,7 +408,7 @@ it is not smuggled into the product-facing corpus through this spec.
 - [x] T2 — Human approval: the recommended self-hosted, synthetic-only,
   Codex-CLI-first pilot and this spec were approved on 2026-08-16. No implementation
   preceded this step.
-- [ ] T3 — Policy/docs slice: add the human onboarding guide, conditional agent
+- [x] T3 — Policy/docs slice: add the human onboarding guide, conditional agent
   playbook, routing/index links, and boundary decision. Include no runnable launcher or
   credentials.
 - [ ] T4 — Isolated deployment slice: create and review an external pilot directory

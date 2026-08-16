@@ -1,7 +1,7 @@
 # Engineering decisions
 
 Human-facing log of **what we chose, why, what we rejected, and what is not next**.
-Last confirmed against the tree on 2026-08-13.
+Last confirmed against the tree on 2026-08-16.
 
 This file is **not** a new RFC 2119 layer. Binding agent rules stay in
 [`AGENTS.md`](../../AGENTS.md), crate `AGENTS.md` files, and
@@ -64,8 +64,9 @@ cargo-cult in `AGENTS.md`. A fifth unique (a new runtime, a new permission diale
 framework-owned agent stack, CEF-by-default, …) would be architecture theater unless
 it changes who owns a handle, who can crash whom, or who can mint a principal.
 
-**Implemented vs specified.** The four uniques are the design. Today the tree is a
-macOS hello window plus a kipc echo slice. `keld-guard::evaluate` exists;
+**Implemented vs specified.** The four uniques are the design. Today the tree has live
+macOS WKWebView and Windows WebView2 hello paths plus a kipc echo slice; Linux remains a
+compiled layout slot. `keld-guard::evaluate` exists;
 `keld_permissions_explain` and the macOS webview media-capture handler call it;
 `keld-core` / `keld-native` do not invoke the guard on privileged IPC.
 `keld-runtime` is still a `RestartPolicy` struct; `keld dev` spawns `bun` from the
@@ -485,6 +486,56 @@ list. `docs/agents/workflow.md`: CI is the arbiter; humans are the architects
 
 ---
 
+## 13. Optional agent memory stays outside Keld
+
+**Chose (KEL-67, approved 2026-08-16).** TencentDB Agent Memory may be evaluated as
+an optional, external contributor aid: a pit-crew notebook that points an agent back
+to current evidence. It is not a Keld runtime, agent runtime, model proxy shipped by
+Keld, MCP extension, or fifth architectural unique. Current instructions, approved
+specs, code, tests, Git, and Linear remain authoritative; recalled text is bounded,
+read-only, untrusted data.
+
+The compatibility candidate is upstream prerelease `v2.0.1-beta.2` at commit
+`29d609a729704ae31ff1848dc6f8acb7e712106d`, synthetic-only. That commit is not a
+complete deployment pin; every image still needs a reviewed immutable digest in T4.
+The user's default Codex configuration remains unchanged. A later experiment uses a
+separate `~/.codex/<name>.config.toml` overlay selected deliberately with
+`--profile <name>`, following
+[OpenAI's profile contract](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles).
+Authorization filters project, owner, visibility, team, and agent before ranking;
+every returned claim is verified against current evidence before action.
+
+**Why.** A reviewed notebook may reduce repeated investigation and improve
+cross-platform handoffs. It changes no OS-handle owner, crash boundary, or principal,
+so the work is developer tooling rather than architecture. KEL-44 may later test the
+hypothesis with controlled, paired evidence; vendor benchmark claims do not count.
+
+**Why not.** No Keld service, proxy, crate/package, app configuration, permission,
+wire change, `.mcp.json` entry, automatic transcript capture, automatic recall
+injection, repository copy, credential, or authority channel. Real Keld data, team
+use, a remote deployment, and the vendor's managed cloud remain outside the current
+approval. Memory cannot authorize commands, widen scope, bypass gates, resolve a
+code/spec conflict, or mark work complete.
+
+**Implemented vs approved.** T3 contains policy, a conditional agent playbook, and
+a deliberately non-runnable onboarding page. There is no launcher, reviewed image
+digest set, provider block, credential, real Keld data flow, or support/security claim.
+The official Codex CLI path is documented but remains unexercised until T6; desktop/IDE,
+Linux, Windows, WSL2, Docker Desktop, team, and remote behavior remain unverified.
+
+**Next.** T4 may create a separately reviewed launcher outside Keld with exact source
+and image pins, loopback-only listeners, no Keld mount, explicit capture/write/injection
+off, named providers, secret indirection, and an uninstall manifest. T5 runs hostile
+synthetic controls; T6 exercises one explicit Codex CLI profile and proves restoration.
+Only then may KEL-44 add a memory-on evaluation arm. If isolation, security, or measured
+value fails, remove the external pilot without changing Keld.
+
+**Evidence.** [`optional-agent-memory-pilot.md`](../specs/optional-agent-memory-pilot.md),
+[`08-optional-agent-memory.md`](../onboarding/08-optional-agent-memory.md),
+[TencentDB Agent Memory beta install guide](https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/v2.0.1-beta.2/INSTALL.md).
+
+---
+
 ## Related tracked docs
 
 | Need | Document |
@@ -497,4 +548,5 @@ list. `docs/agents/workflow.md`: CI is the arbiter; humans are the architects
 | Toolchain history | [`tooling-audit.md`](./tooling-audit.md) |
 | Linear vs ROADMAP phases | [`linear-roadmap-mapping.md`](./linear-roadmap-mapping.md) |
 | One-line gotchas | [`docs/agents/learnings.md`](../agents/learnings.md) |
+| Optional external contributor memory | [`optional-agent-memory-pilot.md`](../specs/optional-agent-memory-pilot.md), [`08-optional-agent-memory.md`](../onboarding/08-optional-agent-memory.md), [`.agents/memory.md`](../../.agents/memory.md) |
 | Where to read next | [`docs/onboarding/06-documentation-map.md`](../onboarding/06-documentation-map.md) |
