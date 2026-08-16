@@ -121,22 +121,35 @@ and owning the create sequence — not by a speed claim.
 macOS/Windows started with.** `crates/keld-wv/src/webkitgtk/mod.rs` drives wry's
 GTK3 + WebKit2GTK 4.1 backend (`default = ["os-webview", "x11"]` — no extra
 feature flags needed for the hello slice), mirroring `wkwebview/mod.rs`
-structurally. One Linux-only addition crate `AGENTS.md` requires:
-`probe_gpu_stack()` detects NVIDIA + Wayland (`/proc/driver/nvidia/version` +
-`WAYLAND_DISPLAY`) and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` on the process's
-own environment before any GTK/WebKit call — never by asking a developer to
-export a shell variable — mitigating the documented DMA-BUF crash/flicker
-class (`research/06` §Linux, Tauri #9394/#14924). Media-permission guard
-(KEL-59) reuses the existing wry helpers unchanged (`media.rs` widened from
-macOS-only to `any(macos, linux)`), since Linux's default without a handler is
-also "show the platform's own prompt," same category as the old Windows
-default. Verification ceiling in this environment: compiled and clippy-clean
-on real Ubuntu 26.04 (GTK3/WebKit2GTK 4.1 dev libs via apt), full workspace
-test suite green (224 tests) including live Bun↔Rust kipc integration — but no
-window has been visually confirmed anywhere. Built from a WSL sandbox with no
-reachable display server (`gtk::init()` fails there: "Failed to initialize
-GTK" — a display problem, not a code defect); confirm on real Linux
-hardware/VM before relying on it.
+structurally, with one deliberate deviation: `WebViewBuilderExtUnix::build_gtk`
+against the tao-owned GTK window, not the plain cross-platform `build()`, which
+wry's own docs say is X11-only. KEL-28's DoD requires Wayland too. One
+Linux-only addition crate `AGENTS.md` requires: `probe_gpu_stack()` detects
+NVIDIA + Wayland (`/proc/driver/nvidia/version` + `WAYLAND_DISPLAY`) and sets
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` on the process's own environment before any
+GTK/WebKit call — never by asking a developer to export a shell variable —
+mitigating the documented DMA-BUF crash/flicker class on `WebKitGTK` ≤ 2.54
+(tauri-apps/tauri#9394, #14924). Detection is split from the mutation
+(`detect_gpu_safe_mode`, pure, vs. `probe_gpu_stack`, which also applies it) so
+`keld doctor` can read the state later without side effects. Media-permission
+guard (KEL-59) reuses the existing wry helpers unchanged (`media.rs` widened
+from macOS-only to `any(macos, linux)`), since Linux's default without a
+handler is also "show the platform's own prompt," same category as the old
+Windows default.
+
+Verification: compiled, clippy-clean, and 225 tests green (including live
+Bun↔Rust kipc integration) on real Ubuntu 26.04 (GTK3/WebKit2GTK 4.1 dev libs
+via apt) in WSL. That same WSL sandbox has no display reachable through WSLg
+(`gtk::init()` fails there directly: "Failed to initialize GTK"), so a plain
+`keld-host --hello` could not be watched — but `Xvfb` + a window manager
+(`fluxbox`) + `xdotool search --name Keld` **does** find a real, correctly
+titled X11 window within 0.5 s of launch, zero stderr, exactly the headless
+smoke test KEL-28's own spec asked for. A root-window screenshot without a WM
+running came back blank (no compositor to map the child window for capture);
+with `fluxbox` running the window exists per `xdotool` but a follow-up
+screenshot attempt did not land it either — worth another pass, not blocking.
+Nobody has watched pixels render on a real desktop yet; confirm on Linux
+hardware/VM with eyes on the screen before calling this fully closed.
 
 **Why not treat wry as the product.** Architecture 05 lists hooks wry does not
 prioritize (scheme-streaming as bulk IPC, principal identity per navigation, engine
@@ -472,7 +485,7 @@ test (a): Linear Phase 2 (window + kipc echo + crate map) ships without them.
 | **Servo / Verso backend** | Spec 05 tracks them as a fifth `WebEngine` the day embedding stabilizes. That is a later backend, not a wry replacement for the hello window. | architecture 05 §1 |
 | **Wrapping SaaS / OAuth MCP** | v1 is stdio, zero listeners, no HTTP transport, no auth crate. Architecture 07 §9: no bespoke agent protocol; we do not host developers' agent identity. | `Cargo.toml` rmcp comment; architecture 07 §4, §9; onboarding 07 |
 | **objc2 rewrite this week** | Destination is spec 05; current macOS path is wry+tao scaffolding. The rewrite does not move Phase 2. | architecture 05 §1; `wkwebview/mod.rs`; `AGENTS.md` YAGNI (a) |
-| **Visually confirming the KEL-28 Linux window** | Windows (KEL-27) and Linux (KEL-28) backends are both implemented and built/tested on their real OS (WSL Ubuntu for Linux, not cross-compiled from macOS as-if-done — `AGENTS.md` forbids that shortcut). What's still open for Linux specifically: no environment used to build it so far has a reachable display server, so nobody has watched a real window open. Confirm on Linux hardware/VM with a display before calling KEL-28 fully closed. | `crates/keld-wv/src/webkitgtk/mod.rs`; architecture 05 §1 |
+| **Watching the KEL-28 Linux window with eyes on a screen** | Windows (KEL-27) and Linux (KEL-28) backends are both implemented and built/tested on their real OS (WSL Ubuntu for Linux, not cross-compiled from macOS as-if-done — `AGENTS.md` forbids that shortcut). Xvfb + `xdotool` confirms a real, correctly titled X11 window exists (§2 above) — the headless smoke test KEL-28's own spec asked for. What's still open: nobody has watched pixels render on a real desktop. Confirm on Linux hardware/VM with a display before calling KEL-28 fully closed. | `crates/keld-wv/src/webkitgtk/mod.rs`; architecture 05 §1 |
 | **Six-framework notes-app bench** | Same app in Keld / Electron / Electrobun / Tauri / Wails / Swift is a later epic. Fair score is **v1** (search, GFM preview, custom-scheme images, native menus, second window, PDF-exists, file watch, autosave) — not v0 CRUD. Keld cannot host that without guard-on-IPC and host `fs.read`/`fs.write`. Bun `node:fs` is not a default-deny test. | architecture 01 §5; this file §11; research 43 / 43a (exploratory, not required) |
 
 Also parked, for the same YAGNI reason: `bench/` perf CI (budgets exist in

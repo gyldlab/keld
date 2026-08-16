@@ -31,7 +31,9 @@ use std::fmt;
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
+use tao::platform::unix::WindowExtUnix;
 use tao::window::{Window, WindowBuilder};
+use wry::WebViewBuilderExtUnix;
 
 use keld_guard::PermissionsManifest;
 
@@ -50,8 +52,11 @@ pub enum GpuSafeMode {
     /// No known-risky driver/session combination detected.
     Normal,
     /// NVIDIA proprietary driver + Wayland session: `WebKitGTK`'s DMA-BUF
-    /// compositor path crashes and flickers on this combination (Tauri
-    /// #9394, #14924; no fix as of `WebKitGTK` 2.54 — `research/06` §Linux).
+    /// compositor path crashes and flickers on this combination, on every
+    /// `WebKitGTK` release through 2.54 (no fix shipped as of that release —
+    /// `research/06` §Linux). Upstream reports:
+    /// [tauri-apps/tauri#9394](https://github.com/tauri-apps/tauri/issues/9394),
+    /// [#14924](https://github.com/tauri-apps/tauri/issues/14924).
     /// `WEBKIT_DISABLE_DMABUF_RENDERER=1` remains the documented mitigation.
     NvidiaWaylandDmabuf,
 }
@@ -90,28 +95,46 @@ fn nvidia_driver_loaded() -> bool {
     std::path::Path::new("/proc/driver/nvidia/version").exists()
 }
 
-/// Detects the known-risky NVIDIA+Wayland combination and applies the
-/// documented safe-mode mitigation on this process's own environment,
-/// before any `WebKit`/GTK object is constructed.
+/// Detects the known-risky NVIDIA+Wayland combination. Pure: reads the
+/// session type and driver presence, mutates nothing. Safe to call from
+/// anywhere (`keld doctor`, tests, repeatedly) without side effects — unlike
+/// [`probe_gpu_stack`], which additionally applies the mitigation.
 ///
-/// # Errors
+/// Best-effort: an unreadable `/proc` entry (e.g. a sandboxed container) is
+/// read as "no NVIDIA driver," not an error — a missed degradation defaults
+/// to the driver's normal path, which is no worse than not probing at all.
+#[must_use]
+pub fn detect_gpu_safe_mode() -> GpuSafeMode {
+    if is_wayland_session() && nvidia_driver_loaded() {
+        GpuSafeMode::NvidiaWaylandDmabuf
+    } else {
+        GpuSafeMode::Normal
+    }
+}
+
+/// Detects the known-risky NVIDIA+Wayland combination ([`detect_gpu_safe_mode`])
+/// and, if found, applies the documented safe-mode mitigation on this
+/// process's own environment.
 ///
-/// Never fails. The probe is best-effort: an unreadable `/proc` entry (e.g. a
-/// sandboxed container) is read as "no NVIDIA driver," not an error — a
-/// missed degradation defaults to the driver's normal path, which is no
-/// worse than not probing at all.
+/// Callers MUST invoke this before any `WebKit`/GTK object is constructed —
+/// [`WebKitGtkEngine::new`] is the only current call site, at the very top of
+/// engine construction, before the tao event loop or any GTK/WebKit call.
+/// Calling it a second time is safe but pointless (idempotent env write); do
+/// not call it from `keld doctor` or anywhere that only wants to *read* the
+/// state — use [`detect_gpu_safe_mode`] there instead, which cannot mutate
+/// anything.
 #[must_use]
 pub fn probe_gpu_stack() -> GpuSafeMode {
-    if is_wayland_session() && nvidia_driver_loaded() {
-        // SAFETY: called once at the top of `WebKitGtkEngine::new`, before
-        // the tao event loop or any GTK/WebKit call — see the module SAFETY
-        // note for why no concurrent env access exists yet.
+    let mode = detect_gpu_safe_mode();
+    if mode.is_degraded() {
+        // SAFETY: this function's own contract requires the caller to invoke
+        // it before the tao event loop or any GTK/WebKit call exists — see
+        // the module SAFETY note for why no concurrent env access exists yet.
         unsafe {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         }
-        return GpuSafeMode::NvidiaWaylandDmabuf;
     }
-    GpuSafeMode::Normal
+    mode
 }
 
 /// One live webview and the host window it fills (v0: one per window).
@@ -246,8 +269,13 @@ impl WebEngine for WebKitGtkEngine {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
         };
+        // wry's plain `build(&window)` only wires the X11 path; Wayland needs
+        // `build_gtk` against the tao-managed GTK window directly (wry's own
+        // docs: "If you also want to support Wayland too... use
+        // WebViewBuilderExtUnix::build_gtk"). KEL-28's DoD requires both
+        // session types, so this is not optional.
         let webview = builder
-            .build(&window)
+            .build_gtk(window.gtk_window())
             .map_err(|e| WvError::Webview(e.to_string()))?;
 
         let id = self.next_id;
@@ -347,6 +375,22 @@ mod tests {
     fn session_and_driver_probes_do_not_panic_on_a_headless_runner() {
         let _ = is_wayland_session();
         let _ = nvidia_driver_loaded();
+    }
+
+    /// `detect_gpu_safe_mode` must never touch the process environment —
+    /// `keld doctor` (and this test) can call it freely without side
+    /// effects. Only `probe_gpu_stack` may mutate.
+    #[test]
+    fn detect_gpu_safe_mode_does_not_mutate_the_environment() {
+        // `env::var_os` (read) is safe in edition 2024; only `set_var` /
+        // `remove_var` (write) are unsafe.
+        let before = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER");
+        let _ = super::detect_gpu_safe_mode();
+        let after = std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER");
+        assert_eq!(
+            before, after,
+            "detect_gpu_safe_mode must be pure — no env mutation"
+        );
     }
 
     /// Keeps the engine type named from the test module so a rename fails the

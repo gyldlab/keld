@@ -4,12 +4,13 @@
 //!
 //! - **macOS + Linux (wry interim)**: wry's `with_permission_handler` is the
 //!   same builder call on both — omitting it means auto-grant on macOS
-//!   (`WKPermissionDecision::Grant` in `wry_web_view_ui_delegate.rs`) or
-//!   `WebKitGTK`'s own prompt on Linux (`competitors/wry/src/webkitgtk/mod.rs`
-//!   permission-request handler, KEL-28) — different platform defaults,
-//!   same wrong-for-Keld direction. Keld installs
-//!   `with_guarded_media_permissions` on both (cfg-gated, so no intra-doc
-//!   link).
+//!   (`WKPermissionDecision::Grant` in
+//!   [`wry_web_view_ui_delegate.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/wkwebview/class/wry_web_view_ui_delegate.rs))
+//!   or `WebKitGTK`'s own prompt on Linux
+//!   ([`connect_permission_request`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/webkitgtk/mod.rs#L585),
+//!   KEL-28) — different platform defaults, same wrong-for-Keld direction.
+//!   Keld installs `with_guarded_media_permissions` on both (cfg-gated, so no
+//!   intra-doc link). Vendored locally: `competitors/wry` @ this same commit.
 //! - **Windows (direct COM, KEL-65)**: without a handler `WebView2` falls back
 //!   to its own user prompt — default-ask, not default-deny. The backend
 //!   registers `add_PermissionRequested` before the first navigation and maps
@@ -135,8 +136,9 @@ pub fn media_permission_response(
 /// Installs a default-deny media-capture handler backed by `keld-guard`.
 ///
 /// Omitting wry's handler means wry 0.56.1 auto-grants on macOS
-/// (`wry_web_view_ui_delegate.rs` returns `Grant` unconditionally) or shows
-/// `WebKitGTK`'s own prompt on Linux (`competitors/wry/src/webkitgtk/mod.rs`:
+/// ([`wry_web_view_ui_delegate.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/wkwebview/class/wry_web_view_ui_delegate.rs)
+/// returns `Grant` unconditionally) or shows `WebKitGTK`'s own prompt on Linux
+/// ([`webkitgtk/mod.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/webkitgtk/mod.rs#L642):
 /// an unhandled request "let[s] `WebKitGTK` show default prompt"). The
 /// manifest is the authority (`docs/architecture/03-security.md` §1), so
 /// `Deny` here is deliberate on both: default-deny, not default-ask.

@@ -169,10 +169,12 @@ Evidence files: `/tmp/keld-vs-tauri-20260817-corrected.json`,
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **appkit+wk** | dmg | UDZO | 29,774 | native installer floor | — | — | — | — | UDZO of `.app` | same |
 
 Windows Keld rows: measured, see "Windows first paint on the direct-COM backend"
-below. Linux Keld rows: still **N/A** — KEL-28 landed a live backend
-(`crates/keld-wv/src/webkitgtk/`), but no environment used to build/test it so
-far has a display server to measure a real window against (WSL sandbox, `gtk::init()`
-fails: "Failed to initialize GTK"). Numbers need real Linux hardware/VM.
+below. Linux Keld rows: still **N/A** for timing/RSS numbers — KEL-28 landed a
+live backend (`crates/keld-wv/src/webkitgtk/`), confirmed opening a real X11
+window via `Xvfb` + `xdotool` (`gtk::init()` fails outright in the plain WSL
+sandbox with no display; Xvfb sidesteps that), but nobody has run a real
+first-paint measurement there. Numbers need real Linux hardware/VM or a
+proper CI job.
 Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 
 ### Still waiting

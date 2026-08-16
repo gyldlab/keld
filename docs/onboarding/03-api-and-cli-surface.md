@@ -200,18 +200,20 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **Closing the window ends the process.** Both live backends hand the thread to tao's
-  `EventLoop::run`, which never returns and exits the process itself
+- **Closing the window ends the process.** All three live backends hand the thread to
+  tao's `EventLoop::run`, which never returns and exits the process itself
   ([`wkwebview/mod.rs::run_until_closed`](../../crates/keld-wv/src/wkwebview/mod.rs),
-  [`webview2/mod.rs::run_until_closed`](../../crates/keld-wv/src/webview2/mod.rs)).
+  [`webview2/mod.rs::run_until_closed`](../../crates/keld-wv/src/webview2/mod.rs),
+  [`webkitgtk/mod.rs::run_until_closed`](../../crates/keld-wv/src/webkitgtk/mod.rs)).
   That is why echo runs to completion *before* the window opens.
 - **Linux has a live backend too, as of KEL-28.** `run_hello_window_html` is the
-  same cross-platform call on every OS, and Linux (`WebKitGTK` via wry, GTK3 +
-  `libwebkit2gtk-4.1-dev`) now dispatches to a real backend instead of an
-  `unavailable()` stub. Compiled, clippy-clean, and test-green on real Ubuntu —
-  but not yet visually confirmed to open a window anywhere (built and verified
-  from a sandbox with no display server: GTK's own init fails there, a display
-  problem, not a code defect). `WvError::UnsupportedPlatform` remains the
+  same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
+  `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
+  dispatches to a real backend instead of an `unavailable()` stub. Compiled,
+  clippy-clean, and test-green on real Ubuntu; `Xvfb` + `xdotool` confirms a
+  real, correctly titled X11 window opens (a plain WSL sandbox has no display
+  at all — `gtk::init()` fails outright there). Not yet watched on a real
+  desktop with eyes on the screen. `WvError::UnsupportedPlatform` remains the
   fallback for any other target.
 
 ### 1.7 `keld doctor`
@@ -509,7 +511,7 @@ Backends:
 |---|---|---|
 | `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with. `probe_gpu_stack()` applies NVIDIA+Wayland safe-mode before any GTK/WebKit call. Compiled/tested on real Ubuntu; window-opening not yet visually confirmed anywhere (built from a display-less sandbox). Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. `probe_gpu_stack()` applies NVIDIA+Wayland safe-mode before any GTK/WebKit call — split from the pure `detect_gpu_safe_mode()` so `keld doctor` can read it side-effect-free. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms a real X11 window opens with the right title — not yet watched on a real desktop. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live

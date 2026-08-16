@@ -65,7 +65,8 @@ Confirm on real Linux hardware/VM with a display before relying on it. `WvError:
 workspace (kipc, the CLI, `create`, `doctor`, the echo tests) is cross-platform and
 builds and tests on all three today.
 
-Expected `doctor` output outside a project:
+Expected `doctor` output outside a project (macOS shown; Windows/Linux differ only in
+the `webview` line's detail text — "Windows WebView2..." / "Linux WebKitGTK..."):
 
 ```
 [ok] bun — found bun 1.4.0
@@ -84,7 +85,10 @@ cd /tmp && "$KELD" create my-app && cd my-app
 ```
 
 which prints `ipc-echo ok: …` and `my-app: main process ready (IPC echo ok)` and opens
-the window. Close the window (or Ctrl-C the terminal) to end the session.
+the window. Close the window (or Ctrl-C the terminal) to end the session. Confirmed on
+macOS and Windows with a real display; on Linux confirmed at the X11 level under Xvfb +
+a window manager (`xdotool search --name Keld` finds a real, correctly-titled window —
+KEL-28), but not yet watched on a real desktop with eyes on the screen.
 
 ---
 
