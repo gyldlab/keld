@@ -90,8 +90,9 @@ the unauthenticated component.
 
 [OpenAI's current profile documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles)
 describes named profiles as separate overlay files. A profile named `name` lives at
-`~/.codex/name.config.toml`; Codex loads the ordinary `~/.codex/config.toml` first and
-applies that overlay only when the user explicitly selects `--profile name`.
+`$CODEX_HOME/name.config.toml` (by default `~/.codex/name.config.toml`); Codex loads the
+ordinary `$CODEX_HOME/config.toml` first and applies that overlay only when the user
+explicitly selects `--profile name`.
 
 That separation matters: a future pilot profile must be a deliberate door into the test
 room, not a replacement for the user's normal front door. This T3 page intentionally
@@ -154,6 +155,9 @@ If T4–T6 eventually pass, a contributor's session should remain simple:
 Authorization must filter project, owner, visibility, current team membership, and
 allowed-agent membership before similarity ranking. If another project appears, the
 service has failed isolation and the contributor stops using it.
+Before ranking or using a record, the adapter must also validate the complete §4.5
+schema, current status, exact record hash, and approved admission receipt. Changing a
+claim after its receipt was created must make the record unusable.
 
 Recalled text can never approve a scope change, grant a permission, authorize a command,
 bypass a gate, settle a code/spec mismatch, or mark a ticket complete. Every action is
@@ -177,12 +181,13 @@ authorized again against the live task and repository policy.
 - Synthetic-stage backups are off by default. The one deletion exercise uses a
   content-addressed encrypted pre-delete backup, proves that deleting the live sentinel
   makes it non-recallable, and then purges that backup. It next creates one encrypted
-  post-delete backup under the canonical external pilot root with a seven-day expiry,
-  restores only into fresh isolated volumes, and proves the deleted sentinel remains
-  absent. Live deletion, pre-delete-backup purge, post-delete backup, isolated restore,
-  and post-restore recall are separate reported outcomes. The negative control restores
-  an isolated copy of the pre-delete backup before purge and must recover the sentinel;
-  otherwise the exercise did not prove why purge order matters.
+  post-delete backup under `<pilot-root>/backups/<run-id>/` with a seven-day expiry,
+  records its content digest and contained volume names, restores only into fresh
+  isolated volumes, and proves the deleted sentinel remains absent. Live deletion,
+  pre-delete-backup purge, post-delete backup, isolated restore, and post-restore recall
+  are separate reported outcomes. The negative control restores an isolated copy of the
+  pre-delete backup before purge and must recover the sentinel; otherwise the exercise
+  did not prove why purge order matters.
 - Removal first proves a direct non-memory Codex session, then stops the isolated stack,
   purges only the named external data and configuration with the documented recovery
   impact, rotates transited secrets, and verifies every recall path. Broad workspace or
@@ -196,8 +201,8 @@ authorized again against the live task and repository policy.
   approved external-memory task triggers it.
 - Linear KEL-44 — later owner of the controlled memory-on evaluation arm, after KEL-67
   security and isolation pass.
-- [TencentDB Agent Memory beta install guide](https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/v2.0.1-beta.2/INSTALL.md)
-  and [environment template](https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/v2.0.1-beta.2/deploy/global-images/.env.example)
+- [TencentDB Agent Memory beta install guide](https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/29d609a729704ae31ff1848dc6f8acb7e712106d/INSTALL.md)
+  and [environment template](https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/29d609a729704ae31ff1848dc6f8acb7e712106d/deploy/global-images/.env.example)
   — primary evidence for the candidate and its deployment assumptions.
 - [OpenAI Codex profile documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles)
   — primary evidence for separate named profile overlays and explicit selection.
