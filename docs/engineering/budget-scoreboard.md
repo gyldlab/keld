@@ -106,20 +106,18 @@ interleaved run predates the trace seam, so every arm was untraced.
 | **Keld** adapter `--hello` | 11/11 | **342.911 / 393.103 ms** | **over** (~1.14×) | [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b) | `5ba4672` | **Gap:** not in keld-benches git. Previously recorded on Keld [`4b70435`](https://github.com/gyldlab/keld/commit/4b7043505b84c488aa6213e59ae4c198c01d04e8) / Linear KEL-64 from `/tmp/keld-vs-tauri-20260816d.json` (`--publish` eligible at the time). |
 | **Tauri** 2.11.5 | 11/11 | **346.034 / 353.070 ms** | **over** | same | n/a (Tauri recipe `9e7c83d`) | same gap |
 
-Same-recipe Keld-only `--publish` (RSS only on the previous scoreboard row;
-paint was not copied here from Linear): coalition RSS median **199,568 KiB**
-(min 196,080; max 200,368), artifact **1,043,880 B** file sum, Keld source
-`dc5dea2`, benches [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b).
-Tauri-only `--publish` double-rAF median **378.758 ms**, p90 **749.492 ms**,
-coalition RSS median **204,624 KiB**, disk **8,292,272 B** file sum — paint and
-RSS stay in their own columns; that Tauri paint is **not** a vs-Electron number.
+Same-recipe Keld-only and Tauri-only `--publish` disk/RSS live in the
+[Memory](#memory--idle-rss-not-paint) and [Disk](#disk--installer-not-paint)
+tables (Keld `dc5dea2` coalition **199,568 KiB**; Tauri-only double-rAF
+**378.758 / 749.492 ms** is a different session from the interleaved row
+above — not a vs-Electron paint cell).
 
 **Committed untraced sample after AC4:** none. keld-benches
 [`MEASUREMENTS.md`](https://github.com/gyldlab/keld-benches/blob/aae2e12f998ff47805eed38083c624525d87b9a8/MEASUREMENTS.md)
 @ [`aae2e12`](https://github.com/gyldlab/keld-benches/commit/aae2e12f998ff47805eed38083c624525d87b9a8)
 records the traced attribution decision, not an untraced `--publish` JSON.
-This turn did not re-run the official GUI harness (11 arms would steal the
-foreground session). Do not invent a replacement median.
+The last untraced `--publish` JSON lived at `/tmp/keld-vs-tauri-20260816d.json`
+and is **not** in keld-benches. Do not invent a replacement median.
 
 ### macOS traced attribution (not a score)
 
