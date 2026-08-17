@@ -2,6 +2,7 @@
 
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
+use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc;
 
@@ -199,7 +200,7 @@ fn created_template_main_runs_ipc_echo() {
     );
     assert!(
         stdout.contains("ipc-echo ok: message=\"keld\" count=1"),
-        "template must use ipc-client echo: stdout={stdout}"
+        "template must speak kipc echo: stdout={stdout}"
     );
     assert!(
         stdout.contains("app: main process ready (IPC echo ok)"),
@@ -208,5 +209,98 @@ fn created_template_main_runs_ipc_echo() {
     assert!(
         !stdout.contains("{{name}}"),
         "unsubstituted template leaked: stdout={stdout}"
+    );
+}
+
+#[test]
+fn kipc_ts_golden_vectors_pass_under_bun_test() {
+    let hello = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/hello");
+    let output = Command::new("bun")
+        .args(["test", "src/kipc.test.ts"])
+        .current_dir(&hello)
+        .output()
+        .expect("bun must be on PATH (same contract as bun_echo)");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "kipc.ts golden vectors failed: stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
+fn created_template_session_two_echoes_on_one_connection() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app");
+    std::fs::write(
+        project.join("src/two.ts"),
+        r#"
+import { AppLinkSession } from "./kipc";
+
+const link = process.env.KELD_APP_LINK;
+if (!link) {
+  console.error("KELD-CLI-010: KELD_APP_LINK is unset");
+  process.exit(1);
+}
+const firstMsg = process.env.KELD_ECHO_A;
+const secondMsg = process.env.KELD_ECHO_B;
+if (!firstMsg || !secondMsg) {
+  console.error("KELD-CLI-011: KELD_ECHO_A/B unset");
+  process.exit(1);
+}
+
+const session = await AppLinkSession.connect(link);
+try {
+  const first = await session.echo({ message: firstMsg, count: 2 });
+  const second = await session.echo({ message: secondMsg, count: 9 });
+  console.log(`first=${JSON.stringify(first.message)}:${first.count}`);
+  console.log(`second=${JSON.stringify(second.message)}:${second.count}`);
+} finally {
+  session.close();
+}
+"#,
+    )
+    .expect("write two.ts");
+
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let server = EchoServer::start(&ready_tx).expect("bind echo server");
+    ready_rx.recv().expect("server ready");
+    let link = server.link();
+
+    let unique_a = format!("kel30-a-{}", std::process::id());
+    let unique_b = format!("kel30-b-{}", std::process::id());
+    let output = Command::new("bun")
+        .arg("run")
+        .arg("src/two.ts")
+        .current_dir(&project)
+        .env("KELD_APP_LINK", &link)
+        .env("KELD_ECHO_A", &unique_a)
+        .env("KELD_ECHO_B", &unique_b)
+        .output()
+        .expect("spawn bun");
+
+    server.join().expect("server join");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "two-call session failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("first={unique_a:?}:2")),
+        "missing first unique echo: stdout={stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("second={unique_b:?}:9")),
+        "missing second unique echo: stdout={stdout}"
+    );
+    assert_ne!(unique_a, unique_b);
+    // two.ts prints `first=${JSON.stringify(message)}:${count}` (same for second),
+    // never `message=... count=...`. A demo-payload leak must match that format.
+    assert!(
+        !stdout.contains("first=\"keld\":1") && !stdout.contains("second=\"keld\":1"),
+        "must not print the hardcoded demo payload: {stdout}"
     );
 }

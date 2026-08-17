@@ -245,7 +245,7 @@ mod tests {
         let main = fs::read_to_string(root.join("src/main.ts")).expect("main");
         assert!(main.contains("KELD-CLI-010"), "{main}");
         assert!(main.contains("KELD_APP_LINK"), "{main}");
-        assert!(main.contains("echoRoundtrip"), "{main}");
+        assert!(main.contains("AppLinkSession"), "{main}");
         assert!(
             !main.contains("ipc-client"),
             "KEL-30: template must speak kipc directly, not shell out: {main}"
@@ -257,6 +257,7 @@ mod tests {
         assert!(!main.contains("{{name}}"), "{main}");
 
         let kipc = fs::read_to_string(root.join("src/kipc.ts")).expect("kipc");
+        assert!(kipc.contains("export class AppLinkSession"), "{kipc}");
         assert!(
             kipc.contains("export async function echoRoundtrip"),
             "{kipc}"

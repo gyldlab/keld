@@ -22,7 +22,7 @@ pub mod token;
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use link::AppLinkDeadlines;
-pub use session::{echo_call, serve_echo_session};
+pub use session::{echo_call, echo_invoke, serve_echo_session};
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).

@@ -12,7 +12,7 @@ use keld_ipc::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use keld_ipc::link::{handshake_client, handshake_server, read_frame, write_frame};
 use keld_ipc::{
     ECHO_CHANNEL, EchoRequest, EchoResponse, HEADER_LEN, IpcError, MAGIC, PROTOCOL_VERSION,
-    SessionToken, echo_call, serve_echo_session,
+    SessionToken, echo_call, echo_invoke, serve_echo_session,
 };
 
 #[cfg(unix)]
@@ -368,5 +368,84 @@ fn echo_call_header_bytes_are_pinned() {
     assert_eq!(
         header,
         [b'K', b'I', 2, 1, 0, 0, 1, 0, 1, 0, 0, 0, 6, 0, 0, 0]
+    );
+}
+
+#[test]
+fn echo_invoke_two_calls_on_one_handshake() {
+    let (mut client, server) = connected_pair();
+    let handle = spawn_echo_server(server);
+    handshake_client(&mut client, &test_token()).expect("hello once");
+    let first = echo_invoke(
+        &mut client,
+        &EchoRequest {
+            message: "kel30-first".to_owned(),
+            count: 2,
+        },
+        CorrelationId(1),
+    )
+    .expect("first invoke");
+    let second = echo_invoke(
+        &mut client,
+        &EchoRequest {
+            message: "kel30-second".to_owned(),
+            count: 9,
+        },
+        CorrelationId(2),
+    )
+    .expect("second invoke");
+    drop(client);
+    handle.join().expect("server thread").expect("serve");
+    assert_eq!(first.message, "kel30-first");
+    assert_eq!(first.count, 2);
+    assert_eq!(second.message, "kel30-second");
+    assert_eq!(second.count, 9);
+    assert_ne!(
+        first.message, second.message,
+        "two invokes must not share a hardcoded reply"
+    );
+}
+
+#[test]
+fn second_echo_call_on_same_stream_client_001_server_005() {
+    let (mut client, server) = connected_pair();
+    let handle = spawn_echo_server(server);
+    let first = echo_call(
+        &mut client,
+        &EchoRequest {
+            message: "once".to_owned(),
+            count: 1,
+        },
+        &test_token(),
+    )
+    .expect("first one-shot");
+    assert_eq!(first.message, "once");
+    let err = echo_call(
+        &mut client,
+        &EchoRequest {
+            message: "twice".to_owned(),
+            count: 2,
+        },
+        &test_token(),
+    )
+    .expect_err("second HELLO on a live session must fail");
+    drop(client);
+    let server_err = handle
+        .join()
+        .expect("server thread")
+        .expect_err("server must fail closed on a second HELLO");
+    let client_msg = err.to_string();
+    assert!(
+        client_msg.contains("KELD-IPC-001"),
+        "client observes peer close after the server rejects the second HELLO: {client_msg}"
+    );
+    assert!(
+        !client_msg.contains("twice"),
+        "must not surface the second payload as a successful echo: {client_msg}"
+    );
+    let server_msg = server_err.to_string();
+    assert!(
+        server_msg.contains("KELD-IPC-005"),
+        "server must reject a second HELLO as protocol, not serve it: {server_msg}"
     );
 }

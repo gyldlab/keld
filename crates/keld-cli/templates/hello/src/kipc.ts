@@ -240,8 +240,9 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
  * directly (oversized `len`, malformed headers) without a live socket — not
  * meant as a public transport API.
  *
- * v0 usage is strictly sequential (write, then await one reply), so a
- * single pending waiter is enough — no queue needed.
+ * v0 usage is strictly sequential per CALL (write, then await one reply),
+ * so a single pending waiter is enough — no queue needed. Multiple CALLs
+ * on one connection are issued one after another by `AppLinkSession`.
  */
 export class FrameReader {
   #buf = new Uint8Array(0);
@@ -365,77 +366,112 @@ async function writeFrame(
 }
 
 /**
- * Performs one echo round-trip: connect, `HELLO` handshake, one `Call`/`Reply`.
+ * One `HELLO` plus N sequential `CALL`/`REPLY` pairs on a single app-link
+ * socket. Mirrors `keld_ipc::{handshake_client, echo_invoke}`: a second
+ * `HELLO` on this stream is `KELD-IPC-005`.
  *
- * Mirrors `keld_ipc::{handshake_client, echo_call}` byte-for-byte. `link` is
- * the `KELD_APP_LINK` value (`<endpoint>#<64 hex chars>`); on Windows the
- * endpoint is a loopback TCP port, on Unix a domain socket path — the same
- * branch `crates/keld-cli/src/echo_link.rs::echo_roundtrip` takes, decided by
- * platform (not by sniffing the endpoint string).
- *
- * @throws on I/O failure, protocol mismatch, auth failure, or codec error —
- * error messages carry the matching `KELD-IPC-*` code from `keld-ipc`.
+ * `echoRoundtrip` is the one-shot wrapper (connect, one CALL, close).
  */
-export async function echoRoundtrip(link: string, request: EchoRequest): Promise<EchoResponse> {
-  const { endpoint, token } = parseAppLink(link);
-  const reader = new FrameReader();
-  const drain = new DrainSignal();
+export class AppLinkSession {
+  #socket: KipcSocket;
+  #reader: FrameReader;
+  #drain: DrainSignal;
+  #nextCorr = 1;
+  #closed = false;
 
-  const handlers = {
-    binaryType: "uint8array" as const,
-    data(_socket: unknown, data: Uint8Array) {
-      reader.push(data);
-    },
-    drain(_socket: unknown) {
-      drain.fire();
-    },
-    error(_socket: unknown, err: Error) {
-      reader.fail(kipcError("KELD-IPC-001", err.message));
-    },
-    close(_socket: unknown) {
-      reader.fail(kipcError("KELD-IPC-001", "connection closed by peer"));
-    },
-    connectError(_socket: unknown, err: Error) {
-      reader.fail(kipcError("KELD-IPC-001", err.message));
-    },
-  };
+  private constructor(socket: KipcSocket, reader: FrameReader, drain: DrainSignal) {
+    this.#socket = socket;
+    this.#reader = reader;
+    this.#drain = drain;
+  }
 
-  const socket: KipcSocket =
-    process.platform === "win32"
-      ? await Bun.connect({
-          hostname: "127.0.0.1",
-          port: Number.parseInt(endpoint, 10),
-          socket: handlers,
-        })
-      : await Bun.connect({
-          unix: endpoint,
-          socket: handlers,
-        });
+  /**
+   * Connects and completes the v2 `HELLO` handshake.
+   *
+   * @throws on I/O, protocol, or auth failure — messages carry `KELD-IPC-*`.
+   */
+  static async connect(link: string): Promise<AppLinkSession> {
+    const { endpoint, token } = parseAppLink(link);
+    const reader = new FrameReader();
+    const drain = new DrainSignal();
 
-  try {
-    // Client HELLO first (client already possesses the token from
-    // KELD_APP_LINK, so writing first discloses nothing new — same
-    // rationale as `handshake_client`'s doc comment).
-    await writeFrame(socket, drain, FrameKind.Hello, 0, 0, 0, token);
-    const helloReply = await reader.readFrame();
-    if (helloReply.header.kind !== FrameKind.Hello) {
-      throw kipcError("KELD-IPC-005", "expected HELLO from peer");
-    }
-    if (helloReply.header.channel !== 0 || helloReply.header.corr !== 0) {
-      throw kipcError("KELD-IPC-005", "HELLO must have reserved channel/corr 0");
-    }
-    if (helloReply.payload.length !== 32) {
-      throw kipcError("KELD-IPC-007", "HELLO payload must be a 32-byte session token");
-    }
-    if (!timingSafeEqual(helloReply.payload, token)) {
-      throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
-    }
+    const handlers = {
+      binaryType: "uint8array" as const,
+      data(_socket: unknown, data: Uint8Array) {
+        reader.push(data);
+      },
+      drain(_socket: unknown) {
+        drain.fire();
+      },
+      error(_socket: unknown, err: Error) {
+        reader.fail(kipcError("KELD-IPC-001", err.message));
+      },
+      close(_socket: unknown) {
+        reader.fail(kipcError("KELD-IPC-001", "connection closed by peer"));
+      },
+      connectError(_socket: unknown, err: Error) {
+        reader.fail(kipcError("KELD-IPC-001", err.message));
+      },
+    };
 
-    const corr = 1;
+    const socket: KipcSocket =
+      process.platform === "win32"
+        ? await Bun.connect({
+            hostname: "127.0.0.1",
+            port: Number.parseInt(endpoint, 10),
+            socket: handlers,
+          })
+        : await Bun.connect({
+            unix: endpoint,
+            socket: handlers,
+          });
+
+    const session = new AppLinkSession(socket, reader, drain);
+    try {
+      await writeFrame(socket, drain, FrameKind.Hello, 0, 0, 0, token);
+      const helloReply = await reader.readFrame();
+      if (helloReply.header.kind !== FrameKind.Hello) {
+        throw kipcError("KELD-IPC-005", "expected HELLO from peer");
+      }
+      if (helloReply.header.channel !== 0 || helloReply.header.corr !== 0) {
+        throw kipcError("KELD-IPC-005", "HELLO must have reserved channel/corr 0");
+      }
+      if (helloReply.payload.length !== 32) {
+        throw kipcError("KELD-IPC-007", "HELLO payload must be a 32-byte session token");
+      }
+      if (!timingSafeEqual(helloReply.payload, token)) {
+        throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
+      }
+      return session;
+    } catch (err) {
+      session.close();
+      throw err;
+    }
+  }
+
+  /** Next CALL correlation id; `0` is reserved for `HELLO`. */
+  #allocCorr(): number {
+    const corr = this.#nextCorr;
+    let next = (corr + 1) >>> 0;
+    if (next === 0) next = 1;
+    this.#nextCorr = next;
+    return corr;
+  }
+
+  /**
+   * One echo `Call`/`Reply` on this connection. Does not handshake again.
+   *
+   * @throws on I/O, protocol, or codec error — messages carry `KELD-IPC-*`.
+   */
+  async echo(request: EchoRequest): Promise<EchoResponse> {
+    if (this.#closed) {
+      throw kipcError("KELD-IPC-001", "session is closed");
+    }
+    const corr = this.#allocCorr();
     const payload = encodeEchoRequest(request);
-    await writeFrame(socket, drain, FrameKind.Call, 0, ECHO_CHANNEL, corr, payload);
+    await writeFrame(this.#socket, this.#drain, FrameKind.Call, 0, ECHO_CHANNEL, corr, payload);
 
-    const reply = await reader.readFrame();
+    const reply = await this.#reader.readFrame();
     if (
       reply.header.kind !== FrameKind.Reply ||
       reply.header.corr !== corr ||
@@ -444,7 +480,33 @@ export async function echoRoundtrip(link: string, request: EchoRequest): Promise
       throw kipcError("KELD-IPC-005", "expected REPLY for echo CALL");
     }
     return decodeEchoResponse(reply.payload);
+  }
+
+  /** Ends the socket. Safe to call more than once. */
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#socket.end();
+  }
+}
+
+/**
+ * Performs one echo round-trip: connect, `HELLO` handshake, one `Call`/`Reply`.
+ *
+ * One-shot wrapper over [`AppLinkSession`]. `link` is the `KELD_APP_LINK`
+ * value (`<endpoint>#<64 hex chars>`); on Windows the endpoint is a loopback
+ * TCP port, on Unix a domain socket path — the same branch
+ * `crates/keld-cli/src/echo_link.rs::echo_roundtrip` takes, decided by
+ * platform (not by sniffing the endpoint string).
+ *
+ * @throws on I/O failure, protocol mismatch, auth failure, or codec error —
+ * error messages carry the matching `KELD-IPC-*` code from `keld-ipc`.
+ */
+export async function echoRoundtrip(link: string, request: EchoRequest): Promise<EchoResponse> {
+  const session = await AppLinkSession.connect(link);
+  try {
+    return await session.echo(request);
   } finally {
-    socket.end();
+    session.close();
   }
 }
