@@ -224,7 +224,9 @@ mis-parented and silently never attached, see `docs/agents/learnings.md`),
 and this smoke test now runs in CI (`linux-gui-smoke` job), but nobody has
 run a real first-paint measurement there. Numbers need real Linux
 hardware/VM.
-Notes-app rows: **later** (guard-on-IPC + host `fs` first).
+Notes-app rows: **later** — guard-on-IPC (KEL-69) and host `fs.read`/`fs.write` (KEL-71)
+both landed 2026-08-17, but the six-framework bench itself is a separate epic, not
+started (`docs/engineering/decisions.md` §11).
 
 ### Still waiting
 

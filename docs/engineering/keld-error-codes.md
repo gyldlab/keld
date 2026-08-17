@@ -9,8 +9,8 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` `src`, `keld-cli` templates, or workspace `tools/` that has
-  no heading here fails the test.
+  `keld-runtime` / `keld-native` `src`, `keld-cli` templates, or workspace
+  `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -342,3 +342,9 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-runtime
 - message: The app-process child crashed repeatedly; the crash-loop breaker tripped
 - fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+
+## KELD-NATIVE-001
+
+- crate: keld-native
+- message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
+- fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).

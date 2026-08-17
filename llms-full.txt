@@ -1814,9 +1814,10 @@ it changes who owns a handle, who can crash whom, or who can mint a principal.
 macOS WKWebView, Windows WebView2, and Linux WebKitGTK hello paths (KEL-26/27/28) plus
 a kipc echo slice. `keld-guard::evaluate` exists;
 `keld_permissions_explain`, the macOS/Linux/Windows webview media-capture handlers, and
-now `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. No production
-capability uses `dispatch_privileged` yet — `keld-native`'s modules are still names only
-(no `fs.read`/`fs.write` implementation; that is KEL-71). `keld dev`'s app-process spawn
+`keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. `keld-native::fs`
+(KEL-71) is the first production capability using `dispatch_privileged` — host
+`fs.read`/`fs.write`, guard-checked before any disk I/O. The other 14 `keld-native`
+modules are still names only. `keld dev`'s app-process spawn
 now runs under a real
 `keld-runtime::Supervisor` (KEL-70): spawn, stdout/stderr capture, restart-on-crash with
 exponential backoff, and a crash-loop breaker (default 3 crashes / 30s → typed
@@ -1859,10 +1860,31 @@ actually exercise the gate. Echo (KEL-30) stays deliberately ungated. `keld-core
 has no privileged operation of its own to route through this — the mechanism is proven
 and ready, not yet load-bearing for a real capability.
 
-**Next.** Host-owned scoped `fs.read`/`fs.write` (KEL-71, no longer blocked) — MUST call
-`dispatch_privileged` rather than reimplement the check. Keep shipping Linear Phase 2
-(window + kipc echo + crate map) on the four uniques. Do not add a fifth unique to look
-complete.
+**Update (2026-08-17, KEL-71).** `keld-native` was a `MODULES` name list with zero
+implementations. Added `keld_native::fs`: `fs_read`/`fs_write` (capability ids
+`fs.read`/`fs.write`) and a real `serve_fs_session` kipc channel (`FS_CHANNEL`,
+`ChannelId(2)`), every call routed through `dispatch_privileged` (KEL-69) before touching
+disk — the first production capability to use it. Cross-platform by construction
+(`std::fs::read`/`std::fs::write` are the same call on all three OSes), so this satisfies
+architecture 05 §3's "all three OS implementations" without per-platform code.
+`..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
+`..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`),
+not re-implemented here. Verified end-to-end over a real kipc session
+(`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
+on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
+leaves the file completely unwritten, each checked with a real `std::path::Path::exists()`
+stat, not a stub return. Negative control verified manually twice: bypassing
+`dispatch_privileged` inside `fs_write` made three fs-specific tests fail; separately,
+temporarily adding a `node:fs` import to the hello template made the new
+`template_never_imports_node_fs` static check fail (`crates/keld-cli/src/template.rs`) —
+both reverted before committing. Bun's own `node:fs` still works unsandboxed
+(architecture 03 §4.2 OS-sandbox slice is v0.3, not this ticket); this is the **Keld**
+API, not a claim that Bun is jailed.
+
+**Next.** Wire a real `@keld/api` TypeScript surface for `fs.read`/`fs.write` once
+`packages/` exists (currently empty — out of scope until a TS package pipeline lands).
+Keep shipping Linear Phase 2 (window + kipc echo + crate map) on the four uniques. Do not
+add a fifth unique to look complete.
 
 ---
 
@@ -2309,7 +2331,7 @@ test (a): Linear Phase 2 (window + kipc echo + crate map) ships without them.
 | **Wrapping SaaS / OAuth MCP** | v1 is stdio, zero listeners, no HTTP transport, no auth crate. Architecture 07 §9: no bespoke agent protocol; we do not host developers' agent identity. | `Cargo.toml` rmcp comment; architecture 07 §4, §9; onboarding 07 |
 | **objc2 rewrite this week** | Destination is spec 05; current macOS path is wry+tao scaffolding. The rewrite does not move Phase 2. | architecture 05 §1; `wkwebview/mod.rs`; `AGENTS.md` YAGNI (a) |
 | **Watching the KEL-28 Linux window with eyes on a screen** | Windows (KEL-27) and Linux (KEL-28) backends are both implemented and built/tested on their real OS (WSL Ubuntu for Linux, not cross-compiled from macOS as-if-done — `AGENTS.md` forbids that shortcut). Xvfb + `xdotool` confirms a real, correctly titled X11 window exists, and — since the 2026-08-17 `default_vbox` fix — that the webview actually attaches to it without GTK's widget-conflict warning, and that `keld-host --hello` correctly blocks in its event loop instead of exiting. `linux-gui-smoke` now runs this in CI on every push/PR. What's still open: nobody has watched pixels *render* on a real desktop. Confirm on Linux hardware/VM with a display before calling KEL-28 fully closed. | `crates/keld-wv/src/webkitgtk/mod.rs`; `.github/workflows/ci.yml` `linux-gui-smoke`; architecture 05 §1 |
-| **Six-framework notes-app bench** | Same app in Keld / Electron / Electrobun / Tauri / Wails / Swift is a later epic. Fair score is **v1** (search, GFM preview, custom-scheme images, native menus, second window, PDF-exists, file watch, autosave) — not v0 CRUD. Keld cannot host that without guard-on-IPC and host `fs.read`/`fs.write`. Bun `node:fs` is not a default-deny test. | architecture 01 §5; this file §11; research 43 / 43a (exploratory, not required) |
+| **Six-framework notes-app bench** | Same app in Keld / Electron / Electrobun / Tauri / Wails / Swift is a later epic. Fair score is **v1** (search, GFM preview, custom-scheme images, native menus, second window, PDF-exists, file watch, autosave) — not v0 CRUD. The two hard blockers (guard-on-IPC, KEL-69; host `fs.read`/`fs.write`, KEL-71) are both done as of 2026-08-17, but the bench itself — six real app builds, `fs.watch`, autosave, second-window, PDF-exists — is still its own epic, deliberately not started here. Bun `node:fs` is still not a default-deny test; a scaffolded app that wants the guarded path uses `keld_native::fs`, not `node:fs` (`crates/keld-cli/src/template.rs` `template_never_imports_node_fs` enforces this statically). | architecture 01 §5; this file §11; research 43 / 43a (exploratory, not required) |
 
 Also parked, for the same YAGNI reason: `bench/` perf CI (budgets exist in
 architecture 01 §5; the directory does not), `keld build` / `keld migrate` /
@@ -2424,8 +2446,8 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` `src`, `keld-cli` templates, or workspace `tools/` that has
-  no heading here fails the test.
+  `keld-runtime` / `keld-native` `src`, `keld-cli` templates, or workspace
+  `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -2758,6 +2780,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The app-process child crashed repeatedly; the crash-loop breaker tripped
 - fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
 
+## KELD-NATIVE-001
+
+- crate: keld-native
+- message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
+- fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+
 ---
 
 ## Source: `docs/engineering/budget-scoreboard.md`
@@ -2988,7 +3016,9 @@ mis-parented and silently never attached, see `docs/agents/learnings.md`),
 and this smoke test now runs in CI (`linux-gui-smoke` job), but nobody has
 run a real first-paint measurement there. Numbers need real Linux
 hardware/VM.
-Notes-app rows: **later** (guard-on-IPC + host `fs` first).
+Notes-app rows: **later** — guard-on-IPC (KEL-69) and host `fs.read`/`fs.write` (KEL-71)
+both landed 2026-08-17, but the six-framework bench itself is a separate epic, not
+started (`docs/engineering/decisions.md` §11).
 
 ### Still waiting
 

@@ -55,4 +55,31 @@ mod tests {
             );
         }
     }
+
+    /// KEL-71: `node:fs` (or bare `fs`) is Bun's own filesystem API, not
+    /// Keld's — a scaffolded app that wants host-brokered, guard-checked
+    /// file I/O uses `keld_ipc`'s `fs.read`/`fs.write` channel
+    /// (`keld_native::fs`), not `node:fs` directly. Negative control: an app
+    /// author (or a future template edit) adding `import ... from "node:fs"`
+    /// / `require("fs")` to the template makes this fail immediately.
+    #[test]
+    fn template_never_imports_node_fs() {
+        let banned = [
+            "node:fs",
+            "require(\"fs\")",
+            "require('fs')",
+            "from \"fs\"",
+            "from 'fs'",
+        ];
+        for file in HELLO_TEMPLATE {
+            for needle in banned {
+                assert!(
+                    !file.contents.contains(needle),
+                    "KEL-71: {} must not use Bun's node:fs ({needle}) — use the host-brokered \
+                     fs.read/fs.write kipc channel instead",
+                    file.path
+                );
+            }
+        }
+    }
 }
