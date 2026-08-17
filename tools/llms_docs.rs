@@ -85,9 +85,9 @@ const SOURCES: &[Source] = &[
     },
     Source {
         section: "Reference",
-        title: "Size, RSS, and installer scoreboard",
+        title: "Size, RSS, latency, and installer scoreboard",
         path: "docs/engineering/budget-scoreboard.md",
-        description: "Living hello-to-apps measurements against architecture 01 §5 budgets and competitors.",
+        description: "Disk, idle RSS, and untraced double-rAF proxy vs architecture 01 §5. Latency and memory are separate tables; RSS and PR #10 are not first paint.",
     },
     Source {
         section: "Reference",
