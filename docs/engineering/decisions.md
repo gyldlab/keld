@@ -65,15 +65,40 @@ framework-owned agent stack, CEF-by-default, …) would be architecture theater 
 it changes who owns a handle, who can crash whom, or who can mint a principal.
 
 **Implemented vs specified.** The four uniques are the design. Today the tree has live
-macOS WKWebView and Windows WebView2 hello paths plus a kipc echo slice; Linux remains a
-compiled layout slot. `keld-guard::evaluate` exists;
-`keld_permissions_explain` and the macOS webview media-capture handler call it;
-`keld-core` / `keld-native` do not invoke the guard on privileged IPC.
-`keld-runtime` is still a `RestartPolicy` struct; `keld dev` spawns `bun` from the
-CLI. Hold both facts.
+macOS WKWebView, Windows WebView2, and Linux WebKitGTK hello paths (KEL-26/27/28) plus
+a kipc echo slice. `keld-guard::evaluate` exists;
+`keld_permissions_explain` and the macOS/Linux/Windows webview media-capture handlers
+call it; `keld-core` / `keld-native` do not yet invoke the guard on privileged IPC
+(tracked: KEL-69). `keld dev`'s app-process spawn now runs under a real
+`keld-runtime::Supervisor` (KEL-70): spawn, stdout/stderr capture, restart-on-crash with
+exponential backoff, and a crash-loop breaker (default 3 crashes / 30s → typed
+`KELD-RUNTIME-002`). Not yet built: the destination `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`
+env contract (v0 keeps `KELD_APP_LINK`), Bun pinning/download, `--inspect` passthrough,
+Bun watch hot-restart, and OS sandboxing of the child (architecture 03 §4.2, v0.3). Hold
+these facts.
 
-**Next.** Keep shipping Linear Phase 2 (window + kipc echo + crate map) on these four.
-Do not add a fifth unique to look complete.
+**Update (2026-08-17, KEL-70).** `keld-runtime` was a bare `RestartPolicy` struct with
+nothing reading it; `crates/keld-cli/src/dev.rs` spawned `bun` with a raw
+`Command::new("bun").wait_with_output()` — Electrobun-shaped, not Unique #2. Replaced
+with `keld_runtime::Supervisor`: a background thread owns the child, polls `try_wait`
+(no async runtime — this crate is cold tooling, not the kipc/event-loop/guard hot path),
+captures stdout/stderr via reader threads into a shared buffer, and on a non-zero exit
+restarts with exponential backoff until the policy's crash count trips inside its
+window, at which point it returns a typed `RuntimeError::CrashLoop`. A zero exit is
+graceful completion — no restart. `keld dev`'s window is opened by the caller on its own
+thread after the echo step; the supervised child is a fully separate OS process, so
+killing/restarting it cannot touch a host-owned window (verified headless: every
+supervised child pid is asserted distinct from the host process's own pid across
+multiple restart cycles, `crates/keld-runtime/src/lib.rs`
+`host_pid_is_unaffected_across_restart_cycles`). Verification: `cargo fmt`/clippy
+`-D warnings`/nextest green on Windows (this machine); Unix/Windows test-shell branches
+(`sh -c` / `cmd /C`) compile under both `cfg`s but only the Windows path was executed
+here — Linux/macOS re-verification is still open.
+
+**Next.** Wire `keld-guard::evaluate` into the privileged kipc handler path (KEL-69);
+host-owned scoped `fs.read`/`fs.write` (KEL-71, blocked on KEL-69). Keep shipping Linear
+Phase 2 (window + kipc echo + crate map) on the four uniques. Do not add a fifth unique
+to look complete.
 
 ---
 

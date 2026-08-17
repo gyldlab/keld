@@ -49,11 +49,15 @@ the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
 command". Garbage verbs are `KELD-CLI-046` (exit 2).
 
 **v0 env var is `KELD_APP_LINK`, not `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.**
-§1's contract above is the destination shape for the real `keld-runtime`
-supervisor (still a skeleton — no spawn/backoff/crash-loop code exists).
-What `keld dev` actually spawns today (`crates/keld-cli/src/dev.rs`
-`run_dev_echo`) is a bare `Command::new("bun")` with one env var,
-`KELD_APP_LINK=<endpoint>#<64 hex chars>` (`docs/architecture/02-ipc.md` §1).
+§1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
+the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
+built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
+`keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
+on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
+before giving up with a typed `KELD-RUNTIME-002`. `keld dev` (`crates/keld-cli/src/dev.rs`
+`run_dev_echo`) spawns through that supervisor, not a bare `Command::new("bun")` wait;
+the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
+(`docs/architecture/02-ipc.md` §1).
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, `HELLO` handshake);
 `keld gen`/`@keld/schema` codegen (KEL-13) is not built, so this is the actual

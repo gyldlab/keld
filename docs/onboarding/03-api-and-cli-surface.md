@@ -564,7 +564,6 @@ subsystems:
 |---|---|
 | `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`, `parse_manifest` / `load_manifest` / `evaluate`. Host IPC still does not call evaluate; MCP `keld_permissions_explain` and the macOS webview media-capture handler do. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
-| `keld_runtime` | `RestartPolicy { max_crashes: 3, window_secs: 30 }` (via `Default`). No supervisor |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
 | `keld_pack` | `Format::{App, Dmg, Nsis, Msi, Deb, Rpm, AppImage}` |
 | `keld_compat` | `Tier::{One, Two, Three}` |

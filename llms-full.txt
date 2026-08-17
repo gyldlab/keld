@@ -596,15 +596,20 @@ because Bun has no stable embedding C API.
 
 ### What the code actually passes
 
+Since KEL-70, `keld dev` spawns Bun through `keld_runtime::Supervisor`, not a direct
+`Command::spawn()` call — the supervisor owns `Stdio::piped()` and restart-on-crash; the
+command factory below only sets argv/cwd/env, once per spawn attempt (including restarts):
+
 ```rust
 // crates/keld-cli/src/dev.rs (run_dev_echo)
-let mut bun = Command::new("bun");
-bun.arg("run")
-    .arg(&bun_main)
-    .current_dir(project_root)
-    .env("KELD_APP_LINK", &link)
-    .stdout(Stdio::inherit())
-    .stderr(Stdio::inherit());
+let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+    let mut cmd = Command::new("bun");
+    cmd.arg("run")
+        .arg(&bun_main)
+        .current_dir(&project_root)
+        .env("KELD_APP_LINK", &link_for_child);
+    cmd
+})?;
 ```
 
 | Variable | Value | Consumed by |
@@ -1487,11 +1492,15 @@ the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
 command". Garbage verbs are `KELD-CLI-046` (exit 2).
 
 **v0 env var is `KELD_APP_LINK`, not `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.**
-§1's contract above is the destination shape for the real `keld-runtime`
-supervisor (still a skeleton — no spawn/backoff/crash-loop code exists).
-What `keld dev` actually spawns today (`crates/keld-cli/src/dev.rs`
-`run_dev_echo`) is a bare `Command::new("bun")` with one env var,
-`KELD_APP_LINK=<endpoint>#<64 hex chars>` (`docs/architecture/02-ipc.md` §1).
+§1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
+the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
+built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
+`keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
+on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
+before giving up with a typed `KELD-RUNTIME-002`. `keld dev` (`crates/keld-cli/src/dev.rs`
+`run_dev_echo`) spawns through that supervisor, not a bare `Command::new("bun")` wait;
+the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
+(`docs/architecture/02-ipc.md` §1).
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, `HELLO` handshake);
 `keld gen`/`@keld/schema` codegen (KEL-13) is not built, so this is the actual
@@ -1794,15 +1803,40 @@ framework-owned agent stack, CEF-by-default, …) would be architecture theater 
 it changes who owns a handle, who can crash whom, or who can mint a principal.
 
 **Implemented vs specified.** The four uniques are the design. Today the tree has live
-macOS WKWebView and Windows WebView2 hello paths plus a kipc echo slice; Linux remains a
-compiled layout slot. `keld-guard::evaluate` exists;
-`keld_permissions_explain` and the macOS webview media-capture handler call it;
-`keld-core` / `keld-native` do not invoke the guard on privileged IPC.
-`keld-runtime` is still a `RestartPolicy` struct; `keld dev` spawns `bun` from the
-CLI. Hold both facts.
+macOS WKWebView, Windows WebView2, and Linux WebKitGTK hello paths (KEL-26/27/28) plus
+a kipc echo slice. `keld-guard::evaluate` exists;
+`keld_permissions_explain` and the macOS/Linux/Windows webview media-capture handlers
+call it; `keld-core` / `keld-native` do not yet invoke the guard on privileged IPC
+(tracked: KEL-69). `keld dev`'s app-process spawn now runs under a real
+`keld-runtime::Supervisor` (KEL-70): spawn, stdout/stderr capture, restart-on-crash with
+exponential backoff, and a crash-loop breaker (default 3 crashes / 30s → typed
+`KELD-RUNTIME-002`). Not yet built: the destination `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`
+env contract (v0 keeps `KELD_APP_LINK`), Bun pinning/download, `--inspect` passthrough,
+Bun watch hot-restart, and OS sandboxing of the child (architecture 03 §4.2, v0.3). Hold
+these facts.
 
-**Next.** Keep shipping Linear Phase 2 (window + kipc echo + crate map) on these four.
-Do not add a fifth unique to look complete.
+**Update (2026-08-17, KEL-70).** `keld-runtime` was a bare `RestartPolicy` struct with
+nothing reading it; `crates/keld-cli/src/dev.rs` spawned `bun` with a raw
+`Command::new("bun").wait_with_output()` — Electrobun-shaped, not Unique #2. Replaced
+with `keld_runtime::Supervisor`: a background thread owns the child, polls `try_wait`
+(no async runtime — this crate is cold tooling, not the kipc/event-loop/guard hot path),
+captures stdout/stderr via reader threads into a shared buffer, and on a non-zero exit
+restarts with exponential backoff until the policy's crash count trips inside its
+window, at which point it returns a typed `RuntimeError::CrashLoop`. A zero exit is
+graceful completion — no restart. `keld dev`'s window is opened by the caller on its own
+thread after the echo step; the supervised child is a fully separate OS process, so
+killing/restarting it cannot touch a host-owned window (verified headless: every
+supervised child pid is asserted distinct from the host process's own pid across
+multiple restart cycles, `crates/keld-runtime/src/lib.rs`
+`host_pid_is_unaffected_across_restart_cycles`). Verification: `cargo fmt`/clippy
+`-D warnings`/nextest green on Windows (this machine); Unix/Windows test-shell branches
+(`sh -c` / `cmd /C`) compile under both `cfg`s but only the Windows path was executed
+here — Linux/macOS re-verification is still open.
+
+**Next.** Wire `keld-guard::evaluate` into the privileged kipc handler path (KEL-69);
+host-owned scoped `fs.read`/`fs.write` (KEL-71, blocked on KEL-69). Keep shipping Linear
+Phase 2 (window + kipc echo + crate map) on the four uniques. Do not add a fifth unique
+to look complete.
 
 ---
 
@@ -2363,8 +2397,9 @@ error website in v0; `KeldErrorObject.docs` still uses the
 CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
-- A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` `src`,
-  `keld-cli` templates, or workspace `tools/` that has no heading here fails the test.
+- A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
+  `keld-runtime` `src`, `keld-cli` templates, or workspace `tools/` that has
+  no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -2684,6 +2719,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: llms-docs
 - message: Documentation generator invocation or file I/O failed
 - fix: Follow the command-specific fix, correct the path or permissions, and rerun the generator.
+
+## KELD-RUNTIME-001
+
+- crate: keld-runtime
+- message: The supervisor's first spawn of the app-process child failed
+- fix: Check that `bun` is on PATH and re-run `keld doctor`.
+
+## KELD-RUNTIME-002
+
+- crate: keld-runtime
+- message: The app-process child crashed repeatedly; the crash-loop breaker tripped
+- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
 
 ---
 

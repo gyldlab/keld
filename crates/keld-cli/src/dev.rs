@@ -4,12 +4,13 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::Command;
 
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title,
     run_hello_window_html,
 };
+use keld_runtime::{RestartPolicy, Supervisor, SupervisorOutcome};
 
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 use crate::echo_link::EchoServer;
@@ -130,11 +131,15 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
 /// Doctor checks, then one Bun IPC echo round-trip. Does not open a window.
 ///
 /// The template speaks kipc directly (`src/kipc.ts`, KEL-30) — Bun needs only
-/// `KELD_APP_LINK`, not a `keld` binary path to shell out to.
+/// `KELD_APP_LINK`, not a `keld` binary path to shell out to. Bun runs under
+/// a [`keld_runtime::Supervisor`] (KEL-70): a crash (non-zero exit) is
+/// retried per [`RestartPolicy::default`] before this call gives up, instead
+/// of failing on the first non-zero exit.
 ///
 /// # Errors
 ///
-/// Returns [`DevError`] when checks fail, Bun cannot be spawned, or echo fails.
+/// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the
+/// supervisor's crash-loop breaker trips.
 pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     let checks = run_checks(Some(project_root));
     if !all_ok(&checks) {
@@ -152,35 +157,38 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
         .recv()
         .map_err(|_| DevError::Runtime("echo server failed to start".to_owned()))?;
     let link = server.link();
+    let link_for_child = link.clone();
 
     let bun_main = project_root.join("src/main.ts");
-    let child = Command::new("bun")
-        .arg("run")
-        .arg(&bun_main)
-        .current_dir(project_root)
-        .env("KELD_APP_LINK", &link)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let output = KillOnDrop::new(child).wait_with_output()?;
-    io::stdout().write_all(&output.stdout)?;
-    io::stderr().write_all(&output.stderr)?;
-
-    if !output.status.success() {
-        let _ = server.shutdown();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevError::Runtime(format!(
-            "bun exited with status {}. stderr: {stderr}",
-            output.status.code().unwrap_or(1)
-        )));
-    }
-
-    server.shutdown()?;
-
-    Ok(DevEchoResult {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        link,
+    let project_root = project_root.to_path_buf();
+    let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+        let mut cmd = Command::new("bun");
+        cmd.arg("run")
+            .arg(&bun_main)
+            .current_dir(&project_root)
+            .env("KELD_APP_LINK", &link_for_child);
+        cmd
     })
+    .map_err(|e| DevError::Runtime(e.to_string()))?;
+
+    let outcome = supervisor.wait_for_outcome();
+    let output = supervisor.output();
+    io::stdout().write_all(output.stdout.as_bytes())?;
+    io::stderr().write_all(output.stderr.as_bytes())?;
+
+    match outcome {
+        SupervisorOutcome::CrashLoop(err) => {
+            let _ = server.shutdown();
+            Err(DevError::Runtime(err.to_string()))
+        }
+        SupervisorOutcome::Stopped => {
+            server.shutdown()?;
+            Ok(DevEchoResult {
+                stdout: output.stdout,
+                link,
+            })
+        }
+    }
 }
 
 /// Runs `keld dev` in `project_root`: echo session, then the hello window.
@@ -199,58 +207,10 @@ fn open_dev_window(project_root: &Path) -> Result<(), DevError> {
     run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()))
 }
 
-/// Kills and reaps a child if the session is dropped before `wait`.
-struct KillOnDrop {
-    child: Option<Child>,
-}
-
-impl KillOnDrop {
-    fn new(child: Child) -> Self {
-        Self { child: Some(child) }
-    }
-
-    fn wait_with_output(mut self) -> io::Result<Output> {
-        let child = self
-            .child
-            .take()
-            .ok_or_else(|| io::Error::other("bun child missing"))?;
-        child.wait_with_output()
-    }
-}
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-
-    fn pid_is_running(pid: u32) -> bool {
-        #[cfg(unix)]
-        {
-            Command::new("/bin/kill")
-                .args(["-0", &pid.to_string()])
-                .status()
-                .is_ok_and(|s| s.success())
-        }
-        #[cfg(windows)]
-        {
-            let output = Command::new("tasklist")
-                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-                .output();
-            match output {
-                Ok(out) => String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()),
-                Err(_) => false,
-            }
-        }
-    }
 
     #[test]
     fn finds_config_from_nested_dir() {
@@ -423,26 +383,5 @@ mod tests {
         assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
         assert!(msg.contains("relative"), "{msg}");
         assert!(msg.contains(abs), "{msg}");
-    }
-
-    #[test]
-    fn kill_on_drop_reaps_bun_child() {
-        let child = Command::new("bun")
-            .args(["-e", "process.stdin.resume()"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("bun must be on PATH (same contract as bun_echo)");
-        let pid = child.id();
-        assert!(
-            pid_is_running(pid),
-            "child must be alive before drop; pid={pid}"
-        );
-        drop(KillOnDrop::new(child));
-        assert!(
-            !pid_is_running(pid),
-            "KillOnDrop must reap bun; pid {pid} still running"
-        );
     }
 }
