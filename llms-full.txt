@@ -2827,6 +2827,30 @@ Raw local evidence: `/tmp/keld-kel64-final-keld-20260817.json`,
 `/tmp/keld-kel64-final-electrobun-20260817.json`, and
 `/tmp/keld-kel64-final-electron-valid-20260817.json`.
 
+### KEL-64 macOS startup attribution (2026-08-17)
+
+This is a Keld-only diagnostic, not a framework leaderboard or a publishable
+score. A clean Keld `59e0987` adapter and the clean public fixture/harness
+[`258756c`](https://github.com/gyldlab/keld-benches/commit/258756c051fb951590d69d16fbad96f85c605d8b)
+ran 11 trace-disabled and 11 trace-enabled fresh-process arms in alternating
+order. Finder was the stable session anchor; all 22 arms passed the existing
+visible/focused double-rAF, foreground-continuity, exact-restoration, cleanup,
+and coalition-RSS checks.
+
+| Diagnostic (trace-enabled arm) | Median / p90 | What it bounds |
+|---|---:|---|
+| External valid double-rAF beacon | **352.211 / 392.408 ms** | End-to-end scored contract; not compositor completion. |
+| `event_loop_created` | **46.906 / 52.158 ms** | Keld/tao event-loop construction from `keld_wv::hello::run`. |
+| `window_built` | **95.141 / 102.793 ms** | Native tao/AppKit window construction complete. |
+| `webview_built` | **149.031 / 168.192 ms** | Keld's wry/WebKit webview-construction boundary complete. |
+| Beacon after `webview_built` | **197.656 / 215.243 ms** | Post-construction WebKit process/navigation/canonical-page scheduling residual. |
+
+The 739.960 ms maximum reached `webview_built` at 138.650 ms, leaving a
+601.311 ms post-webview residual. Keld-owned construction therefore does not
+explain the macOS tail; no product startup optimisation is claimed from this
+experiment. Raw evidence:
+`/private/tmp/keld-startup-attribution-paired-11-finder-20260817.json`.
+
 Neutralino's direct `--url` diagnostic bypassed fixture navigation and still
 returned the unfocused beacon. In upstream
 [v6.9.0](https://github.com/neutralinojs/neutralinojs/tree/2cec764ac5e3ccc5b1b44d046d6e6d6c85c3099e),

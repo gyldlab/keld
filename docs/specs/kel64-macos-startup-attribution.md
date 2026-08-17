@@ -60,10 +60,9 @@ Non-goals:
 
 ## 4. Design
 
-- The public `macos/keld/hello` recipe receives a second, committed,
-  benchmark-only patch. It changes only the fresh detached benchmark source
-  checkout; Keld's repository and its shipping artifact do not read a trace
-  setting.
+- The public `macos/keld/hello` recipe expands its committed benchmark-only
+  adapter patch. It changes only the fresh detached benchmark source checkout;
+  Keld's repository and its shipping artifact do not read a trace setting.
 - The patch adds a private `keld-wv` trace recorder used only by the patched
   macOS hello path. It captures `Instant`-relative nanoseconds at the four
   Keld-owned points above. It has a fixed four-slot state, accepts each stage
@@ -74,9 +73,8 @@ Non-goals:
   without asserting that they are equivalent to first paint.
 - The record is emitted once to the harness-provided unique path only after
   `webview_built`. The record contains the existing run nonce, ordered stage
-  names, relative nanoseconds, source and recipe identities, and no app
-  content, user data, process IDs, or window handles. The trace write is not
-  included in any scored arm.
+  names, and relative nanoseconds—no app content, user data, process IDs, or
+  window handles. The trace write is not included in any scored arm.
 - The Swift harness generates and reserves a non-existent per-arm trace path,
   passes it only to the traced Keld artifact, and reads it only after the
   existing externally timed beacon has been accepted. Its parser validates the
@@ -97,20 +95,43 @@ Non-goals:
   macOS Keld hello implementation required to emit the four records.
 - Must not touch: Keld's checked-in product source, `keld-guard`, `keld-ipc`,
   public `WebEngine` API, workspace dependencies, benchmark validity policy,
-  competitor fixtures, or schema/publication eligibility rules.
+  or competitor fixtures. The harness may add an optional privacy-safe trace
+  field and must refuse publishing trace-enabled diagnostic arms.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 Add the four-stage benchmark-only Keld patch and a strict harness
+- [x] T1 Add the four-stage benchmark-only Keld patch and a strict harness
   parser with falsifiable malformed/missing/stale/duplicate controls.
-- [ ] T2 Build immutable traced and untraced Keld artifacts from the same
+- [x] T2 Build immutable traced and untraced Keld artifacts from the same
   source, run alternating strict arms, and record raw evidence plus stage
   distributions.
-- [ ] T3 Make and record the attribution decision. If Keld-owned work explains
+- [x] T3 Make and record the attribution decision. If Keld-owned work explains
   the p90 tail, create a separate approved optimisation spec; otherwise record
   the external limitation and close this attribution slice.
 
-## 7. Test plan
+## 7. Result (2026-08-17)
+
+A clean `keld-host` adapter from Keld `59e0987` and public recipe
+[`258756c`](https://github.com/gyldlab/keld-benches/commit/258756c051fb951590d69d16fbad96f85c605d8b)
+ran 11 trace-disabled and 11 trace-enabled arms in alternating order. All 22
+samples met the existing focused double-rAF, foreground, restoration, cleanup,
+and coalition-RSS contract. Finder was the stable pre-arm foreground anchor.
+
+The trace-enabled diagnostic arm reached `webview_built` at 149.031 ms median
+(168.192 ms p90), while the independent valid beacon reached 352.211 ms median
+(392.408 ms p90). Its post-webview residual was 197.656 ms median and 215.243
+ms p90. The 739.960 ms maximum completed Keld-owned webview construction at
+138.650 ms, leaving 601.311 ms after it. Therefore Keld's construction work
+does not explain the retained macOS tail. That residual includes WebKit process
+startup/navigation and the canonical-page scheduling path; this experiment does
+not isolate those external components further. No product optimisation is
+justified by this attribution slice.
+
+Raw local evidence: `/private/tmp/keld-startup-attribution-paired-11-finder-20260817.json`.
+The trace-disabled lane is intentionally not a publishable score because the
+paired diagnostic run contains trace-enabled arms.
+
+## 8. Test plan
 
 - Harness pure tests: reject wrong nonce, missing stage, duplicate stage,
   out-of-order stage, non-monotonic duration, wrong source identity, and a
@@ -127,18 +148,18 @@ Non-goals:
   must reject it as non-monotonic. The external beacon must still be required
   in both controls.
 
-## 8. Review gates triggered
+## 9. Review gates triggered
 
 Unsafe: none. Public API: none. Permission model: none. Dependency addition:
 none. Wire protocol: none.
 
-## 9. Perf impact
+## 10. Perf impact
 
 The score-bearing untraced arms continue to measure architecture 01 §5's cold
 start → first-paint and coalition RSS values. Traced arms are diagnostic only;
 their overhead is never folded into a score. The final report includes medians,
 p90s, raw samples, and the exact public recipe/source commits.
 
-## 10. Open questions
+## 11. Open questions
 
 None. Human approval was given for this attribution-first scope on 2026-08-17.
