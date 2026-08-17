@@ -2690,7 +2690,7 @@ Regressions > 5% fail the PR once `bench/` lands (KEL-39 parked `bench/` as YAGN
 |---|---|---|---|
 | Installer (runtime = bun) | ≤ 20 MB | 85–150 MB | N/A — Bun not packed |
 | Installer (runtime = none) | ≤ 6 MB | — | N/A — no `.app` / DMG |
-| Cold start → first paint | ≤ 300 ms | 1–3 s | macOS **unmeasured**; Windows **472 ms** (2026-08-15 session, direct-COM backend) — ~1.6x over, floor is Chromium boot in controller creation |
+| Cold start → first paint | ≤ 300 ms | 1–3 s | macOS **over budget** (KEL-64 untraced-arm oracle; not gyldlab/keld#10 `PageLoadEvent::Finished`); Windows **472 ms** (2026-08-15 session, direct-COM backend) — ~1.6x over, floor is Chromium boot in controller creation |
 | Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB | **72.6–77.8 MiB** host-only (under budget; no Bun; WebKit XPCs excluded) |
 | kipc small-message p99 | ≤ 100 µs | ~ms-class | echo exists; not bench'd |
 | kipc bulk (shm) | ≥ 1 GB/s | n/a | no shm |
@@ -2756,7 +2756,7 @@ Electron/NW.js = Chromium ceiling; Native Swift = WK floor. Flutter = Skia
 **SHA:** `b93ebb6e0fb557b20ae312f155f3a33713212ccf` (`origin/main` at measure).
 **Build:** `cargo build --release -p keld-host -p keld-cli`.
 **Engine:** system WKWebView (wry+tao). **Not Chromium.** `keld-host --hello` does **not** spawn Bun.
-**First paint:** not instrumented. Do not treat RSS-ready as ≤ 300 ms.
+**First paint:** KEL-64 external double-rAF beacon on **untraced** arms. Do not treat RSS-ready, window-visible, or gyldlab/keld#10 `PageLoadEvent::Finished` as paint.
 **Native Swift:** Xcode 26.5 / Swift 6.3.2, `swiftc -O`, `arm64-macos14.0`, ad-hoc, no sandbox; artifacts `/tmp/keld-native-swift-hello`; same `HELLO_HTML` as `crates/keld-wv/src/hello/mod.rs`.
 **Competitor `vs`:** 2026-08-14, same Mac; fixtures `0308d55f628797067985247000b30b43ea00cba1`.
 
@@ -2827,43 +2827,39 @@ Raw local evidence: `/tmp/keld-kel64-final-keld-20260817.json`,
 `/tmp/keld-kel64-final-electrobun-20260817.json`, and
 `/tmp/keld-kel64-final-electron-valid-20260817.json`.
 
-### KEL-64 macOS startup attribution (2026-08-17)
+### KEL-64 macOS first paint and attribution (2026-08-17)
 
-This is a Keld-only diagnostic, not a framework leaderboard or a publishable
-score. A clean Keld `59e0987` adapter and the clean public fixture/harness
-[`258756c`](https://github.com/gyldlab/keld-benches/commit/258756c051fb951590d69d16fbad96f85c605d8b)
-ran 11 trace-disabled and 11 trace-enabled fresh-process arms in alternating
-order. Finder was the stable session anchor; all 22 arms passed the existing
-visible/focused double-rAF, foreground-continuity, exact-restoration, cleanup,
-and coalition-RSS checks.
+Paint oracle: independent double-rAF image beacon on a focused document, clock
+armed before spawn. **Do not** treat [gyldlab/keld#10](https://github.com/gyldlab/keld/pull/10)
+`PageLoadEvent::Finished` as first paint (navigation completion; clock starts
+after process launch).
 
-| Diagnostic (trace-enabled arm) | Median / p90 | What it bounds |
+Reported scores come only from **trace-disabled** arms (AC4
+[`c3030d5`](https://github.com/gyldlab/keld-benches/commit/c3030d579b606ac00d3ba9e0fba8f57987a41baa)).
+The untraced interleaved Keld row above (median **342.911 ms** @
+[`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b))
+is that class of number. Traced-arm construction is attribution, not a paint
+score.
+
+Fixture [`macos/keld/hello`](https://github.com/gyldlab/keld-benches/tree/aae2e12f998ff47805eed38083c624525d87b9a8/macos/keld/hello):
+AC1 [`a5b517c`](https://github.com/gyldlab/keld-benches/commit/a5b517c281da5555dcf7d310151af105ce589d02),
+AC4 [`c3030d5`](https://github.com/gyldlab/keld-benches/commit/c3030d579b606ac00d3ba9e0fba8f57987a41baa),
+AC6 [`aae2e12`](https://github.com/gyldlab/keld-benches/commit/aae2e12f998ff47805eed38083c624525d87b9a8).
+Record: [`kel64-startup-attribution.json`](https://github.com/gyldlab/keld-benches/blob/aae2e12f998ff47805eed38083c624525d87b9a8/macos/keld/hello/kel64-startup-attribution.json)
+(Keld `59e0987`, recipe
+[`258756c`](https://github.com/gyldlab/keld-benches/commit/258756c051fb951590d69d16fbad96f85c605d8b);
+n=11 traced diagnostic, **not** a published score).
+
+| Attribution (traced; not a score) | Median / p90 | Bounds |
 |---|---:|---|
-| External valid double-rAF beacon | **352.211 / 392.408 ms** | End-to-end scored contract; not compositor completion. |
-| `event_loop_created` | **46.906 / 52.158 ms** | Keld/tao event-loop construction from `keld_wv::hello::run`. |
-| `window_built` | **95.141 / 102.793 ms** | Native tao/AppKit window construction complete. |
-| `webview_built` | **149.031 / 168.192 ms** | Keld's wry/WebKit webview-construction boundary complete. |
-| Beacon after `webview_built` | **197.656 / 215.243 ms** | Post-construction WebKit process/navigation/canonical-page scheduling residual. |
+| Keld `webview_built` construction | **149.031 / 168.192 ms** | wry/WebKit webview-construction boundary |
+| External valid double-rAF beacon | **352.211 / 392.408 ms** | End-to-end contract; not compositor completion |
+| Residual after construction | **197.656 / 215.243 ms** | WebKit process/navigation/canonical-page scheduling |
 
-The 739.960 ms maximum reached `webview_built` at 138.650 ms, leaving a
-601.311 ms post-webview residual. Keld-owned construction therefore does not
-explain the macOS tail; no product startup optimisation is claimed from this
-experiment. Raw evidence:
-`/private/tmp/keld-startup-attribution-paired-11-finder-20260817.json`.
+Construction does not explain the p90 tail. Limitation
+`external_webkit_scheduling`. No product `keld-wv` window-build optimisation
+from this slice.
 
-Neutralino's direct `--url` diagnostic bypassed fixture navigation and still
-returned the unfocused beacon. In upstream
-[v6.9.0](https://github.com/neutralinojs/neutralinojs/tree/2cec764ac5e3ccc5b1b44d046d6e6d6c85c3099e),
-the macOS `window.focus()` path activates the application and restores or brings
-the window forward, but does not make the runtime `WKWebView` first responder. The independent
-Context-7 audit confirmed the canonical beacon's focus check is the correct
-contract: active app, key window, and first responder are distinct AppKit state.
-The minimal, reproducibly built local patch is recorded at
-[`gyldlab/keld-benches@4666d0a`](https://github.com/gyldlab/keld-benches/commit/4666d0a):
-it calls `makeFirstResponder:` for the existing web view after the current macOS
-bring-to-front/restore branch. A clean v6.9.0 source rebuild also passed a fresh
-focused-beacon run. This establishes a patch proof, **not** a replacement stock
-score or an assertion that upstream has accepted the change.
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | rss | debug | 73,184 then 70,752 KiB (~70–73 MiB) | ≤ 90 MB | — | — | — | — | Host-only; KEL-26 GUI pass | `just hello` / debug |
 | Phase 2 hello | 2026-08-13 | `b93ebb6` | darwin/arm64 | keld | dmg / .app | — | N/A | ≤ 6 MB runtimeless / ≤ 20 MB w/ Bun | zip 122,121,746 B; `.app` 288,448,512 B; Keld wrapping N/A | `.app` 8,265,728 B; DMG 2,910,772 B; Keld wrapping N/A | 96K `.app` / 31,655 B UDZO | 88K `.app` / 29,774 B UDZO | `keld-pack` is a `Format` enum. Tiny Swift `.app` ≠ packed Keld | n/a |
 | Phase 2 hello | 2026-08-13 | — | darwin/arm64 | **swiftui+wk** | .app | `swiftc -O` | 96K `du` / 92,740 B file sum | native floor | — | — | — | — | WKWebView + loadHTMLString | `/tmp/keld-native-swift-hello` |
@@ -2891,7 +2887,7 @@ Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 | Keld `.app` / DMG | `keld-pack` has no authoring code |
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
 | Electrobun complete RSS | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
-| First paint ≤ 300 ms | **Windows: 472 ms (2026-08-15 controlled session), ~1.6x over budget** — floor is Chromium boot inside controller creation (see the direct-COM A/B section). macOS/Linux: still not instrumented. |
+| First paint ≤ 300 ms | **Windows: 472 ms (2026-08-15), ~1.6x over.** macOS: KEL-64 untraced-arm oracle is over budget (interleaved median 342.911 ms); construction ~149 ms vs beacon ~352 ms is residual WebKit, not a `keld-wv` build target. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Linux: still not instrumented. |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
 | Windows / Linux competitor hellos | keld-benches stubs; not this machine |
@@ -2944,7 +2940,7 @@ Four uniques only — no fifth.
 | 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. Electrobun 72,032 KB launcher is incomplete. Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
-| 5 | Cold start first paint (≤300 ms) | **can win with work** — **fastest WebView2 arm, budget still missed** | Latest controlled session (Windows, 2026-08-15): Keld **472 ms** ahead of Tauri 483/506 in both same-session runs; Electron 278 leads absolutes. Budget missed ~1.6x; the floor is Chromium boot inside `CreateCoreWebView2Controller` (Microsoft-confirmed not app-reducible). macOS still uninstrumented. See "Windows first paint on the direct-COM backend". |
+| 5 | Cold start first paint (≤300 ms) | **can win with work** — **budget missed on both OS** | Windows (2026-08-15): Keld **472 ms** vs Tauri 483/506; Electron 278; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced-arm** oracle (not #10 PageLoad Finished); construction ~149 ms, beacon ~352 ms, residual is WebKit (`external_webkit_scheduling`). |
 | 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk (this-Mac Electron `.app` 288,448,512; NW.js `.app` 410,271,744). Spec 01 §6: no CEF-by-default. |
 | 7 | Default-deny / crash isolation / zero ambient OS authority | **can win with work** | The product bet (architecture 01 §1). Specified, not enforced on hello. |
 | 8 | Flutter Skia hello | **cannot win honestly** | Different engine. Spec 01 §6: not a UI toolkit. |
@@ -2957,9 +2953,10 @@ compressed Bun ~25–35 MB — the 20 MB budget is a **compressor choice** (zstd
 UDZO), not a host-trim project.
 
 **Refuse:** CEF-by-default; drop Bun to win installer; count hello-without-Bun as
-the product; mix WK/Chromium/Skia in one `vs`; debug 5.5M in `vs`; time-to-RSS or
-time-to-titled-`HWND` as first paint; fill `vs` from blog citations; treat
-Electrobun launcher RSS as vs-WK; fake `bench/` CI.
+the product; mix WK/Chromium/Skia in one `vs`; debug 5.5M in `vs`; time-to-RSS,
+time-to-titled-`HWND`, or wry `PageLoadEvent::Finished` (gyldlab/keld#10) as first
+paint; fill `vs` from blog citations; treat Electrobun launcher RSS as vs-WK;
+fake `bench/` CI; treat traced-arm construction as a paint score.
 
 ## Related
 
@@ -2968,6 +2965,7 @@ Cite the path **and** an immutable SHA — not only `main`. Not in this monorepo
 
 - Competitor hellos @ [`0308d55`](https://github.com/gyldlab/keld-benches/commit/0308d55f628797067985247000b30b43ea00cba1) ([MEASUREMENTS.md](https://github.com/gyldlab/keld-benches/blob/0308d55f628797067985247000b30b43ea00cba1/MEASUREMENTS.md)): [`macos/electron/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/electron/hello), [`macos/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/tauri/hello), [`macos/neutralino/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/neutralino/hello), [`macos/wails/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/wails/hello), [`macos/nwjs/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/nwjs/hello), [`macos/electrobun/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/electrobun/hello)
 - KEL-64 macOS oracle + recipes @ [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b): [`macos/harness`](https://github.com/gyldlab/keld-benches/tree/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b/macos/harness), [`macos/keld/hello`](https://github.com/gyldlab/keld-benches/tree/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b/macos/keld/hello), [`macos/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b/macos/tauri/hello)
+- KEL-64 attribution fixture [`macos/keld/hello`](https://github.com/gyldlab/keld-benches/tree/aae2e12f998ff47805eed38083c624525d87b9a8/macos/keld/hello): AC1 [`a5b517c`](https://github.com/gyldlab/keld-benches/commit/a5b517c281da5555dcf7d310151af105ce589d02), AC4 [`c3030d5`](https://github.com/gyldlab/keld-benches/commit/c3030d579b606ac00d3ba9e0fba8f57987a41baa), AC6 [`aae2e12`](https://github.com/gyldlab/keld-benches/commit/aae2e12f998ff47805eed38083c624525d87b9a8)
 - Native Swift @ [`646be79`](https://github.com/gyldlab/keld-benches/commit/646be7972706158ff744a1cb33547eddfe127445): [`macos/swift/appkit-wk`](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/appkit-wk), [`macos/swift/swiftui-wk`](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/swiftui-wk)
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
