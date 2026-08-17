@@ -526,15 +526,20 @@ because Bun has no stable embedding C API.
 
 ### What the code actually passes
 
+Since KEL-70, `keld dev` spawns Bun through `keld_runtime::Supervisor`, not a direct
+`Command::spawn()` call — the supervisor owns `Stdio::piped()` and restart-on-crash; the
+command factory below only sets argv/cwd/env, once per spawn attempt (including restarts):
+
 ```rust
 // crates/keld-cli/src/dev.rs (run_dev_echo)
-let mut bun = Command::new("bun");
-bun.arg("run")
-    .arg(&bun_main)
-    .current_dir(project_root)
-    .env("KELD_APP_LINK", &link)
-    .stdout(Stdio::inherit())
-    .stderr(Stdio::inherit());
+let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+    let mut cmd = Command::new("bun");
+    cmd.arg("run")
+        .arg(&bun_main)
+        .current_dir(&project_root)
+        .env("KELD_APP_LINK", &link_for_child);
+    cmd
+})?;
 ```
 
 | Variable | Value | Consumed by |

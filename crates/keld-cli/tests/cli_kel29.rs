@@ -270,7 +270,62 @@ fn run_dev_echo_uses_project_name_and_reaps_socket() {
 }
 
 #[test]
+fn run_dev_echo_recovers_from_one_real_bun_crash() {
+    // KEL-70 AC1/AC3 at the `keld dev` integration level: a real `bun`
+    // process that crashes once and succeeds on retry must still produce a
+    // successful `run_dev_echo` — proving the supervisor, not a bare
+    // `Command::new("bun")` wait, now owns this spawn.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("t{}crash", std::process::id());
+    let root = create_project(dir.path(), &name).expect("create");
+    fs::write(
+        root.join("src/main.ts"),
+        r#"
+import { echoRoundtrip } from "./kipc";
+import { existsSync, writeFileSync } from "node:fs";
+
+const marker = "./.crash-once";
+if (!existsSync(marker)) {
+  writeFileSync(marker, "1");
+  console.error("simulated-crash");
+  process.exit(1);
+}
+
+const link = process.env.KELD_APP_LINK;
+if (!link) {
+  console.error("KELD-CLI-010: KELD_APP_LINK is unset");
+  process.exit(1);
+}
+const response = await echoRoundtrip(link, { message: "keld", count: 1 });
+console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+console.log("recovered-after-crash");
+"#,
+    )
+    .expect("overwrite main with a once-crashing script");
+
+    let result = run_dev_echo(&root).expect("supervisor must retry the crash and succeed");
+    assert!(
+        result.stdout.contains("recovered-after-crash"),
+        "{}",
+        result.stdout
+    );
+    assert!(
+        result
+            .stdout
+            .contains("ipc-echo ok: message=\"keld\" count=1"),
+        "{}",
+        result.stdout
+    );
+}
+
+#[test]
 fn run_dev_echo_bun_nonzero_without_connect_does_not_hang() {
+    // A deterministic non-zero exit now goes through the keld-runtime
+    // supervisor (KEL-70): it is retried per the default RestartPolicy
+    // (3 crashes / 30s) before this call gives up, so the failure surfaces
+    // as a crash-loop error rather than a single-attempt failure — but the
+    // property under test (no hang on a socket the child never connects to)
+    // still holds, and well inside the 30s deadline below.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = create_project(dir.path(), "app").expect("create");
     fs::write(root.join("src/main.ts"), "process.exit(7);\n").expect("overwrite main");
@@ -283,9 +338,11 @@ fn run_dev_echo_bun_nonzero_without_connect_does_not_hang() {
     let result = done_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("bun non-zero without a socket connect must not block on accept()");
-    let err = result.expect_err("bun exit 7 must fail the session");
+    let err = result.expect_err("bun exit 7 crash-looping must fail the session");
     let msg = err.to_string();
     assert!(msg.contains("KELD-CLI-031"), "{msg}");
+    assert!(msg.contains("KELD-RUNTIME-002"), "{msg}");
+    assert!(msg.contains("crashed 3 times"), "{msg}");
     assert!(msg.contains('7'), "{msg}");
 }
 

@@ -22,6 +22,7 @@ keld-pack = { workspace = true }
 keld-update = { workspace = true }
 keld-ipc = { workspace = true }
 keld-guard = { workspace = true }
+keld-runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }

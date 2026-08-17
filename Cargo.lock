@@ -1266,6 +1266,7 @@ dependencies = [
  "keld-guard",
  "keld-ipc",
  "keld-pack",
+ "keld-runtime",
  "keld-update",
  "rmcp",
  "schemars",

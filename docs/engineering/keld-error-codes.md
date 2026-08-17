@@ -8,8 +8,9 @@ error website in v0; `KeldErrorObject.docs` still uses the
 CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
-- A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` `src`,
-  `keld-cli` templates, or workspace `tools/` that has no heading here fails the test.
+- A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
+  `keld-runtime` `src`, `keld-cli` templates, or workspace `tools/` that has
+  no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
 
@@ -329,3 +330,15 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: llms-docs
 - message: Documentation generator invocation or file I/O failed
 - fix: Follow the command-specific fix, correct the path or permissions, and rerun the generator.
+
+## KELD-RUNTIME-001
+
+- crate: keld-runtime
+- message: The supervisor's first spawn of the app-process child failed
+- fix: Check that `bun` is on PATH and re-run `keld doctor`.
+
+## KELD-RUNTIME-002
+
+- crate: keld-runtime
+- message: The app-process child crashed repeatedly; the crash-loop breaker tripped
+- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
