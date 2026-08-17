@@ -578,7 +578,7 @@ value fails, remove the external pilot without changing Keld.
 | Bindings for agents | [`AGENTS.md`](../../AGENTS.md), crate `AGENTS.md`, [`docs/agents/workflow.md`](../agents/workflow.md) |
 | Design target | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Error codes | [`keld-error-codes.md`](./keld-error-codes.md) |
-| Hello size / RSS / installer | [`budget-scoreboard.md`](./budget-scoreboard.md) |
+| Hello disk / RSS / untraced first-paint proxy | [`budget-scoreboard.md`](./budget-scoreboard.md) |
 | Licenses for binaries | [`third-party-licenses.md`](./third-party-licenses.md) |
 | Toolchain history | [`tooling-audit.md`](./tooling-audit.md) |
 | Linear vs ROADMAP phases | [`linear-roadmap-mapping.md`](./linear-roadmap-mapping.md) |
