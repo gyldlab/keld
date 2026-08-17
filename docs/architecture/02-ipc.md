@@ -43,6 +43,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify).
   Channel-table exchange remains later work.
+- **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
+  stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
+  CALL). Further CALLs on the same stream use `echo_invoke` and must not send a
+  second `HELLO`. Correlation id `0` stays reserved for `HELLO`. This is the
+  session loop a persistent Bun child needs; it is not a 10k-call latency bench
+  (KEL-30 AC3 / KEL-39 remain parked).
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
   measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
   exists only for `--inspect-ipc` debugging (human dump), never on the hot path.

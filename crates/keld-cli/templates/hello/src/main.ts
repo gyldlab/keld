@@ -4,8 +4,10 @@
  * does the HELLO handshake + echo Call/Reply — no shelling out to a second
  * Rust process. Full schema-driven codegen (`keld gen`, `@keld/schema`) is a
  * later slice; `./kipc.ts` is the hand-written, wire-exact v0 client.
+ * `AppLinkSession` holds one HELLO'd connection so further CALLs do not
+ * handshake again.
  */
-import { echoRoundtrip } from "./kipc";
+import { AppLinkSession } from "./kipc";
 
 const link = process.env.KELD_APP_LINK;
 if (!link) {
@@ -15,7 +17,12 @@ if (!link) {
   process.exit(1);
 }
 
-const response = await echoRoundtrip(link, { message: "keld", count: 1 });
-console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+const session = await AppLinkSession.connect(link);
+try {
+  const response = await session.echo({ message: "keld", count: 1 });
+  console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+} finally {
+  session.close();
+}
 
 console.log("{{name}}: main process ready (IPC echo ok)");
