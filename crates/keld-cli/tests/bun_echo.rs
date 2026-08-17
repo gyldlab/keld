@@ -297,8 +297,10 @@ try {
         "missing second unique echo: stdout={stdout}"
     );
     assert_ne!(unique_a, unique_b);
+    // two.ts prints `first=${JSON.stringify(message)}:${count}` (same for second),
+    // never `message=... count=...`. A demo-payload leak must match that format.
     assert!(
-        !stdout.contains("message=\"keld\" count=1"),
+        !stdout.contains("first=\"keld\":1") && !stdout.contains("second=\"keld\":1"),
         "must not print the hardcoded demo payload: {stdout}"
     );
 }
