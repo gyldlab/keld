@@ -281,12 +281,14 @@ The honest reading of that diagram:
 - **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
   (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
   echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic
-  guard-before-handler entry point for privileged calls now exists
-  (`keld_ipc::guard_dispatch::dispatch_privileged`, KEL-69) and is proven end-to-end over
-  a real kipc session, but no production capability calls it yet — `keld-native`'s
-  modules are still names only. MCP `keld_permissions_explain` and the webview
-  media-capture handlers (all three OS backends) already call `keld-guard::evaluate`
-  directly, independent of `dispatch_privileged`.
+  guard-before-handler entry point for privileged calls exists
+  (`keld_ipc::guard_dispatch::dispatch_privileged`, KEL-69) and now has its first real
+  caller: `keld_native::fs::{fs_read, fs_write}` (KEL-71) — a real kipc channel
+  (`serve_fs_session`), guard-checked before any OS call, with real temp-file oracles
+  proving allow/deny/`..`/non-`AppProcess` cases. Every other `keld-native` module is
+  still a name only. MCP `keld_permissions_explain` and the webview media-capture
+  handlers (all three OS backends) call `keld-guard::evaluate` directly, independent of
+  `dispatch_privileged`.
 - **`keld-runtime` now supervises the Bun spawn (KEL-70).** `keld-cli/src/dev.rs`
   `run_dev_echo` spawns through `keld_runtime::Supervisor`, which restarts a crashed
   (non-zero exit) child with exponential backoff up to `RestartPolicy`'s defaults
@@ -322,6 +324,7 @@ flowchart TD
     core --> guard[keld-guard]
     core --> wv[keld-wv]
     native[keld-native] --> guard
+    native --> ipc
     runtime[keld-runtime] --> ipc
     wv --> guard
     wv -.->|macOS only| ext["tao 0.35.3<br/>wry 0.56.1"]
@@ -329,14 +332,15 @@ flowchart TD
 
     classDef live fill:#1b5e20,stroke:#a5d6a7,color:#fff
     classDef skel fill:#37474f,stroke:#90a4ae,color:#fff
-    class ipc,wv,cli live
-    class core,guard,native,runtime,update,pack,compat,host skel
+    class ipc,wv,cli,guard,native,runtime live
+    class core,update,pack,compat,host skel
 ```
 
 Green = substantially implemented. Grey = skeleton. Two specified edges are missing today:
-`keld-core → keld-native` and `keld-core → keld-runtime` — the host does not yet reach the
-native API layer or the supervisor, which is consistent with neither of those crates having
-behavior to reach.
+`keld-core → keld-native` and `keld-core → keld-runtime` — the host does not yet *reach*
+the native API layer or the supervisor. Both crates have real behavior now (`keld-native`'s
+`fs.read`/`fs.write`, KEL-71; `keld-runtime`'s `Supervisor`, KEL-70) — `keld-core` itself is
+just still too thin (`run_hello_window()` delegation only) to be the one calling either.
 
 ### The two crates that carry real weight
 
@@ -381,7 +385,7 @@ but written down next to the code with the reason and the milestone that closes 
 |---|---|---|---|---|---|
 | `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
 | `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. Proven wiring, no real capability uses it yet (host `fs.read`/`fs.write` is KEL-71). `$VARS`/symlink resolution is not in this slice. |
-| `keld-native` | 25 | Skeleton | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules (`window`, `menu`, `tray`, `dialog`, `notify`, `clipboard`, `shortcut`, `screen`, `power`, `shell`, `fs`, `secrets`, `deeplink`, `autostart`, `dock`). Zero implementations |
+| `keld-native` | ~345 | Partial | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules. `fs` is live (KEL-71): `fs_read`/`fs_write` (capability ids `fs.read`/`fs.write`), a real `serve_fs_session` kipc channel, every call routed through `keld_ipc::guard_dispatch::dispatch_privileged` before touching disk. The other 14 modules are still names only |
 | `keld-runtime` | ~685 | Partial | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s). `keld-cli/src/dev.rs` `run_dev_echo` spawns through it. Bun discovery/pinning, `--inspect`, and Bun watch hot-restart are not built |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
 | `keld-pack` | 25 | Skeleton | Packaging, signing, cross-compilation | [`06` §3](../architecture/06-runtime-and-tooling.md) | A `Format` enum (`App`, `Dmg`, `Nsis`, `Msi`, `Deb`, `Rpm`, `AppImage`) |
@@ -622,12 +626,12 @@ The summary table. "Live" means it works and a test proves it.
 | Linux webview backend | **Implemented + build-tested (KEL-28); window unverified on a real desktop** | `keld-wv/src/webkitgtk/`, wry interim (GTK3 + WebKit2GTK 4.1, `build_gtk` for Wayland) mirroring how macOS/Windows started; GPU-stack probe (NVIDIA+Wayland safe-mode) built in. Compiles/clippy/225-test-green on real Ubuntu; `Xvfb`+`xdotool` finds a real correctly-titled window; nobody has watched pixels render yet |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; `dev` runs echo and window side by side, not integrated |
-| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` and macOS + Windows `web.camera`/`web.microphone` capture call them; host IPC does not |
-| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is live default-deny; host IPC still does not call them. `$VARS` matched literally in v0 |
+| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_native::fs` (KEL-71, via `dispatch_privileged`, KEL-69) call them; echo dispatch deliberately does not |
+| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic and `fs.read`/`fs.write` are live default-deny; echo dispatch deliberately stays ungated. `$VARS` matched literally in v0 |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash-loop breaker) | **Implemented (KEL-70)** | `keld_runtime::Supervisor`; `keld dev` spawns through it |
-| `keld-native` modules (window, menu, tray, dialog, …) | **Specified, not implemented** | A list of 15 names |
+| `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | `fs` is implemented (KEL-71: `fs.read`/`fs.write`, guard-checked); the other 14 are still names only |
 | Electron compat (`@keld/electron`, tiers, conformance suite) | **Specified, not implemented** | A `Tier` enum. `packages/` is empty |
 | `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | `packages/` is empty |
 | `keld build` / `migrate` / `gen` / `ext` | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |

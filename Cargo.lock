@@ -1321,6 +1321,8 @@ name = "keld-native"
 version = "0.0.1"
 dependencies = [
  "keld-guard",
+ "keld-ipc",
+ "serde",
 ]
 
 [[package]]
