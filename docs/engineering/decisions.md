@@ -162,6 +162,40 @@ Apache-2.0. The MPL-2.0 crate in the graph is **`option-ext` 0.2.0**, reached
 [`third-party-licenses.md`](./third-party-licenses.md), learnings 2026-08-13). Do not
 describe wry as MPL.
 
+**Update (2026-08-17, KEL-28 follow-up): the `build_gtk` container was itself
+wrong.** §2's `WebViewBuilderExtUnix::build_gtk(window.gtk_window())` call
+compiled, created a real titled window `xdotool` could find, and did not
+panic — but was silently broken: `window.gtk_window()` returns the
+`GtkApplicationWindow`, a `GtkBin` that can hold exactly one child, and tao
+already fills that slot with its own vertical `gtk::Box`
+(`WindowExtUnix::default_vbox`). GTK logged "Attempting to add a widget...
+but as a GtkBin subclass a GtkApplicationWindow can only contain one widget
+at a time" and the webview never actually attached to the window — confirmed
+live under Xvfb (log capture, `docs/agents/learnings.md`). Every real wry
+example (`examples/simple.rs`, `examples/multiwindow.rs`, ...) passes
+`window.default_vbox().unwrap()` to `build_gtk`; the `gtk_window()` form only
+appears in wry's simplified top-of-crate-doc snippet, which is for the
+X11-only `build(&window)` path, not `build_gtk`. Fixed to `default_vbox()`;
+re-verified under Xvfb — the GTK warning is gone, and `keld-host --hello`
+now stays alive in its event loop (blocks as expected) instead of the prior
+run completing regardless. This does not by itself prove pixel-level render
+correctness (still nobody has watched it with eyes on a screen), but it is
+materially stronger evidence than before: the previous "it works" claim was
+based on window *existence*, not the webview being correctly parented into
+that window at all.
+
+**Update (2026-08-17): Linux CI wiring landed.** `.github/workflows/ci.yml`
+`linux-gui-smoke` now runs the exact Xvfb + `xdotool` smoke test described
+above on every PR/push — closing the "CI wiring (`.github/workflows/ci.yml`
+untouched)" gap disclosed in KEL-28's original PR and Linear comment. It
+installs Xvfb + xdotool + the same WebKitGTK apt packages as the `check`
+job, builds `keld-host`, launches `--hello`, and polls `xdotool search`
+(up to 30s) before killing the process — a bounded, non-flaky wait, not a
+blind sleep. A local dry-run in WSL surfaced a real bug in the *test script
+itself*: a `trap '... || true' EXIT` clobbers `$?`, so a genuinely failing
+smoke test would have reported success to CI — fixed by capturing the exit
+code before cleanup and re-exiting with it explicitly (`docs/agents/learnings.md`).
+
 **Next.** Keep macOS and Linux on wry+tao. Rewrite a backend to objc2/webkit6-gtk4
 when that backend needs a wry-missing hook (as happened for Windows, KEL-65), or
 when someone can run the smoke on that OS with a real display — not as a
@@ -485,7 +519,7 @@ test (a): Linear Phase 2 (window + kipc echo + crate map) ships without them.
 | **Servo / Verso backend** | Spec 05 tracks them as a fifth `WebEngine` the day embedding stabilizes. That is a later backend, not a wry replacement for the hello window. | architecture 05 §1 |
 | **Wrapping SaaS / OAuth MCP** | v1 is stdio, zero listeners, no HTTP transport, no auth crate. Architecture 07 §9: no bespoke agent protocol; we do not host developers' agent identity. | `Cargo.toml` rmcp comment; architecture 07 §4, §9; onboarding 07 |
 | **objc2 rewrite this week** | Destination is spec 05; current macOS path is wry+tao scaffolding. The rewrite does not move Phase 2. | architecture 05 §1; `wkwebview/mod.rs`; `AGENTS.md` YAGNI (a) |
-| **Watching the KEL-28 Linux window with eyes on a screen** | Windows (KEL-27) and Linux (KEL-28) backends are both implemented and built/tested on their real OS (WSL Ubuntu for Linux, not cross-compiled from macOS as-if-done — `AGENTS.md` forbids that shortcut). Xvfb + `xdotool` confirms a real, correctly titled X11 window exists (§2 above) — the headless smoke test KEL-28's own spec asked for. What's still open: nobody has watched pixels render on a real desktop. Confirm on Linux hardware/VM with a display before calling KEL-28 fully closed. | `crates/keld-wv/src/webkitgtk/mod.rs`; architecture 05 §1 |
+| **Watching the KEL-28 Linux window with eyes on a screen** | Windows (KEL-27) and Linux (KEL-28) backends are both implemented and built/tested on their real OS (WSL Ubuntu for Linux, not cross-compiled from macOS as-if-done — `AGENTS.md` forbids that shortcut). Xvfb + `xdotool` confirms a real, correctly titled X11 window exists, and — since the 2026-08-17 `default_vbox` fix — that the webview actually attaches to it without GTK's widget-conflict warning, and that `keld-host --hello` correctly blocks in its event loop instead of exiting. `linux-gui-smoke` now runs this in CI on every push/PR. What's still open: nobody has watched pixels *render* on a real desktop. Confirm on Linux hardware/VM with a display before calling KEL-28 fully closed. | `crates/keld-wv/src/webkitgtk/mod.rs`; `.github/workflows/ci.yml` `linux-gui-smoke`; architecture 05 §1 |
 | **Six-framework notes-app bench** | Same app in Keld / Electron / Electrobun / Tauri / Wails / Swift is a later epic. Fair score is **v1** (search, GFM preview, custom-scheme images, native menus, second window, PDF-exists, file watch, autosave) — not v0 CRUD. Keld cannot host that without guard-on-IPC and host `fs.read`/`fs.write`. Bun `node:fs` is not a default-deny test. | architecture 01 §5; this file §11; research 43 / 43a (exploratory, not required) |
 
 Also parked, for the same YAGNI reason: `bench/` perf CI (budgets exist in

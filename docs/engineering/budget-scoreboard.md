@@ -218,9 +218,12 @@ Windows Keld rows: measured, see "Windows first paint on the direct-COM backend"
 below. Linux Keld rows: still **N/A** for timing/RSS numbers — KEL-28 landed a
 live backend (`crates/keld-wv/src/webkitgtk/`), confirmed opening a real X11
 window via `Xvfb` + `xdotool` (`gtk::init()` fails outright in the plain WSL
-sandbox with no display; Xvfb sidesteps that), but nobody has run a real
-first-paint measurement there. Numbers need real Linux hardware/VM or a
-proper CI job.
+sandbox with no display; Xvfb sidesteps that) with the webview correctly
+attached (2026-08-17 `default_vbox` fix — the widget was previously
+mis-parented and silently never attached, see `docs/agents/learnings.md`),
+and this smoke test now runs in CI (`linux-gui-smoke` job), but nobody has
+run a real first-paint measurement there. Numbers need real Linux
+hardware/VM.
 Notes-app rows: **later** (guard-on-IPC + host `fs` first).
 
 ### Still waiting

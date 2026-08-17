@@ -270,12 +270,29 @@ impl WebEngine for WebKitGtkEngine {
             NavTarget::Url(url) => builder.with_url(url),
         };
         // wry's plain `build(&window)` only wires the X11 path; Wayland needs
-        // `build_gtk` against the tao-managed GTK window directly (wry's own
-        // docs: "If you also want to support Wayland too... use
-        // WebViewBuilderExtUnix::build_gtk"). KEL-28's DoD requires both
-        // session types, so this is not optional.
+        // `build_gtk` (wry's own docs: "If you also want to support Wayland
+        // too... use WebViewBuilderExtUnix::build_gtk"). KEL-28's DoD
+        // requires both session types, so this is not optional.
+        //
+        // The container passed to `build_gtk` MUST be the vertical
+        // `gtk::Box` tao adds as the window's sole child
+        // (`WindowExtUnix::default_vbox`), not the `GtkApplicationWindow`
+        // itself (`gtk_window()`) — a `GtkApplicationWindow` is a `GtkBin`
+        // (exactly one child) and that slot is already taken by tao's own
+        // vbox. Passing `gtk_window()` compiles and even runs, but GTK logs
+        // "can only contain one widget at a time" and the webview never
+        // actually attaches — confirmed live under Xvfb (see
+        // `docs/agents/learnings.md`). Every real wry example
+        // (`examples/simple.rs` etc.) uses `default_vbox()`; the
+        // `gtk_window()` form in wry's top-of-crate doc comment is the
+        // X11-only `build(&window)` snippet, not `build_gtk`'s.
+        let vbox = window.default_vbox().ok_or_else(|| {
+            WvError::Webview(String::from(
+                "tao window has no default GTK vbox (WindowBuilderExtUnix::with_default_vbox(false) was set)",
+            ))
+        })?;
         let webview = builder
-            .build_gtk(window.gtk_window())
+            .build_gtk(vbox)
             .map_err(|e| WvError::Webview(e.to_string()))?;
 
         let id = self.next_id;
