@@ -1311,6 +1311,7 @@ dependencies = [
 name = "keld-ipc"
 version = "0.0.1"
 dependencies = [
+ "keld-guard",
  "postcard",
  "serde",
 ]

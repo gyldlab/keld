@@ -14,6 +14,7 @@ use std::time::Duration;
 pub mod codec;
 pub mod echo;
 pub mod frame;
+pub mod guard_dispatch;
 pub mod link;
 pub mod session;
 pub mod token;
