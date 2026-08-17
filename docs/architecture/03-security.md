@@ -23,7 +23,15 @@ every privileged call.
 principal field on the wire. `keld-guard::evaluate` takes a `Principal` and
 default-denies anything other than `AppProcess` (`KELD-GUARD006`) so `app`
 scopes cannot be applied to a webview or plugin by accident. Channel grants
-are not evaluated. Echo dispatch does not call the guard.
+are not evaluated. Echo dispatch does not call the guard — it is an
+unprivileged demo channel (KEL-30), deliberately not routed through this.
+`keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) is the sanctioned
+guard-before-handler entry point for a privileged `Call`: it runs
+`evaluate` and only invokes the handler closure on `Allow`, verified
+end-to-end over a real kipc session (real socket, real `HELLO` handshake,
+real filesystem side effect gated on the decision). No production
+capability calls it yet — host `fs.read`/`fs.write` (KEL-71) is the first
+one that will, and MUST use this path rather than reimplement the check.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 

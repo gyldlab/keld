@@ -1088,7 +1088,15 @@ every privileged call.
 principal field on the wire. `keld-guard::evaluate` takes a `Principal` and
 default-denies anything other than `AppProcess` (`KELD-GUARD006`) so `app`
 scopes cannot be applied to a webview or plugin by accident. Channel grants
-are not evaluated. Echo dispatch does not call the guard.
+are not evaluated. Echo dispatch does not call the guard — it is an
+unprivileged demo channel (KEL-30), deliberately not routed through this.
+`keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) is the sanctioned
+guard-before-handler entry point for a privileged `Call`: it runs
+`evaluate` and only invokes the handler closure on `Allow`, verified
+end-to-end over a real kipc session (real socket, real `HELLO` handshake,
+real filesystem side effect gated on the decision). No production
+capability calls it yet — host `fs.read`/`fs.write` (KEL-71) is the first
+one that will, and MUST use this path rather than reimplement the check.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 
@@ -1805,9 +1813,11 @@ it changes who owns a handle, who can crash whom, or who can mint a principal.
 **Implemented vs specified.** The four uniques are the design. Today the tree has live
 macOS WKWebView, Windows WebView2, and Linux WebKitGTK hello paths (KEL-26/27/28) plus
 a kipc echo slice. `keld-guard::evaluate` exists;
-`keld_permissions_explain` and the macOS/Linux/Windows webview media-capture handlers
-call it; `keld-core` / `keld-native` do not yet invoke the guard on privileged IPC
-(tracked: KEL-69). `keld dev`'s app-process spawn now runs under a real
+`keld_permissions_explain`, the macOS/Linux/Windows webview media-capture handlers, and
+now `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. No production
+capability uses `dispatch_privileged` yet — `keld-native`'s modules are still names only
+(no `fs.read`/`fs.write` implementation; that is KEL-71). `keld dev`'s app-process spawn
+now runs under a real
 `keld-runtime::Supervisor` (KEL-70): spawn, stdout/stderr capture, restart-on-crash with
 exponential backoff, and a crash-loop breaker (default 3 crashes / 30s → typed
 `KELD-RUNTIME-002`). Not yet built: the destination `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`
@@ -1833,10 +1843,26 @@ multiple restart cycles, `crates/keld-runtime/src/lib.rs`
 (`sh -c` / `cmd /C`) compile under both `cfg`s but only the Windows path was executed
 here — Linux/macOS re-verification is still open.
 
-**Next.** Wire `keld-guard::evaluate` into the privileged kipc handler path (KEL-69);
-host-owned scoped `fs.read`/`fs.write` (KEL-71, blocked on KEL-69). Keep shipping Linear
-Phase 2 (window + kipc echo + crate map) on the four uniques. Do not add a fifth unique
-to look complete.
+**Update (2026-08-17, KEL-69).** ACL fixtures (KEL-45) proved the matcher but not that a
+privileged `Call` is denied on the wire without its handler running — Unique #4 was
+advisory. Added `keld_ipc::guard_dispatch::dispatch_privileged(manifest, principal,
+operation, path, handler) -> Result<T, DenyReason>`: the single sanctioned
+guard-before-handler entry point, evaluating before `handler` ever runs. Proved
+end-to-end with a real kipc session (`crates/keld-ipc/tests/guard_dispatch.rs`): a real
+socket, a real v2 `HELLO` handshake, a `Call` on a test-only channel (`test.marker` —
+deliberately not `fs.*`, so it can't collide with KEL-71's real capability), and a real
+filesystem write as the handler's side effect. Deny-manifest and non-`AppProcess`
+principal cases both leave the file unwritten; allow-manifest writes it. Negative control
+verified manually (not just asserted): temporarily bypassing `dispatch_privileged` in the
+test server made both the deny and the webview-principal tests fail, confirming they
+actually exercise the gate. Echo (KEL-30) stays deliberately ungated. `keld-core` still
+has no privileged operation of its own to route through this — the mechanism is proven
+and ready, not yet load-bearing for a real capability.
+
+**Next.** Host-owned scoped `fs.read`/`fs.write` (KEL-71, no longer blocked) — MUST call
+`dispatch_privileged` rather than reimplement the check. Keep shipping Linear Phase 2
+(window + kipc echo + crate map) on the four uniques. Do not add a fifth unique to look
+complete.
 
 ---
 

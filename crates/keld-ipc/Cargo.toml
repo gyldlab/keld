@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+keld-guard = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
 

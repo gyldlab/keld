@@ -278,8 +278,15 @@ The honest reading of that diagram:
   the Bun echo child, then opens a window with the project's `renderer` file as inline
   HTML (`load_dev_window_html` → `run_hello_window_html`). The webview still has no
   kipc. `keld hello` keeps compiled `keld_wv::HELLO_HTML`.
-- **No guard check happens anywhere.** `serve_echo_session` (`crates/keld-ipc/src/session.rs:16-47`)
-  goes straight from frame decode to handler. `keld-guard` is not called by any crate.
+- **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
+  (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
+  echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic
+  guard-before-handler entry point for privileged calls now exists
+  (`keld_ipc::guard_dispatch::dispatch_privileged`, KEL-69) and is proven end-to-end over
+  a real kipc session, but no production capability calls it yet — `keld-native`'s
+  modules are still names only. MCP `keld_permissions_explain` and the webview
+  media-capture handlers (all three OS backends) already call `keld-guard::evaluate`
+  directly, independent of `dispatch_privileged`.
 - **`keld-runtime` now supervises the Bun spawn (KEL-70).** `keld-cli/src/dev.rs`
   `run_dev_echo` spawns through `keld_runtime::Supervisor`, which restarts a crashed
   (non-zero exit) child with exponential backoff up to `RestartPolicy`'s defaults
@@ -373,7 +380,7 @@ but written down next to the code with the reason and the milestone that closes 
 | Crate | Lines | Status | Role | Spec | What's actually in it |
 |---|---|---|---|---|---|
 | `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
-| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain` and the macOS webview media-capture handler call it; privileged IPC still does not. `$VARS`/symlink resolution is not in this slice. |
+| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. Proven wiring, no real capability uses it yet (host `fs.read`/`fs.write` is KEL-71). `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | 25 | Skeleton | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules (`window`, `menu`, `tray`, `dialog`, `notify`, `clipboard`, `shortcut`, `screen`, `power`, `shell`, `fs`, `secrets`, `deeplink`, `autostart`, `dock`). Zero implementations |
 | `keld-runtime` | ~685 | Partial | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s). `keld-cli/src/dev.rs` `run_dev_echo` spawns through it. Bun discovery/pinning, `--inspect`, and Bun watch hot-restart are not built |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
