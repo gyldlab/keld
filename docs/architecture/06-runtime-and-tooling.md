@@ -55,8 +55,9 @@ What `keld dev` actually spawns today (`crates/keld-cli/src/dev.rs`
 `run_dev_echo`) is a bare `Command::new("bun")` with one env var,
 `KELD_APP_LINK=<endpoint>#<64 hex chars>` (`docs/architecture/02-ipc.md` §1).
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
-hand-written, wire-exact v0 client (postcard framing, `HELLO` handshake);
-`keld gen`/`@keld/schema` codegen (KEL-13) is not built, so this is the actual
+hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
+connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
+`@keld/schema` codegen (KEL-13) is not built, so this is the actual
 "Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
 useful standalone; the template no longer shells out to it.

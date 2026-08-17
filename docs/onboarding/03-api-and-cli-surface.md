@@ -53,7 +53,7 @@ from `std::env::args()`.
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
 | `keld hello` | `keld_core::run_hello_window` | opens the WKWebView hello window (macOS) |
 | `keld ipc-echo` | `main.rs::run_ipc_echo_demo` | in-process kipc round-trip demo |
-| `keld ipc-client echo --link <path>` | [`echo_link.rs`](../../crates/keld-cli/src/echo_link.rs) | one echo call against an existing app-link; used by the template |
+| `keld ipc-client echo --link <path>` | [`echo_link.rs`](../../crates/keld-cli/src/echo_link.rs) | one-shot echo against an existing app-link; the hello template speaks kipc via `AppLinkSession` instead |
 | `keld build` / `migrate` / `gen` / `ext` | [`verb.rs`](../../crates/keld-cli/src/verb.rs) | **`KELD-CLI-045`**, usage, exit **2** — reserved, not live |
 | anything else | [`verb.rs`](../../crates/keld-cli/src/verb.rs) | **`KELD-CLI-046`**, usage, exit **2** |
 
@@ -622,7 +622,7 @@ a directory glob, so test files can sit next to what they test without shipping 
 Source: [`crates/keld-cli/templates/hello/src/main.ts`](../../crates/keld-cli/templates/hello/src/main.ts).
 
 ```ts
-import { echoRoundtrip } from "./kipc";
+import { AppLinkSession } from "./kipc";
 
 const link = process.env.KELD_APP_LINK;
 if (!link) {
@@ -632,8 +632,13 @@ if (!link) {
   process.exit(1);
 }
 
-const response = await echoRoundtrip(link, { message: "keld", count: 1 });
-console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+const session = await AppLinkSession.connect(link);
+try {
+  const response = await session.echo({ message: "keld", count: 1 });
+  console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+} finally {
+  session.close();
+}
 
 console.log("{{name}}: main process ready (IPC echo ok)");
 ```
@@ -651,8 +656,9 @@ Read it as a contract statement in four parts:
 3. **There is still no schema-driven TypeScript SDK** (`@keld/api`, `keld gen`, KEL-13
    remain unbuilt), but as of KEL-30 the template no longer shells out to a second
    process to fake one. `./kipc.ts` is a hand-written client speaking the real kipc v2
-   wire format — frame header, postcard `EchoRequest`/`EchoResponse`, the `HELLO`
-   handshake — pinned byte-for-byte against `keld-ipc`'s own Rust tests. It is the
+   wire format — frame header, postcard `EchoRequest`/`EchoResponse`, one `HELLO`
+   per connection then N `CALL`/`REPLY` via `AppLinkSession` — pinned byte-for-byte
+   against `keld-ipc`'s own Rust tests. It is the
    actual "Bun to Rust and back" vertical slice, not a placeholder for one. Expect it to
    be replaced by generated code once `@keld/api` exists; until then it is real, tested
    transport, not a stub.

@@ -207,9 +207,10 @@ The doc comment on `ECHO_CHANNEL` records its own temporariness: "resolved at ha
 versions". Today it is a hardcoded constant on both sides.
 
 **`CorrelationId` pairs a `Reply` or `Err` with its `Call`.** The client picks it; the server echoes
-it back unchanged. Uncorrelated kinds use `0`. Today `echo_call` hardcodes `CorrelationId(1)`
-(`session.rs:60`) because exactly one call is ever in flight — a real client will need an
-allocator and an in-flight table.
+it back unchanged. Uncorrelated kinds use `0` (reserved for `HELLO`). `echo_call`
+hardcodes `CorrelationId(1)` for its one-shot path. `echo_invoke` takes the caller's
+`corr`; the Bun `AppLinkSession` allocates monotonically, skipping `0`. v0 is still
+one CALL in flight at a time (the reader has a single pending waiter).
 
 ---
 
@@ -268,9 +269,11 @@ The client writes 48 bytes (16-byte header plus 32-byte token) first; that
 fits in any socket buffer. The server does not write those bytes until the
 payload matches. A later channel table of meaningful size will need revisiting.
 
-One more current-code quirk: `echo_call` calls `handshake_client` itself, so it is a
-connect-handshake-call-close operation rather than a client you hold open. Calling it twice on one
-stream would send a second HELLO.
+`echo_call` is still the one-shot helper: deadline + `handshake_client` + one CALL.
+Calling it twice on one stream sends a second `HELLO`. The server fails the session
+with `KELD-IPC-005`; the client observes `KELD-IPC-001` because the peer closed.
+Further CALLs on a live session use `echo_invoke` (Rust) / `AppLinkSession.echo`
+(Bun). The hello template holds that session for its one demo CALL, then closes.
 
 ---
 
