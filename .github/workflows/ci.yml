@@ -91,6 +91,84 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  linux-gui-smoke:
+    name: Linux GUI smoke test (Xvfb)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-on-failure: true
+      - name: Install WebKitGTK build deps + Xvfb + xdotool (KEL-28)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev pkg-config build-essential xvfb xdotool
+      - name: Build keld-host
+        run: cargo build -p keld-host
+      # KEL-28's own DoD promised "a smoke test exists that CI can run
+      # (headless/virtual display where needed)" but this job never existed
+      # until now — closing a disclosed gap, not a new requirement.
+      # No GPU/Wayland on this runner, so the GPU-safe-mode probe
+      # (webkitgtk::probe_gpu_stack) reports Normal and is a no-op here;
+      # this job proves window creation, not the safe-mode branch.
+      - name: Xvfb GUI smoke test — real titled window via xdotool
+        run: |
+          set -uo pipefail
+          xvfb_pid=""
+          hello_pid=""
+          # A bare `trap '... || true' EXIT` clobbers $? with the trap's own
+          # last command status, so a script that hit `exit 1` would report
+          # success to the CI step. Capture the real exit code first, run
+          # cleanup, then re-exit with the captured code explicitly.
+          cleanup() {
+            ec=$?
+            [ -n "$hello_pid" ] && kill "$hello_pid" 2>/dev/null || true
+            [ -n "$xvfb_pid" ] && kill "$xvfb_pid" 2>/dev/null || true
+            exit "$ec"
+          }
+          trap cleanup EXIT
+
+          Xvfb :99 -screen 0 1024x768x24 &
+          xvfb_pid=$!
+
+          for _ in $(seq 1 50); do
+            [ -e /tmp/.X11-unix/X99 ] && break
+            sleep 0.2
+          done
+          if [ ! -e /tmp/.X11-unix/X99 ]; then
+            echo "::error::Xvfb never created its X11 socket"
+            exit 1
+          fi
+          export DISPLAY=:99
+
+          ./target/debug/keld-host --hello --title CI-Linux-Smoke &
+          hello_pid=$!
+
+          found=0
+          for _ in $(seq 1 60); do
+            if ! kill -0 "$hello_pid" 2>/dev/null; then
+              echo "::error::keld-host --hello exited before a window was found"
+              break
+            fi
+            if xdotool search --name "CI-Linux-Smoke" >/dev/null 2>&1; then
+              found=1
+              break
+            fi
+            sleep 0.5
+          done
+
+          if [ "$found" -ne 1 ]; then
+            echo "::error::keld-host --hello never produced a titled window under Xvfb"
+            exit 1
+          fi
+          echo "Linux hello window confirmed via xdotool under Xvfb"
+
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
