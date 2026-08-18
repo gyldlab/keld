@@ -27,8 +27,8 @@ is the single most important thing to understand about this repo.
 |---|---|---|
 | Version | `0.0.1`, pre-alpha | [`Cargo.toml`](../../Cargo.toml) `[workspace.package]` |
 | License | MIT OR Apache-2.0 | [`Cargo.toml`](../../Cargo.toml), [`deny.toml`](../../deny.toml) |
-| Language / edition | Rust, edition 2024, MSRV 1.93 | [`Cargo.toml`](../../Cargo.toml) |
-| Toolchain | pinned `1.93.0` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
+| Language / edition | Rust, edition 2024, MSRV 1.97 | [`Cargo.toml`](../../Cargo.toml) |
+| Toolchain | pinned `1.97.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
 | Workspace | 11 crates, no npm packages yet | [`Cargo.toml`](../../Cargo.toml) `members`, empty `packages/` |
 | Rust in tree | 2,339 lines across `crates/**/*.rs` | `find crates -name '*.rs' \| xargs wc -l` (2026-08-10) |
 | Test suite | 17 tests, all passing | `cargo nextest run --workspace --profile ci` (2026-08-10) |

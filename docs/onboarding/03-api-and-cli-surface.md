@@ -400,7 +400,7 @@ statement, not as documentation of the current binary.
 
 ## 3. Public Rust crate APIs
 
-Workspace version `0.0.1`, edition 2024, MSRV/toolchain 1.93.0. Every public item is
+Workspace version `0.0.1`, edition 2024, MSRV/toolchain 1.97.1. Every public item is
 documented (`missing_docs` is a workspace lint) and `cargo doc --workspace --no-deps`
 builds clean, so `cargo doc --open` is a legitimate way to browse this.
 
