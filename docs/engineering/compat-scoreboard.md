@@ -22,9 +22,16 @@ The public **API** scoreboard contract is defined by
 - Public URL: planned at `https://keld.dev/compat`
 
 Until the corpus harness lands, Electron's documented behavior remains the compatibility
-oracle and every implemented divergence must be recorded explicitly. This page will
-become generated measurement output when that harness exists; it is not a claim of
-current compatibility.
+oracle and every implemented divergence must be recorded explicitly. Matches are recorded
+when a slice lands so the board does not imply a still-open gap. This page will become
+generated measurement output when that harness exists; it is not a claim of current
+compatibility.
+
+## Recorded matches (KEL-72)
+
+| API | Electron oracle | Keld | Mark | Why |
+|---|---|---|---|---|
+| `window-all-closed` (no listener) | [`window-all-closed`](https://www.electronjs.org/docs/latest/api/app#event-window-all-closed): if you do not subscribe and all windows are closed, the default is to quit; if you subscribe, you control whether the app quits | Host `LastWindowClosed` with no `app.on("window-all-closed")` sends kipc `Quit`; a subscriber is not auto-quit | ✔ | Matches Electron. The public `app.quit()` return type is a separate ▲ below. Conformance: `packages/@keld/electron/fixtures/window_all_closed_default.ts`, `packages/@keld/electron/src/app.test.ts` (`window-all-closed Electron default quit`). |
 
 ## Recorded divergences (KEL-72)
 

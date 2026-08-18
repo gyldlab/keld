@@ -1349,6 +1349,12 @@ in this main-process package. `@keld/api` does not exist yet; the shim
 speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
 `keld build` is not live.
 
+Match (scoreboard ✔): with no `window-all-closed` listener, a host
+`LastWindowClosed` event quits the app — Electron's documented default
+([`event-window-all-closed`](https://www.electronjs.org/docs/latest/api/app#event-window-all-closed)).
+A registered listener owns whether the app quits (no auto-quit). Recorded on
+[`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
 Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
 [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit)
 is process-lifetime and not thenable. Keld's `app.quit()` returns
@@ -3446,9 +3452,16 @@ The public **API** scoreboard contract is defined by
 - Public URL: planned at `https://keld.dev/compat`
 
 Until the corpus harness lands, Electron's documented behavior remains the compatibility
-oracle and every implemented divergence must be recorded explicitly. This page will
-become generated measurement output when that harness exists; it is not a claim of
-current compatibility.
+oracle and every implemented divergence must be recorded explicitly. Matches are recorded
+when a slice lands so the board does not imply a still-open gap. This page will become
+generated measurement output when that harness exists; it is not a claim of current
+compatibility.
+
+## Recorded matches (KEL-72)
+
+| API | Electron oracle | Keld | Mark | Why |
+|---|---|---|---|---|
+| `window-all-closed` (no listener) | [`window-all-closed`](https://www.electronjs.org/docs/latest/api/app#event-window-all-closed): if you do not subscribe and all windows are closed, the default is to quit; if you subscribe, you control whether the app quits | Host `LastWindowClosed` with no `app.on("window-all-closed")` sends kipc `Quit`; a subscriber is not auto-quit | ✔ | Matches Electron. The public `app.quit()` return type is a separate ▲ below. Conformance: `packages/@keld/electron/fixtures/window_all_closed_default.ts`, `packages/@keld/electron/src/app.test.ts` (`window-all-closed Electron default quit`). |
 
 ## Recorded divergences (KEL-72)
 

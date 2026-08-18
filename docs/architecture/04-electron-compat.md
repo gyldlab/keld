@@ -90,6 +90,12 @@ in this main-process package. `@keld/api` does not exist yet; the shim
 speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
 `keld build` is not live.
 
+Match (scoreboard ✔): with no `window-all-closed` listener, a host
+`LastWindowClosed` event quits the app — Electron's documented default
+([`event-window-all-closed`](https://www.electronjs.org/docs/latest/api/app#event-window-all-closed)).
+A registered listener owns whether the app quits (no auto-quit). Recorded on
+[`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
 Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
 [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit)
 is process-lifetime and not thenable. Keld's `app.quit()` returns
