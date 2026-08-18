@@ -17,7 +17,7 @@ this guide and those disagree, they win.
 
 | Tool | Required? | Install | Why |
 |---|---|---|---|
-| Rust 1.93.0 | Yes | nothing to do — [`rust-toolchain.toml`](../../rust-toolchain.toml) pins `channel = "1.93.0"` with `rustfmt` + `clippy`, and rustup installs it on your first `cargo` command in this directory | Every crate; edition 2024 |
+| Rust 1.97.1 | Yes | nothing to do — [`rust-toolchain.toml`](../../rust-toolchain.toml) pins `channel = "1.97.1"` with `rustfmt` + `clippy`, and rustup installs it on your first `cargo` command in this directory | Every crate; edition 2024 |
 | `cargo-nextest` | Yes | `cargo install cargo-nextest --locked` | The test gate is `cargo nextest run --workspace --profile ci` ([`.config/nextest.toml`](../../.config/nextest.toml)) |
 | `cargo-deny` | For `just ci` / the supply-chain gate | `cargo install cargo-deny --locked` | The `deny` job in CI ([`deny.toml`](../../deny.toml)) |
 | `just` | Optional, but assumed by the docs | `cargo install just` (or `brew install just`) | [`justfile`](../../justfile) is the canonical local mirror of CI |
@@ -29,8 +29,8 @@ and the template has zero dependencies, so there is nothing to `bun install`.
 Versions this guide was written against (macOS, Darwin 25.5.0, aarch64):
 
 ```
-rustc 1.93.0 (254b59607 2026-01-19)     # matches rust-toolchain.toml
-cargo 1.93.0 (083ac5135 2025-12-15)
+rustc 1.97.1 (8bab26f4f 2026-07-14)     # matches rust-toolchain.toml
+cargo 1.97.1 (c980f4866 2026-06-30)
 cargo-nextest 0.9.140
 cargo-deny 0.19.9
 bun 1.4.0
@@ -255,7 +255,7 @@ the code they cover, and a comment explaining *why* a non-obvious assertion exis
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
 other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions
 are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`,
-`EmbarkStudios/cargo-deny-action`). The toolchain action requires `with: toolchain: 1.93.0`;
+`EmbarkStudios/cargo-deny-action`). The toolchain action requires `with: toolchain: 1.97.1`;
 it does not auto-read `rust-toolchain.toml` (that file is for local rustup). CI does not
 use an unpinned `cargo` on a random runner image.
 

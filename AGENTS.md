@@ -42,7 +42,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 Crate `AGENTS.md` only where invariants exist (`wv`, `ipc`, `guard`, `compat`). Skeletons and `keld-cli`: spec in this table, no hollow file.
 
 ## Commands & verification
-Toolchain: `rust-toolchain.toml` (1.93.0). TS: `bun install` / `bun test` in `packages/*`.
+Toolchain: `rust-toolchain.toml` (1.97.1). TS: `bun install` / `bun test` in `packages/*`.
 
 ```bash
 cargo fmt --all                                    # before done
