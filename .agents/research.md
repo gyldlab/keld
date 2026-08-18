@@ -33,6 +33,28 @@ claims MUST be verified against local reproduction or a primary source; otherwis
 label them anecdotal or unverified. Separate evidence, contradiction, inference, and
 uncertainty.
 
+## Diagrams in private research
+
+- A Mermaid diagram under `docs/research/`, or one that synthesizes external evidence,
+  MUST also follow root `AGENTS.md` § Documentation diagrams and the render/report gate
+  in [`.agents/testing.md`](testing.md). The nested research commit/push rule still
+  applies to its Markdown source.
+- A diagram is synthesis, not proof. Every decision-bearing node, edge, state transition
+  and quantitative label MUST trace to a direct primary source or committed local/raw
+  experiment artifact. Otherwise the label itself MUST say `inference`, `proposed` or
+  `unknown`; a caption or color legend is not enough to downgrade the claim.
+- Copied `turn…` citations, `sandbox:/mnt/data` paths, screenshots without provenance or
+  environment context, and model-generated diagrams are leads only. They MUST NOT be
+  promoted into a diagram's factual edge or number until the source ledger or executable
+  artifact is restored.
+- For unfamiliar Mermaid syntax, use Context7 when available to locate current material,
+  then confirm against [official Mermaid documentation](https://mermaid.js.org/) before authoring.
+  Record the official page used in the research source ledger; Context7 output is not
+  the cited authority.
+- The render report MUST name the exact stable renderer version and actual result. Keep
+  generated SVG/PNG/PDF output temporary unless the rendered file is an intentionally
+  reviewed research artifact; do not commit generated pictures merely to prove parsing.
+
 ## Copy-ready prompt pack
 
 ### Perplexity — focused source discovery

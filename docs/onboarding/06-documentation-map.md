@@ -55,12 +55,12 @@ on day one; read the others when you touch their area.
 
 | Doc | What's in it | When you'd read it |
 |---|---|---|
-| [`01-overview.md`](../architecture/01-overview.md) | The one diagram (three principals, three trust levels), the eight ordered design principles, the crate/package topology table with dependency rules, the process and thread model, the CI-gated performance budgets (§5), and the v1 non-goals (§6). | Day one, completely. Everything else assumes it. |
-| [`02-ipc.md`](../architecture/02-ipc.md) | kipc: the two-link topology, wire protocol and framing, the zero-copy bulk plane, schema-first contracts, how the Electron shim maps onto it, hot-path implementation rules, and failure/lifecycle semantics. | Any work in `keld-ipc`, or anything that sends a message anywhere. |
+| [`01-overview.md`](../architecture/01-overview.md) | The one diagram (three principal classes with host-minted instances), the eight ordered design principles, the crate/package topology table with dependency rules, the process and thread model, the target performance budgets/future gates (§5), and the v1 non-goals (§6). | Day one, completely. Everything else assumes it. |
+| [`02-ipc.md`](../architecture/02-ipc.md) | kipc: webview/app-role link classes, wire protocol and framing, measured optional bulk lanes, schema-first contracts, how the Electron shim maps onto it, hot-path implementation rules, and failure/lifecycle semantics. | Any work in `keld-ipc`, or anything that sends a message anywhere. |
 | [`03-security.md`](../architecture/03-security.md) | Principals and trust levels, the `keld.permissions.jsonc` manifest, why it's generated rather than hand-written, defense-in-depth enforcement mechanics, update security, and the honesty ledger of what Keld does **not** promise (§6). | Any work in `keld-guard`, any new privileged operation, any capability question. |
 | [`04-electron-compat.md`](../architecture/04-electron-compat.md) | The migration developer experience end to end, the exact five-file config surface (§2), how the shim is layered, compat tiers and the public scoreboard, native-module policy, the migration corpus harness, and the updater bridge trap every migrator hits. | Compat work, migration work, or any time you need to answer "how does this behave under `@keld/electron`?" — which principle #1 says is every time. |
 | [`05-webview-and-native.md`](../architecture/05-webview-and-native.md) | Why `keld-wv` is Keld's own binding layer (wry-informed, not wry-bound), the `WebEngine` trait, the `window.keld` renderer bridge contract, the `keld-native` API surface, and the `keld-ext` plugin path. | Any `keld-wv` or `keld-native` work. |
-| [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) | Bun as a *supervised child*, never embedded (§1, with the reasoning); the CLI verb-by-verb contract (§2); `keld-pack` packaging and cross-compilation; `keld-update` delta updates; and dev-loop targets. | CLI, packaging, updater, or runtime-supervisor work. |
+| [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) | Bun as a supervised primary child plus named compatibility roles, never embedded (§1); the CLI contract (§2); cross-target assembly with explicit signing flows; delta updates and a minimal relaunch helper; and dev-loop targets. | CLI, packaging, updater, or runtime-supervisor work. |
 | [`07-agent-experience.md`](../architecture/07-agent-experience.md) | Agents as a first-class user persona: the framework-wide "errors state the fix" standard with the `KELD-<area><nnn>` code shape (§2), docs-for-agents rules, the official MCP server design, the agent-eval harness as a CI metric, guardrails for vibe-coded apps, and the CLI contract for agents. | Before designing any error type, CLI output, or public API. §2 governs error messages everywhere in the codebase. |
 
 ## `docs/specs/` — scoped feature designs
@@ -115,6 +115,8 @@ This directory is **not** required onboarding; the why-pointer is
 | [`08-competitor-source-audit.md`](../research/08-competitor-source-audit.md) | Ground-truth survey of the vendored clones in `competitors/`: pinned commit inventory, per-repo layout/CI/core-machinery/steal-or-avoid notes, a consolidated adopt/adapt/avoid list, an **implementer reading order** into competitor source, stated limitations, and a 2026-08-08 refresh log of what changed upstream. Read before you go looking in `competitors/`. |
 | [`09-tooling-context7-audit.md`](../research/09-tooling-context7-audit.md) | Per-tool best-practice analysis for Keld's stack, recommended toolchain versions, CI pipeline recommendation, tools to adopt and to skip. |
 | [`14-phase0-synthesis.md`](../research/14-phase0-synthesis.md) | **The capstone.** Market gap statement, ranked ~10× opportunities, ranked risks with mitigations, one-paragraph guidance per Phase 1 RFC, the frozen benchmark baseline table, and the Phase 0 exit checklist. If you read only two research docs, read `00` and this. |
+| [`20-vscode-on-keld.md`](../research/20-vscode-on-keld.md) | VS Code north-star feasibility and local Bun/native probes. It is a demanding showcase, not Keld's product denominator. |
+| [`46-vscode-north-star-framework-synthesis.md`](../research/46-vscode-north-star-framework-synthesis.md) | Audited P01–P20 synthesis: separates reusable framework contracts from VS Code-only work, records evidence gaps and maps the findings into roadmap/Linear. Read this instead of treating raw P files as decisions. |
 
 ### Drafts — `docs/research/drafts/`
 
@@ -145,6 +147,12 @@ framework conversation, agentic-engineering practitioners, AX leaders).
 **These are inputs, not sources.** The rule is explicit in
 [`docs/agents/learnings.md`](../agents/learnings.md): never cite `from-outside/` directly —
 cite the polished numbered doc that consumed it.
+
+`45-P1.md` through `45-P20.md` are another raw external-input set retained at the
+research root because they arrived under those user-owned paths. Their copied `turn…`
+citations are nonportable and P13's ephemeral benchmark artifacts are missing. Each
+file carries a raw-input banner; use `46` for decisions and require a direct source
+ledger before promoting any unresolved claim.
 
 ## `docs/agents/` — how work gets done here
 
@@ -192,17 +200,18 @@ audits.
 |---|---|---|
 | [`keld-error-codes.md`](../engineering/keld-error-codes.md) | Canonical `KELD-*` registry. Adding a code without this file + the registry test is a bug. | When you add or change an error code. |
 | [`budget-scoreboard.md`](../engineering/budget-scoreboard.md) | Measured hello size/RSS/installer vs architecture 01 §5 budgets, competitors, and Native Swift WKWebView floors. Win-conditions and byte autopsy. No `bench/` CI yet. | When recording or citing installer size, host bytes, or idle RSS. |
-| [`decisions.md`](../engineering/decisions.md) | Decision log for humans: four uniques, wry vs spec 05, `KELD-*` errors, verification/CI, cargo-deny, nested `AGENTS.md`, `llms.txt` corpus, MCP/`$VARS`, review gates, the external-only memory boundary, and what is explicitly not next. | When you need “why we chose this” without treating research as a spec. Day-one why-pointer. |
+| [`decisions.md`](../engineering/decisions.md) | Decision log for humans: four uniques, wry vs spec 05, `KELD-*` errors, verification/CI, cargo-deny, nested `AGENTS.md`, `llms.txt` corpus, MCP/`$VARS`, review gates, the external-only memory boundary, the reuse-first maximum-compatibility program, and what is explicitly not next. | When you need “why we chose this” without treating research as a spec. Day-one why-pointer. |
 | [`alignment-audit-2026-07-08.md`](../engineering/alignment-audit-2026-07-08.md) | A read-only audit across vision, research, architecture, `AGENTS.md`, roadmap, tooling/CI, Linear, crates, and `competitors/` hygiene. Verdict: "MOSTLY ALIGNED" — the technical story is coherent end to end; drift is concentrated in program tracking. Contains a scorecard, contradictions with suggested fixes, gaps, Linear drift, verification output, and prioritized actions. | When something feels inconsistent between docs, check whether the audit already named it. |
 | [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | The translation table between Linear's project numbering and `ROADMAP.md`'s phase numbering — they do not match. | Every time you link an issue to a roadmap milestone. |
 | [`tooling-audit.md`](../engineering/tooling-audit.md) | Senior-engineer review of the toolchain: what was thin at audit start, findings on the workspace and each config file, CI compared against competitors, changes applied, recommendations to adopt later, verification, and open questions. Explains *why* each lint and config choice exists. | Before changing anything in `Cargo.toml` lints, `clippy.toml`, `deny.toml`, or CI. |
 
 ## `competitors/` — vendored source as reference and oracle
 
-Sixteen git clones, roughly 2.9 GB, gitignored and local-only. They exist so design
-questions get answered by reading real implementations instead of guessing.
+Gitignored, local-only competitor checkouts exist so design questions can be answered by
+reading pinned real implementations instead of guessing. Their count and disk footprint
+depend on the current lock/sync state and are not a documentation contract.
 
-Seven have written teardowns in
+Reviewed entries have written teardowns in
 [`08-competitor-source-audit.md`](../research/08-competitor-source-audit.md), with pinned
 commits and per-repo notes:
 
@@ -309,9 +318,9 @@ the optional external KEL-67 memory pilot should also read
    — Linear vs local `ROADMAP.md` numbering; the gitignored file is not required reading.
 7. [`docs/agents/learnings.md`](../agents/learnings.md) — the gotcha log; load-bearing
    and short.
-8. Run it: `cargo nextest run --workspace --profile ci`, then `just hello` on macOS. Seeing
-   tests pass and one window open tells you more about the state of the project than
-   another hour of reading.
+8. Run it: `cargo nextest run --workspace --profile ci`, then `just hello` on the target
+   OS. A passing build proves only the compiled paths; observing the window on that OS is
+   separate runtime evidence.
 
 ### First week
 

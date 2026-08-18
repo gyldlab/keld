@@ -8,7 +8,10 @@
 
 use crate::{HEADER_LEN, MAGIC, PROTOCOL_VERSION};
 
-/// Identifies a channel; resolved from schema names during handshake.
+/// Identifies a numeric channel.
+///
+/// The destination protocol resolves schema names during handshake; v0 hardcodes the
+/// echo channel and does not exchange a channel table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelId(pub u16);
 
@@ -20,7 +23,7 @@ pub struct CorrelationId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameKind {
-    /// Handshake: version + channel table exchange.
+    /// Handshake: v2 authenticates a 32-byte session token; channel exchange is future work.
     Hello = 0,
     /// Request expecting exactly one `Reply` or `Err`.
     Call = 1,

@@ -4,13 +4,13 @@
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
 
-# Open hello window (macOS only, Phase 1 slice).
+# Open the current platform hello backend (Phase 1 slice).
 hello:
     cargo run -p keld-host -- --hello
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md llms-test llms-check hygiene fmt-check clippy test doc deny
+ci: agents-md mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -88,6 +88,30 @@ llms-test:
     mkdir -p target/llms-docs
     rustc --edition=2024 -D warnings --test tools/llms_docs.rs -o target/llms-docs/llms-docs-test
     target/llms-docs/llms-docs-test
+
+# Validate Mermaid fences, accessibility metadata, stable types, and semantic palette.
+mermaid-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/mermaid-docs
+    rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
+    target/mermaid-docs/mermaid-docs check .
+    if [[ -f ROADMAP.md ]]; then
+        target/mermaid-docs/mermaid-docs check-file ROADMAP.md
+    fi
+    if git -C docs/research rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        target/mermaid-docs/mermaid-docs check docs/research
+    fi
+
+# Contract tests for the Mermaid documentation validator.
+mermaid-test:
+    mkdir -p target/mermaid-docs
+    rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test
+    target/mermaid-docs/mermaid-docs-test
+
+# Render every tracked Mermaid block in the isolated, digest-pinned official container.
+mermaid-render-check:
+    tools/mermaid_render_check.sh
 
 # KEL-39: CODEOWNERS, templates, Action SHA pin, .github not gitignored.
 hygiene:

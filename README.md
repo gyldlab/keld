@@ -1,34 +1,48 @@
 # KELD
 
-**The desktop framework that replaces Electron without a rewrite.**
+**The desktop framework that replaces Electron without requiring a full app rewrite.**
 Rust core · Bun-powered JS/TS main process · system webviews · security by default.
 By [GYLDLAB](https://github.com/gyldlab).
 
-> Status: **pre-alpha** — public repo contains the implementation; research and
-> architecture specs are maintained privately by the GYLDLAB team.
+> Status: **pre-alpha** — this checkout contains implementation and tracked architecture
+> specs; private research is maintained in the separate nested research repository.
 
 ## The idea in 30 seconds
 
-Every Electron alternative asks you to rewrite your app. Keld doesn't.
+Keld starts from Electron's observable API and process contracts, measures them against
+a versioned app corpus, and keeps unsupported behavior explicit. Median apps should
+migrate through configuration; demanding apps may drive targeted runtime, host or app
+patches behind the same compatibility facade.
+
+The following is the **target product flow**. `migrate` and `build` are not implemented
+in the current pre-alpha CLI:
 
 ```bash
 cd my-electron-app
 bunx keld migrate   # analyzes your app, generates config, aliases electron → @keld/electron
-bunx keld dev       # your app runs — no Chromium bundle, no Node, no rewrite
+bunx keld dev       # no bundled Chromium/Node executable; exact gaps reported
 bunx keld build     # signed installers + kilobyte-scale delta updates
 ```
 
-Under the hood, Keld replaces Electron's architecture, not its API:
+The target architecture replaces Electron's architecture, not its API:
 
 - **A prebuilt Rust host** owns windows, webviews, and every native API — you never
   install a Rust toolchain.
-- **Your JS/TS main process runs on Bun** as a supervised, unprivileged child process —
-  full npm ecosystem, no ambient OS access, crashes don't take your windows down.
+- **Your JS/TS main process and named compatibility roles run on Bun** as supervised,
+  strict-profile principals — npm/Node behavior is corpus-tested, ambient OS access is
+  denied, and a child crash does not take your windows down.
 - **System webviews by default** (WebView2 / WKWebView / WebKitGTK) with a polyfill
   pack and per-platform engine policy.
-- **Typed binary IPC** (schema-first, shared-memory bulk lane, backpressured).
+- **Typed binary IPC** (schema-first and backpressured; optional per-role shared-memory
+  bulk lanes only after workload and sandbox measurements justify them).
 - **Default-deny permissions** generated from your code, reviewed like a lockfile.
-- **Delta updates (bsdiff+zstd, signed)** and cross-compiled installers.
+- **Delta updates (bsdiff+zstd, signed)** and cross-target-assembled installers;
+  signing/notarization remains an exercised per-platform credential flow.
+
+The current implementation is a vertical slice: the CLI can scaffold and diagnose a
+hello project, run an authenticated Bun-to-Rust kipc echo, and open the project HTML in
+the platform webview. Bun supervision, the TypeScript packages, general native brokers,
+packaging, migration, updates, and strict-profile containment remain roadmap work.
 
 ## Workspace layout
 
@@ -44,7 +58,7 @@ See [`AGENTS.md`](AGENTS.md) for engineering rules and verification gates.
 
 ```bash
 cargo nextest run --workspace --profile ci
-just hello    # macOS: open WKWebView hello window (Phase 1 slice)
+just hello    # launch the current platform hello backend (Phase 1 slice)
 ```
 
 ## License

@@ -17,7 +17,10 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
 4. **Implement.** Tests with the change (conformance entries *first* for compat work).
    Small commits, conventional messages. No placeholder code on the branch tip.
 5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test
-   suite, plus the spec's test plan. Paste real output in the PR; never "should work".
+   suite, plus the spec's test plan. Diagram changes additionally run
+   `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
+   visual/report gate from `.agents/testing.md`; authoritative-doc changes run
+   `just llms-check` after regeneration. Paste real output in the PR; never "should work".
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review
    subagent): boundary violations? review gates missed? spec drift? slop (dead code,
    duplicated helpers, drive-by refactors)? Fix before pushing.
@@ -42,7 +45,9 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
 ## Review: CI is the arbiter, humans are the architects
 
 - **Hard gates (block merge, no exceptions):** fmt · clippy `-D warnings` · full test
-  suite · secret scan · no `todo!()`/`unimplemented!()` on the diff.
+  suite · generated-doc freshness · Mermaid structural checks + pinned render when
+  diagrams change · secret scan · no `todo!()`/`unimplemented!()` on the diff. Visual
+  inspection and the render report remain review artifacts in addition to CI.
 - **Review gates (block until a human signs off):** the five in root `AGENTS.md`
   (unsafe, public API, permissions, dependencies, wire protocol). `.github/CODEOWNERS`
   requests human review on `keld-guard`, `keld-ipc`, workspace manifests, and CI

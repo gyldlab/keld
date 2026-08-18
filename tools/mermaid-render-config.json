@@ -1,0 +1,8 @@
+{
+  "securityLevel": "strict",
+  "maxTextSize": 50000,
+  "maxEdges": 500,
+  "deterministicIds": true,
+  "deterministicIDSeed": "keld-docs",
+  "htmlLabels": true
+}
