@@ -189,12 +189,15 @@ pub struct ChannelId(pub u16);
 pub struct CorrelationId(pub u32);
 ```
 
-**`ChannelId` is a handle, never a name.** This is one of the crate's three stated design
-constraints (`crates/keld-ipc/src/lib.rs:6-9`): "Channel names never travel per-call; they resolve
-to `ChannelId` handles." The string `"notes.save"` is meant to be exchanged exactly once, in the
-handshake's channel table, and thereafter every frame carries two bytes. That is what keeps a call
-allocation-free and what makes the p99 ≤ 100 µs budget in
-[`01` §5](../architecture/01-overview.md) plausible.
+**v0 contract: channel ids are hardcoded `u16` constants on both sides.**
+HELLO does not exchange a name table. Every frame still carries a two-byte
+`ChannelId` handle, never a string — that part of `crates/keld-ipc/src/lib.rs`
+("Channel names never travel per-call") is already true. Handshake name/table
+negotiation (resolve `"notes.save"` once, then use the handle) is later work
+and is what keeps a future call allocation-free enough for the p99 ≤ 100 µs
+budget in [`01` §5](../architecture/01-overview.md). The `ECHO_CHANNEL` comment
+"resolved at handshake in later versions" names that future, not the current
+protocol.
 
 Currently allocated:
 
@@ -204,9 +207,6 @@ Currently allocated:
 | `ECHO_CHANNEL` | `1` | The echo vertical slice | `crates/keld-ipc/src/echo.rs` |
 | `FS_CHANNEL` | `2` | Host `fs.read` / `fs.write` | `crates/keld-native/src/fs.rs` |
 | `LIFECYCLE_CHANNEL` | `3` | Host ready / last-window-closed / quit | `crates/keld-ipc/src/lifecycle.rs` |
-
-The doc comment on `ECHO_CHANNEL` records its own temporariness: "resolved at handshake in later
-versions". Today it is a hardcoded constant on both sides.
 
 **`CorrelationId` pairs a `Reply` or `Err` with its `Call`.** The client picks it; the server echoes
 it back unchanged. Uncorrelated kinds use `0` (reserved for `HELLO`). `echo_call`
@@ -259,7 +259,7 @@ What this actually establishes, and what it doesn't:
 
 | Spec ([`02` §2](../architecture/02-ipc.md), `frame.rs:23`) | v2 reality |
 |---|---|
-| "Handshake: version + channel table exchange" | Version + **session token**. **No channel table** — both sides hardcode `ECHO_CHANNEL` |
+| "Handshake: version + channel table exchange" | Version + **session token**. **No channel table** — both sides hardcode channel `0`, `ECHO_CHANNEL`, `FS_CHANNEL`, and `LIFECYCLE_CHANNEL` |
 | "versioned at handshake" | Strict equality: a peer on any version other than `2` is rejected by `decode` before `handshake_client` / `handshake_server` even inspects the frame. No negotiation, no range, no downgrade |
 | HELLO payload | 32 raw bytes (KEL-60). Empty, truncated, or mismatched tokens are `KELD-IPC-007`. The channel table will still have to live here later |
 

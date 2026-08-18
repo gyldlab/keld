@@ -28,10 +28,10 @@ current compatibility.
 
 ## Recorded divergences (KEL-72)
 
-Chosen as scoreboard ▲, not a `keld.compat.ts` quirks flag: restoring Electron's
-`void` would hide transport errors, so this is not a per-app toggle. `keld migrate`
-is not live.
+Chosen as scoreboard ▲, not a `keld.compat.ts` quirks flag: these are host/kipc
+constraints, not per-app toggles. `keld migrate` is not live.
 
 | API | Electron oracle | Keld | Mark | Why |
 |---|---|---|---|---|
 | `app.quit` | [`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit) | `Promise<void>` | ▲ | The Quit Call travels over kipc and can fail (`KELD-IPC-*`). Callers must be able to await or `.then` the result. Do not change the public signature to `void` to paper over that. Conformance: `crates/keld-compat/tests/electron_lifecycle.rs`, `packages/@keld/electron/src/app.ts`. |
+| `app` `ready` / `window-all-closed` listeners | Electron [`app`](https://www.electronjs.org/docs/latest/api/app) is a Node [EventEmitter](https://nodejs.org/docs/latest/api/events.html#emitteremiteventname-args): a throw in one listener propagates from `emit` and later listeners do not run | Per-listener `try/catch` in `emit` | ▲ | Host `Event` frames arrive on the kipc read loop. An uncaught throw would skip remaining listeners and abort the reader. Isolation is the contract for this slice; do not revert it to match EventEmitter. Conformance: `packages/@keld/electron/fixtures/app_ready.ts`, `crates/keld-compat/tests/electron_lifecycle.rs` (`app_ready_isolates_listeners_retries_connect_without_unhandled_rejection`). |
