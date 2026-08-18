@@ -95,7 +95,7 @@ describe("app.whenReady on link death", () => {
 
 describe("window-all-closed Electron default quit", () => {
   test(
-    "LastWindowClosed with no app listener calls quit; a subscriber is not auto-quit",
+    "LastWindowClosed default-quits with zero listeners, after last removeListener, and not while a listener remains",
     async () => {
       child = Bun.spawn({
         cmd: ["bun", "./window_all_closed_default.ts"],
@@ -112,7 +112,10 @@ describe("window-all-closed Electron default quit", () => {
       expect(code).toBe(0);
       expect(stdout).toContain("KEL72_DEFAULT_QUIT");
       expect(stdout).toContain("KEL72_WINDOW_ALL_CLOSED_SECOND");
-      expect(stdout).toContain("KEL72_QUIT_CALLS=1");
+      expect(stdout).toContain("KEL72_DEFAULT_QUIT_AFTER_REMOVE");
+      expect(stdout).toContain("KEL72_REMAINING");
+      expect(stdout).not.toContain("KEL72_DROPPED_FIRED");
+      expect(stdout).toContain("KEL72_QUIT_CALLS=2");
     },
     10_000,
   );

@@ -8,6 +8,7 @@
  * - `window-all-closed` is emitted only when the host sends `LastWindowClosed`.
  *   If no listener is registered, Electron's default is `app.quit()`
  *   (https://www.electronjs.org/docs/latest/api/app#event-window-all-closed).
+ *   `removeListener` / `off` restore that default after the last subscriber is removed.
  */
 
 import { LifecycleLink } from "./link";
@@ -71,6 +72,24 @@ function ignoreIfUnawaited(promise: Promise<unknown>): void {
 function hasListeners(event: string): boolean {
   const list = listeners.get(event);
   return list !== undefined && list.length > 0;
+}
+
+/**
+ * Drop one matching subscriber (Node EventEmitter: last match, then stop).
+ * Empty `window-all-closed` lists restore Electron's default quit.
+ */
+function removeAppListener(event: string, listener: AppListener): void {
+  const list = listeners.get(event);
+  if (!list) return;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i] === listener) {
+      list.splice(i, 1);
+      break;
+    }
+  }
+  if (list.length === 0) {
+    listeners.delete(event);
+  }
 }
 
 /**
@@ -188,4 +207,11 @@ export const app = {
     list.push(listener);
     listeners.set(event, list);
   },
+
+  /**
+   * Node EventEmitter `removeListener` / `off`. Removing the last
+   * `window-all-closed` listener restores default quit.
+   */
+  removeListener: removeAppListener,
+  off: removeAppListener,
 };
