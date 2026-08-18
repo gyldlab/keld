@@ -62,9 +62,10 @@ export default defineConfig({
 ## 3. How the shim works (layers)
 
 1. **Module alias**: the app's main-process code `require("electron")` resolves to
-   `@keld/electron` (bundler alias in app builds; Bun `bunfig.toml` alias in dev).
-   `process.versions.electron` is shimmed; `process.type` reports `browser`/`renderer`
-   appropriately.
+   `@keld/electron` (bundler alias in app builds). §2 names `bunfig.toml` as the
+   migrate-edited alias *file*; it is **not** the v0 Bun runtime resolver (see
+   the v0 note). `process.versions.electron` is shimmed; `process.type` reports
+   `browser`/`renderer` appropriately.
 2. **Main-process modules** (`app`, `BrowserWindow`, `ipcMain`, `dialog`, `Menu`,
    `Tray`, …) are TS classes over `@keld/api` kipc calls; event semantics (ready,
    window-all-closed, activate, before-quit ordering) replicated against a conformance
@@ -91,12 +92,12 @@ speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
 
 Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
 from `bunfig.toml` `[alias]` (it still loads the npm `electron` package
-from the install cache). The working resolver is `tsconfig.json`
+from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
-architecture §2's named file; it is not the oracle. Other Tier 1 surfaces
-(`BrowserWindow`, `ipcMain`, preload/`contextBridge`, …) are later slices.
-`keld migrate` is not live.
+architecture §2's named file; treating that file as the resolver is a
+defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
+preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
 
 ## 4. Compat tiers & the public scoreboard
 
