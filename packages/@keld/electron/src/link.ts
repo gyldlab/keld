@@ -137,6 +137,9 @@ interface DecodedFrame {
 /**
  * Buffers socket chunks and resolves one `readFrame()` call per complete
  * frame. Exported so tests can feed untrusted bytes without a live socket.
+ *
+ * One in-flight `readFrame()` only. A second call while `#pending` is set is
+ * `KELD-IPC-005` (unexpected session state); it must not overwrite the waiter.
  */
 export class FrameReader {
   #buf = new Uint8Array(0);
@@ -190,6 +193,14 @@ export class FrameReader {
   readFrame(): Promise<DecodedFrame> {
     if (this.#closed) {
       return Promise.reject(this.#closeError ?? kipcError("KELD-IPC-001", "connection closed"));
+    }
+    if (this.#pending) {
+      return Promise.reject(
+        kipcError(
+          "KELD-IPC-005",
+          "overlapping readFrame(); FrameReader allows one in-flight read. Await the first read before calling readFrame again.",
+        ),
+      );
     }
     return new Promise((resolve, reject) => {
       this.#pending = { resolve, reject };
@@ -254,11 +265,16 @@ async function writeOneFrame(
 /**
  * One-at-a-time frame writer. Concurrent `writeOneFrame` calls interleave
  * bytes on the stream (and used to hang on a single-slot drain).
+ *
+ * The first `writeOneFrame` failure poisons the queue: later `writeFrame`
+ * calls reject without sending bytes. Swallowing the failure used to let a
+ * second frame follow a truncated one (peer `KELD-IPC-002`).
  */
 export class WriteQueue {
   #chain: Promise<void> = Promise.resolve();
   #socket: KipcSocket;
   #drain: DrainSignal;
+  #poison: Error | null = null;
 
   constructor(socket: KipcSocket, drain: DrainSignal) {
     this.#socket = socket;
@@ -272,12 +288,23 @@ export class WriteQueue {
     corr: number,
     payload: Uint8Array,
   ): Promise<void> {
-    const run = this.#chain.then(() =>
-      writeOneFrame(this.#socket, this.#drain, kind, flags, channel, corr, payload),
-    );
+    if (this.#poison) {
+      return Promise.reject(this.#poison);
+    }
+    const run = this.#chain.then(() => {
+      if (this.#poison) {
+        throw this.#poison;
+      }
+      return writeOneFrame(this.#socket, this.#drain, kind, flags, channel, corr, payload);
+    });
     this.#chain = run.then(
       () => undefined,
-      () => undefined,
+      () => {
+        this.#poison ??= kipcError(
+          "KELD-IPC-001",
+          "write queue stopped after a previous write failed. Close the session and open a new app-link; do not send another frame after a truncated write.",
+        );
+      },
     );
     return run;
   }

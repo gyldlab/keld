@@ -32,6 +32,15 @@ function encodeFrame(kind: number, channel: number, corr: number, payload: Uint8
   return frame;
 }
 
+/** Independent oracle: kipc magic is `b"KI"` (`keld_ipc::MAGIC`), not WriteQueue layout. */
+function countKiMagic(bytes: number[]): number {
+  let n = 0;
+  for (let i = 0; i + 1 < bytes.length; i += 1) {
+    if (bytes[i] === 0x4b && bytes[i + 1] === 0x49) n += 1;
+  }
+  return n;
+}
+
 function encodePostcardString(text: string): Uint8Array {
   const utf8 = new TextEncoder().encode(text);
   if (utf8.length > 127) {
@@ -171,6 +180,67 @@ describe("WriteQueue", () => {
     },
     15_000,
   );
+
+  test("a failed mid-frame write poisons the queue so a later frame cannot follow a truncated one", async () => {
+    // Independent oracle: a second `KI` after 8 truncated header bytes is a
+    // new frame on a torn stream (peer sees KELD-IPC-002). Swallowing
+    // writeOneFrame in `#chain.then(..., () => undefined)` used to allow that.
+    const out: number[] = [];
+    let writes = 0;
+    const queue = new WriteQueue(
+      {
+        write(data: Uint8Array): number {
+          writes += 1;
+          if (writes === 1) {
+            const n = 8;
+            for (let i = 0; i < n; i += 1) out.push(data[i]!);
+            return n;
+          }
+          if (writes === 2) {
+            return -1;
+          }
+          for (let i = 0; i < data.length; i += 1) out.push(data[i]!);
+          return data.length;
+        },
+        end(): void {},
+      },
+      new DrainSignal(),
+    );
+    await expect(
+      queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
+    ).rejects.toThrow("KELD-IPC-001");
+    await expect(
+      queue.writeFrame(FrameKind.Ping, 0, 0, 2, new Uint8Array()),
+    ).rejects.toThrow("KELD-IPC-001");
+    expect(countKiMagic(out)).toBe(1);
+    expect(out.length).toBe(8);
+  });
+});
+
+describe("FrameReader", () => {
+  test("overlapping readFrame() rejects; the first waiter still gets the frame", async () => {
+    // Single-slot `#pending` overwrite left the first promise unsettled.
+    // keld_ipc::IpcError::Protocol is KELD-IPC-005 (unexpected session state);
+    // KELD-IPC-003 is postcard codec and is not this contract.
+    const reader = new FrameReader();
+    const first = reader.readFrame();
+    const second = reader.readFrame();
+    await expect(
+      rejectWithin(
+        200,
+        second,
+        "overlapping readFrame() hung — concurrent call overwrote #pending",
+      ),
+    ).rejects.toThrow("KELD-IPC-005");
+    reader.push(encodeFrame(FrameKind.Ping, 0, 1, new Uint8Array()));
+    const frame = await rejectWithin(
+      200,
+      first,
+      "first readFrame() hung — overlapping call overwrote #pending",
+    );
+    expect(frame.header.kind).toBe(FrameKind.Ping);
+    expect(frame.header.corr).toBe(1);
+  });
 });
 
 describe("withIoDeadline", () => {
