@@ -6,6 +6,8 @@
  * - `app.quit()` is a kipc `Quit` Call; the host ending the session is the
  *   process-lifecycle oracle.
  * - `window-all-closed` is emitted only when the host sends `LastWindowClosed`.
+ *   If no listener is registered, Electron's default is `app.quit()`
+ *   (https://www.electronjs.org/docs/latest/api/app#event-window-all-closed).
  */
 
 import { LifecycleLink } from "./link";
@@ -66,6 +68,33 @@ function ignoreIfUnawaited(promise: Promise<unknown>): void {
   void promise.catch(() => {});
 }
 
+function hasListeners(event: string): boolean {
+  const list = listeners.get(event);
+  return list !== undefined && list.length > 0;
+}
+
+/**
+ * kipc `Quit` Call. Shared by public `app.quit()` and the Electron default
+ * for a listener-less `LastWindowClosed`. Always returns a Promise so a
+ * failed transport is `KELD-IPC-*`, not silent `void`.
+ */
+function sendQuit(): Promise<void> {
+  const done = ensureLink().then((link) => link.quit());
+  ignoreIfUnawaited(done);
+  return done;
+}
+
+function onLastWindowClosed(): void {
+  if (hasListeners("window-all-closed")) {
+    emit("window-all-closed");
+    return;
+  }
+  // Fire-and-forget: this callback runs on the kipc read loop. Awaiting
+  // quit here would stall Events; a throw would abort the loop. Isolation
+  // for user listeners is `emit`'s per-listener try/catch.
+  void sendQuit();
+}
+
 function ensureLink(): Promise<LifecycleLink> {
   if (linkPromise) return linkPromise;
   const envLink = process.env.KELD_APP_LINK;
@@ -80,9 +109,7 @@ function ensureLink(): Promise<LifecycleLink> {
   let tracked: Promise<LifecycleLink>;
   const pending = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
-    onLastWindowClosed: () => {
-      emit("window-all-closed");
-    },
+    onLastWindowClosed,
     onLinkDead: (err: Error) => {
       if (linkPromise !== tracked) return;
       try {
@@ -153,9 +180,7 @@ export const app = {
    * signature to `void` to paper over kipc.
    */
   quit(): Promise<void> {
-    const done = ensureLink().then((link) => link.quit());
-    ignoreIfUnawaited(done);
-    return done;
+    return sendQuit();
   },
 
   on(event: string, listener: AppListener): void {

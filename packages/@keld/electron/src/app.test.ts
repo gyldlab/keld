@@ -1,6 +1,6 @@
 /**
- * Spawns `fixtures/app_link_death.ts` so the connect stub cannot leak into
- * `link.test.ts` (bun test keeps a process-wide module cache across files).
+ * Spawns fixtures that stub `LifecycleLink.connect` so the stub cannot leak
+ * into `link.test.ts` (bun test keeps a process-wide module cache across files).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -33,7 +33,7 @@ async function waitChildOrKill(
     ]).then(([stdout, stderr, code]) => ({ stdout, stderr, code }));
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error(`app_link_death fixture did not exit within ${ms}ms`));
+        reject(new Error(`app fixture did not exit within ${ms}ms`));
       }, ms);
     });
     return await Promise.race([finished, timeout]);
@@ -88,6 +88,31 @@ describe("app.whenReady on link death", () => {
       expect(stdout).toContain("KEL72_WHEN_READY_DEAD");
       expect(stdout).toContain("KEL72_RETRY_READY");
       expect(stdout).toContain("KEL72_CONNECT_CALLS=2");
+    },
+    10_000,
+  );
+});
+
+describe("window-all-closed Electron default quit", () => {
+  test(
+    "LastWindowClosed with no app listener calls quit; a subscriber is not auto-quit",
+    async () => {
+      child = Bun.spawn({
+        cmd: ["bun", "./window_all_closed_default.ts"],
+        cwd: fixtures,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+        },
+      });
+      const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      expect(stdout).toContain("KEL72_DEFAULT_QUIT");
+      expect(stdout).toContain("KEL72_WINDOW_ALL_CLOSED_SECOND");
+      expect(stdout).toContain("KEL72_QUIT_CALLS=1");
     },
     10_000,
   );

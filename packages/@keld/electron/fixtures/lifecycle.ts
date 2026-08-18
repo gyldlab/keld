@@ -9,6 +9,9 @@
  * A throwing `ready` listener must not skip `KEL72_READY_SECOND`, leave
  * `whenReady()` pending, or kill the kipc read loop (`window-all-closed`
  * would then never arrive).
+ *
+ * Electron default when this file's `window-all-closed` listener is absent:
+ * `fixtures/window_all_closed_default.ts` (LastWindowClosed → `app.quit()`).
  */
 import { writeSync } from "node:fs";
 import { app } from "electron";
