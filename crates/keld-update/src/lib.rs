@@ -1,8 +1,9 @@
 //! keld-update — delta updates as a default.
 //!
-//! bsdiff/zstd patches with BLAKE3 post-conditions and ed25519-signed
-//! manifests, static-host-compatible feeds, atomic swap with N-1 rollback,
-//! on all three platforms. Normative spec:
+//! zstd-compressed delta patches (diff algorithm selected by KEL-53 AC2,
+//! not yet chosen — see below) with BLAKE3 post-conditions and
+//! ed25519-signed manifests, static-host-compatible feeds, atomic swap
+//! with N-1 rollback, on all three platforms. Normative spec:
 //! `docs/architecture/06-runtime-and-tooling.md` §4 (§4a: the byte-level
 //! manifest/feed wire contract — KEL-53's trigger condition); threat model
 //! lives here with the code per `docs/architecture/03-security.md` §5.

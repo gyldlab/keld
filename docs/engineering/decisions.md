@@ -677,18 +677,24 @@ slice") names its own trigger: start only once the update artifact/feed contract
 architecture 06 §4 is concrete enough for executable acceptance tests. §4 was prose —
 "signed manifests", "ed25519", "BLAKE3 post-conditions" — with no byte-level shape, so
 the ticket was not actually unblocked. Added §4a: a static feed layout
-(`<channel>/updates.json` + a **detached** `.sig` file, not a signature field embedded
-in the JSON — sidesteps JSON canonicalization/malleability entirely, since the
-signature covers the manifest's literal response bytes), a v0 `updates.json` schema
-(`schema`, `channel`, `app.id`, `releases[].{version, full, deltas[]}`, each artifact
-carrying its own `size`/`blake3`), a six-step client verification order, and the
-atomic-swap/N-1-rollback directory scheme. Two facts worth holding onto: the ed25519
-public key **must** be compiled into the host binary, never fetched from the feed
-(otherwise a compromised feed can serve a fake "trusted" key alongside a fake
-manifest); and a delta's own `blake3` only proves the *patch file* downloaded intact —
-after applying it, the *reconstructed* full package must separately be checked against
-the release's `full.blake3`, or a corrupted-but-correctly-hashed patch can still
-silently reconstruct the wrong bytes against this host's actual base.
+(`<channel>/updates.json` + a **detached** `<channel>/updates.json.sig` file, not a
+signature field embedded in the JSON — avoids a canonicalization requirement between
+signer and verifier because the signature covers the exact response bytes, checked
+before parsing; §4a separately specifies duplicate-key rejection and an
+unrecognized-`schema` fail-closed rule, since detached signing alone does not remove
+parser-level ambiguity), a v0 `updates.json` schema (`schema`, `channel`, `app.id`,
+`releases[].{version, full, deltas[]}`, `full` required on every release), and an
+eight-step client verification order ending in atomic-swap/N-1-rollback. Facts worth
+holding onto: the ed25519 public key **must** be compiled into the host binary, never
+fetched from the feed; every artifact's `blake3` proves only that *its own downloaded
+bytes* are intact, so `full.contentBlake3` is a second, separate hash domain over the
+*decompressed, installable* content that both the full path and the post-delta
+reconstruction path must converge on; `app.id`/`channel` are checked fail-closed
+against the host's own identity so a correctly-signed manifest for a different app or
+channel is rejected on principle, not just on missing content; and a **persisted
+version floor** (not the running version) is what a replayed old signed manifest is
+checked against, so an authorized local rollback can run an older version without
+reopening the door to an attacker replaying a stale feed.
 
 **Why.** `AGENTS.md` §Working rules forbids landing an RFC that "restates
 `docs/architecture/` without binary acceptance tests" — the fix for prose that can't be
@@ -703,11 +709,38 @@ its own dependency-review gate), and did not spec a TUF-style rotating root — 
 limitation rather than silently narrowed. All three stay KEL-53's decisions, not this
 change's.
 
+**Update (2026-08-18, review pass before human sign-off).** An adversarial review of
+the first draft found eight real gaps, not style nits, each fixed in §4a directly
+rather than patched around: (1) the feed layout hardcoded a `.bsdiff.zst` extension
+while this same record says the algorithm is undecided — renamed to algorithm-neutral
+`.delta.zst`, and softened `crates/keld-update/src/lib.rs`'s module doc, which flatly
+asserted "bsdiff" two lines above its own "not yet chosen" caveat; (2) `full` read as
+optional by omission — now explicit that every release requires it; (3) one `blake3`
+field was doing two jobs (artifact-transport integrity and reconstructed-content
+correctness) with no way to tell which failure a mismatch meant — split into `blake3`
+(downloaded bytes) and `full.contentBlake3` (decompressed, installable bytes both the
+full and delta paths converge on); (4) nothing bound a manifest to *this* app or
+channel beyond a valid signature, so a correctly-signed manifest for a different app or
+a different channel would have passed — added a fail-closed identity check; (5) a
+delta that failed content verification would be re-selected forever, since the fallback
+said "try `full` on the next poll" but the next poll re-picks the same delta — fixed to
+fall back to `full` within the same attempt; (6) atomic swap named the mechanism
+(symlink / pointer rename) but not the crash-safety sequence — added the
+temp-pointer/fsync/durable-rename discipline (POSIX and Windows), a `.complete`
+directory marker, and startup recovery for an absent/corrupt pointer; (7) rollback had
+no defense against a stale signed manifest being replayed through the feed to force a
+downgrade — added a persisted version floor, separate from the running version, that a
+local rollback intentionally does not reset; (8) the signature section's own claim
+overstated what detached signing buys (no canonicalization *between signer and
+verifier*, not immunity to parser-level ambiguity) — narrowed the wording and added
+duplicate-key rejection. None of this reopens KEL-53 AC2/AC3 (algorithm, dependencies)
+or the TUF-root deferral — all three exclusions from "Why not" stand unchanged.
+
 **Next.** KEL-53 can now write its failing-first fixtures (valid/tampered manifest,
-corrupted patch, full-package fallback, N-1 rollback) against a concrete shape instead
-of inventing one mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here;
-still zero verification code — nothing in this change reads or checks the contract it
-describes.
+corrupted patch, full-package fallback, N-1 rollback, identity mismatch, replay/
+downgrade, crash-interrupted install) against a concrete shape instead of inventing one
+mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here; still zero
+verification code — nothing in this change reads or checks the contract it describes.
 
 **Evidence.** `docs/architecture/06-runtime-and-tooling.md` §4a; `crates/keld-update/src/lib.rs`.
 
