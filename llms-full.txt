@@ -2068,7 +2068,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-Toolchain pin: `rust-toolchain.toml` (`1.93.0`, rustfmt + clippy). Nextest CI
+Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
 profile: `.config/nextest.toml` (`retries = 1`). Workspace clippy is already
 pedantic; do not re-enable it per crate (learnings 2026-07-08).
 

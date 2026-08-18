@@ -6,7 +6,7 @@ Engineering rules, the verification gate, and review gates are in
 ## Clone → build → test → PR
 
 1. Clone this repository.
-2. Use the pinned toolchain in `rust-toolchain.toml` (1.93.0).
+2. Use the pinned toolchain in `rust-toolchain.toml` (1.97.1).
 3. Maintainers (optional): run `just hooks-install` once so this clone uses
    tracked `.githooks/` (`core.hooksPath`, local config only). After that,
    `git pull` / checkout runs `just research-sync` then `just competitors-sync`

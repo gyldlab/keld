@@ -32,7 +32,7 @@ tao = "0.35.3"
 #   wry 0.56 `build` takes `HasWindowHandle`, so tao 0.35.3 still fits.
 # Breaking: macOS/iOS `transparent`/`fullscreen` features removed (always on);
 #   `protocol` feature removed (always on). Keld used neither flag.
-# License: Apache-2.0 OR MIT (unchanged). MSRV 1.77 < Keld 1.93.
+# License: Apache-2.0 OR MIT (unchanged). MSRV 1.77 < Keld 1.97.
 # Pin 0.56.1 not 0.56.0: macOS 11 debug_assertion skip for the media-capture
 #   delegate method (wry #1781).
 wry = { version = "0.56.1", features = ["devtools"] }
