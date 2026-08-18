@@ -28,19 +28,34 @@ function emit(event: string): void {
 }
 
 let hostReady = false;
-let readyWaiters: Array<() => void> = [];
+let linkDead: Error | undefined;
+let readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
 let linkPromise: Promise<LifecycleLink> | undefined;
 
 function onHostReady(): void {
   if (hostReady) return;
   hostReady = true;
+  linkDead = undefined;
   // Drain whenReady waiters before user `ready` listeners so a throw in a
   // listener cannot leave whenReady() pending (even if emit isolation is
   // later weakened).
   const waiters = readyWaiters;
   readyWaiters = [];
-  for (const waiter of waiters) waiter();
+  for (const waiter of waiters) waiter.resolve();
   emit("ready");
+}
+
+function failReadyWaiters(err: Error): void {
+  linkDead = err;
+  const waiters = readyWaiters;
+  readyWaiters = [];
+  for (const waiter of waiters) {
+    try {
+      waiter.reject(err);
+    } catch {
+      // Isolate each waiter. A throw must not skip linkPromise clear.
+    }
+  }
 }
 
 /**
@@ -61,13 +76,27 @@ function ensureLink(): Promise<LifecycleLink> {
       ),
     );
   }
+  linkDead = undefined;
+  let tracked: Promise<LifecycleLink>;
   const pending = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
     onLastWindowClosed: () => {
       emit("window-all-closed");
     },
+    onLinkDead: (err: Error) => {
+      if (linkPromise !== tracked) return;
+      try {
+        failReadyWaiters(err);
+      } finally {
+        // Drop the cached session only before Ready so a later whenReady()
+        // retries. After Ready, Electron stays isReady(); keep the (dead)
+        // link for quit().
+        if (!hostReady && linkPromise === tracked) {
+          linkPromise = undefined;
+        }
+      }
+    },
   });
-  let tracked: Promise<LifecycleLink>;
   tracked = pending.catch((err: unknown) => {
     if (linkPromise === tracked) {
       linkPromise = undefined;
@@ -87,10 +116,20 @@ export const app = {
    * must not print READY. That is the KEL-72 negative control.
    */
   whenReady(): Promise<void> {
+    if (hostReady) return Promise.resolve();
     const ready = ensureLink().then(() => {
       if (hostReady) return;
-      return new Promise<void>((resolve) => {
-        readyWaiters.push(resolve);
+      if (linkDead) return Promise.reject(linkDead);
+      return new Promise<void>((resolve, reject) => {
+        if (hostReady) {
+          resolve();
+          return;
+        }
+        if (linkDead) {
+          reject(linkDead);
+          return;
+        }
+        readyWaiters.push({ resolve, reject });
       });
     });
     ignoreIfUnawaited(ready);

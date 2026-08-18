@@ -244,7 +244,9 @@ async function writeOneFrame(
     }
     offset += written;
     if (written === 0) {
-      await drain.wait();
+      // Bun `socket.write` returning 0 parks on drain. A missing drain
+      // event must not hang HELLO, ping, or quit writes.
+      await withIoDeadline(drain.wait());
     }
   }
 }
@@ -361,6 +363,11 @@ function errorFromErrFrame(payload: Uint8Array): Error {
 export type LifecycleHandler = {
   onReady: () => void;
   onLastWindowClosed: () => void;
+  /**
+   * Read loop died after HELLO. `app.whenReady()` waiters must reject here;
+   * a throw must not skip `#quitWaiter` drain.
+   */
+  onLinkDead: (err: Error) => void;
 };
 
 /**
@@ -373,6 +380,7 @@ export class LifecycleLink {
   #nextCorr = 1;
   #closed = false;
   #quitWaiter: { corr: number; resolve: () => void; reject: (e: Error) => void } | null = null;
+  #quitPromise: Promise<void> | undefined;
   #loopStarted = false;
 
   private constructor(socket: KipcSocket, reader: FrameReader, writes: WriteQueue) {
@@ -417,7 +425,7 @@ export class LifecycleLink {
     const writes = new WriteQueue(socket, drain);
     const session = new LifecycleLink(socket, reader, writes);
     try {
-      await writes.writeFrame(FrameKind.Hello, 0, 0, 0, token);
+      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
       const helloReply = await withIoDeadline(reader.readFrame());
       if (helloReply.header.kind !== FrameKind.Hello) {
         throw kipcError("KELD-IPC-005", "expected HELLO from peer");
@@ -467,28 +475,45 @@ export class LifecycleLink {
           continue;
         }
         if (frame.header.kind === FrameKind.Ping) {
-          await this.#writes.writeFrame(
-            FrameKind.Ping,
-            0,
-            frame.header.channel,
-            frame.header.corr,
-            new Uint8Array(),
+          await withIoDeadline(
+            this.#writes.writeFrame(
+              FrameKind.Ping,
+              0,
+              frame.header.channel,
+              frame.header.corr,
+              new Uint8Array(),
+            ),
           );
           continue;
         }
       }
     };
     void run().catch((err: Error) => {
-      const waiter = this.#quitWaiter;
-      this.#quitWaiter = null;
-      waiter?.reject(err);
+      try {
+        this.close();
+        try {
+          handlers.onLinkDead(err);
+        } catch {
+          // Isolate: a throwing listener must not skip quit-waiter drain.
+        }
+      } finally {
+        const waiter = this.#quitWaiter;
+        this.#quitWaiter = null;
+        waiter?.reject(err);
+      }
     });
   }
 
   async quit(): Promise<void> {
+    if (this.#quitPromise) return this.#quitPromise;
     if (this.#closed) {
       throw kipcError("KELD-IPC-001", "session is closed");
     }
+    this.#quitPromise = this.#quitOnce();
+    return this.#quitPromise;
+  }
+
+  async #quitOnce(): Promise<void> {
     const corr = this.#nextCorr;
     let next = (corr + 1) >>> 0;
     if (next === 0) next = 1;

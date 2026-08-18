@@ -53,13 +53,13 @@ function writeAll(socket: { write(data: Uint8Array | string): number }, data: Ui
   }
 }
 
-async function rejectWithin(ms: number, promise: Promise<unknown>, why: string): Promise<void> {
+async function rejectWithin<T>(ms: number, promise: Promise<T>, why: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const kill = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(why)), ms);
   });
   try {
-    await Promise.race([promise, kill]);
+    return await Promise.race([promise, kill]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -143,6 +143,33 @@ describe("WriteQueue", () => {
     await done;
     expect(out).toEqual([...ping, ...quit]);
   });
+
+  test(
+    "never-draining write is KELD-IPC-006 (drain.wait inside writeOneFrame)",
+    async () => {
+      // Independent of LifecycleLink.connect / outer writeFrame wraps.
+      // socket.write returning 0 and no drain.fire() must surface 006;
+      // omitting withIoDeadline around drain.wait() hangs this test.
+      const drain = new DrainSignal();
+      const queue = new WriteQueue(
+        {
+          write(): number {
+            return 0;
+          },
+          end(): void {},
+        },
+        drain,
+      );
+      const start = Date.now();
+      await expect(
+        queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
+      ).rejects.toThrow("KELD-IPC-006");
+      const elapsed = Date.now() - start;
+      expect(elapsed).toBeGreaterThanOrEqual(4_000);
+      expect(elapsed).toBeLessThan(12_000);
+    },
+    15_000,
+  );
 });
 
 describe("withIoDeadline", () => {
@@ -156,6 +183,116 @@ describe("withIoDeadline", () => {
     const elapsed = Date.now() - start;
     expect(elapsed).toBeLessThan(1_000);
   }, 2_000);
+});
+
+describe("LifecycleLink write deadlines", () => {
+  const originalConnect = Bun.connect;
+
+  function installConnect(
+    socket: { write(data: Uint8Array): number; end(): void },
+  ): { handlers: Record<string, (...args: never[]) => void> } {
+    const captured: { handlers: Record<string, (...args: never[]) => void> } = {
+      handlers: {},
+    };
+    Bun.connect = (async (opts: { socket?: Record<string, (...args: never[]) => void> }) => {
+      captured.handlers = opts.socket ?? {};
+      return socket;
+    }) as typeof Bun.connect;
+    return captured;
+  }
+
+  function mockLink(): string {
+    return process.platform === "win32" ? `9000#${TOKEN_HEX}` : `/tmp/keld-kel72-deadline.sock#${TOKEN_HEX}`;
+  }
+
+  afterAll(() => {
+    Bun.connect = originalConnect;
+  });
+
+  test(
+    "HELLO write against a never-draining send buffer is KELD-IPC-006",
+    async () => {
+      // Independent oracle: socket.write returning 0 parks on DrainSignal.wait
+      // with no drain event. withIoDeadline around HELLO write must surface
+      // KELD-IPC-006; omitting it hangs until the test runner kills the file.
+      installConnect({
+        write(): number {
+          return 0;
+        },
+        end(): void {},
+      });
+      try {
+        const start = Date.now();
+        const err = await LifecycleLink.connect(mockLink(), {
+          onReady(): void {},
+          onLastWindowClosed(): void {},
+          onLinkDead(): void {},
+        }).then(
+          () => null,
+          (e: unknown) => e as Error,
+        );
+        expect(err?.message).toContain("KELD-IPC-006");
+        expect(err?.message).toContain("deadline");
+        const elapsed = Date.now() - start;
+        expect(elapsed).toBeGreaterThanOrEqual(4_000);
+        expect(elapsed).toBeLessThan(12_000);
+      } finally {
+        Bun.connect = originalConnect;
+      }
+    },
+    15_000,
+  );
+
+  test(
+    "Ping reply write against a never-draining send buffer is KELD-IPC-006",
+    async () => {
+      let writes = 0;
+      const captured = installConnect({
+        write(data: Uint8Array): number {
+          writes += 1;
+          if (writes === 1) return data.length;
+          return 0;
+        },
+        end(): void {},
+      });
+      try {
+        let resolveDead: (err: Error) => void = () => undefined;
+        const died = new Promise<Error>((resolve) => {
+          resolveDead = resolve;
+        });
+        const connectP = LifecycleLink.connect(mockLink(), {
+          onReady(): void {},
+          onLastWindowClosed(): void {},
+          onLinkDead(err: Error): void {
+            resolveDead(err);
+          },
+        });
+        const helloKill = Date.now() + 2_000;
+        while (writes < 1) {
+          if (Date.now() > helloKill) {
+            throw new Error("HELLO write never reached the mock socket");
+          }
+          await Promise.resolve();
+        }
+        const data = captured.handlers.data as (socket: unknown, chunk: Uint8Array) => void;
+        data(undefined, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+        await connectP;
+        const start = Date.now();
+        data(undefined, encodeFrame(FrameKind.Ping, 0, 1, new Uint8Array()));
+        const dead = await rejectWithin(
+          12_000,
+          died,
+          "Ping reply write hung without withIoDeadline — onLinkDead never ran",
+        );
+        expect(dead.message).toContain("KELD-IPC-006");
+        expect(Date.now() - start).toBeGreaterThanOrEqual(4_000);
+        expect(Date.now() - start).toBeLessThan(12_000);
+      } finally {
+        Bun.connect = originalConnect;
+      }
+    },
+    15_000,
+  );
 });
 
 describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", () => {
@@ -197,7 +334,11 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
     return { link: `${path}#${TOKEN_HEX}`, listener, reader, opened };
   }
 
-  const handlers = { onReady(): void {}, onLastWindowClosed(): void {} };
+  const handlers = {
+    onReady(): void {},
+    onLastWindowClosed(): void {},
+    onLinkDead(): void {},
+  };
 
   test(
     "HELLO readFrame against a live silent peer is KELD-IPC-006",
@@ -246,6 +387,84 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
         ),
       );
       await expect(quitP).rejects.toThrow("KELD-IPC-005");
+    } finally {
+      peer.listener.stop(true);
+    }
+  });
+
+  test("peer close after HELLO fails whenReady-side onLinkDead with KELD-IPC-001", async () => {
+    const peer = bindPeer();
+    try {
+      let resolveDead: (err: Error) => void = () => undefined;
+      const died = new Promise<Error>((resolve) => {
+        resolveDead = resolve;
+      });
+      const connectP = LifecycleLink.connect(peer.link, {
+        onReady(): void {},
+        onLastWindowClosed(): void {},
+        onLinkDead(err: Error): void {
+          resolveDead(err);
+        },
+      });
+      const socket = await peer.opened;
+      await peer.reader.readFrame();
+      writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+      await connectP;
+      socket.end();
+      const dead = await rejectWithin(
+        2_000,
+        died,
+        "onLinkDead was not called after peer close — ready waiters would hang",
+      );
+      expect(dead.message).toContain("KELD-IPC-001");
+    } finally {
+      peer.listener.stop(true);
+    }
+  });
+
+  test("throwing onLinkDead still rejects an in-flight quit", async () => {
+    const peer = bindPeer();
+    try {
+      const connectP = LifecycleLink.connect(peer.link, {
+        onReady(): void {},
+        onLastWindowClosed(): void {},
+        onLinkDead(): void {
+          throw new Error("KEL72_ON_LINK_DEAD_THROW");
+        },
+      });
+      const socket = await peer.opened;
+      await peer.reader.readFrame();
+      writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+      const session = await connectP;
+      const quitP = session.quit();
+      await peer.reader.readFrame();
+      const start = Date.now();
+      socket.end();
+      await expect(quitP).rejects.toThrow("KELD-IPC-001");
+      expect(Date.now() - start).toBeLessThan(1_000);
+    } finally {
+      peer.listener.stop(true);
+    }
+  });
+
+  test("concurrent quit() shares the in-flight promise", async () => {
+    const peer = bindPeer();
+    try {
+      const connectP = LifecycleLink.connect(peer.link, handlers);
+      const socket = await peer.opened;
+      await peer.reader.readFrame();
+      writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+      const session = await connectP;
+      const first = session.quit();
+      const second = session.quit();
+      const call = await peer.reader.readFrame();
+      expect(call.header.kind).toBe(FrameKind.Call);
+      writeAll(socket, encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array()));
+      await rejectWithin(
+        2_000,
+        Promise.all([first, second]),
+        "second quit() overwrote #quitWaiter — the first waiter never resolved",
+      );
     } finally {
       peer.listener.stop(true);
     }
