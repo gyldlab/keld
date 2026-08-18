@@ -1,4 +1,4 @@
-//! Webview media-capture permission policy (KEL-59).
+//! Webview media-capture permission policy (KEL-59, KEL-73).
 //!
 //! One policy, two install mechanisms:
 //!
@@ -20,12 +20,18 @@
 //! [`keld_guard::evaluate`] on `web.camera` / `web.microphone` — the mapping is
 //! the security decision, so it lives here rather than once per platform.
 //!
-//! Neither platform callback passes an origin or a webview principal. v0
-//! therefore evaluates as [`Principal::AppProcess`] with requested resource
-//! [`WEB_MEDIA_ORIGIN`] (`*`). Origin-scoped and window-principal grants are
-//! not enforceable until the callbacks grow those arguments.
+//! Platform callbacks still do not pass an origin. The host *does* mint a
+//! [`WebviewId`] at create time, so capture evaluates as that
+//! [`Principal::Webview`]. Missing identity and [`Principal::AppProcess`] fail
+//! closed ([`DenyReason::MediaPrincipalRequired`], `KELD-GUARD007`) — they
+//! must not inherit `/app` media grants. A minted webview principal is still
+//! `KELD-GUARD006` until window-level grants exist. Deny has no side effect
+//! (no capture start, no principal mint, no manifest write). Requested
+//! resource remains [`WEB_MEDIA_ORIGIN`] (`*`).
 
-use keld_guard::{Decision, PermissionsManifest, Principal, evaluate};
+use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, evaluate};
+
+use crate::WebviewId;
 
 /// Capability id for camera capture (`getUserMedia` video).
 pub const WEB_CAMERA: &str = "web.camera";
@@ -35,9 +41,13 @@ pub const WEB_MICROPHONE: &str = "web.microphone";
 
 /// Requested-resource sentinel for v0 media checks.
 ///
-/// Exact-match only — this is not a glob. A grant of `["*"]` allows any origin
-/// because the live wry callback cannot name the requesting origin.
+/// Exact-match only — this is not a glob. Origin-scoped grants are not
+/// enforceable until a platform callback names the requesting origin.
 pub const WEB_MEDIA_ORIGIN: &str = "*";
+
+/// v0 generation for media principals. Rotation on navigation is not in this
+/// slice (spec 03).
+const WEBVIEW_MEDIA_GENERATION: u32 = 0;
 
 /// Media kinds the platform backends map their permission callbacks onto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,23 +74,55 @@ impl MediaPermission {
     }
 }
 
-/// Whether `kind` is allowed by `manifest`.
+/// Host-minted webview principal used for media checks (KEL-73).
+///
+/// Generation stays `0` until navigation rotation lands (spec 03).
+#[must_use]
+pub fn webview_media_principal(id: WebviewId) -> Principal {
+    Principal::Webview {
+        id: id.0,
+        generation: WEBVIEW_MEDIA_GENERATION,
+    }
+}
+
+/// Guard decision for `capability` from `principal`.
+///
+/// Only a minted [`Principal::Webview`] proceeds to [`evaluate`]. Anything
+/// else — including omitted identity and [`Principal::AppProcess`] — is
+/// [`DenyReason::MediaPrincipalRequired`] (`KELD-GUARD007`). Deny allocates
+/// only the reason; it does not start capture or mutate the manifest.
+#[must_use]
+pub fn media_permission_decision(
+    manifest: &PermissionsManifest,
+    principal: Option<Principal>,
+    capability: &str,
+) -> Decision {
+    match principal {
+        Some(webview @ Principal::Webview { .. }) => {
+            evaluate(manifest, webview, capability, WEB_MEDIA_ORIGIN)
+        }
+        presented => Decision::Deny(DenyReason::MediaPrincipalRequired {
+            capability: capability.to_owned(),
+            presented,
+        }),
+    }
+}
+
+/// Whether `kind` is allowed by `manifest` for `principal`.
 ///
 /// Unknown kinds fail closed without consulting the manifest. Camera and
-/// microphone use [`evaluate`] as [`Principal::AppProcess`] against
-/// [`WEB_MEDIA_ORIGIN`] — no platform callback can name the requesting webview
-/// yet.
+/// microphone require a minted webview principal; see
+/// [`media_permission_decision`].
 #[must_use]
-pub fn media_permission_allowed(manifest: &PermissionsManifest, kind: MediaPermission) -> bool {
+pub fn media_permission_allowed(
+    manifest: &PermissionsManifest,
+    principal: Option<Principal>,
+    kind: MediaPermission,
+) -> bool {
     let Some(capability) = kind.capability() else {
         return false;
     };
-    evaluate(
-        manifest,
-        Principal::AppProcess,
-        capability,
-        WEB_MEDIA_ORIGIN,
-    ) == Decision::Allow
+    media_permission_decision(manifest, principal, capability) == Decision::Allow
 }
 
 /// Maps `WebView2` permission kinds onto Keld capabilities. Unknown kinds fail
@@ -124,9 +166,10 @@ pub fn wry_media_kind(kind: wry::PermissionKind) -> MediaPermission {
 #[must_use]
 pub fn media_permission_response(
     manifest: &PermissionsManifest,
+    principal: Principal,
     kind: wry::PermissionKind,
 ) -> wry::PermissionResponse {
-    if media_permission_allowed(manifest, wry_media_kind(kind)) {
+    if media_permission_allowed(manifest, Some(principal), wry_media_kind(kind)) {
         wry::PermissionResponse::Allow
     } else {
         wry::PermissionResponse::Deny
@@ -143,6 +186,9 @@ pub fn media_permission_response(
 /// manifest is the authority (`docs/architecture/03-security.md` §1), so
 /// `Deny` here is deliberate on both: default-deny, not default-ask.
 ///
+/// `principal` MUST be the webview this builder will become. Presenting
+/// [`Principal::AppProcess`] is `KELD-GUARD007`, not an allow.
+///
 /// The `backends_install_guarded_handler` test asserts every live backend
 /// wires its platform mechanism; dropping the call silently restores the
 /// platform default. Windows registers `add_PermissionRequested` directly in
@@ -152,8 +198,10 @@ pub fn media_permission_response(
 pub fn with_guarded_media_permissions(
     builder: wry::WebViewBuilder<'_>,
     manifest: PermissionsManifest,
+    principal: Principal,
 ) -> wry::WebViewBuilder<'_> {
-    builder.with_permission_handler(move |kind| media_permission_response(&manifest, kind))
+    builder
+        .with_permission_handler(move |kind| media_permission_response(&manifest, principal, kind))
 }
 
 #[cfg(test)]
@@ -161,15 +209,38 @@ mod tests {
     use super::*;
     use keld_guard::{DenyReason, parse_manifest};
 
+    fn other_webview() -> Principal {
+        Principal::Webview {
+            id: 99,
+            generation: 0,
+        }
+    }
+
+    fn camera_grant() -> PermissionsManifest {
+        parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant")
+    }
+
+    #[test]
+    fn webview_media_principal_uses_host_id() {
+        assert_eq!(
+            webview_media_principal(WebviewId(7)),
+            Principal::Webview {
+                id: 7,
+                generation: 0
+            }
+        );
+    }
+
     #[test]
     fn empty_manifest_denies_camera_and_microphone() {
         let manifest = parse_manifest("{}").expect("empty object");
+        let webview = webview_media_principal(WebviewId(1));
         assert!(
-            !media_permission_allowed(&manifest, MediaPermission::Camera),
+            !media_permission_allowed(&manifest, Some(webview), MediaPermission::Camera),
             "empty manifest must default-deny camera"
         );
         assert!(
-            !media_permission_allowed(&manifest, MediaPermission::Microphone),
+            !media_permission_allowed(&manifest, Some(webview), MediaPermission::Microphone),
             "empty manifest must default-deny microphone"
         );
         match evaluate(
@@ -192,20 +263,69 @@ mod tests {
     }
 
     #[test]
-    fn camera_grant_does_not_allow_microphone_or_other() {
-        let manifest = parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
-        assert!(
-            media_permission_allowed(&manifest, MediaPermission::Camera),
-            "in-scope web.camera grant must allow camera — inverted deny would fail this"
+    fn remote_webview_does_not_inherit_app_process_media_grant() {
+        let manifest = camera_grant();
+        assert_eq!(
+            evaluate(
+                &manifest,
+                Principal::AppProcess,
+                WEB_CAMERA,
+                WEB_MEDIA_ORIGIN
+            ),
+            Decision::Allow,
+            "control: /app web.camera still allows AppProcess — the media path must not use that"
         );
+        let other = other_webview();
+        match media_permission_decision(&manifest, Some(other), WEB_CAMERA) {
+            Decision::Deny(reason) => {
+                assert_eq!(
+                    reason.code(),
+                    "KELD-GUARD006",
+                    "minted webview must hit evaluate's non-AppProcess deny, got {}",
+                    reason.code()
+                );
+                assert!(
+                    !media_permission_allowed(&manifest, Some(other), MediaPermission::Camera),
+                    "other webview must not start capture on an AppProcess camera grant"
+                );
+            }
+            Decision::Allow => {
+                panic!("other webview must not inherit AppProcess camera grant, got Allow")
+            }
+        }
         assert!(
-            !media_permission_allowed(&manifest, MediaPermission::Microphone),
+            !media_permission_allowed(&manifest, Some(other), MediaPermission::Microphone),
             "camera grant must not imply microphone"
         );
         assert!(
-            !media_permission_allowed(&manifest, MediaPermission::Other),
-            "unknown wry kinds must fail closed even when camera is granted"
+            !media_permission_allowed(&manifest, Some(other), MediaPermission::Other),
+            "unknown kinds must fail closed even when camera is granted to app"
         );
+    }
+
+    #[test]
+    fn missing_or_app_process_media_principal_is_guard007() {
+        let manifest = camera_grant();
+        for presented in [None, Some(Principal::AppProcess)] {
+            match media_permission_decision(&manifest, presented, WEB_CAMERA) {
+                Decision::Deny(reason) => {
+                    assert_eq!(reason.code(), "KELD-GUARD007", "{presented:?}: {reason}");
+                    assert_eq!(reason.kind(), "media_principal_required");
+                    assert!(
+                        !reason.fix().contains("/app/web"),
+                        "must not recommend applying app media grants: {}",
+                        reason.fix()
+                    );
+                    assert!(
+                        !media_permission_allowed(&manifest, presented, MediaPermission::Camera),
+                        "{presented:?} must not start capture"
+                    );
+                }
+                Decision::Allow => {
+                    panic!("expected KELD-GUARD007, got Allow for {presented:?}")
+                }
+            }
+        }
     }
 
     #[test]
@@ -213,7 +333,11 @@ mod tests {
         let manifest = parse_manifest(r#"{"app":{"web":{"camera":["https://evil.example"]}}}"#)
             .expect("origin grant");
         assert!(
-            !media_permission_allowed(&manifest, MediaPermission::Camera),
+            !media_permission_allowed(
+                &manifest,
+                Some(webview_media_principal(WebviewId(1))),
+                MediaPermission::Camera
+            ),
             "v0 requested resource is `*`; an https origin grant must not allow"
         );
     }
@@ -245,6 +369,10 @@ mod tests {
             wkwebview.contains("with_guarded_media_permissions"),
             "KEL-59: wkwebview omits the guarded handler, restoring wry's auto-grant"
         );
+        assert!(
+            wkwebview.contains("webview_media_principal"),
+            "KEL-73: wkwebview must mint a webview principal, not fall back to AppProcess"
+        );
         // The wry helper must still reach wry and the guard, or the backends
         // above and below would be calling a no-op.
         let helper = include_str!("media.rs");
@@ -263,6 +391,10 @@ mod tests {
             webkitgtk.contains("with_guarded_media_permissions"),
             "KEL-28/KEL-59: webkitgtk omits the guarded handler, restoring `WebKitGTK`'s default prompt"
         );
+        assert!(
+            webkitgtk.contains("webview_media_principal"),
+            "KEL-73: webkitgtk must mint a webview principal, not fall back to AppProcess"
+        );
 
         // Windows (direct COM, KEL-65): the backend must register the guarded
         // `PermissionRequested` handler and route it through the shared policy.
@@ -280,6 +412,10 @@ mod tests {
             "KEL-59: webview2 guard must consult the shared policy, not a constant"
         );
         assert!(
+            webview2.contains("webview_media_principal"),
+            "KEL-73: webview2 must mint a webview principal, not fall back to AppProcess"
+        );
+        assert!(
             webview2.contains("navigate_initial(&view.webview, &guard"),
             "KEL-65: the first navigation must present the GuardInstalled proof"
         );
@@ -291,7 +427,10 @@ mod tests {
 /// deny-vs-allow is fully testable without a GUI session.
 #[cfg(all(test, target_os = "windows"))]
 mod webview2_tests {
-    use super::{MediaPermission, media_permission_allowed, webview2_media_kind};
+    use super::{
+        MediaPermission, WebviewId, media_permission_allowed, webview_media_principal,
+        webview2_media_kind,
+    };
     use keld_guard::parse_manifest;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,
@@ -319,10 +458,11 @@ mod webview2_tests {
     }
 
     /// The end-to-end deny decision the COM handler applies: empty manifest
-    /// denies every kind; a camera grant allows exactly camera.
+    /// denies every kind; an AppProcess camera grant must not allow a webview.
     #[test]
     fn empty_manifest_denies_every_webview2_kind() {
         let empty = parse_manifest("{}").expect("empty");
+        let principal = Some(webview_media_principal(WebviewId(1)));
         for kind in [
             COREWEBVIEW2_PERMISSION_KIND_CAMERA,
             COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
@@ -330,21 +470,27 @@ mod webview2_tests {
             COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
         ] {
             assert!(
-                !media_permission_allowed(&empty, webview2_media_kind(kind)),
+                !media_permission_allowed(&empty, principal, webview2_media_kind(kind)),
                 "KEL-59: empty manifest must deny WebView2 kind {kind:?}"
             );
         }
     }
 
     #[test]
-    fn camera_grant_allows_only_camera_kind() {
+    fn camera_grant_does_not_allow_webview2_camera_kind() {
         let granted = parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("grant");
-        assert!(media_permission_allowed(
-            &granted,
-            webview2_media_kind(COREWEBVIEW2_PERMISSION_KIND_CAMERA)
-        ));
+        let principal = Some(webview_media_principal(WebviewId(1)));
+        assert!(
+            !media_permission_allowed(
+                &granted,
+                principal,
+                webview2_media_kind(COREWEBVIEW2_PERMISSION_KIND_CAMERA)
+            ),
+            "KEL-73: /app camera grant must not start capture for a webview"
+        );
         assert!(!media_permission_allowed(
             &granted,
+            principal,
             webview2_media_kind(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE)
         ));
     }
@@ -355,9 +501,14 @@ mod webview2_tests {
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod wry_tests {
     use super::{
-        MediaPermission, media_permission_response, with_guarded_media_permissions, wry_media_kind,
+        MediaPermission, WebviewId, media_permission_response, webview_media_principal,
+        with_guarded_media_permissions, wry_media_kind,
     };
     use keld_guard::parse_manifest;
+
+    fn view() -> keld_guard::Principal {
+        webview_media_principal(WebviewId(1))
+    }
 
     #[test]
     fn wry_kinds_map_to_keld_media_permissions() {
@@ -382,41 +533,44 @@ mod wry_tests {
     #[test]
     fn empty_manifest_returns_wry_deny_not_allow_or_default() {
         let empty = parse_manifest("{}").expect("empty");
+        let principal = view();
         assert_eq!(
-            media_permission_response(&empty, wry::PermissionKind::Camera),
+            media_permission_response(&empty, principal, wry::PermissionKind::Camera),
             wry::PermissionResponse::Deny
         );
         assert_eq!(
-            media_permission_response(&empty, wry::PermissionKind::Microphone),
+            media_permission_response(&empty, principal, wry::PermissionKind::Microphone),
             wry::PermissionResponse::Deny
         );
         assert_eq!(
-            media_permission_response(&empty, wry::PermissionKind::DisplayCapture),
+            media_permission_response(&empty, principal, wry::PermissionKind::DisplayCapture),
             wry::PermissionResponse::Deny
         );
         assert_ne!(
-            media_permission_response(&empty, wry::PermissionKind::Camera),
+            media_permission_response(&empty, principal, wry::PermissionKind::Camera),
             wry::PermissionResponse::Allow,
             "KEL-59: Allow here is wry's unfixed auto-grant"
         );
         assert_ne!(
-            media_permission_response(&empty, wry::PermissionKind::Camera),
+            media_permission_response(&empty, principal, wry::PermissionKind::Camera),
             wry::PermissionResponse::Default,
             "Default continues the platform behaviour — macOS auto-grants, Linux/Windows prompt. \n             v0 must Deny on all three."
         );
     }
 
     #[test]
-    fn camera_grant_allows_only_camera() {
+    fn camera_grant_does_not_start_wry_capture_for_webview() {
         let granted = parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("grant");
+        let principal = view();
         assert_eq!(
-            media_permission_response(&granted, wry::PermissionKind::Camera),
-            wry::PermissionResponse::Allow
+            media_permission_response(&granted, principal, wry::PermissionKind::Camera),
+            wry::PermissionResponse::Deny,
+            "KEL-73: /app camera grant must not start capture (wry Deny = no capture start)"
         );
         assert_eq!(
-            media_permission_response(&granted, wry::PermissionKind::Microphone),
+            media_permission_response(&granted, principal, wry::PermissionKind::Microphone),
             wry::PermissionResponse::Deny
         );
-        let _ = with_guarded_media_permissions(wry::WebViewBuilder::new(), granted);
+        let _ = with_guarded_media_permissions(wry::WebViewBuilder::new(), granted, principal);
     }
 }

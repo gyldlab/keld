@@ -52,7 +52,8 @@ pub struct PermissionsExplainResult {
 /// MCP view of [`keld_guard::DenyReason`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct DenyReasonView {
-    /// `not_granted` | `out_of_scope` (v0). `channel_forbidden` is not produced.
+    /// `not_granted` | `out_of_scope` | `not_app_process` | `media_principal_required` (v0).
+    /// `channel_forbidden` is not produced.
     pub kind: String,
     /// Capability id when the deny is grant/scope related.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,7 +216,9 @@ fn deny_result(reason: &DenyReason) -> PermissionsExplainResult {
             value: serde_json::Value::String(requested.clone()),
             snippet: format!("append {requested:?} to `{json_pointer}`"),
         }),
-        DenyReason::ChannelForbidden { .. } | DenyReason::NotAppProcess { .. } => None,
+        DenyReason::ChannelForbidden { .. }
+        | DenyReason::NotAppProcess { .. }
+        | DenyReason::MediaPrincipalRequired { .. } => None,
     };
     PermissionsExplainResult {
         decision: "deny".to_owned(),
@@ -264,6 +267,13 @@ impl From<&DenyReason> for DenyReasonView {
             DenyReason::NotAppProcess { .. } => Self {
                 kind: reason.kind().to_owned(),
                 capability: None,
+                scope: None,
+                channel: None,
+                json_pointer: None,
+            },
+            DenyReason::MediaPrincipalRequired { capability, .. } => Self {
+                kind: reason.kind().to_owned(),
+                capability: Some(capability.clone()),
                 scope: None,
                 channel: None,
                 json_pointer: None,

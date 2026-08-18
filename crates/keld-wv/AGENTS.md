@@ -10,8 +10,14 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
 - Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
 - Tests MUST follow repository `.agents/testing.md`.
 - Camera/microphone capture MUST go through `keld-guard` (`web.camera` /
-  `web.microphone`) as `Principal::AppProcess` in v0 — no platform callback
-  carries an origin or webview id yet. Per backend:
+  `web.microphone`) as the requesting `Principal::Webview` when the host
+  has minted that webview's id. Agents MUST NOT evaluate capture as
+  `Principal::AppProcess` — that applies `/app` media grants to every
+  webview, including a remote/other window. If the requesting webview
+  principal has not been minted yet, deny (`KELD-GUARD007`); do not fall
+  back to AppProcess. v0 `evaluate` still denies webview principals
+  (`KELD-GUARD006`) until window-level grants exist — that is fail-closed,
+  not a reason to present AppProcess. Per backend:
   - macOS / Linux (wry interim): agents MUST NOT omit wry `with_permission_handler`
     on a live `WebViewBuilder` — wry 0.56 auto-grants on macOS and shows
     WebKitGTK's own prompt on Linux when the handler is `None`; neither is
@@ -21,4 +27,4 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
     fallback is a user prompt (default-ask, not default-deny). The first
     navigation MUST present the `GuardInstalled` proof; agents MUST NOT add a
     second navigation path that bypasses it.
-  Agents MUST NOT pass a `Webview` principal to inherit `/app` media grants.
+  Agents MUST NOT pass `AppProcess` to inherit `/app` media grants.

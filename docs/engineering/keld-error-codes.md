@@ -301,6 +301,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: v0 evaluate does not apply app grants to this principal
 - fix: Do not apply `/app` scopes to a webview or plugin principal; window-level grants are not in this slice.
 
+## KELD-GUARD007
+
+- crate: keld-guard
+- message: Camera/microphone requires a minted webview principal
+- fix: Mint the requesting webview principal before evaluating the capability. Do not present AppProcess.
+
 ## KELD-DOCS001
 
 - crate: llms-docs

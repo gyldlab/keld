@@ -13,5 +13,8 @@ Spec: `docs/architecture/03-security.md`. Security boundary; threat model in cra
   `evaluate(manifest, principal, operation, path) -> Decision`.
   Non-`AppProcess` principals are `DenyReason::NotAppProcess` (`KELD-GUARD006`)
   before grant lookup — agents MUST NOT apply `/app` scopes to a webview or
-  plugin. Missing file is `ManifestError`, not Allow.
+  plugin. Webview-originated media (`web.camera` / `web.microphone`) MUST
+  present the requesting `Principal::Webview`. Missing identity and
+  `AppProcess` are `DenyReason::MediaPrincipalRequired` (`KELD-GUARD007`).
+  Missing file is `ManifestError`, not Allow.
 - Tests MUST follow repository `.agents/testing.md`.

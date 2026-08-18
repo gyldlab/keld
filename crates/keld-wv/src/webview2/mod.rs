@@ -68,12 +68,12 @@ use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, RECT};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::core::HSTRING;
 
-use keld_guard::PermissionsManifest;
+use keld_guard::{PermissionsManifest, Principal};
 
 use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebView2EngineExt, WebviewSpec};
 use crate::error::WvError;
-use crate::media::{media_permission_allowed, webview2_media_kind};
+use crate::media::{media_permission_allowed, webview_media_principal, webview2_media_kind};
 
 /// Returns the installed `WebView2` Evergreen runtime version.
 ///
@@ -255,6 +255,7 @@ struct GuardInstalled(());
 fn install_guarded_media_permissions(
     webview: &ICoreWebView2,
     manifest: PermissionsManifest,
+    principal: Principal,
 ) -> Result<GuardInstalled, WvError> {
     // Built outside the registration's `unsafe` block so the COM calls inside
     // the callback carry their own SAFETY proofs instead of inheriting one
@@ -272,11 +273,12 @@ fn install_guarded_media_permissions(
         // out-pointer is valid.
         unsafe { args.PermissionKind(&raw mut kind) }?;
 
-        let state = if media_permission_allowed(&manifest, webview2_media_kind(kind)) {
-            COREWEBVIEW2_PERMISSION_STATE_ALLOW
-        } else {
-            COREWEBVIEW2_PERMISSION_STATE_DENY
-        };
+        let state =
+            if media_permission_allowed(&manifest, Some(principal), webview2_media_kind(kind)) {
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW
+            } else {
+                COREWEBVIEW2_PERMISSION_STATE_DENY
+            };
         // SAFETY: same liveness as above; `SetState` takes the enum by value.
         unsafe { args.SetState(state) }
     }));
@@ -496,9 +498,14 @@ impl WebEngine for WebView2Engine {
         };
 
         // Guard before content: nothing may load until default-deny is wired.
-        // Empty manifest → deny everything (KEL-59).
-        let guard =
-            install_guarded_media_permissions(&view.webview, PermissionsManifest::default())?;
+        // Empty manifest → deny everything (KEL-59). KEL-73: mint the webview
+        // id first so capture cannot inherit AppProcess grants.
+        let id = self.next_id;
+        let guard = install_guarded_media_permissions(
+            &view.webview,
+            PermissionsManifest::default(),
+            webview_media_principal(WebviewId(id)),
+        )?;
 
         // Devtools follow the build profile, like the macOS backend: wired in
         // debug, off in release until keld-guard owns `web.devtools`. WebView2
@@ -542,7 +549,6 @@ impl WebEngine for WebView2Engine {
                 .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
         };
 
-        let id = self.next_id;
         self.next_id += 1;
         self.views.insert(id, view);
         Ok(WebviewId(id))

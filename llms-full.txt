@@ -436,11 +436,10 @@ pub struct EchoResponse {
 Note what is *not* in that path: there is no capability check. The echo frame goes from
 decode straight to handler. `keld-guard::evaluate` takes a `Principal` and
 default-denies anything other than `AppProcess` (`KELD-GUARD006`); it is live for
-MCP `keld_permissions_explain` and for macOS webview camera/microphone capture
-(explicitly as `AppProcess`, because wry's handler has no webview id). It is
-still not called on privileged kipc frames, so the "every privileged operation
-passes the guard" property in [`03` §1](../architecture/03-security.md) is not yet
-true of IPC.
+MCP `keld_permissions_explain`, webview camera/microphone capture (as the
+requesting `Webview` principal; missing identity and `AppProcess` are
+`KELD-GUARD007`), and privileged kipc via `dispatch_privileged` (KEL-69). Echo
+dispatch still does not call the guard.
 
 Coverage: `crates/keld-ipc/tests/echo_link.rs` exercises the round trip over a real socket, and
 `crates/keld-cli/tests/bun_echo.rs` does it with a real Bun process in the loop.
@@ -574,9 +573,10 @@ sections. Three honest observations about the gap:
 `keld.permissions.jsonc` is the highest-stakes contract in the system. Its shape is
 normative in [`03` §2](../architecture/03-security.md). v0 code is
 `parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
-`app.<group>.<action>`). Recorder, `keld doctor --permissions`, and host IPC still
-calling `evaluate` on every privileged frame are not this slice. Webview camera and
-microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59).
+`app.<group>.<action>`). Recorder and `keld doctor --permissions` are not this slice.
+Privileged kipc uses `dispatch_privileged` (KEL-69). Webview camera and
+microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59)
+as the requesting webview principal (KEL-73); `AppProcess` is `KELD-GUARD007`.
 
 **v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
 scope; symlink canonicalization is not in this slice. That is not an Allow.
@@ -1174,11 +1174,14 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
    backends: macOS and Linux (KEL-28) both install wry `with_permission_handler`
    (`with_guarded_media_permissions`, shared helper); Windows registers the
    `WebView2` `add_PermissionRequested` handler before the first navigation
-   (KEL-65 direct COM — the ordering is compile-enforced). All three call
-   `keld-guard::evaluate` as `Principal::AppProcess` on `web.camera` /
-   `web.microphone` with requested resource `*` (no platform callback passes
-   an origin or a webview principal). Grant with
-   `"web": { "camera": ["*"] }` / `"microphone": ["*"]`. CSP injection,
+   (KEL-65 direct COM — the ordering is compile-enforced). All three evaluate
+   `web.camera` / `web.microphone` as the requesting `Principal::Webview`
+   (host-minted `WebviewId`, generation `0` until navigation rotation lands)
+   with requested resource `*` (no platform callback passes an origin).
+   Missing identity and `AppProcess` fail closed (`KELD-GUARD007`) so `/app`
+   media grants cannot apply to a remote or other webview. A minted webview
+   principal is still `KELD-GUARD006` until window-level grants exist. CSP
+   injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.
 4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9
@@ -1923,6 +1926,12 @@ through tao's event loop. Replacing it does not change who owns the handle, who 
 crash whom, or who can mint a principal — so it fails the first-principles test in
 `AGENTS.md` until wry is missing a hook we actually need. KEL-59 was that case for
 camera/mic: bump to 0.56.1 for `with_permission_handler`, do not rewrite the backend.
+
+**Update (2026-08-18, KEL-73).** Evaluating capture as `Principal::AppProcess` applied
+`/app` `web.camera` / `web.microphone` grants to every webview. Capture now uses the
+host-minted `WebviewId` (`Principal::Webview`, generation `0`). Missing identity and
+`AppProcess` are `KELD-GUARD007`; a minted webview is still `KELD-GUARD006` until
+window-level grants exist. Deny does not start capture.
 
 **Update (2026-08-15, KEL-65): Windows create path is now direct windows-rs COM.**
 wry crossed the "missing a hook" line on Windows three ways at once: it blocks the
@@ -2747,6 +2756,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-guard
 - message: v0 evaluate does not apply app grants to this principal
 - fix: Do not apply `/app` scopes to a webview or plugin principal; window-level grants are not in this slice.
+
+## KELD-GUARD007
+
+- crate: keld-guard
+- message: Camera/microphone requires a minted webview principal
+- fix: Mint the requesting webview principal before evaluating the capability. Do not present AppProcess.
 
 ## KELD-DOCS001
 
