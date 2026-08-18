@@ -244,26 +244,35 @@ Five things to notice, because they are each a deliberate decision rather than a
 
 ### 4b. What actually happens today when you run `keld dev`
 
-Read `crates/keld-cli/src/dev.rs:68-131` alongside this. The gap is large and you should see it
-clearly before you start work.
+Read `crates/keld-cli/src/dev.rs` and `crates/keld-cli/src/dev_session.rs` alongside this. The
+gap is large and you should see it clearly before you start work.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant CLI as keld dev<br/>(keld-cli)
-    participant Srv as EchoServer thread<br/>(keld-cli/echo_link.rs)
-    participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30)
+    participant Srv as dev session thread<br/>(keld-cli/dev_session.rs)
+    participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30/72)
     participant Win as WKWebView / WebView2 window
 
     CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts?<br/>renderer HTML present and project-relative?
-    CLI->>Srv: EchoServer::start() → bind UDS or loopback port, wait for ready
-    CLI->>Bun: spawn, env KELD_APP_LINK=<endpoint>#<token>
-    Bun->>Srv: Bun.connect (./kipc.ts) + HELLO
-    Srv-->>Bun: HELLO
-    Bun->>Srv: CALL on ECHO_CHANNEL (postcard EchoRequest)
-    Srv-->>Bun: REPLY (postcard EchoResponse)
-    Bun-->>Bun: prints "ipc-echo ok"
-    CLI->>Win: run_hello_window_html — project renderer HTML, no IPC in the webview
+    CLI->>Srv: EchoServer::start_with(serve_dev_session) → bind UDS or loopback port, wait for ready
+    CLI->>Bun: spawn via keld_runtime::Supervisor, env KELD_APP_LINK=<endpoint>#<token>
+    par window opens concurrently
+        CLI->>Win: run_hello_window_html_with_ready — project renderer HTML, no IPC in the webview
+        Win-->>Srv: on_ready callback fires the window_ready channel
+    and Bun session runs concurrently
+        Bun->>Srv: Bun.connect (./kipc.ts) + HELLO
+        Srv-->>Bun: HELLO
+        Bun->>Srv: CALL on ECHO_CHANNEL (postcard EchoRequest)
+        Srv-->>Bun: REPLY (postcard EchoResponse)
+        Bun->>Srv: CALL on APP_CHANNEL (AppRequest::WhenReady)
+        Note over Srv: blocks until window_ready fires
+        Srv-->>Bun: REPLY (AppResponse::Ready)
+        Bun->>Srv: CALL on APP_CHANNEL (AppRequest::Quit)
+        Srv-->>Bun: REPLY (AppResponse::Quitting), session ends
+        Bun-->>Bun: exits
+    end
     Note over Win: blocks the main thread<br/>until the user closes it
 ```
 
@@ -274,15 +283,23 @@ The honest reading of that diagram:
   `main.ts` shells out to a *Rust* subprocess that speaks kipc on its behalf
   (`crates/keld-cli/templates/hello/src/main.ts:15-19`). Every JS-side arrow in §4a is
   currently a `Bun.spawn`.
-- **The window and the IPC session are sequential, not concurrent.** `keld dev` reaps
-  the Bun echo child, then opens a window with the project's `renderer` file as inline
-  HTML (`load_dev_window_html` → `run_hello_window_html`). The webview still has no
-  kipc. `keld hello` keeps compiled `keld_wv::HELLO_HTML`.
-- **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
-  (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
-  echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic
-  guard-before-handler entry point for privileged calls exists
-  (`keld_ipc::guard_dispatch::dispatch_privileged`, KEL-69) and now has its first real
+- **The window and the Bun session are now concurrent (KEL-72), not sequential.** `keld dev`
+  binds the dev session, spawns Bun, and opens the window on the main thread at the same time;
+  a `window_ready` channel — fired the instant `WebEngine::create` returns, threaded through a
+  parallel `_with_ready` callback in every layer down to each platform's `keld-wv` backend —
+  is what `AppRequest::WhenReady` blocks on. The window still shows the project's `renderer`
+  file as inline HTML (`load_dev_window_html` → `run_hello_window_html_with_ready`) with no
+  kipc of its own. `keld hello` keeps compiled `keld_wv::HELLO_HTML`. `AppRequest::Quit` ends
+  the kipc session only — it does not close the host window; nothing yet forwards a real
+  window-close event back into the Bun session (`window-all-closed` is a disclosed, deferred
+  follow-up, not built).
+- **Echo and app-lifecycle dispatch share one connection, neither is guard-checked —
+  deliberately.** `serve_dev_session` (`crates/keld-cli/src/dev_session.rs`) multiplexes
+  `ECHO_CHANNEL` (KEL-30) and `APP_CHANNEL` (`keld_ipc::app`, KEL-72) on one handshake, going
+  straight from frame decode to handler for both: echo is an unprivileged demo channel, and
+  `whenReady`/`quit` are basic process lifecycle (like Node's own `process.exit()`), neither a
+  `keld-guard` capability. A generic guard-before-handler entry point for privileged calls
+  exists (`keld_ipc::guard_dispatch::dispatch_privileged`, KEL-69) and has its first real
   caller: `keld_native::fs::{fs_read, fs_write}` (KEL-71) — a real kipc channel
   (`serve_fs_session`), guard-checked before any OS call, with real temp-file oracles
   proving allow/deny/`..`/non-`AppProcess` cases. Every other `keld-native` module is
@@ -290,7 +307,7 @@ The honest reading of that diagram:
   handlers (all three OS backends) call `keld-guard::evaluate` directly, independent of
   `dispatch_privileged`.
 - **`keld-runtime` now supervises the Bun spawn (KEL-70).** `keld-cli/src/dev.rs`
-  `run_dev_echo` spawns through `keld_runtime::Supervisor`, which restarts a crashed
+  `run_dev`/`run_dev_echo` spawn through `keld_runtime::Supervisor`, which restarts a crashed
   (non-zero exit) child with exponential backoff up to `RestartPolicy`'s defaults
   (3 crashes / 30 s) before returning a typed `KELD-RUNTIME-002`. Not yet built: Bun
   discovery/pinning, health checks beyond exit code, `--inspect`, Bun watch hot-restart.
@@ -386,12 +403,12 @@ but written down next to the code with the reason and the milestone that closes 
 | `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
 | `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. Proven wiring, no real capability uses it yet (host `fs.read`/`fs.write` is KEL-71). `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | ~345 | Partial | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules. `fs` is live (KEL-71): `fs_read`/`fs_write` (capability ids `fs.read`/`fs.write`), a real `serve_fs_session` kipc channel, every call routed through `keld_ipc::guard_dispatch::dispatch_privileged` before touching disk. The other 14 modules are still names only |
-| `keld-runtime` | ~685 | Partial | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s). `keld-cli/src/dev.rs` `run_dev_echo` spawns through it. Bun discovery/pinning, `--inspect`, and Bun watch hot-restart are not built |
+| `keld-runtime` | ~685 | Partial | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s). `keld-cli/src/dev.rs` `run_dev` and `run_dev_echo` both spawn through it. Bun discovery/pinning, `--inspect`, and Bun watch hot-restart are not built |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
 | `keld-pack` | 25 | Skeleton | Packaging, signing, cross-compilation | [`06` §3](../architecture/06-runtime-and-tooling.md) | A `Format` enum (`App`, `Dmg`, `Nsis`, `Msi`, `Deb`, `Rpm`, `AppImage`) |
 | `keld-compat` | 18 | Skeleton | Host-side Electron emulation (what JS can't fake) | [`04` §3](../architecture/04-electron-compat.md) | A `Tier` enum (`One`/`Two`/`Three`) |
 | `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` handles `--hello` and otherwise prints a pre-alpha message. Does not parse config or start an event loop |
-| `keld-cli` | — | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`. Absent: `build`, `migrate`, `gen`, `ext`, and `--json` on every verb |
+| `keld-cli` | — | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`. `dev.rs`'s `run_dev` opens the window and the Bun session concurrently (KEL-72), multiplexing `ECHO_CHANNEL`/`APP_CHANNEL` on one connection via the new `dev_session.rs`. Absent: `build`, `migrate`, `gen`, `ext`, and `--json` on every verb |
 
 Each skeleton crate's `lib.rs` opens with a module doc naming its spec section. Those docs are
 accurate about intent and say nothing about status — which is why this table exists.
@@ -620,6 +637,7 @@ The summary table. "Live" means it works and a test proves it.
 | Windows transport | **Partial / diverges** | Loopback **TCP** plus v2 HELLO token (KEL-60); named-pipe DACL is the destination (`keld-cli/src/echo_link.rs`) |
 | HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
+| `app.whenReady()`/`app.quit()` (KEL-72) | **Live, narrow** | `keld_ipc::app` + `dev_session.rs`; `whenReady` blocks on real window creation, `quit` ends the kipc session only — does not close the window. `window-all-closed` (window → Bun) not built |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |
 | Windows window + WebView2 | **Live** | `keld-wv/src/webview2/`, direct `webview2-com` COM since KEL-65 (wry not linked on Windows); tao for window + event loop; `KELD-WV-008` probe |
 | `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (three backends) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |

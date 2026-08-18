@@ -7,7 +7,10 @@
 use std::fs;
 use std::path::Path;
 
-use keld_wv::{HELLO_HTML, WvError, run_hello_window as wv_run_hello};
+use keld_wv::{
+    HELLO_HTML, WvError, run_hello_window as wv_run_hello,
+    run_hello_window_with_ready as wv_run_hello_with_ready,
+};
 
 /// Window title when config/args do not supply one.
 pub const DEFAULT_HELLO_TITLE: &str = "Keld";
@@ -43,6 +46,21 @@ pub fn run_hello_window_titled(title: &str) -> Result<(), WvError> {
 /// Forwards [`keld_wv::WvError`] from the webview layer.
 pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), WvError> {
     wv_run_hello(title, html)
+}
+
+/// Like [`run_hello_window_html`], but calls `on_ready` once the window has
+/// been created — before the run loop starts. Used by `keld dev` (KEL-72) so
+/// `app.whenReady()` blocks on a real, host-backed signal.
+///
+/// # Errors
+///
+/// Forwards [`keld_wv::WvError`] from the webview layer.
+pub fn run_hello_window_html_with_ready(
+    title: &str,
+    html: &str,
+    on_ready: impl FnOnce(),
+) -> Result<(), WvError> {
+    wv_run_hello_with_ready(title, html, on_ready)
 }
 
 /// `--title <name>` or `--title=<name>` from argv (binary name included is fine).

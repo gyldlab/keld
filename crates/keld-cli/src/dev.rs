@@ -5,13 +5,15 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title,
-    run_hello_window_html,
+    run_hello_window_html_with_ready,
 };
 use keld_runtime::{RestartPolicy, Supervisor, SupervisorOutcome};
 
+use crate::dev_session::serve_dev_session;
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 use crate::echo_link::EchoServer;
 
@@ -136,6 +138,11 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
 /// retried per [`RestartPolicy::default`] before this call gives up, instead
 /// of failing on the first non-zero exit.
 ///
+/// Uses the same [`serve_dev_session`] as [`run_dev`] (not the plain echo
+/// session) so the template's `AppLinkSession.whenReady()`/`.quit()` calls
+/// (KEL-72) work identically here — with no window to wait for,
+/// `window_ready` is pre-fired so `whenReady()` returns immediately.
+///
 /// # Errors
 ///
 /// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the
@@ -152,7 +159,12 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     }
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let server = EchoServer::start(&ready_tx)?;
+    let server = EchoServer::start_with(&ready_tx, |stream, token| {
+        let (window_ready_tx, window_ready_rx) = mpsc::channel();
+        // No window in this flow — `whenReady()` must not block forever.
+        let _ = window_ready_tx.send(());
+        serve_dev_session(stream, token, window_ready_rx)
+    })?;
     ready_rx
         .recv()
         .map_err(|_| DevError::Runtime("echo server failed to start".to_owned()))?;
@@ -191,20 +203,64 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     }
 }
 
-/// Runs `keld dev` in `project_root`: echo session, then the hello window.
+/// Runs `keld dev` in `project_root`: opens the app-process session
+/// (echo + app lifecycle, KEL-72) and the hello window concurrently.
+///
+/// Unlike [`run_dev_echo`] (a one-shot echo smoke test with no window), the
+/// Bun session here stays open for the process lifetime: `app.whenReady()`
+/// blocks until this call's window is actually created, and `app.quit()`
+/// ends the Bun session (it does not close the window — that direction is a
+/// follow-up, see `crate::dev_session`).
 ///
 /// # Errors
 ///
-/// Returns [`DevError`] when checks fail, Bun exits non-zero, or the window fails.
+/// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the
+/// window fails to create.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    let _echo = run_dev_echo(project_root)?;
-    open_dev_window(project_root)
-}
+    let checks = run_checks(Some(project_root));
+    if !all_ok(&checks) {
+        let mut msg = String::from("KELD-CLI-032: environment checks failed:\n");
+        for check in &checks {
+            let mark = if check.ok { "ok" } else { "FAIL" };
+            let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
+        }
+        return Err(DevError::Doctor(msg));
+    }
 
-fn open_dev_window(project_root: &Path) -> Result<(), DevError> {
+    let (server_ready_tx, server_ready_rx) = mpsc::channel();
+    let (window_ready_tx, window_ready_rx) = mpsc::channel();
+    let session = EchoServer::start_with(&server_ready_tx, move |stream, token| {
+        serve_dev_session(stream, token, window_ready_rx)
+    })?;
+    server_ready_rx
+        .recv()
+        .map_err(|_| DevError::Runtime("dev session failed to start".to_owned()))?;
+    let link = session.link();
+
+    let bun_main = project_root.join("src/main.ts");
+    let project_root_owned = project_root.to_path_buf();
+    let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+        let mut cmd = Command::new("bun");
+        cmd.arg("run")
+            .arg(&bun_main)
+            .current_dir(&project_root_owned)
+            .env("KELD_APP_LINK", &link);
+        cmd
+    })
+    .map_err(|e| DevError::Runtime(e.to_string()))?;
+
     let title = hello_title_for_project(project_root);
     let html = load_dev_window_html(project_root)?;
-    run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()))
+    let window_result = run_hello_window_html_with_ready(&title, &html, move || {
+        let _ = window_ready_tx.send(());
+    });
+
+    // tao's event loop never returns on a normal close (learnings.md), so
+    // this is reached only on a window/webview creation failure — clean up
+    // the still-running child and session rather than leaking them.
+    supervisor.shutdown();
+    let _ = session.join();
+    window_result.map_err(|e| DevError::Runtime(e.to_string()))
 }
 
 #[cfg(test)]

@@ -6,6 +6,11 @@
  * later slice; `./kipc.ts` is the hand-written, wire-exact v0 client.
  * `AppLinkSession` holds one HELLO'd connection so further CALLs do not
  * handshake again.
+ *
+ * `whenReady()`/`quit()` (KEL-72) are the first Electron-compat lifecycle
+ * primitives: `whenReady()` blocks on a real host-backed signal (the dev
+ * window's creation, or immediate under `run_dev_echo`'s windowless smoke
+ * test), and `quit()` ends this app-process session.
  */
 import { AppLinkSession } from "./kipc";
 
@@ -21,6 +26,12 @@ const session = await AppLinkSession.connect(link);
 try {
   const response = await session.echo({ message: "keld", count: 1 });
   console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+
+  await session.whenReady();
+  console.log("{{name}}: app ready");
+
+  await session.quit();
+  console.log("{{name}}: app quit ok");
 } finally {
   session.close();
 }

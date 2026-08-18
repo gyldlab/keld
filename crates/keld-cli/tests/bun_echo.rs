@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::mpsc;
 
 use keld_cli::create::create_project;
+use keld_cli::dev_session::serve_dev_session;
 use keld_cli::echo_link::EchoServer;
 
 #[test]
@@ -176,7 +177,16 @@ fn created_template_main_runs_ipc_echo() {
     let project = dir.path().join("app");
 
     let (ready_tx, ready_rx) = mpsc::channel();
-    let server = EchoServer::start(&ready_tx).expect("bind echo server");
+    // The real template's main.ts also calls whenReady()/quit() (KEL-72), so
+    // this needs `serve_dev_session`, not the plain echo session — matches
+    // what `run_dev_echo` uses. No window in this test, so readiness is
+    // pre-fired.
+    let server = EchoServer::start_with(&ready_tx, |stream, token| {
+        let (window_ready_tx, window_ready_rx) = mpsc::channel();
+        let _ = window_ready_tx.send(());
+        serve_dev_session(stream, token, window_ready_rx)
+    })
+    .expect("bind dev server");
     ready_rx.recv().expect("server ready");
     let link = server.link();
 
@@ -201,6 +211,14 @@ fn created_template_main_runs_ipc_echo() {
     assert!(
         stdout.contains("ipc-echo ok: message=\"keld\" count=1"),
         "template must speak kipc echo: stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("app: app ready"),
+        "whenReady() must resolve: stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("app: app quit ok"),
+        "quit() must resolve: stdout={stdout}"
     );
     assert!(
         stdout.contains("app: main process ready (IPC echo ok)"),

@@ -25,7 +25,10 @@ pub use engine::{
     WebviewSpec, WkWebViewEngineExt,
 };
 pub use error::WvError;
-pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};
+pub use hello::{
+    DEFAULT_HTML as HELLO_HTML, run as run_hello_window,
+    run_with_ready as run_hello_window_with_ready,
+};
 pub use media::{
     MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WEB_MICROPHONE, media_permission_allowed,
 };

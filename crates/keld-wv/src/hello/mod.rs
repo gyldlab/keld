@@ -43,22 +43,34 @@ pub(crate) fn hello_spec(title: &str, html: &str) -> WebviewSpec {
 ///
 /// Returns [`WvError`] if the platform backend is unavailable or window/webview creation fails.
 pub fn run(title: &str, html: &str) -> Result<(), WvError> {
+    run_with_ready(title, html, || {})
+}
+
+/// Like [`run`], but calls `on_ready` once the window has been created —
+/// before the run loop starts (KEL-72: the real, host-backed signal
+/// `app.whenReady()` blocks on).
+///
+/// # Errors
+///
+/// Returns [`WvError`] if the platform backend is unavailable or window/webview creation fails.
+pub fn run_with_ready(title: &str, html: &str, on_ready: impl FnOnce()) -> Result<(), WvError> {
     let spec = hello_spec(title, html);
     #[cfg(target_os = "macos")]
     {
-        crate::wkwebview::run_hello(&spec)
+        crate::wkwebview::run_hello_with_ready(&spec, on_ready)
     }
     #[cfg(target_os = "windows")]
     {
-        crate::webview2::run_hello(&spec)
+        crate::webview2::run_hello_with_ready(&spec, on_ready)
     }
     #[cfg(target_os = "linux")]
     {
-        crate::webkitgtk::run_hello(&spec)
+        crate::webkitgtk::run_hello_with_ready(&spec, on_ready)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = spec;
+        let _ = on_ready;
         // macOS, Windows, and Linux all have live backends (KEL-26/27/28);
         // this arm is the true "nothing planned" case, so it names the spec
         // rather than citing tickets that would mislead a reader into

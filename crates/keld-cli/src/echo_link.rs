@@ -15,6 +15,13 @@ use keld_ipc::{
     parse_app_link, serve_echo_session,
 };
 
+/// Connected stream type this platform's [`EchoServer`] accepts.
+#[cfg(unix)]
+pub type Stream = std::os::unix::net::UnixStream;
+/// Connected stream type this platform's [`EchoServer`] accepts.
+#[cfg(windows)]
+pub type Stream = std::net::TcpStream;
+
 /// Endpoint for the echo server (Unix socket path or TCP port).
 #[derive(Debug, Clone)]
 pub enum EchoEndpoint {
@@ -100,6 +107,23 @@ impl EchoServer {
     ///
     /// Returns [`io::Error`] if the loopback listener cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
+        Self::start_with(ready, serve_echo_session)
+    }
+
+    /// Like [`Self::start`], but runs `serve` instead of the echo demo
+    /// session — the bind/accept/cleanup plumbing (owner-only Unix session
+    /// dir, Windows loopback TCP, `Drop`/`shutdown` semantics) is not
+    /// echo-specific, so `keld dev`'s combined echo+app-lifecycle session
+    /// (KEL-72, `crate::dev_session::serve_dev_session`) reuses it here
+    /// rather than duplicating it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the loopback listener cannot be bound.
+    pub fn start_with<F>(ready: &mpsc::Sender<()>, serve: F) -> io::Result<Self>
+    where
+        F: FnOnce(&mut Stream, &SessionToken) -> Result<(), keld_ipc::IpcError> + Send + 'static,
+    {
         let token = mint_session_token()?;
         #[cfg(unix)]
         {
@@ -108,7 +132,7 @@ impl EchoServer {
             let serve_token = token;
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept()?;
-                serve_echo_session(&mut stream, &serve_token)
+                serve(&mut stream, &serve_token)
             });
             Ok(Self {
                 endpoint: EchoEndpoint::Unix(path),
@@ -127,7 +151,7 @@ impl EchoServer {
             let serve_token = token;
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept()?;
-                serve_echo_session(&mut stream, &serve_token)
+                serve(&mut stream, &serve_token)
             });
             Ok(Self {
                 endpoint: EchoEndpoint::Tcp(port),

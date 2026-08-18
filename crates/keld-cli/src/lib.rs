@@ -2,6 +2,7 @@
 
 pub mod create;
 pub mod dev;
+pub mod dev_session;
 pub mod doctor;
 pub mod echo_link;
 pub mod error_object;

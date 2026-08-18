@@ -628,8 +628,21 @@ impl WebView2EngineExt for WebView2Engine {}
 /// Returns [`WvError::WebView2RuntimeMissing`] if the Evergreen runtime is
 /// absent, or another [`WvError`] if window or webview creation fails.
 pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
+    run_hello_with_ready(spec, || {})
+}
+
+/// Like [`run_hello`], but calls `on_ready` once the window has been
+/// created — right after `create` returns, before the run loop starts (KEL-72:
+/// the real, host-backed signal `app.whenReady()` blocks on).
+///
+/// # Errors
+///
+/// Returns [`WvError::WebView2RuntimeMissing`] if the Evergreen runtime is
+/// absent, or another [`WvError`] if window or webview creation fails.
+pub fn run_hello_with_ready(spec: &WebviewSpec, on_ready: impl FnOnce()) -> Result<(), WvError> {
     let mut engine = WebView2Engine::new()?;
     engine.create(spec)?;
+    on_ready();
     engine.run_until_closed()
 }
 

@@ -22,8 +22,18 @@ const MAGIC_BYTES = new Uint8Array([0x4b, 0x49]); // "KI", matches Rust `u16::fr
 const PROTOCOL_VERSION = 2;
 const HEADER_LEN = 16;
 const ECHO_CHANNEL = 1;
+/** App-lifecycle channel (KEL-72) — mirrors `keld_ipc::app::APP_CHANNEL`. */
+const APP_CHANNEL = 3;
 /** Control-plane frame payload cap — mirrors `keld_ipc::MAX_FRAME_LEN` (16 MiB). */
 const MAX_FRAME_LEN = 16 * 1024 * 1024;
+
+/**
+ * `AppRequest`/`AppResponse` are fieldless enums — postcard encodes those as
+ * just the 0-based variant-index varint, no field bytes (pinned in
+ * `crates/keld-ipc/src/app.rs` `fieldless_enum_variants_are_pinned_single_byte_indices`).
+ */
+const AppRequestKind = { WhenReady: 0, Quit: 1 } as const;
+const AppResponseKind = { Ready: 0, Quitting: 1 } as const;
 
 /** Frame kinds carried in the header's `kind` byte — mirrors `keld_ipc::FrameKind`. */
 export const FrameKind = {
@@ -480,6 +490,67 @@ export class AppLinkSession {
       throw kipcError("KELD-IPC-005", "expected REPLY for echo CALL");
     }
     return decodeEchoResponse(reply.payload);
+  }
+
+  /**
+   * Blocks until the host signals its window is ready — a real,
+   * host-backed wait, not `Promise.resolve()` (KEL-72). v0 "ready" is an
+   * interim, narrower signal than Electron's own semantic (which resolves
+   * before any window exists): here it resolves once the host's window has
+   * been *created*, the only real milestone available without
+   * `BrowserWindow`.
+   *
+   * @throws on I/O, protocol, or codec error — messages carry `KELD-IPC-*`.
+   */
+  async whenReady(): Promise<void> {
+    if (this.#closed) {
+      throw kipcError("KELD-IPC-001", "session is closed");
+    }
+    const corr = this.#allocCorr();
+    const payload = encodeVarint(AppRequestKind.WhenReady);
+    await writeFrame(this.#socket, this.#drain, FrameKind.Call, 0, APP_CHANNEL, corr, payload);
+
+    const reply = await this.#reader.readFrame();
+    if (
+      reply.header.kind !== FrameKind.Reply ||
+      reply.header.corr !== corr ||
+      reply.header.channel !== APP_CHANNEL
+    ) {
+      throw kipcError("KELD-IPC-005", "expected REPLY for app.whenReady CALL");
+    }
+    const [kind] = decodeVarint(reply.payload, 0);
+    if (kind !== AppResponseKind.Ready) {
+      throw kipcError("KELD-IPC-003", `unexpected AppResponse kind for whenReady: ${kind}`);
+    }
+  }
+
+  /**
+   * Asks the host to end this app-process session. Ends the kipc session
+   * only — it does not close the host window (that direction is a
+   * follow-up, see `docs/engineering/decisions.md`).
+   *
+   * @throws on I/O, protocol, or codec error — messages carry `KELD-IPC-*`.
+   */
+  async quit(): Promise<void> {
+    if (this.#closed) {
+      throw kipcError("KELD-IPC-001", "session is closed");
+    }
+    const corr = this.#allocCorr();
+    const payload = encodeVarint(AppRequestKind.Quit);
+    await writeFrame(this.#socket, this.#drain, FrameKind.Call, 0, APP_CHANNEL, corr, payload);
+
+    const reply = await this.#reader.readFrame();
+    if (
+      reply.header.kind !== FrameKind.Reply ||
+      reply.header.corr !== corr ||
+      reply.header.channel !== APP_CHANNEL
+    ) {
+      throw kipcError("KELD-IPC-005", "expected REPLY for app.quit CALL");
+    }
+    const [kind] = decodeVarint(reply.payload, 0);
+    if (kind !== AppResponseKind.Quitting) {
+      throw kipcError("KELD-IPC-003", `unexpected AppResponse kind for quit: ${kind}`);
+    }
   }
 
   /** Ends the socket. Safe to call more than once. */
