@@ -8,9 +8,11 @@
 //! dotted capabilities (`fs.read`) against path/host scopes.
 //! [`evaluate`] requires a [`Principal`] and denies anything other than
 //! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
-//! or plugin by omitting identity. `$VARS` resolution, symlink/`..`
-//! canonicalization beyond rejecting a `..` segment, and channel grants are
-//! not in this slice.
+//! or plugin by omitting identity. Webview-originated media capture must
+//! present a minted [`Principal::Webview`]; missing identity and
+//! [`Principal::AppProcess`] are [`DenyReason::MediaPrincipalRequired`]
+//! (`KELD-GUARD007`). `$VARS` resolution, symlink/`..` canonicalization
+//! beyond rejecting a `..` segment, and channel grants are not in this slice.
 
 mod jsonc;
 
@@ -100,6 +102,15 @@ pub enum DenyReason {
         /// The principal that was presented (never [`Principal::AppProcess`]).
         principal: Principal,
     },
+    /// Camera/microphone (and other webview-originated ops) require a minted
+    /// [`Principal::Webview`]. Missing identity and [`Principal::AppProcess`]
+    /// both fail closed so `/app` media grants cannot apply to the wrong view.
+    MediaPrincipalRequired {
+        /// The capability that was requested, e.g. `web.camera`.
+        capability: String,
+        /// What was presented: `None` if identity was omitted.
+        presented: Option<Principal>,
+    },
 }
 
 impl DenyReason {
@@ -111,6 +122,7 @@ impl DenyReason {
             Self::OutOfScope { .. } => "KELD-GUARD002",
             Self::ChannelForbidden { .. } => "KELD-GUARD003",
             Self::NotAppProcess { .. } => "KELD-GUARD006",
+            Self::MediaPrincipalRequired { .. } => "KELD-GUARD007",
         }
     }
 
@@ -122,6 +134,7 @@ impl DenyReason {
             Self::OutOfScope { .. } => "out_of_scope",
             Self::ChannelForbidden { .. } => "channel_forbidden",
             Self::NotAppProcess { .. } => "not_app_process",
+            Self::MediaPrincipalRequired { .. } => "media_principal_required",
         }
     }
 
@@ -156,6 +169,10 @@ impl DenyReason {
                  Do not apply `/app` scopes to a webview or plugin — window-level grants are not in this slice.",
                 principal.label()
             ),
+            Self::MediaPrincipalRequired { capability, .. } => format!(
+                "Mint the requesting webview principal before evaluating `{capability}`. \
+                 Do not present AppProcess — that would apply `/app` media grants to every webview."
+            ),
         }
     }
 }
@@ -186,6 +203,18 @@ impl fmt::Display for DenyReason {
                 principal.label(),
                 self.fix()
             ),
+            Self::MediaPrincipalRequired {
+                capability,
+                presented,
+            } => {
+                let who = presented.map_or("none", Principal::label);
+                write!(
+                    f,
+                    "KELD-GUARD007: `{capability}` requires a minted webview principal \
+                     (presented `{who}`). {}",
+                    self.fix()
+                )
+            }
         }
     }
 }
@@ -471,6 +500,27 @@ mod tests {
         );
         assert_eq!(not_app.code(), "KELD-GUARD006");
         assert_eq!(not_app.kind(), "not_app_process");
+
+        let media = DenyReason::MediaPrincipalRequired {
+            capability: "web.camera".to_owned(),
+            presented: Some(Principal::AppProcess),
+        };
+        let media_msg = media.to_string();
+        assert!(media_msg.contains("KELD-GUARD007"), "{media_msg}");
+        assert!(media_msg.contains("web.camera"), "{media_msg}");
+        assert!(media_msg.contains("app"), "{media_msg}");
+        assert!(
+            !media.fix().contains("/app/web"),
+            "must not recommend applying app media grants: {}",
+            media.fix()
+        );
+        assert_eq!(media.code(), "KELD-GUARD007");
+        assert_eq!(media.kind(), "media_principal_required");
+        let missing = DenyReason::MediaPrincipalRequired {
+            capability: "web.microphone".to_owned(),
+            presented: None,
+        };
+        assert!(missing.to_string().contains("none"), "{}", missing);
     }
 
     fn eval_app(manifest: &PermissionsManifest, operation: &str, path: &str) -> Decision {

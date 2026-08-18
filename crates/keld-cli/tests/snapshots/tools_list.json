@@ -269,7 +269,7 @@
                 ]
               },
               "kind": {
-                "description": "`not_granted` | `out_of_scope` (v0). `channel_forbidden` is not produced.",
+                "description": "`not_granted` | `out_of_scope` | `not_app_process` | `media_principal_required` (v0).\n`channel_forbidden` is not produced.",
                 "type": "string"
               },
               "scope": {

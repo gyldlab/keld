@@ -366,11 +366,10 @@ pub struct EchoResponse {
 Note what is *not* in that path: there is no capability check. The echo frame goes from
 decode straight to handler. `keld-guard::evaluate` takes a `Principal` and
 default-denies anything other than `AppProcess` (`KELD-GUARD006`); it is live for
-MCP `keld_permissions_explain` and for macOS webview camera/microphone capture
-(explicitly as `AppProcess`, because wry's handler has no webview id). It is
-still not called on privileged kipc frames, so the "every privileged operation
-passes the guard" property in [`03` §1](../architecture/03-security.md) is not yet
-true of IPC.
+MCP `keld_permissions_explain`, webview camera/microphone capture (as the
+requesting `Webview` principal; missing identity and `AppProcess` are
+`KELD-GUARD007`), and privileged kipc via `dispatch_privileged` (KEL-69). Echo
+dispatch still does not call the guard.
 
 Coverage: `crates/keld-ipc/tests/echo_link.rs` exercises the round trip over a real socket, and
 `crates/keld-cli/tests/bun_echo.rs` does it with a real Bun process in the loop.
@@ -504,9 +503,10 @@ sections. Three honest observations about the gap:
 `keld.permissions.jsonc` is the highest-stakes contract in the system. Its shape is
 normative in [`03` §2](../architecture/03-security.md). v0 code is
 `parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
-`app.<group>.<action>`). Recorder, `keld doctor --permissions`, and host IPC still
-calling `evaluate` on every privileged frame are not this slice. Webview camera and
-microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59).
+`app.<group>.<action>`). Recorder and `keld doctor --permissions` are not this slice.
+Privileged kipc uses `dispatch_privileged` (KEL-69). Webview camera and
+microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59)
+as the requesting webview principal (KEL-73); `AppProcess` is `KELD-GUARD007`.
 
 **v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
 scope; symlink canonicalization is not in this slice. That is not an Allow.

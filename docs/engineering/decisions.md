@@ -168,6 +168,12 @@ crash whom, or who can mint a principal — so it fails the first-principles tes
 `AGENTS.md` until wry is missing a hook we actually need. KEL-59 was that case for
 camera/mic: bump to 0.56.1 for `with_permission_handler`, do not rewrite the backend.
 
+**Update (2026-08-18, KEL-73).** Evaluating capture as `Principal::AppProcess` applied
+`/app` `web.camera` / `web.microphone` grants to every webview. Capture now uses the
+host-minted `WebviewId` (`Principal::Webview`, generation `0`). Missing identity and
+`AppProcess` are `KELD-GUARD007`; a minted webview is still `KELD-GUARD006` until
+window-level grants exist. Deny does not start capture.
+
 **Update (2026-08-15, KEL-65): Windows create path is now direct windows-rs COM.**
 wry crossed the "missing a hook" line on Windows three ways at once: it blocks the
 UI thread 96–109 ms injecting a `window.ipc` bridge Keld never uses (reported

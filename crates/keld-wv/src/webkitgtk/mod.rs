@@ -40,7 +40,7 @@ use keld_guard::PermissionsManifest;
 use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebKitGtkEngineExt, WebviewSpec};
 use crate::error::WvError;
-use crate::media::with_guarded_media_permissions;
+use crate::media::{webview_media_principal, with_guarded_media_permissions};
 
 /// Outcome of [`probe_gpu_stack`]: whether Keld silently degraded rendering
 /// to avoid a known `WebKitGTK` crash/flicker class.
@@ -263,8 +263,14 @@ impl WebEngine for WebKitGtkEngine {
         // KEL-59 parity. Without this, WebKitGTK falls back to its own
         // permission prompt on a `PermissionRequested` event it can't
         // handle — default-ask, not default-deny. Empty manifest → deny
-        // everything.
-        let builder = with_guarded_media_permissions(builder, PermissionsManifest::default());
+        // everything. KEL-73: mint the webview id first so capture cannot
+        // inherit AppProcess grants.
+        let id = self.next_id;
+        let builder = with_guarded_media_permissions(
+            builder,
+            PermissionsManifest::default(),
+            webview_media_principal(WebviewId(id)),
+        );
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
@@ -295,7 +301,6 @@ impl WebEngine for WebKitGtkEngine {
             .build_gtk(vbox)
             .map_err(|e| WvError::Webview(e.to_string()))?;
 
-        let id = self.next_id;
         self.next_id += 1;
         self.views.insert(id, View { window, webview });
         Ok(WebviewId(id))
