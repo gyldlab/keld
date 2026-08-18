@@ -18,7 +18,12 @@ function marker(line: string): void {
   writeSync(1, `${line}\n`);
 }
 
-process.env.KELD_APP_LINK = `/tmp/keld-kel72-unused.sock#${"a".repeat(64)}`;
+// Prefer the unique unused app-link minted by `electron_lifecycle.rs`.
+// Standalone `bun ./app_ready.ts` still needs a well-formed value so
+// `ensureLink` does not reject before the stubbed `connect` runs.
+if (!process.env.KELD_APP_LINK) {
+  process.env.KELD_APP_LINK = `/tmp/keld-kel72-unused.sock#${"a".repeat(64)}`;
+}
 
 type Handlers = { onReady: () => void; onLastWindowClosed: () => void };
 
@@ -91,6 +96,11 @@ if (connectCalls < afterFailCalls + 1) {
 
 await Promise.resolve();
 await Promise.resolve();
+// Bun 1.3.14 delivers `unhandledRejection` on a macrotask. Two microticks
+// leave COUNT=0 even when a derived `whenReady()` promise is unhandled.
+await new Promise<void>((resolve) => {
+  setImmediate(resolve);
+});
 
 marker(`KEL72_CONNECT_CALLS=${connectCalls}`);
 marker(`KEL72_UNHANDLED_COUNT=${unhandled}`);

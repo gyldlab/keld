@@ -89,8 +89,19 @@ impl LineLog {
         self.acc.contains(needle)
     }
 
+    /// Exact stdout line. `has("KEL72_CONNECT_CALLS=2")` also matches `=20`.
+    fn has_exact_line(&mut self, line: &str) -> bool {
+        self.drain_queued();
+        self.acc.lines().any(|l| l == line)
+    }
+
     fn first_marker_line(&self, needle: &str) -> Option<usize> {
         self.acc.lines().position(|line| line.contains(needle))
+    }
+
+    /// Exact line index. `contains("KEL72_READY")` also matches `KEL72_READY_SECOND`.
+    fn first_exact_line(&self, line: &str) -> Option<usize> {
+        self.acc.lines().position(|l| l == line)
     }
 
     /// Host-visible WAITING / READY order *before* `signal_ready`.
@@ -309,6 +320,72 @@ fn when_ready_does_not_resolve_before_host_ready_event() {
     assert!(
         log.has("KEL72_TYPE=browser") && log.has("KEL72_ELECTRON=0.0.1"),
         "shim fields missing: {}",
+        log.acc
+    );
+
+    #[cfg(unix)]
+    let _ = std::fs::remove_dir_all(&bound.session_dir);
+}
+
+/// Isolation / connect-retry / unhandledRejection probe (`app_ready.ts`).
+///
+/// The fixture stubs `LifecycleLink.connect` (no host handshake — that is
+/// `lifecycle.ts`). Spawn still mints a unique unused app-link the same way
+/// the READY test does (temp `0o700` dir + socket, or loopback port 0) so
+/// two parallel runs do not share `/tmp/keld-kel72-unused.sock`.
+///
+/// Oracle lines the fixture already prints on success:
+/// `KEL72_READY_SECOND`, `KEL72_CONNECT_CALLS=2`, `KEL72_UNHANDLED_COUNT=0`,
+/// exit 0.
+///
+/// Negative control (a defect must fail this test):
+/// - cached `linkPromise` after a failed connect → fixture stderr
+///   `KEL72_CONNECT_NOT_RETRIED` and exit 1
+/// - `emit` without per-listener try/catch → `KEL72_SECOND_LISTENER_SKIPPED`
+///   and exit 1
+/// - missing `ignoreIfUnawaited` on `whenReady` → `KEL72_UNHANDLED_COUNT`
+///   ≠ 0 and exit 1
+#[test]
+fn app_ready_isolates_listeners_retries_connect_without_unhandled_rejection() {
+    let bound = bind_app_link();
+    // `bound` keeps the unique endpoint alive. The fixture never dials it
+    // (`connect` is replaced); accepting would hang.
+
+    let mut child = spawn_fixture("app_ready.ts", Some(&bound.link));
+    let stdout = child.stdout.take().expect("stdout");
+    let mut log = spawn_line_log(stdout);
+
+    log.wait_contains("KEL72_READY_SECOND");
+    log.wait_contains("KEL72_CONNECT_CALLS=");
+    log.wait_contains("KEL72_UNHANDLED_COUNT=");
+
+    let status = child.wait().expect("wait bun");
+    log.drain_queued();
+    assert!(
+        status.success(),
+        "app_ready fixture failed (exit {:?}): stdout={}",
+        status.code(),
+        log.acc
+    );
+    let second_at = log
+        .first_exact_line("KEL72_READY_SECOND")
+        .expect("KEL72_READY_SECOND recorded");
+    let ready_at = log
+        .first_exact_line("KEL72_READY")
+        .expect("KEL72_READY recorded");
+    assert!(
+        second_at < ready_at,
+        "throwing ready listener skipped the later listener (second@{second_at} ready@{ready_at}): {}",
+        log.acc
+    );
+    assert!(
+        log.has_exact_line("KEL72_CONNECT_CALLS=2"),
+        "failed connect must be retried (want KEL72_CONNECT_CALLS=2): {}",
+        log.acc
+    );
+    assert!(
+        log.has_exact_line("KEL72_UNHANDLED_COUNT=0"),
+        "unawaited whenReady must not become unhandledRejection: {}",
         log.acc
     );
 
