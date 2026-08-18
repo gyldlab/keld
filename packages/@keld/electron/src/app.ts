@@ -146,9 +146,11 @@ export const app = {
    *
    * Quirk vs Electron oracle `app.quit(): void`
    * (https://www.electronjs.org/docs/latest/api/app#appquit): this returns
-   * `Promise<void>` so callers can await the kipc Quit reply. Electron's
-   * `void` is process-lifetime and is not a thenable. Keep the Promise; do
-   * not change the public signature to `void` to paper over kipc.
+   * `Promise<void>` so callers can observe `KELD-IPC-*` when the transport
+   * fails. Electron's `void` is process-lifetime and is not a thenable.
+   * Scoreboard ▲ (`docs/engineering/compat-scoreboard.md`); not a
+   * `keld.compat.ts` toggle. Keep the Promise; do not change the public
+   * signature to `void` to paper over kipc.
    */
   quit(): Promise<void> {
     const done = ensureLink().then((link) => link.quit());

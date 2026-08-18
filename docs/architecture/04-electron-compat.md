@@ -90,6 +90,14 @@ in this main-process package. `@keld/api` does not exist yet; the shim
 speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
 `keld build` is not live.
 
+Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
+[`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit)
+is process-lifetime and not thenable. Keld's `app.quit()` returns
+`Promise<void>` so callers can observe `KELD-IPC-*` when the Quit Call fails
+on the transport. Restoring `void` would paper over kipc; the Promise is
+the public contract for this slice. Recorded on
+[`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
 Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
 from `bunfig.toml` `[alias]` (it still loads the npm `electron` package
 from the install cache). The runtime resolver is `tsconfig.json`

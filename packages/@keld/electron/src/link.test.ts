@@ -5,7 +5,8 @@
  * as `u16` (not parseInt), and concatenated frame bytes under backpressure.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   APP_LINK_IO_DEADLINE_MS,
@@ -296,7 +297,12 @@ describe("LifecycleLink write deadlines", () => {
 });
 
 describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", () => {
-  const root = join(import.meta.dir, "..", ".test-run");
+  // `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). A path under
+  // the package tree plus `.test-run/<pid>-<ts>-<rand>/e.sock` overflows.
+  // Short unique 0o700 dir under tmpdir, same contract as keld-cli bind_unix_echo.
+  const root = mkdtempSync(join(tmpdir(), "ke"));
+  chmodSync(root, 0o700);
+  let sockN = 0;
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
@@ -308,10 +314,8 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
     reader: FrameReader;
     opened: Promise<Bun.Socket>;
   } {
-    mkdirSync(root, { recursive: true, mode: 0o700 });
-    const dir = join(root, `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`);
-    mkdirSync(dir, { mode: 0o700 });
-    const path = join(dir, "e.sock");
+    sockN += 1;
+    const path = join(root, `${sockN}.s`);
     const reader = new FrameReader();
     let resolveOpen: (socket: Bun.Socket) => void = () => undefined;
     const opened = new Promise<Bun.Socket>((resolve) => {

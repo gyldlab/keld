@@ -215,15 +215,18 @@ Verified on macOS, 2026-08-10:
 | `just hello` / `cargo run -p keld-host -- --hello` | Opens a `WKWebView`/`WebView2`/`WebKitGTK` window with static HTML (macOS/Windows/Linux, KEL-28) |
 | `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
 | `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS, Windows, and Linux |
-| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows/Linux; extra tokens including `--watch` are `KELD-CLI-044` |
+| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` through `keld_runtime::Supervisor` (KEL-70) with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows/Linux; extra tokens including `--watch` are `KELD-CLI-044` |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
 | `cargo nextest run --workspace --profile ci` | 17 tests, all green |
 
-Note how far `keld dev` is from the target architecture: there is no host process, no
-supervisor, no `@keld/api`. The template's `src/main.ts` proves the link by speaking
-kipc itself, through `src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30);
-schema-driven codegen (`keld gen`, `@keld/schema`) is a later slice. It is an honest
-vertical slice, deliberately built end-to-end rather than stubbed —
+`keld dev` is still a slice, not the destination architecture: the CLI process owns
+the echo server and the hello window (there is no separate `keld-host` in this loop),
+and there is no `@keld/api`. Bun *is* supervised — `keld_runtime::Supervisor` spawns
+`bun run src/main.ts` (KEL-70) instead of a bare `Command::new("bun")` wait. The
+template's `src/main.ts` proves the link by speaking kipc itself, through
+`src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30); schema-driven codegen
+(`keld gen`, `@keld/schema`) is a later slice. It is an honest vertical slice,
+deliberately built end-to-end rather than stubbed —
 [`AGENTS.md`](../../AGENTS.md) forbids `todo!()`/`unimplemented!()` on main — but it
 is a slice, not the system.
 

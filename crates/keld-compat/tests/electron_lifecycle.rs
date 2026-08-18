@@ -7,6 +7,11 @@
 //! - [`process.type`](https://www.electronjs.org/docs/latest/api/process#processtype) (`browser` in main)
 //! - [`process.versions.electron`](https://www.electronjs.org/docs/latest/api/process#processversionselectron)
 //!
+//! Divergence (scoreboard ▲, not a `keld.compat.ts` toggle): Electron
+//! `app.quit(): void` vs Keld `Promise<void>` so a failed Quit Call is
+//! visible as `KELD-IPC-*`. Keep the Promise; do not change the public
+//! signature to `void`. See `docs/engineering/compat-scoreboard.md`.
+//!
 //! Negative control: replacing `whenReady` with `Promise.resolve()` (skipping
 //! the host Ready event) makes `when_ready_does_not_resolve_before_host_ready_event`
 //! fail — after draining queued stdout, `KEL72_READY` is already present
