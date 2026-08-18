@@ -492,7 +492,10 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(msg.contains("KELD-IPC-004"), "missing error code in: {msg}");
-        assert!(msg.contains("bulk plane"), "missing fix hint in: {msg}");
+        assert!(
+            msg.contains("bulk/resource adapter"),
+            "missing fix hint in: {msg}"
+        );
     }
 
     #[test]

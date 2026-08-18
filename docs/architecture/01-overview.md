@@ -4,40 +4,77 @@
 > system webviews by default, and a first-class Electron compatibility layer.
 > This document is normative for v0.x. Changes go through a design PR.
 
-## 1. The one diagram
+## 1. Process and trust topology
 
-```
-┌──────────────────────────────── keld-host (Rust, prebuilt & signed) ───────────────────────────────┐
-│                                                                                                     │
-│  Platform event loop (NSRunLoop / Win32 pump / GLib)  ←  callback/state-machine core, no async rt   │
-│                                                                                                     │
-│  ┌────────────┐  ┌───────────────┐  ┌──────────────┐  ┌───────────────┐  ┌───────────────────────┐  │
-│  │ keld-wv    │  │ keld-native   │  │ keld-guard   │  │ keld-runtime  │  │ keld-update           │  │
-│  │ webview    │  │ menus, tray,  │  │ capability   │  │ app-process   │  │ bsdiff+zstd patches,  │  │
-│  │ layer      │  │ dialogs, fs   │  │ engine       │  │ supervisor    │  │ signed manifests      │  │
-│  │ (3 engines)│  │ shortcuts, …  │  │ default-deny │  │ (Bun child)   │  │                       │  │
-│  └─────┬──────┘  └───────┬───────┘  └──────┬───────┘  └───────┬───────┘  └───────────────────────┘  │
-│        │                 └────── every native call passes guard ──────┐                             │
-│        │                                                              │                             │
-└────────┼──────────────────────────────────────────────────────────────┼─────────────────────────────┘
-         │ native bridge (control)                                      │ kipc: UDS/pipe (control)
-         │ keld:// scheme (bulk/stream)                                 │      + shm rings (bulk)
-┌────────┴─────────────┐                                       ┌────────┴─────────────────────────────┐
-│  Webviews (UI)       │                                       │  App process (Bun, supervised)       │
-│  WKWebView/WebView2/ │   routed channels (host-mediated)     │  developer's main.ts                 │
-│  WebKitGTK|pinned    │ ←───────────────────────────────────→ │  @keld/api · @keld/electron shim     │
-│  window.keld bridge  │                                       │  npm ecosystem, N-API modules        │
-└──────────────────────┘                                       └──────────────────────────────────────┘
+```mermaid
+flowchart LR
+    accTitle: Keld process and trust topology
+    accDescr {
+      The trusted Rust host owns privileged resources and mediates webview and Bun-role
+      requests. The live v0 slice has three webview backends, a guard evaluator, and one
+      CLI-owned token-authenticated echo link to a bare Bun child. Moving that link into
+      the host, role supervision, guarded dispatch, native services, and an optional
+      sandboxed native-addon worker are destination behavior.
+    }
+
+    subgraph Host["Trusted authority process: keld-host"]
+        Core["TARGET<br/>window registry and lifecycle"]
+        Link["TARGET<br/>host-owned role-bound app-link"]
+        Guard["PARTIAL LIVE<br/>guard evaluator exists<br/>TARGET guard-before-handler"]
+        Native["SKELETON<br/>guarded native services"]
+        Runtime["SKELETON<br/>Bun role supervisor"]
+    end
+
+    subgraph Prototype["Current diagnostic process: keld-cli"]
+        CliLink["LIVE v0<br/>token-authenticated echo listener"]
+    end
+
+    subgraph UI["Untrusted UI principals"]
+        Webview["LIVE v0<br/>three webview backends<br/>TARGET per-navigation principal"]
+    end
+
+    subgraph JS["Semi-trusted and untrusted code processes"]
+        App["LIVE v0<br/>one bare Bun echo child<br/>TARGET primary and named roles"]
+        Addon["FUTURE OPTIONAL<br/>sandboxed native-addon worker"]
+    end
+
+    Runtime -.->|TARGET spawn with fresh principal and token| App
+    App -->|LIVE v0 HELLO and echo CALL| CliLink
+    App -.->|TARGET role link| Link
+    Link -->|TARGET bind principal before dispatch| Guard
+    Webview -->|engine bridge: TARGET guarded calls| Guard
+    Addon -->|typed broker requests only| Guard
+    Guard -->|allow only| Core
+    Guard -->|allow only| Native
+    Core -->|window and navigation control| Webview
+
+    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px;
+    classDef target fill:#dbeafe,stroke:#1d4ed8,color:#172554,stroke-width:2px;
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px;
+    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px;
+
+    class Core,Link,Runtime,Native target;
+    class Guard gate;
+    class CliLink,Webview,App current;
+    class Addon external;
 ```
 
-Three principals, three trust levels:
-1. **keld-host** (Rust): owns every OS resource — windows, webviews, native APIs, keys,
-   updater. The only privileged code. Prebuilt per platform; app developers never compile it.
-2. **App process** (Bun child): the developer's "main process." Full npm/Node-compat
-   world, but **zero ambient OS authority** — every privileged operation is a typed IPC
-   call into the host, checked by the capability engine. Crashable and restartable
-   without tearing down windows (host keeps webviews alive; renderer gets an
-   `app-process-restarted` event).
+Three principal classes, with host-minted instances inside each class:
+1. **keld-host** (Rust): the authority root for every framework-controlled privileged
+   resource—windows, webviews, native APIs, keys and update policy. It is the only
+   long-lived general privileged process. A reviewed native plugin or minimal signed
+   update relaunch helper receives only its declared narrow authority. The host is
+   prebuilt per platform; app developers never compile it.
+2. **App-process family** (destination: supervised Bun children): the developer's primary "main
+   process" plus named compatibility roles when an app needs independent extension,
+   watcher, PTY, agent, or shared-service lifecycles. Each child is a distinct
+   host-minted principal with its own kipc link and grants. The destination Node-shaped
+   npm world is proven against a versioned operation/extension corpus,
+   but **zero ambient OS authority** in the strict profile — every privileged operation
+   is a typed host call checked by the capability engine. Children are intended to be
+   crashable and restartable without tearing down windows. v0 currently has one bare
+   primary-child echo slice; `keld-runtime` supervision and restart continuity are not
+   implemented.
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 
@@ -54,8 +91,10 @@ Why this shape (each competitor fails differently — see `docs/research/00-land
 1. **Compatibility is the product.** The Electron surface is a protocol to implement
    (Rspack/Rolldown lesson). Every design must answer: "how does this behave under
    `@keld/electron`?"
-2. **The host owns the OS; JS owns the app.** No native handle ever crosses into JS;
-   handles are capability-scoped ids.
+2. **The host owns privileged OS resources; JS owns the app.** Application APIs expose
+   capability-scoped ids, never reusable file/window/process handles. A supervised role
+   receives only its IPC endpoint and, when validated, an optional role-private bulk
+   mapping handle; those transport handles cannot authorize another OS operation.
 3. **Default deny, generated, auditable.** One permission manifest, generated by
    tooling, human-diffed in review. No wildcard escape culture (Tauri's DX failure).
 4. **Hot paths are state machines** (Bun-rewrite lesson): the host core runs on platform
@@ -65,9 +104,10 @@ Why this shape (each competitor fails differently — see `docs/research/00-land
    (esbuild lesson). Rust is the *plugin* path, not the entry fee.
 6. **Per-platform engine policy, not ideology.** System webviews where they're good
    (Windows/macOS), pinned engine where they're not (Linux opt-in). Polyfill pack +
-   baseline matrix + doctor close the rest.
-7. **Measured, budgeted, regression-gated.** Perf budgets in CI (below). A number
-   without a benchmark is marketing.
+   baseline matrix + doctor close the rest. The precise default claim is **no bundled
+   Chromium**; Windows WebView2 is Chromium-derived, and any CEF tier is named plainly.
+7. **Measured, budgeted, regression-gated.** The budgets below become CI gates when the
+   benchmark harness lands. A number without a valid benchmark is marketing.
 8. **Small public surface, prose-grade code.** Idiomatic, pedantic-clippy Rust; minimal
    `unsafe` behind reviewed wrappers (see `AGENTS.md`).
 
@@ -78,11 +118,11 @@ Cargo workspace (all crates `keld-*`, lib names `keld_*`):
 | Crate | Role | Depends on |
 |---|---|---|
 | `keld-core` | host runtime: event loop integration, window registry, lifecycle, plugin host | wv, ipc, guard, native, runtime |
-| `keld-wv` | webview abstraction: `WebEngine` trait; backends `wkwebview`/`webview2`/`webkitgtk`/`cef` (feature-gated) | — |
+| `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | — |
 | `keld-ipc` | kipc protocol: framing, codecs, channel registry, shm rings, schema runtime | — |
 | `keld-native` | native APIs: menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, fs-scoped, secure storage | guard |
 | `keld-guard` | capability engine: manifest parsing, scope matching, per-window/per-principal grants, audit log | — |
-| `keld-runtime` | app-process supervisor: Bun discovery/pinning, spawn, health, restart policy, stdio capture | ipc |
+| `keld-runtime` | app-process-family supervisor: Bun discovery/pinning, named role spawn, health, per-role principal/lifecycle/restart policy, stdio capture | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | host-side Electron behavior emulation (session/protocol/webContents semantics) | core |
@@ -93,7 +133,7 @@ npm packages (TypeScript, in `packages/`):
 
 | Package | Role |
 |---|---|
-| `@keld/api` | typed SDK for the app process (windows, native APIs, channels) — the "real" API |
+| `@keld/api` | typed SDK for supervised Bun roles (windows, native APIs, channels) — the "real" API |
 | `@keld/electron` | Electron compat shim implementing `electron`'s module surface over `@keld/api` |
 | `@keld/web` | renderer-side bridge (`window.keld`), polyfill pack loader |
 | `@keld/cli` | npm wrapper that resolves the platform `keld` binary (esbuild-style optionalDependencies) |
@@ -113,16 +153,24 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
 - Host main thread = platform UI thread (AppKit/GTK demand it; Win32 tolerates it).
   All webview/window mutations happen here via a command queue (lock-free MPSC into the
   event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add`).
-- IPC I/O threads: one reader + one writer per app-process link; readiness-driven state
+- IPC I/O threads: one reader + one writer per supervised-child link; readiness-driven state
   machines; messages dispatched to main thread only when they touch UI, else handled on
   pool threads (fs, dialogs marshal back as needed per-OS).
-- App process: plain Bun. Keld injects `KELD_IPC_FD`/pipe name + `keld.app.json`
-  contract at spawn. Supervisor policy: exponential-backoff restart, crash loop breaker,
-  `--inspect` passthrough in dev.
-- Webview content processes: whatever the engine does (WKWebView WebContent, WebView2
-  helpers, WebKitGTK web process, CEF subprocesses). We never fight the engine's model.
+- App-process family: plain Bun. Keld injects the canonical role-scoped
+  `KELD_APP_LINK`; the host binds the accepted link to its principal and sends/negotiates
+  contract metadata after authentication rather than accepting identity from env.
+  Supervisor policy is per role:
+  exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
+  `--inspect` passthrough in dev. v0 has one primary link; additional roles are a
+  compatibility destination and require their own tested spec slices.
+- Webview content processes: whatever the selected engine does (WKWebView WebContent,
+  WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
+  lands). We never fight the engine's model.
 
-## 5. Performance budgets (CI-gated, hello-world app, M-series Mac / mid Windows laptop)
+## 5. Target performance budgets (future CI gates)
+
+These are acceptance budgets for a hello-world app on an M-series Mac / mid-range
+Windows laptop. They are not current product measurements or live CI gates.
 
 | Metric | Budget | Electron baseline |
 |---|---|---|
@@ -131,11 +179,13 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
 | Cold start → first paint | ≤ 300 ms | 1–3 s |
 | Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB |
 | kipc small-message round trip p99 | ≤ 100 µs | ~ms-class |
-| kipc bulk throughput (shm lane) | ≥ 1 GB/s | n/a (copies) |
+| kipc bulk throughput (when a shm lane is enabled) | ≥ 1 GB/s | n/a (copies) |
 | Update patch, 1-line JS change | ≤ 50 KB | full installer |
 | `keld dev` cold to window | ≤ 2 s | — |
 
-Benchmarks live in `bench/` and run in CI on all three OSes; regressions > 5% fail the PR.
+`bench/` has not landed. Until it does, only rows backed by committed fixtures and raw
+evidence in `docs/engineering/budget-scoreboard.md` are measurements. Once the harness
+lands, valid regressions greater than 5% fail the PR or require a written waiver.
 
 ## 6. What Keld is not (v1 non-goals)
 
@@ -143,6 +193,9 @@ Benchmarks live in `bench/` and run in CI on all three OSes; regressions > 5% fa
   iOS/Android work in v1).
 - Not a UI toolkit; no bespoke widgets. The web is the UI layer.
 - Not a bundler; `keld dev/build` orchestrates the app's own Vite/Rolldown/Bun build.
-- Not a Node fork: Node-API compatibility comes via Bun's implementation; we do not
-  patch runtimes.
-- No CEF-by-default anywhere; pinned engines are opt-in and per-platform.
+- Not a permanently private Node/V8 reimplementation: compatibility comes through Bun.
+  General, package-agnostic Node/N-API/V8/libuv fixes SHOULD go upstream; Keld MAY carry
+  a temporary pinned Bun patch while an upstream fix is reviewed, with the same
+  differential corpus and no package-name special cases.
+- No CEF-by-default anywhere; pinned engines are opt-in and per-platform. Keld promises
+  no bundled Chromium by default, not literal no-Chromium execution on WebView2.

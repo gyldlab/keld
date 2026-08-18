@@ -1,6 +1,7 @@
 # Keld CI — gates promised in AGENTS.md / docs/agents/workflow.md:
 #   cargo fmt --check · clippy (warnings deny) · cargo nextest · rustdoc
-#   + MSRV, cargo-deny, gitleaks, and CODEOWNERS/template hygiene (KEL-39).
+#   + Mermaid/docs contracts, MSRV, cargo-deny, gitleaks, and
+#   CODEOWNERS/template hygiene (KEL-39).
 #
 # Toolchain: rust-toolchain.toml pins the local rustup channel. The
 # dtolnay/rust-toolchain action still requires `with: toolchain:` (this SHA
@@ -69,6 +70,24 @@ jobs:
             libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev pkg-config build-essential
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Mermaid docs contracts (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p target/mermaid-docs
+          rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test
+          target/mermaid-docs/mermaid-docs-test
+          rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
+          target/mermaid-docs/mermaid-docs check .
+      - name: Mermaid docs contracts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target/mermaid-docs | Out-Null
+          rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test.exe
+          & target/mermaid-docs/mermaid-docs-test.exe
+          rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs.exe
+          & target/mermaid-docs/mermaid-docs.exe check .
       - name: clippy (warnings deny)
         run: cargo clippy --workspace --all-targets -- -D warnings
       # v2.9.4 tar'd nextest into `%CARGO_HOME%\bin` using a Git-bash
@@ -239,6 +258,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
@@ -257,3 +278,12 @@ jobs:
           mkdir -p target/llms-docs
           rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
           target/llms-docs/llms-docs check .
+      - name: Mermaid docs contract tests and check
+        run: |
+          mkdir -p target/mermaid-docs
+          rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test
+          target/mermaid-docs/mermaid-docs-test
+          rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
+          target/mermaid-docs/mermaid-docs check .
+      - name: Render Mermaid docs in pinned isolated container
+        run: tools/mermaid_render_check.sh

@@ -1,6 +1,6 @@
 # AGENTS.md — Keld engineering rules
 
-Desktop framework: Rust host (windows/webviews/native); JS/TS main on supervised Bun child (zero ambient OS authority); kipc IPC; default-deny permissions; Electron compat via `@keld/electron` + `keld migrate`.
+Desktop framework: Rust host (windows/webviews/native); JS/TS main and named compat roles on supervised Bun children (zero ambient OS authority per strict-profile principal); kipc IPC; default-deny permissions; Electron compat via `@keld/electron` + `keld migrate`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in agent-facing docs (this file, crate `AGENTS.md`, `.agents/*`, and `docs/agents/*`) are IETF [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119). They bind agents. Architecture specs (`docs/architecture/*`) stay prose.
 
@@ -30,8 +30,8 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 | keld-wv | WebEngine; wkwebview/webview2/webkitgtk/cef — spec 05; `AGENTS.md` |
 | keld-ipc | kipc framing/codecs/channels/shm — spec 02; `AGENTS.md` |
 | keld-guard | Capabilities, manifest, scopes — spec 03; `AGENTS.md` |
-| keld-native | menu/tray/dialog; guard-checked — spec 05 |
-| keld-runtime | Bun child supervisor — spec 06 |
+| keld-native | menu/tray/dialog/process/PTY brokers; guard-checked — spec 05 |
+| keld-runtime | Bun child-role supervisor — spec 06 |
 | keld-update | bsdiff+zstd, signed manifests — spec 06 |
 | keld-pack | Installers, signing, cross-compile — spec 06 |
 | keld-compat | Electron emulation — spec 04; `AGENTS.md` |
@@ -50,10 +50,16 @@ cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo nextest run --workspace --profile ci    # verification gate — all three before "done"
 cargo nextest run -p <crate> [-- <filter>]         # single crate/test
 just llms-check                                    # generated docs are current
+just mermaid-check                                 # Mermaid accessibility/type/palette contract
+just mermaid-render-check                          # digest-pinned isolated SVG render
 # Fallback: cargo test --workspace
 ```
 
-Agents MUST run all three gates before calling work done. New behavior MUST have tests. Agents MUST report actual command output; MUST NOT write "should work". Failures on other-OS paths: say plainly.
+Agents MUST run all three Rust gates before calling work done. Mermaid changes MUST also
+pass `just mermaid-test` and `just mermaid-check`, then render through an explicitly
+versioned stable Mermaid renderer using `just mermaid-render-check`. New behavior MUST
+have tests. Agents MUST report actual command output; MUST NOT write "should work".
+Failures on other-OS paths: say plainly.
 
 ## Rust
 - Lints: workspace `Cargo.toml` — `clippy::pedantic`, `missing_docs` warn (CI denies). A new `allow` MUST have an inline justification.
@@ -72,6 +78,35 @@ Agents MUST run all three gates before calling work done. New behavior MUST have
 - Crates `keld-*`, libs `keld_*`, npm `@keld/*`, protocol `KI*`. One canonical name per concept.
 - Config: `keld.config.ts`, `keld.permissions.jsonc`, `keld.build.ts`, `keld.compat.ts` only (else spec change).
 - Numbered docs are paths; renumber → update all refs.
+
+## Documentation diagrams
+- Agents MUST add a Mermaid diagram only when it makes a relationship materially clearer
+  than prose or a small table; diagrams MUST NOT be decorative or duplicate nearby text.
+- Use `flowchart` for topology, dependencies or decisions; `sequenceDiagram` for ordered
+  messages/lifecycle; `stateDiagram-v2` for a state machine; `gantt` only for a real dated
+  schedule; and `erDiagram` only for a data model.
+- Every Mermaid block MUST include `accTitle` and `accDescr`. Labels MUST carry the
+  meaning without color, including current versus target and framework versus showcase;
+  styling is redundant emphasis only. The surrounding prose MUST name the source of
+  truth and any implementation gap.
+- Agents MUST use stable Mermaid syntax supported by the repository renderer/GitHub.
+  Before introducing unfamiliar syntax, agents SHOULD use Context7 when available to
+  locate current material and MUST confirm it against the current
+  [official Mermaid documentation](https://mermaid.js.org/). Every added or changed
+  block MUST pass `just mermaid-render-check` and the render/report gate in
+  [`.agents/testing.md`](.agents/testing.md); a browser preview or visual inspection
+  alone is not verification.
+- When a diagram uses semantic color, agents MUST reuse the applicable palette below
+  rather than inventing per-file colors:
+
+```text
+classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
+classDef target fill:#dbeafe,stroke:#1d4ed8,color:#172554,stroke-width:2px
+classDef showcase fill:#f3e8ff,stroke:#7e22ce,color:#3b0764,stroke-width:2px,stroke-dasharray:5 3
+classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
+classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
+classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
+```
 
 ## Security & performance
 - Default-deny is sacred: agents MUST NOT bypass `keld-guard`. Dev-permissive MAY exist only under `keld dev` + recorder; release MUST refuse.
@@ -96,7 +131,7 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 1. Agents MUST decompose every design to OS/process/memory/trust-boundary facts across host / Bun child / webview. If it does not change who owns a handle, who can crash whom, or who can mint a principal, it is not architecture.
 2. Agents MUST treat wry layout, Tauri ACL, Electron docs, and platform event loops as evidence of facts — not templates. Copying crate graphs, tokio-in-core, ACL wildcards, or in-process Node is cargo-cult.
-3. Agents MUST protect four uniques only: prebuilt host, supervised Bun with zero ambient OS authority, kipc, default-deny (generated, host-enforced). MUST NOT invent a fifth.
+3. Agents MUST protect four uniques only: prebuilt host, supervised Bun process family with zero ambient OS authority per strict-profile principal, kipc, default-deny (generated, host-enforced). MUST NOT invent a fifth.
 4. Two YAGNI tests: (a) can Linear Phase 2 (window + kipc echo + crate map) ship without this? (b) does this file exist only to look complete? Either yes → agents MUST NOT land it.
 5. Anti-patterns: crate `AGENTS.md` only when it adds binding rules; agents MUST NOT write an RFC that restates `docs/architecture/` without binary acceptance tests; MUST NOT split toward a 100-crate graph; MUST NOT add a `WebEngine` method until a live backend implements it in the same PR.
 

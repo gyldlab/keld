@@ -49,8 +49,8 @@ pub const HEADER_LEN: usize = 16;
 ///
 /// The wire `len` field is a `u32` (~4 GiB), but control-plane frames carry
 /// postcard-encoded messages and small `RAW` fallbacks only. Large transfers
-/// belong on the bulk plane (shm rings / `keld://`; see `docs/architecture/02-ipc.md`
-/// §3). Readers must enforce this cap **before** allocating the payload buffer so
+/// belong on an approved measured bulk/resource adapter (see
+/// `docs/architecture/02-ipc.md` §3). Readers must enforce this cap **before** allocating the payload buffer so
 /// a forged header cannot force a multi-GiB allocation.
 pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
@@ -100,7 +100,7 @@ impl core::fmt::Display for IpcError {
             Self::PayloadTooLarge => write!(
                 f,
                 "KELD-IPC-004: frame payload exceeds MAX_FRAME_LEN ({MAX_FRAME_LEN} bytes). \
-                 Shrink the payload or move large transfers to the bulk plane (shm / keld://)."
+                 Shrink the payload or move large transfers to an approved measured bulk/resource adapter."
             ),
             Self::Protocol { detail } => write!(
                 f,
@@ -175,7 +175,15 @@ mod tests {
         );
         let codec_err = decode::<EchoRequest>(&[0xff]).expect_err("invalid postcard");
         assert_code_and_fix(&codec_err, "KELD-IPC-003", "postcard");
-        assert_code_and_fix(&IpcError::PayloadTooLarge, "KELD-IPC-004", "bulk plane");
+        assert_code_and_fix(
+            &IpcError::PayloadTooLarge,
+            "KELD-IPC-004",
+            "bulk/resource adapter",
+        );
+        assert!(
+            !IpcError::PayloadTooLarge.to_string().contains("keld://"),
+            "the error must not prescribe one unqualified engine resource scheme"
+        );
         assert_code_and_fix(
             &IpcError::Protocol {
                 detail: "expected HELLO from peer",

@@ -25,7 +25,11 @@ Human sign-off is required for any that apply (`AGENTS.md`). Check all that this
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
+# When Mermaid changed:
+just mermaid-test && just mermaid-check && just mermaid-render-check
 ```
+
+<!-- Mermaid PRs also report renderer image tag+digest, diagram/SVG count, and visual inspection. -->
 
 ## Platforms
 

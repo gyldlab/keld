@@ -14,15 +14,32 @@ const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
 const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
 const WORKFLOW: &str = ".github/workflows/ci.yml";
 const GITIGNORE: &str = ".gitignore";
+const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
+const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
+const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
+const MERMAID_IMAGE_DIGEST: &str =
+    "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf";
 
 const REQUIRED_OWNER_PATHS: &[&str] = &[
     "crates/keld-guard",
     "crates/keld-ipc",
     "Cargo.toml",
     ".github",
+    "AGENTS.md",
+    ".agents",
+    "docs/agents",
+    "keld-error-codes.md",
+    "justfile",
+    "tools",
 ];
 
-const PR_NEEDLES: &[&str] = &["Review gates", "cargo fmt", "clippy", "nextest"];
+const PR_NEEDLES: &[&str] = &[
+    "Review gates",
+    "cargo fmt",
+    "clippy",
+    "nextest",
+    "mermaid-render-check",
+];
 
 const WORKFLOW_NEEDLES: &[&str] = &[
     "gitleaks detect",
@@ -32,6 +49,10 @@ const WORKFLOW_NEEDLES: &[&str] = &[
     "toolchain: 1.97.1",
     "tools/llms_docs.rs",
     "llms-docs check",
+    "--test tools/mermaid_docs.rs",
+    "mermaid-docs check .",
+    "tools/mermaid_render_check.sh",
+    "persist-credentials: false",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -75,6 +96,13 @@ fn uncommented_codeowners_lines(text: &str) -> impl Iterator<Item = &str> {
 
 fn codeowners_covers(text: &str, needle: &str) -> bool {
     uncommented_codeowners_lines(text).any(|line| line.contains(needle) && line.contains('@'))
+}
+
+fn uncommented_line_contains(text: &str, needle: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with('#') && trimmed.contains(needle)
+    })
 }
 
 fn action_uses_unpinned(workflow: &str) -> Vec<(usize, String)> {
@@ -196,13 +224,13 @@ fn check_issue_templates(root: &Path) -> Result<(), String> {
 fn check_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, WORKFLOW)?;
     for needle in WORKFLOW_NEEDLES {
-        if !text.contains(needle) {
+        if !uncommented_line_contains(&text, needle) {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
                  Restore the gitleaks job (checksummed CLI, not the org-licensed Action), \
                  `with: toolchain:` on dtolnay/rust-toolchain, \
                  the hygiene job that compiles this file, \
-                 and the hygiene step that compiles `tools/llms_docs.rs` and runs `llms-docs check`."
+                 generated-doc freshness, and the structural plus digest-pinned Mermaid render gates."
             ));
         }
     }
@@ -221,12 +249,54 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
+    let _checker = read(root, MERMAID_CHECKER)?;
+    let renderer = read(root, MERMAID_RENDERER)?;
+    for needle in [
+        MERMAID_IMAGE_DIGEST,
+        "--network none",
+        "--read-only",
+        "--cap-drop ALL",
+        "--security-opt no-new-privileges",
+        "--memory 2g",
+        "--pids-limit 256",
+        "run_with_timeout 120 docker run",
+        "run_with_timeout 300 docker pull",
+        "--pull never",
+        "--jobs 2",
+        ":/input/source.md:ro",
+        "trap cleanup EXIT",
+        "/tmp/keld-mermaid-render.",
+    ] {
+        if !uncommented_line_contains(&renderer, needle) {
+            return Err(format!(
+                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing `{needle}`. Restore the pinned, network-disabled, read-only, resource-bounded renderer contract."
+            ));
+        }
+    }
+    let config = read(root, MERMAID_CONFIG)?;
+    for needle in [
+        "\"securityLevel\": \"strict\"",
+        "\"maxTextSize\"",
+        "\"maxEdges\"",
+        "\"deterministicIds\": true",
+    ] {
+        if !config.contains(needle) {
+            return Err(format!(
+                "CI-HYGIENE: `{MERMAID_CONFIG}` is missing `{needle}`. Restore the strict deterministic resource-limit configuration."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check(root: &Path) -> Result<(), String> {
     check_gitignore(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
     check_issue_templates(root)?;
     check_workflow(root)?;
+    check_mermaid_gate_files(root)?;
     Ok(())
 }
 
@@ -310,12 +380,16 @@ mod tests {
                        toolchain: 1.97.1\n\
                    - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -\n\
                    - run: gitleaks detect --source . --exit-code 1\n\
+                   - run: echo persist-credentials: false\n\
                hygiene:\n\
                  steps:\n\
              {PINNED_CHECKOUT}\
                    - run: rustc --edition=2024 --test tools/ci_hygiene.rs\n\
                    - run: rustc --edition=2024 tools/llms_docs.rs\n\
-                   - run: llms-docs check .\n"
+                   - run: llms-docs check .\n\
+                   - run: rustc --edition=2024 --test tools/mermaid_docs.rs\n\
+                   - run: mermaid-docs check .\n\
+                   - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n"
         )
     }
 
@@ -323,11 +397,17 @@ mod tests {
         "/Cargo.toml @alice\n\
          /crates/keld-guard/ @alice\n\
          /crates/keld-ipc/ @alice\n\
-         /.github/ @alice\n"
+         /.github/ @alice\n\
+         /AGENTS.md @alice\n\
+         /.agents/ @alice\n\
+         /docs/agents/ @alice\n\
+         /docs/engineering/keld-error-codes.md @alice\n\
+         /justfile @alice\n\
+         /tools/ @alice\n"
     }
 
     fn valid_pr() -> &'static str {
-        "## Review gates\n\nRun cargo fmt, clippy, and nextest.\n"
+        "## Review gates\n\nRun cargo fmt, clippy, nextest, and mermaid-render-check.\n"
     }
 
     fn complete_fixture() -> TempDir {
@@ -340,6 +420,15 @@ mod tests {
             "name: Bug\nbody:\n  - type: markdown\n",
         );
         temp.write(WORKFLOW, &valid_workflow());
+        temp.write(MERMAID_CHECKER, "fn main() {}\n");
+        temp.write(
+            MERMAID_RENDERER,
+            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 120 docker run\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\n",
+        );
+        temp.write(
+            MERMAID_CONFIG,
+            "{\"securityLevel\": \"strict\", \"maxTextSize\": 50000, \"maxEdges\": 500, \"deterministicIds\": true}\n",
+        );
         temp
     }
 
@@ -473,6 +562,82 @@ mod tests {
             error.contains("tools/llms_docs.rs") || error.contains("llms-docs check"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn missing_mermaid_render_workflow_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow()
+            .replace("tools/mermaid_render_check.sh", "")
+            .replace(MERMAID_IMAGE_DIGEST, "");
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("workflow without pinned render must fail");
+        assert!(
+            error.contains("mermaid_render_check.sh") || error.contains(MERMAID_IMAGE_DIGEST),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn commented_mermaid_render_workflow_does_not_pass() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "- run: tools/mermaid_render_check.sh",
+            "# - run: tools/mermaid_render_check.sh",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("commented render step must fail");
+        assert!(error.contains("mermaid_render_check.sh"), "{error}");
+    }
+
+    #[test]
+    fn weakened_mermaid_renderer_isolation_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace("--network none", ""),
+        );
+        let error = check(temp.path()).expect_err("network-enabled renderer must fail");
+        assert!(error.contains("--network none"), "{error}");
+    }
+
+    #[test]
+    fn commented_mermaid_isolation_flag_does_not_pass() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace("--network none", "# --network none"),
+        );
+        let error = check(temp.path()).expect_err("commented network isolation must fail");
+        assert!(error.contains("--network none"), "{error}");
+    }
+
+    #[test]
+    fn weakened_mermaid_resource_config_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_CONFIG,
+            &read(temp.path(), MERMAID_CONFIG)
+                .expect("config fixture")
+                .replace("\"maxEdges\"", "\"removedMaxEdges\""),
+        );
+        let error = check(temp.path()).expect_err("config without edge limit must fail");
+        assert!(error.contains("maxEdges"), "{error}");
+    }
+
+    #[test]
+    fn missing_tools_codeowner_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            CODEOWNERS,
+            &valid_codeowners().replace("/tools/ @alice\n", ""),
+        );
+        let error = check(temp.path()).expect_err("gate tools without owner must fail");
+        assert!(error.contains("tools"), "{error}");
     }
 
     #[test]

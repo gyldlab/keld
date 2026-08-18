@@ -10,5 +10,11 @@
 /Cargo.lock                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /rust-toolchain.toml                @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /.github/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/AGENTS.md                          @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/.agents/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/docs/agents/                       @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/docs/engineering/keld-error-codes.md @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/justfile                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/tools/                             @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /crates/keld-guard/                 @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /crates/keld-ipc/                   @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish

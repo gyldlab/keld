@@ -110,36 +110,14 @@ Run `cargo fmt --all` (no `--check`) to fix formatting before the gate. Run the 
 before every push, and report **real output** in the PR — never "should work". If a path
 only exists on another OS, say so plainly rather than claiming coverage you do not have.
 
-### 3.2 Actual results, observed in this working tree
+### 3.2 Report fresh results, not an onboarding snapshot
 
-Run on macOS (aarch64) against the tree as it stands today — which includes a large
-amount of **uncommitted work in progress** (the CLI `create`/`dev`/`doctor` modules, the
-kipc echo slice, the `keld-wv` engine/backends and their tests are all untracked or
-modified). Formatting and lint state on your machine may differ once that work is
-committed or rebased.
+Run all three commands against the exact checkout being handed off and quote their real
+exit status and summary. Test totals, durations, commit ids and dirty-tree shape change
+too often to embed here. A platform-gated module compiling on this machine is not proof
+that its window, sandbox, installer or updater behavior ran on the target OS.
 
-```console
-$ cargo fmt --all --check
-                                            # no output, exit 0
-
-$ cargo clippy --workspace --all-targets -- -D warnings
-    Checking keld-ipc v0.0.1 ...
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.04s
-                                            # no warnings, exit 0
-
-$ cargo nextest run --workspace --profile ci
-    Starting 17 tests across 14 binaries
-        PASS [   0.014s] ( 1/17) keld-ipc frame::tests::rejects_bad_magic
-        ...
-        PASS [   0.637s] (17/17) keld-cli::bun_echo bun_main_runs_ipc_echo
-     Summary [   0.639s] 17 tests run: 17 passed, 0 skipped
-```
-
-**Gate status: all three green.** Note that
-[`task.md`](../../task.md) records `12/12` as of 2026-07-10 — that is a historical
-snapshot from an earlier session, not the current number. Today's tree runs 17 on macOS.
-
-The two extra gates that `just ci` adds beyond the three:
+The additional gates that `just ci` adds beyond the three include:
 
 ```console
 $ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
@@ -183,10 +161,13 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 | `just test` | `cargo nextest run --workspace --profile ci` |
 | `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
 | `just deny` | `cargo deny check` |
-| `just ci` | all five gates: `fmt-check clippy test doc deny` |
+| `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
+| `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
+| `just ci` | agent instructions + Mermaid + generated docs + hygiene + `fmt-check clippy test doc deny` |
 
-`just ci` is the local mirror of CI, minus the three-OS matrix. If it is green and you
-only touched cross-platform code, CI usually agrees.
+`just ci` is the local mirror of CI, minus the three-OS matrix and the manual Mermaid
+visual-inspection/report step. If it is green and you only touched
+cross-platform code, CI usually agrees.
 
 ---
 
@@ -199,13 +180,9 @@ cargo nextest run -p keld-ipc -- frame         # one crate, substring filter
 cargo test --workspace                         # fallback if nextest is unavailable
 ```
 
-Verified filter behavior:
-
-```console
-$ cargo nextest run -p keld-ipc -- frame
-    Starting 4 tests across 2 binaries (2 tests skipped)
-     Summary [   0.015s] 4 tests run: 4 passed, 2 skipped
-```
+`cargo nextest run -p keld-ipc -- frame` applies a substring filter. Quote its fresh
+summary when using it; the selected test/binary/skipped totals are not a documentation
+contract.
 
 Where the tests live:
 
@@ -223,14 +200,14 @@ Two things to expect:
 
 - **Test counts differ per platform.** `crates/keld-wv/src/hello/mod.rs` gates its test
   on `#[cfg(all(test, not(target_os = "macos")))]`, and the `wkwebview` module only
-  compiles on macOS. 17 on macOS is not the number you will see on Linux or Windows.
+  compiles on macOS. Never compare raw totals across target OSes as if they were the
+  same executed surface.
 - **`bun_echo` needs Bun on `PATH`.** It calls `.expect("spawn bun")`, so a missing Bun
   is a test *failure*, not a skip.
 
-There are currently **zero doctests** (`cargo test --workspace --doc` runs 0 tests) — and
-nextest does not run doctests at all, despite the `justfile` comment mentioning them. If
-you add a runnable ```` ```rust ```` example to a doc comment, run `cargo test --doc`
-yourself; the gate will not catch it for you.
+Nextest does not execute doctests. If you add a runnable ```` ```rust ```` example to a
+doc comment, run `cargo test --workspace --doc` explicitly and report its fresh result;
+do not infer doctest coverage from nextest.
 
 Anti-flake rules from `AGENTS.md` that the existing tests already follow, and yours must
 too: no sleep-based synchronization (the echo tests wait on an `mpsc` ready signal), port
@@ -241,8 +218,8 @@ the code they cover, and a comment explaining *why* a non-obvious assertion exis
 
 ## 5. What CI runs on your PR
 
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), six jobs, on every push to
-`main` and every pull request:
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) is the current source for
+job count and trigger details. Its stable responsibilities are:
 
 | Job | Runner(s) | What it does |
 |---|---|---|
@@ -251,7 +228,7 @@ the code they cover, and a comment explaining *why* a non-obvious assertion exis
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
 | `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |
 | `gitleaks` | ubuntu | checksum-pinned OSS CLI 8.30.1 (`gitleaks detect`), not the org-licensed GitHub Action |
-| `CODEOWNERS + templates` | ubuntu | compile+run `tools/ci_hygiene.rs` |
+| `CODEOWNERS + docs contracts` | ubuntu | compile+run `tools/ci_hygiene.rs`, validate generated llms docs, run Mermaid validator tests/check, then render tracked diagrams in the digest-pinned isolated container |
 
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
 other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions
@@ -264,11 +241,11 @@ use an unpinned `cargo` on a random runner image.
 
 ## 6. Conventions that will get a PR rejected
 
-Read [`AGENTS.md`](../../AGENTS.md) in full — it is under 90 lines. The greatest hits,
+Read [`AGENTS.md`](../../AGENTS.md) in full. The greatest hits,
 with the rationale, so you do not learn them from a review comment:
 
-- **No `unwrap`, `expect`, `panic!` in library code.** Return typed errors (`thiserror`
-  is the stated tool; the older crates hand-write `Display`). `expect` is allowed in
+- **No `unwrap`, `expect`, `panic!` in library code.** Return typed errors with the
+  repository's hand-written `Display` + stable-code contract. `expect` is allowed in
   tests and at the top level of `keld-cli`, and every sanctioned use states the invariant
   it relies on. `clippy.toml` makes the restriction lints test-aware; a site-local
   `#[allow]` needs a comment saying why.

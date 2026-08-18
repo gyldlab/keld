@@ -5,7 +5,8 @@ binding rules live in [`AGENTS.md`](../../AGENTS.md) and the normative specs liv
 [`docs/architecture/`](../architecture/). Everything here is traceable to a file in this
 tree; where something is specified but not built, it says so and names the source.
 
-Written 2026-08-10 against commit `6d642c4` plus the uncommitted working tree.
+This set avoids frozen LOC/test/HEAD counts. “Current” means the checked-out source plus
+fresh gate and target-host evidence, not the date this prose was last edited.
 
 | # | Document | Read it when |
 |---|---|---|
@@ -20,23 +21,24 @@ Written 2026-08-10 against commit `6d642c4` plus the uncommitted working tree.
 
 ## The short version
 
-Keld replaces Electron's architecture, not its API: a prebuilt Rust host owns every OS
-resource, the developer's JS/TS main process runs on a supervised Bun child with zero
-ambient OS authority, UI runs in system webviews, and the two sides talk over a typed
-binary IPC plane (kipc) behind a default-deny capability manifest.
+Keld replaces Electron's architecture while preserving a measured API contract: a
+prebuilt Rust host owns every OS resource; the developer's JS/TS primary process and
+any named compatibility roles run as supervised Bun principals whose destination strict
+profile has zero undeclared ambient OS authority; UI runs in system webviews; and the sides talk over a
+typed binary IPC plane (kipc) behind a default-deny capability manifest.
 
 **It is pre-alpha and the gap between the specs and the code is large.** The architecture
-documents describe a finished framework; the tree holds roughly 2,300 lines of Rust that
-open one macOS window and echo one IPC message. Both are true at once. Doc 01 quantifies
-the gap crate by crate — read it before you trust anything the specs imply about what
-works today.
+documents describe the approved destination; the current tree contains CLI/MCP, guard,
+framed-echo and three platform hello slices, while the supervisor, brokers, packages,
+compatibility and distribution systems remain incomplete. Doc 01 records the gap by
+observable behavior — read it before treating a target contract as live.
 
 ## Day one
 
 ```bash
 cargo build --workspace
 cargo nextest run --workspace --profile ci
-just hello                                   # macOS only: opens the WKWebView window
+just hello                                   # launches the current platform hello backend
 cargo run -p keld-cli -- doctor
 ```
 

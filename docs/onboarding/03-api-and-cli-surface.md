@@ -374,7 +374,7 @@ if you change that wording, the test is the contract.
 ```bash
 cd my-electron-app
 bunx keld migrate   # analyzes your app, generates config, aliases electron → @keld/electron
-bunx keld dev       # your app runs — no Chromium bundle, no Node, no rewrite
+bunx keld dev       # target: no bundled Chromium/Node executable; exact gaps reported
 bunx keld build     # signed installers + kilobyte-scale delta updates
 ```
 
@@ -451,9 +451,9 @@ The echo vertical slice ([`echo.rs`](../../crates/keld-ipc/src/echo.rs)):
 `EchoResponse { message: String, count: u32 }`, and `handle_echo(&[u8]) -> Result<Vec<u8>, IpcError>`.
 
 `IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }`, `HelloAuth { detail }`, `Timeout` — codes
-`KELD-IPC-001..007`. Note this crate hand-writes `Display`/`Error` rather than deriving
-`thiserror`, and has exactly two dependencies (`postcard`, `serde`). The HELLO token is
-minted in `keld-cli` via `getrandom` (cold path).
+`KELD-IPC-001..007`. This crate hand-writes `Display`/`Error` rather than deriving
+`thiserror`; inspect its current manifest instead of freezing a dependency count here.
+The HELLO token is minted in `keld-cli` via `getrandom` (cold path).
 
 Not built yet, despite being named all over the specs: channel-name resolution at
 handshake, the shm bulk lane, credit-window backpressure, cancellation, streaming, and
@@ -711,11 +711,13 @@ not part of the flow yet.
 
 ```mermaid
 sequenceDiagram
+    accTitle: Current generated app echo and window lifecycle
+    accDescr: A developer runs keld dev. The CLI starts an echo server, Bun performs the authenticated HELLO and ECHO exchange, and the CLI then opens the renderer window. The integration test excludes the window.
     participant Dev as You
     participant CLI as keld dev (parent)
     participant Echo as EchoServer thread
     participant Bun as Bun (src/main.ts + kipc.ts)
-    participant Win as WKWebView / WebView2 window
+    participant Win as Platform system-webview window
 
     Dev->>CLI: keld dev
     CLI->>CLI: run_checks() — bun, project layout, renderer HTML

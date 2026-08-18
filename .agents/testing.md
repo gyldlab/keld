@@ -1,8 +1,8 @@
 # Testing playbook
 
 Load this playbook for tests, bug fixes, compatibility work, fuzzing, process
-boundaries, and platform behavior. A test is evidence only when a plausible defect can
-make it fail.
+boundaries, platform behavior, and any added or changed Mermaid diagram. A test is
+evidence only when a plausible defect can make it fail.
 
 ## Failure-first proof
 
@@ -49,12 +49,42 @@ make it fail.
 | Hostile input | `cargo-fuzz` raw-byte target plus minimized deterministic regressions |
 | Webview or other platform binding | Pure state-model test plus real-OS subprocess smoke |
 
+## Documentation and Mermaid render gate
+
+- Root `AGENTS.md` § Documentation diagrams owns diagram selection, accessibility,
+  semantic labels and the shared `classDef` palette. A changed diagram MUST preserve
+  explicit current/target and framework/showcase meaning in its labels and surrounding
+  prose; color or layout alone is not an oracle.
+- Run `just mermaid-test` and `just mermaid-check` for every diagram change. These prove
+  the repository validator and structural policy; they do not replace the actual render
+  required below.
+- Before using syntax the author has not already rendered in this repository, the author
+  SHOULD use Context7 when available to locate current material and MUST confirm the
+  syntax in the current official Mermaid docs. Context7 is discovery; official Mermaid
+  docs are the primary syntax authority and remain sufficient when the connector is absent.
+- Every added or changed Mermaid block MUST pass `just mermaid-render-check`. It uses the
+  official [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)
+  11.16.0 GHCR image pinned by immutable OCI digest, with the checkout read-only,
+  network disabled and resource limits. `latest`, beta/canary builds, third-party live
+  editors and an unversioned global `mmdc` MUST NOT satisfy the gate. Changing the image
+  tag/digest or render config is a dependency + CI review gate.
+- A passing render means every changed block exits successfully, produces a non-empty
+  output, and preserves an accessible SVG `<title>` and `<desc>` derived from
+  `accTitle`/`accDescr`. Inspect the rendered relationship at least once; parse success
+  cannot detect a reversed edge, misleading grouping or clipped semantic label.
+- The PR or hand-off MUST contain an actual render report: source files and block count,
+  renderer name, version and digest, exact command, output format, and observed pass/fail.
+  Temporary render output SHOULD live outside the repository and MUST NOT be committed
+  unless it is itself a reviewed documentation artifact. If rendering cannot run, report
+  the blocker and do not call the diagram change verified.
+
 ## CI tiers
 
 - **Every PR:** `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, and
   `cargo nextest run --workspace --profile ci`. Replay committed fuzz regressions as
-  normal tests; build changed fuzz harnesses.
+  normal tests; build changed fuzz harnesses. A PR that changes Mermaid additionally
+  runs the documentation render gate above.
 - **Nightly:** run bounded `cargo-fuzz` campaigns with retained corpora. Add targeted
   sanitizer or Miri lanes only where unsafe, FFI, allocation, or lifetime risk makes
   them applicable; print replayable seeds and promote every failure to a regression.
