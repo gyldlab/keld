@@ -9,7 +9,9 @@
 //!
 //! Negative control: replacing `whenReady` with `Promise.resolve()` (skipping
 //! the host Ready event) makes `when_ready_does_not_resolve_before_host_ready_event`
-//! fail — `KEL72_READY` would already be in stdout before `signal_ready`.
+//! fail — after draining queued stdout, `KEL72_READY` is already present
+//! *before* `signal_ready`. A `has()` that only inspects the accumulator
+//! (leaving READY on `rx`) is not a valid negative control.
 
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 
@@ -67,8 +69,49 @@ impl LineLog {
         }
     }
 
-    fn has(&self, needle: &str) -> bool {
+    /// Pull every line already sitting on `rx` into `acc`.
+    ///
+    /// `acc` is what [`Self::has`] and sequence checks inspect. After
+    /// [`Self::wait_contains`] returns on `KEL72_WAITING`, an early
+    /// `KEL72_READY` can still be queued on `rx`; a later
+    /// `wait_contains("KEL72_READY")` after `signal_ready` would consume it
+    /// and a stub `whenReady` (`Promise.resolve()`, or resolve-at-connect)
+    /// would pass.
+    fn drain_queued(&mut self) {
+        while let Ok(line) = self.rx.try_recv() {
+            self.acc.push_str(&line);
+            self.acc.push('\n');
+        }
+    }
+
+    fn has(&mut self, needle: &str) -> bool {
+        self.drain_queued();
         self.acc.contains(needle)
+    }
+
+    fn first_marker_line(&self, needle: &str) -> Option<usize> {
+        self.acc.lines().position(|line| line.contains(needle))
+    }
+
+    /// Host-visible WAITING / READY order *before* `signal_ready`.
+    ///
+    /// Drains `rx` first so a READY line that arrived with WAITING cannot
+    /// hide on the channel. Handshake completion is the barrier that the
+    /// child is a live kipc peer; READY must still be absent.
+    fn assert_waiting_without_ready(&mut self) {
+        self.drain_queued();
+        let waiting = self.first_marker_line("KEL72_WAITING");
+        let ready = self.first_marker_line("KEL72_READY");
+        assert!(
+            waiting.is_some(),
+            "KEL72_WAITING must appear before the host Ready event. stdout:\n{}",
+            self.acc
+        );
+        assert!(
+            ready.is_none(),
+            "KEL72_READY before signal_ready — whenReady resolved without the host Ready event (stub Promise.resolve() / resolve-at-connect): {}",
+            self.acc
+        );
     }
 }
 
@@ -219,30 +262,34 @@ fn when_ready_does_not_resolve_before_host_ready_event() {
     let mut log = spawn_line_log(stdout);
 
     log.wait_contains("KEL72_WAITING");
-    // Negative control: `whenReady` as `Promise.resolve()` prints READY
-    // before the host signals. Handshake may already be done (macOS
-    // connect unblocks once the accept thread runs) but Ready is not sent
-    // until `signal_ready` below.
-    assert!(
-        !log.has("KEL72_READY"),
-        "whenReady resolved before the host Ready event (would pass if whenReady were Promise.resolve()): {}",
-        log.acc
-    );
+    // Drain `rx` here: WAITING and READY are consecutive writeSync lines if
+    // `whenReady` is `Promise.resolve()`, and `wait_contains(WAITING)` stops
+    // with READY still queued.
+    log.assert_waiting_without_ready();
 
+    // Host-visible barrier: HELLO completed. A shim that resolves at connect
+    // (not at Ready) prints READY as soon as this returns.
     let mut host = session_rx
         .recv_timeout(Duration::from_secs(8))
         .expect("handshake result")
         .unwrap_or_else(|e| panic!("lifecycle handshake failed: {e}"));
 
-    assert!(
-        !log.has("KEL72_READY"),
-        "Ready must still wait for signal_ready after HELLO: {}",
-        log.acc
-    );
+    log.assert_waiting_without_ready();
 
     host.window_opened();
     host.signal_ready().expect("ready");
     log.wait_contains("KEL72_READY");
+    let waiting_at = log
+        .first_marker_line("KEL72_WAITING")
+        .expect("WAITING recorded");
+    let ready_at = log
+        .first_marker_line("KEL72_READY")
+        .expect("READY recorded");
+    assert!(
+        waiting_at < ready_at,
+        "KEL72_WAITING must precede KEL72_READY (got waiting@{waiting_at} ready@{ready_at}): {}",
+        log.acc
+    );
     assert!(
         !log.has("KEL72_WINDOW_ALL_CLOSED"),
         "window-all-closed must not be emitted by the shim itself: {}",
