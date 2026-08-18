@@ -117,5 +117,12 @@ Optional locally: `just ci`, `cargo deny check` (requires cargo-deny installed).
 ## Open questions
 
 1. **Licensing:** workspace declares MIT OR Apache-2.0; README/ROADMAP updated to match.
-2. **MSRV vs pin:** both `1.93` today; document bump policy when pin advances.
+2. **MSRV vs pin — resolved 2026-08-18.** Policy: keep MSRV == toolchain pin while
+   pre-alpha (no external consumers with an older-Rust constraint to protect); bump
+   both together, do not let the pin drift silently. First bump under this policy:
+   `1.93.0` → `1.97.1` (current stable; `1.98.0` was not yet released). Re-run the full
+   gate (`fmt`/clippy `-D warnings`/nextest/MSRV job/`llms-check`) on the bump itself,
+   not just on the next unrelated change — a version bump is exactly the kind of change
+   that can silently introduce new clippy lints or drop old ones. Revisit "keep MSRV ==
+   pin" once there are real external consumers who need a floor below the latest stable.
 3. **Strip + crash triage:** release `strip = "symbols"` may complicate host crash reports — revisit with `keld-update` rollback UX.

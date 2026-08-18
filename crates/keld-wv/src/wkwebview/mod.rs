@@ -28,7 +28,7 @@ use keld_guard::PermissionsManifest;
 use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
-use crate::media::with_guarded_media_permissions;
+use crate::media::{webview_media_principal, with_guarded_media_permissions};
 
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
@@ -149,7 +149,13 @@ impl WebEngine for WkWebViewEngine {
         let builder = builder.with_devtools(true);
         // KEL-59: wry 0.56 still auto-grants camera/mic when this handler is
         // omitted (`WKPermissionDecision::Grant`). Empty manifest → default-deny.
-        let builder = with_guarded_media_permissions(builder, PermissionsManifest::default());
+        // KEL-73: mint the webview id first so capture cannot inherit AppProcess grants.
+        let id = self.next_id;
+        let builder = with_guarded_media_permissions(
+            builder,
+            PermissionsManifest::default(),
+            webview_media_principal(WebviewId(id)),
+        );
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
@@ -158,7 +164,6 @@ impl WebEngine for WkWebViewEngine {
             .build(&window)
             .map_err(|e| WvError::Webview(e.to_string()))?;
 
-        let id = self.next_id;
         self.next_id += 1;
         self.views.insert(id, View { window, webview });
         Ok(WebviewId(id))

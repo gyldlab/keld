@@ -371,6 +371,11 @@ pub struct EchoResponse {
 
 Echo is **ungated on purpose**: the frame goes from decode straight to handler.
 `keld-guard::evaluate` is not on this path. That is not the privileged-IPC story.
+`keld-guard::evaluate` takes a `Principal` and default-denies anything other than
+`AppProcess` (`KELD-GUARD006`); it is live for MCP `keld_permissions_explain`,
+webview camera/microphone capture (as the requesting `Webview` principal; missing
+identity and `AppProcess` are `KELD-GUARD007`), and privileged kipc via
+`dispatch_privileged` (KEL-69). Echo dispatch still does not call the guard.
 
 **FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
 `fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
@@ -385,8 +390,9 @@ the app-link the host already minted (`crates/keld-ipc/src/lifecycle.rs`).
 `@keld/electron` maps those onto `app.whenReady` / `window-all-closed` / `app.quit`.
 
 `keld-guard::evaluate` also runs for MCP `keld_permissions_explain` and for
-webview camera/microphone capture (explicitly as `AppProcess`, because wry's
-handler has no webview id). Echo and other ungated demo paths do not make the
+webview camera/microphone capture as the requesting webview principal (KEL-73);
+missing identity and `AppProcess` are `KELD-GUARD007`. Echo and other ungated
+demo paths do not make the
 [`03` §1](../architecture/03-security.md) "every privileged operation passes the
 guard" property true of *all* IPC — only of the privileged channels that call
 `dispatch_privileged`.
@@ -526,9 +532,10 @@ sections. Three honest observations about the gap:
 `keld.permissions.jsonc` is the highest-stakes contract in the system. Its shape is
 normative in [`03` §2](../architecture/03-security.md). v0 code is
 `parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
-`app.<group>.<action>`). Recorder, `keld doctor --permissions`, and host IPC still
-calling `evaluate` on every privileged frame are not this slice. Webview camera and
-microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59).
+`app.<group>.<action>`). Recorder and `keld doctor --permissions` are not this slice.
+Privileged kipc uses `dispatch_privileged` (KEL-69). Webview camera and
+microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59)
+as the requesting webview principal (KEL-73); `AppProcess` is `KELD-GUARD007`.
 
 **v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
 scope; symlink canonicalization is not in this slice. That is not an Allow.

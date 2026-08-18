@@ -29,7 +29,7 @@ const WORKFLOW_NEEDLES: &[&str] = &[
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
-    "toolchain: 1.93.0",
+    "toolchain: 1.97.1",
     "tools/llms_docs.rs",
     "llms-docs check",
 ];
@@ -307,7 +307,7 @@ mod tests {
              {PINNED_CHECKOUT}\
                    - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05\n\
                      with:\n\
-                       toolchain: 1.93.0\n\
+                       toolchain: 1.97.1\n\
                    - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -\n\
                    - run: gitleaks detect --source . --exit-code 1\n\
                hygiene:\n\
@@ -455,10 +455,10 @@ mod tests {
     #[test]
     fn missing_toolchain_pin_fails() {
         let temp = complete_fixture();
-        let workflow = valid_workflow().replace("toolchain: 1.93.0", "");
+        let workflow = valid_workflow().replace("toolchain: 1.97.1", "");
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
-        assert!(error.contains("toolchain: 1.93.0"), "{error}");
+        assert!(error.contains("toolchain: 1.97.1"), "{error}");
     }
 
     #[test]

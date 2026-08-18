@@ -102,11 +102,14 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
    backends: macOS and Linux (KEL-28) both install wry `with_permission_handler`
    (`with_guarded_media_permissions`, shared helper); Windows registers the
    `WebView2` `add_PermissionRequested` handler before the first navigation
-   (KEL-65 direct COM — the ordering is compile-enforced). All three call
-   `keld-guard::evaluate` as `Principal::AppProcess` on `web.camera` /
-   `web.microphone` with requested resource `*` (no platform callback passes
-   an origin or a webview principal). Grant with
-   `"web": { "camera": ["*"] }` / `"microphone": ["*"]`. CSP injection,
+   (KEL-65 direct COM — the ordering is compile-enforced). All three evaluate
+   `web.camera` / `web.microphone` as the requesting `Principal::Webview`
+   (host-minted `WebviewId`, generation `0` until navigation rotation lands)
+   with requested resource `*` (no platform callback passes an origin).
+   Missing identity and `AppProcess` fail closed (`KELD-GUARD007`) so `/app`
+   media grants cannot apply to a remote or other webview. A minted webview
+   principal is still `KELD-GUARD006` until window-level grants exist. CSP
+   injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.
 4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9

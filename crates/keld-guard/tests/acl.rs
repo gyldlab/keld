@@ -369,6 +369,29 @@ fn every_denial_reason_variant_has_a_stable_contract() {
     let not_app_msg = not_app.to_string();
     assert!(not_app_msg.contains("KELD-GUARD006"), "{not_app_msg}");
     assert!(not_app_msg.contains("webview"), "{not_app_msg}");
+
+    let media = DenyReason::MediaPrincipalRequired {
+        capability: "web.camera".to_owned(),
+        presented: Some(Principal::AppProcess),
+    };
+    assert_eq!(media.code(), "KELD-GUARD007");
+    assert_eq!(media.kind(), "media_principal_required");
+    assert_eq!(
+        media.fix(),
+        "Mint the requesting webview principal before evaluating `web.camera`. \
+         Do not present AppProcess — that would apply `/app` media grants to every webview."
+    );
+    assert_eq!(
+        media.to_string(),
+        "KELD-GUARD007: `web.camera` requires a minted webview principal (presented `app`). \
+         Mint the requesting webview principal before evaluating `web.camera`. \
+         Do not present AppProcess — that would apply `/app` media grants to every webview."
+    );
+    assert!(
+        !media.fix().contains("/app/web"),
+        "must not recommend applying app media grants: {}",
+        media.fix()
+    );
 }
 
 #[test]

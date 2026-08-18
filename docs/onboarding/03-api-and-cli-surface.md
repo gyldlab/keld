@@ -399,7 +399,7 @@ statement, not as documentation of the current binary.
 
 ## 3. Public Rust crate APIs
 
-Workspace version `0.0.1`, edition 2024, MSRV/toolchain 1.93.0. Every public item is
+Workspace version `0.0.1`, edition 2024, MSRV 1.97; pinned toolchain 1.97.1. Every public item is
 documented (`missing_docs` is a workspace lint) and `cargo doc --workspace --no-deps`
 builds clean, so `cargo doc --open` is a legitimate way to browse this.
 
@@ -492,9 +492,11 @@ Supporting types:
 - `LogicalSize { width: f64, height: f64 }`, `Rect { x, y, width, height }` (logical points)
 - `DevtoolsAction::{ Open, Close }`
 - `MediaPermission::{ Camera, Microphone, Other }`, `WEB_CAMERA` / `WEB_MICROPHONE` /
-  `WEB_MEDIA_ORIGIN`, `media_permission_allowed` — default-deny camera/mic policy
-  (KEL-59). v0 requested resource is `*` because neither platform callback passes
-  an origin (wry's handler on macOS, `PermissionRequested` args on Windows).
+  `WEB_MEDIA_ORIGIN`, `media_permission_allowed(manifest, principal, kind)` — default-deny
+  camera/mic policy (KEL-59, KEL-73). Evaluates as the requesting `Principal::Webview`
+  when the host has minted that id. Missing identity and `AppProcess` are
+  `KELD-GUARD007`. v0 requested resource is `*` because neither platform callback
+  passes an origin (wry's handler on macOS, `PermissionRequested` args on Windows).
 - `WebviewId(pub u32)`, `EnginePolicy::{ System (default), Pinned }` (declared in
   [`lib.rs`](../../crates/keld-wv/src/lib.rs); nothing reads `EnginePolicy` yet)
 - `WvError` — seven variants, codes `KELD-WV-001..007`
@@ -561,7 +563,7 @@ subsystems:
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`, `parse_manifest` / `load_manifest` / `evaluate`. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it — the last one is proven end-to-end but has no real capability using it yet (host `fs.read`/`fs.write` is KEL-71). |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it — the last one is proven end-to-end but has no real capability using it yet (host `fs.read`/`fs.write` is KEL-71). |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
 | `keld_pack` | `Format::{App, Dmg, Nsis, Msi, Deb, Rpm, AppImage}` |
