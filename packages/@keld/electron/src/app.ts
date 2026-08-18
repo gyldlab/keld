@@ -15,8 +15,15 @@ type AppListener = () => void;
 const listeners = new Map<string, AppListener[]>();
 
 function emit(event: string): void {
-  for (const listener of listeners.get(event) ?? []) {
-    listener();
+  const snapshot = listeners.get(event);
+  if (!snapshot) return;
+  for (const listener of snapshot.slice()) {
+    try {
+      listener();
+    } catch {
+      // Isolate each listener. Host Events arrive on the kipc read loop;
+      // an uncaught throw would skip remaining listeners and abort the loop.
+    }
   }
 }
 
@@ -27,10 +34,21 @@ let linkPromise: Promise<LifecycleLink> | undefined;
 function onHostReady(): void {
   if (hostReady) return;
   hostReady = true;
-  emit("ready");
+  // Drain whenReady waiters before user `ready` listeners so a throw in a
+  // listener cannot leave whenReady() pending (even if emit isolation is
+  // later weakened).
   const waiters = readyWaiters;
   readyWaiters = [];
   for (const waiter of waiters) waiter();
+  emit("ready");
+}
+
+/**
+ * Attach a handler so an unawaited rejection is not "unhandled", without
+ * swallowing it for anyone who does await the same promise.
+ */
+function ignoreIfUnawaited(promise: Promise<unknown>): void {
+  void promise.catch(() => {});
 }
 
 function ensureLink(): Promise<LifecycleLink> {
@@ -43,13 +61,21 @@ function ensureLink(): Promise<LifecycleLink> {
       ),
     );
   }
-  linkPromise = LifecycleLink.connect(envLink, {
+  const pending = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
     onLastWindowClosed: () => {
       emit("window-all-closed");
     },
   });
-  return linkPromise;
+  let tracked: Promise<LifecycleLink>;
+  tracked = pending.catch((err: unknown) => {
+    if (linkPromise === tracked) {
+      linkPromise = undefined;
+    }
+    throw err;
+  });
+  linkPromise = tracked;
+  return tracked;
 }
 
 export const app = {
@@ -61,12 +87,14 @@ export const app = {
    * must not print READY. That is the KEL-72 negative control.
    */
   whenReady(): Promise<void> {
-    return ensureLink().then(() => {
+    const ready = ensureLink().then(() => {
       if (hostReady) return;
       return new Promise<void>((resolve) => {
         readyWaiters.push(resolve);
       });
     });
+    ignoreIfUnawaited(ready);
+    return ready;
   },
 
   /** True only after the host `Ready` event. */
@@ -76,10 +104,17 @@ export const app = {
 
   /**
    * Sends a kipc `Quit` Call. The host replies and ends the session.
+   *
+   * Quirk vs Electron oracle `app.quit(): void`
+   * (https://www.electronjs.org/docs/latest/api/app#appquit): this returns
+   * `Promise<void>` so callers can await the kipc Quit reply. Electron's
+   * `void` is process-lifetime and is not a thenable. Keep the Promise; do
+   * not change the public signature to `void` to paper over kipc.
    */
-  async quit(): Promise<void> {
-    const link = await ensureLink();
-    await link.quit();
+  quit(): Promise<void> {
+    const done = ensureLink().then((link) => link.quit());
+    ignoreIfUnawaited(done);
+    return done;
   },
 
   on(event: string, listener: AppListener): void {
