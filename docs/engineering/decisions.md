@@ -676,22 +676,27 @@ value fails, remove the external pilot without changing Keld.
 slice") names its own trigger: start only once the update artifact/feed contract in
 architecture 06 §4 is concrete enough for executable acceptance tests. §4 was prose —
 "signed manifests", "ed25519", "BLAKE3 post-conditions" — with no byte-level shape, so
-the ticket was not actually unblocked. Added §4a: a static feed layout
-(`<channel>/updates.json` + a **detached** `<channel>/updates.json.sig` file, not a
-signature field embedded in the JSON — avoids a canonicalization requirement between
-signer and verifier because the signature covers the exact response bytes, checked
-before parsing; §4a separately specifies duplicate-key rejection and an
-unrecognized-`schema` fail-closed rule, since detached signing alone does not remove
-parser-level ambiguity), a v0 `updates.json` schema (`schema`, `channel`, `app.id`,
-`releases[].{version, full, deltas[]}`, `full` required on every release), and an
-eight-step client verification order ending in atomic-swap/N-1-rollback. Facts worth
-holding onto: the ed25519 public key **must** be compiled into the host binary, never
-fetched from the feed; every artifact's `blake3` proves only that *its own downloaded
-bytes* are intact, so `full.contentBlake3` is a second, separate hash domain over the
-*decompressed, installable* content that both the full path and the post-delta
-reconstruction path must converge on; `app.id`/`channel` are checked fail-closed
-against the host's own identity so a correctly-signed manifest for a different app or
-channel is rejected on principle, not just on missing content; and a **persisted
+the ticket was not actually unblocked. Added §4a: a static feed layout keyed by
+**channel and target** (`<channel>/<target>/updates.json` + a **detached**
+`<channel>/<target>/updates.json.sig` file, not a signature field embedded in the
+JSON — avoids a canonicalization requirement between signer and verifier because the
+signature covers the exact response bytes, checked before parsing; §4a separately
+specifies duplicate-key rejection and an unrecognized-`schema` fail-closed rule, since
+detached signing alone does not remove parser-level ambiguity), a v0 `updates.json`
+schema (`schema`, `channel`, `target`, `app.id`, `releases[].{version, full,
+deltas[]}`, `full` required on every release, no duplicate `version`/`fromVersion`), a
+multi-step client verification order (fetch/verify → parse/identity-check →
+shape-validity → floor-filter/select → download → transport-hash → decompress/
+content-hash → full-fallback on any delta failure → install) ending in
+atomic-swap/N-1-rollback. Facts worth holding onto: the ed25519 public key **must** be
+compiled into the host binary, never fetched from the feed; every artifact's `blake3`
+proves only that *its own downloaded bytes* are intact, so `full.contentBlake3` is a
+second, separate hash domain over the *decompressed, installable* content — itself a
+fully byte-specified POSIX-tar profile, not "whatever decompresses" — that both the
+full path and the post-delta reconstruction path must converge on; `app.id`/`channel`/
+`target` are checked fail-closed against the host's own identity so a correctly-signed
+manifest for a different app, channel, or target is rejected on principle, not just on
+missing content; and a **persisted
 version floor** (not the running version) is what a replayed old signed manifest is
 checked against, so an authorized local rollback can run an older version without
 reopening the door to an attacker replaying a stale feed.
@@ -762,12 +767,46 @@ always advances *before* `current` is republished) and adding a startup-recovery
 that completes an interrupted publish from already-verified local state, never from
 anything the crash left ambiguous.
 
+**Update (2026-08-18, third review pass).** A deeper pass over the now-much-larger
+§4a found a second real bug plus real gaps, not restated nits: (1) nothing bound the
+manifest to a target platform/architecture — added `<target>` to the feed path and a
+redundant manifest field, mirroring the app/channel check; (2) release/delta selection
+still had a documented ambiguity between "the floor rejects the manifest" and "the
+floor filters the eligible set" — resolved explicitly as filtering (a normal feed's
+historical releases are not a schema violation); (3) `contentBlake3` covered
+"decompressed bytes" with no byte-exact package format, so two conforming
+implementations could still disagree — replaced with a fully specified POSIX-tar
+profile (entry types, name/mode/uid/gid/mtime/magic/version/checksum, sort order,
+block padding — an exhaustive list, not an example); (4) that same tar definition
+exposed a real vulnerability class: sorted paths alone do not stop path-traversal
+during extraction, so added explicit reject-before-write rules for absolute paths,
+`..` components, and anything that resolves outside the destination directory
+("tar slip"); (5) `size` was in the schema but bounded only the compressed download,
+not decompressed output — a valid small artifact could still be a decompression bomb;
+added `contentSize` as an explicit, incrementally-enforced decompression ceiling; (6)
+**the second real bug**: after extraction, the previous version exists only as a
+directory tree on disk, but a delta's base was specified as "the currently-installed
+content" with no defined byte stream to patch against — extraction is lossy relative
+to exact reproduction, so a re-serialized tree is not guaranteed to match the original
+tar bytes; fixed by retaining each version's exact `content.tar` alongside its
+extracted form, specifically as the only valid delta base; (7) **the third real bug**:
+the first pass's own replay/downgrade fix (the persisted version floor) could be
+silently defeated by its own recovery logic — after an intentional rollback, `current`
+legitimately sits behind the floor, which is exactly the state the first pass's
+"complete an interrupted publish" recovery rule would have auto-corrected, undoing the
+rollback on the next restart. Fixed with a `publish-intent` marker that names an
+in-flight forward publish and is never written by rollback, so recovery can tell "an
+update was interrupted" from "the host deliberately rolled back" instead of conflating
+them.
+
 **Next.** KEL-53 can now write its failing-first fixtures (valid/tampered manifest,
 corrupted patch, full-package fallback, N-1 rollback, identity mismatch, replay/
 downgrade, crash-interrupted install, wrong-target manifest, duplicate release/delta
-entries, oversized/undersized artifact) against a concrete shape instead of inventing
-one mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here; still zero
-verification code — nothing in this change reads or checks the contract it describes.
+entries, oversized/undersized artifact, decompression-bomb content, path-traversal
+archive entries, rollback surviving a restart) against a concrete shape instead of
+inventing one mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here;
+still zero verification code — nothing in this change reads or checks the contract it
+describes.
 
 **Evidence.** `docs/architecture/06-runtime-and-tooling.md` §4a; `crates/keld-update/src/lib.rs`.
 
