@@ -10,6 +10,8 @@ const MAGIC_BYTES = new Uint8Array([0x4b, 0x49]);
 const PROTOCOL_VERSION = 2;
 const HEADER_LEN = 16;
 const MAX_FRAME_LEN = 16 * 1024 * 1024;
+/** Mirrors `keld_ipc::{APP_LINK_IO_DEADLINE}` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
+export const APP_LINK_IO_DEADLINE_MS = 5_000;
 /** Mirrors `keld_ipc::LIFECYCLE_CHANNEL`. */
 export const LIFECYCLE_CHANNEL = 3;
 
@@ -28,7 +30,7 @@ function kipcError(code: string, detail: string): Error {
   return new Error(`${code}: ${detail}`);
 }
 
-function encodeHeader(
+export function encodeHeader(
   kind: number,
   flags: number,
   channel: number,
@@ -98,6 +100,28 @@ export function parseAppLink(link: string): AppLink {
   return { endpoint, token };
 }
 
+/**
+ * Windows `KELD_APP_LINK` endpoint is a decimal loopback port, matching
+ * `u16::from_str` on the host — not `Number.parseInt`, which accepts
+ * `"127.0.0.1:9000"` as `127`.
+ */
+export function parseWin32Port(endpoint: string): number {
+  if (!/^[0-9]+$/.test(endpoint)) {
+    throw kipcError(
+      "KELD-IPC-007",
+      "KELD_APP_LINK Windows endpoint must be a TCP port in 1–65535",
+    );
+  }
+  const port = Number(endpoint);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw kipcError(
+      "KELD-IPC-007",
+      "KELD_APP_LINK Windows endpoint must be a TCP port in 1–65535",
+    );
+  }
+  return port;
+}
+
 function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -110,7 +134,11 @@ interface DecodedFrame {
   payload: Uint8Array;
 }
 
-class FrameReader {
+/**
+ * Buffers socket chunks and resolves one `readFrame()` call per complete
+ * frame. Exported so tests can feed untrusted bytes without a live socket.
+ */
+export class FrameReader {
   #buf = new Uint8Array(0);
   #pending: { resolve: (f: DecodedFrame) => void; reject: (e: Error) => void } | null = null;
   #closed = false;
@@ -170,18 +198,22 @@ class FrameReader {
   }
 }
 
-class DrainSignal {
-  #waiter: (() => void) | null = null;
+/**
+ * Wakes every waiter parked on `wait()`. A single-slot signal drops the
+ * first waiter when ping-reply and `quit()` both hit backpressure.
+ */
+export class DrainSignal {
+  #waiters: Array<() => void> = [];
 
   fire(): void {
-    const waiter = this.#waiter;
-    this.#waiter = null;
-    waiter?.();
+    const waiters = this.#waiters;
+    this.#waiters = [];
+    for (const waiter of waiters) waiter();
   }
 
   wait(): Promise<void> {
     return new Promise((resolve) => {
-      this.#waiter = resolve;
+      this.#waiters.push(resolve);
     });
   }
 }
@@ -191,7 +223,7 @@ interface KipcSocket {
   end(): void;
 }
 
-async function writeFrame(
+async function writeOneFrame(
   socket: KipcSocket,
   drain: DrainSignal,
   kind: number,
@@ -217,6 +249,61 @@ async function writeFrame(
   }
 }
 
+/**
+ * One-at-a-time frame writer. Concurrent `writeOneFrame` calls interleave
+ * bytes on the stream (and used to hang on a single-slot drain).
+ */
+export class WriteQueue {
+  #chain: Promise<void> = Promise.resolve();
+  #socket: KipcSocket;
+  #drain: DrainSignal;
+
+  constructor(socket: KipcSocket, drain: DrainSignal) {
+    this.#socket = socket;
+    this.#drain = drain;
+  }
+
+  writeFrame(
+    kind: number,
+    flags: number,
+    channel: number,
+    corr: number,
+    payload: Uint8Array,
+  ): Promise<void> {
+    const run = this.#chain.then(() =>
+      writeOneFrame(this.#socket, this.#drain, kind, flags, channel, corr, payload),
+    );
+    this.#chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+}
+
+export async function withIoDeadline<T>(
+  promise: Promise<T>,
+  deadlineMs: number = APP_LINK_IO_DEADLINE_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        kipcError(
+          "KELD-IPC-006",
+          "app-link I/O deadline exceeded. Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.",
+        ),
+      );
+    }, deadlineMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    void promise.catch(() => undefined);
+  }
+}
+
 function decodeUnitEnum(bytes: Uint8Array): number {
   if (bytes.length !== 1) {
     throw kipcError("KELD-IPC-003", "lifecycle enum must be a single postcard varint byte");
@@ -231,6 +318,46 @@ function decodeEvent(bytes: Uint8Array): LifecycleEventName {
   throw kipcError("KELD-IPC-003", `unknown LifecycleEvent discriminant ${disc}`);
 }
 
+function decodePostcardString(bytes: Uint8Array): string {
+  if (bytes.length === 0) {
+    throw kipcError("KELD-IPC-003", "empty postcard string");
+  }
+  let len = 0;
+  let shift = 0;
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i];
+    i += 1;
+    len |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) {
+      const text = bytes.subarray(i, i + len);
+      if (text.length !== len || i + len !== bytes.length) {
+        throw kipcError("KELD-IPC-003", "postcard string length does not match payload");
+      }
+      return new TextDecoder().decode(text);
+    }
+    shift += 7;
+    if (shift > 28) {
+      throw kipcError("KELD-IPC-003", "postcard string length overflow");
+    }
+  }
+  throw kipcError("KELD-IPC-003", "truncated postcard string");
+}
+
+function errorFromErrFrame(payload: Uint8Array): Error {
+  let detail: string;
+  try {
+    detail = decodePostcardString(payload);
+  } catch {
+    detail =
+      payload.length === 0
+        ? "peer sent Err with empty payload"
+        : new TextDecoder().decode(payload);
+  }
+  if (detail.startsWith("KELD-")) return new Error(detail);
+  return kipcError("KELD-IPC-005", detail || "peer sent Err for in-flight Call");
+}
+
 export type LifecycleHandler = {
   onReady: () => void;
   onLastWindowClosed: () => void;
@@ -242,16 +369,16 @@ export type LifecycleHandler = {
 export class LifecycleLink {
   #socket: KipcSocket;
   #reader: FrameReader;
-  #drain: DrainSignal;
+  #writes: WriteQueue;
   #nextCorr = 1;
   #closed = false;
   #quitWaiter: { corr: number; resolve: () => void; reject: (e: Error) => void } | null = null;
   #loopStarted = false;
 
-  private constructor(socket: KipcSocket, reader: FrameReader, drain: DrainSignal) {
+  private constructor(socket: KipcSocket, reader: FrameReader, writes: WriteQueue) {
     this.#socket = socket;
     this.#reader = reader;
-    this.#drain = drain;
+    this.#writes = writes;
   }
 
   static async connect(link: string, handlers: LifecycleHandler): Promise<LifecycleLink> {
@@ -280,17 +407,18 @@ export class LifecycleLink {
       process.platform === "win32"
         ? await Bun.connect({
             hostname: "127.0.0.1",
-            port: Number.parseInt(endpoint, 10),
+            port: parseWin32Port(endpoint),
             socket: socketHandlers,
           })
         : await Bun.connect({
             unix: endpoint,
             socket: socketHandlers,
           });
-    const session = new LifecycleLink(socket, reader, drain);
+    const writes = new WriteQueue(socket, drain);
+    const session = new LifecycleLink(socket, reader, writes);
     try {
-      await writeFrame(socket, drain, FrameKind.Hello, 0, 0, 0, token);
-      const helloReply = await reader.readFrame();
+      await writes.writeFrame(FrameKind.Hello, 0, 0, 0, token);
+      const helloReply = await withIoDeadline(reader.readFrame());
       if (helloReply.header.kind !== FrameKind.Hello) {
         throw kipcError("KELD-IPC-005", "expected HELLO from peer");
       }
@@ -328,16 +456,25 @@ export class LifecycleLink {
           waiter.resolve();
           continue;
         }
+        if (
+          frame.header.kind === FrameKind.Err &&
+          this.#quitWaiter &&
+          frame.header.corr === this.#quitWaiter.corr
+        ) {
+          const waiter = this.#quitWaiter;
+          this.#quitWaiter = null;
+          waiter.reject(errorFromErrFrame(frame.payload));
+          continue;
+        }
         if (frame.header.kind === FrameKind.Ping) {
-          await writeFrame(
-            this.#socket,
-            this.#drain,
+          await this.#writes.writeFrame(
             FrameKind.Ping,
             0,
             frame.header.channel,
             frame.header.corr,
             new Uint8Array(),
           );
+          continue;
         }
       }
     };
@@ -356,19 +493,28 @@ export class LifecycleLink {
     let next = (corr + 1) >>> 0;
     if (next === 0) next = 1;
     this.#nextCorr = next;
-    await new Promise<void>((resolve, reject) => {
-      this.#quitWaiter = { corr, resolve, reject };
-      void writeFrame(
-        this.#socket,
-        this.#drain,
-        FrameKind.Call,
-        0,
-        LIFECYCLE_CHANNEL,
-        corr,
-        new Uint8Array([0x00]),
-      ).catch(reject);
-    });
-    this.close();
+    try {
+      await withIoDeadline(
+        new Promise<void>((resolve, reject) => {
+          this.#quitWaiter = { corr, resolve, reject };
+          void this.#writes.writeFrame(
+            FrameKind.Call,
+            0,
+            LIFECYCLE_CHANNEL,
+            corr,
+            new Uint8Array([0x00]),
+          ).catch((err: Error) => {
+            this.#quitWaiter = null;
+            reject(err);
+          });
+        }),
+      );
+    } catch (err) {
+      this.#quitWaiter = null;
+      throw err;
+    } finally {
+      this.close();
+    }
   }
 
   close(): void {
