@@ -27,7 +27,9 @@ use keld_ipc::{
 /// wake a blocking `read`
 /// ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594)).
 /// Idle polls are retried by `read_frame_interruptible` and are not
-/// `KELD-IPC-006`. Must stay well under the Drop-join kill switch (2s).
+/// `KELD-IPC-006`. A started frame that stalls still is, at
+/// [`APP_LINK_IO_DEADLINE`]. Must stay well under the Drop-join kill
+/// switch (2s).
 const LIFECYCLE_READER_POLL: Duration = Duration::from_millis(200);
 
 /// Host side of one app-link lifecycle session.

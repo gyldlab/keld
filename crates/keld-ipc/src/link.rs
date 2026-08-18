@@ -3,11 +3,11 @@
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use crate::token::SessionToken;
-use crate::{HEADER_LEN, IpcError, MAX_FRAME_LEN};
+use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
 
 /// Connected app-link streams that can bound a blocking read or write.
 ///
@@ -164,9 +164,17 @@ pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), Ipc
 /// Reads one kipc frame, retrying idle `SO_RCVTIMEO` until `stop` is set.
 ///
 /// Unlike [`read_frame`], an idle timeout (`WouldBlock` / `TimedOut` with
-/// the read deadline) is **not** [`IpcError::Timeout`]: the wait continues
-/// so a quiet persistent reader is not `KELD-IPC-006`. Mid-frame timeouts
-/// also retry, so a poll interval cannot desynchronize the stream.
+/// the read deadline and **no bytes of this frame yet**) is **not**
+/// [`IpcError::Timeout`]: the wait continues so a quiet persistent reader
+/// is not `KELD-IPC-006`.
+///
+/// After the first byte of a frame, short poll timeouts still retry so a
+/// `SO_RCVTIMEO` interval cannot desynchronize the stream, but the rest of
+/// that frame (header remainder and payload) must complete within
+/// [`APP_LINK_IO_DEADLINE`]. A peer that writes a partial header — or a
+/// header then stalls on payload — and stays silent is `KELD-IPC-006`.
+/// The stall clock is wall time from the first byte; per-`recv`
+/// `SO_RCVTIMEO` resets every syscall and is not an overall frame deadline.
 ///
 /// Returns `Ok(None)` when `stop` is observed. The stream is then only
 /// safe to close — partial header/payload bytes may already have been
@@ -174,27 +182,53 @@ pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), Ipc
 /// [`io::ErrorKind::UnexpectedEof`].
 ///
 /// The caller MUST set a bounded [`AppLinkDeadlines::set_app_link_read_deadline`]
-/// on `stream`. Without it, `stop` is only observed before the first
-/// blocking `read` (or after peer-FIN). Win32 `TcpStream::shutdown` on a
-/// cloned handle does not wake that `read`
+/// on a **blocking** stream. Non-blocking sockets are unsupported:
+/// `WouldBlock` is treated as poll expiry (`SO_RCVTIMEO` on a blocking
+/// socket), so a non-blocking fd idle-spins until `stop` and, after the
+/// first byte, busy-waits until the stall deadline. Without a recv
+/// timeout, `stop` is only observed before the first blocking `read`
+/// (or after peer-FIN). Win32 `TcpStream::shutdown` on a cloned handle
+/// does not wake that `read`
 /// ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594)).
+///
+/// After [`IpcError::Timeout`] or [`IpcError::Io`], the stream is
+/// unusable: close the link; do not retry on the same stream.
 ///
 /// # Errors
 ///
-/// Returns [`IpcError`] on I/O failure, bad header, or oversized payload.
+/// Returns [`IpcError`] on I/O failure, bad header, oversized payload, or
+/// [`IpcError::Timeout`] (`KELD-IPC-006`) when a started frame does not
+/// finish within [`APP_LINK_IO_DEADLINE`].
 pub fn read_frame_interruptible<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    read_frame_interruptible_with_stall(stream, stop, APP_LINK_IO_DEADLINE)
+}
+
+fn read_frame_interruptible_with_stall<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    stall_limit: Duration,
+) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];
-    if !read_exact_interruptible(stream, &mut header_bytes, stop)? {
+    if !read_exact_interruptible(
+        stream,
+        &mut header_bytes,
+        stop,
+        &mut stall_deadline,
+        stall_limit,
+    )? {
         return Ok(None);
     }
     let header = FrameHeader::decode(&header_bytes)?;
     let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
     ensure_payload_len(len)?;
     let mut payload = vec![0u8; len];
-    if !payload.is_empty() && !read_exact_interruptible(stream, &mut payload, stop)? {
+    if !payload.is_empty()
+        && !read_exact_interruptible(stream, &mut payload, stop, &mut stall_deadline, stall_limit)?
+    {
         return Ok(None);
     }
     Ok(Some((header, payload)))
@@ -203,15 +237,24 @@ pub fn read_frame_interruptible<S: Read>(
 /// Fills `buf` from `stream`, retrying idle timeouts until `stop`.
 ///
 /// Returns `Ok(true)` when `buf` is full, `Ok(false)` when `stop` is set.
+///
+/// `stall_deadline` is shared across the header and payload of one frame.
+/// The first read that yields bytes starts it (`now + stall_limit`). Later
+/// `TimedOut` / `WouldBlock` after that instant are [`IpcError::Timeout`].
 fn read_exact_interruptible<S: Read>(
     stream: &mut S,
     buf: &mut [u8],
     stop: &AtomicBool,
+    stall_deadline: &mut Option<Instant>,
+    stall_limit: Duration,
 ) -> Result<bool, IpcError> {
     let mut filled = 0;
     while filled < buf.len() {
         if stop.load(Ordering::Acquire) {
             return Ok(false);
+        }
+        if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(IpcError::Timeout);
         }
         match stream.read(&mut buf[filled..]) {
             Ok(0) => {
@@ -221,13 +264,26 @@ fn read_exact_interruptible<S: Read>(
                 )
                 .into());
             }
-            Ok(n) => filled += n,
+            Ok(n) => {
+                if stall_deadline.is_none() {
+                    match Instant::now().checked_add(stall_limit) {
+                        Some(deadline) => *stall_deadline = Some(deadline),
+                        None => return Err(IpcError::Timeout),
+                    }
+                }
+                filled += n;
+            }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e)
                 if matches!(
                     e.kind(),
                     io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                ) => {}
+                ) =>
+            {
+                if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return Err(IpcError::Timeout);
+                }
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -947,6 +1003,9 @@ mod tests {
 
     #[test]
     fn interruptible_read_retries_timeout_mid_header() {
+        // Poll interval is not the frame deadline: a second chunk inside
+        // APP_LINK_IO_DEADLINE must still assemble. A stall past that
+        // deadline is interruptible_read_stalled_mid_header_is_ipc_006.
         let (mut reader, mut writer) = connected_pair();
         reader
             .set_app_link_read_deadline(Some(Duration::from_millis(50)))
@@ -965,7 +1024,8 @@ mod tests {
         let early = done_rx.recv_timeout(Duration::from_millis(400));
         assert!(
             early.is_err(),
-            "idle poll mid-header must retry, not surface KELD-IPC-006: {early:?}"
+            "poll timeout mid-header must retry within APP_LINK_IO_DEADLINE, \
+             not surface KELD-IPC-006: {early:?}"
         );
 
         writer.write_all(&header[8..]).expect("header rest");
@@ -1006,5 +1066,111 @@ mod tests {
         assert_eq!(header.kind, FrameKind::Ping);
         assert_eq!(header.channel, ChannelId(7));
         assert_eq!(payload, b"hi");
+    }
+
+    #[test]
+    fn interruptible_read_idle_does_not_hit_stall_deadline() {
+        // Stall clock starts after the first byte, not at read entry.
+        let (mut reader, _writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_reader = Arc::clone(&stop);
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame_interruptible_with_stall(
+                &mut reader,
+                stop_for_reader.as_ref(),
+                Duration::from_millis(200),
+            );
+            let _ = done_tx.send(result);
+        });
+        let early = done_rx.recv_timeout(Duration::from_millis(400));
+        assert!(
+            early.is_err(),
+            "idle wait must keep retrying; stall deadline is not an idle timeout: {early:?}"
+        );
+        stop.store(true, Ordering::Release);
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stop flag must unblock the idle reader");
+        assert!(
+            matches!(result, Ok(None)),
+            "stop must return Ok(None), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn interruptible_read_stalled_mid_header_is_ipc_006() {
+        // Live peer writes a partial header then stays silent. Poll
+        // retries must not wait forever: the overall stall deadline after
+        // the first byte is KELD-IPC-006. recv_timeout is the hang kill
+        // switch, not the assertion.
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let stop = AtomicBool::new(false);
+        writer
+            .write_all(&header_with_len(0)[..8])
+            .expect("partial header");
+        writer.flush().expect("flush");
+
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result =
+                read_frame_interruptible_with_stall(&mut reader, &stop, Duration::from_millis(200));
+            let _ = done_tx.send(result);
+        });
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stalled mid-header must hit the overall stall deadline, not hang");
+        let err = result.expect_err("partial header + live silent peer is not a frame");
+        assert!(
+            matches!(err, IpcError::Timeout),
+            "deadline must be KELD-IPC-006, got {err}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-IPC-006"), "{msg}");
+        assert!(
+            !msg.contains("KELD-IPC-001"),
+            "must not classify a live stalled peer as EOF: {msg}"
+        );
+        drop(writer);
+    }
+
+    #[test]
+    fn interruptible_read_stalled_mid_payload_is_ipc_006() {
+        // Complete header, no payload bytes: the stall clock started on
+        // the header and must still expire (not reset to an idle wait).
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let stop = AtomicBool::new(false);
+        writer
+            .write_all(&header_with_len(8))
+            .expect("complete header claiming 8 payload bytes");
+        writer.flush().expect("flush");
+
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result =
+                read_frame_interruptible_with_stall(&mut reader, &stop, Duration::from_millis(200));
+            let _ = done_tx.send(result);
+        });
+
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stalled mid-payload must hit the overall stall deadline, not hang");
+        let err = result.expect_err("header without payload + live peer is not a frame");
+        assert!(
+            matches!(err, IpcError::Timeout),
+            "deadline must be KELD-IPC-006, got {err}"
+        );
+        assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
+        drop(writer);
     }
 }
