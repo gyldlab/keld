@@ -5,7 +5,10 @@ use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title,
@@ -251,8 +254,22 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
     let title = hello_title_for_project(project_root);
     let html = load_dev_window_html(project_root)?;
-    let window_result = run_hello_window_html_with_ready(&title, &html, move || {
-        let _ = window_ready_tx.send(());
+
+    // The Supervisor only captures Bun's stdout/stderr into a buffer
+    // (KEL-70) — nothing prints it while the session stays open for the
+    // window's lifetime, unlike `run_dev_echo`'s one-shot forward after
+    // `wait_for_outcome`. Tail it live on its own thread so `keld dev`'s
+    // Bun output (e.g. the echo/whenReady/quit demo lines) is still visible
+    // in the terminal while the window is open.
+    let output = supervisor.output_handle();
+    let stop_forwarding = AtomicBool::new(false);
+    let window_result = thread::scope(|scope| {
+        scope.spawn(|| forward_captured_output(&output, &stop_forwarding));
+        let result = run_hello_window_html_with_ready(&title, &html, move || {
+            let _ = window_ready_tx.send(());
+        });
+        stop_forwarding.store(true, Ordering::Relaxed);
+        result
     });
 
     // tao's event loop never returns on a normal close (learnings.md), so
@@ -261,6 +278,36 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
     supervisor.shutdown();
     let _ = session.join();
     window_result.map_err(|e| DevError::Runtime(e.to_string()))
+}
+
+/// Polls `output` for newly captured bytes and writes only the new suffix to
+/// the real stdout/stderr, until `stop` is observed — then does one final
+/// flush in case output arrived between the last poll and `stop` being set.
+fn forward_captured_output(output: &keld_runtime::OutputHandle, stop: &AtomicBool) {
+    let mut sent_stdout = 0;
+    let mut sent_stderr = 0;
+    loop {
+        let snapshot = output.snapshot();
+        sent_stdout = write_new_suffix(&mut io::stdout(), &snapshot.stdout, sent_stdout);
+        sent_stderr = write_new_suffix(&mut io::stderr(), &snapshot.stderr, sent_stderr);
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let snapshot = output.snapshot();
+    write_new_suffix(&mut io::stdout(), &snapshot.stdout, sent_stdout);
+    write_new_suffix(&mut io::stderr(), &snapshot.stderr, sent_stderr);
+}
+
+/// Writes `full[already_sent..]` to `w` and returns the new sent length.
+/// `already_sent` is always a previous `full.len()`, so it is always a valid
+/// UTF-8 boundary — `full` only ever grows by appending.
+fn write_new_suffix(w: &mut impl Write, full: &str, already_sent: usize) -> usize {
+    if full.len() > already_sent {
+        let _ = w.write_all(&full.as_bytes()[already_sent..]);
+    }
+    full.len()
 }
 
 #[cfg(test)]

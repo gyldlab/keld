@@ -1891,9 +1891,54 @@ both reverted before committing. Bun's own `node:fs` still works unsandboxed
 (architecture 03 §4.2 OS-sandbox slice is v0.3, not this ticket); this is the **Keld**
 API, not a claim that Bun is jailed.
 
-**Next.** Wire a real `@keld/api` TypeScript surface for `fs.read`/`fs.write` once
-`packages/` exists (currently empty — out of scope until a TS package pipeline lands).
-Keep shipping Linear Phase 2 (window + kipc echo + crate map) on the four uniques. Do not
+**Update (2026-08-18, KEL-72).** First Electron-compat primitive (architecture 04 §3
+layer 2), narrowed at the user's direction to `app.whenReady()`/`app.quit()` only —
+`window-all-closed` deferred (see below). Added `keld_ipc::app` (`APP_CHANNEL`,
+`ChannelId(3)`; `AppRequest::{WhenReady,Quit}`/`AppResponse::{Ready,Quitting}`),
+deliberately **not** routed through `dispatch_privileged` — basic process lifecycle,
+like Node's own `process.exit()`, needs no capability grant. `whenReady()`'s v0 "ready"
+is narrower than Electron's real semantic (which fires before any window exists): it
+fires once the host's window has been *created*, the only real, host-backed milestone
+available without `BrowserWindow` (out of scope this ticket). Threaded a parallel
+`_with_ready` callback through every layer from `keld dev` down to each platform's
+`WebEngine::run_hello*` (`keld-wv`'s three backends, `keld-core::hello`, `keld-cli::dev`)
+so the caller learns the instant `engine.create` returns, before the blocking event
+loop starts; every original function now delegates to the new variant with a no-op
+callback, so no existing caller's behavior changed. `crates/keld-cli/src/dev_session.rs`
+(new) is the real `keld dev` session loop, multiplexing `ECHO_CHANNEL` (KEL-30) and
+`APP_CHANNEL` on one kipc connection — generalized `EchoServer::start` into
+`EchoServer::start_with(ready, serve)` (`crates/keld-cli/src/echo_link.rs`) rather than
+duplicate the socket-bind/accept/cleanup logic for a second session type
+(`AGENTS.md` "fix the shared one, don't duplicate"). `run_dev` no longer sequences
+"echo then exit, then open window": it now binds the dev session, spawns Bun through
+`keld_runtime::Supervisor` (KEL-70), and opens the window on the main thread
+concurrently, signaling `window_ready` once `create` returns; the hello template's
+`main.ts` calls `session.whenReady()` then `session.quit()` after its existing echo
+call. `quit()` ends the kipc session only — it does not close the host window (that
+direction, window→Bun event forwarding, does not exist yet). Verified: a new pinned
+wire-encoding test (`keld_ipc::app::tests`) confirms postcard encodes each fieldless
+variant as a bare 0-based-index varint — `WhenReady`→`[0x00]`, `Quit`→`[0x01]`,
+`Ready`→`[0x00]`, `Quitting`→`[0x01]`, no tag string, no field bytes, a fact this slice
+depends on and `kipc.ts` must match by hand, not guess. `dev_session`'s own tests prove
+`whenReady` genuinely blocks (a second thread + `recv_timeout` shows the reply does not
+arrive before the ready signal, then does after), `quit` ends the session without
+waiting for readiness, echo and app calls share one connection, and an unknown channel
+still fails closed. End-to-end: the hello template's `main.ts`, run for real under Bun
+against the new session server, prints `app ready` then `app quit ok` after its echo
+line (`crates/keld-cli/tests/bun_echo.rs`). Full workspace `cargo fmt --check` / clippy
+`-D warnings` / `cargo nextest run --workspace` (264 tests) and `llms-docs check` are
+green on Windows (this machine); cross-platform (macOS/Linux) re-verification of the
+new `_with_ready` variants in each `keld-wv` backend is still open, and no interactive
+GUI run of the new concurrent `keld dev` flow (real window + real Bun session
+end-to-end) has been done yet — only the isolated unit/integration tests above.
+
+**Next.** `window-all-closed` needs a still-missing bridge forwarding host window-close
+events into the Bun session (today the window opens on its own thread after Bun's
+script has already run to completion — nothing connects window lifecycle to the app
+session at all); track as its own follow-up ticket, not silently folded into this one.
+Wire a real `@keld/api` TypeScript surface for `fs.read`/`fs.write` once `packages/`
+exists (currently empty — out of scope until a TS package pipeline lands). Keep
+shipping Linear Phase 2 (window + kipc echo + crate map) on the four uniques. Do not
 add a fifth unique to look complete.
 
 ---

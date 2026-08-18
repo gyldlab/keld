@@ -128,6 +128,26 @@ impl CapturedOutput {
     }
 }
 
+/// A cheap, `Send + Sync` handle for polling a [`Supervisor`]'s captured
+/// output from a thread that does not own the `Supervisor` itself.
+///
+/// `Supervisor` holds an `mpsc::Receiver`, which is `Send` but not `Sync`,
+/// so `&Supervisor` cannot be shared across a thread boundary (e.g. from a
+/// caller that wants to tail live output on a background thread while the
+/// main thread blocks elsewhere, such as a windowing event loop). This
+/// handle carries only the `Arc<Mutex<CapturedOutput>>` the capture threads
+/// already write into, so it is safe to clone and move anywhere.
+#[derive(Debug, Clone)]
+pub struct OutputHandle(Arc<Mutex<CapturedOutput>>);
+
+impl OutputHandle {
+    /// Snapshot of stdout/stderr captured so far, across every spawn attempt.
+    #[must_use]
+    pub fn snapshot(&self) -> CapturedOutput {
+        lock_or_recover(&self.0).clone()
+    }
+}
+
 /// One observable step in a supervised child's lifecycle. Tests await these
 /// via [`Supervisor::recv_event`] instead of sleep-polling process state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +303,13 @@ impl Supervisor {
     #[must_use]
     pub fn output(&self) -> CapturedOutput {
         lock_or_recover(&self.output).clone()
+    }
+
+    /// A cheap, thread-safe handle for polling captured output from a
+    /// thread that does not own this `Supervisor` (see [`OutputHandle`]).
+    #[must_use]
+    pub fn output_handle(&self) -> OutputHandle {
+        OutputHandle(Arc::clone(&self.output))
     }
 
     /// OS process id of the currently running child, or `None` between
@@ -587,6 +614,31 @@ mod tests {
         let out = sup.output();
         assert!(out.stdout.contains("out-marker"), "{out:?}");
         assert!(out.stderr.contains("err-marker"), "{out:?}");
+    }
+
+    #[test]
+    fn output_handle_reflects_captured_output_from_another_thread() {
+        let sup = Supervisor::start(RestartPolicy::default(), || {
+            shell_command(&joined_steps(&["echo handle-marker", "exit 0"]))
+        })
+        .expect("spawn must succeed");
+
+        // Take the handle before the child even exits, proving it is a live
+        // view (an Arc, not a one-time snapshot) — not just Send-able.
+        let handle = sup.output_handle();
+
+        match sup.wait_for_outcome() {
+            SupervisorOutcome::Stopped => {}
+            SupervisorOutcome::CrashLoop(e) => panic!("must exit 0: {e}"),
+        }
+
+        // Move the handle to a fresh thread — this only compiles if
+        // `OutputHandle: Send`, unlike `&Supervisor` (its `mpsc::Receiver`
+        // field is `!Sync`).
+        let snapshot = thread::spawn(move || handle.snapshot())
+            .join()
+            .expect("thread join");
+        assert!(snapshot.stdout.contains("handle-marker"), "{snapshot:?}");
     }
 
     #[test]
