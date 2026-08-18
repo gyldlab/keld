@@ -228,6 +228,11 @@ where
                     }
                 }
             }
+            FrameKind::Call => {
+                return Err(IpcError::Protocol {
+                    detail: "lifecycle Call on a non-lifecycle channel",
+                });
+            }
             FrameKind::Ping => {
                 let mut guard = writer.lock().map_err(|_| IpcError::Protocol {
                     detail: "lifecycle writer lock poisoned",
@@ -259,7 +264,7 @@ mod tests {
     use super::*;
     use keld_ipc::codec::decode;
     use keld_ipc::link::{AppLinkDeadlines, handshake_client, read_frame, write_frame};
-    use keld_ipc::{IpcError, LifecycleEvent, LifecycleRequest};
+    use keld_ipc::{ECHO_CHANNEL, IpcError, LifecycleEvent, LifecycleRequest};
 
     fn test_token() -> SessionToken {
         SessionToken::from_bytes([0x72; 32])
@@ -377,6 +382,38 @@ mod tests {
 
         host.wait_for_quit()
             .expect("session must end after Quit reply");
+    }
+
+    #[test]
+    fn lifecycle_call_on_non_lifecycle_channel_is_protocol_error() {
+        let (mut client, server) = connected_pair();
+        let host_thread = std::thread::spawn(move || begin_session(server));
+        handshake_client(&mut client, &test_token()).expect("client hello");
+        let mut host = host_thread.join().expect("host thread");
+
+        let payload = encode(&LifecycleRequest::Quit).expect("enc");
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            ECHO_CHANNEL,
+            CorrelationId(1),
+            &payload,
+        )
+        .expect("call on echo channel");
+
+        let err = host
+            .wait_for_quit()
+            .expect_err("a foreign-channel Call must not count as Quit");
+        assert!(
+            matches!(
+                err,
+                IpcError::Protocol { detail }
+                    if detail.contains("lifecycle Call on a non-lifecycle channel")
+            ),
+            "Call on a non-lifecycle channel must not be 'unexpected frame kind': {err}"
+        );
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
     }
 
     #[test]

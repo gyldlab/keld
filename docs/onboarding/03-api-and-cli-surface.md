@@ -1,7 +1,6 @@
 # 03 — API and CLI surface
 
-Keld has no HTTP API and no server. Its "API" is four surfaces. Three of them
-exist fully as code today; the TypeScript packages are a KEL-72 partial:
+Keld has no HTTP API and no server. Its "API" is four surfaces:
 
 | Surface | Status | Where it lives |
 |---|---|---|

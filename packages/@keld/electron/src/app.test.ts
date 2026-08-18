@@ -70,6 +70,29 @@ describe("app.quit vs Electron void", () => {
 
 describe("app.whenReady on link death", () => {
   test(
+    "rejects whenReady and retries when onLinkDead runs before connect() returns",
+    async () => {
+      child = Bun.spawn({
+        cmd: ["bun", "./app_sync_link_dead.ts"],
+        cwd: fixtures,
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+        },
+      });
+      const { stdout, stderr, code } = await waitChildOrKill(child, 8_000);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      expect(stdout).toContain("KEL72_SYNC_DEAD");
+      expect(stdout).toContain("KEL72_SYNC_DEAD_RETRY_READY");
+      expect(stdout).toContain("KEL72_CONNECT_CALLS=2");
+    },
+    10_000,
+  );
+
+  test(
     "rejects pending whenReady and retries connect after HELLO-then-death",
     async () => {
       child = Bun.spawn({

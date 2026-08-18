@@ -34,6 +34,8 @@ let hostReady = false;
 let linkDead: Error | undefined;
 let readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
 let linkPromise: Promise<LifecycleLink> | undefined;
+/** Per-connect identity; compared by `onLinkDead` so a sync death cannot recache. */
+let linkSession: object | undefined;
 
 function onHostReady(): void {
   if (hostReady) return;
@@ -125,31 +127,37 @@ function ensureLink(): Promise<LifecycleLink> {
     );
   }
   linkDead = undefined;
-  let tracked: Promise<LifecycleLink>;
+  // Token must exist before connect(): onLinkDead can run before connect()
+  // returns (HELLO already failed, or a test stub). Assigning `tracked`
+  // afterward would recache a dead session.
+  const session = {};
+  linkSession = session;
   const pending = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
     onLastWindowClosed,
     onLinkDead: (err: Error) => {
-      if (linkPromise !== tracked) return;
+      if (linkSession !== session) return;
       try {
         failReadyWaiters(err);
       } finally {
         // Drop the cached session only before Ready so a later whenReady()
         // retries. After Ready, Electron stays isReady(); keep the (dead)
         // link for quit().
-        if (!hostReady && linkPromise === tracked) {
+        if (!hostReady && linkSession === session) {
           linkPromise = undefined;
         }
       }
     },
   });
-  tracked = pending.catch((err: unknown) => {
-    if (linkPromise === tracked) {
+  const tracked = pending.catch((err: unknown) => {
+    if (linkSession === session) {
       linkPromise = undefined;
     }
     throw err;
   });
-  linkPromise = tracked;
+  if (linkSession === session && !linkDead) {
+    linkPromise = tracked;
+  }
   return tracked;
 }
 
