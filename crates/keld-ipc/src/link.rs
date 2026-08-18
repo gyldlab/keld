@@ -1,6 +1,7 @@
 //! Framed read/write on a byte stream (app-link control plane v0).
 
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::time::Duration;
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
@@ -10,29 +11,73 @@ use crate::{HEADER_LEN, IpcError, MAX_FRAME_LEN};
 /// Connected app-link streams that can bound a blocking read or write.
 ///
 /// Spec: `docs/architecture/02-ipc.md` §7. v0 uses socket timeouts, not an
-/// async runtime.
+/// async runtime. `SO_RCVTIMEO` and `SO_SNDTIMEO` are socket options: they
+/// apply to every cloned fd of the same connection, so a combined setter
+/// cannot clear the reader deadline without also clearing the writer.
 pub trait AppLinkDeadlines {
-    /// Sets read and write timeouts. `None` restores blocking-forever.
+    /// Sets read and write timeouts. `None` restores blocking-forever on both.
     ///
     /// # Errors
     ///
     /// Returns [`io::Error`] if the OS rejects the timeout (should not on
     /// connected `UnixStream` / `TcpStream`).
-    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()>;
+    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_app_link_read_deadline(timeout)?;
+        self.set_app_link_write_deadline(timeout)
+    }
+
+    /// Sets only `SO_RCVTIMEO`. `None` restores blocking-forever reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the OS rejects the timeout.
+    fn set_app_link_read_deadline(&self, timeout: Option<Duration>) -> io::Result<()>;
+
+    /// Sets only `SO_SNDTIMEO`. `None` restores blocking-forever writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the OS rejects the timeout.
+    fn set_app_link_write_deadline(&self, timeout: Option<Duration>) -> io::Result<()>;
+
+    /// Shuts down both directions of the connected stream.
+    ///
+    /// Unblocks a peer or local `read_frame` / `write_frame` waiting on this
+    /// socket (EOF or I/O error). Closing one cloned fd is not enough while
+    /// another clone still holds the connection open.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the OS rejects the shutdown.
+    fn shutdown_app_link(&self) -> io::Result<()>;
 }
 
 #[cfg(unix)]
 impl AppLinkDeadlines for std::os::unix::net::UnixStream {
-    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.set_read_timeout(timeout)?;
+    fn set_app_link_read_deadline(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+
+    fn set_app_link_write_deadline(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.set_write_timeout(timeout)
+    }
+
+    fn shutdown_app_link(&self) -> io::Result<()> {
+        self.shutdown(Shutdown::Both)
     }
 }
 
 impl AppLinkDeadlines for std::net::TcpStream {
-    fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.set_read_timeout(timeout)?;
+    fn set_app_link_read_deadline(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+
+    fn set_app_link_write_deadline(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.set_write_timeout(timeout)
+    }
+
+    fn shutdown_app_link(&self) -> io::Result<()> {
+        self.shutdown(Shutdown::Both)
     }
 }
 
@@ -178,6 +223,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::APP_LINK_IO_DEADLINE;
     use crate::frame::HeaderError;
     use crate::token::SessionToken;
 
@@ -633,5 +679,89 @@ mod tests {
         let err = result.expect_err("peer never sent HELLO");
         assert!(matches!(err, IpcError::Timeout), "got {err}");
         assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
+    }
+
+    #[test]
+    fn read_and_write_deadlines_are_independent() {
+        let (stream, _peer) = connected_pair();
+        stream
+            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+            .expect("both");
+        stream
+            .set_app_link_read_deadline(None)
+            .expect("clear recv only");
+        assert_eq!(
+            stream.read_timeout().expect("query rcv"),
+            None,
+            "clearing SO_RCVTIMEO must not require clearing SO_SNDTIMEO"
+        );
+        assert_eq!(
+            stream.write_timeout().expect("query snd"),
+            Some(APP_LINK_IO_DEADLINE),
+            "writer deadline must survive a reader-only clear"
+        );
+    }
+
+    #[test]
+    fn write_frame_non_reading_peer_is_ipc_006() {
+        let (client, mut server) = connected_pair();
+        server
+            .set_app_link_write_deadline(Some(Duration::from_millis(200)))
+            .expect("send deadline");
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let payload = vec![0u8; 64 * 1024];
+            let result = loop {
+                match write_frame(
+                    &mut server,
+                    FrameKind::Ping,
+                    0,
+                    ChannelId(0),
+                    CorrelationId(1),
+                    &payload,
+                ) {
+                    Ok(()) => {}
+                    Err(err) => break err,
+                }
+            };
+            let _ = done_tx.send(result);
+        });
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("non-reading peer must hit SO_SNDTIMEO, not hang");
+        drop(client);
+        assert!(
+            matches!(result, IpcError::Timeout),
+            "full send buffer must be KELD-IPC-006, got {result}"
+        );
+        assert!(result.to_string().contains("KELD-IPC-006"), "{result}");
+    }
+
+    #[test]
+    fn shutdown_app_link_unblocks_blocked_read() {
+        let (mut reader, writer) = connected_pair();
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame(&mut reader);
+            let _ = done_tx.send(result);
+        });
+        writer
+            .shutdown_app_link()
+            .expect("shutdown both directions");
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("shutdown must unblock read_frame; timeout means the read leaked");
+        let err = result.expect_err("shutdown is not a frame");
+        assert!(
+            matches!(err, IpcError::Io(ref e) if matches!(
+                e.kind(),
+                ErrorKind::UnexpectedEof
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::ConnectionAborted
+            )),
+            "shutdown must surface as I/O close, got {err}"
+        );
+        assert!(err.to_string().contains("KELD-IPC-001"), "{err}");
     }
 }
