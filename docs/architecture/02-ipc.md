@@ -49,6 +49,14 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   second `HELLO`. Correlation id `0` stays reserved for `HELLO`. This is the
   session loop a persistent Bun child needs; it is not a 10k-call latency bench
   (KEL-30 AC3 / KEL-39 remain parked).
+- **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
+  sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
+  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  still uses the 5-second I/O deadline; the persistent reader then clears
+  `SO_RCVTIMEO` so a quiet `whenReady` wait is not `KELD-IPC-006`. This is not a
+  frame-layout change (protocol version stays 2). `@keld/electron` maps these
+  onto `app.whenReady` / `app.quit` / `window-all-closed` — the wire names are
+  host-lifecycle, not Electron-isms.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
   measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
   exists only for `--inspect-ipc` debugging (human dump), never on the hot path.
@@ -140,5 +148,8 @@ compromised keeps the host's threat model uniform).
   guard re-evaluates capabilities (origin-scoped grants).
 - Host never blocks on either peer; every await point has a deadline. v0 app-link
   applies a 5-second `SO_RCVTIMEO`/`SO_SNDTIMEO` on the connected stream; expiry is
-  `KELD-IPC-006`. That is an OS socket timeout, not an async timer. The readiness-driven
-  reader (and credit windows) remain later work.
+  `KELD-IPC-006`. That is an OS socket timeout, not an async timer. **Exception
+  (KEL-72):** after a successful lifecycle `HELLO`, the persistent reader
+  clears `SO_RCVTIMEO` so a quiet `whenReady` wait is not `KELD-IPC-006`
+  (`read_frame` cannot retry after Timeout). The readiness-driven reader (and
+  credit windows) remain later work.

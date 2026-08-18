@@ -35,7 +35,7 @@ Under the hood, Keld replaces Electron's architecture, not its API:
 ```
 crates/   keld-core · keld-wv · keld-ipc · keld-guard · keld-native · keld-runtime
           keld-update · keld-pack · keld-compat · keld-host (bin) · keld-cli (bin)
-packages/ @keld/api · @keld/electron · @keld/web · @keld/cli · @keld/schema · create-keld   (upcoming)
+packages/ @keld/electron (KEL-72) · @keld/api · @keld/web · @keld/cli · @keld/schema · create-keld (others upcoming)
 ```
 
 ## Development

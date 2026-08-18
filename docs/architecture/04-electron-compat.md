@@ -80,6 +80,24 @@ export default defineConfig({
    (e.g., `windowOpenHandler` strictness, menu accelerator edge cases) — the
    Rspack-style "compatibility switches" escape hatch.
 
+**v0 (KEL-72):** `packages/@keld/electron` is a real TypeScript package.
+`app.whenReady()`, `app.quit()`, and `window-all-closed` are backed by
+`keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
+`Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
+crate version, not an Electron release) and `process.type` is `"browser"`
+in this main-process package. `@keld/api` does not exist yet; the shim
+speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
+`keld build` is not live.
+
+Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
+from `bunfig.toml` `[alias]` (it still loads the npm `electron` package
+from the install cache). The working resolver is `tsconfig.json`
+`compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
+`bunfig.toml` is still written with the same mapping so it matches
+architecture §2's named file; it is not the oracle. Other Tier 1 surfaces
+(`BrowserWindow`, `ipcMain`, preload/`contextBridge`, …) are later slices.
+`keld migrate` is not live.
+
 ## 4. Compat tiers & the public scoreboard
 
 - **Tier 1 (v0.2)**: app lifecycle, BrowserWindow core, ipcMain/ipcRenderer/invoke,

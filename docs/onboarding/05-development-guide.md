@@ -23,8 +23,9 @@ this guide and those disagree, they win.
 | `just` | Optional, but assumed by the docs | `cargo install just` (or `brew install just`) | [`justfile`](../../justfile) is the canonical local mirror of CI |
 | Bun | Yes in practice | https://bun.sh | `keld dev` spawns `bun run src/main.ts`; the `bun_echo` integration test **fails** (does not skip) without it |
 
-You do **not** need Xcode-the-IDE, Node, or any JS package manager: `packages/` is empty
-and the template has zero dependencies, so there is nothing to `bun install`.
+You do **not** need Xcode-the-IDE or Node. `@keld/electron` is a zero-dependency
+TS package (`bun` runs it directly); `keld create`'s hello template still has
+nothing to `bun install`.
 
 Versions this guide was written against (macOS, Darwin 25.5.0, aarch64):
 

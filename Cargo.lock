@@ -1281,6 +1281,7 @@ name = "keld-compat"
 version = "0.0.1"
 dependencies = [
  "keld-core",
+ "keld-ipc",
 ]
 
 [[package]]

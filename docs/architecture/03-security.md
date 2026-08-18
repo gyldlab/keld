@@ -29,9 +29,11 @@ unprivileged demo channel (KEL-30), deliberately not routed through this.
 guard-before-handler entry point for a privileged `Call`: it runs
 `evaluate` and only invokes the handler closure on `Allow`, verified
 end-to-end over a real kipc session (real socket, real `HELLO` handshake,
-real filesystem side effect gated on the decision). No production
-capability calls it yet — host `fs.read`/`fs.write` (KEL-71) is the first
-one that will, and MUST use this path rather than reimplement the check.
+real filesystem side effect gated on the decision). Host `fs.read` /
+`fs.write` (KEL-71) is the first production capability on that path.
+Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
+`LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
+OS-authority handlers, and stay ungated like echo.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 

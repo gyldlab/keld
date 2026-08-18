@@ -269,11 +269,7 @@ sequenceDiagram
 
 The honest reading of that diagram:
 
-- **The Bun child is not a kipc peer.** `@keld/api` does not exist (`packages/` is an empty
-  directory), so there is no JavaScript implementation of the wire protocol. The template's
-  `main.ts` shells out to a *Rust* subprocess that speaks kipc on its behalf
-  (`crates/keld-cli/templates/hello/src/main.ts:15-19`). Every JS-side arrow in §4a is
-  currently a `Bun.spawn`.
+- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template speaks kipc from `src/kipc.ts`, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
 - **The window and the IPC session are sequential, not concurrent.** `keld dev` reaps
   the Bun echo child, then opens a window with the project's `renderer` file as inline
   HTML (`load_dev_window_html` → `run_hello_window_html`). The webview still has no
@@ -632,8 +628,8 @@ The summary table. "Live" means it works and a test proves it.
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash-loop breaker) | **Implemented (KEL-70)** | `keld_runtime::Supervisor`; `keld dev` spawns through it |
 | `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | `fs` is implemented (KEL-71: `fs.read`/`fs.write`, guard-checked); the other 14 are still names only |
-| Electron compat (`@keld/electron`, tiers, conformance suite) | **Specified, not implemented** | A `Tier` enum. `packages/` is empty |
-| `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | `packages/` is empty |
+| Electron compat (`@keld/electron`, tiers, conformance suite) | **Partial (KEL-72)** | `packages/@keld/electron`: `app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`. Other Tier 1 APIs and `keld migrate` are later. Bun 1.3.14 remaps `electron` via `tsconfig.json` paths, not bunfig `[alias]`. |
+| `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | Only `@keld/electron` exists under `packages/` |
 | `keld build` / `migrate` / `gen` / `ext` | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |
 | `keld mcp serve`, `keld doctor --json`, error registry | **Live** | `crates/keld-cli/src/mcp/`, `doctor --json`, `docs/engineering/keld-error-codes.md` |
 | Packaging, signing, delta updates | **Specified, not implemented** | Two enums |

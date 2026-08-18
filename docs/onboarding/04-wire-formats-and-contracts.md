@@ -200,8 +200,10 @@ Currently allocated:
 
 | Channel | Value | Purpose | Defined at |
 |---|---:|---|---|
-| *(control)* | `0` | Handshake frames | Implicit — `link.rs:63` passes `ChannelId(0)`. **There is no named constant for this**; it is a convention waiting to be made explicit |
-| `ECHO_CHANNEL` | `1` | The echo vertical slice | `crates/keld-ipc/src/echo.rs:10` |
+| *(control)* | `0` | Handshake frames | Implicit — `link.rs` passes `ChannelId(0)`. **There is no named constant for this**; it is a convention waiting to be made explicit |
+| `ECHO_CHANNEL` | `1` | The echo vertical slice | `crates/keld-ipc/src/echo.rs` |
+| `FS_CHANNEL` | `2` | Host `fs.read` / `fs.write` | `crates/keld-native/src/fs.rs` |
+| `LIFECYCLE_CHANNEL` | `3` | Host ready / last-window-closed / quit | `crates/keld-ipc/src/lifecycle.rs` |
 
 The doc comment on `ECHO_CHANNEL` records its own temporariness: "resolved at handshake in later
 versions". Today it is a hardcoded constant on both sides.
