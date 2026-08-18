@@ -73,8 +73,7 @@ fn bind_unix_echo() -> io::Result<(PathBuf, PathBuf, std::os::unix::net::UnixLis
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_nanos())
     ));
     fs::DirBuilder::new().mode(0o700).create(&session_dir)?;
     if let Err(err) = fs::set_permissions(&session_dir, fs::Permissions::from_mode(0o700)) {
@@ -275,8 +274,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_nanos())
         );
         #[cfg(windows)]
         let endpoint = "1".to_owned(); // port 1: connection refused on loopback
