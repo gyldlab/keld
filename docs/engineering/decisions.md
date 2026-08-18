@@ -670,6 +670,49 @@ value fails, remove the external pilot without changing Keld.
 
 ---
 
+## 14. `keld-update` v0 manifest/feed wire contract (KEL-53 trigger)
+
+**Chose (2026-08-18).** KEL-53 ("updater: signed manifest and delta patch vertical
+slice") names its own trigger: start only once the update artifact/feed contract in
+architecture 06 §4 is concrete enough for executable acceptance tests. §4 was prose —
+"signed manifests", "ed25519", "BLAKE3 post-conditions" — with no byte-level shape, so
+the ticket was not actually unblocked. Added §4a: a static feed layout
+(`<channel>/updates.json` + a **detached** `.sig` file, not a signature field embedded
+in the JSON — sidesteps JSON canonicalization/malleability entirely, since the
+signature covers the manifest's literal response bytes), a v0 `updates.json` schema
+(`schema`, `channel`, `app.id`, `releases[].{version, full, deltas[]}`, each artifact
+carrying its own `size`/`blake3`), a six-step client verification order, and the
+atomic-swap/N-1-rollback directory scheme. Two facts worth holding onto: the ed25519
+public key **must** be compiled into the host binary, never fetched from the feed
+(otherwise a compromised feed can serve a fake "trusted" key alongside a fake
+manifest); and a delta's own `blake3` only proves the *patch file* downloaded intact —
+after applying it, the *reconstructed* full package must separately be checked against
+the release's `full.blake3`, or a corrupted-but-correctly-hashed patch can still
+silently reconstruct the wrong bytes against this host's actual base.
+
+**Why.** `AGENTS.md` §Working rules forbids landing an RFC that "restates
+`docs/architecture/` without binary acceptance tests" — the fix for prose that can't be
+tested is a concrete schema, not a longer paragraph. This is also explicitly a wire
+protocol change (root `AGENTS.md` review gate #5), so it is docs-only and flagged for
+human sign-off rather than paired with code.
+
+**Why not.** Did not pick bsdiff vs HDiffPatch (KEL-53 AC2 is an explicit benchmark,
+not a docs-time guess), did not add `ed25519-dalek`/`zstd`/a delta crate (KEL-53 AC3,
+its own dependency-review gate), and did not spec a TUF-style rotating root — 03
+§4 point 4 names one as a future target; v0 here is a single pinned key, stated as a
+limitation rather than silently narrowed. All three stay KEL-53's decisions, not this
+change's.
+
+**Next.** KEL-53 can now write its failing-first fixtures (valid/tampered manifest,
+corrupted patch, full-package fallback, N-1 rollback) against a concrete shape instead
+of inventing one mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here;
+still zero verification code — nothing in this change reads or checks the contract it
+describes.
+
+**Evidence.** `docs/architecture/06-runtime-and-tooling.md` §4a; `crates/keld-update/src/lib.rs`.
+
+---
+
 ## Related tracked docs
 
 | Need | Document |
