@@ -736,10 +736,37 @@ verifier*, not immunity to parser-level ambiguity) — narrowed the wording and 
 duplicate-key rejection. None of this reopens KEL-53 AC2/AC3 (algorithm, dependencies)
 or the TUF-root deferral — all three exclusions from "Why not" stand unchanged.
 
+**Update (2026-08-18, second review pass).** A second, deeper pass over the now-larger
+§4a found seven more gaps — including a real bug in the first pass's own fix. Fixed
+directly: (1) nothing bound the manifest to a *platform/architecture* the way `app.id`/
+`channel` bound it to an app/channel — added `<target>` to the feed path and a
+redundant `target` field, same defense-in-depth shape as the app/channel check; (2)
+release/delta selection wasn't fully deterministic — duplicate `version`/`fromVersion`
+now invalidate the whole manifest, and among eligible releases the client takes the
+single highest version, not "any newer"; (3) `contentBlake3` hashed "decompressed
+bytes" with no defined package format, so two clients could verify identical bytes and
+extract different trees — defined v0's canonical content stream as a single POSIX tar,
+sorted entries, regular files only, uniform modes, named as a v0 limitation for
+symlink-heavy formats like macOS `.app` bundles; (4) `size` was carried in the schema
+but never checked — made it normative: bounded, streaming downloads that reject over-
+and under-sized artifacts before decompression; (5) the full-fallback step only
+triggered on a content-hash failure, missing transport-hash, decompression, and
+patch-application failures on the delta path — broadened to any delta-path failure;
+(6) the `.complete` marker's own fsync was unspecified, so the crash-safety fix from
+the first pass had a hole in itself — added explicit fsync-the-marker-then-fsync-the-
+directory-again ordering; (7) the real bug: `current` and the version floor (added in
+the first pass specifically to stop replay/downgrade attacks) are two separate durable
+files with no shared transaction, so a crash between publishing one and the other could
+leave `current` ahead of the floor — fixed by making publish order load-bearing (floor
+always advances *before* `current` is republished) and adding a startup-recovery case
+that completes an interrupted publish from already-verified local state, never from
+anything the crash left ambiguous.
+
 **Next.** KEL-53 can now write its failing-first fixtures (valid/tampered manifest,
 corrupted patch, full-package fallback, N-1 rollback, identity mismatch, replay/
-downgrade, crash-interrupted install) against a concrete shape instead of inventing one
-mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here; still zero
+downgrade, crash-interrupted install, wrong-target manifest, duplicate release/delta
+entries, oversized/undersized artifact) against a concrete shape instead of inventing
+one mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here; still zero
 verification code — nothing in this change reads or checks the contract it describes.
 
 **Evidence.** `docs/architecture/06-runtime-and-tooling.md` §4a; `crates/keld-update/src/lib.rs`.
