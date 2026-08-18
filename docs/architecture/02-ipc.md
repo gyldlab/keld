@@ -52,11 +52,14 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
   `Call` `Quit` and the host replies, then the serve loop returns. Handshake
-  still uses the 5-second I/O deadline; the persistent reader then clears
-  `SO_RCVTIMEO` so a quiet `whenReady` wait is not `KELD-IPC-006`. This is not a
-  frame-layout change (protocol version stays 2). `@keld/electron` maps these
-  onto `app.whenReady` / `app.quit` / `window-all-closed` — the wire names are
-  host-lifecycle, not Electron-isms.
+  still uses the 5-second I/O deadline. The persistent reader then uses a short
+  `SO_RCVTIMEO` poll and retries idle timeouts (`read_frame_interruptible`) so a
+  quiet `whenReady` wait is not `KELD-IPC-006` and so Drop can join the reader
+  — Win32 `TcpStream::shutdown` on a cloned handle does not wake a blocking
+  local `read` (rust-lang/rust#121594). Writer `SO_SNDTIMEO` stays 5 seconds.
+  This is not a frame-layout change (protocol version stays 2). `@keld/electron`
+  maps these onto `app.whenReady` / `app.quit` / `window-all-closed` — the wire
+  names are host-lifecycle, not Electron-isms.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
   measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
   exists only for `--inspect-ipc` debugging (human dump), never on the hot path.
@@ -150,6 +153,8 @@ compromised keeps the host's threat model uniform).
   applies a 5-second `SO_RCVTIMEO`/`SO_SNDTIMEO` on the connected stream; expiry is
   `KELD-IPC-006`. That is an OS socket timeout, not an async timer. **Exception
   (KEL-72):** after a successful lifecycle `HELLO`, the persistent reader
-  clears `SO_RCVTIMEO` so a quiet `whenReady` wait is not `KELD-IPC-006`
-  (`read_frame` cannot retry after Timeout). The readiness-driven reader (and
-  credit windows) remain later work.
+  replaces the handshake `SO_RCVTIMEO` with a short poll and retries idle
+  timeouts so a quiet `whenReady` wait is not `KELD-IPC-006` and so Drop can
+  join (Win32 clone-shutdown does not wake a local blocking `read`;
+  rust-lang/rust#121594). Writer `SO_SNDTIMEO` stays 5 seconds. The
+  readiness-driven reader (and credit windows) remain later work.

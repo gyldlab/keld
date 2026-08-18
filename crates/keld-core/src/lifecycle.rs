@@ -6,32 +6,46 @@
 //! `@keld/electron` (`crates/keld-compat/AGENTS.md`: no Electron-isms here).
 
 use std::io::{ErrorKind, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{CorrelationId, FrameKind};
-use keld_ipc::link::{AppLinkDeadlines, handshake_server, read_frame, write_frame};
+use keld_ipc::link::{AppLinkDeadlines, handshake_server, read_frame_interruptible, write_frame};
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest,
     LifecycleResponse, SessionToken,
 };
 
+/// Bounded `SO_RCVTIMEO` on the lifecycle reader after `HELLO`.
+///
+/// Handshake uses [`APP_LINK_IO_DEADLINE`]. The persistent reader cannot
+/// block forever: Win32 `TcpStream::shutdown` on a cloned handle does not
+/// wake a blocking `read`
+/// ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594)).
+/// Idle polls are retried by `read_frame_interruptible` and are not
+/// `KELD-IPC-006`. Must stay well under the Drop-join kill switch (2s).
+const LIFECYCLE_READER_POLL: Duration = Duration::from_millis(200);
+
 /// Host side of one app-link lifecycle session.
 ///
 /// After [`Self::handshake`], the caller sends `Ready` / `LastWindowClosed`
 /// explicitly — they are never implied by handshake. A 5-second I/O deadline
-/// applies to `HELLO` and to subsequent writes; the persistent reader then
-/// blocks until `Quit` or EOF so a quiet `whenReady` wait is not
-/// `KELD-IPC-006`. Drop shuts down both directions of the app-link and joins
-/// the reader so an idle peer cannot leak a blocked `read_frame`.
+/// applies to `HELLO` and to subsequent writes. The persistent reader then
+/// polls with a short `SO_RCVTIMEO` until `Quit`, EOF, or Drop so a quiet
+/// `whenReady` wait is not `KELD-IPC-006` and so Drop can join on Windows.
+/// Drop sets a stop flag, shuts down both directions of the app-link (peer
+/// FIN), and joins the reader.
 pub struct LifecycleSession<W: AppLinkDeadlines> {
     writer: Arc<Mutex<W>>,
     windows: u32,
     ready: bool,
     quit_rx: Receiver<Result<(), IpcError>>,
     reader: Option<JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl<W: AppLinkDeadlines> core::fmt::Debug for LifecycleSession<W> {
@@ -60,16 +74,19 @@ impl<W: Write + Send + AppLinkDeadlines + 'static> LifecycleSession<W> {
         handshake_server(&mut reader, token)?;
         // Persistent session: a quiet child waiting on Ready is expected.
         // `read_frame` cannot retry after Timeout, so the handshake recv
-        // deadline must not remain on the reader. `SO_RCVTIMEO`/`SO_SNDTIMEO`
-        // are socket options (shared across `try_clone` fds): clearing both
-        // would drop the send deadline too. Spec exception is reader-only.
-        reader.set_app_link_read_deadline(None)?;
+        // deadline must not remain on the reader. Replacing it with a short
+        // poll lets Drop join on Windows (clone-shutdown does not wake a
+        // local `read`; rust-lang/rust#121594). `SO_SNDTIMEO` stays the
+        // handshake send deadline — spec exception is reader-only.
+        reader.set_app_link_read_deadline(Some(LIFECYCLE_READER_POLL))?;
 
         let writer = Arc::new(Mutex::new(writer));
         let writer_for_reader = Arc::clone(&writer);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_reader = Arc::clone(&stop);
         let (quit_tx, quit_rx) = mpsc::channel();
         let reader_handle = thread::spawn(move || {
-            let outcome = read_until_quit(reader, &writer_for_reader);
+            let outcome = read_until_quit(reader, &writer_for_reader, stop_for_reader.as_ref());
             let _ = quit_tx.send(outcome);
         });
 
@@ -79,6 +96,7 @@ impl<W: Write + Send + AppLinkDeadlines + 'static> LifecycleSession<W> {
             ready: false,
             quit_rx,
             reader: Some(reader_handle),
+            stop,
         })
     }
 
@@ -157,6 +175,7 @@ impl<W: Write + Send + AppLinkDeadlines + 'static> LifecycleSession<W> {
 
 impl<W: AppLinkDeadlines> Drop for LifecycleSession<W> {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
         {
             let guard = match self.writer.lock() {
                 Ok(guard) => guard,
@@ -170,14 +189,19 @@ impl<W: AppLinkDeadlines> Drop for LifecycleSession<W> {
     }
 }
 
-fn read_until_quit<R, W>(mut reader: R, writer: &Mutex<W>) -> Result<(), IpcError>
+fn read_until_quit<R, W>(
+    mut reader: R,
+    writer: &Mutex<W>,
+    stop: &AtomicBool,
+) -> Result<(), IpcError>
 where
     R: Read,
     W: Write,
 {
     loop {
-        let (header, payload) = match read_frame(&mut reader) {
-            Ok(frame) => frame,
+        let (header, payload) = match read_frame_interruptible(&mut reader, stop) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return Ok(()),
             Err(IpcError::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
         };
@@ -227,11 +251,12 @@ where
 #[cfg(test)]
 mod tests {
     use std::io::ErrorKind;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use super::*;
     use keld_ipc::codec::decode;
-    use keld_ipc::link::{handshake_client, read_frame, write_frame};
+    use keld_ipc::link::{AppLinkDeadlines, handshake_client, read_frame, write_frame};
     use keld_ipc::{IpcError, LifecycleEvent, LifecycleRequest};
 
     fn test_token() -> SessionToken {
@@ -353,26 +378,86 @@ mod tests {
     }
 
     #[test]
-    fn hello_clears_reader_deadline_only() {
+    fn hello_reader_poll_keeps_writer_deadline() {
         let (mut client, server) = connected_pair();
-        let inspect = server
-            .try_clone()
-            .expect("inspect clone shares socket timeouts");
         let host_thread = std::thread::spawn(move || begin_session(server));
         handshake_client(&mut client, &test_token()).expect("client hello");
         let host = host_thread.join().expect("host thread");
 
-        assert_eq!(
-            inspect.read_timeout().expect("query rcv"),
-            None,
-            "persistent reader must clear SO_RCVTIMEO"
+        let reported = host
+            .writer
+            .lock()
+            .expect("lock")
+            .app_link_write_deadline()
+            .expect("query the writer handle, not a clone");
+        if let Some(deadline) = reported {
+            assert_eq!(
+                deadline, APP_LINK_IO_DEADLINE,
+                "HELLO cleanup must not clear SO_SNDTIMEO (spec exception is reader-only)"
+            );
+            drop(host);
+            return;
+        }
+
+        // Windows `write_timeout()` may return None even when SO_SNDTIMEO is
+        // set (std: some platforms do not provide access to the current
+        // timeout). Observe the option: a non-reading peer must still hit
+        // the send deadline. Hang = the deadline was actually cleared.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let payload = vec![0u8; 64 * 1024];
+            let err = loop {
+                let mut guard = host.writer.lock().expect("lock");
+                match write_frame(
+                    &mut *guard,
+                    FrameKind::Ping,
+                    0,
+                    LIFECYCLE_CHANNEL,
+                    CorrelationId(0),
+                    &payload,
+                ) {
+                    Ok(()) => {}
+                    Err(err) => break err,
+                }
+            };
+            let _ = done_tx.send(err);
+        });
+        let err = done_rx
+            .recv_timeout(APP_LINK_IO_DEADLINE + Duration::from_secs(2))
+            .expect(
+                "writer SO_SNDTIMEO must still fire after HELLO reader-poll setup; \
+                 hang means the send deadline was cleared",
+            );
+        assert!(
+            matches!(err, IpcError::Timeout),
+            "HELLO cleanup is reader-only, got {err}"
         );
-        assert_eq!(
-            inspect.write_timeout().expect("query snd"),
-            Some(APP_LINK_IO_DEADLINE),
-            "HELLO cleanup must not clear SO_SNDTIMEO (spec exception is reader-only)"
+        assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
+    }
+
+    #[test]
+    fn stop_flag_joins_blocked_reader_without_clone_shutdown() {
+        // rust-lang/rust#121594: TcpStream::shutdown on a cloned Win32
+        // handle does not wake a blocking read on another thread. Drop
+        // still calls shutdown (peer FIN), but join must not depend on it.
+        let (mut client, server) = connected_pair();
+        let host_thread = std::thread::spawn(move || begin_session(server));
+        handshake_client(&mut client, &test_token()).expect("client hello");
+        let mut host = host_thread.join().expect("host thread");
+
+        host.stop.store(true, Ordering::Release);
+        let handle = host.reader.take().expect("reader thread");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = handle.join();
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(Duration::from_secs(2)).expect(
+            "lifecycle reader must honor the stop flag on a bounded SO_RCVTIMEO poll; \
+             timeout means join still depends on clone-shutdown",
         );
         drop(host);
+        drop(client);
     }
 
     #[test]
@@ -388,16 +473,16 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(200)))
             .expect("kill switch");
 
-        // Peer stays connected and silent (no Quit, no close). Detaching the
-        // JoinHandle without shutdown leaves read_frame blocked forever.
+        // Peer stays connected and silent (no Quit, no close). Win32
+        // clone-shutdown does not wake the local reader; stop + poll must.
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             drop(host);
             let _ = done_tx.send(());
         });
         done_rx.recv_timeout(Duration::from_secs(2)).expect(
-            "Drop must shutdown both directions and join the reader; \
-             timeout means read_frame leaked on an idle peer",
+            "Drop must set the stop flag, shutdown (peer FIN), and join the reader; \
+             timeout means the local read leaked on an idle peer",
         );
 
         let eof = read_frame(&mut client);

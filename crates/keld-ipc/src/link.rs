@@ -2,6 +2,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
@@ -11,9 +12,11 @@ use crate::{HEADER_LEN, IpcError, MAX_FRAME_LEN};
 /// Connected app-link streams that can bound a blocking read or write.
 ///
 /// Spec: `docs/architecture/02-ipc.md` §7. v0 uses socket timeouts, not an
-/// async runtime. `SO_RCVTIMEO` and `SO_SNDTIMEO` are socket options: they
-/// apply to every cloned fd of the same connection, so a combined setter
-/// cannot clear the reader deadline without also clearing the writer.
+/// async runtime. On Unix, `SO_RCVTIMEO` / `SO_SNDTIMEO` are socket-wide and
+/// shared across `try_clone` fds, so a combined setter cannot clear the
+/// reader deadline without also clearing the writer. On Windows those
+/// options are per-handle, and `write_timeout()` may also return `None`
+/// even when `SO_SNDTIMEO` is set — a getter on a clone is not an oracle.
 pub trait AppLinkDeadlines {
     /// Sets read and write timeouts. `None` restores blocking-forever on both.
     ///
@@ -40,11 +43,39 @@ pub trait AppLinkDeadlines {
     /// Returns [`io::Error`] if the OS rejects the timeout.
     fn set_app_link_write_deadline(&self, timeout: Option<Duration>) -> io::Result<()>;
 
+    /// Returns the current read timeout (`SO_RCVTIMEO`).
+    ///
+    /// `None` means blocking-forever, or that this platform does not
+    /// round-trip the option through the getter (std: some platforms do
+    /// not provide access to the current timeout).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the OS rejects the query.
+    fn app_link_read_deadline(&self) -> io::Result<Option<Duration>>;
+
+    /// Returns the current write timeout (`SO_SNDTIMEO`).
+    ///
+    /// See [`Self::app_link_read_deadline`]: a `None` getter is not proof
+    /// the send deadline was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if the OS rejects the query.
+    fn app_link_write_deadline(&self) -> io::Result<Option<Duration>>;
+
     /// Shuts down both directions of the connected stream.
     ///
-    /// Unblocks a peer or local `read_frame` / `write_frame` waiting on this
-    /// socket (EOF or I/O error). Closing one cloned fd is not enough while
-    /// another clone still holds the connection open.
+    /// Unblocks a **peer** `read_frame` / `write_frame` (FIN / I/O error).
+    /// Closing one cloned fd is not enough while another clone still holds
+    /// the connection open.
+    ///
+    /// On Unix, shutdown of a cloned fd also unblocks a local `read` on
+    /// another clone of the same socket. On Windows, `TcpStream::shutdown`
+    /// does **not** wake a blocking `read` already in progress on another
+    /// thread ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594))
+    /// — clone-shutdown is not peer-FIN. Local teardown must use
+    /// [`read_frame_interruptible`] with a bounded `SO_RCVTIMEO`.
     ///
     /// # Errors
     ///
@@ -62,6 +93,14 @@ impl AppLinkDeadlines for std::os::unix::net::UnixStream {
         self.set_write_timeout(timeout)
     }
 
+    fn app_link_read_deadline(&self) -> io::Result<Option<Duration>> {
+        self.read_timeout()
+    }
+
+    fn app_link_write_deadline(&self) -> io::Result<Option<Duration>> {
+        self.write_timeout()
+    }
+
     fn shutdown_app_link(&self) -> io::Result<()> {
         self.shutdown(Shutdown::Both)
     }
@@ -74,6 +113,14 @@ impl AppLinkDeadlines for std::net::TcpStream {
 
     fn set_app_link_write_deadline(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.set_write_timeout(timeout)
+    }
+
+    fn app_link_read_deadline(&self) -> io::Result<Option<Duration>> {
+        self.read_timeout()
+    }
+
+    fn app_link_write_deadline(&self) -> io::Result<Option<Duration>> {
+        self.write_timeout()
     }
 
     fn shutdown_app_link(&self) -> io::Result<()> {
@@ -112,6 +159,79 @@ pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), Ipc
         stream.read_exact(&mut payload)?;
     }
     Ok((header, payload))
+}
+
+/// Reads one kipc frame, retrying idle `SO_RCVTIMEO` until `stop` is set.
+///
+/// Unlike [`read_frame`], an idle timeout (`WouldBlock` / `TimedOut` with
+/// the read deadline) is **not** [`IpcError::Timeout`]: the wait continues
+/// so a quiet persistent reader is not `KELD-IPC-006`. Mid-frame timeouts
+/// also retry, so a poll interval cannot desynchronize the stream.
+///
+/// Returns `Ok(None)` when `stop` is observed. The stream is then only
+/// safe to close — partial header/payload bytes may already have been
+/// consumed. EOF is still [`IpcError::Io`] with
+/// [`io::ErrorKind::UnexpectedEof`].
+///
+/// The caller MUST set a bounded [`AppLinkDeadlines::set_app_link_read_deadline`]
+/// on `stream`. Without it, `stop` is only observed before the first
+/// blocking `read` (or after peer-FIN). Win32 `TcpStream::shutdown` on a
+/// cloned handle does not wake that `read`
+/// ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594)).
+///
+/// # Errors
+///
+/// Returns [`IpcError`] on I/O failure, bad header, or oversized payload.
+pub fn read_frame_interruptible<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    let mut header_bytes = [0u8; HEADER_LEN];
+    if !read_exact_interruptible(stream, &mut header_bytes, stop)? {
+        return Ok(None);
+    }
+    let header = FrameHeader::decode(&header_bytes)?;
+    let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
+    ensure_payload_len(len)?;
+    let mut payload = vec![0u8; len];
+    if !payload.is_empty() && !read_exact_interruptible(stream, &mut payload, stop)? {
+        return Ok(None);
+    }
+    Ok(Some((header, payload)))
+}
+
+/// Fills `buf` from `stream`, retrying idle timeouts until `stop`.
+///
+/// Returns `Ok(true)` when `buf` is full, `Ok(false)` when `stop` is set.
+fn read_exact_interruptible<S: Read>(
+    stream: &mut S,
+    buf: &mut [u8],
+    stop: &AtomicBool,
+) -> Result<bool, IpcError> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        if stop.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                )
+                .into());
+            }
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(true)
 }
 
 /// Writes one kipc frame to `stream`.
@@ -218,12 +338,13 @@ pub fn handshake_server<S: Read + Write>(
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, ErrorKind, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
     use super::*;
-    use crate::APP_LINK_IO_DEADLINE;
     use crate::frame::HeaderError;
     use crate::token::SessionToken;
 
@@ -683,23 +804,52 @@ mod tests {
 
     #[test]
     fn read_and_write_deadlines_are_independent() {
-        let (stream, _peer) = connected_pair();
-        stream
-            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+        // Getter round-trip is not the Windows oracle: `write_timeout()` on
+        // Win32 may return `None` even when `SO_SNDTIMEO` is set (std:
+        // some platforms do not provide access to the current timeout).
+        // Prove the send deadline still fires after a reader-only clear.
+        let (client, mut server) = connected_pair();
+        server
+            .set_app_link_deadlines(Some(Duration::from_millis(200)))
             .expect("both");
-        stream
+        server
             .set_app_link_read_deadline(None)
             .expect("clear recv only");
-        assert_eq!(
-            stream.read_timeout().expect("query rcv"),
-            None,
-            "clearing SO_RCVTIMEO must not require clearing SO_SNDTIMEO"
+        if let Some(reported) = server.app_link_write_deadline().expect("query snd") {
+            assert_eq!(
+                reported,
+                Duration::from_millis(200),
+                "when the getter round-trips, it must still show the send deadline"
+            );
+        }
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let payload = vec![0u8; 64 * 1024];
+            let result = loop {
+                match write_frame(
+                    &mut server,
+                    FrameKind::Ping,
+                    0,
+                    ChannelId(0),
+                    CorrelationId(1),
+                    &payload,
+                ) {
+                    Ok(()) => {}
+                    Err(err) => break err,
+                }
+            };
+            let _ = done_tx.send(result);
+        });
+        let result = done_rx.recv_timeout(Duration::from_secs(2)).expect(
+            "clearing SO_RCVTIMEO must leave SO_SNDTIMEO in effect; \
+             hang means the send deadline was cleared",
         );
-        assert_eq!(
-            stream.write_timeout().expect("query snd"),
-            Some(APP_LINK_IO_DEADLINE),
-            "writer deadline must survive a reader-only clear"
+        drop(client);
+        assert!(
+            matches!(result, IpcError::Timeout),
+            "reader-only clear must not disable the send deadline, got {result}"
         );
+        assert!(result.to_string().contains("KELD-IPC-006"), "{result}");
     }
 
     #[test]
@@ -763,5 +913,98 @@ mod tests {
             "shutdown must surface as I/O close, got {err}"
         );
         assert!(err.to_string().contains("KELD-IPC-001"), "{err}");
+    }
+
+    #[test]
+    fn interruptible_read_stops_on_flag_without_peer_close() {
+        // Win32 clone-shutdown does not wake a local blocking read
+        // (rust-lang/rust#121594). The stop flag + bounded SO_RCVTIMEO is
+        // the local wakeup; this must not depend on the peer sending FIN.
+        let (mut reader, _writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_reader = Arc::clone(&stop);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = started_tx.send(());
+            let result = read_frame_interruptible(&mut reader, stop_for_reader.as_ref());
+            let _ = done_tx.send(result);
+        });
+        started_rx.recv().expect("reader entered");
+        stop.store(true, Ordering::Release);
+        let result = done_rx.recv_timeout(Duration::from_secs(2)).expect(
+            "stop flag must unblock the reader within the poll interval; \
+             timeout means the read leaked (clone-shutdown is not this test)",
+        );
+        assert!(
+            matches!(result, Ok(None)),
+            "stop must return Ok(None), not a frame or KELD-IPC-006: {result:?}"
+        );
+    }
+
+    #[test]
+    fn interruptible_read_retries_timeout_mid_header() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let stop = AtomicBool::new(false);
+        let header = header_with_len(0);
+        writer.write_all(&header[..8]).expect("partial header");
+        writer.flush().expect("flush");
+
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame_interruptible(&mut reader, &stop);
+            let _ = done_tx.send(result);
+        });
+
+        let early = done_rx.recv_timeout(Duration::from_millis(400));
+        assert!(
+            early.is_err(),
+            "idle poll mid-header must retry, not surface KELD-IPC-006: {early:?}"
+        );
+
+        writer.write_all(&header[8..]).expect("header rest");
+        writer.flush().expect("flush rest");
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("completed header after poll retry");
+        let (got, payload) = result.expect("I/O").expect("stop was not set");
+        assert_eq!(got.kind, FrameKind::Ping);
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn interruptible_read_delivers_a_frame_when_peer_writes() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("poll");
+        let stop = AtomicBool::new(false);
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = read_frame_interruptible(&mut reader, &stop);
+            let _ = done_tx.send(result);
+        });
+        write_frame(
+            &mut writer,
+            FrameKind::Ping,
+            0,
+            ChannelId(7),
+            CorrelationId(9),
+            b"hi",
+        )
+        .expect("frame");
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("frame must arrive");
+        let (header, payload) = result.expect("I/O").expect("not stopped");
+        assert_eq!(header.kind, FrameKind::Ping);
+        assert_eq!(header.channel, ChannelId(7));
+        assert_eq!(payload, b"hi");
     }
 }
