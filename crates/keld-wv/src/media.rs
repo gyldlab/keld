@@ -111,8 +111,8 @@ pub fn media_permission_decision(
 /// Whether `kind` is allowed by `manifest` for `principal`.
 ///
 /// Unknown kinds fail closed without consulting the manifest. Camera and
-/// microphone require a minted webview principal; see
-/// [`media_permission_decision`].
+/// microphone require a minted webview principal; omitted identity and
+/// [`Principal::AppProcess`] fail closed as `KELD-GUARD007`.
 #[must_use]
 pub fn media_permission_allowed(
     manifest: &PermissionsManifest,
@@ -458,7 +458,7 @@ mod webview2_tests {
     }
 
     /// The end-to-end deny decision the COM handler applies: empty manifest
-    /// denies every kind; an AppProcess camera grant must not allow a webview.
+    /// denies every kind; an `AppProcess` camera grant must not allow a webview.
     #[test]
     fn empty_manifest_denies_every_webview2_kind() {
         let empty = parse_manifest("{}").expect("empty");
