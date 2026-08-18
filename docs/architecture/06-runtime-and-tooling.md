@@ -346,15 +346,33 @@ release missing `full` is part of AC1):
     `contentBlake3` reproducible at all; "roughly tar-shaped" is not enough.
 
   `contentBlake3`/`contentSize` are the digest and byte count of that exact tar
-  stream. **Extraction MUST reject the whole archive, before writing anything, if any
-  entry's `name`** is absolute, contains a `..` component, is empty, or — after being
-  joined against the destination versioned directory — does not stay lexically within
-  it. Path validation happens at the archive level (reject and discard the entire
-  artifact), not per-entry with partial writes: sorted names and the 100-byte/no-`..`
-  `name` rule above narrow what a *valid* archive can contain, but do not by
-  themselves stop a crafted or corrupted stream from attempting a `../`-style escape
-  during extraction — an extractor that only sorts paths and trusts them is exactly
-  the "tar slip" class of bug this rule exists to close.
+  stream. **Extraction is a two-pass operation — a full validation pass over every
+  header, then writing — never validate-as-you-go while already writing:**
+  1. Read every entry's header first, without writing any file. Reject the whole
+     archive (no partial writes to clean up, because none happened) if any entry's
+     `name` is absolute, contains a `..` component, is empty, or — after being joined
+     against the destination versioned directory — does not stay lexically within it
+     (standard "tar slip" defense; sorted names and the 100-byte/no-`..` `name` rule
+     above narrow what a *valid* archive can contain, but do not by themselves stop a
+     crafted or corrupted stream from attempting the escape during extraction). Also
+     reject on any **namespace collision**: the same path claimed by two entries
+     (already invalid per the no-duplicate-`name` rule, checked again here since this
+     is the enforcement point), or a path that requires a directory where an *ancestor*
+     path is already claimed as a regular file (e.g. entries for both `a` and `a/b` —
+     `a` cannot be a file and a directory at once).
+  2. Only after every header in the archive passes pass 1 does pass 2 write anything,
+     directories before the regular files inside them (guaranteed satisfiable because
+     pass 1 already proved no file/directory collisions exist).
+
+  Every directory created during extraction is `fsync`ed **bottom-up** — each
+  directory's own `fsync` happens only after every entry inside it (files and
+  subdirectories alike) is already durable — ending with the versioned directory
+  itself and then its parent (`<app-data>/versions/`, since adding a new child
+  directory entry to it is itself a metadata change that needs its own directory
+  `fsync`, the same rule this contract already applies everywhere else). Only once
+  that full bottom-up sync completes is the `.complete` marker created — a marker
+  that's durable while a nested child directory underneath it is not is not a
+  meaningful "this write finished" signal.
 
 **Client verification order — no step may be skipped or reordered:**
 
@@ -450,34 +468,57 @@ release missing `full` is part of AC1):
   leave a window where `current` already shows the new version but the floor still
   allows a replayed old signed manifest, exactly the gap this ordering exists to close.
 - Publishing any of the three files above (`content.tar`'s directory, the floor, the
-  pointer) is a durable-replace, not an in-place edit: write a temporary file, `fsync`
-  it, then atomically publish it over the target — POSIX `rename()` (atomic within one
-  filesystem; the directory is `fsync`ed afterward for the same reason above); Windows
-  `ReplaceFile`/`MoveFileEx(..., MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`
-  on the temp file (plain `MoveFileEx` alone is not guaranteed atomic across all
-  filesystem/volume combinations). **None of these files is ever removed before its
-  replacement is durably in place** — there is no window where a required pointer is
-  absent.
+  pointer) is a durable-replace, not an in-place edit: write a temporary file **in the
+  same directory as the target it will replace** — POSIX `rename()` requires both
+  paths on one filesystem (cross-filesystem `rename()` fails `EXDEV`, and papering
+  over that with a copy+delete fallback is exactly the non-atomic operation this whole
+  scheme exists to avoid, so `EXDEV` is a hard error, not a fallback trigger); Windows
+  `ReplaceFile`/`MoveFileEx` carry the same same-volume requirement. `fsync` the temp
+  file, then atomically publish it over the target — POSIX `rename()` (atomic within
+  one filesystem; the directory is `fsync`ed afterward for the same reason above);
+  Windows `ReplaceFile`/`MoveFileEx(..., MOVEFILE_REPLACE_EXISTING |
+  MOVEFILE_WRITE_THROUGH)` on the temp file. **None of these files is ever removed
+  before its replacement is durably in place** — there is no window where a required
+  pointer is absent.
+- **All of the above — a full update attempt, a rollback, and startup recovery — are
+  serialized by a single-writer lock** (a host-process-lifetime lock, e.g. an
+  exclusively-held lock file under `<app-data>/`, held for the entire sequence from
+  "start selecting a release" through "publish-intent removed"). Every ordering
+  guarantee above (floor before pointer, publish-intent written before either) assumes
+  exactly one writer; two concurrent update polls, or a poll racing a manual rollback,
+  can otherwise interleave their steps and produce a floor/pointer pair neither writer
+  ever intended (e.g. an older poll's pointer publish landing after a newer one's).
+  `keld-update` owning this lock, not merely documenting the ordering, is what makes
+  the ordering guarantees actually hold.
 - The **previous** version's directory is kept, not deleted, until the new version has
   been confirmed healthy (e.g. survives `keld-runtime`'s crash-loop breaker window,
   KEL-70) — kept specifically for both rollback *and* as the next delta's base.
-- **Startup recovery, in order:**
-  1. If `publish-intent` names a version whose directory carries a durable
-     `.complete` marker and matches the persisted floor, **and** `current` does not
-     already point there, complete the interrupted publish: republish `current` to
-     that directory, then remove `publish-intent`. No re-download, no
+- **Startup recovery, in order (holding the single-writer lock above):**
+  1. If `publish-intent` exists and `current` **already points at the version it
+     names**, the publish itself finished before the crash — only its removal
+     didn't. Durably remove `publish-intent` and stop; there is nothing else to
+     recover. (This case matters on its own: a `publish-intent` left over from an
+     already-completed publish, with no removal step ever reached, is exactly the
+     stale marker that a later rollback would otherwise leave sitting on disk —
+     without this step, step 2 below could see that stale intent, plus `current`
+     now behind the floor after the rollback, and wrongly conclude an update needs
+     completing, undoing the rollback.)
+  2. Otherwise, if `publish-intent` names a version whose directory carries a
+     durable `.complete` marker and matches the persisted floor, **and** `current`
+     does not already point there, complete the interrupted publish: republish
+     `current` to that directory, then remove `publish-intent`. No re-download, no
      re-verification — the marker and the floor already prove this exact version was
      fully verified before the crash; this is finishing an interrupted local write,
      not trusting new, unverified state.
-  2. Otherwise, if `current` is behind the floor with **no** `publish-intent` on
+  3. Otherwise, if `current` is behind the floor with **no** `publish-intent` on
      disk, that is not an interrupted publish to fix — leave `current` exactly where
      it is. This is the intentional-rollback case: the operator/host chose to run an
      older, already-verified version, and startup recovery must not silently move it
      forward again.
-  3. Otherwise, if `current` is missing, unreadable, or points at a versioned
+  4. Otherwise, if `current` is missing, unreadable, or points at a versioned
      directory with no `.complete` marker, fall back to the most recent kept
      versioned directory that *does* have one.
-  4. If none of the above recovers to a valid state, startup fails closed with a
+  5. If none of the above recovers to a valid state, startup fails closed with a
      typed error — it never runs a partially-written install.
 - **Rollback** is a host/user-authorized local action: flipping `current` back to the
   kept N-1 directory via the same durable-pointer mechanism above — no re-download, no
