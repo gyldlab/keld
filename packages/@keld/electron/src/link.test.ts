@@ -159,7 +159,7 @@ describe("WriteQueue", () => {
     async () => {
       // Independent of LifecycleLink.connect / outer writeFrame wraps.
       // socket.write returning 0 and no drain.fire() must surface 006;
-      // omitting withIoDeadline around drain.wait() hangs this test.
+      // omitting the writeOneFrame wall-clock hangs this test.
       const drain = new DrainSignal();
       const queue = new WriteQueue(
         {
@@ -175,6 +175,38 @@ describe("WriteQueue", () => {
         queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
       ).rejects.toThrow("KELD-IPC-006");
       const elapsed = Date.now() - start;
+      expect(elapsed).toBeGreaterThanOrEqual(4_000);
+      expect(elapsed).toBeLessThan(12_000);
+    },
+    15_000,
+  );
+
+  test(
+    "never-finishing partial writes are KELD-IPC-006 within one frame deadline",
+    async () => {
+      // Independent of LifecycleLink.connect / outer writeFrame wraps.
+      // write() returns 0 (no offset progress) but drain keeps firing.
+      // Restarting withIoDeadline per drain.wait() never hits KELD-IPC-006.
+      // One wall-clock for the whole writeOneFrame must.
+      const drain = new DrainSignal();
+      let parked = 0;
+      const queue = new WriteQueue(
+        {
+          write(): number {
+            parked += 1;
+            setTimeout(() => drain.fire(), 10);
+            return 0;
+          },
+          end(): void {},
+        },
+        drain,
+      );
+      const start = Date.now();
+      await expect(
+        queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
+      ).rejects.toThrow("KELD-IPC-006");
+      const elapsed = Date.now() - start;
+      expect(parked).toBeGreaterThan(1);
       expect(elapsed).toBeGreaterThanOrEqual(4_000);
       expect(elapsed).toBeLessThan(12_000);
     },
@@ -383,6 +415,7 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
     listener: ReturnType<typeof Bun.listen>;
     reader: FrameReader;
     opened: Promise<Bun.Socket>;
+    closed: Promise<void>;
   } {
     sockN += 1;
     const path = join(root, `${sockN}.s`);
@@ -390,6 +423,10 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
     let resolveOpen: (socket: Bun.Socket) => void = () => undefined;
     const opened = new Promise<Bun.Socket>((resolve) => {
       resolveOpen = resolve;
+    });
+    let resolveClosed: () => void = () => undefined;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
     });
     const listener = Bun.listen({
       unix: path,
@@ -402,10 +439,12 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
           reader.push(data);
         },
         error() {},
-        close() {},
+        close() {
+          resolveClosed();
+        },
       },
     });
-    return { link: `${path}#${TOKEN_HEX}`, listener, reader, opened };
+    return { link: `${path}#${TOKEN_HEX}`, listener, reader, opened, closed };
   }
 
   const handlers = {
@@ -461,6 +500,63 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
         ),
       );
       await expect(quitP).rejects.toThrow("KELD-IPC-005");
+    } finally {
+      peer.listener.stop(true);
+    }
+  });
+
+  test("local close() after HELLO does not fire onLinkDead", async () => {
+    const peer = bindPeer();
+    try {
+      let dead: Error | undefined;
+      const connectP = LifecycleLink.connect(peer.link, {
+        onReady(): void {},
+        onLastWindowClosed(): void {},
+        onLinkDead(err: Error): void {
+          dead = err;
+        },
+      });
+      const socket = await peer.opened;
+      await peer.reader.readFrame();
+      writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+      const session = await connectP;
+      session.close();
+      await rejectWithin(2_000, peer.closed, "peer never saw local close()");
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(dead).toBeUndefined();
+    } finally {
+      peer.listener.stop(true);
+    }
+  });
+
+  test("local quit() after Quit Reply does not fire onLinkDead", async () => {
+    const peer = bindPeer();
+    try {
+      let dead: Error | undefined;
+      const connectP = LifecycleLink.connect(peer.link, {
+        onReady(): void {},
+        onLastWindowClosed(): void {},
+        onLinkDead(err: Error): void {
+          dead = err;
+        },
+      });
+      const socket = await peer.opened;
+      await peer.reader.readFrame();
+      writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+      const session = await connectP;
+      const quitP = session.quit();
+      const call = await peer.reader.readFrame();
+      expect(call.header.kind).toBe(FrameKind.Call);
+      writeAll(
+        socket,
+        encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array()),
+      );
+      await rejectWithin(2_000, quitP, "quit hung after Quit Reply");
+      await rejectWithin(2_000, peer.closed, "peer never saw local close after quit");
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(dead).toBeUndefined();
     } finally {
       peer.listener.stop(true);
     }

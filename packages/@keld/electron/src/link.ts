@@ -30,6 +30,13 @@ function kipcError(code: string, detail: string): Error {
   return new Error(`${code}: ${detail}`);
 }
 
+function ioDeadlineExceeded(): Error {
+  return kipcError(
+    "KELD-IPC-006",
+    "app-link I/O deadline exceeded. Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.",
+  );
+}
+
 export function encodeHeader(
   kind: number,
   flags: number,
@@ -247,8 +254,16 @@ async function writeOneFrame(
   const frame = new Uint8Array(header.length + payload.length);
   frame.set(header, 0);
   frame.set(payload, header.length);
+  // One wall-clock for every write + drain.wait in this frame. Restarting
+  // withIoDeadline per drain.wait() lets a peer that keeps draining (tiny
+  // chunks, or write()==0 forever) never hit KELD-IPC-006.
+  const deadlineAt = Date.now() + APP_LINK_IO_DEADLINE_MS;
   let offset = 0;
   while (offset < frame.length) {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) {
+      throw ioDeadlineExceeded();
+    }
     const written = socket.write(frame.subarray(offset));
     if (written < 0) {
       throw kipcError("KELD-IPC-001", "socket closed during write");
@@ -257,7 +272,7 @@ async function writeOneFrame(
     if (written === 0) {
       // Bun `socket.write` returning 0 parks on drain. A missing drain
       // event must not hang HELLO, ping, or quit writes.
-      await withIoDeadline(drain.wait());
+      await withIoDeadline(drain.wait(), remaining);
     }
   }
 }
@@ -317,12 +332,7 @@ export async function withIoDeadline<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(
-        kipcError(
-          "KELD-IPC-006",
-          "app-link I/O deadline exceeded. Check the peer is still running and sending kipc frames; a silent or wedged process will not be waited on forever.",
-        ),
-      );
+      reject(ioDeadlineExceeded());
     }, deadlineMs);
   });
   try {
@@ -516,12 +526,16 @@ export class LifecycleLink {
       }
     };
     void run().catch((err: Error) => {
+      const localClose = this.#closed;
       try {
         this.close();
-        try {
-          handlers.onLinkDead(err);
-        } catch {
-          // Isolate: a throwing listener must not skip quit-waiter drain.
+        // Local quit()/close() ends the socket; that is not a peer drop.
+        if (!localClose) {
+          try {
+            handlers.onLinkDead(err);
+          } catch {
+            // Isolate: a throwing listener must not skip quit-waiter drain.
+          }
         }
       } finally {
         const waiter = this.#quitWaiter;
