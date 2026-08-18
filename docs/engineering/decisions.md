@@ -751,8 +751,9 @@ now invalidate the whole manifest, and among eligible releases the client takes 
 single highest version, not "any newer"; (3) `contentBlake3` hashed "decompressed
 bytes" with no defined package format, so two clients could verify identical bytes and
 extract different trees — defined v0's canonical content stream as a single POSIX tar,
-sorted entries, regular files only, uniform modes, named as a v0 limitation for
-symlink-heavy formats like macOS `.app` bundles; (4) `size` was carried in the schema
+sorted entries, regular files and directories only, uniform modes, named as a v0
+limitation for symlink-heavy formats like macOS `.app` bundles; (4) `size` was carried
+in the schema
 but never checked — made it normative: bounded, streaming downloads that reject over-
 and under-sized artifacts before decompression; (5) the full-fallback step only
 triggered on a content-hash failure, missing transport-hash, decompression, and
@@ -799,14 +800,42 @@ in-flight forward publish and is never written by rollback, so recovery can tell
 update was interrupted" from "the host deliberately rolled back" instead of conflating
 them.
 
+**Update (2026-08-18, fourth review pass — last automated round).** A fourth pass
+found six more real issues, including a third bug in the spec's own fixes: (1) this
+record's own summary still said "regular files only," stale against §4a's directories
+rule — synced; (2) extraction validated paths per-entry while already writing, which
+can leave partial files before a later entry is rejected, and never caught a file/
+directory ancestor collision (`a` as a file, `a/b` as its child) — replaced with a
+two-pass extractor (validate every header first, write nothing until the whole archive
+passes); (3) only the leaf versioned directory's `fsync` was specified, not each
+nested directory created during extraction or the parent `versions/` directory itself
+— added bottom-up directory `fsync`; (4) the durable-replace steps never said *where*
+the temporary file must live, so an implementation could place it on a different
+filesystem/volume than its target and hit `EXDEV`, or worse "fix" that with a
+non-atomic copy+delete fallback — required same-directory placement and made `EXDEV`
+a hard error, never a fallback trigger; (5) every ordering guarantee in this section
+(floor-before-pointer, publish-intent-before-either) implicitly assumed one writer —
+made that explicit as a single-writer lock held for the whole sequence; (6) **the
+third real bug**: recovery's own "complete an interrupted publish" step never
+accounted for `current` already matching `publish-intent`'s named version (crash after
+publish, before removing the marker) — the stale marker survives, and a *later*,
+unrelated rollback would then present exactly the state step 2 treats as "resume this
+publish," undoing the rollback. Fixed by making "current already matches → just clear
+the stale marker" the first recovery check, before the resume-publish check. Stopping
+the automated-review loop here — four rounds have found three genuine bugs in the
+contract's own crash-safety logic, which is real signal this depth is warranted, but
+the fix for "is this loop still finding signal or noise" is a human reviewer's
+judgment call, not another round.
+
 **Next.** KEL-53 can now write its failing-first fixtures (valid/tampered manifest,
 corrupted patch, full-package fallback, N-1 rollback, identity mismatch, replay/
 downgrade, crash-interrupted install, wrong-target manifest, duplicate release/delta
-entries, oversized/undersized artifact, decompression-bomb content, path-traversal
-archive entries, rollback surviving a restart) against a concrete shape instead of
-inventing one mid-ticket. `crates/keld-update/src/lib.rs`'s module doc points here;
-still zero verification code — nothing in this change reads or checks the contract it
-describes.
+entries, oversized/undersized artifact, decompression-bomb content, path-traversal and
+namespace-collision archive entries, rollback surviving a restart, stale
+publish-intent cleared without resurrecting a completed publish, cross-filesystem temp
+placement rejected) against a concrete shape instead of inventing one mid-ticket.
+`crates/keld-update/src/lib.rs`'s module doc points here; still zero verification
+code — nothing in this change reads or checks the contract it describes.
 
 **Evidence.** `docs/architecture/06-runtime-and-tooling.md` §4a; `crates/keld-update/src/lib.rs`.
 
