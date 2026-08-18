@@ -1928,9 +1928,21 @@ against the new session server, prints `app ready` then `app quit ok` after its 
 line (`crates/keld-cli/tests/bun_echo.rs`). Full workspace `cargo fmt --check` / clippy
 `-D warnings` / `cargo nextest run --workspace` (264 tests) and `llms-docs check` are
 green on Windows (this machine); cross-platform (macOS/Linux) re-verification of the
-new `_with_ready` variants in each `keld-wv` backend is still open, and no interactive
-GUI run of the new concurrent `keld dev` flow (real window + real Bun session
-end-to-end) has been done yet — only the isolated unit/integration tests above.
+new `_with_ready` variants in each `keld-wv` backend is still open.
+
+A real interactive `keld dev` run (Windows: a real window, title + handle confirmed via
+`Get-Process`) surfaced a genuine regression the isolated tests missed: `Supervisor`
+only captures Bun's stdout/stderr into a buffer (KEL-70) — nothing printed it while the
+session now stays open for the window's whole lifetime, unlike `run_dev_echo`'s
+one-shot forward after `wait_for_outcome`, so `keld dev` showed none of the Bun
+session's output. Fixed with `Supervisor::output_handle()`, a cheap `Send + Sync`
+handle (`Supervisor` itself holds an `mpsc::Receiver`, so it is `!Sync` and cannot cross
+a thread boundary) that `run_dev` tails on a `thread::scope`d thread alongside the
+blocking window event loop, writing only newly captured bytes each poll. Re-verified
+against a real window after the fix: the Bun session's stdout (echo/whenReady/quit
+lines) now prints live in the terminal while the window is open. 265 tests green
+(the new `OutputHandle` test proves it is genuinely usable from a different thread than
+the one that owns the `Supervisor`, not just that the type checks).
 
 **Next.** `window-all-closed` needs a still-missing bridge forwarding host window-close
 events into the Bun session (today the window opens on its own thread after Bun's
