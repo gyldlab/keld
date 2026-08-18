@@ -269,11 +269,7 @@ sequenceDiagram
 
 The honest reading of that diagram:
 
-- **The Bun child is not a kipc peer.** `@keld/api` does not exist (`packages/` is an empty
-  directory), so there is no JavaScript implementation of the wire protocol. The template's
-  `main.ts` shells out to a *Rust* subprocess that speaks kipc on its behalf
-  (`crates/keld-cli/templates/hello/src/main.ts:15-19`). Every JS-side arrow in §4a is
-  currently a `Bun.spawn`.
+- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template speaks kipc from `src/kipc.ts`, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
 - **The window and the IPC session are sequential, not concurrent.** `keld dev` reaps
   the Bun echo child, then opens a window with the project's `renderer` file as inline
   HTML (`load_dev_window_html` → `run_hello_window_html`). The webview still has no
@@ -396,13 +392,13 @@ but written down next to the code with the reason and the milestone that closes 
 Each skeleton crate's `lib.rs` opens with a module doc naming its spec section. Those docs are
 accurate about intent and say nothing about status — which is why this table exists.
 
-### The npm side does not exist
+### The npm side is partial
 
-`packages/` and `examples/` are empty directories. That means **none** of `@keld/api`,
-`@keld/electron`, `@keld/web`, `@keld/cli`, `@keld/schema`, or `create-keld` has any code.
-Whenever a spec passage or a Rust doc comment refers to one of them, read it as a forward
-reference. This is the single largest gap between the documents and the repository, and it is
-also why §4b looks the way it does.
+`packages/@keld/electron` exists (KEL-72): `app.whenReady` / `app.quit` /
+`window-all-closed` over `LIFECYCLE_CHANNEL`. `examples/` is still empty.
+**None** of `@keld/api`, `@keld/web`, `@keld/cli`, `@keld/schema`, or
+`create-keld` has any code. Spec passages that name those remaining packages
+are still forward references.
 
 ---
 
@@ -549,8 +545,9 @@ the honesty mechanism, and the same discipline as the perf budgets.
 The shim works in five layers:
 
 1. **Module alias.** The app's `require("electron")` resolves to `@keld/electron` — a bundler alias
-   in builds, a `bunfig.toml` alias in dev. `process.versions.electron` and `process.type` are
-   shimmed.
+   in builds. Architecture 04 §2 names `bunfig.toml` as the migrate-edited alias file; v0 Bun 1.3.14
+   remaps runtime `import "electron"` via `tsconfig.json` `compilerOptions.paths`, not bunfig
+   `[alias]`. `process.versions.electron` and `process.type` are shimmed.
 2. **Main-process modules.** `app`, `BrowserWindow`, `ipcMain`, `dialog`, `Menu`, `Tray`, … are TS
    classes over `@keld/api` kipc calls.
 3. **Preload and renderer.** A compat user-script implements `ipcRenderer`, `contextBridge`, and a
@@ -632,8 +629,8 @@ The summary table. "Live" means it works and a test proves it.
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash-loop breaker) | **Implemented (KEL-70)** | `keld_runtime::Supervisor`; `keld dev` spawns through it |
 | `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | `fs` is implemented (KEL-71: `fs.read`/`fs.write`, guard-checked); the other 14 are still names only |
-| Electron compat (`@keld/electron`, tiers, conformance suite) | **Specified, not implemented** | A `Tier` enum. `packages/` is empty |
-| `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | `packages/` is empty |
+| Electron compat (`@keld/electron`, tiers, conformance suite) | **Partial (KEL-72)** | `packages/@keld/electron`: `app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`. Other Tier 1 APIs and `keld migrate` are later. Bun 1.3.14 remaps `electron` via `tsconfig.json` paths, not bunfig `[alias]`. |
+| `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | Only `@keld/electron` exists under `packages/` |
 | `keld build` / `migrate` / `gen` / `ext` | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |
 | `keld mcp serve`, `keld doctor --json`, error registry | **Live** | `crates/keld-cli/src/mcp/`, `doctor --json`, `docs/engineering/keld-error-codes.md` |
 | Packaging, signing, delta updates | **Specified, not implemented** | Two enums |
@@ -641,8 +638,9 @@ The summary table. "Live" means it works and a test proves it.
 | CI: fmt + clippy + nextest on 3 OSes, cargo-deny, MSRV | **Live** | `.github/workflows/ci.yml`; mirrored locally by `just ci` |
 | `llms.txt` + `llms-full.txt` | **Live** | Deterministically generated from an ordered allowlist by `tools/llms_docs.rs`; `just llms-check` rejects stale output |
 
-Roughly: **the wire format and the macOS window are real; the security model, the runtime
-supervisor, the native API surface, the bulk lanes, and everything TypeScript are not.**
+Roughly: **the wire format, the macOS window, host-brokered `fs.read`/`fs.write`, and a
+partial `@keld/electron` lifecycle shim are real; remaining native modules, bulk lanes,
+and the other `@keld/*` TypeScript packages are not.**
 
 ---
 

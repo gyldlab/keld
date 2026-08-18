@@ -62,9 +62,10 @@ export default defineConfig({
 ## 3. How the shim works (layers)
 
 1. **Module alias**: the app's main-process code `require("electron")` resolves to
-   `@keld/electron` (bundler alias in app builds; Bun `bunfig.toml` alias in dev).
-   `process.versions.electron` is shimmed; `process.type` reports `browser`/`renderer`
-   appropriately.
+   `@keld/electron` (bundler alias in app builds). §2 names `bunfig.toml` as the
+   migrate-edited alias *file*; it is **not** the v0 Bun runtime resolver (see
+   the v0 note). `process.versions.electron` is shimmed; `process.type` reports
+   `browser`/`renderer` appropriately.
 2. **Main-process modules** (`app`, `BrowserWindow`, `ipcMain`, `dialog`, `Menu`,
    `Tray`, …) are TS classes over `@keld/api` kipc calls; event semantics (ready,
    window-all-closed, activate, before-quit ordering) replicated against a conformance
@@ -79,6 +80,38 @@ export default defineConfig({
 5. **Quirks flags** (`keld.compat.ts`): per-app toggles for behaviors that differ
    (e.g., `windowOpenHandler` strictness, menu accelerator edge cases) — the
    Rspack-style "compatibility switches" escape hatch.
+
+**v0 (KEL-72):** `packages/@keld/electron` is a real TypeScript package.
+`app.whenReady()`, `app.quit()`, and `window-all-closed` are backed by
+`keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
+`Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
+crate version, not an Electron release) and `process.type` is `"browser"`
+in this main-process package. `@keld/api` does not exist yet; the shim
+speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
+`keld build` is not live.
+
+Match (scoreboard ✔): with no `window-all-closed` listener, a host
+`LastWindowClosed` event quits the app — Electron's documented default
+([`event-window-all-closed`](https://www.electronjs.org/docs/latest/api/app#event-window-all-closed)).
+A registered listener owns whether the app quits (no auto-quit). Recorded on
+[`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
+Divergence (scoreboard ▲, not a §5 quirks-flag toggle): Electron
+[`app.quit(): void`](https://www.electronjs.org/docs/latest/api/app#appquit)
+is process-lifetime and not thenable. Keld's `app.quit()` returns
+`Promise<void>` so callers can observe `KELD-IPC-*` when the Quit Call fails
+on the transport. Restoring `void` would paper over kipc; the Promise is
+the public contract for this slice. Recorded on
+[`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
+
+Dev module alias: Bun 1.3.14 does **not** remap runtime `import "electron"`
+from `bunfig.toml` `[alias]` (it still loads the npm `electron` package
+from the install cache). The runtime resolver is `tsconfig.json`
+`compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
+`bunfig.toml` is still written with the same mapping so it matches
+architecture §2's named file; treating that file as the resolver is a
+defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
+preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
 
 ## 4. Compat tiers & the public scoreboard
 

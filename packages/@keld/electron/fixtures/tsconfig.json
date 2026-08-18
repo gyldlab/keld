@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "paths": {
+      "electron": ["../src/index.ts"]
+    },
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": true
+  }
+}

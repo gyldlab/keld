@@ -105,17 +105,17 @@ bytes (fixture `0xA5` repeated; live tokens are `getrandom`):
 ## 2. Frame kinds
 
 `FrameKind` is `#[repr(u8)]` with 11 variants (`crates/keld-ipc/src/frame.rs:19-45`). All 11 are
-*defined* — the roundtrip test in that file encodes and decodes every one of them — but most have
-no sender and no handler anywhere in the workspace. The distinction matters: the byte values are
-frozen protocol facts, while the behavior behind them is largely future work.
+*defined* — the roundtrip test encodes and decodes every one. Hello, Call, Reply, Err, Event, and
+Ping have senders today; StreamOpen/Chunk/Close, Cancel, and Grant remain defined-only. The byte values are frozen
+protocol facts.
 
 | Value | Variant | Purpose | Implemented? |
 |---:|---|---|---|
 | 0 | `Hello` | Handshake: version + channel table exchange | **Partial** — version only, no channel table (§6) |
-| 1 | `Call` | Request expecting exactly one `Reply` or `Err` | **Live** on the echo channel |
-| 2 | `Reply` | Successful response to a `Call` | **Live** |
-| 3 | `Err` | Failed response to a `Call` | Defined only — nothing emits it |
-| 4 | `Event` | Fire-and-forget notification | Defined only |
+| 1 | `Call` | Request expecting exactly one `Reply` or `Err` | **Live** on echo, FS, and lifecycle `Quit` |
+| 2 | `Reply` | Successful response to a `Call` | **Live** on echo, FS, and lifecycle `Quit` |
+| 3 | `Err` | Failed response to a `Call` | **Live** on FS deny / I/O (`keld-native::fs`) |
+| 4 | `Event` | Fire-and-forget notification | **Live** on lifecycle `Ready` / `LastWindowClosed` (KEL-72) |
 | 5 | `StreamOpen` | Opens a stream on a channel | Defined only |
 | 6 | `StreamChunk` | One stream chunk; payload may reference the bulk lane | Defined only |
 | 7 | `StreamClose` | Graceful end of stream | Defined only |
@@ -189,22 +189,24 @@ pub struct ChannelId(pub u16);
 pub struct CorrelationId(pub u32);
 ```
 
-**`ChannelId` is a handle, never a name.** This is one of the crate's three stated design
-constraints (`crates/keld-ipc/src/lib.rs:6-9`): "Channel names never travel per-call; they resolve
-to `ChannelId` handles." The string `"notes.save"` is meant to be exchanged exactly once, in the
-handshake's channel table, and thereafter every frame carries two bytes. That is what keeps a call
-allocation-free and what makes the p99 ≤ 100 µs budget in
-[`01` §5](../architecture/01-overview.md) plausible.
+**v0 contract: channel ids are hardcoded `u16` constants on both sides.**
+HELLO does not exchange a name table. Every frame still carries a two-byte
+`ChannelId` handle, never a string — that part of `crates/keld-ipc/src/lib.rs`
+("Channel names never travel per-call") is already true. Handshake name/table
+negotiation (resolve `"notes.save"` once, then use the handle) is later work
+and is what keeps a future call allocation-free enough for the p99 ≤ 100 µs
+budget in [`01` §5](../architecture/01-overview.md). The `ECHO_CHANNEL` comment
+"resolved at handshake in later versions" names that future, not the current
+protocol.
 
 Currently allocated:
 
 | Channel | Value | Purpose | Defined at |
 |---|---:|---|---|
-| *(control)* | `0` | Handshake frames | Implicit — `link.rs:63` passes `ChannelId(0)`. **There is no named constant for this**; it is a convention waiting to be made explicit |
-| `ECHO_CHANNEL` | `1` | The echo vertical slice | `crates/keld-ipc/src/echo.rs:10` |
-
-The doc comment on `ECHO_CHANNEL` records its own temporariness: "resolved at handshake in later
-versions". Today it is a hardcoded constant on both sides.
+| *(control)* | `0` | Handshake frames | Implicit — `link.rs` passes `ChannelId(0)`. **There is no named constant for this**; it is a convention waiting to be made explicit |
+| `ECHO_CHANNEL` | `1` | The echo vertical slice | `crates/keld-ipc/src/echo.rs` |
+| `FS_CHANNEL` | `2` | Host `fs.read` / `fs.write` | `crates/keld-native/src/fs.rs` |
+| `LIFECYCLE_CHANNEL` | `3` | Host ready / last-window-closed / quit | `crates/keld-ipc/src/lifecycle.rs` |
 
 **`CorrelationId` pairs a `Reply` or `Err` with its `Call`.** The client picks it; the server echoes
 it back unchanged. Uncorrelated kinds use `0` (reserved for `HELLO`). `echo_call`
@@ -257,7 +259,7 @@ What this actually establishes, and what it doesn't:
 
 | Spec ([`02` §2](../architecture/02-ipc.md), `frame.rs:23`) | v2 reality |
 |---|---|
-| "Handshake: version + channel table exchange" | Version + **session token**. **No channel table** — both sides hardcode `ECHO_CHANNEL` |
+| "Handshake: version + channel table exchange" | Version + **session token**. **No channel table** — both sides hardcode channel `0`, `ECHO_CHANNEL`, `FS_CHANNEL`, and `LIFECYCLE_CHANNEL` |
 | "versioned at handshake" | Strict equality: a peer on any version other than `2` is rejected by `decode` before `handshake_client` / `handshake_server` even inspects the frame. No negotiation, no range, no downgrade |
 | HELLO payload | 32 raw bytes (KEL-60). Empty, truncated, or mismatched tokens are `KELD-IPC-007`. The channel table will still have to live here later |
 
@@ -326,10 +328,14 @@ exists yet.
 
 ---
 
-## 8. The echo channel — today's only contract
+## 8. Application-level contracts: echo (ungated), FS (guarded), lifecycle
 
-`crates/keld-ipc/src/echo.rs` is the entire application-level contract that exists. It is a
-deliberate vertical slice: two structs, one handler, one channel constant.
+Three channels have handlers today. Echo is the ungated demo. FS is the first
+privileged path — guard-checked before any OS call. Lifecycle is session control
+on an app-link the host already minted, not an OS-authority grant.
+
+Echo (`ECHO_CHANNEL`) is still the smallest vertical slice: two structs, one
+handler, one channel constant.
 
 ```rust
 // crates/keld-ipc/src/echo.rs:10-28
@@ -363,16 +369,38 @@ pub struct EchoResponse {
 | Clean EOF | Loop exits, session ends `Ok` |
 | **Anything else** — including a `Call` on a different channel | `IpcError::Protocol`, session terminates |
 
-Note what is *not* in that path: there is no capability check. The echo frame goes from
-decode straight to handler. `keld-guard::evaluate` takes a `Principal` and
-default-denies anything other than `AppProcess` (`KELD-GUARD006`); it is live for
-MCP `keld_permissions_explain`, webview camera/microphone capture (as the
-requesting `Webview` principal; missing identity and `AppProcess` are
-`KELD-GUARD007`), and privileged kipc via `dispatch_privileged` (KEL-69). Echo
-dispatch still does not call the guard.
+Echo is **ungated on purpose**: the frame goes from decode straight to handler.
+`keld-guard::evaluate` is not on this path. That is not the privileged-IPC story.
+`keld-guard::evaluate` takes a `Principal` and default-denies anything other than
+`AppProcess` (`KELD-GUARD006`); it is live for MCP `keld_permissions_explain`,
+webview camera/microphone capture (as the requesting `Webview` principal; missing
+identity and `AppProcess` are `KELD-GUARD007`), and privileged kipc via
+`dispatch_privileged` (KEL-69). Echo dispatch still does not call the guard.
 
-Coverage: `crates/keld-ipc/tests/echo_link.rs` exercises the round trip over a real socket, and
-`crates/keld-cli/tests/bun_echo.rs` does it with a real Bun process in the loop.
+**FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
+`fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
+touching disk. A deny or I/O failure is a `FrameKind::Err` carrying the guard's
+`KELD-GUARD*` text or `KELD-NATIVE-001`. Echo remaining ungated does not mean
+privileged frames skip the guard.
+
+**Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)
+sends `FrameKind::Event` `Ready` / `LastWindowClosed` and accepts `Call` `Quit`.
+It is not routed through `dispatch_privileged`: ready / last-window / quit ride
+the app-link the host already minted (`crates/keld-ipc/src/lifecycle.rs`).
+`@keld/electron` maps those onto `app.whenReady` / `window-all-closed` / `app.quit`.
+
+`keld-guard::evaluate` also runs for MCP `keld_permissions_explain` and for
+webview camera/microphone capture as the requesting webview principal (KEL-73);
+missing identity and `AppProcess` are `KELD-GUARD007`. Echo and other ungated
+demo paths do not make the
+[`03` §1](../architecture/03-security.md) "every privileged operation passes the
+guard" property true of *all* IPC — only of the privileged channels that call
+`dispatch_privileged`.
+
+Coverage: `crates/keld-ipc/tests/echo_link.rs` and
+`crates/keld-cli/tests/bun_echo.rs` for echo; `crates/keld-native/tests/fs_session.rs`
+for FS allow/deny; `crates/keld-compat/tests/electron_lifecycle.rs` for lifecycle
+Events over a real Bun `@keld/electron` fixture.
 
 ---
 
@@ -495,8 +523,9 @@ sections. Three honest observations about the gap:
 2. **`entry` is still ignored.** `dev.rs` hardcodes `project_root.join("src/main.ts")`.
    `renderer` is consulted: the window loads that file as inline HTML (default
    `index.html`). `keld hello` still uses `HELLO_HTML`.
-3. **`defineConfig` cannot exist yet**, because `@keld/cli` — like every other `@keld/*`
-   package — has no code. `packages/` is an empty directory.
+3. **`defineConfig` cannot exist yet**, because `@keld/cli` has no code.
+   `@keld/electron` is live under `packages/` (KEL-72); the other `@keld/*`
+   packages are still absent.
 
 ### The permission manifest
 

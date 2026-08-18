@@ -11,5 +11,8 @@ authors.workspace = true
 [dependencies]
 keld-core = { workspace = true }
 
+[dev-dependencies]
+keld-ipc = { workspace = true }
+
 [lints]
 workspace = true

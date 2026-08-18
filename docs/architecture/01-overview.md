@@ -100,6 +100,9 @@ npm packages (TypeScript, in `packages/`):
 | `create-keld` | scaffolding (`bun create keld` / `npm create keld`) |
 | `@keld/schema` | channel/contract definition + codegen (TS types ↔ Rust types) |
 
+**v0 (KEL-72):** `@keld/electron` exists and speaks kipc directly (`LIFECYCLE_CHANNEL`);
+`@keld/api` is still absent. Other packages in this table are not in tree.
+
 Rules: crates never depend "upward"; `keld-wv`/`keld-ipc`/`keld-guard` are host-agnostic
 and unit-testable headless; every public item documented; `#![forbid(unsafe_code)]`
 everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where each

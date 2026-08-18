@@ -29,7 +29,7 @@ is the single most important thing to understand about this repo.
 | License | MIT OR Apache-2.0 | [`Cargo.toml`](../../Cargo.toml), [`deny.toml`](../../deny.toml) |
 | Language / edition | Rust, edition 2024, MSRV 1.97 | [`Cargo.toml`](../../Cargo.toml) |
 | Toolchain | pinned `1.97.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
-| Workspace | 11 crates, no npm packages yet | [`Cargo.toml`](../../Cargo.toml) `members`, empty `packages/` |
+| Workspace | 11 crates; `packages/@keld/electron` live (KEL-72) | [`Cargo.toml`](../../Cargo.toml) `members`, `packages/@keld/electron/` |
 | Rust in tree | 2,339 lines across `crates/**/*.rs` | `find crates -name '*.rs' \| xargs wc -l` (2026-08-10) |
 | Test suite | 17 tests, all passing | `cargo nextest run --workspace --profile ci` (2026-08-10) |
 | Last commit | `6d642c4` "feat: Keld workspace scaffold and macOS hello window" (2026-07-08) | `git log -1` |
@@ -215,15 +215,18 @@ Verified on macOS, 2026-08-10:
 | `just hello` / `cargo run -p keld-host -- --hello` | Opens a `WKWebView`/`WebView2`/`WebKitGTK` window with static HTML (macOS/Windows/Linux, KEL-28) |
 | `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
 | `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS, Windows, and Linux |
-| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows/Linux; extra tokens including `--watch` are `KELD-CLI-044` |
+| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` through `keld_runtime::Supervisor` (KEL-70) with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows/Linux; extra tokens including `--watch` are `KELD-CLI-044` |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
 | `cargo nextest run --workspace --profile ci` | 17 tests, all green |
 
-Note how far `keld dev` is from the target architecture: there is no host process, no
-supervisor, no `@keld/api`. The template's `src/main.ts` proves the link by speaking
-kipc itself, through `src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30);
-schema-driven codegen (`keld gen`, `@keld/schema`) is a later slice. It is an honest
-vertical slice, deliberately built end-to-end rather than stubbed —
+`keld dev` is still a slice, not the destination architecture: the CLI process owns
+the echo server and the hello window (there is no separate `keld-host` in this loop),
+and there is no `@keld/api`. Bun *is* supervised — `keld_runtime::Supervisor` spawns
+`bun run src/main.ts` (KEL-70) instead of a bare `Command::new("bun")` wait. The
+template's `src/main.ts` proves the link by speaking kipc itself, through
+`src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30); schema-driven codegen
+(`keld gen`, `@keld/schema`) is a later slice. It is an honest vertical slice,
+deliberately built end-to-end rather than stubbed —
 [`AGENTS.md`](../../AGENTS.md) forbids `todo!()`/`unimplemented!()` on main — but it
 is a slice, not the system.
 
@@ -233,15 +236,15 @@ is a slice, not the system.
 |---|---|---|---|
 | `keld-ipc` | [02-ipc](../architecture/02-ipc.md) | 16-byte little-endian frame header, 11 `FrameKind`s, `HELLO` handshake, postcard codec, blocking framed read/write, one hardcoded `echo` channel | shm bulk lane, credit-window backpressure, streams/cancel, schema-driven channel registry, codegen, fuzzing |
 | `keld-wv` | [05-webview-and-native](../architecture/05-webview-and-native.md) | `WebEngine` trait + per-platform extension traits; all three backends implemented — macOS + Linux on tao + wry as **interim scaffolding** (macOS to be replaced by direct objc2 bindings, Linux by webkit6/gtk4), Windows on direct `webview2-com` since KEL-65; Linux GPU-stack probe (NVIDIA+Wayland safe-mode) built in, `detect`/`apply` split for side-effect-free reads. Linux: build+225-test-green on real Ubuntu, `Xvfb`+`xdotool` finds a real titled window; macOS/Windows watched on a real desktop, Linux not yet | `keld://` scheme, `window.keld` bridge, CEF, `keld doctor` line for GPU safe-mode, watching the Linux window render on real hardware/VM |
-| `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `keld-host --hello` opens it, otherwise prints a pre-alpha notice | event loop ownership, command queue, window registry, booting from compiled `keld.config.ts` |
-| `keld-guard` | [03-security](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for `app.<group>.<action>` path scopes; `Principal`, `Decision`, `DenyReason`; a proven guard-before-handler dispatch entry point for privileged kipc calls (`keld_ipc::guard_dispatch::dispatch_privileged`, KEL-69) | a real capability using `dispatch_privileged` (host `fs.read`/`fs.write` is KEL-71), `$VARS`/symlink canonicalization, channel grants, recorder, audit log |
+| `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `LifecycleSession` (KEL-72) for host ready / last-window-closed / quit; `keld-host --hello` opens a window, otherwise prints a pre-alpha notice | event loop ownership, command queue, full window registry, booting from compiled `keld.config.ts` |
+| `keld-guard` | [03-security](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for `app.<group>.<action>` path scopes; `Principal`, `Decision`, `DenyReason`; `dispatch_privileged` (KEL-69); `keld_native::fs` uses it (KEL-71) | `$VARS`/symlink canonicalization, channel grants, recorder, audit log |
 | `keld-runtime` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §1 | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s → typed `KELD-RUNTIME-002`); `keld dev` spawns through it, not a bare `Command::new("bun")` wait (KEL-70) | Bun discovery/pinning/download, health checks beyond exit code, `--inspect` passthrough, Bun watch hot-restart, destination `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT` env |
 | `keld-cli` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §2 | `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client` | `build`, `migrate`, `gen`, `ext`; `--json` on every verb; stable exit codes 0/1/2/3; delegated dev server |
 | `keld-native` | [05-webview-and-native](../architecture/05-webview-and-native.md) §3 | A `MODULES` constant naming the 15 planned modules; `fs` is live (KEL-71) — `fs_read`/`fs_write` and a real `serve_fs_session` kipc channel, both gated through `keld_ipc::guard_dispatch::dispatch_privileged` before any OS call; cross-platform by construction (`std::fs`), no per-platform code needed | every other module; `fs.watch`, drag-out, recent docs (`fs+`'s remaining destination scope) |
-| `keld-compat` | [04-electron-compat](../architecture/04-electron-compat.md) | A `Tier` enum | the entire emulation layer |
+| `keld-compat` | [04-electron-compat](../architecture/04-electron-compat.md) | `Tier` enum; KEL-72 conformance tests for `@keld/electron` lifecycle | `protocol` / `session` / `webContents` host emulation; remaining Tier 1 APIs |
 | `keld-pack` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §3 | A `Format` enum (app/dmg/nsis/msi/deb/rpm/AppImage) | all packaging and signing |
 | `keld-update` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §4 | A `Channel` enum (stable/beta/canary) | bsdiff+zstd, signatures, rollback, feeds |
-| `packages/` | [01-overview](../architecture/01-overview.md) §3 | Empty directory | `@keld/api`, `@keld/electron`, `@keld/web`, `@keld/cli`, `@keld/schema`, `create-keld` — none exist |
+| `packages/` | [01-overview](../architecture/01-overview.md) §3 | `@keld/electron` (KEL-72: `app.whenReady` / `quit` / `window-all-closed`) | `@keld/api`, `@keld/web`, `@keld/cli`, `@keld/schema`, `create-keld` |
 
 `examples/` is also empty, and there is no `bench/` and no `docs/specs/` yet (the latter
 is where [`docs/agents/spec-template.md`](../agents/spec-template.md) says approved specs

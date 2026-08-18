@@ -8,6 +8,18 @@ Spec: `docs/architecture/02-ipc.md`. Hot path.
 - State-machine readers/writers. No async, no steady-state alloc (`Vec`/frame = wrong design).
 - Credit-window backpressure; no unbounded queues. Every OS-block await has deadline.
   v0: `SO_RCVTIMEO`/`SO_SNDTIMEO` of 5s on the connected stream; expiry is `KELD-IPC-006`.
+  Exception (KEL-72 `LIFECYCLE_CHANNEL`): `HELLO` still uses `APP_LINK_IO_DEADLINE`;
+  the host then sets a short reader poll (`SO_RCVTIMEO`) and retries **idle**
+  timeouts via `read_frame_interruptible` so a quiet `whenReady` wait is not
+  `KELD-IPC-006` and so Drop can join. After the first byte of a frame, the
+  rest of that frame (header remainder + payload) must complete within
+  `APP_LINK_IO_DEADLINE` or the stall is `KELD-IPC-006` — per-`recv`
+  `SO_RCVTIMEO` resets every syscall and is not an overall frame deadline.
+  Non-blocking streams are unsupported: `WouldBlock` means poll expiry on a
+  blocking socket, not a readiness loop. Win32 `TcpStream::shutdown` on a cloned
+  handle does not wake a blocking `read` (rust-lang/rust#121594) — that is not
+  peer-FIN. The writer deadline (`SO_SNDTIMEO`) stays `APP_LINK_IO_DEADLINE`.
+  `read_frame` still cannot retry after Timeout. Spec 02 §2/§7 v0 host lifecycle.
 - `unsafe` only in future `shm` module (`deny(unsafe_op_in_unsafe_fn)`, `// SAFETY:`). Framing stays `#![forbid(unsafe_code)]`.
 - postcard on hot path; JSON only for `--inspect-ipc` debug.
 - Fuzz decode paths — malformed webview input is expected, not a bug.

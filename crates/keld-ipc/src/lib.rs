@@ -15,12 +15,14 @@ pub mod codec;
 pub mod echo;
 pub mod frame;
 pub mod guard_dispatch;
+pub mod lifecycle;
 pub mod link;
 pub mod session;
 pub mod token;
 
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
+pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 pub use link::AppLinkDeadlines;
 pub use session::{echo_call, echo_invoke, serve_echo_session};
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};

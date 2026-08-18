@@ -37,7 +37,7 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 | keld-compat | Electron emulation — spec 04; `AGENTS.md` |
 | keld-host | Shipping host binary — spec 01/06 |
 | keld-cli | create/dev/build/migrate/doctor/gen — spec 06/07 |
-| packages/ | @keld/* TS (upcoming) |
+| packages/ | `@keld/electron` (KEL-72); other `@keld/*` upcoming |
 
 Crate `AGENTS.md` only where invariants exist (`wv`, `ipc`, `guard`, `compat`). Skeletons and `keld-cli`: spec in this table, no hollow file.
 

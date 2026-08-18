@@ -1,10 +1,15 @@
 //! keld-compat — host-side Electron emulation.
 //!
-//! The TypeScript shim (`@keld/electron`) covers the API surface; this crate
-//! covers the semantics JS cannot fake: custom `protocol` schemes wired into
-//! the engine, `session` cookie/proxy subsets, `webContents` routing identity,
-//! window parenting/modal behavior, and `nativeImage` codecs. Normative spec:
-//! `docs/architecture/04-electron-compat.md` §3.
+//! Layer 1–2 (KEL-72): the TypeScript shim lives in `packages/@keld/electron`
+//! and maps `app.whenReady` / `app.quit` / `window-all-closed` onto the
+//! generic host-lifecycle kipc channel (`keld_ipc::LIFECYCLE_CHANNEL`,
+//! served by `keld_core::LifecycleSession`). Electron names stay out of
+//! `keld-core` / `keld-ipc`.
+//!
+//! This crate still owns the semantics JS cannot fake later: custom
+//! `protocol` schemes, `session` cookie/proxy subsets, `webContents`
+//! routing identity, window parenting/modals, `nativeImage` codecs.
+//! Normative spec: `docs/architecture/04-electron-compat.md` §3.
 
 /// Compat tiers, mirrored on the public scoreboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

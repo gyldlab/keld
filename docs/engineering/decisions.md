@@ -135,10 +135,11 @@ both reverted before committing. Bun's own `node:fs` still works unsandboxed
 (architecture 03 §4.2 OS-sandbox slice is v0.3, not this ticket); this is the **Keld**
 API, not a claim that Bun is jailed.
 
-**Next.** Wire a real `@keld/api` TypeScript surface for `fs.read`/`fs.write` once
-`packages/` exists (currently empty — out of scope until a TS package pipeline lands).
-Keep shipping Linear Phase 2 (window + kipc echo + crate map) on the four uniques. Do not
-add a fifth unique to look complete.
+**Next.** Keep shipping Linear Phase 2 on the four uniques. `@keld/electron`
+lifecycle (KEL-72) is the first compat slice, not a fifth unique — it sits on
+kipc. Remaining `@keld/api` for `fs.read`/`fs.write`, other Tier 1 Electron
+APIs, and `keld migrate` are later tickets. Do not invent a fifth unique to
+look complete.
 
 ---
 
