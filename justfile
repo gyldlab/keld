@@ -1,5 +1,6 @@
-# Keld task runner — mirrors the CI gates in .github/workflows/ci.yml.
-# `just ci` before pushing == what CI will run (minus the 3-OS matrix).
+# Keld task runner — full local verification superset of the dynamically routed CI gates.
+# `just ci` before pushing runs every local gate, while CI routes costly OS lanes by
+# changed-path ownership through tools/ci_changes.sh.
 
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
@@ -10,7 +11,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
+ci: agents-md ci-router-test mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -120,6 +121,10 @@ hygiene:
     target/ci-hygiene/ci-hygiene-test
     rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
     target/ci-hygiene/ci-hygiene check .
+
+# KEL-81: keep change-based CI routing falsifiable outside GitHub Actions too.
+ci-router-test:
+    tools/ci_changes_test.sh
 
 # Format the workspace in place.
 fmt:

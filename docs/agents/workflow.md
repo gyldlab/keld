@@ -70,10 +70,13 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
 
 ## Review: CI is the arbiter, humans are the architects
 
-- **Hard gates (block merge, no exceptions):** fmt · clippy `-D warnings` · full test
-  suite · generated-doc freshness · Mermaid structural checks + pinned render when
-  diagrams change · secret scan · no `todo!()`/`unimplemented!()` on the diff. Visual
-  inspection and the render report remain review artifacts in addition to CI.
+- **Hard gates (block merge, no exceptions):** every gate whose owned contract is
+  affected by the diff: fmt · clippy `-D warnings` · full test suite · generated-doc
+  freshness · Mermaid structural checks + pinned render when diagrams change · secret
+  scan · no `todo!()`/`unimplemented!()` on the diff. The always-created CI router owns
+  the job-level applicability decision; unknown/shared/workflow/build-graph inputs run
+  every potentially affected gate. Visual inspection and the render report remain review
+  artifacts in addition to CI.
 - **Review gates (block until a human signs off):** the five in root `AGENTS.md`
   (unsafe, public API, permissions, dependencies, wire protocol). `.github/CODEOWNERS`
   requests human review on `keld-guard`, `keld-ipc`, workspace manifests, and CI

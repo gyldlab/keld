@@ -102,6 +102,33 @@ versioned stable Mermaid renderer using `just mermaid-render-check`. New behavio
 have tests. Agents MUST report actual command output; MUST NOT write "should work".
 Failures on other-OS paths: say plainly.
 
+## CI dependency routing
+
+GitHub Actions workflows MUST be created for every pull request and push. Agents MUST
+NOT use workflow-level `paths` or `paths-ignore` filters for a required workflow:
+GitHub leaves its required check pending when it skips the whole workflow. The
+repository-owned CI router instead classifies changed paths and applies conditions at
+the **job** boundary; a skipped job reports success while unrelated expensive work is
+not scheduled.
+
+- Every lane MUST name the observable contract and inputs it owns. A dependency install,
+  OS runtime, browser engine, device, cross-target toolchain, or benchmark MAY run only
+  when a changed input can affect that contract. `gitleaks` remains unconditional because
+  every changed byte is its input.
+- The router MUST derive build-dependency closures from the current build metadata where
+  available; agents MUST NOT copy a hand-maintained crate list. Unknown, shared,
+  workspace-graph, workflow, router, or comparison-base inputs MUST fail safe by
+  enabling every potentially affected lane. If the router itself cannot obtain required
+  metadata or parse it, it MUST fail the router job before emitting a partial/empty
+  selection; it MUST NOT convert that fault into a skipped-green result.
+- Conditional routing MUST have a falsifiable contract test for relevant, unrelated,
+  unknown, empty, pull-request and push diffs. A workflow/router edit MUST exercise all
+  conditional lanes. Agents MUST verify branch-protection behavior from current official
+  GitHub Actions documentation before changing this mechanism.
+- CI routing changes are a human-reviewed shared-file change. They MUST be their own
+  Linear-scoped PR unless the owning issue is CI itself; agents MUST NOT hide a CI
+  workaround in an unrelated product PR.
+
 ## Rust
 - Lints: workspace `Cargo.toml` — `clippy::pedantic`, `missing_docs` warn (CI denies). A new `allow` MUST have an inline justification.
 - `unsafe` MUST appear only in `keld-wv` backends + `keld-ipc` shm; `#![deny(unsafe_op_in_unsafe_fn)]`, `// SAFETY:` proof. Else = human review.
@@ -189,6 +216,17 @@ Agents MUST follow `.agents/testing.md`. Tests MUST be falsifiable: a real contr
 
 No workarounds (MUST):
 Agents MUST fix causes, not symptoms — in code, tests, builds, docs, and tooling alike. When something resists, the reflex MUST be "why is this happening", never "how do I get past this". Agents MUST NOT make the signal fit the change.
+
+**Failure decomposition protocol (MUST):** before selecting any fix for a failed gate,
+CI dependency, platform behavior, build, test, security control, or runtime fault,
+agents MUST decompose the problem into atomic reasoning units. For each atom they MUST
+(1) state the logical component, (2) validate its independence from the other atoms,
+and (3) verify correctness with a falsifiable observation. Only then MAY they synthesize
+the atoms into a root-cause design and implementation. A timeout increase, retry,
+bypass, flag, skip, mock, hard-coded exception, test weakening, broader permission, or
+environment override is forbidden when it merely makes a symptom disappear; it is
+permitted only when the decomposed root cause proves that it is the owned correctness
+mechanism, its compatibility fallback is explicit, and a test falsifies its removal.
 
 Forbidden in general:
 - Special-casing an input, hardcoding a value, or branching on a specific case to make one caller work, when the underlying rule is what is wrong.

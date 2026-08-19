@@ -149,7 +149,9 @@ fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
             if indent <= with {
                 with_indent = None;
             } else if let Some(value) = content.strip_prefix("persist-credentials:") {
-                let value = value.trim().trim_matches(|character| character == '\'' || character == '"');
+                let value = value
+                    .trim()
+                    .trim_matches(|character| character == '\'' || character == '"');
                 if value == "false" {
                     return true;
                 }
@@ -157,6 +159,204 @@ fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
         }
     }
     false
+}
+
+fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
+    let mut checkout_indent = None;
+    let mut with_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content.starts_with("- uses:") {
+            checkout_indent = content.contains("actions/checkout@").then_some(indent);
+            with_indent = None;
+            continue;
+        }
+        let Some(checkout) = checkout_indent else {
+            continue;
+        };
+        if indent <= checkout {
+            checkout_indent = None;
+            with_indent = None;
+            continue;
+        }
+        if content == "with:" {
+            with_indent = Some(indent);
+            continue;
+        }
+        if let Some(with) = with_indent {
+            if indent <= with {
+                with_indent = None;
+            } else if let Some(value) = content.strip_prefix("fetch-depth:") {
+                let value = value
+                    .trim()
+                    .trim_matches(|character| character == '\'' || character == '"');
+                if value == "0" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn workflow_has_unconditional_named_step(text: &str, step_name: &str, command: &str) -> bool {
+    let expected_name = format!("- name: {step_name}");
+    let expected_command = format!("run: {command}");
+    let mut step_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content == expected_name {
+            step_indent = Some(indent);
+            continue;
+        }
+        let Some(step) = step_indent else {
+            continue;
+        };
+        if indent <= step {
+            return false;
+        }
+        if content.starts_with("if:") || content.starts_with("- if:") {
+            return false;
+        }
+        if content == expected_command {
+            return true;
+        }
+    }
+    false
+}
+
+fn workflow_named_step_has_property(text: &str, step_name: &str, property: &str) -> bool {
+    let expected_name = format!("- name: {step_name}");
+    let mut step_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content == expected_name {
+            step_indent = Some(indent);
+            continue;
+        }
+        let Some(step) = step_indent else {
+            continue;
+        };
+        if indent <= step {
+            return false;
+        }
+        if content == property {
+            return true;
+        }
+    }
+    false
+}
+
+fn workflow_named_step_contains(text: &str, step_name: &str, needle: &str) -> bool {
+    let expected_name = format!("- name: {step_name}");
+    let mut step_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content == expected_name {
+            step_indent = Some(indent);
+            continue;
+        }
+        let Some(step) = step_indent else {
+            continue;
+        };
+        if indent <= step {
+            return false;
+        }
+        if content.contains(needle) {
+            return true;
+        }
+    }
+    false
+}
+
+fn workflow_job_block<'a>(text: &'a str, job_name: &str) -> Option<String> {
+    let target = format!("{job_name}:");
+    let mut found = false;
+    let mut block = String::new();
+
+    for line in text.lines() {
+        let parsed = yaml_content(line);
+        if !found {
+            if matches!(parsed, Some((2, ref content)) if content == &target) {
+                found = true;
+                block.push_str(line);
+                block.push('\n');
+            }
+            continue;
+        }
+        if matches!(parsed, Some((indent, _)) if indent <= 2) {
+            break;
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+
+    found.then_some(block)
+}
+
+fn check_change_router_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "changes") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `changes` job. Restore the always-created change router; do not use workflow-level path filters for required CI."
+        ));
+    };
+    if !uncommented_line_contains(&block, "name: change router") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` job is missing `name: change router`. Keep the router's owner visible in that job."
+        ));
+    }
+    if !workflow_has_checkout_fetch_depth_zero(&block) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` job must use `actions/checkout` with `fetch-depth: 0`. The router needs both PR/push comparison commits; do not borrow a full-history checkout from another job."
+        ));
+    }
+    for (step_name, command) in [
+        ("Router contract tests", "tools/ci_changes_test.sh"),
+        (
+            "Classify changed-path ownership",
+            "tools/ci_changes.sh github",
+        ),
+    ] {
+        if !workflow_has_unconditional_named_step(&block, step_name, command) {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `changes` job must have an unconditional `{step_name}` step whose exact command is `{command}`. Put it in the router job; a shell guard, GitHub `if`, or identical command in another job cannot prove routing."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_package_loop_shell(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "check") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `check` job. Restore the cross-platform package verification job."
+        ));
+    };
+    for step_name in ["clippy (warnings deny)", "test"] {
+        if !workflow_named_step_has_property(&block, step_name, "shell: bash") {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step_name}` must set `shell: bash`. Its package loop is Bash syntax; the Windows default PowerShell shell rejects it before Cargo runs."
+            ));
+        }
+    }
+    if !workflow_named_step_contains(&block, "test", "--no-tests=pass") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `test` must use `cargo nextest --no-tests=pass` for selected zero-test packages. Package routing must preserve the workspace suite's valid zero-test behavior, not fail before consumer tests run."
+        ));
+    }
+    Ok(())
 }
 
 fn executable_run_fragment_contains(fragment: &str, needle: &str) -> bool {
@@ -320,7 +520,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
                  Restore the gitleaks job (checksummed CLI, not the org-licensed Action), \
                  `with: toolchain:` on dtolnay/rust-toolchain, \
-                 the hygiene job that compiles this file, \
+                the hygiene job that compiles this file, \
                  generated-doc freshness, and the structural plus digest-pinned Mermaid render gates."
             ));
         }
@@ -330,6 +530,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` must set `persist-credentials: false` inside an `actions/checkout` `with:` mapping. An echoed or unrelated YAML value does not protect checkout credentials."
         ));
     }
+    check_change_router_job(&text)?;
+    check_package_loop_shell(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -475,6 +677,24 @@ mod tests {
         [
             "name: CI",
             "jobs:",
+            "  changes:",
+            "    name: change router",
+            "    steps:",
+            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          fetch-depth: 0",
+            "      - name: Router contract tests",
+            "        run: tools/ci_changes_test.sh",
+            "      - name: Classify changed-path ownership",
+            "        run: tools/ci_changes.sh github",
+            "  check:",
+            "    steps:",
+            "      - name: clippy (warnings deny)",
+            "        shell: bash",
+            "        run: cargo clippy -p fixture --all-targets -- -D warnings",
+            "      - name: test",
+            "        shell: bash",
+            "        run: cargo nextest run -p fixture --profile ci --no-tests=pass",
             "  secrets:",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -542,6 +762,119 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn router_test_in_another_job_does_not_satisfy_changes_contract() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow()
+            .replacen("        run: tools/ci_changes_test.sh\n", "", 1)
+            .replace(
+                "  secrets:\n",
+                "  unrelated:\n    steps:\n      - run: tools/ci_changes_test.sh\n  secrets:\n",
+            );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("router test must run in changes job");
+        assert!(error.contains("changes` job"), "{error}");
+        assert!(error.contains("tools/ci_changes_test.sh"), "{error}");
+    }
+
+    #[test]
+    fn router_command_in_another_job_does_not_satisfy_changes_contract() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow()
+            .replacen("        run: tools/ci_changes.sh github\n", "", 1)
+            .replace(
+                "  secrets:\n",
+                "  unrelated:\n    steps:\n      - run: tools/ci_changes.sh github\n  secrets:\n",
+            );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("router command must run in changes job");
+        assert!(error.contains("changes` job"), "{error}");
+        assert!(error.contains("tools/ci_changes.sh github"), "{error}");
+    }
+
+    #[test]
+    fn full_history_checkout_in_another_job_does_not_satisfy_changes_contract() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow()
+            .replacen("          fetch-depth: 0\n", "", 1)
+            .replacen(
+                "          persist-credentials: false\n",
+                "          persist-credentials: false\n          fetch-depth: 0\n",
+                1,
+            );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("changes job must fetch its own history");
+        assert!(error.contains("changes` job"), "{error}");
+        assert!(error.contains("fetch-depth: 0"), "{error}");
+    }
+
+    #[test]
+    fn quoted_fetch_depth_in_changes_job_is_accepted() {
+        for value in ["'0'", "\"0\""] {
+            let temp = complete_fixture();
+            temp.write(
+                WORKFLOW,
+                &valid_workflow().replacen("fetch-depth: 0", &format!("fetch-depth: {value}"), 1),
+            );
+            check(temp.path()).expect("quoted fetch depth is the same YAML scalar");
+        }
+    }
+
+    #[test]
+    fn shell_guarded_router_test_does_not_satisfy_changes_contract() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "run: tools/ci_changes_test.sh",
+                "run: false && tools/ci_changes_test.sh",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("disabled shell command must fail");
+        assert!(error.contains("unconditional"), "{error}");
+        assert!(error.contains("tools/ci_changes_test.sh"), "{error}");
+    }
+
+    #[test]
+    fn github_if_guarded_router_command_does_not_satisfy_changes_contract() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "      - name: Classify changed-path ownership\n        run:",
+                "      - name: Classify changed-path ownership\n        if: ${{ false }}\n        run:",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("disabled GitHub step must fail");
+        assert!(error.contains("unconditional"), "{error}");
+        assert!(error.contains("tools/ci_changes.sh github"), "{error}");
+    }
+
+    #[test]
+    fn package_loop_requires_bash_on_windows_matrix() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen("        shell: bash\n", "", 1),
+        );
+        let error = check(temp.path()).expect_err("package loop needs Bash on Windows");
+        assert!(error.contains("clippy (warnings deny)"), "{error}");
+        assert!(error.contains("shell: bash"), "{error}");
+    }
+
+    #[test]
+    fn selected_zero_test_package_must_not_fail_nextest() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(" --no-tests=pass", "", 1),
+        );
+        let error = check(temp.path()).expect_err("zero-test package policy must remain explicit");
+        assert!(error.contains("--no-tests=pass"), "{error}");
     }
 
     #[test]

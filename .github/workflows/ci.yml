@@ -32,10 +32,45 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  changes:
+    name: change router
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      docs: ${{ steps.classify.outputs.docs }}
+      hygiene: ${{ steps.classify.outputs.hygiene }}
+      gui: ${{ steps.classify.outputs.gui }}
+      msrv: ${{ steps.classify.outputs.msrv }}
+      deny: ${{ steps.classify.outputs.deny }}
+      webkitgtk: ${{ steps.classify.outputs.webkitgtk }}
+      packages: ${{ steps.classify.outputs.packages }}
+    steps:
+      # Full history gives the router both PR and push comparison commits. The
+      # router falls back to all lanes when either commit is unavailable.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.97.1
+      - name: Router contract tests
+        run: tools/ci_changes_test.sh
+      - name: Classify changed-path ownership
+        id: classify
+        env:
+          KELD_CI_EVENT_NAME: ${{ github.event_name }}
+          KELD_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          KELD_CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          KELD_CI_BEFORE_SHA: ${{ github.event.before || '' }}
+        run: tools/ci_changes.sh github
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
@@ -49,6 +84,8 @@ jobs:
     name: clippy + test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -63,33 +100,19 @@ jobs:
         with:
           cache-on-failure: true
       - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev pkg-config build-essential
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - name: Mermaid docs contracts (Unix)
-        if: runner.os != 'Windows'
+      - name: clippy (warnings deny)
         shell: bash
         run: |
-          mkdir -p target/mermaid-docs
-          rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test
-          target/mermaid-docs/mermaid-docs-test
-          rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
-          target/mermaid-docs/mermaid-docs check .
-      - name: Mermaid docs contracts (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path target/mermaid-docs | Out-Null
-          rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test.exe
-          & target/mermaid-docs/mermaid-docs-test.exe
-          rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs.exe
-          & target/mermaid-docs/mermaid-docs.exe check .
-      - name: clippy (warnings deny)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+          for package in ${{ needs.changes.outputs.packages }}; do
+            cargo clippy -p "$package" --all-targets -- -D warnings
+          done
       # v2.9.4 tar'd nextest into `%CARGO_HOME%\bin` using a Git-bash
       # `C:\...` path (`C\:\\Users\...`: Cannot open). Create the dir for
       # all OSes (pwsh is on ubuntu/macos/windows runners) and pin v2.85+
@@ -103,10 +126,17 @@ jobs:
         with:
           tool: nextest
       - name: test
-        run: cargo nextest run --workspace --profile ci
+        shell: bash
+        run: |
+          for package in ${{ needs.changes.outputs.packages }}; do
+            cargo nextest run -p "$package" --profile ci --no-tests=pass
+          done
       - name: rustdoc (warnings deny)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo doc --workspace --no-deps
+        run: |
+          for package in ${{ needs.changes.outputs.packages }}; do
+            cargo doc -p "$package" --no-deps
+          done
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -114,6 +144,8 @@ jobs:
     name: Linux GUI smoke test (Xvfb)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.gui == 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
@@ -192,6 +224,8 @@ jobs:
     name: MSRV
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.msrv == 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
@@ -200,6 +234,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
+        if: needs.changes.outputs.webkitgtk == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -213,12 +248,16 @@ jobs:
       - name: cargo check on MSRV toolchain
         run: |
           rustup toolchain install "${{ steps.msrv.outputs.msrv }}" --profile minimal
-          cargo +${{ steps.msrv.outputs.msrv }} check --workspace --all-targets
+          for package in ${{ needs.changes.outputs.packages }}; do
+            cargo +${{ steps.msrv.outputs.msrv }} check -p "$package" --all-targets
+          done
 
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
@@ -256,6 +295,8 @@ jobs:
     name: CODEOWNERS + templates
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: changes
+    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -265,20 +306,24 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
       - name: Contract tests
+        if: needs.changes.outputs.hygiene == 'true'
         run: |
           mkdir -p target/ci-hygiene
           rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
           target/ci-hygiene/ci-hygiene-test
       - name: Check this checkout
+        if: needs.changes.outputs.hygiene == 'true'
         run: |
           rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
           target/ci-hygiene/ci-hygiene check .
       - name: llms-docs check
+        if: needs.changes.outputs.docs == 'true'
         run: |
           mkdir -p target/llms-docs
           rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
           target/llms-docs/llms-docs check .
       - name: Mermaid docs contract tests and check
+        if: needs.changes.outputs.docs == 'true'
         run: |
           mkdir -p target/mermaid-docs
           rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test
@@ -286,4 +331,5 @@ jobs:
           rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
           target/mermaid-docs/mermaid-docs check .
       - name: Render Mermaid docs in pinned isolated container
+        if: needs.changes.outputs.docs == 'true'
         run: tools/mermaid_render_check.sh

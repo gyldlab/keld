@@ -80,11 +80,21 @@ evidence only when a plausible defect can make it fail.
 
 ## CI tiers
 
-- **Every PR:** `cargo fmt --all --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, and
-  `cargo nextest run --workspace --profile ci`. Replay committed fuzz regressions as
-  normal tests; build changed fuzz harnesses. A PR that changes Mermaid additionally
-  runs the documentation render gate above.
+- **Every PR, always-created workflow:** security scanning runs for every changed byte.
+  The repository-owned change router then schedules each non-security CI lane at the
+  job boundary from the observable contract and its inputs. It MUST NOT use
+  workflow-level path filters for required workflows: those leave a required check
+  pending. A skipped job is permitted only when it reports success and a falsifiable
+  router test covers that input class. Unknown/shared/workflow/build-graph inputs run
+  every potentially affected lane; no filename heuristic may silently skip a proof.
+- **Rust-affecting PRs:** CI runs `cargo fmt --all --check` plus clippy, tests and MSRV
+  checks for the changed workspace package and every Cargo reverse-dependent consumer.
+  Its Linux WebKitGTK dependency setup runs only when that selected package closure
+  actually compiles `keld-wv`; the Xvfb smoke separately runs only when the current
+  `keld-host` dependency closure or graphical build/runtime inputs change. Replay
+  committed fuzz regressions as normal tests; build changed fuzz harnesses. A
+  documentation-affecting PR runs the generated docs and Mermaid render gates. Agents
+  still run the root `AGENTS.md` local verification gate before claiming their work done.
 - **Nightly:** run bounded `cargo-fuzz` campaigns with retained corpora. Add targeted
   sanitizer or Miri lanes only where unsafe, FFI, allocation, or lifetime risk makes
   them applicable; print replayable seeds and promote every failure to a regression.
