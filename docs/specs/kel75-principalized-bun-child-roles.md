@@ -179,9 +179,11 @@ never silently weaken a strict profile.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1: Reuse KEL-70's `Supervisor` and extract a generic bootstrap listener in
-  `keld-ipc`: it mints an owner-only endpoint/token, continues accepting after invalid
-  `HELLO`, and revokes/unlinks on drop. Add one host-owned `primary` role coordinator
+- [x] T1a: Extract a generic Unix bootstrap listener in `keld-ipc`, used by the live
+  CLI echo server. It mints an owner-only endpoint/token, continues accepting after an
+  invalid `HELLO`, and unlinks on drop. This proves one shared bootstrap primitive, not
+  a role coordinator.
+- [ ] T1b: Reuse KEL-70's `Supervisor` for one host-owned `primary` role coordinator
   that provisions fresh identity before every spawn, binds only a successful `HELLO`,
   revokes before successor provisioning, and proves the black-box restart flow. No
   ports, extra roles, sandbox or shared memory.

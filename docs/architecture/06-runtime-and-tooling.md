@@ -49,8 +49,9 @@ never a PID recovered after exit.
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. v0 implements none of this registry: it has only KEL-70's generic one-child
-supervisor and a CLI-owned echo listener.
+authority. v0 implements none of this registry: it has KEL-70's generic one-child
+supervisor and KEL-75 T1a's Unix authenticated bootstrap listener, but no role
+generation/principal registry.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
