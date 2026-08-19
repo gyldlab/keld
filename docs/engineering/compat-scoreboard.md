@@ -45,9 +45,12 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    IPv4-translated embeddings), and live-mutable
    https URLs (no git object id in the path, e.g. `/blob/main/` or
    `https://example.com/foo`) are
-   non-normative leads. Host checks are literal (no DNS); abbreviated IPv4
+   non-normative leads.    Host checks are literal (no DNS); abbreviated IPv4
    (`127.1`, `010.0.0.1`, `1.1`) and DNS-to-private names (`nip.io`) are T1
-   residuals. Allowed pins: `sha256:<64 hex>` or https with a
+   residuals. A trailing FQDN dot is the same host, including GitHub raw CDN
+   live-ref checks. An unbracketed `host:port` (or `[v6]:port`) must use a
+   decimal `u16` port; `github.com:abc` and `github.com:65536` are leads.
+   Allowed pins: `sha256:<64 hex>` or https with a
    parsed public host and a 40- or 64-hex git object id path segment.
    A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object
    id must be the `blob`/`tree`/`raw` (or GitHub raw CDN) ref itself.

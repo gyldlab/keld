@@ -122,9 +122,12 @@ impl fmt::Display for EvidenceError {
                 "KELD-COMPAT-007: evidence URI is not immutable ({detail}). \
                  Use sha256:<64 lowercase hex> or an https URL with a public \
                  host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, \
-                 or unique-local) whose path contains a full git object id \
-                 (40 or 64 lowercase hex); turn citations, sandbox paths, and \
-                 mutable branch URLs are non-normative leads only."
+                 or unique-local; a colon in an unbracketed authority must be \
+                 a decimal u16 port) whose blob/tree/raw (or GitHub raw CDN) \
+                 ref is itself a 40- or 64-character lowercase-hex git object \
+                 id — not a later path segment on a live branch; turn \
+                 citations, sandbox paths, and mutable branch URLs are \
+                 non-normative leads only."
             ),
             Self::InvalidDenominator { detail } => write!(
                 f,
@@ -1073,13 +1076,14 @@ fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
             detail: format!("`{trimmed}` is a sandbox path or opaque turn citation"),
         });
     }
-    if let Some(hex) = trimmed.strip_prefix("sha256:") {
+    if trimmed.starts_with("sha256:") {
         parse_digest(trimmed)?;
-        let _ = hex;
         return Ok(trimmed.to_owned());
     }
     if let Some(rest) = trimmed.strip_prefix("https://") {
         let (host, path) = parse_https_host_and_path(rest, trimmed)?;
+        // Trailing FQDN dots are the same host (RFC 1034); compare once.
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
         if host_is_forbidden(&host) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a public https location"),
@@ -1169,7 +1173,7 @@ fn parse_https_host_and_path(
                             ),
                         })?;
                 let port = &port_and_path[..path_at];
-                if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                if !https_port_is_valid(port) {
                     return Err(EvidenceError::NonNormativeEvidence {
                         detail: format!("`{original}` is not a public https location"),
                     });
@@ -1203,15 +1207,15 @@ fn parse_https_host_and_path(
         });
     }
     let host = match hostport.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
-            if h.is_empty() {
+        Some((h, port)) => {
+            if h.is_empty() || !https_port_is_valid(port) {
                 return Err(EvidenceError::NonNormativeEvidence {
                     detail: format!("`{original}` is not a public https location"),
                 });
             }
             h.to_owned()
         }
-        _ => hostport.to_owned(),
+        None => hostport.to_owned(),
     };
     let path = slash.map_or(String::new(), |i| without_query[i..].to_owned());
     Ok((host, path))
@@ -1229,6 +1233,11 @@ fn authority_has_userinfo(rest: &str) -> bool {
         }
     }
     false
+}
+
+/// Decimal port that fits in `u16`. Non-numeric and `65536` are not public https.
+fn https_port_is_valid(port: &str) -> bool {
+    !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok()
 }
 
 fn host_is_forbidden(host: &str) -> bool {
@@ -1315,6 +1324,7 @@ fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
         return true;
     }
     let host = host.to_ascii_lowercase();
+    let host = host.trim_end_matches('.');
     if host == "raw.githubusercontent.com" {
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         return segs
@@ -2061,6 +2071,9 @@ mod tests {
             format!("https://[64:ff9b::10.0.0.1]/org/repo/commit/{sha}"),
             format!("https://[2002:a00:1::1]/org/repo/commit/{sha}"),
             format!("https://100.64.0.1/org/repo/commit/{sha}"),
+            format!("https://github.com:abc/gyldlab/keld/commit/{sha}"),
+            format!("https://github.com:65536/gyldlab/keld/commit/{sha}"),
+            format!("https://raw.githubusercontent.com./gyldlab/keld/main/{hexfile}"),
         ] {
             let mut record = parse_ok();
             record.evidence_uri = uri.clone();
@@ -2134,5 +2147,64 @@ mod tests {
             assert!(text.contains(code), "{text}");
             assert!(text.contains(fix), "{text}");
         }
+    }
+
+    #[test]
+    fn foreign_kind_record_cannot_fill_committed_cell() {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.cells.truncate(1);
+        let json =
+            valid_evidence_json().replace(r#""kind": "primary_workflow""#, r#""kind": "install""#);
+        let foreign = parse_evidence(json.as_bytes()).expect("install record");
+        assert_eq!(foreign.operation.kind, OperationKind::Install);
+        let board = score(&denom, &[foreign], AS_OF).expect("score");
+        assert_eq!(board.missing, 1);
+        assert_eq!(board.passed, 0);
+        assert_eq!(board.unweighted_percent, None);
+        assert!(!board.complete);
+    }
+
+    #[test]
+    fn rejects_malformed_https_ports() {
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        for uri in [
+            format!("https://github.com:abc/gyldlab/keld/commit/{sha}"),
+            format!("https://github.com:65536/gyldlab/keld/commit/{sha}"),
+            format!("https://github.com:/gyldlab/keld/commit/{sha}"),
+            format!("https://[2001:db8::1]:65536/org/repo/commit/{sha}"),
+        ] {
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                &uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(&uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        }
+        let ok = format!("https://github.com:443/gyldlab/keld/commit/{sha}");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &ok,
+        );
+        parse_evidence(json.as_bytes()).expect("decimal u16 port is still a public https location");
+    }
+
+    #[test]
+    fn rejects_trailing_dot_github_raw_cdn_live_ref() {
+        let hexfile = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        let live = format!("https://raw.githubusercontent.com./gyldlab/keld/main/{hexfile}");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &live,
+        );
+        let err = parse_evidence(json.as_bytes()).expect_err(&live);
+        assert_eq!(err.code(), "KELD-COMPAT-007");
+        let pinned = format!("https://raw.githubusercontent.com./gyldlab/keld/{sha}/README.md");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &pinned,
+        );
+        parse_evidence(json.as_bytes())
+            .expect("trailing FQDN dot on a pinned GitHub raw CDN ref is still a pin");
     }
 }

@@ -2025,8 +2025,9 @@ docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms
   status, the tracking issue, and the workaround doc — never a bare "not implemented".
 - The error-code registry is `docs/engineering/keld-error-codes.md` (one heading per
   code — that heading **is** the docs stub). A `KELD-*` code emitted in `keld-ipc`,
-  `keld-wv`, `keld-cli`, or `keld-guard` without a registry heading fails CI
-  (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
+  `keld-wv`, `keld-cli`, `keld-guard`, `keld-runtime`, `keld-native`, or `keld-compat`
+  (plus `keld-cli` templates and workspace `tools/`) without a registry heading fails
+  CI (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
   Error messages are tested (exact-match on `fix` text where feasible).
 
 ## 3. Docs for agents
@@ -2447,7 +2448,8 @@ dependency (`Cargo.toml`, grep of `crates/`). `AGENTS.md` § Rust: hand-rolled
 
 Canonical registry: [`keld-error-codes.md`](./keld-error-codes.md). CI
 (`crates/keld-cli/tests/error_registry.rs`) requires a 1:1 match with codes emitted
-from `keld-ipc`, `keld-wv`, `keld-cli`, `keld-guard`, CLI templates, and `tools/`.
+from `keld-ipc`, `keld-wv`, `keld-cli`, `keld-guard`, `keld-runtime`, `keld-native`,
+`keld-compat`, CLI templates, and `tools/`.
 Architecture 07 §2 is the message shape; `keld-guard`'s `DenyReason` is the floor.
 
 Enums in tree that follow this (not an exhaustive forever-list): `IpcError`,
@@ -3262,7 +3264,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-compat
 - message: Compatibility evidence URI is a lead, not an immutable location
-- fix: Use sha256:<64 lowercase hex> or an https URL with a public host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, or unique-local) whose path contains a full git object id (40 or 64 lowercase hex); turn citations, sandbox paths, and mutable branch URLs are non-normative leads only.
+- fix: Use sha256:<64 lowercase hex> or an https URL with a public host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, or unique-local; a colon in an unbracketed authority must be a decimal u16 port) whose blob/tree/raw (or GitHub raw CDN) ref is itself a 40- or 64-character lowercase-hex git object id — not a later path segment on a live branch; turn citations, sandbox paths, and mutable branch URLs are non-normative leads only.
 
 ## KELD-COMPAT-008
 
@@ -3869,9 +3871,12 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    IPv4-translated embeddings), and live-mutable
    https URLs (no git object id in the path, e.g. `/blob/main/` or
    `https://example.com/foo`) are
-   non-normative leads. Host checks are literal (no DNS); abbreviated IPv4
+   non-normative leads.    Host checks are literal (no DNS); abbreviated IPv4
    (`127.1`, `010.0.0.1`, `1.1`) and DNS-to-private names (`nip.io`) are T1
-   residuals. Allowed pins: `sha256:<64 hex>` or https with a
+   residuals. A trailing FQDN dot is the same host, including GitHub raw CDN
+   live-ref checks. An unbracketed `host:port` (or `[v6]:port`) must use a
+   decimal `u16` port; `github.com:abc` and `github.com:65536` are leads.
+   Allowed pins: `sha256:<64 hex>` or https with a
    parsed public host and a 40- or 64-hex git object id path segment.
    A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object
    id must be the `blob`/`tree`/`raw` (or GitHub raw CDN) ref itself.
