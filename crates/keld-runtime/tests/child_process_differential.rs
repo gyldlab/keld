@@ -1,6 +1,11 @@
-//! KEL-77 T1: package-agnostic Node-versus-Bun differential harness for the
+//! KEL-77: package-agnostic Node-versus-Bun differential harness for the
 //! child-process lifecycle family. Spec:
 //! `docs/specs/kel77-bun-child-process-differential.md`.
+//!
+//! T1 measures six child-process cases under Node and Bun. T2 serializes those
+//! cells as `keld.compat.evidence/v1` and validates them with
+//! [`keld_compat::evidence::parse_evidence`] — no parallel parser, no product
+//! percent, no `score()` panel.
 //!
 //! # Why this exists
 //!
@@ -53,15 +58,30 @@
 
 #![allow(clippy::expect_used, clippy::panic)] // test crate: expect/panic are the assertion oracle
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use serde_json::{Map, Value};
+use keld_compat::evidence::{
+    Arch, AuthorityProfile, OperationKind, Platform, Verdict as EvidenceVerdict, parse_evidence,
+};
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 /// Documentation revision every oracle sentence in this file was read from.
 const ORACLE_REVISION: &str = "nodejs-docs-v24.x@2026-08-19";
 /// Bytes the abrupt/drained flush fixture writes before exiting.
 const DRAINED_WRITE_BYTES: u64 = 200_000;
+/// Least-wrong existing KEL-74 `operation.kind`. Runtime-semantics cells are
+/// none of the v1 kinds; KEL-74 did not add `runtime_semantics`. One named
+/// constant so a later switch is one line.
+const OPERATION_KIND: &str = "primary_workflow";
+/// Bare Node/Bun spawned from a test process have ambient OS authority.
+/// `strict_bun` would claim Keld's zero-ambient profile, which is false.
+const AUTHORITY_PROFILE: &str = "legacy_sandbox_off";
+/// Producer-side copy of the KEL-74 schema id. The parser, not this string,
+/// is the validation oracle.
+const EVIDENCE_SCHEMA: &str = "keld.compat.evidence/v1";
 
 /// Whether upstream documentation pins the observable this case measures.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,7 +102,7 @@ enum Verdict {
 }
 
 /// One measured runtime.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Arm {
     name: &'static str,
     exe: &'static str,
@@ -141,8 +161,22 @@ fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/child-process")
 }
 
+fn revision_stdout(exe: &str, flag: &str) -> String {
+    let out = Command::new(exe).arg(flag).output().unwrap_or_else(|e| {
+        panic!(
+            "`{exe} {flag}` failed: {e}. KEL-77 requires both `node` and `bun` on PATH; \
+             install the missing runtime rather than skipping the differential."
+        )
+    });
+    assert!(out.status.success(), "`{exe} {flag}` exited {}", out.status);
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 /// Exact revision string of an arm, recorded with every verdict so a result is
 /// never readable without the runtime it was measured against.
+///
+/// This is `revisions.engine` (`node-…` / `bun-…`). `revisions.bun` is the
+/// unprefixed `bun --revision` string from [`bun_revision_raw`].
 fn arm_revision(arm: Arm) -> String {
     // `bun --revision` includes the commit; node only offers `--version`.
     let flag = if arm.exe == "bun" {
@@ -150,27 +184,230 @@ fn arm_revision(arm: Arm) -> String {
     } else {
         "--version"
     };
-    let out = Command::new(arm.exe)
-        .arg(flag)
+    format!("{}-{}", arm.name, revision_stdout(arm.exe, flag))
+}
+
+fn bun_revision_raw() -> String {
+    revision_stdout("bun", "--revision")
+}
+
+fn keld_revision() -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "`{} {flag}` failed: {e}. KEL-77 requires both `node` and `bun` on PATH; \
-             install the missing runtime rather than skipping the differential.",
-                arm.exe
-            )
-        });
+        .unwrap_or_else(|e| panic!("`git rev-parse HEAD` failed: {e}"));
     assert!(
         out.status.success(),
-        "`{} {flag}` exited {}",
-        arm.exe,
+        "`git rev-parse HEAD` exited {}",
         out.status
     );
-    format!(
-        "{}-{}",
-        arm.name,
-        String::from_utf8_lossy(&out.stdout).trim()
-    )
+    let rev = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    assert!(!rev.is_empty(), "git rev-parse HEAD was empty");
+    rev
+}
+
+fn host_platform() -> &'static str {
+    let os = std::env::consts::OS;
+    assert!(
+        matches!(os, "macos" | "windows" | "linux"),
+        "KEL-74 platform is macos|windows|linux, got {os}"
+    );
+    os
+}
+
+fn host_arch() -> &'static str {
+    let arch = std::env::consts::ARCH;
+    assert!(
+        matches!(arch, "aarch64" | "x86_64"),
+        "KEL-74 arch is aarch64|x86_64, got {arch}"
+    );
+    arch
+}
+
+fn posix_rel(root: &Path, path: &Path) -> String {
+    let mut rel = String::new();
+    for component in path
+        .strip_prefix(root)
+        .unwrap_or_else(|_| panic!("{} is not under {}", path.display(), root.display()))
+        .components()
+    {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        if !rel.is_empty() {
+            rel.push('/');
+        }
+        rel.push_str(&part.to_string_lossy());
+    }
+    rel
+}
+
+fn corpus_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, current: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        let mut entries: Vec<_> = fs::read_dir(current)
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", current.display()))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|e| panic!("read_dir {}: {e}", current.display()));
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            if file_type.is_dir() {
+                walk(root, &path, out);
+            } else if file_type.is_file() {
+                let rel = posix_rel(root, &path);
+                let bytes =
+                    fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+                out.push((rel, bytes));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files);
+    files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    files
+}
+
+/// Spec §4.3: `SHA256(path_utf8 || 0x00 || u64_le(len) || bytes)` over files
+/// ordered by byte-wise relative POSIX path.
+fn digest_named_blobs(files: &[(&str, &[u8])]) -> String {
+    let mut files = files.to_vec();
+    files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    let mut hasher = Sha256::new();
+    for (path, bytes) in files {
+        hasher.update(path.as_bytes());
+        hasher.update([0_u8]);
+        let len = u64::try_from(bytes.len()).expect("corpus file larger than u64");
+        hasher.update(len.to_le_bytes());
+        hasher.update(bytes);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn corpus_digest(dir: &Path) -> String {
+    let files = corpus_files(dir);
+    assert!(
+        !files.is_empty(),
+        "corpus {} has no files; a digest must identify a real fixture set",
+        dir.display()
+    );
+    let blobs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+        .collect();
+    digest_named_blobs(&blobs)
+}
+
+fn sha256_uri(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn wire_result(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Pass => "pass",
+        Verdict::Fail => "fail",
+        Verdict::Unknown => "unknown",
+    }
+}
+
+fn evidence_json(
+    corpus_sha256: &str,
+    keld: &str,
+    bun: &str,
+    engine: &str,
+    case: &Case,
+    result: Verdict,
+    evidence_uri: &str,
+) -> String {
+    serde_json::to_string(&json!({
+        "schema": EVIDENCE_SCHEMA,
+        "artifact": {
+            "sha256": corpus_sha256,
+            "platform": host_platform(),
+            "arch": host_arch(),
+        },
+        "revisions": {
+            "keld": keld,
+            "bun": bun,
+            "engine": engine,
+        },
+        "authority_profile": AUTHORITY_PROFILE,
+        "operation": {
+            "id": case.operation_id,
+            "kind": OPERATION_KIND,
+            "oracle": {
+                "id": case.oracle_id,
+                "revision": ORACLE_REVISION,
+            },
+        },
+        "result": wire_result(result),
+        "evidence_uri": evidence_uri,
+    }))
+    .expect("evidence JSON serializes")
+}
+
+struct EmittedRecord {
+    arm: Arm,
+    case: &'static Case,
+    json: String,
+    verdict: Verdict,
+}
+
+/// Serialize every (case × arm) cell as `keld.compat.evidence/v1`. T2 adds no
+/// new measurement: verdicts still come from [`derive_verdict`].
+fn emit_v1_records() -> (String, String, Vec<EmittedRecord>) {
+    let corpus_sha256 = corpus_digest(&corpus_dir());
+    let keld = keld_revision();
+    let bun = bun_revision_raw();
+    let node_engine = arm_revision(NODE);
+    let bun_engine = arm_revision(BUN);
+
+    let mut report = Vec::new();
+    let mut cells = Vec::new();
+    for case in CASES {
+        for arm in [NODE, BUN] {
+            let obs = run_case(arm, case.operation_id);
+            let (verdict, _) = derive_verdict(case, &obs);
+            let line = json!({
+                "arm": arm.name,
+                "operation_id": case.operation_id,
+                "observation": obs,
+            });
+            report.extend(serde_json::to_vec(&line).expect("observation JSON"));
+            report.push(b'\n');
+            cells.push((arm, case, verdict));
+        }
+    }
+    let evidence_uri = sha256_uri(&report);
+
+    let records = cells
+        .into_iter()
+        .map(|(arm, case, verdict)| {
+            let engine = if arm.name == NODE.name {
+                &node_engine
+            } else {
+                &bun_engine
+            };
+            EmittedRecord {
+                arm,
+                case,
+                json: evidence_json(
+                    &corpus_sha256,
+                    &keld,
+                    &bun,
+                    engine,
+                    case,
+                    verdict,
+                    &evidence_uri,
+                ),
+                verdict,
+            }
+        })
+        .collect();
+    (corpus_sha256, evidence_uri, records)
 }
 
 /// Run one case under one arm and return its single JSON observation line.
@@ -574,4 +811,166 @@ fn differential_report_pins_revision_platform_and_oracle_for_every_cell() {
         CASES.len() * 2,
         "every case must be measured on both arms"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance §3.10 — T2: every cell is a real `keld.compat.evidence/v1`
+// record. The oracle is `parse_evidence`, not a shape-only assertion.
+// Showcase / non-product: this test MUST NOT call `score()` or mint a
+// product percent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn emitted_records_parse_via_keld_compat() {
+    assert_eq!(OPERATION_KIND, "primary_workflow");
+    let (corpus_sha256, evidence_uri, records) = emit_v1_records();
+    assert_eq!(records.len(), CASES.len() * 2);
+    assert!(
+        corpus_sha256.starts_with("sha256:") && corpus_sha256.len() == 7 + 64,
+        "corpus digest must be sha256: + 64 hex, got {corpus_sha256}"
+    );
+    assert!(
+        evidence_uri.starts_with("sha256:") && evidence_uri.len() == 7 + 64,
+        "evidence_uri must be sha256: + 64 hex, got {evidence_uri}"
+    );
+
+    let out_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/kel77-child-process-evidence");
+    fs::create_dir_all(&out_dir).expect("target/kel77-child-process-evidence");
+
+    let bun = bun_revision_raw();
+    let keld = keld_revision();
+    let expected_platform = match host_platform() {
+        "macos" => Platform::Macos,
+        "windows" => Platform::Windows,
+        "linux" => Platform::Linux,
+        other => panic!("unreachable host_platform {other}"),
+    };
+    let expected_arch = match host_arch() {
+        "aarch64" => Arch::Aarch64,
+        "x86_64" => Arch::X86_64,
+        other => panic!("unreachable host_arch {other}"),
+    };
+
+    for record in &records {
+        let name = format!("{}-{}.json", record.arm.name, record.case.operation_id);
+        let path = out_dir.join(name);
+        fs::write(&path, record.json.as_bytes()).expect("write evidence record");
+        let bytes = fs::read(&path).expect("read evidence record");
+        let parsed = parse_evidence(&bytes).unwrap_or_else(|e| {
+            panic!(
+                "parse_evidence rejected {} / {}: {e}\n{}",
+                record.arm.name, record.case.operation_id, record.json
+            )
+        });
+
+        assert_eq!(parsed.artifact().sha256, corpus_sha256);
+        assert_eq!(parsed.artifact().platform, expected_platform);
+        assert_eq!(parsed.artifact().arch, expected_arch);
+        assert_eq!(parsed.revisions().keld, keld);
+        assert_eq!(parsed.revisions().bun, bun);
+        assert_eq!(parsed.revisions().engine, arm_revision(record.arm));
+        assert_eq!(
+            parsed.authority_profile(),
+            AuthorityProfile::LegacySandboxOff
+        );
+        assert_eq!(parsed.operation().id, record.case.operation_id);
+        assert_eq!(parsed.operation().kind, OperationKind::PrimaryWorkflow);
+        assert_eq!(parsed.operation().oracle.id, record.case.oracle_id);
+        assert_eq!(parsed.operation().oracle.revision, ORACLE_REVISION);
+        assert_eq!(parsed.evidence_uri(), evidence_uri);
+        assert!(parsed.waiver().is_none(), "harness never emits waived");
+        assert_ne!(parsed.result(), EvidenceVerdict::Waived);
+
+        let expected = match record.verdict {
+            Verdict::Pass => EvidenceVerdict::Pass,
+            Verdict::Fail => EvidenceVerdict::Fail,
+            Verdict::Unknown => EvidenceVerdict::Unknown,
+        };
+        assert_eq!(parsed.result(), expected);
+
+        if record.case.operation_id == "child-process.kill-after-exit" && record.arm.name == "bun" {
+            assert_eq!(
+                parsed.result(),
+                EvidenceVerdict::Fail,
+                "Bun kill-after-exit must stay fail in the evidence record"
+            );
+        }
+        if record.case.operation_id == "child-process.stdout-flush-on-abrupt-exit" {
+            assert_eq!(parsed.result(), EvidenceVerdict::Unknown);
+        }
+    }
+
+    // The real parser, not a key-presence check: KEL-74's closed kind set
+    // rejects `runtime_semantics` with KELD-COMPAT-005.
+    let forged = records[0].json.replace(OPERATION_KIND, "runtime_semantics");
+    let err = parse_evidence(forged.as_bytes())
+        .expect_err("runtime_semantics is not a v1 kind; parse_evidence must fail closed");
+    assert_eq!(err.code(), "KELD-COMPAT-005");
+    assert!(err.to_string().contains("KELD-COMPAT-005"), "{}", err);
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance §3.11 — T2: mutating a fixture file changes the corpus digest.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn corpus_digest_changes_when_a_fixture_changes() {
+    let baseline = corpus_digest(&corpus_dir());
+    assert_eq!(
+        baseline,
+        corpus_digest(&corpus_dir()),
+        "digest of an unchanged corpus must be stable"
+    );
+
+    let tmp = tempfile::tempdir().expect("isolated corpus copy");
+    for (rel, bytes) in corpus_files(&corpus_dir()) {
+        let dest = tmp
+            .path()
+            .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).expect("corpus parent");
+        }
+        fs::write(&dest, bytes).expect("copy fixture");
+    }
+    assert_eq!(
+        corpus_digest(tmp.path()),
+        baseline,
+        "a byte-identical copy must keep the committed digest"
+    );
+
+    let mutated_path = tmp.path().join("driver.cjs");
+    let mut bytes = fs::read(&mutated_path).expect("driver.cjs in copy");
+    assert!(
+        !bytes.is_empty(),
+        "driver.cjs must be non-empty to flip a byte"
+    );
+    bytes[0] ^= 0x01;
+    fs::write(&mutated_path, &bytes).expect("mutate driver.cjs");
+    let mutated = corpus_digest(tmp.path());
+    assert_ne!(
+        mutated, baseline,
+        "flipping one fixture byte must change artifact.sha256 so a record \
+         cannot silently describe a different corpus"
+    );
+    assert!(mutated.starts_with("sha256:") && mutated.len() == 7 + 64);
+}
+
+#[test]
+fn corpus_digest_rename_plus_content_shuffle_does_not_collide() {
+    // Spec §4.3: path || 0x00 || u64_le(len) || bytes. Concatenating path and
+    // bytes without framing would hash ("ab","c") and ("a","bc") the same.
+    let left = digest_named_blobs(&[("ab", b"c")]);
+    let right = digest_named_blobs(&[("a", b"bc")]);
+    assert_ne!(left, right);
+}
+
+#[test]
+fn corpus_digest_length_framing_is_not_a_no_op() {
+    // Removing u64_le(len) would let content that starts with a NUL-framed
+    // length prefix collide with a shorter file plus extra bytes. Keep the
+    // length field in the hash so that mutation is independently observable.
+    let short = digest_named_blobs(&[("f", b"x")]);
+    let long = digest_named_blobs(&[("f", b"xy")]);
+    assert_ne!(short, long);
 }

@@ -1,7 +1,7 @@
 # Spec: package-agnostic Bun differential harness — child-process lifecycle (KEL-77)
 
 Status: approved
-Linear: KEL-77 · Owner: GYLDLAB · Updated: 2026-08-19 (T1 scope reconciled after the KEL-74 dependency hold)
+Linear: KEL-77 · Owner: GYLDLAB · Updated: 2026-08-19 (T2: evidence round-trip after KEL-74 merge `8ff4cd6`)
 
 ## 1. Goal & non-goals
 
@@ -81,17 +81,19 @@ Non-goals:
 9. Given any arm, when the harness runs, then the exact `--revision` / `--version` string
    of that arm is recorded in every record it produces, so a verdict is never readable
    without the revision it was measured against.
-10. **(T2 — blocked on KEL-74 / PR #34.)** Given the emitted record set, when it is
-    inspected, then every record is a
+10. Given the emitted record set, when it is inspected, then every record is a
     `keld.compat.evidence/v1` object whose `artifact.sha256` is the corpus digest defined
     in §4.3, whose `artifact.platform`/`arch` are the real host values, whose
     `revisions.bun` is the exact `bun --revision` string, whose `operation.oracle.id` and
     `revision` name the cited Node documentation, and whose `result` is one of
-    `pass`/`fail`/`unknown`. `waived` is never emitted by this harness.
-11. **(T2 — blocked on KEL-74 / PR #34.)** Error case: given a fixture file mutated on
-    disk, when the harness runs, then the
-    recomputed corpus digest differs from the previous record set, so a record can never
-    silently describe a different corpus than the one that ran.
+    `pass`/`fail`/`unknown`. `waived` is never emitted by this harness. Validation is
+    `keld_compat::evidence::parse_evidence` (KEL-74), not a shape-only assertion. The
+    harness does not call `score()` and does not mint a product percent — this corpus is
+    showcase / non-product; extras cannot shrink N; `complete` needs n>0; the documented
+    product corpus list is empty.
+11. Error case: given a fixture file mutated on disk, when the corpus digest is
+    recomputed, then it differs from the digest of the committed corpus, so a record can
+    never silently describe a different corpus than the one that ran.
 12. Given the harness's own comparator fed a deliberately-wrong expectation (the committed
     negative-control cell), when verdicts are derived, then it yields `fail` — proving the
     comparator can produce a failing verdict and is not a constant `pass`.
@@ -134,15 +136,15 @@ Non-goals:
     live output as the oracle — a mirror, not an oracle: it cannot distinguish "Bun is
     wrong" from "Node changed", and it would make the Node arm unfalsifiable by
     construction.
-  - **Hashing: deferred to T2 with the serializer.** `keld.compat.evidence/v1` mandates a
-    real `sha256:<64 hex>` artifact digest, which needs `sha2` (RustCrypto; MIT OR
-    Apache-2.0, on the `deny.toml` allow-list; already in `Cargo.lock` at 0.10.9 via
-    `wry`). Because T1 no longer serializes records (see §4.6), the digest has no consumer
-    yet, so T1 adds **no new dependency and does not edit the single-writer workspace
-    `Cargo.toml`** at all. In T1 the fixture bytes are pinned by the committed git
-    revision, which identifies them exactly. *Rejected for T2:* hand-rolling SHA-256
-    (forbidden duplicate of a primitive); shelling out to `node -e` (makes the digest
-    depend on the runtime under test); `git hash-object` (SHA-1 blob id, wrong digest).
+  - **Hashing (T2).** `keld.compat.evidence/v1` mandates a real `sha256:<64 hex>`
+    artifact digest. T2 adds a workspace-pinned `sha2` 0.10 **dev-dependency** on
+    `keld-runtime` (RustCrypto; MIT OR Apache-2.0; already in `Cargo.lock` at 0.10.9 via
+    `wry`; no first-party hasher exists — `keld-update` is empty). *Rejected:*
+    hand-rolling SHA-256 (forbidden duplicate of a primitive); shelling out to `node -e`
+    (makes the digest depend on the runtime under test); `git hash-object` (SHA-1 blob
+    id, wrong digest); using wry's transitive `sha2` without a direct dep (Cargo forbids
+    it). `keld-runtime` also gains a **dev-dependency** on `keld-compat` so tests call
+    `parse_evidence` rather than forking a parser.
   - Compatibility fallback: `not required` — no prior runtime-differential harness exists.
   - Performance claim: none made, none retained.
 
@@ -176,7 +178,7 @@ are *recorded* in every record; assertions are oracle-based. (YAGNI, per `.agent
 The verdict written into the record is always derived from observation-versus-oracle, and
 is independent of whether the build is green.
 
-### 4.3 Fixture corpus digest — **T2, blocked on KEL-74**
+### 4.3 Fixture corpus digest
 
 `artifact.sha256` is `sha256:` + lowercase hex of:
 
@@ -208,7 +210,7 @@ merely unreaped. Case 6 additionally runs a drained variant (child awaits the do
 write callback before exiting) to demonstrate the divergence disappears on the specified
 path — which is why case 6 is `unknown`, not `fail`.
 
-### 4.5 Record mapping onto `keld.compat.evidence/v1` — **T2, blocked on KEL-74**
+### 4.5 Record mapping onto `keld.compat.evidence/v1`
 
 | Record field | Value |
 |---|---|
@@ -232,19 +234,12 @@ measurement was taken under Keld's zero-ambient-authority profile, which is fals
 The record set references the raw observation report by content hash, so both arms' raw
 observations are retained and addressable without embedding them in every record.
 
-### 4.6 Why T1 stops short of serializing records
+### 4.6 T1 hold, T2 mapping
 
-`keld.compat.evidence/v1` is defined by KEL-74's PR #34, which is **open, unreviewed and
-still changing** (its own spec was edited while KEL-77 was in progress). Hard-coding that
-field set now would fork a schema this issue does not own — the precise AGENTS.md §3
-violation the reuse decision exists to avoid — and would silently diverge the moment #34
-lands. T1 therefore computes and asserts every datum a record needs (operation id, oracle
-identity and revision, three-state verdict, arm revision, platform, arch) and prints them
-as a differential report; T2 maps that report onto the frozen schema and validates it with
-the real `keld_compat::evidence::parse_evidence` rather than a shape-only assertion.
-
-This is a deliberate hold, not descoping: the blocked surface is the field-name mapping
-only, so T2 adds no new measurement.
+T1 computed every datum a record needs and printed a differential report because KEL-74's
+schema was still in flight. KEL-74 merged as `8ff4cd61bd7776fdc6096864d61ec343975a131f`.
+T2 maps that report onto the frozen schema and validates it with
+`keld_compat::evidence::parse_evidence`. No new measurement; no product `score()` panel.
 
 - New/changed types & channels: none shipped. All new code is test-only.
 - Capabilities required; manifest changes (spec 03): none.
@@ -256,24 +251,24 @@ only, so T2 adds no new measurement.
 
 ## 5. Boundaries
 
-- Implement in (T1, as shipped): `crates/keld-runtime/tests/child_process_differential.rs`,
+- Implement in: `crates/keld-runtime/tests/child_process_differential.rs`,
   `crates/keld-runtime/fixtures/child-process/` (2 fixture files),
-  `crates/keld-runtime/Cargo.toml` (one dev-dependency on an already-workspace-pinned
-  crate), `docs/specs/kel77-bun-child-process-differential.md`, `docs/agents/learnings.md`.
-- Must not touch: workspace `Cargo.toml` (single-writer; T1 needs no edit there),
-  `.github/workflows/*` (single-writer), `crates/keld-guard/**`,
-  `crates/keld-ipc/**`, `crates/keld-compat/**` (KEL-74 owns `evidence.rs`),
-  `packages/@keld/electron/**`, `docs/research/**`, `docs/architecture/*` (no deviation),
-  any other agent's worktree or branch.
+  `crates/keld-runtime/Cargo.toml` (dev-dependencies: `serde_json`, `keld-compat`,
+  `sha2`, `tempfile`), workspace `Cargo.toml` (`sha2` pin + review comment),
+  `docs/specs/kel77-bun-child-process-differential.md`, `docs/agents/learnings.md`.
+- Must not touch: `.github/workflows/*` (single-writer), `crates/keld-guard/**`,
+  `crates/keld-ipc/**`, `crates/keld-compat/src/**` (KEL-74 owns `evidence.rs`; this
+  harness is a producer only), `packages/@keld/electron/**`, `docs/research/**`,
+  `docs/architecture/*` (no deviation), any other agent's worktree or branch.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [x] T1 Fixture corpus + Rust differential harness + 6 cases + oracle comparison +
       executed negative controls. Acceptance §3.1–§3.9 and §3.12. **Done.**
-- [ ] T2 (**blocked on KEL-74 / PR #34**) Corpus digest (§4.3), `keld.compat.evidence/v1`
-      serialization (§4.5), and validation through the real
-      `keld_compat::evidence::parse_evidence` rather than shape-only assertions.
-      Acceptance §3.10–§3.11. Adds the `sha2` dev-dependency and its review gate.
+- [x] T2 Corpus digest (§4.3), `keld.compat.evidence/v1` serialization (§4.5), and
+      validation through `keld_compat::evidence::parse_evidence`. Acceptance §3.10–§3.11.
+      Adds the `sha2` workspace pin (dev-only on `keld-runtime`) and its review gate.
+      Does **not** call `score()` or mint a product percent.
 - [ ] T3 (follow-up issue) Windows and Linux execution + per-platform expectations.
 - [ ] T4 (follow-up issue) Upstream a minimized `kill()`-after-exit reproducer to
       `oven-sh/bun` as a general fixture, and link the issue from the record.
@@ -287,9 +282,9 @@ only, so T2 adds no new measurement.
 | 3.6 | `kill_after_exit_matches_baseline_and_records_bun_fail` | `kill()`/`killed`/`ESRCH` triple; record `result` |
 | 3.7 | `abrupt_exit_flush_is_recorded_unknown` | both records `unknown`; drained variant equal on both arms |
 | 3.8 | `kill_after_exit_matches_baseline_and_records_bun_fail` (same test) | pinned defect expectation + remediation message |
-| 3.9 | `emitted_records_have_v1_shape` | non-empty `revisions.bun` / `revisions.engine` per record |
-| 3.10 | *(T2 — blocked on KEL-74)* `emitted_records_parse_via_keld_compat` | the real `parse_evidence`, not a shape assertion |
-| 3.11 | *(T2 — blocked on KEL-74)* `corpus_digest_changes_when_a_fixture_changes` | digest over a temp corpus copy with one byte flipped |
+| 3.9 | `differential_report_pins_revision_platform_and_oracle_for_every_cell` | non-empty revision / platform / arch / oracle per cell |
+| 3.10 | `emitted_records_parse_via_keld_compat` | the real `parse_evidence`, not a shape assertion; `runtime_semantics` kind is `KELD-COMPAT-005` |
+| 3.11 | `corpus_digest_changes_when_a_fixture_changes` | digest over a temp corpus copy with one byte flipped |
 | 3.12 | `comparator_can_emit_fail` (negative control) | deliberately-wrong expectation ⇒ `fail` |
 
 Anti-flake: no sleeps — case 2 kills only after the child's `READY` line is observed, and
@@ -309,11 +304,13 @@ removing the length framing from §4.3 must fail `corpus_digest_changes_when_a_f
 2. Public API: **none** — all new code is test-only; no `pub` item is added to
    `keld-runtime`'s shipped surface.
 3. Permission model: none.
-4. Dependency: **no new dependency in T1.** `keld-runtime` gains a dev-dependency on
-   `serde_json`, which is already workspace-pinned and already used by `keld-guard` and
-   `keld-cli`. `Cargo.lock` gains exactly one line — the new `keld-runtime -> serde_json`
-   edge — and no new package, version or source enters the tree.
-   The `sha2` addition and its review gate move to T2 with the serializer (§4.1).
+4. Dependency: **`sha2` 0.10** is added to `[workspace.dependencies]` and as a
+   `keld-runtime` **dev-dependency** (see workspace `Cargo.toml` review comment).
+   Purpose: corpus digest + observation-report `evidence_uri`. Alternatives rejected
+   in §4.1. `keld-compat` and `tempfile` are already workspace-pinned; T2 adds
+   dev-only edges from `keld-runtime` to both. No new package enters the lockfile
+   for `sha2` (already present via wry at 0.10.9); the lockfile gains a direct
+   `keld-runtime` → `sha2` edge.
 5. Wire protocol: none for kipc. This harness *emits* KEL-74's versioned JSON document
    format without defining or modifying it.
 
@@ -331,9 +328,9 @@ Blocking human decisions before Status: approved.
    (human):** emit `primary_workflow` as the least-wrong existing value and leave the
    coordination note on KEL-74 for its owner to decide. This issue does not fork the enum.
    The value is a single named constant in the harness so a later switch is one line.
-2. **T2 is blocked, deliberately.** `keld.compat.evidence/v1` is unmerged and changing in
-   PR #34. T2 must not start until #34 is reviewed and merged; starting earlier would fork
-   the schema. Confirm the hold, or re-scope T2 onto whatever KEL-74 finally freezes.
+2. ~~**T2 is blocked, deliberately.**~~ **Resolved 2026-08-19:** KEL-74 merged as
+   `8ff4cd6`. T2 serializes through `parse_evidence` on that freeze. `operation.kind`
+   remains `primary_workflow` (named constant). No `runtime_semantics` fork.
 3. **Baseline versus pinned Bun.** CI's `oven-sh/setup-bun` has no version pin, so the CI
    Bun revision floats and will periodically become unbaselined (acceptance §3.9 makes that
    `unknown`, not red). Pinning Bun in CI would make the gate sharper but edits a
