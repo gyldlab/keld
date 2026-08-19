@@ -25,9 +25,12 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 
 ## Engineering principles — non-negotiable
 
-Agents MUST apply first-principles systems engineering and DRY before choosing a design
-or writing code. Familiar framework shapes, a larger language rewrite, and a passing
-happy path are not evidence that a design is correct, secure or fast.
+For every architecture, public-contract, process, IPC, permission, lifecycle or
+performance design change, agents MUST apply first-principles systems engineering and
+DRY before choosing a design or writing code. Familiar framework shapes, a larger
+language rewrite, and a passing happy path are not evidence that a design is correct,
+secure or fast. For smaller changes, agents MUST state `No boundary change` when that
+distinction would otherwise be ambiguous.
 
 1. **Start from facts, not analogies.** Decompose the change into ownership, process,
    memory, I/O, lifecycle, trust and failure facts. State who owns each handle, who can
@@ -38,8 +41,9 @@ happy path are not evidence that a design is correct, secure or fast.
    abstraction, platform primitive, verified upstream facility and generated contract
    before adding a replacement. A rewrite is permitted only when the existing option
    cannot meet a named correctness, security, ownership or measured-performance
-   requirement. The spec/PR MUST record the rejected alternative and preserve a
-   compatibility fallback whenever the published contract requires one.
+   requirement. An approved spec—or, for a bug fix governed by an existing spec, the
+   PR—MUST record the rejected alternative and preserve a compatibility fallback whenever
+   the published contract requires one.
 3. **One rule, one owner, one source of truth.** Agents MUST NOT duplicate policy,
    schema, permission checks, wire parsing, lifecycle state, platform shims or helpers
    because a shared implementation is inconvenient. Fix or extend the owning
@@ -166,39 +170,13 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 ## Linear coordination (mandatory)
 
 For every task associated with a KELD Linear issue, Linear is the shared execution
-record, not a final reporting form. Agents MUST follow this loop when the Linear
-connector is available:
-
-1. **Refresh before action.** Fetch the issue, description, comments, status and
-   relations before starting a work session; refresh again before a material design or
-   scope decision, before integration/verification, and before handoff. Reconcile new
-   Linear evidence with the checked-out code and spec rather than assuming the issue is
-   current.
-2. **Start visibly.** Move only the agent's own issue to `In Progress`, then post a
-   concise plan naming scope, expected paths/crates, non-goals, dependencies and the
-   first falsifiable acceptance check. Never change another agent's status, ownership,
-   priority or scope without explicit authority.
-3. **Report material progress.** Post a comment after a frozen contract decision, a
-   meaningful test/prototype pass or fail, a discovered blocker/contradiction, a scope
-   change, or at least each substantial milestone. The comment MUST state completed
-   work, evidence/files, current result, remaining work, blockers/risks and the next
-   acceptance check. Agents MUST NOT use Linear comments to turn unverified inference
-   into a fact.
-4. **Resolve conflicts early.** If a refreshed issue shows a duplicate, blocker,
-   supersession or another active owner of the same contract, stop the overlapping work
-   and record the exact conflict. A worktree prevents filesystem races; it does not
-   authorize competing architecture decisions.
-5. **Close honestly.** Before handoff, refresh the issue once more and post actual gate
-   output, review gates, platforms/conditions not exercised, commit/PR links and
-   follow-up issue IDs. Move an issue to `Done` only after every stated acceptance
-   criterion is met. Otherwise leave it `In Progress` or mark it `Blocked` with the
-   precise external dependency.
-
-When Linear is unavailable, agents MUST record that limitation in the handoff and keep
-the same evidence in the PR or task report; they MUST NOT invent a ticket update.
+record, not a final reporting form. When the connector is available, agents MUST follow
+the canonical lifecycle in [`docs/agents/workflow.md`](docs/agents/workflow.md). When it
+is unavailable or permissions prevent an update, agents MUST record that limitation in
+the PR or handoff and MUST NOT invent a ticket update.
 
 First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
-1. Agents MUST decompose every design to OS/process/memory/trust-boundary facts across host / Bun child / webview. If it does not change who owns a handle, who can crash whom, or who can mint a principal, it is not architecture.
+1. Apply the Engineering principles above across host / Bun child / webview; Keld-specific architecture additionally changes who owns a handle, who can crash whom, or who can mint a principal. If it changes none of those facts, it is not architecture.
 2. Agents MUST treat wry layout, Tauri ACL, Electron docs, and platform event loops as evidence of facts — not templates. Copying crate graphs, tokio-in-core, ACL wildcards, or in-process Node is cargo-cult.
 3. Agents MUST protect four uniques only: prebuilt host, supervised Bun process family with zero ambient OS authority per strict-profile principal, kipc, default-deny (generated, host-enforced). MUST NOT invent a fifth.
 4. Two YAGNI tests: (a) can Linear Phase 2 (window + kipc echo + crate map) ship without this? (b) does this file exist only to look complete? Either yes → agents MUST NOT land it.
@@ -224,7 +202,7 @@ Forbidden when a test, gate, or check fails:
 - Regenerating or hand-editing a generated artifact until a check passes without confirming the generator itself is current. A stale generator can emit a self-consistent wrong artifact that satisfies a staleness check and still fails the content test. Rebuild the generator from the working tree first.
 - Treating a red gate as noise. Reproduce it locally, find the cause, then fix.
 
-When the real fix is genuinely out of scope, agents MUST stop and say so — name the cause, propose the fix, and let a human choose. A disclosed limitation is acceptable; a silent workaround is not. Merging with a failing required check MUST have explicit human approval, and the reason MUST be recorded on the PR.
+When the real fix is genuinely out of scope, agents MUST stop and say so — name the cause, propose the fix, and let a human choose. A disclosed limitation is acceptable; a silent workaround is not. A required failing check MUST be fixed before merge. If its contract is wrong, the rule/test change requires explicit human approval and lands before or with the dependent implementation; approval alone MUST NOT waive the check.
 
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.

@@ -1,21 +1,23 @@
 # Spec: principalized Bun child roles and virtual-port routing
 
-Status: draft
+Status: approved
 Linear: KEL-75 · Owner: GYLDLAB · Updated: 2026-08-19
 
 ## 1. Goal & non-goals
 
-Keld needs a host-owned family of independently supervised Bun roles while retaining
-one authority root, default-deny dispatch, and an app-agnostic runtime core. Each role
-instance must receive a new host-minted principal generation and a private authenticated
-link. The host, rather than a role, creates roles, virtual ports, windows and privileged
-resources. This specification makes the later Electron `utilityProcess` and
-`MessageChannelMain` facades consumers of that generic model.
+Keld extends KEL-70's live generic single-child supervisor into a host-owned family of
+independently supervised Bun roles while retaining one authority root, default-deny
+dispatch, and an app-agnostic runtime core. Each role instance receives a new
+host-minted principal generation and private authenticated link. The host, rather than a
+role, creates roles, virtual ports, windows and privileged resources. This specification
+makes the later Electron `utilityProcess` and `MessageChannelMain` facades consumers of
+that generic model.
 
 Non-goals:
 
-- Implementing `keld-runtime`, `@keld/api`, `@keld/electron`, shared memory, or an OS
-  sandbox in this change.
+- Replacing KEL-70's generic `keld_runtime::Supervisor`, its restart policy, output
+  capture, or crash-loop breaker. T1 extends it through a role-bootstrap boundary.
+- Implementing `@keld/api`, `@keld/electron`, shared memory, or an OS sandbox in T1.
 - Giving a webview a Bun socket, pipe, file descriptor, mapping handle, reconnect
   capability, or direct OS channel.
 - Making a PID, listener path, token, environment variable or a wire field an identity.
@@ -35,29 +37,32 @@ Non-goals:
   `docs/api/utility-process.md`, `docs/api/message-port-main.md`, and
   `spec/api-ipc-spec.ts`
 
-The architecture files describe destination behavior. The live v0 slice remains one
-CLI-owned, token-authenticated echo child and does not implement this specification.
-KEL-70 remains the completed single-primary-child slice; it does not acquire named-role
-or virtual-port behavior through this specification. KEL-72 remains an app-lifecycle
-shim slice; it does not acquire a process model, privileged child channel or role grant.
+The architecture files describe destination behavior. KEL-70 is live: its generic
+supervisor spawns one CLI-owned Bun echo child, captures stdout/stderr, applies
+backoff/crash-loop policy, and reaps exited children. It has no role identity, principal
+binding, role-specific grant, multi-role registry, reusable bootstrap listener or
+renderer-continuity proof. KEL-72 remains an app-lifecycle shim; it does not acquire a
+process model, privileged child channel or role grant through this specification.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
 1. Given a declared role instance, when the host spawns it, then the host creates a
    fresh endpoint, 32-byte possession secret and principal generation before spawn;
    the link is bound to that exact generation only after a valid `HELLO`.
-2. Given a role restart, when the old role tries its token, endpoint or virtual-port
-   capability after revocation, then the host rejects it; a newly spawned generation
-   authenticates with a different token and principal instance under the same declared
-   policy.
+2. Given a primary-role restart, when the old role tries its complete locator or token
+   after revocation, then the host rejects it; a newly provisioned generation has a
+   different endpoint, token and principal instance under the same declared policy.
+   `Revoked(g1)` must happen before any `Provisioned(g2)` or successor spawn. The
+   portable KEL-70 child wait observes/reaps on exit, so literal revoke-before-reap is
+   not claimed for natural exit; a per-OS non-reaping wait design is separate work.
 3. Given two live roles with different principals, when role A sends a call, a port
    transfer, a cancellation or a stale reference naming role B, then role B receives no
    call and neither role's authority changes. A valid role-B workflow remains live.
-4. Given an app-bound and a window-bound role, when their owning window closes, then
+4. Given an app-bound and a window-bound role in T2/T4, when their owning window closes, then
    only the window-bound role and its routes drain and stop; the app-bound role remains
    live until its application session stops. When the host dies, every child is reaped
    by the platform lifecycle mechanism; numeric PID reuse cannot target a later process.
-5. Given a virtual port pair, when the sender transfers one end, then ownership moves
+5. Given a virtual port pair in T3, when the sender transfers one end, then ownership moves
    once to the host-approved target principal; duplicate, self, source, closed and
    stale-generation transfers fail without delivery. FIFO ordering is preserved per
    live port generation, and closing either end gives the peer exactly one disconnect
@@ -66,12 +71,34 @@ shim slice; it does not acquire a process model, privileged child channel or rol
    requested, then the host does not start an unconfined role. A separately declared
    legacy profile remains authenticated and guarded but reports that the strict claim is
    unavailable.
-7. Given an Electron facade fixture against the pinned oracle, when it exercises the
+7. Given an Electron facade fixture in T5 against the pinned oracle, when it exercises the
    selected `utilityProcess` and `MessagePortMain` behaviors, then the facade's
    observable events, transfer validation, queue/start behavior and disconnect behavior
    match the recorded conformance entry. An operation without an oracle remains unknown.
 
 ## 4. Design
+
+### First-principles and reuse decision
+
+- **Ownership/trust/lifecycle:** `keld-runtime::Supervisor` owns a live child process
+  and its restart/reap lifecycle; `keld-ipc` owns wire authentication and must own the
+  reusable endpoint/token listener; the new coordinator owns role generation and only
+  binds a principal after authentication. The webview owns neither the endpoint nor the
+  role lifetime. The host remains the sole privileged-resource owner.
+- **Existing options evaluated:** the live KEL-70 `Supervisor` is retained for spawn,
+  output capture, crash-loop and process-handle lifetime. The CLI-local `EchoServer` is
+  rejected as a reusable listener because it accepts one connection and terminates on
+  invalid `HELLO`; that would let a hostile connector deny the legitimate role. The
+  existing `keld-ipc` handshake is retained as the wire oracle.
+- **Named unmet requirement:** KEL-70 cannot mint fresh endpoint/token generations,
+  bind an authenticated link to host metadata, accept again after an invalid connector,
+  or revoke old link authority before successor provisioning. T1 adds those missing
+  responsibilities without duplicating supervision or wire decoding.
+- **Fallback:** bounded inline kipc remains mandatory. No shared mapping, raw OS handle,
+  direct webview link or compatibility facade is introduced in T1.
+- **Performance:** T1 is a correctness/security boundary, not a performance rewrite;
+  no speed claim is made. Any later bulk optimization needs a reproducible attributed
+  end-to-end benchmark and retains inline `RAW` as fallback.
 
 ### Role declaration and identity
 
@@ -107,14 +134,15 @@ role-specific grant with its own capability diff; it cannot arise from role name
 `utilityProcess` options, a caller payload or an environment value. Both schema changes
 are versioned permission/public-API review gates.
 
-The supervisor owns the process handle and reap operation. It never kills by a bare
-PID after an exit. On exit, handshake failure, protocol abuse, drain deadline or host
-shutdown, it first revokes the role generation, its link, grants, virtual-port
-capabilities and optional mapping handles; it then settles/reroutes observable work as
-the caller contract requires. A restart always starts at provisioning with fresh
-identity. `app-bound` describes ownership by the host's logical app session—not a child
-process tree—so a primary-role restart does not silently grant it control over another
-role's lifetime.
+KEL-70's `Supervisor` owns the process handle and reap operation; it never kills by a
+bare PID after an exit. The role-bootstrap layer owns generation revocation. On
+handshake failure, protocol abuse, drain deadline or host shutdown it revokes the role
+generation before closing/killing the child. On natural exit, portable safe Rust
+observes exit through `try_wait`, which already reaps; the required invariant is that it
+revokes the old generation before it provisions or spawns any successor. A restart
+always starts at provisioning with fresh identity. `app-bound` describes ownership by
+the host's logical app session—not a child process tree—so a primary-role restart does
+not silently grant it control over another role's lifetime.
 
 ### Routed virtual ports
 
@@ -151,9 +179,12 @@ never silently weaken a strict profile.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1: Implement one host-owned `primary` role with a fresh link/principal
-  generation, authenticated handshake, reaping and a black-box restart test. No ports,
-  extra roles, sandbox or shared memory.
+- [ ] T1: Reuse KEL-70's `Supervisor` and extract a generic bootstrap listener in
+  `keld-ipc`: it mints an owner-only endpoint/token, continues accepting after invalid
+  `HELLO`, and revokes/unlinks on drop. Add one host-owned `primary` role coordinator
+  that provisions fresh identity before every spawn, binds only a successful `HELLO`,
+  revokes before successor provisioning, and proves the black-box restart flow. No
+  ports, extra roles, sandbox or shared memory.
 - [ ] T2: Add one `app-bound` role and host-owned lifecycle registry; prove independent
   crash/restart isolation and stale-generation rejection.
 - [ ] T3: Add a bounded host-owned virtual-port pair between two authenticated roles;
@@ -170,16 +201,20 @@ never silently weaken a strict profile.
 
 | Acceptance | Future fixture | Independent oracle |
 |---|---|---|
-| 1–3 | subprocess role fixture that prints its assigned test phase only after handshake | host log/exit status plus rejected stale/foreign calls |
-| 4 | host integration fixture with a real temporary window owner and child processes | observed role exits and unaffected app-bound role call |
-| 5 | virtual-port contract fixture | ordered received sequence, exactly-once disconnect, and no foreign delivery |
+| T1 subset of 1–3 | real Bun subprocess + hostile raw kipc client | ordered `Provisioned(g1) → LinkBound(g1) → Revoked(g1) → Provisioned(g2) → LinkBound(g2)`, `KELD-IPC-007` for token reuse, and a successful legitimate second link |
+| 4 / T4 | host integration fixture with a real temporary window owner and child processes | observed role exits and unaffected app-bound role call |
+| 5 / T3 | virtual-port contract fixture | ordered received sequence, exactly-once disconnect, and no foreign delivery |
 | 6 | platform-specific hostile sandbox fixture | real OS-visible fs/net/handle attempts; untested OS stays unverified |
 | 7 | pinned Electron differential fixture | Electron's documented behavior and checked-in oracle result |
 
 Fixtures use temporary owner-only endpoints, bind ports to `0`, wait for explicit
 readiness records, and use timeouts only as kill switches. Crash/lifetime assertions run
-the risky child out of process. The test author performs a temporary negative control by
-removing generation revocation or route-target validation and records the failing test.
+the risky child out of process. T1 does not claim renderer continuity: current
+host/webview code has no persistent window registry plus renderer acknowledgement oracle.
+T4 must prove it on a real backend with a stable document nonce and post-restart beacon.
+The test author performs a temporary negative control by reusing a token, binding before
+`HELLO`, closing after one invalid `HELLO`, or removing generation revocation and records
+the failing test.
 
 ## 8. Review gates triggered
 
@@ -193,14 +228,13 @@ removing generation revocation or route-target validation and records the failin
 
 ## 9. Perf impact
 
-No current runtime performance impact. T1–T5 measure only after semantic correctness:
+T1 adds a cold bootstrap listener and is not a hot-path optimization. T1–T5 measure only after semantic correctness:
 role spawn/restart latency, p99 bounded routed-port latency, queued-byte maxima, CPU and
 RSS. Shared memory is not a baseline or an acceptance condition; see the committed
 P13 new-run evidence and `docs/research/48-p13-new-run-audit.md`.
 
 ## 10. Open questions
 
-- Human approval is required before implementation begins.
 - KEL-78 must select and prove the platform lifecycle/reaping mechanism used to ensure
   host death cannot orphan role descendants on each supported OS.
 - KEL-74 must freeze the versioned compatibility-record format that stores the Electron

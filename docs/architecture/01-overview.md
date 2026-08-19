@@ -11,10 +11,11 @@ flowchart LR
     accTitle: Keld process and trust topology
     accDescr {
       The trusted Rust host owns privileged resources and mediates webview and Bun-role
-      requests. The live v0 slice has three webview backends, a guard evaluator, and one
-      CLI-owned token-authenticated echo link to a bare Bun child. Moving that link into
-      the host, role supervision, guarded dispatch, native services, and an optional
-      sandboxed native-addon worker are destination behavior.
+      requests. The live v0 slice has three webview backends, a guard evaluator, one
+      CLI-owned token-authenticated echo link, and KEL-70's generic supervised Bun child
+      restart loop. Host-bound role identity, guarded role dispatch, native services,
+      role-specific lifecycle and an optional sandboxed native-addon worker remain
+      destination behavior.
     }
 
     subgraph Host["Trusted authority process: keld-host"]
@@ -22,7 +23,7 @@ flowchart LR
         Link["TARGET<br/>host-owned role-bound app-link"]
         Guard["PARTIAL LIVE<br/>guard evaluator exists<br/>TARGET guard-before-handler"]
         Native["SKELETON<br/>guarded native services"]
-        Runtime["SKELETON<br/>Bun role supervisor"]
+        Runtime["PARTIAL LIVE<br/>generic Bun supervisor<br/>TARGET role identity"]
     end
 
     subgraph Prototype["Current diagnostic process: keld-cli"]
@@ -34,11 +35,11 @@ flowchart LR
     end
 
     subgraph JS["Semi-trusted and untrusted code processes"]
-        App["LIVE v0<br/>one bare Bun echo child<br/>TARGET primary and named roles"]
+        App["PARTIAL LIVE<br/>one supervised Bun echo child<br/>TARGET primary and named roles"]
         Addon["FUTURE OPTIONAL<br/>sandboxed native-addon worker"]
     end
 
-    Runtime -.->|TARGET spawn with fresh principal and token| App
+    Runtime -->|LIVE v0 supervise, restart and capture logs| App
     App -->|LIVE v0 HELLO and echo CALL| CliLink
     App -.->|TARGET role link| Link
     Link -->|TARGET bind principal before dispatch| Guard
@@ -72,9 +73,10 @@ Three principal classes, with host-minted instances inside each class:
    npm world is proven against a versioned operation/extension corpus,
    but **zero ambient OS authority** in the strict profile — every privileged operation
    is a typed host call checked by the capability engine. Children are intended to be
-   crashable and restartable without tearing down windows. v0 currently has one bare
-   primary-child echo slice; `keld-runtime` supervision and restart continuity are not
-   implemented.
+   crashable and restartable without tearing down windows. v0 has KEL-70's one
+   CLI-owned supervised primary-child echo slice with restart/backoff/output capture;
+   it does not bind an accepted link to a principal, mint a fresh role generation on
+   restart, preserve a live renderer through restart, or implement named roles.
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 
@@ -163,10 +165,11 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
   or `window-bound`. The host alone creates and reaps roles; one role cannot parent,
   select, upgrade or terminate another. Supervisor policy is per declared role:
   exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
-  `--inspect` passthrough in dev. Every spawn is a fresh principal/link generation—not
-  a PID, token or socket name—and revocation happens before restart. v0 has one primary
-  link; additional roles are a compatibility destination and require the KEL-75 binary
-  fixtures before implementation.
+  `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
+  generation—not a PID, token or socket name—and old authority is revoked before a
+  successor is provisioned. v0 has KEL-70's generic one-child supervision plus one
+  fixed CLI echo link; additional roles and principalized restart require the KEL-75
+  binary fixtures before implementation.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

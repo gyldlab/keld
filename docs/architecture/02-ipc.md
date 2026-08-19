@@ -3,22 +3,37 @@
 IPC is where every competitor cut corners (Electron structured-clone JSON, Tauri
 serde-JSON invoke, Electrobun localhost WebSockets, Deno deleting the boundary
 entirely). Keld treats the IPC plane as a core product. Design goals: typed end-to-end,
-binary, zero-copy bulk, backpressured, capability-checked, and fast enough that the
+binary, copy-accounted, backpressured, capability-checked, and fast enough that the
 compat layer built on it beats Electron's native IPC.
 
 ## 1. Topology: two links, three principals
 
 ```
-webview ⇄ host        "wv-link"   native bridge (control) + keld:// scheme (bulk)
-host    ⇄ app process "app-link"  UDS/named pipe (control) + shm rings (bulk)
-webview ⇄ app process             routed via host (both links), never direct
+webview_j ⇄ host       "wv-link"       engine bridge (control) + measured engine-specific bulk lane
+host ⇄ app role_i      "app-link[i]"   UDS/named pipe (control) + optional measured shm lane
+webview_j ⇄ app role_i                routed via host (both link classes), never direct
 ```
 
 The host mediates everything. That's what makes capability checks, auditing, crash
-isolation, and Electron-compat routing possible. The mediation cost is engineered away
-with binary framing + shm, not avoided by deleting the boundary (Deno's mistake).
+isolation, and Electron-compat routing possible. Binary framing removes avoidable
+serialization overhead; shared memory is added only to an attributed bulk bottleneck.
+Mediation and browser-engine copies are measured, not described away.
 
-**v0 app-link (KEL-60):** Unix is a domain socket inside an owner-only (`0o700`) session
+Principal identity is authenticated **link metadata**, not a frame payload field. The
+destination supervisor mints a role principal, creates the listener/token, spawns that
+role and binds the accepted link to the principal before dispatch. A frame cannot select,
+forge or upgrade its role. KEL-70's live generic supervisor does not yet perform this
+binding; v0's token proves possession only.
+
+**Destination role-instance contract (KEL-75):** a role instance is the host-owned
+pair `(declared role, fresh generation)`. It is never inferred from a PID, listener
+name, token, environment value or decoded frame. The host creates an endpoint/token
+before spawn, admits an authenticated link, then binds that link as trusted metadata.
+Revocation invalidates grants, routed virtual-port capabilities and optional mapping
+handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
+possession secret; it never carries role or principal identity.
+
+**v0 app-link (KEL-60/KEL-70):** one CLI-owned primary link is a domain socket inside an owner-only (`0o700`) session
 directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
 section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
@@ -41,7 +56,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   are `KELD-IPC-007`. The client writes `HELLO` first. The server reads and
   verifies before writing its own `HELLO`, so a connector that does not already
   possess the token never learns it from the wire. This proves possession of the
-  session token; it is not a principal id (peers still do not self-identify).
+  session token; it is not a principal id (peers still do not self-identify). KEL-75's
+  reusable listener continues accepting after an invalid `HELLO` until its bounded
+  deadline; the v0 CLI `EchoServer` accepts one client only and is not that primitive.
   Channel-table exchange remains later work.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
@@ -78,24 +95,28 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   No unbounded queues anywhere — Electron's frame-starving chatty-IPC failure is
   structurally impossible.
 
-## 3. Bulk plane (zero-copy where the platform allows)
+## 3. Bulk plane (measured copies, optional shared memory)
 
-- **app-link**: a pair of SPSC shared-memory ring buffers (one per direction) created by
+- **app-link[i]**: a pair of SPSC shared-memory ring buffers (one per direction) MAY be created by
   the host, passed to Bun at spawn (memfd/`shm_open`/named section + fd/handle
   inheritance). JS reads/writes via `ArrayBuffer` views over the mapping (Bun `mmap` /
   N-API external buffers — bun:ffi remains experimental, so the stable binding path is a
   tiny N-API glue shipped with `@keld/api`). Control frame carries {ring offset, len,
-  generation}; payload bytes are never re-serialized. Fallback: inline `RAW` frames on
-  the socket when shm is unavailable (containers, exotic sandboxes).
+  generation}; payload bytes are never re-serialized after mapping. Inline `RAW` frames
+  over the socket remain the mandatory baseline. A role receives a mapping only after
+  its own end-to-end benchmark and hostile handle-inheritance proof justify it; one role
+  cannot map another role's ring. The P13 new-run did not justify a shared-memory
+  baseline: at 16 MiB memfd was near UDS and at 1 MiB explicit-copy memfd was slower.
 - **wv-link**: engines don't expose shm to page JS reliably (SAB needs COOP/COEP and
   still doesn't cross to native). Bulk therefore rides the custom scheme: `keld://c/{channel}`
   request/response with streaming bodies (WKURLSchemeHandler / WebView2
   WebResourceRequested / WebKitGTK 2.40+ streams), which engines serve off the UI
   thread and can hand to us as counted buffers. postMessage stays control-only
   (string-typed on WebView2 — see research/06).
-- Renderer→app-process file-ish transfers (the Electron `send(bigBuffer)` pattern) are
-  routed: webview streams over `keld://` into host, host forwards into the shm ring —
-  no double JSON, one copy at the scheme boundary (engine-imposed), zero after.
+- Renderer→app-role file-ish transfers (the Electron `send(bigBuffer)` pattern) are
+  routed through the host with bounded credit. A platform adapter MAY forward into that
+  role's ring, but the actual engine path reports its copies; choosing a binary codec
+  does not itself make a transfer zero-copy.
 
 ## 4. Schema-first contracts
 
@@ -130,7 +151,14 @@ compromised keeps the host's threat model uniform).
   codec: a `postcard`-encoded SCV (structured-clone value) sum type covering Electron's
   value domain (incl. Buffer/TypedArray → bulk lane refs, Date, Map/Set, Error).
 - `webContents.send` ⇄ host-routed EVENT to a specific webview principal.
-- `MessagePort`s ⇄ dedicated channel pairs with credit windows.
+- `MessagePort`s ⇄ host-owned virtual-port pairs with dedicated bounded channel routes
+  and credit windows. A port capability binds to one authenticated role or webview
+  generation; transfer is one-shot, receiver-bound and host-authorized. Browser and Bun
+  endpoints never connect directly. Exact Electron `start`, queued-message, close-event
+  and transferable-validation behavior is a pinned-oracle conformance requirement.
+- `utilityProcess.fork` ⇄ an `@keld/electron` request for a host-declared app-bound or
+  window-bound Bun role, not an arbitrary child-process escape hatch. Its PID is
+  diagnostic only and never authorizes, identifies, reaps or routes a Keld role.
 - Semantics preserved: ordering per channel, `event.sender`/`senderFrame` identity
   (host mints principal ids), sync `sendSync` supported but rate-limited + dev-warned
   (it's a blocking CALL with a deadline; Electron apps abuse it, so it must exist).
@@ -149,12 +177,15 @@ compromised keeps the host's threat model uniform).
 
 ## 7. Failure & lifecycle semantics
 
-- App process crash: host parks channels, buffers nothing (credit hits zero), emits
-  `runtime-crashed` to webviews (compat shim translates to nothing — Electron apps just
-  never see it — but `@keld/api` users can render "reconnecting" UI); supervisor
-  restarts with backoff; channels re-handshake; in-flight CALLs reject with `E_RESTART`.
-- Webview navigation: principal id rotates; pending replies to the old principal drop;
-  guard re-evaluates capabilities (origin-scoped grants).
+- App-role crash: the destination host parks only that role's channels, buffers nothing
+  (credit hits zero), emits a role-qualified `runtime-crashed` event and restarts per
+  policy. Its in-flight calls reject with a registered role-qualified `KELD-*` error;
+  other principals continue. KEL-70 currently proves generic child restart only.
+- Window close: the destination host revokes that window generation and virtual-port
+  routes, then drains only roles declared `window-bound` to it. App-bound roles remain
+  live until the host application session stops.
+- Webview navigation: principal generation rotates; pending replies to the old principal
+  drop; guard re-evaluates capabilities using origin/resource policy context.
 - Host never blocks on either peer; every await point has a deadline. v0 app-link
   applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) on the
   connected stream; expiry is `KELD-IPC-006`. That is an OS socket timeout, not
