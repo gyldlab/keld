@@ -66,10 +66,14 @@ Non-goals:
    / PE / ELF / WASM magic prefixes (and empty/unknown bytes), when
    `classify_artifact` runs, then it returns the matching class. Import success is
    not a verdict this function can produce.
-10. Given `https://example.com/foo` or a `/blob/main/`-style branch URL, when
-    `parse_evidence` runs, then `KELD-COMPAT-007`. An allowed URI is `sha256:<64
-    lowercase hex>` or an `https://` URL whose path contains a `/`-delimited git
-    object id (40 or 64 lowercase hex). Host checks parse authority (not
+10. Given `https://example.com/foo` or a `/blob/main/`-style branch URL
+    (including `/blob/main/<40-hex>`, `/tree/main/…`, case variants, and
+    `raw.githubusercontent.com/{owner}/{repo}/main/…`), when `parse_evidence`
+    **or** `score` runs, then `KELD-COMPAT-007`. A later hex path segment does
+    not pin a live ref. An allowed URI is `sha256:<64 lowercase hex>` or an
+    `https://` URL whose path contains a `/`-delimited git object id (40 or 64
+    lowercase hex) and whose `blob`/`tree`/`raw` ref (or GitHub raw CDN ref
+    segment) is itself that object id. Host checks parse authority (not
     `starts_with` after `https://`) and reject userinfo, loopback, IPv4-mapped
     loopback, and unspecified addresses.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
@@ -89,8 +93,10 @@ Non-goals:
     or an `https://` URL whose authority parses as a public host (no userinfo,
     loopback, IPv4-mapped loopback, or unspecified address) and whose path
     contains a full git object id (40 or 64 lowercase hex). A live branch/tag
-    path such as `/blob/main/` is a lead, not a pin. `/tmp/` is a path-prefix
-    check on non-https URIs, not a substring search on https URLs.
+    path such as `/blob/main/` is a lead, not a pin, even when another path
+    segment is 40- or 64-hex; commit-pinned `/blob/<object-id>/` is allowed.
+    `/tmp/` is a path-prefix check on non-https URIs, not a substring search
+    on https URLs.
   - **Lifecycle:** schema version is a closed string. Unknown versions fail closed.
   - **I/O:** no filesystem reads in this slice. Magic classification is prefix-only.
   - **Failure:** every reject is a `KELD-COMPAT-*` code plus a fix sentence.
@@ -125,7 +131,7 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified) and a 40- or 64-hex git object id path segment |
+| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name |
 
 ### 4.2 Denominator (`keld.compat.denominator/v1`)
 

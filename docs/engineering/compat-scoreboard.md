@@ -40,6 +40,8 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    the path, e.g. `/blob/main/` or `https://example.com/foo`) are
    non-normative leads. Allowed pins: `sha256:<64 hex>` or https with a
    parsed public host and a 40- or 64-hex git object id path segment.
+   A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object
+   id must be the `blob`/`tree`/`raw` (or GitHub raw CDN) ref itself.
    `score` re-checks the URI; `/tmp/` is not a substring ban on https URLs.
 
 Until a product denominator is committed, this page stays a narrative API

@@ -1026,6 +1026,14 @@ fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
                 detail: format!("`{trimmed}` is not a resolvable https URL with a path"),
             });
         }
+        if https_path_is_live_mutable(&host, &path) {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!(
+                    "`{trimmed}` has a live branch/tag path; \
+                     a mutable URL is not an immutable pin"
+                ),
+            });
+        }
         if !path_has_git_object_id(&path) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!(
@@ -1172,6 +1180,31 @@ fn host_is_forbidden(host: &str) -> bool {
 
 fn path_has_git_object_id(path: &str) -> bool {
     path.split('/').any(is_git_object_id)
+}
+
+/// `/blob/<branch>/`, `/tree/<branch>/`, `/raw/<branch>/`, and GitHub raw CDN
+/// `/{owner}/{repo}/{branch}/…` stay live-mutable even when a later segment is
+/// 40- or 64-hex. Commit-pinned `/blob/<object-id>/` is not this case.
+fn https_path_is_live_mutable(host: &str, path: &str) -> bool {
+    if path_has_live_git_ref(path) {
+        return true;
+    }
+    let host = host.to_ascii_lowercase();
+    if host == "raw.githubusercontent.com" {
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        return segs
+            .get(2)
+            .is_some_and(|git_ref| !is_git_object_id(git_ref));
+    }
+    false
+}
+
+fn path_has_live_git_ref(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    segments.windows(2).any(|pair| {
+        let kind = pair[0].to_ascii_lowercase();
+        matches!(kind.as_str(), "blob" | "tree" | "raw") && !is_git_object_id(pair[1])
+    })
 }
 
 fn is_git_object_id(segment: &str) -> bool {
@@ -1698,7 +1731,10 @@ mod tests {
         for uri in [
             format!("https://git@127.0.0.1/org/repo/commit/{sha}"),
             format!("https://[::ffff:127.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::ffff:7f00:1]/org/repo/commit/{sha}"),
             format!("https://0.0.0.0/org/repo/commit/{sha}"),
+            format!("https://127.0.0.1/org/repo/commit/{sha}"),
+            format!("https://[::1]/org/repo/commit/{sha}"),
             format!("https://user@github.com/gyldlab/keld/commit/{sha}"),
             format!("https://[::]/org/repo/commit/{sha}"),
         ] {
@@ -1719,6 +1755,51 @@ mod tests {
         );
         let record = parse_evidence(json.as_bytes()).expect("sha256 uri");
         assert_eq!(record.evidence_uri, DIGEST_A);
+    }
+
+    #[test]
+    fn rejects_blob_main_even_when_a_hex_path_segment_is_present() {
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        let hexfile = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for uri in [
+            format!("https://github.com/gyldlab/keld/blob/main/{hexfile}"),
+            format!("https://github.com/gyldlab/keld/tree/main/{hexfile}"),
+            format!("https://github.com/gyldlab/keld/BLOB/MAIN/{hexfile}"),
+            format!("https://raw.githubusercontent.com/gyldlab/keld/main/{hexfile}"),
+        ] {
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                &uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(&uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        }
+        let pinned = format!("https://github.com/gyldlab/keld/blob/{sha}/README.md");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &pinned,
+        );
+        parse_evidence(json.as_bytes()).expect("commit-pinned blob is a pin");
+    }
+
+    #[test]
+    fn score_rejects_constructed_loopback_and_blob_main_uris() {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.cells.truncate(1);
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        let hexfile = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for uri in [
+            format!("https://git@127.0.0.1/org/repo/commit/{sha}"),
+            format!("https://[::ffff:127.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://0.0.0.0/org/repo/commit/{sha}"),
+            "https://github.com/gyldlab/keld/blob/main/README.md".to_owned(),
+            format!("https://github.com/gyldlab/keld/blob/main/{hexfile}"),
+        ] {
+            let mut record = parse_ok();
+            record.evidence_uri = uri.clone();
+            let err = score(&denom, &[record], AS_OF).expect_err(&uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        }
     }
 
     #[test]
