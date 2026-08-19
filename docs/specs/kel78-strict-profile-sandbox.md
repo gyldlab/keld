@@ -218,7 +218,7 @@ the grant).
 | Code loading (`dlopen`, unsigned libraries, JIT) | deny except the recorded Bun JIT minimum on that OS |
 | Brokers | only authenticated kipc to the host; no raw host object |
 | Persistence / update staging / signing keys | deny |
-| Descendants | same profile, or immediately killed; no breakaway |
+| Descendants | same profile; no breakaway. Immediate kill is the supervisor-cleanup row, not an OS-containment pass |
 
 ### Addon-worker principal
 
@@ -274,11 +274,13 @@ Required:
   (ledger M4, M7). A Bun role does not get
   `com.apple.security.files.user-selected.*` or bookmark entitlements.
 - `com.apple.security.temporary-exception.*` is an unexpected grant.
-- Network, device, and personal-information entitlements are absent unless a
-  recorded Bun-start failure names them. Each such entitlement is a
-  permission-model review gate. A `keld-guard` network grant MUST NOT add
-  `com.apple.security.network.client` / `network.server` to the child — that
-  would be ambient `connect()` for native code. Direct net stays denied.
+- Device and personal-information entitlements are absent unless a recorded
+  Bun-start failure names them. Each such entitlement is a permission-model
+  review gate.
+- Network entitlements (`com.apple.security.network.client` /
+  `network.server`) are always absent. A recorded Bun-start failure MUST NOT
+  add them. A `keld-guard` network grant MUST NOT add them either — that
+  would be ambient `connect()` for native code. Direct net stays OS-denied.
 - JIT: `com.apple.security.cs.allow-jit` is allowed only if a recorded
   Bun-start failure proves it is required. `allow-unsigned-executable-memory`
   and `disable-library-validation` stay denied until the same bar is met.
@@ -443,9 +445,9 @@ fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
    Host-protocol, supervisor-cleanup, and resource-limit rows MAY be present;
    they do **not** satisfy this check and do **not** prove OS containment.
 9. Each recorded OS-containment pass used that row's independent OS oracle
-   (deny/kill of the direct syscall/API). A JavaScript-shim deny, a
+   (deny of the direct syscall/API). A JavaScript-shim deny, a
    `KELD-IPC-007` / host-protocol pass, a supervisor reap, or a resource-limit
-   hit recorded in an OS-containment slot is a layer mismatch.
+   hit recorded in an OS-containment slot is `ProofLayerMismatch`.
 
 Otherwise the result is not `Strict`:
 
