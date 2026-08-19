@@ -26,8 +26,9 @@ Do not treat Chromium blogs, forum posts, competitor sandboxes, or
 
 Rows marked **fetch-limited** were not fully readable as rendered HTML in this
 pass (Apple Developer pages that require JavaScript). The URL remains the
-official locator; the quoted text then comes from a sibling archive page or a
-local man page.
+official locator. **Quote stays empty** — do not invent, paraphrase, or paste
+forum or search-engine text into Quote. Fail closed on any claim that would
+need that missing sentence.
 
 ---
 
@@ -101,9 +102,9 @@ of a sandbox, not containment.
 
 - **Source (official locator, fetch-limited):** <https://developer.apple.com/documentation/security/hardened_runtime>
 - **Publisher:** Apple
-- **Dated:** current Apple documentation; rendered HTML required JavaScript in this fetch
-- **Quote:** not captured from rendered HTML. Sibling entitlement catalog (M2) and `sandbox_init(3)` (M1) already separate App Sandbox from older seatbelt profiles. Hardened Runtime entitlements (`com.apple.security.cs.allow-jit`, `com.apple.security.cs.allow-unsigned-executable-memory`, `com.apple.security.cs.disable-library-validation`) are listed at <https://developer.apple.com/documentation/bundleresources/entitlements> (fetch-limited).
-- **Use:** Shipping with Hardened Runtime alone does **not** admit the strict state. JIT-related entitlements are experimental minima only; each must be forced by a recorded Bun-start failure, not cargo-culted.
+- **Dated:** current Apple documentation; accessed 2026-08-19; re-fetched the same day and still a JavaScript shell
+- **Quote:** not captured. This fetch returned a JavaScript shell ("This page requires JavaScript"), not the rendered documentation body. Forum posts, search-engine summaries, and entitlement-catalog siblings are **not** this page's Quote.
+- **Use:** Fail closed: Hardened Runtime alone does **not** admit the strict state, including while Quote is empty. App Sandbox remains the required macOS authority boundary (M2–M5). JIT-related entitlements (`com.apple.security.cs.allow-jit` and siblings) remain experimental minima only; each must be forced by a recorded Bun-start failure. A later ledger pass MAY fill Quote from the rendered Apple page; filling Quote is not a containment proof.
 
 ---
 
@@ -163,7 +164,7 @@ of a sandbox, not containment.
 - **Publisher:** Linux man-pages project (Michael Kerrisk)
 - **Dated:** man-pages 6.18, 2026-02-08
 - **Quote:** "A namespace wraps a global system resource in an abstraction that makes it appear to the processes within the namespace that they have their own isolated instance of the global resource." Table: Mount/`CLONE_NEWNS`, PID/`CLONE_NEWPID`, Network/`CLONE_NEWNET`, User/`CLONE_NEWUSER`.
-- **Use:** The Linux candidate requires user + mount + PID + network namespaces together. One namespace type is not the profile.
+- **Use:** The Linux candidate requires user + mount + PID + network namespaces together. One namespace type is not the profile. `CLONE_NEWNS` still needs the host-path deny in L9; it is not itself a filesystem deny.
 
 ### L2. Creating most namespaces needs `CAP_SYS_ADMIN`; user namespaces are the exception
 
@@ -216,7 +217,15 @@ of a sandbox, not containment.
 - **Publisher:** The Linux Kernel documentation (Mickaël Salaün)
 - **Dated:** June 2026 (page header)
 - **Quote:** "The goal of Landlock is to enable restriction of ambient rights (e.g. global filesystem or network access) for a set of processes. Because Landlock is a stackable LSM, it makes it possible to create safe security sandboxes as new security layers in addition to the existing system-wide access-controls."
-- **Use:** Landlock is preferred *in addition* to the namespace + capability + `no_new_privs` + seccomp stack. Landlock or seccomp alone cannot admit the strict state. Missing Landlock on a kernel that lacks it is recorded; it does not by itself fail the candidate if the required namespace stack is present — but it also does not substitute for a missing namespace.
+- **Use:** Landlock is preferred *in addition* to the namespace + capability + `no_new_privs` + seccomp stack **and** the host-path deny (L9). Landlock or seccomp alone cannot admit the strict state. Missing Landlock on a kernel that lacks it is recorded; it does not by itself fail the candidate if the required namespace stack and host-path deny are present — but it also does not substitute for a missing namespace or a missing host-path deny. Landlock is extra, not the only filesystem story.
+
+### L9. `CLONE_NEWNS` copies the parent's mount list
+
+- **Source:** <https://man7.org/linux/man-pages/man7/mount_namespaces.7.html>
+- **Publisher:** Linux man-pages project (Michael Kerrisk)
+- **Dated:** man-pages 6.18, 2026-02-08
+- **Quote:** "A new mount namespace is created using either clone(2) or unshare(2) with the CLONE_NEWNS flag. When a new mount namespace is created, its mount list is initialized as follows: If the namespace is created using clone(2), the mount list of the child's namespace is a copy of the mount list in the parent process's mount namespace. If the namespace is created using unshare(2), the mount list of the new namespace is a copy of the mount list in the caller's previous mount namespace."
+- **Use:** Linux `strict` requires `CLONE_NEWNS` **and** an explicit host-path deny with tests that role-private paths still work. A copied host mount table is not containment. Landlock (L8) is additional, not the only filesystem policy.
 
 ---
 
@@ -226,7 +235,7 @@ of a sandbox, not containment.
 |---|---|
 | Architecture 03 §4.2 progressive sandbox sketch | Destination prose; names deprecated `sandbox_init` and insufficient Windows/Linux primitives |
 | Chromium LPAC / seatbelt write-ups | Practitioner synthesis, not the OS contract |
-| Apple Developer JS-only pages that did not render | Official locators kept (M8); quotes taken from archive/man siblings |
+| Apple Developer JS-only Hardened Runtime page | Official locator kept (M8); Quote stays empty; forum/search paraphrases are not Quote; HR-alone does not admit `strict` |
 | `docs/research/` / Codex notes | Nested private research; not staged from this Keld PR |
 | Electron / VS Code sandbox flags | Product policy, not this spec |
 
@@ -236,4 +245,4 @@ of a sandbox, not containment.
 |---|---|---|---|
 | macOS | yes (App Sandbox + inherit/XPC rules) | no | **unverified** |
 | Windows | yes (zero-capability LPAC + ACL + handle list + job) | no | **unverified** |
-| Linux | yes (userns+mnt+pid+net, no_new_privs, cap drop, seccomp; Landlock additional) | no | **unverified** |
+| Linux | yes (userns+mnt+pid+net, host-path deny, no_new_privs, cap drop, seccomp; Landlock additional) | no | **unverified** |

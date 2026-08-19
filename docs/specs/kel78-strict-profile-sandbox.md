@@ -55,9 +55,12 @@ default-deny.
    a caller asks whether that OS is contained, then the only legal answers are
    `unverified` or `legacy` — never `strict` / "best effort secure".
 2. Given a request to start a role in the `strict` state, when a required OS
-   primitive is missing or admission fails, then the host does not start an
-   unconfined child. It returns a typed error that names the missing primitive
-   and the fix (install/enable the primitive, or declare `legacy` explicitly).
+   primitive is missing, the archived proof is missing, stale, or mismatched
+   (artifact digest, proof identity, or freshness), or admission otherwise
+   fails, then the host does not start an unconfined child and MUST NOT return
+   `Strict`. It returns a typed error that names the defect and the fix
+   (install/enable the primitive, refresh or replace the archive, or declare
+   `legacy` explicitly).
 3. Given a role declared `legacy` (`appSandbox` / profile off), when it starts,
    then it remains authenticated and `keld-guard`-checked, and every
    build/doctor/scoreboard/release metadata surface forfeits the zero-authority
@@ -68,9 +71,22 @@ default-deny.
    are the authenticated app-link transport and supervisor log sinks. Those
    handles cannot authorize another operation.
 5. Given the per-OS candidate in §4, when the named hostile probes in §7 run
-   against the shipped artifact, then each probe is denied or killed by the OS
-   (not by a JS shim), and the artifact/token/handles/output are archived. An
-   OS with no such archive stays `unverified`.
+   against the shipped artifact, then each probe records a **layer verdict**
+   against that layer's independent oracle — not a JavaScript shim, and not
+   another layer's success. Layers and oracles:
+
+   | Layer | Independent oracle |
+   |---|---|
+   | OS containment | OS deny/kill of the direct syscall/API (errno, NTSTATUS, sandbox violation, job/PID kill) |
+   | Host protocol denial | typed `KELD-IPC-007` (or documented successor) from the host on the app-link |
+   | Supervisor cleanup | descendants reaped, generation revoked, next legitimate spawn works |
+   | Resource limits | worker hang/OOM hits the worker limits; host and webviews remain up |
+
+   A JavaScript-shim deny is a failed OS-containment verdict for OS-layer
+   probes. Host-protocol, supervisor-cleanup, and resource-limit passes do
+   **not** prove OS containment. Artifact digest, token/profile, remaining
+   handles/FDs, and per-layer output are archived. A missing, incomplete, or
+   layer-mismatched archive stays `unverified`.
 6. Given a native addon, when the decision tree in §4 is applied, then the
    outcome is exactly one of: reuse in an addon-worker process, replace behind
    a guarded Rust host service, wait for an upstream Bun fix, or reject/exclude.
@@ -116,7 +132,8 @@ default-deny.
   uniques stay: prebuilt host, supervised Bun family, kipc, default-deny).
   Rejected alternatives: architecture 03 §4.2 `sandbox_init` (deprecated,
   ledger M1); ordinary AppContainer / Low IL / restricted token (ledger W2);
-  seccomp or Landlock alone (ledger L5, L8).
+  seccomp or Landlock alone (ledger L5, L8); `CLONE_NEWNS` without an
+  explicit host-path deny (ledger L9).
 - **Compatibility fallback:** `legacy` is the only fallback. It is explicit
   and forfeits the claim.
 - **Performance:** No speed claim. No rewrite justified by language choice.
@@ -137,13 +154,14 @@ Three states. They are not a confidence slider.
 ```mermaid
 stateDiagram-v2
     accTitle: Strict, legacy, and unverified profile states
-    accDescr: Unverified is the default. Legacy requires an explicit declaration and forfeits the zero-authority claim. Strict requires both OS admission and an archived hostile proof. A missing primitive or stale proof returns the role to unverified. Legacy never becomes strict without a new proof and removal of the legacy declaration.
+    accDescr: Unverified is the default. Legacy requires an explicit declaration and forfeits the zero-authority claim. Strict requires both OS admission and an archived hostile proof. A missing primitive or stale proof returns Strict to Unverified. Dropping the legacy declaration without a new archived proof returns Legacy to Unverified. Dropping the legacy declaration and presenting a new archived proof may admit Strict.
 
     [*] --> Unverified
     Unverified --> Legacy: explicit legacy declaration
     Unverified --> Strict: admission plus archived hostile proof
     Strict --> Unverified: primitive missing or proof stale
     Legacy --> Unverified: declaration removed without a new proof
+    Legacy --> Strict: declaration dropped plus new archived proof
     note right of Strict
         Missing primitive does not
         start an unconfined strict child
@@ -275,13 +293,28 @@ Required, together:
 
 1. User, mount, PID, and network namespaces (`CLONE_NEWUSER`, `CLONE_NEWNS`,
    `CLONE_NEWPID`, `CLONE_NEWNET`). Ledger L1–L4.
-2. `prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)` before seccomp. Ledger L5.
-3. Empty capability sets and dropped bounding set (`PR_CAPBSET_DROP`).
+2. After `CLONE_NEWNS`, an **explicit host-path deny** policy. Creating a
+   mount namespace copies the parent's mount list (ledger L9); `CLONE_NEWNS`
+   is not a filesystem deny. The policy MUST:
+   - deny create/read/write on host paths outside the reviewed role-private
+     container (home, `/etc`, update staging, sibling-role paths, host TCB
+     paths);
+   - still allow the role-private paths that role is supposed to use;
+   - be proven by tests: host-path open/create fails with an OS error;
+     role-private open/create succeeds;
+   - fail closed: if the deny cannot be applied, do not admit `strict`.
+   The archive names the mechanism actually used (bind-mount allowlist of the
+   role container, covering or unmount of host trees, path-based LSM, or
+   equivalent). Landlock (item 6) is an extra layer, not this policy's only
+   implementation and not a substitute for it.
+3. `prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)` before seccomp. Ledger L5.
+4. Empty capability sets and dropped bounding set (`PR_CAPBSET_DROP`).
    Ledger L6.
-4. Seccomp-BPF that denies direct fs/net/spawn/ptrace/mount not needed for
+5. Seccomp-BPF that denies direct fs/net/spawn/ptrace/mount not needed for
    the authenticated link, inherited by descendants (ledger L7).
-5. Landlock filesystem/network rules when the kernel supports them (ledger L8).
-   Preferred additional layer; not a substitute for 1–4.
+6. Landlock filesystem/network rules when the kernel supports them (ledger L8).
+   Preferred additional layer; not a substitute for 1–5 and not the only
+   filesystem story.
 
 Unavailable user namespace: `clone`/`unshare` with `CLONE_NEWUSER` fails
 (`EPERM`, `EACCES`, `EUSERS`, `ENOSPC`, or LSM deny). Admission then
@@ -289,32 +322,71 @@ Unavailable user namespace: `clone`/`unshare` with `CLONE_NEWUSER` fails
 on the child's behalf is a TCB addition and needs its own human review; it
 is not implied by this spec (see §10).
 
-Seccomp alone or Landlock alone cannot admit `strict`.
+Seccomp alone, Landlock alone, or `CLONE_NEWNS` without the host-path deny
+cannot admit `strict`.
 
-Fail closed when: any of 1–4 is missing; a capability remains; a descendant
-escapes the PID namespace or the seccomp filter; SCM_RIGHTS delivers a host
-FD (ledger L5).
+Fail closed when: any of 1–5 is missing; the host-path deny cannot be
+applied; a capability remains; a descendant escapes the PID namespace or the
+seccomp filter; SCM_RIGHTS delivers a host FD (ledger L5).
 
 ### Types and channels (sketch; not implemented on this SHA)
 
 ```text
 enum ProfileState { Unverified, Legacy, Strict }
 
+/// SHA-256 of the launched binary. Compared to the archived proof.
+struct ArtifactDigest([u8; 32]);
+
+struct ProofIdentity {
+    os: Os,
+    artifact_digest: ArtifactDigest,
+    archive_id: ArchiveId,
+}
+
 struct AdmissionRequest {
     role: RoleInstance,          // KEL-75 generation
     requested: ProfileState,     // never inferred from package name
+    artifact_digest: ArtifactDigest,
+    proof: Option<ProofIdentity>,
 }
 
 enum AdmissionError {
-    // KELD-RUNTIME-0xx in the implementation PR
+    // KELD-RUNTIME-0xx in the implementation PR; Display names the fix
     PrimitiveUnavailable { os, primitive, fix },
     UnexpectedGrant { os, grant, fix },
     HandleLeak { description, fix },
-    ProofMissing { os, fix },    // requested Strict, archive empty
+    ProofMissing { os, fix },    // requested Strict; proof absent / archive empty
+    ProofStale { os, archive_id, reason, fix },
+    ProofMismatch { os, field, expected, found, fix }, // digest, OS, or identity
 }
 
 fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
 ```
+
+`admit` MUST NOT return `Strict` unless every check below passes:
+
+1. `requested` is `Strict`.
+2. The §4 primitives for this OS are present (including Linux host-path deny).
+3. `proof` is `Some`.
+4. `proof.artifact_digest` equals `req.artifact_digest`.
+5. `proof.os` is this host.
+6. The archive identified by `proof.archive_id` is **fresh** for this digest
+   and candidate: it covers this exact artifact and the §4 policy admission
+   will apply. A newer binary, a changed candidate, or an archive that
+   predates a required primitive/policy change is stale.
+
+Otherwise the result is not `Strict`:
+
+| Defect | Error |
+|---|---|
+| `proof` is `None` or the archive is empty | `ProofMissing` |
+| digest, OS, or `archive_id` does not match the request | `ProofMismatch` |
+| archive is not fresh for this digest/candidate | `ProofStale` |
+| required primitive or host-path deny missing | `PrimitiveUnavailable` |
+
+`Legacy` does not require a strict archive. Default / `Unverified` never
+becomes `Strict` through this function. T1 implements this state machine
+without claiming OS containment.
 
 Capabilities / manifest: a future `keld.permissions.jsonc` / `keld.config.ts`
 key may declare `profile: "strict" | "legacy"`. The key does not exist today.
@@ -356,8 +428,10 @@ Renderer sandbox is a different column.
       requires them.
 - [ ] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
-- [ ] T4: Linux namespace + `no_new_privs` + cap drop + seccomp (+ Landlock
-      when present) and unavailable-userns fail-closed proof.
+- [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
+      work) + `no_new_privs` + cap drop + seccomp (+ Landlock when present)
+      and unavailable-userns fail-closed proof. Landlock is extra, not the
+      filesystem deny.
 - [ ] T5: Crash/hang/OOM cleanup and updater-boundary probes on each OS
       that passed T2–T4.
 - [ ] T6: Doctor / build / release metadata surfaces. Then KEL-75 T6 may
@@ -373,39 +447,43 @@ OS. Mocks may test the admission state machine only.
 | AC | Future fixture | Independent oracle |
 |---|---|---|
 | 1 | doctor/build metadata unit | printed state string is `unverified`/`legacy`/`strict` |
-| 2 | admission on a machine with the primitive removed | typed error; no child PID |
+| 2 | admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong digest / OS / archive id) | typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch`; no child PID; result is not `Strict` |
 | 3 | explicit legacy spawn | child runs; metadata forfeits the claim |
 | 4 | `/proc/pid/fd`, `lsof`, or `GetProcessHandleCount` + handle dump | only app-link + log sinks |
-| 5 | hostile catalog below | OS deny/kill, archived stdout + profile dump |
+| 5 | hostile catalog below | **per-layer** oracle in that row; JS shim deny fails OS-containment probes; host-protocol / cleanup / limit passes do not mark the OS contained; missing archive stays `unverified` |
 | 6 | synthetic addon matrix | one of the four outcomes; in-process load fails closed under `strict` |
 | 7 | plugin vs worker | plugin has no OS sandbox; worker does (once T7 exists) |
 | 8 | doctor JSON | two distinct fields |
 | 9 | kill host / abort child / hang | no leftover descendants; next spawn works |
 | 10 | open update staging / key path from child | OS deny |
 
-Hostile catalog (each is a real syscall/API from the child or addon worker):
+Hostile catalog (each is a real syscall/API from the child or addon worker).
+Each row is one layer. Do not attribute every outcome to the OS.
 
-| Probe | Must observe |
-|---|---|
-| Direct filesystem | create/read outside the role container fails |
-| Direct network | `connect`/`bind`/`socket` fails without a reviewed grant |
-| Direct shell / spawn | `exec`/`CreateProcess`/`posix_spawn` of a helper fails or is job/PID-contained and equally sandboxed |
-| Inherited handles | leftover host FD/HANDLE cannot open host files, the update dir, or sibling links |
-| Descendants | grandchild has the same profile or is killed; no job breakaway; no new user namespace |
-| Broker bypass | raw use of a host object the broker would have checked is denied |
-| Token theft | cannot impersonate the interactive user (macOS keychain / Windows user token / Linux host UID 0) |
-| Addon escape | synthetic native code cannot `dlopen` unsigned host code or join the host address space |
-| Crash cleanup | abort/OOM/hang leaves no descendant and revokes the generation |
-| Updater boundary | cannot read/write staging, signatures, or the relaunch helper |
-| Protocol confusion | foreign `HELLO`, stale token, or confused deputy on the app-link is `KELD-IPC-007` / typed deny |
-| Resource | intentional hang and allocator blow-up hit the worker limits, not the host |
+| Probe | Layer | Must observe |
+|---|---|---|
+| Direct filesystem | OS containment | create/read of a **host** path outside the role container fails with an OS error; create/read of a **role-private** path succeeds |
+| Direct network | OS containment | `connect`/`bind`/`socket` fails without a reviewed grant |
+| Direct shell / spawn | OS containment | `exec`/`CreateProcess`/`posix_spawn` of a helper fails or is job/PID-contained and equally sandboxed |
+| Inherited handles | OS containment | leftover host FD/HANDLE cannot open host files, the update dir, or sibling links |
+| Descendants | OS containment | grandchild has the same profile or is killed; no job breakaway; no new user namespace |
+| Broker bypass | OS containment | raw use of a host object the broker would have checked is denied by the OS |
+| Token theft | OS containment | cannot impersonate the interactive user (macOS keychain / Windows user token / Linux host UID 0) |
+| Addon escape | OS containment | synthetic native code cannot `dlopen` unsigned host code or join the host address space |
+| Crash cleanup | Supervisor cleanup | abort/OOM/hang leaves no descendant and revokes the generation (supervisor/job/PID-namespace reap — not an OS-containment pass by itself) |
+| Updater boundary | OS containment | cannot read/write staging, signatures, or the relaunch helper |
+| Protocol confusion | Host protocol denial | foreign `HELLO`, stale token, or confused deputy on the app-link is `KELD-IPC-007` / typed host deny — not an OS-containment pass |
+| Resource | Resource limits | intentional hang and allocator blow-up hit the worker limits, not the host — not an OS-containment pass |
 
 Anti-flake: bind port 0; use temp dirs; await supervisor events (no sleep-sync);
 run crash cases out of process. Platform-only tests report other OSes as
 `unverified` rather than skip-and-claim.
 
 Negative control: temporarily remove the LPAC opt-out, the App Sandbox
-entitlement, or `CLONE_NEWUSER` and confirm the `strict` tests fail.
+entitlement, `CLONE_NEWUSER`, or the host-path deny (leaving `CLONE_NEWNS`
+as a copied host mount table) and confirm the `strict` tests fail.
+Role-private path success is a required positive control, not a substitute
+for the host-path deny.
 
 ## 8. Review gates triggered
 
