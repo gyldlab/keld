@@ -56,11 +56,13 @@ default-deny.
    `unverified` or `legacy` — never `strict` / "best effort secure".
 2. Given a request to start a role in the `strict` state, when a required OS
    primitive is missing, the archived proof is missing, stale, or mismatched
-   (artifact digest, proof identity, or freshness), or admission otherwise
-   fails, then the host does not start an unconfined child and MUST NOT return
-   `Strict`. It returns a typed error that names the defect and the fix
-   (install/enable the primitive, refresh or replace the archive, or declare
-   `legacy` explicitly).
+   (artifact digest, token/profile, OS, archive id, or freshness), incomplete
+   (missing §7 OS-containment rows), or layer-mismatched (a non-OS oracle
+   recorded as OS containment), or admission otherwise fails, then the host
+   does not start an unconfined child and MUST NOT return `Strict`. It returns
+   a typed error that names the defect and the fix (install/enable the
+   primitive, refresh or replace the archive, complete the OS-containment
+   catalog against independent OS oracles, or declare `legacy` explicitly).
 3. Given a role declared `legacy` (`appSandbox` / profile off), when it starts,
    then it remains authenticated and `keld-guard`-checked, and every
    build/doctor/scoreboard/release metadata surface forfeits the zero-authority
@@ -84,7 +86,8 @@ default-deny.
 
    A JavaScript-shim deny is a failed OS-containment verdict for OS-layer
    probes. Host-protocol, supervisor-cleanup, and resource-limit passes do
-   **not** prove OS containment. Artifact digest, token/profile, remaining
+   **not** prove OS containment and MUST NOT be the rows that admit `Strict`
+   (see `admit` checks 8–9). Artifact digest, token/profile, remaining
    handles/FDs, and per-layer output are archived. A missing, incomplete, or
    layer-mismatched archive stays `unverified`.
 6. Given a native addon, when the decision tree in §4 is applied, then the
@@ -98,10 +101,14 @@ default-deny.
 8. Given renderer sandbox status and Bun-role containment, when either is
    reported, then they are separate fields. A contained webview does not imply
    a contained Bun role.
-9. Given host death, crash, abort, or hang of a strict child or addon worker,
-   when cleanup finishes, then descendants are reaped by the platform mechanism
-   in §4, leftover grants/links are revoked, and the next legitimate spawn
-   still works.
+9. Given host death, crash, abort, or hang of a strict child or addon worker
+   on an OS whose §4 names a host-death reaper, when cleanup finishes, then
+   descendants are reaped by that named mechanism, leftover grants/links are
+   revoked, and the next legitimate spawn still works. Today §4 names Windows
+   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ledger W5) and Linux `CLONE_NEWPID`
+   (ledger L1). macOS §4 names no reaper; this criterion does **not** apply
+   to macOS until T2 records a primary-sourced mechanism. Process-group and
+   `launchd` `SIGKILL` are not that mechanism (see §10 Q4).
 10. Given the update staging directory, signing keys, and relaunch helper, when
     a strict child or addon worker tries to read or write them, then the OS
     denies the attempt. The updater stays a host-owned TCB path (KEL-53).
@@ -147,21 +154,21 @@ Three states. They are not a confidence slider.
 
 | State | Who chooses it | Zero-authority claim | Child starts? |
 |---|---|---|---|
-| `unverified` | Default until an archived per-OS proof exists | Forbidden | Only if the caller did not request `strict`. Reporting must say `unverified`. |
+| `unverified` | Default until a complete per-OS OS-containment archive exists | Forbidden | Only if the caller did not request `strict`. Reporting must say `unverified`. |
 | `legacy` | Explicit app/build declaration | Forfeited, and the forfeit is printed | Yes: authenticated + guarded, unsandboxed |
-| `strict` | Admission + archived hostile proof for that OS/artifact | Allowed | Yes, only after admission |
+| `strict` | Admission + complete OS-containment archive for that OS/artifact/profile | Allowed | Yes, only after admission |
 
 ```mermaid
 stateDiagram-v2
     accTitle: Strict, legacy, and unverified profile states
-    accDescr: Unverified is the default. Legacy requires an explicit declaration and forfeits the zero-authority claim. Strict requires both OS admission and an archived hostile proof. A missing primitive or stale proof returns Strict to Unverified. Dropping the legacy declaration without a new archived proof returns Legacy to Unverified. Dropping the legacy declaration and presenting a new archived proof may admit Strict.
+    accDescr: Unverified is the default. Legacy requires an explicit declaration and forfeits the zero-authority claim. Strict requires OS admission plus an archived complete OS-containment catalog with a matching token/profile digest. A missing primitive, stale proof, incomplete catalog, or layer-mismatched archive returns Strict to Unverified. Dropping the legacy declaration without a new complete archive returns Legacy to Unverified. Dropping the legacy declaration and presenting a new complete archive may admit Strict.
 
     [*] --> Unverified
     Unverified --> Legacy: explicit legacy declaration
-    Unverified --> Strict: admission plus archived hostile proof
-    Strict --> Unverified: primitive missing or proof stale
+    Unverified --> Strict: admission plus complete OS-containment archive
+    Strict --> Unverified: primitive missing or proof not admissible
     Legacy --> Unverified: declaration removed without a new proof
-    Legacy --> Strict: declaration dropped plus new archived proof
+    Legacy --> Strict: declaration dropped plus new complete archive
     note right of Strict
         Missing primitive does not
         start an unconfined strict child
@@ -260,6 +267,10 @@ enumerated.
 Packaging: signed `.app` with the reviewed entitlements embedded in the
 signature. Unsigned or ad-hoc signed children are `unverified`, never `strict`.
 
+Host-death descendant reap is **not** specified here. T2 MUST name the
+mechanism from a primary source before AC9 applies on macOS. Process-group
+and `launchd` `SIGKILL` are not claimed (see §10 Q4).
+
 `sandbox_init(3)` is deprecated (ledger M1) and is not the candidate.
 
 ### Windows candidate
@@ -303,18 +314,26 @@ Required, together:
    - be proven by tests: host-path open/create fails with an OS error;
      role-private open/create succeeds;
    - fail closed: if the deny cannot be applied, do not admit `strict`.
-   The archive names the mechanism actually used (bind-mount allowlist of the
-   role container, covering or unmount of host trees, path-based LSM, or
-   equivalent). Landlock (item 6) is an extra layer, not this policy's only
-   implementation and not a substitute for it.
+   The archive names the mechanism actually used. Item 2 is a distinct
+   **mount-table** host-path deny: bind-mount allowlist of the role container,
+   covering or unmount of host trees, or an equivalent mount operation that
+   removes host paths from the child's mount list. Landlock is a stackable
+   LSM (ledger L8) and MAY sit **on top of** that deny (item 6). It MUST NOT
+   be the sole implementation of item 2: a path-based LSM without the
+   mount-table deny does not satisfy this item.
 3. `prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)` before seccomp. Ledger L5.
 4. Empty capability sets and dropped bounding set (`PR_CAPBSET_DROP`).
    Ledger L6.
 5. Seccomp-BPF that denies direct fs/net/spawn/ptrace/mount not needed for
-   the authenticated link, inherited by descendants (ledger L7).
+   the authenticated link, inherited by descendants (ledger L7). The filter
+   MUST deny descendant `clone`/`unshare` with `CLONE_NEWUSER`, `setns` into
+   a user namespace, and `clone3` (so a grandchild cannot create a new user
+   namespace). Allowing those calls while claiming "no new user namespace"
+   is a failed descendant proof.
 6. Landlock filesystem/network rules when the kernel supports them (ledger L8).
-   Preferred additional layer; not a substitute for 1–5 and not the only
-   filesystem story.
+   Additional layer **on top of** items 1–5, including on top of item 2's
+   mount-table deny. Not a substitute for 1–5 and not an implementation of
+   item 2.
 
 Unavailable user namespace: `clone`/`unshare` with `CLONE_NEWUSER` fails
 (`EPERM`, `EACCES`, `EUSERS`, `ENOSPC`, or LSM deny). Admission then
@@ -326,8 +345,10 @@ Seccomp alone, Landlock alone, or `CLONE_NEWNS` without the host-path deny
 cannot admit `strict`.
 
 Fail closed when: any of 1–5 is missing; the host-path deny cannot be
-applied; a capability remains; a descendant escapes the PID namespace or the
-seccomp filter; SCM_RIGHTS delivers a host FD (ledger L5).
+applied; Landlock is the only filesystem policy (item 2 missing); a
+capability remains; a descendant escapes the PID namespace or the seccomp
+filter; a descendant creates a user namespace via `clone`/`clone3`/
+`unshare`/`setns`; SCM_RIGHTS delivers a host FD (ledger L5).
 
 ### Types and channels (sketch; not implemented on this SHA)
 
@@ -337,9 +358,22 @@ enum ProfileState { Unverified, Legacy, Strict }
 /// SHA-256 of the launched binary. Compared to the archived proof.
 struct ArtifactDigest([u8; 32]);
 
+/// SHA-256 of the token/profile this spawn will apply.
+/// macOS: App Sandbox entitlement set (inherit keys, JIT, enumerated
+///   XPC/Powerbox/bookmarks).
+/// Windows: LPAC SECURITY_CAPABILITIES (count + SIDs) + All-Application-
+///   Packages opt-out + reviewed ACL generation.
+/// Linux: namespace set + host-path deny mechanism + seccomp filter
+///   generation + capability set + Landlock ABI if present.
+/// A digest taken under a different entitlement / LPAC / capability set
+/// MUST NOT admit Strict for this spawn. Not interchangeable with
+/// ArtifactDigest: same binary, different profile → different value.
+struct ProfileDigest([u8; 32]);
+
 struct ProofIdentity {
     os: Os,
     artifact_digest: ArtifactDigest,
+    profile_digest: ProfileDigest,
     archive_id: ArchiveId,
 }
 
@@ -347,6 +381,7 @@ struct AdmissionRequest {
     role: RoleInstance,          // KEL-75 generation
     requested: ProfileState,     // never inferred from package name
     artifact_digest: ArtifactDigest,
+    profile_digest: ProfileDigest, // candidate this spawn will apply
     proof: Option<ProofIdentity>,
 }
 
@@ -357,7 +392,9 @@ enum AdmissionError {
     HandleLeak { description, fix },
     ProofMissing { os, fix },    // requested Strict; proof absent / archive empty
     ProofStale { os, archive_id, reason, fix },
-    ProofMismatch { os, field, expected, found, fix }, // digest, OS, or identity
+    ProofMismatch { os, field, expected, found, fix }, // artifact, profile, OS, archive_id
+    ProofIncomplete { os, missing, fix }, // §7 OS-containment rows absent
+    ProofLayerMismatch { os, probe, expected_layer, recorded_layer, fix },
 }
 
 fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
@@ -369,20 +406,37 @@ fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
 2. The §4 primitives for this OS are present (including Linux host-path deny).
 3. `proof` is `Some`.
 4. `proof.artifact_digest` equals `req.artifact_digest`.
-5. `proof.os` is this host.
-6. The archive identified by `proof.archive_id` is **fresh** for this digest
-   and candidate: it covers this exact artifact and the §4 policy admission
-   will apply. A newer binary, a changed candidate, or an archive that
-   predates a required primitive/policy change is stale.
+5. `proof.profile_digest` equals `req.profile_digest`.
+6. `proof.os` is this host.
+7. The archive identified by `proof.archive_id` is **fresh** for this artifact
+   digest and profile digest: it covers this exact artifact and token/profile,
+   and the §4 policy admission will apply. A newer binary, a different
+   profile digest, or an archive that predates a required primitive/policy
+   change is stale.
+8. The archive contains a **complete §7 OS-containment catalog**: every
+   hostile-catalog row whose Layer is `OS containment` has a recorded pass.
+   Host-protocol, supervisor-cleanup, and resource-limit rows MAY be present;
+   they do **not** satisfy this check and do **not** prove OS containment.
+9. Each recorded OS-containment pass used that row's independent OS oracle
+   (deny/kill of the direct syscall/API). A JavaScript-shim deny, a
+   `KELD-IPC-007` / host-protocol pass, a supervisor reap, or a resource-limit
+   hit recorded in an OS-containment slot is a layer mismatch.
 
 Otherwise the result is not `Strict`:
 
 | Defect | Error |
 |---|---|
 | `proof` is `None` or the archive is empty | `ProofMissing` |
-| digest, OS, or `archive_id` does not match the request | `ProofMismatch` |
-| archive is not fresh for this digest/candidate | `ProofStale` |
+| artifact digest, profile digest, OS, or `archive_id` does not match | `ProofMismatch` |
+| archive is not fresh for this digest/profile | `ProofStale` |
+| one or more §7 OS-containment rows missing | `ProofIncomplete` |
+| an OS-containment slot used another layer's oracle | `ProofLayerMismatch` |
 | required primitive or host-path deny missing | `PrimitiveUnavailable` |
+
+An archive that contains only protocol, cleanup, or limit rows is
+`ProofIncomplete` (OS-containment rows absent). If those other-layer
+results were written into OS-containment slots, it is
+`ProofLayerMismatch`. Neither admits `Strict`.
 
 `Legacy` does not require a strict archive. Default / `Unverified` never
 becomes `Strict` through this function. T1 implements this state machine
@@ -399,7 +453,7 @@ Wire/protocol: none. `KELD_APP_LINK` stays `<endpoint>#<64 hex chars>`.
 
 | Surface | `strict` | `legacy` | `unverified` |
 |---|---|---|---|
-| `keld build` output | printed only after proof archive exists | printed "zero-authority claim forfeited" | printed "unverified — no OS proof" |
+| `keld build` output | printed only after a complete OS-containment archive exists | printed "zero-authority claim forfeited" | printed "unverified — no OS proof" |
 | `keld doctor` | same | same | same |
 | Scoreboard / release metadata | same | same | same |
 
@@ -422,16 +476,20 @@ Renderer sandbox is a different column.
 - [x] T0: Draft this spec + primary-source ledger. All OS proofs unverified.
 - [ ] T1: Admission API + profile-state reporting. Synthetic in-process
       *probe binary* (not a third-party addon). Default state `unverified`.
-      Fail closed when `strict` is requested. No OS containment claim.
+      Fail closed when `strict` is requested (`ProofMissing` /
+      `ProofIncomplete` / `ProofLayerMismatch` / `ProofMismatch` including
+      profile digest). No OS containment claim.
 - [ ] T2: macOS App Sandbox admission + hostile archive for the synthetic
       fixture. JIT entitlements only if a recorded Bun-start failure
-      requires them.
+      requires them. Name the host-death reaper from a primary source
+      before AC9 applies on macOS; do not invent process-group / `launchd`.
 - [ ] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
 - [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
-      work) + `no_new_privs` + cap drop + seccomp (+ Landlock when present)
-      and unavailable-userns fail-closed proof. Landlock is extra, not the
-      filesystem deny.
+      work) + `no_new_privs` + cap drop + seccomp that denies `clone3` /
+      `setns` / descendant `CLONE_NEWUSER` (+ Landlock **on top** when
+      present) and unavailable-userns fail-closed proof. Landlock is extra,
+      not the item-2 mount-table deny.
 - [ ] T5: Crash/hang/OOM cleanup and updater-boundary probes on each OS
       that passed T2–T4.
 - [ ] T6: Doctor / build / release metadata surfaces. Then KEL-75 T6 may
@@ -447,14 +505,14 @@ OS. Mocks may test the admission state machine only.
 | AC | Future fixture | Independent oracle |
 |---|---|---|
 | 1 | doctor/build metadata unit | printed state string is `unverified`/`legacy`/`strict` |
-| 2 | admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong digest / OS / archive id) | typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch`; no child PID; result is not `Strict` |
+| 2 | admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong artifact digest / profile digest / OS / archive id); incomplete OS-containment catalog; layer-mismatched archive (protocol/cleanup/limit rows only, or those oracles in OS slots) | typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch` / `ProofIncomplete` / `ProofLayerMismatch`; no child PID; result is not `Strict` |
 | 3 | explicit legacy spawn | child runs; metadata forfeits the claim |
 | 4 | `/proc/pid/fd`, `lsof`, or `GetProcessHandleCount` + handle dump | only app-link + log sinks |
-| 5 | hostile catalog below | **per-layer** oracle in that row; JS shim deny fails OS-containment probes; host-protocol / cleanup / limit passes do not mark the OS contained; missing archive stays `unverified` |
+| 5 | hostile catalog below | **per-layer** oracle in that row; JS shim deny fails OS-containment probes; host-protocol / cleanup / limit passes do not mark the OS contained and do not admit `Strict`; missing/incomplete/layer-mismatched archive stays `unverified` (`ProofIncomplete` / `ProofLayerMismatch`) |
 | 6 | synthetic addon matrix | one of the four outcomes; in-process load fails closed under `strict` |
 | 7 | plugin vs worker | plugin has no OS sandbox; worker does (once T7 exists) |
 | 8 | doctor JSON | two distinct fields |
-| 9 | kill host / abort child / hang | no leftover descendants; next spawn works |
+| 9 | kill host / abort child / hang on an OS whose §4 names a reaper (Windows job; Linux PID NS). macOS: not claimed until T2 | no leftover descendants; next spawn works. macOS stays unverified for this AC |
 | 10 | open update staging / key path from child | OS deny |
 
 Hostile catalog (each is a real syscall/API from the child or addon worker).
@@ -466,7 +524,7 @@ Each row is one layer. Do not attribute every outcome to the OS.
 | Direct network | OS containment | `connect`/`bind`/`socket` fails without a reviewed grant |
 | Direct shell / spawn | OS containment | `exec`/`CreateProcess`/`posix_spawn` of a helper fails or is job/PID-contained and equally sandboxed |
 | Inherited handles | OS containment | leftover host FD/HANDLE cannot open host files, the update dir, or sibling links |
-| Descendants | OS containment | grandchild has the same profile or is killed; no job breakaway; no new user namespace |
+| Descendants | OS containment | grandchild has the same profile or is killed; no job breakaway; no new user namespace (`clone`/`clone3`/`unshare`/`setns` with `CLONE_NEWUSER`) |
 | Broker bypass | OS containment | raw use of a host object the broker would have checked is denied by the OS |
 | Token theft | OS containment | cannot impersonate the interactive user (macOS keychain / Windows user token / Linux host UID 0) |
 | Addon escape | OS containment | synthetic native code cannot `dlopen` unsigned host code or join the host address space |
@@ -482,6 +540,8 @@ run crash cases out of process. Platform-only tests report other OSes as
 Negative control: temporarily remove the LPAC opt-out, the App Sandbox
 entitlement, `CLONE_NEWUSER`, or the host-path deny (leaving `CLONE_NEWNS`
 as a copied host mount table) and confirm the `strict` tests fail.
+Also remove descendant-namespace denies (`clone3` / `setns` / descendant
+`CLONE_NEWUSER`) and confirm the descendant OS-containment probe fails.
 Role-private path success is a required positive control, not a substitute
 for the host-path deny.
 
@@ -516,6 +576,9 @@ end-to-end measurement exists.
    `sandbox_init` / restricted-token / landlock+seccomp sketch with this
    contract? (This PR does not.)
 4. KEL-75 still asks this spec to name the per-OS host-death reaping
-   mechanism. Tentative answers: macOS process group / XPC `SIGKILL` by
-   `launchd`; Windows `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; Linux PID
-   namespace + PR_SET_PDEATHSIG. Confirm in T2–T4, do not claim them now.
+   mechanism. §4 already names Windows `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+   (W5) and Linux `CLONE_NEWPID` (L1); AC9 applies there. macOS §4 names
+   none. Tentative macOS leads (process group / XPC `SIGKILL` by `launchd`)
+   and Linux `PR_SET_PDEATHSIG` are **not** claimed. T2 MUST pick the macOS
+   reaper from a primary source before AC9 applies on macOS. Do not invent
+   one here.
