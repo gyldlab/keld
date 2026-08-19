@@ -194,6 +194,8 @@ pub(crate) enum RevocationCause {
     Shutdown,
     /// The operating system refused to spawn the prepared command.
     SpawnFailed,
+    /// The host could not observe the live child state.
+    WaitFailed,
 }
 
 /// Host-owned authority that is invalidated with one prepared child attempt.
@@ -305,15 +307,14 @@ impl Supervisor {
     /// introducing a second restart/reap loop.
     pub(crate) fn start_prepared<P>(
         policy: RestartPolicy,
-        mut preparer: P,
+        preparer: P,
     ) -> Result<Self, RuntimeError>
     where
         P: ChildPreparer,
     {
-        let initial_child = preparer.prepare(1)?;
-        let (child, lease) = spawn_prepared(initial_child)?;
-
         let (events_tx, events_rx) = mpsc::channel();
+        let (preparer_tx, preparer_rx) = mpsc::sync_channel::<P>(0);
+        let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<(), RuntimeError>>(0);
         let output = Arc::new(Mutex::new(CapturedOutput::default()));
         let current_pid = Arc::new(Mutex::new(None));
         let crash_loop_error = Arc::new(Mutex::new(None));
@@ -329,6 +330,23 @@ impl Supervisor {
             thread::Builder::new()
                 .name("keld-runtime-supervisor".to_owned())
                 .spawn(move || {
+                    let Ok(mut preparer) = preparer_rx.recv() else {
+                        return;
+                    };
+                    let (child, lease) = match preparer.prepare(1).and_then(spawn_prepared) {
+                        Ok(initial) => initial,
+                        Err(error) => {
+                            let _ = startup_tx.send(Err(error));
+                            return;
+                        }
+                    };
+                    if startup_tx.send(Ok(())).is_err() {
+                        let _ = lease.revoke(RevocationCause::Shutdown);
+                        let mut child = child;
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return;
+                    }
                     supervise(
                         policy,
                         preparer,
@@ -344,6 +362,27 @@ impl Supervisor {
                 })
                 .map_err(RuntimeError::Spawn)?
         };
+
+        preparer_tx
+            .send(preparer)
+            .map_err(|_| RuntimeError::Lifecycle {
+                phase: "supervisor startup handoff",
+                source: std::io::Error::other("supervisor worker exited before preparation"),
+            })?;
+        match startup_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                return Err(error);
+            }
+            Err(_) => {
+                let _ = thread.join();
+                return Err(RuntimeError::Lifecycle {
+                    phase: "supervisor startup",
+                    source: std::io::Error::other("supervisor worker ended before startup result"),
+                });
+            }
+        }
 
         Ok(Self {
             events_rx,
@@ -438,6 +477,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)] // internal worker; grouping into a struct would not reduce coupling
+#[allow(clippy::too_many_lines)] // one lifecycle state machine keeps lease/child ownership transitions contiguous
 fn supervise<P>(
     policy: RestartPolicy,
     mut preparer: P,
@@ -454,20 +494,35 @@ fn supervise<P>(
 {
     let mut crash_times: Vec<Instant> = Vec::new();
     let mut attempt: u32 = 1;
-
     loop {
         let pid = child.id();
         *lock_or_recover(current_pid) = Some(pid);
         let _ = events_tx.send(SupervisorEvent::Started { pid, attempt });
-
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let stdout_thread = stdout.map(|r| spawn_capture_thread(r, Arc::clone(output), true));
         let stderr_thread = stderr.map(|r| spawn_capture_thread(r, Arc::clone(output), false));
-
-        let shutdown_requested = wait_or_shutdown(&mut child, shutdown);
-
-        if shutdown_requested {
+        let wait = match wait_or_shutdown(&mut child, shutdown) {
+            Ok(wait) => wait,
+            Err(error) => {
+                let terminal = RuntimeError::Lifecycle {
+                    phase: "child wait",
+                    source: error,
+                };
+                let terminal = match lease.revoke(RevocationCause::WaitFailed) {
+                    Ok(()) => terminal,
+                    Err(revocation_error) => revocation_error,
+                };
+                let _ = child.kill();
+                let _ = child.wait();
+                join_capture_threads(stdout_thread, stderr_thread);
+                *lock_or_recover(current_pid) = None;
+                *lock_or_recover(terminal_error) = Some(terminal);
+                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                return;
+            }
+        };
+        if matches!(wait, WaitResult::ShutdownRequested) {
             if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
                 *lock_or_recover(terminal_error) = Some(error);
                 let _ = child.kill();
@@ -484,11 +539,13 @@ fn supervise<P>(
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
         }
-
         join_capture_threads(stdout_thread, stderr_thread);
         *lock_or_recover(current_pid) = None;
 
-        let code = child_exit_code(&mut child);
+        let code = match wait {
+            WaitResult::Exited(status) => status.code(),
+            WaitResult::ShutdownRequested => return,
+        };
         let _ = events_tx.send(SupervisorEvent::Exited { pid, code });
 
         if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
@@ -564,26 +621,26 @@ fn join_capture_threads(
 /// Polls `child` for exit, honoring `shutdown`. Returns `true` if it killed
 /// the child because `shutdown` was requested (caller must not treat this as
 /// a crash), `false` if the child exited on its own.
-fn wait_or_shutdown(child: &mut Child, shutdown: &Arc<AtomicBool>) -> bool {
+enum WaitResult {
+    Exited(std::process::ExitStatus),
+    ShutdownRequested,
+}
+
+fn wait_or_shutdown(
+    child: &mut Child,
+    shutdown: &Arc<AtomicBool>,
+) -> Result<WaitResult, std::io::Error> {
     loop {
         match child.try_wait() {
             Ok(None) => {
                 if shutdown.load(Ordering::SeqCst) {
-                    return true;
+                    return Ok(WaitResult::ShutdownRequested);
                 }
                 thread::sleep(POLL_INTERVAL);
             }
-            Ok(Some(_)) | Err(_) => return false,
+            Ok(Some(status)) => return Ok(WaitResult::Exited(status)),
+            Err(error) => return Err(error),
         }
-    }
-}
-
-/// Exit code of a child already confirmed exited by `wait_or_shutdown`.
-/// `try_wait` on an already-reaped child returns the cached status.
-fn child_exit_code(child: &mut Child) -> Option<i32> {
-    match child.try_wait() {
-        Ok(Some(status)) => status.code(),
-        _ => None,
     }
 }
 
@@ -628,6 +685,7 @@ mod tests {
                 RevocationCause::ChildExited => "exited",
                 RevocationCause::Shutdown => "shutdown",
                 RevocationCause::SpawnFailed => "spawn-failed",
+                RevocationCause::WaitFailed => "wait-failed",
             };
             lock_or_recover(&self.record).push(format!("revoke:{}:{cause}", self.attempt));
             Ok(())
