@@ -619,8 +619,32 @@ fn supervise<P>(
 
         attempt += 1;
         match preparer.prepare(attempt) {
+            Ok(next_prepared_child) if shutdown.load(Ordering::SeqCst) => {
+                let PreparedChild { lease, .. } = next_prepared_child;
+                if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
+                    *lock_or_recover(terminal_error) = Some(error);
+                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                } else {
+                    let _ = events_tx.send(SupervisorEvent::Stopped);
+                }
+                return;
+            }
             Ok(next_prepared_child) => match spawn_prepared(next_prepared_child) {
                 Ok((next_child, next_lease)) => {
+                    if shutdown.load(Ordering::SeqCst) {
+                        let mut next_child = next_child;
+                        if let Err(error) = next_lease.revoke(RevocationCause::Shutdown) {
+                            *lock_or_recover(terminal_error) = Some(error);
+                            let _ = next_child.kill();
+                            let _ = next_child.wait();
+                            let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                        } else {
+                            let _ = next_child.kill();
+                            let _ = next_child.wait();
+                            let _ = events_tx.send(SupervisorEvent::Stopped);
+                        }
+                        return;
+                    }
                     child = next_child;
                     lease = next_lease;
                 }
@@ -730,6 +754,29 @@ mod tests {
         commands: Vec<Command>,
     }
 
+    struct GatedPreparer {
+        inner: RecordingPreparer,
+        entered_tx: mpsc::Sender<()>,
+        release_rx: mpsc::Receiver<()>,
+    }
+
+    impl ChildPreparer for GatedPreparer {
+        type Lease = RecordingLease;
+
+        fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+            if attempt == 2 {
+                let _ = self.entered_tx.send(());
+                self.release_rx
+                    .recv()
+                    .map_err(|_| RuntimeError::Lifecycle {
+                        phase: "test successor gate",
+                        source: std::io::Error::other("test release channel closed"),
+                    })?;
+            }
+            self.inner.prepare(attempt)
+        }
+    }
+
     impl ChildPreparer for RecordingPreparer {
         type Lease = RecordingLease;
 
@@ -835,6 +882,53 @@ mod tests {
                 SupervisorOutcome::CrashLoop(_)
             ),
             "event observation must not erase the terminal crash-loop result"
+        );
+    }
+
+    #[test]
+    fn shutdown_during_successor_preparation_revokes_without_started_event() {
+        let record = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy {
+                max_crashes: 3,
+                window_secs: 30,
+            },
+            GatedPreparer {
+                inner: RecordingPreparer {
+                    record: Arc::clone(&record),
+                    commands: vec![shell_command("exit 1"), shell_command("sleep 1")],
+                },
+                entered_tx,
+                release_rx,
+            },
+        )
+        .expect("initial child must spawn");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("g2 preparation must be gated");
+        supervisor.shutdown();
+        release_tx.send(()).expect("release g2 preparation");
+        let mut saw_started_g2 = false;
+        loop {
+            match supervisor.recv_event(Duration::from_secs(1)) {
+                Some(SupervisorEvent::Started { attempt: 2, .. }) => saw_started_g2 = true,
+                Some(SupervisorEvent::Stopped) => break,
+                Some(_) => {}
+                None => panic!("supervisor did not stop after shutdown"),
+            }
+        }
+        assert!(
+            !saw_started_g2,
+            "shutdown must win before g2 becomes observable"
+        );
+        assert!(
+            lock_or_recover(&record)
+                .iter()
+                .any(|entry| entry == "revoke:2:shutdown"),
+            "prepared g2 lease must be revoked when shutdown wins: {:?}",
+            lock_or_recover(&record)
         );
     }
 
