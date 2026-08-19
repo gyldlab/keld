@@ -25,13 +25,19 @@ Non-goals:
 ## 3. Acceptance criteria (binary, each becomes a test)
 
 1. Given a pull-request diff that changes only `keld-runtime`, when CI classifies it,
-   then Rust/MSRV run and Linux GUI smoke is a successful skipped job.
+   then Rust/MSRV run, Linux GUI smoke is a successful skipped job, and Ubuntu clippy
+   does not `apt-get` WebKitGTK (`webkitgtk=false`; `keld-cli` is omitted from
+   `nongtk_packages`).
 2. Given a change under Keld's actual `keld-host` local dependency closure, when CI
-   classifies it, then the Linux GUI smoke runs.
-3. Given a docs-only diff, when CI classifies it, then documentation contracts run while
-   unrelated Rust and GUI jobs are successful skips.
-4. Given an unknown, workspace-graph, workflow or router input, or unavailable comparison
-   base, when CI classifies it, then every potentially affected non-security job runs.
+   classifies it, then the Linux GUI smoke runs. An IPC-only change does not also
+   install WebKitGTK on Ubuntu clippy.
+3. Given a docs-only or `keld-compat`-only diff, when CI classifies it, then
+   documentation contracts (docs) or macOS/Windows clippy (compat) run while Ubuntu
+   WebKitGTK apt and GUI smoke are successful skips.
+4. Given an unknown, workspace-graph, or unavailable comparison base, when CI
+   classifies it, then every potentially affected non-security job runs, including
+   Ubuntu WebKitGTK apt. A workflow/router edit still creates every job and runs GUI
+   smoke apt, but does not duplicate `apt-get update` onto Ubuntu clippy or MSRV.
 5. Given every PR or push, when CI starts, then gitleaks runs regardless of classifier
    output, and the workflow itself was not skipped by a path trigger.
 6. Given an empty, pull-request or push diff, when the router runs, then its emitted
@@ -53,8 +59,12 @@ authority, process ownership, permissions, wire bytes, or performance claims.
   derives both (a) the `keld-host` local dependency closure for the graphical smoke and
   (b) the changed package's Cargo reverse-dependent consumers for Rust checks, from
   `cargo metadata --no-deps`. It also derives whether those selected package closures
-  compile `keld-wv` before installing WebKitGTK. That follows the current Cargo graph
-  instead of copying core/guard/ipc/wv names into another policy table.
+  compile `keld-wv` so Ubuntu clippy can run GTK-free packages without apt. Live
+  `apt-get` for WebKitGTK on Ubuntu clippy is owned by changed `keld-wv` / `keld-core` /
+  `keld-host` paths (or unknown/lockfile fail-safe), not by every reverse-dependent that
+  happens to compile `keld-core`. MSRV runs on macOS so rustc-version checking never
+  waits on Azure Ubuntu mirrors. Linux GUI smoke remains the job that always apts when
+  the host graphical contract is affected.
 - Build graph, workflow, router and unknown inputs fail safe to all affected lanes.
   `gitleaks` is unconditional because secret ownership includes every changed file.
 - A missing comparison commit enables all conditional lanes. If Cargo metadata or `jq`

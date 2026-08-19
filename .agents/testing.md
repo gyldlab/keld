@@ -84,14 +84,19 @@ evidence only when a plausible defect can make it fail.
   The repository-owned change router then schedules each non-security CI lane at the
   job boundary from the observable contract and its inputs. It MUST NOT use
   workflow-level path filters for required workflows: those leave a required check
-  pending. A skipped job is permitted only when it reports success and a falsifiable
-  router test covers that input class. Unknown/shared/workflow/build-graph inputs run
-  every potentially affected lane; no filename heuristic may silently skip a proof.
+  pending.   A skipped job is permitted only when it reports success and a falsifiable
+  router test covers that input class. Unknown/shared/build-graph inputs run
+  every potentially affected lane, including Ubuntu WebKitGTK apt. Workflow/router
+  edits still create every job (GUI smoke owns live apt) but must not duplicate
+  `apt-get update` onto Ubuntu clippy and MSRV. No filename heuristic may silently
+  skip a proof.
 - **Rust-affecting PRs:** CI runs `cargo fmt --all --check` plus clippy, tests and MSRV
   checks for the changed workspace package and every Cargo reverse-dependent consumer.
-  Its Linux WebKitGTK dependency setup runs only when that selected package closure
-  actually compiles `keld-wv`; the Xvfb smoke separately runs only when the current
-  `keld-host` dependency closure or graphical build/runtime inputs change. Replay
+  MSRV is a rustc-version gate on macOS (WKWebView, no apt). Ubuntu WebKitGTK apt for
+  clippy/test runs only when changed paths own `keld-wv` / `keld-core` / `keld-host` (or
+  an unknown/lockfile fail-safe). Other Ubuntu clippy uses packages whose Cargo closure
+  does not compile `keld-wv`. The Xvfb smoke separately runs when the current `keld-host`
+  dependency closure or graphical build/runtime inputs change. Replay
   committed fuzz regressions as normal tests; build changed fuzz harnesses. A
   documentation-affecting PR runs the generated docs and Mermaid render gates. Agents
   still run the root `AGENTS.md` local verification gate before claiming their work done.

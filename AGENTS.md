@@ -117,10 +117,14 @@ not scheduled.
   every changed byte is its input.
 - The router MUST derive build-dependency closures from the current build metadata where
   available; agents MUST NOT copy a hand-maintained crate list. Unknown, shared,
-  workspace-graph, workflow, router, or comparison-base inputs MUST fail safe by
-  enabling every potentially affected lane. If the router itself cannot obtain required
-  metadata or parse it, it MUST fail the router job before emitting a partial/empty
-  selection; it MUST NOT convert that fault into a skipped-green result.
+  workspace-graph, or comparison-base inputs MUST fail safe by enabling every potentially
+  affected lane, including Ubuntu WebKitGTK apt when the diff cannot be proven GTK-free.
+  Workflow and router edits MUST still create every job (Linux GUI smoke installs WebKitGTK)
+  but MUST NOT also `apt-get` on Ubuntu clippy or MSRV: those extra live apt-get update
+  calls hang on Azure Ubuntu mirrors while the GUI job finishes the same packages in
+  minutes. If the router itself cannot obtain required metadata or parse it, it MUST fail
+  the router job before emitting a partial/empty selection; it MUST NOT convert that fault
+  into a skipped-green result.
 - Conditional routing MUST have a falsifiable contract test for relevant, unrelated,
   unknown, empty, pull-request and push diffs. A workflow/router edit MUST exercise all
   conditional lanes. Agents MUST verify branch-protection behavior from current official

@@ -17,6 +17,7 @@ msrv="$FALSE"
 deny="$FALSE"
 webkitgtk="$FALSE"
 packages=""
+nongtk_packages=""
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
@@ -40,6 +41,15 @@ mark_all() {
     all_workspace_packages="$TRUE"
 }
 
+# Unknown/shared inputs must not skip Linux GTK clippy. Workflow/router edits
+# still enable every *job* (including GUI smoke, which installs WebKitGTK) but
+# MUST NOT also install GTK on Ubuntu clippy and MSRV: those extra apt-get
+# update calls contend with the smoke job and hang on Azure Ubuntu mirrors.
+mark_unknown() {
+    mark_all
+    webkitgtk="$TRUE"
+}
+
 emit() {
     printf 'rust=%s\n' "$rust"
     printf 'docs=%s\n' "$docs"
@@ -49,6 +59,7 @@ emit() {
     printf 'deny=%s\n' "$deny"
     printf 'webkitgtk=%s\n' "$webkitgtk"
     printf 'packages=%s\n' "$packages"
+    printf 'nongtk_packages=%s\n' "$nongtk_packages"
 }
 
 load_workspace_metadata() {
@@ -186,12 +197,13 @@ finalize_rust_packages() {
     fi
     packages="$(printf '%s' "$expanded" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
 
+    local nongtk=""
     for package_name in $packages; do
-        if package_requires_webkitgtk "$package_name"; then
-            webkitgtk="$TRUE"
-            return
+        if ! package_requires_webkitgtk "$package_name"; then
+            nongtk+="$package_name"$'\n'
         fi
     done
+    nongtk_packages="$(printf '%s' "$nongtk" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
 }
 
 host_path_is_affected() {
@@ -238,9 +250,10 @@ classify_path() {
             gui="$TRUE"
             msrv="$TRUE"
             deny="$TRUE"
+            webkitgtk="$TRUE"
             ;;
         .cargo/* | .config/nextest.toml)
-            mark_all
+            mark_unknown
             ;;
         deny.toml)
             deny="$TRUE"
@@ -250,7 +263,7 @@ classify_path() {
             rust="$TRUE"
             local package_name
             if ! package_name="$(package_for_path "$changed_file")"; then
-                mark_all
+                mark_unknown
                 return
             fi
             add_changed_package_root "$package_name"
@@ -258,6 +271,14 @@ classify_path() {
             if host_path_is_affected "$changed_file"; then
                 gui="$TRUE"
             fi
+            # Ubuntu clippy/MSRV apt is for linking WebKitGTK, not for every
+            # reverse-dependent that happens to compile keld-core. keld-compat
+            # and keld-cli still get macOS/Windows clippy plus MSRV on macOS.
+            case "$package_name" in
+                keld-wv | keld-core | keld-host)
+                    webkitgtk="$TRUE"
+                    ;;
+            esac
             ;;
 
         # These tools own the generated-doc and Mermaid contracts.
@@ -282,7 +303,7 @@ classify_path() {
         # Failing closed means execute all non-security lanes, never silently
         # omit a check based on a filename guess.
         *)
-            mark_all
+            mark_unknown
             ;;
     esac
 }
@@ -320,7 +341,7 @@ classify_github_event() {
             head_sha="${GITHUB_SHA:-}"
             ;;
         *)
-            mark_all
+            mark_unknown
             finalize_rust_packages
             publish "$(emit)"
             return
@@ -332,7 +353,7 @@ classify_github_event() {
     if [[ -z "$base_sha" || -z "$head_sha" || "$base_sha" =~ ^0+$ ]] || \
         ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null || \
         ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
-        mark_all
+        mark_unknown
         finalize_rust_packages
         publish "$(emit)"
         return

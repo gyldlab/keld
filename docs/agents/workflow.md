@@ -74,9 +74,10 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
   affected by the diff: fmt · clippy `-D warnings` · full test suite · generated-doc
   freshness · Mermaid structural checks + pinned render when diagrams change · secret
   scan · no `todo!()`/`unimplemented!()` on the diff. The always-created CI router owns
-  the job-level applicability decision; unknown/shared/workflow/build-graph inputs run
-  every potentially affected gate. Visual inspection and the render report remain review
-  artifacts in addition to CI.
+  the job-level applicability decision; unknown/shared/build-graph inputs run every
+  potentially affected gate. Workflow/router edits still create those jobs but must not
+  duplicate live Ubuntu `apt-get update` onto clippy/MSRV (GUI smoke owns WebKitGTK apt).
+  Visual inspection and the render report remain review artifacts in addition to CI.
 - **Review gates (block until a human signs off):** the five in root `AGENTS.md`
   (unsafe, public API, permissions, dependencies, wire protocol). `.github/CODEOWNERS`
   requests human review on `keld-guard`, `keld-ipc`, workspace manifests, and CI

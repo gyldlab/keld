@@ -359,6 +359,25 @@ fn check_package_loop_shell(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "msrv") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `msrv` job. Restore MSRV `cargo check`; do not drop the rustc version gate to avoid Ubuntu apt."
+        ));
+    };
+    if !uncommented_line_contains(&block, "runs-on: macos-latest") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `msrv` must `runs-on: macos-latest`. MSRV is a rustc version gate; do not install WebKitGTK via `apt-get` on Ubuntu for it."
+        ));
+    }
+    if uncommented_line_contains(&block, "apt-get") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `msrv` must not call `apt-get`. WebKitGTK belongs on Linux GUI smoke / Ubuntu clippy when `keld-wv` actually links, not on the MSRV rustc job."
+        ));
+    }
+    Ok(())
+}
+
 fn executable_run_fragment_contains(fragment: &str, needle: &str) -> bool {
     if !fragment.contains(needle) {
         return false;
@@ -532,6 +551,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     }
     check_change_router_job(&text)?;
     check_package_loop_shell(&text)?;
+    check_msrv_avoids_apt(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -695,6 +715,10 @@ mod tests {
             "      - name: test",
             "        shell: bash",
             "        run: cargo nextest run -p fixture --profile ci --no-tests=pass",
+            "  msrv:",
+            "    runs-on: macos-latest",
+            "    steps:",
+            "      - run: cargo +1.97 check -p fixture --all-targets",
             "  secrets:",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -875,6 +899,25 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("zero-test package policy must remain explicit");
         assert!(error.contains("--no-tests=pass"), "{error}");
+    }
+
+    #[test]
+    fn msrv_must_not_apt_get_on_ubuntu() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "    runs-on: macos-latest\n",
+                "    runs-on: ubuntu-latest\n    steps:\n      - run: sudo apt-get update\n",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("MSRV apt-get must fail hygiene");
+        assert!(error.contains("msrv"), "{error}");
+        assert!(
+            error.contains("macos-latest") || error.contains("apt-get"),
+            "{error}"
+        );
     }
 
     #[test]

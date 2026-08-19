@@ -45,6 +45,7 @@ jobs:
       deny: ${{ steps.classify.outputs.deny }}
       webkitgtk: ${{ steps.classify.outputs.webkitgtk }}
       packages: ${{ steps.classify.outputs.packages }}
+      nongtk_packages: ${{ steps.classify.outputs.nongtk_packages }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -85,7 +86,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: >
+      needs.changes.outputs.rust == 'true' &&
+      (matrix.os != 'ubuntu-latest' ||
+       needs.changes.outputs.webkitgtk == 'true' ||
+       needs.changes.outputs.nongtk_packages != '')
     strategy:
       fail-fast: false
       matrix:
@@ -109,8 +114,16 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - name: clippy (warnings deny)
         shell: bash
+        env:
+          KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
+          KELD_CI_NONGTK_PACKAGES: ${{ needs.changes.outputs.nongtk_packages }}
+          KELD_CI_WEBKITGTK: ${{ needs.changes.outputs.webkitgtk }}
         run: |
-          for package in ${{ needs.changes.outputs.packages }}; do
+          packages="$KELD_CI_PACKAGES"
+          if [ "${{ matrix.os }}" = ubuntu-latest ] && [ "$KELD_CI_WEBKITGTK" != true ]; then
+            packages="$KELD_CI_NONGTK_PACKAGES"
+          fi
+          for package in $packages; do
             cargo clippy -p "$package" --all-targets -- -D warnings
           done
       # v2.9.4 tar'd nextest into `%CARGO_HOME%\bin` using a Git-bash
@@ -127,18 +140,33 @@ jobs:
           tool: nextest
       - name: test
         shell: bash
+        env:
+          KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
+          KELD_CI_NONGTK_PACKAGES: ${{ needs.changes.outputs.nongtk_packages }}
+          KELD_CI_WEBKITGTK: ${{ needs.changes.outputs.webkitgtk }}
         run: |
-          for package in ${{ needs.changes.outputs.packages }}; do
+          packages="$KELD_CI_PACKAGES"
+          if [ "${{ matrix.os }}" = ubuntu-latest ] && [ "$KELD_CI_WEBKITGTK" != true ]; then
+            packages="$KELD_CI_NONGTK_PACKAGES"
+          fi
+          for package in $packages; do
             cargo nextest run -p "$package" --profile ci --no-tests=pass
           done
       - name: rustdoc (warnings deny)
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          for package in ${{ needs.changes.outputs.packages }}; do
-            cargo doc -p "$package" --no-deps
-          done
         env:
           RUSTDOCFLAGS: -D warnings
+          KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
+          KELD_CI_NONGTK_PACKAGES: ${{ needs.changes.outputs.nongtk_packages }}
+          KELD_CI_WEBKITGTK: ${{ needs.changes.outputs.webkitgtk }}
+        run: |
+          packages="$KELD_CI_PACKAGES"
+          if [ "$KELD_CI_WEBKITGTK" != true ]; then
+            packages="$KELD_CI_NONGTK_PACKAGES"
+          fi
+          for package in $packages; do
+            cargo doc -p "$package" --no-deps
+          done
 
   linux-gui-smoke:
     name: Linux GUI smoke test (Xvfb)
@@ -222,7 +250,7 @@ jobs:
 
   msrv:
     name: MSRV
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.msrv == 'true'
@@ -233,13 +261,6 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
-        if: needs.changes.outputs.webkitgtk == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev pkg-config build-essential
       - name: Read MSRV from workspace metadata
         id: msrv
         run: |
