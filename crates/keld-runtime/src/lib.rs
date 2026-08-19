@@ -119,6 +119,31 @@ impl std::fmt::Display for RuntimeError {
 
 impl std::error::Error for RuntimeError {}
 
+impl Clone for RuntimeError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Spawn(source) => {
+                Self::Spawn(std::io::Error::new(source.kind(), source.to_string()))
+            }
+            Self::Lifecycle { phase, source } => Self::Lifecycle {
+                phase,
+                source: std::io::Error::new(source.kind(), source.to_string()),
+            },
+            Self::CrashLoop {
+                crashes,
+                window_secs,
+                last_exit_code,
+                stderr_tail,
+            } => Self::CrashLoop {
+                crashes: *crashes,
+                window_secs: *window_secs,
+                last_exit_code: *last_exit_code,
+                stderr_tail: stderr_tail.clone(),
+            },
+        }
+    }
+}
+
 /// Stdout/stderr captured from the currently or most-recently supervised child.
 #[derive(Debug, Default, Clone)]
 pub struct CapturedOutput {
@@ -410,7 +435,7 @@ impl Supervisor {
         loop {
             match self.events_rx.recv() {
                 Ok(SupervisorEvent::CrashLoopTripped) => {
-                    let err = lock_or_recover(&self.crash_loop_error).take();
+                    let err = lock_or_recover(&self.crash_loop_error).clone();
                     return SupervisorOutcome::CrashLoop(err.unwrap_or(RuntimeError::CrashLoop {
                         crashes: 0,
                         window_secs: 0,
@@ -419,13 +444,21 @@ impl Supervisor {
                     }));
                 }
                 Ok(SupervisorEvent::Failed { .. }) => {
-                    let err = lock_or_recover(&self.terminal_error).take();
+                    let err = lock_or_recover(&self.terminal_error).clone();
                     return SupervisorOutcome::Failed(err.unwrap_or(RuntimeError::Lifecycle {
                         phase: "unknown",
                         source: std::io::Error::other("prepared child failed without diagnostic"),
                     }));
                 }
-                Ok(SupervisorEvent::Stopped) | Err(_) => return SupervisorOutcome::Stopped,
+                Ok(SupervisorEvent::Stopped) | Err(_) => {
+                    if let Some(error) = lock_or_recover(&self.crash_loop_error).clone() {
+                        return SupervisorOutcome::CrashLoop(error);
+                    }
+                    if let Some(error) = lock_or_recover(&self.terminal_error).clone() {
+                        return SupervisorOutcome::Failed(error);
+                    }
+                    return SupervisorOutcome::Stopped;
+                }
                 Ok(_) => {}
             }
         }
@@ -775,6 +808,33 @@ mod tests {
             *lock_or_recover(&record),
             vec!["prepare:1".to_owned(), "revoke:1:spawn-failed".to_owned()],
             "failed OS spawn must revoke its prepared lease"
+        );
+    }
+
+    #[test]
+    fn draining_crash_loop_event_does_not_erase_terminal_outcome() {
+        let supervisor = Supervisor::start(
+            RestartPolicy {
+                max_crashes: 1,
+                window_secs: 30,
+            },
+            || shell_command("exit 1"),
+        )
+        .expect("child must spawn");
+        loop {
+            if matches!(
+                supervisor.recv_event(Duration::from_secs(1)),
+                Some(SupervisorEvent::CrashLoopTripped)
+            ) {
+                break;
+            }
+        }
+        assert!(
+            matches!(
+                supervisor.wait_for_outcome(),
+                SupervisorOutcome::CrashLoop(_)
+            ),
+            "event observation must not erase the terminal crash-loop result"
         );
     }
 
