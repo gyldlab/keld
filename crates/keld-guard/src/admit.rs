@@ -440,6 +440,8 @@ pub enum AdmissionError {
         expected_layer: ProbeLayer,
         /// What the archive recorded.
         recorded_layer: ProbeLayer,
+        /// Independent oracle the archive recorded (not the layer id).
+        oracle: ProbeOracle,
         /// How to proceed.
         fix: &'static str,
     },
@@ -514,12 +516,15 @@ impl fmt::Display for AdmissionError {
                 probe,
                 expected_layer,
                 recorded_layer,
+                oracle,
                 fix,
             } => write!(
                 f,
-                "KELD-GUARD015: Strict archive row `{probe}` on {os} recorded layer `{recorded}` instead of `{expected}`. {fix}",
+                "KELD-GUARD015: Strict archive row `{probe}` on {os} recorded layer `{recorded}` and oracle `{oracle}` instead of layer `{expected}` and oracle `{needed}`. {fix}",
                 expected = expected_layer.as_str(),
-                recorded = recorded_layer.as_str()
+                recorded = recorded_layer.as_str(),
+                oracle = oracle.as_str(),
+                needed = expected_oracle_for(*expected_layer).as_str(),
             ),
         }
     }
@@ -711,31 +716,39 @@ fn mismatch(os: HostOs, field: MismatchField, expected: &str, found: &str) -> Ad
     }
 }
 
+const fn expected_oracle_for(layer: ProbeLayer) -> ProbeOracle {
+    match layer {
+        ProbeLayer::OsContainment => ProbeOracle::OsDeny,
+        ProbeLayer::SupervisorCleanup => ProbeOracle::SupervisorReap,
+        ProbeLayer::HostProtocol => ProbeOracle::HostProtocol,
+        ProbeLayer::ResourceLimits => ProbeOracle::ResourceLimit,
+    }
+}
+
+fn proof_layer_mismatch(os: HostOs, row: &ProbeRecord, expected: ProbeLayer) -> AdmissionError {
+    AdmissionError::ProofLayerMismatch {
+        os,
+        probe: row.probe,
+        expected_layer: expected,
+        recorded_layer: row.recorded_layer,
+        oracle: row.oracle,
+        fix: FIX_NO_CHILD,
+    }
+}
+
 fn layer_mismatch(os: HostOs, rows: &[ProbeRecord]) -> Option<AdmissionError> {
     for row in rows {
         let Some(expected) = expected_layer_for(row.probe) else {
             continue;
         };
         if row.expected_layer != expected || row.recorded_layer != expected {
-            return Some(AdmissionError::ProofLayerMismatch {
-                os,
-                probe: row.probe,
-                expected_layer: expected,
-                recorded_layer: row.recorded_layer,
-                fix: FIX_NO_CHILD,
-            });
+            return Some(proof_layer_mismatch(os, row, expected));
         }
         if expected == ProbeLayer::OsContainment
             && row.verdict == ProbeVerdict::Pass
             && !row.oracle.admits_os_containment_pass()
         {
-            return Some(AdmissionError::ProofLayerMismatch {
-                os,
-                probe: row.probe,
-                expected_layer: ProbeLayer::OsContainment,
-                recorded_layer: row.recorded_layer,
-                fix: FIX_NO_CHILD,
-            });
+            return Some(proof_layer_mismatch(os, row, ProbeLayer::OsContainment));
         }
     }
     None
@@ -964,6 +977,26 @@ mod tests {
     }
 
     #[test]
+    fn archive_id_mismatch_is_guard013() {
+        let proof = ProofIdentity {
+            archive_id: ArchiveId("other-archive".into()),
+            ..id()
+        };
+        let req = strict_req(Some(proof));
+        match admit(&req, &facts_primitives_present(), Some(&complete_archive())) {
+            Err(err @ AdmissionError::ProofMismatch { field, .. }) => {
+                assert_eq!(field, MismatchField::ArchiveId);
+                assert_code(&err, "KELD-GUARD013");
+                let text = err.to_string();
+                assert!(text.contains("archive_id"), "{text}");
+                assert!(text.contains("other-archive"), "{text}");
+                assert!(text.contains("archive-t1"), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn handle_leak_is_guard010() {
         let facts = HostFacts {
             os: HostOs::current(),
@@ -1029,9 +1062,27 @@ mod tests {
             detail: "guard denied connect".into(),
         });
         match admit(&req, &facts_primitives_present(), Some(&archive)) {
-            Err(err @ AdmissionError::ProofLayerMismatch { probe, .. }) => {
+            Err(
+                err @ AdmissionError::ProofLayerMismatch {
+                    probe,
+                    oracle,
+                    expected_layer,
+                    recorded_layer,
+                    ..
+                },
+            ) => {
                 assert_eq!(probe, "direct_network");
+                assert_eq!(oracle, ProbeOracle::JsShim);
+                assert_eq!(expected_layer, ProbeLayer::OsContainment);
+                assert_eq!(recorded_layer, ProbeLayer::OsContainment);
                 assert_code(&err, "KELD-GUARD015");
+                let text = err.to_string();
+                assert!(text.contains("js_shim"), "{text}");
+                assert!(text.contains("os_deny"), "{text}");
+                assert!(
+                    !text.contains("recorded layer `os_containment` instead of `os_containment`"),
+                    "Display must name the oracle mismatch, not repeat os_containment: {text}"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -1047,8 +1098,27 @@ mod tests {
             }
         }
         match admit(&req, &facts_primitives_present(), Some(&archive)) {
-            Err(err @ AdmissionError::ProofLayerMismatch { .. }) => {
+            Err(
+                err @ AdmissionError::ProofLayerMismatch {
+                    probe,
+                    oracle,
+                    expected_layer,
+                    recorded_layer,
+                    ..
+                },
+            ) => {
+                assert_eq!(probe, "direct_network");
+                assert_eq!(oracle, ProbeOracle::HostProtocol);
+                assert_eq!(expected_layer, ProbeLayer::OsContainment);
+                assert_eq!(recorded_layer, ProbeLayer::OsContainment);
                 assert_code(&err, "KELD-GUARD015");
+                let text = err.to_string();
+                assert!(text.contains("oracle `host_protocol`"), "{text}");
+                assert!(text.contains("oracle `os_deny`"), "{text}");
+                assert!(
+                    !text.contains("recorded layer `os_containment` instead of `os_containment`"),
+                    "Display must name the oracle mismatch, not repeat os_containment: {text}"
+                );
             }
             other => panic!("{other:?}"),
         }
