@@ -324,8 +324,9 @@ profile: `.config/nextest.toml` (`retries = 1`). Workspace clippy is already
 pedantic; do not re-enable it per crate (learnings 2026-07-08).
 
 **Chose — local mirror of CI (`justfile`).** `just ci` runs, in order:
-`agents-md` → `llms-test` → `llms-check` → `hygiene` (KEL-39) → `fmt-check` →
-`clippy` → `test` → `doc` → `deny`. Gitleaks is **not** in `just ci`; the justfile
+`agents-md` → `mermaid-test` → `mermaid-check` → `mermaid-render-check` → `llms-test` →
+`llms-check` → `hygiene` (KEL-39) → `fmt-check` → `clippy` → `test` → `doc` → `deny`.
+Gitleaks is **not** in `just ci`; the justfile
 says it stays GitHub-only (checksum-pinned OSS CLI in `.github/workflows/ci.yml`).
 
 **Chose — no Husky / no committed git-hook manager.** Tracked config has no

@@ -173,9 +173,13 @@ never silently weaken a strict profile.
 
 - Implement in later slices: `keld-runtime`, `keld-core`, `keld-ipc`, `keld-guard`,
   `keld-compat`, `@keld/api`, `@keld/electron`, and generated schema packages.
-- This specification change touches only the listed architecture documents and this
-  file. It must not add runtime code, a new dependency, a wire version, an async runtime
-  or a package-specific branch.
+- The original specification-only review is confined to the listed architecture documents
+  and this file. KEL-75 implementation tasks may touch only their named crate/package
+  boundaries; unrelated frame, manifest, native-service, CI, or package-specific changes
+  require their owning issue and review gate. T1a is the documented exception: it added
+  the reusable `keld-ipc` bootstrap listener, migrated the CLI echo consumer, and used
+  the already workspace-pinned `getrandom` dependency. It did not change a wire version,
+  add an async runtime, or add a package-specific branch.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 

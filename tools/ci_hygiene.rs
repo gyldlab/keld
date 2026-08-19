@@ -41,7 +41,7 @@ const PR_NEEDLES: &[&str] = &[
     "mermaid-render-check",
 ];
 
-const WORKFLOW_NEEDLES: &[&str] = &[
+const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "gitleaks detect",
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
@@ -49,10 +49,12 @@ const WORKFLOW_NEEDLES: &[&str] = &[
     "toolchain: 1.97.1",
     "tools/llms_docs.rs",
     "llms-docs check",
+];
+
+const WORKFLOW_RUN_NEEDLES: &[&str] = &[
     "--test tools/mermaid_docs.rs",
     "mermaid-docs check .",
     "tools/mermaid_render_check.sh",
-    "persist-credentials: false",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -103,6 +105,95 @@ fn uncommented_line_contains(text: &str, needle: &str) -> bool {
         let trimmed = line.trim();
         !trimmed.is_empty() && !trimmed.starts_with('#') && trimmed.contains(needle)
     })
+}
+
+fn yaml_content(line: &str) -> Option<(usize, &str)> {
+    let indent = line.len() - line.trim_start().len();
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let content = trimmed
+        .split_once(" #")
+        .map_or(trimmed, |(before, _)| before)
+        .trim_end();
+    Some((indent, content))
+}
+
+fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
+    let mut checkout_indent = None;
+    let mut with_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content.starts_with("- uses:") {
+            checkout_indent = content.contains("actions/checkout@").then_some(indent);
+            with_indent = None;
+            continue;
+        }
+        let Some(checkout) = checkout_indent else {
+            continue;
+        };
+        if indent <= checkout {
+            checkout_indent = None;
+            with_indent = None;
+            continue;
+        }
+        if content == "with:" {
+            with_indent = Some(indent);
+            continue;
+        }
+        if let Some(with) = with_indent {
+            if indent <= with {
+                with_indent = None;
+            } else if let Some(value) = content.strip_prefix("persist-credentials:") {
+                let value = value.trim().trim_matches(|character| character == '\'' || character == '"');
+                if value == "false" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn executable_run_fragment_contains(fragment: &str, needle: &str) -> bool {
+    if !fragment.contains(needle) {
+        return false;
+    }
+    let command = fragment.trim();
+    !(command.starts_with("echo ") && !command.contains('|'))
+        && !command.starts_with("Write-Output ")
+}
+
+fn workflow_has_executable_run_needle(text: &str, needle: &str) -> bool {
+    let mut run_indent = None;
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content.starts_with("- run:") || content.starts_with("run:") {
+            run_indent = Some(indent);
+            let command = content
+                .strip_prefix("- run:")
+                .or_else(|| content.strip_prefix("run:"))
+                .unwrap_or_default();
+            if executable_run_fragment_contains(command, needle) {
+                return true;
+            }
+            continue;
+        }
+        if let Some(run) = run_indent {
+            if indent <= run {
+                run_indent = None;
+            } else if executable_run_fragment_contains(content, needle) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn action_uses_unpinned(workflow: &str) -> Vec<(usize, String)> {
@@ -223,7 +314,7 @@ fn check_issue_templates(root: &Path) -> Result<(), String> {
 
 fn check_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, WORKFLOW)?;
-    for needle in WORKFLOW_NEEDLES {
+    for needle in WORKFLOW_TEXT_NEEDLES {
         if !uncommented_line_contains(&text, needle) {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
@@ -231,6 +322,18 @@ fn check_workflow(root: &Path) -> Result<(), String> {
                  `with: toolchain:` on dtolnay/rust-toolchain, \
                  the hygiene job that compiles this file, \
                  generated-doc freshness, and the structural plus digest-pinned Mermaid render gates."
+            ));
+        }
+    }
+    if !workflow_has_checkout_persist_credentials_false(&text) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must set `persist-credentials: false` inside an `actions/checkout` `with:` mapping. An echoed or unrelated YAML value does not protect checkout credentials."
+        ));
+    }
+    for needle in WORKFLOW_RUN_NEEDLES {
+        if !workflow_has_executable_run_needle(&text, needle) {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` is missing executable Mermaid gate `{needle}`. Restore it in a `run:` step; comments and echo text do not execute the gate."
             ));
         }
     }
@@ -369,28 +472,31 @@ mod tests {
         "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n";
 
     fn valid_workflow() -> String {
-        format!(
-            "name: CI\n\
-             jobs:\n\
-               secrets:\n\
-                 steps:\n\
-             {PINNED_CHECKOUT}\
-                   - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05\n\
-                     with:\n\
-                       toolchain: 1.97.1\n\
-                   - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -\n\
-                   - run: gitleaks detect --source . --exit-code 1\n\
-                   - run: echo persist-credentials: false\n\
-               hygiene:\n\
-                 steps:\n\
-             {PINNED_CHECKOUT}\
-                   - run: rustc --edition=2024 --test tools/ci_hygiene.rs\n\
-                   - run: rustc --edition=2024 tools/llms_docs.rs\n\
-                   - run: llms-docs check .\n\
-                   - run: rustc --edition=2024 --test tools/mermaid_docs.rs\n\
-                   - run: mermaid-docs check .\n\
-                   - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n"
-        )
+        [
+            "name: CI",
+            "jobs:",
+            "  secrets:",
+            "    steps:",
+            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          persist-credentials: false",
+            "      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05",
+            "        with:",
+            "          toolchain: 1.97.1",
+            "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
+            "      - run: gitleaks detect --source . --exit-code 1",
+            "  hygiene:",
+            "    steps:",
+            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
+            "      - run: rustc --edition=2024 tools/llms_docs.rs",
+            "      - run: llms-docs check .",
+            "      - run: rustc --edition=2024 --test tools/mermaid_docs.rs",
+            "      - run: mermaid-docs check .",
+            "      - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf",
+            "",
+        ]
+        .join("\n")
     }
 
     fn valid_codeowners() -> &'static str {
@@ -487,6 +593,43 @@ mod tests {
             "# formerly /.github/ — CI is tracked (KEL-39)\n/target\n",
         );
         check(temp.path()).expect("comment must not count as an ignore rule");
+    }
+
+    #[test]
+    fn echoed_mermaid_gate_does_not_satisfy_workflow_contract() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "- run: tools/mermaid_render_check.sh",
+            "- run: echo tools/mermaid_render_check.sh",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("echoed gate must not satisfy hygiene");
+        assert!(error.contains("executable Mermaid gate"), "{error}");
+        assert!(error.contains("mermaid_render_check.sh"), "{error}");
+    }
+
+    #[test]
+    fn inline_comment_mermaid_gate_does_not_satisfy_workflow_contract() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "- run: tools/mermaid_render_check.sh",
+            "- run: true # tools/mermaid_render_check.sh",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("commented gate must not satisfy hygiene");
+        assert!(error.contains("executable Mermaid gate"), "{error}");
+    }
+
+    #[test]
+    fn checkout_credentials_must_be_disabled_in_its_with_mapping() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "      persist-credentials: false\n",
+            "      # persist-credentials: false\n",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("comment must not satisfy checkout hardening");
+        assert!(error.contains("persist-credentials: false"), "{error}");
     }
 
     #[test]

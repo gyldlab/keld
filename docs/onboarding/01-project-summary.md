@@ -102,7 +102,7 @@ flowchart TB
         direction LR
         wv["CURRENT keld-wv<br/>webview layer<br/>three engines"]
         native["CURRENT keld-native<br/>scoped fs only<br/>other services target"]
-        guard["CURRENT keld-guard<br/>capability evaluator<br/>target dispatch binding"]
+        guard["CURRENT keld-guard<br/>capability evaluator plus fs dispatch<br/>target role binding"]
         runtime["CURRENT keld-runtime<br/>one generic supervisor<br/>target role identity"]
         update["TARGET keld-update<br/>signed delta patches"]
         native --> guard

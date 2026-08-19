@@ -1027,7 +1027,7 @@ compat layer built on it beats Electron's native IPC.
 
 ## 1. Topology: two links, three principals
 
-```
+```text
 webview_j ⇄ host       "wv-link"       engine bridge (control) + measured engine-specific bulk lane
 host ⇄ app role_i      "app-link[i]"   UDS/named pipe (control) + optional measured shm lane
 webview_j ⇄ app role_i                routed via host (both link classes), never direct
@@ -1771,7 +1771,7 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   the runtime as a *versioned process contract*. The live bootstrap contract is exactly
   `KELD_APP_LINK=<endpoint>#<64 hex chars>`; it names an endpoint and a one-session
   possession secret, never role/principal/grant metadata. Destination `@keld/api`
-  (pure TS plus only reviewed enabled bulk glue) speaks kipc back. Pin exact Bun version
+  (pure TS plus only reviewed enabled bulk glue) communicates with the host over kipc. Pin exact Bun version
   per Keld release (`keld.lock`); CLI downloads the pinned runtime once per machine
   (content-addressed cache), `keld-pack` embeds it per app at build. There are no
   parallel `KELD_LINK`, `KELD_SHM` or `KELD_CONTRACT` contracts.
@@ -2473,8 +2473,9 @@ profile: `.config/nextest.toml` (`retries = 1`). Workspace clippy is already
 pedantic; do not re-enable it per crate (learnings 2026-07-08).
 
 **Chose — local mirror of CI (`justfile`).** `just ci` runs, in order:
-`agents-md` → `llms-test` → `llms-check` → `hygiene` (KEL-39) → `fmt-check` →
-`clippy` → `test` → `doc` → `deny`. Gitleaks is **not** in `just ci`; the justfile
+`agents-md` → `mermaid-test` → `mermaid-check` → `mermaid-render-check` → `llms-test` →
+`llms-check` → `hygiene` (KEL-39) → `fmt-check` → `clippy` → `test` → `doc` → `deny`.
+Gitleaks is **not** in `just ci`; the justfile
 says it stays GitHub-only (checksum-pinned OSS CLI in `.github/workflows/ci.yml`).
 
 **Chose — no Husky / no committed git-hook manager.** Tracked config has no
