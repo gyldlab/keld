@@ -8,7 +8,7 @@ compat layer built on it beats Electron's native IPC.
 
 ## 1. Topology: two links, three principals
 
-```
+```text
 webview_j ⇄ host       "wv-link"       engine bridge (control) + measured engine-specific bulk lane
 host ⇄ app role_i      "app-link[i]"   UDS/named pipe (control) + optional measured shm lane
 webview_j ⇄ app role_i                routed via host (both link classes), never direct

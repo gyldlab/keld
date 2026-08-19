@@ -333,7 +333,7 @@ flowchart TD
     cli --> ipc
     cli --> pack["TARGET keld-pack"]
     cli --> update["TARGET keld-update"]
-    host["TARGET keld-host · bin"] --> core
+    host["CURRENT PARTIAL keld-host · hello bin"] --> core
     compat["CURRENT keld-compat · lifecycle slice"] --> core
     core["CURRENT keld-core · thin host slice"] --> ipc["CURRENT keld-ipc"]
     core --> guard["CURRENT keld-guard"]
@@ -351,8 +351,8 @@ flowchart TD
     classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
     classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
     classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
-    class cli,compat,core,ipc,guard,wv,native,runtime current
-    class pack,update,host target
+    class cli,compat,core,ipc,guard,wv,native,runtime,host current
+    class pack,update target
     class ext,pc external
 ```
 

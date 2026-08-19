@@ -37,7 +37,8 @@ cargo nextest run --workspace --profile ci
 just mermaid-test && just mermaid-check && just mermaid-render-check
 ```
 
-<!-- Mermaid PRs also report renderer image tag+digest, diagram/SVG count, and visual inspection. -->
+<!-- Mermaid PRs also report source files, Mermaid block count, renderer name/version/digest,
+exact render command, SVG output format, observed pass/fail, and visual inspection. -->
 
 ## Platforms
 

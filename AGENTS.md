@@ -63,6 +63,7 @@ distinction would otherwise be ambiguous.
    exception.
 
 ## Repo map
+
 | Crate | Role |
 |---|---|
 | keld-core | Event loop, windows, lifecycle — spec 01 |
@@ -77,6 +78,7 @@ distinction would otherwise be ambiguous.
 | keld-host | Shipping host binary — spec 01/06 |
 | keld-cli | create/dev/build/migrate/doctor/gen — spec 06/07 |
 | packages/ | `@keld/electron` (KEL-72); other `@keld/*` upcoming |
+
 
 Crate `AGENTS.md` only where invariants exist (`wv`, `ipc`, `guard`, `compat`). Skeletons and `keld-cli`: spec in this table, no hollow file.
 

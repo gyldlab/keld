@@ -267,6 +267,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn wrong_token_is_ipc_007_and_does_not_consume_echo_listener() {
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -310,6 +311,37 @@ mod tests {
         assert_eq!(response.message, "legitimate");
         assert_eq!(response.count, 2);
         server.join().expect("legitimate session finishes");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wrong_token_is_ipc_007_on_the_one_accept_loopback_server() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let link = server.link();
+        let (endpoint, token) = parse_app_link(&link).expect("link");
+        let mut foreign = *token.as_bytes();
+        foreign[0] ^= 1;
+        let bad_link = format_app_link(endpoint, &SessionToken::from_bytes(foreign));
+        let error = echo_roundtrip(
+            &bad_link,
+            &EchoRequest {
+                message: "stolen".to_owned(),
+                count: 1,
+            },
+        )
+        .expect_err("foreign token must fail");
+        assert!(
+            error.to_string().contains("KELD-IPC-001")
+                || error.to_string().contains("KELD-IPC-007"),
+            "foreign caller must not receive an echo result: {error}"
+        );
+        let server_error = server
+            .join()
+            .expect_err("v0 Windows one-accept listener closes after the rejected HELLO")
+            .to_string();
+        assert!(server_error.contains("KELD-IPC-007"), "{server_error}");
     }
 
     #[test]

@@ -7,7 +7,7 @@
   the runtime as a *versioned process contract*. The live bootstrap contract is exactly
   `KELD_APP_LINK=<endpoint>#<64 hex chars>`; it names an endpoint and a one-session
   possession secret, never role/principal/grant metadata. Destination `@keld/api`
-  (pure TS plus only reviewed enabled bulk glue) speaks kipc back. Pin exact Bun version
+  (pure TS plus only reviewed enabled bulk glue) communicates with the host over kipc. Pin exact Bun version
   per Keld release (`keld.lock`); CLI downloads the pinned runtime once per machine
   (content-addressed cache), `keld-pack` embeds it per app at build. There are no
   parallel `KELD_LINK`, `KELD_SHM` or `KELD_CONTRACT` contracts.
