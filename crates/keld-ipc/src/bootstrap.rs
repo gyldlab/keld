@@ -92,6 +92,9 @@ impl BootstrapListener {
     ) -> io::Result<Option<UnixStream>> {
         loop {
             let (mut stream, _) = self.listener.accept()?;
+            if self.stopping.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
             stream.set_app_link_deadlines(Some(handshake_deadline))?;
             match handshake_server(&mut stream, &self.token) {
                 Ok(()) => return Ok(Some(stream)),
