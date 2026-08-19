@@ -1338,6 +1338,7 @@ name = "keld-runtime"
 version = "0.0.1"
 dependencies = [
  "keld-ipc",
+ "serde_json",
 ]
 
 [[package]]

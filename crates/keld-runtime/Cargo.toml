@@ -11,5 +11,11 @@ authors.workspace = true
 [dependencies]
 keld-ipc = { workspace = true }
 
+# KEL-77 differential harness only: parses the JSON observation line each fixture
+# emits. Already workspace-pinned and used by keld-guard / keld-cli, so this adds
+# no new dependency to the tree.
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true
