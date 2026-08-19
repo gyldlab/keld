@@ -10,6 +10,11 @@ authors.workspace = true
 
 [dependencies]
 keld-core = { workspace = true }
+# Cold JSON ledger parser (KEL-74). Already workspace-pinned for keld-guard /
+# keld-cli. Alternatives rejected: a new crate; hand-rolled JSON; sha2 (this
+# slice validates digest *format* and classifies magic bytes only).
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 keld-ipc = { workspace = true }

@@ -1,0 +1,1309 @@
+//! Versioned compatibility evidence records and denominator scoring (KEL-74).
+//!
+//! Framework-generic: this module does not name Electron APIs, VS Code
+//! extensions, or package ecosystems. Those corpora consume the schema later.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use serde::Deserialize;
+
+/// Maximum accepted evidence-record JSON size.
+pub const MAX_EVIDENCE_BYTES: usize = 65_536;
+/// Maximum accepted denominator JSON size.
+pub const MAX_DENOMINATOR_BYTES: usize = 262_144;
+
+const EVIDENCE_SCHEMA: &str = "keld.compat.evidence/v1";
+const DENOMINATOR_SCHEMA: &str = "keld.compat.denominator/v1";
+
+/// Typed parse / score failure. Every variant is a `KELD-COMPAT-*` code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceError {
+    /// Input exceeded the documented size cap.
+    TooLarge {
+        /// Observed length in bytes.
+        len: usize,
+        /// Cap that was exceeded.
+        max: usize,
+    },
+    /// Bytes were not UTF-8.
+    NotUtf8,
+    /// JSON syntax, trailing junk, or empty input.
+    InvalidJson {
+        /// Parser detail (safe to show).
+        detail: String,
+    },
+    /// `schema` is missing or not a known v1 id.
+    UnsupportedSchema {
+        /// Value that was present, or empty.
+        found: String,
+    },
+    /// Closed-set / format violation on a record field.
+    InvalidRecord {
+        /// Which rule failed.
+        detail: String,
+    },
+    /// Waiver missing, extra, or expired.
+    InvalidWaiver {
+        /// Which rule failed.
+        detail: String,
+    },
+    /// Evidence URI is a lead, not an immutable location.
+    NonNormativeEvidence {
+        /// Why the URI was rejected.
+        detail: String,
+    },
+    /// Denominator empty, duplicated, or otherwise unusable.
+    InvalidDenominator {
+        /// Which rule failed.
+        detail: String,
+    },
+    /// Two records named the same denominator cell.
+    DuplicateCell {
+        /// `operation_id/oracle_id`.
+        cell: String,
+    },
+}
+
+impl EvidenceError {
+    /// Stable `KELD-COMPAT-*` code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::TooLarge { .. } => "KELD-COMPAT-001",
+            Self::NotUtf8 => "KELD-COMPAT-002",
+            Self::InvalidJson { .. } => "KELD-COMPAT-003",
+            Self::UnsupportedSchema { .. } => "KELD-COMPAT-004",
+            Self::InvalidRecord { .. } => "KELD-COMPAT-005",
+            Self::InvalidWaiver { .. } => "KELD-COMPAT-006",
+            Self::NonNormativeEvidence { .. } => "KELD-COMPAT-007",
+            Self::InvalidDenominator { .. } => "KELD-COMPAT-008",
+            Self::DuplicateCell { .. } => "KELD-COMPAT-009",
+        }
+    }
+}
+
+impl fmt::Display for EvidenceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { len, max } => write!(
+                f,
+                "KELD-COMPAT-001: input is {len} bytes, over the {max}-byte cap. \
+                 Split the ledger or shrink the document."
+            ),
+            Self::NotUtf8 => write!(
+                f,
+                "KELD-COMPAT-002: evidence bytes are not UTF-8. \
+                 Re-encode the document as UTF-8 without a BOM."
+            ),
+            Self::InvalidJson { detail } => write!(
+                f,
+                "KELD-COMPAT-003: invalid JSON ({detail}). \
+                 Supply a single UTF-8 JSON object with no trailing bytes."
+            ),
+            Self::UnsupportedSchema { found } => write!(
+                f,
+                "KELD-COMPAT-004: unsupported schema `{found}`. \
+                 Use `{EVIDENCE_SCHEMA}` or `{DENOMINATOR_SCHEMA}`."
+            ),
+            Self::InvalidRecord { detail } => write!(
+                f,
+                "KELD-COMPAT-005: invalid evidence record ({detail}). \
+                 Use the closed field set in docs/specs/kel74-compat-evidence-schema.md."
+            ),
+            Self::InvalidWaiver { detail } => write!(
+                f,
+                "KELD-COMPAT-006: invalid waiver ({detail}). \
+                 Waive only with owner, reason, and a future YYYY-MM-DD expiry."
+            ),
+            Self::NonNormativeEvidence { detail } => write!(
+                f,
+                "KELD-COMPAT-007: evidence URI is not immutable ({detail}). \
+                 Use an https URL or sha256:<64 lowercase hex>; turn citations \
+                 and sandbox paths are non-normative leads only."
+            ),
+            Self::InvalidDenominator { detail } => write!(
+                f,
+                "KELD-COMPAT-008: invalid denominator ({detail}). \
+                 Commit a v1 denominator with unique cells before scoring."
+            ),
+            Self::DuplicateCell { cell } => write!(
+                f,
+                "KELD-COMPAT-009: duplicate evidence for cell `{cell}`. \
+                 Keep one record per (operation_id, oracle_id)."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EvidenceError {}
+
+/// Calendar date used for waiver expiry (`YYYY-MM-DD`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CivilDate {
+    /// Year (e.g. 2026).
+    pub year: u16,
+    /// Month 1–12.
+    pub month: u8,
+    /// Day of month.
+    pub day: u8,
+}
+
+impl CivilDate {
+    /// Parse `YYYY-MM-DD` with real month lengths. No timezone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvidenceError::InvalidWaiver`] when the string is not a real date.
+    pub fn parse(text: &str) -> Result<Self, EvidenceError> {
+        let mut parts = text.split('-');
+        let (Some(ys), Some(ms), Some(ds), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(EvidenceError::InvalidWaiver {
+                detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
+            });
+        };
+        if ys.len() != 4 || ms.len() != 2 || ds.len() != 2 {
+            return Err(EvidenceError::InvalidWaiver {
+                detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
+            });
+        }
+        let year: u16 = ys.parse().map_err(|_| EvidenceError::InvalidWaiver {
+            detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
+        })?;
+        let month: u8 = ms.parse().map_err(|_| EvidenceError::InvalidWaiver {
+            detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
+        })?;
+        let day: u8 = ds.parse().map_err(|_| EvidenceError::InvalidWaiver {
+            detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
+        })?;
+        let parsed = Self { year, month, day };
+        if !parsed.valid() {
+            return Err(EvidenceError::InvalidWaiver {
+                detail: format!("expires_on `{text}` is not a real calendar date"),
+            });
+        }
+        Ok(parsed)
+    }
+
+    fn valid(self) -> bool {
+        let max = days_in_month(self.year, self.month);
+        self.month >= 1 && max > 0 && self.day >= 1 && self.day <= max
+    }
+}
+
+impl fmt::Display for CivilDate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
+fn days_in_month(year: u16, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap(year: u16) -> bool {
+    let y = u32::from(year);
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
+}
+
+/// Host OS family recorded with the artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// macOS.
+    Macos,
+    /// Windows.
+    Windows,
+    /// Linux.
+    Linux,
+}
+
+/// Instruction-set recorded with the artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    /// 64-bit ARM.
+    Aarch64,
+    /// 64-bit x86.
+    X86_64,
+}
+
+/// Authority profile under which the operation ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityProfile {
+    /// Strict Bun child (zero ambient OS authority).
+    StrictBun,
+    /// Native addon in a sandboxed worker.
+    SandboxedAddonWorker,
+    /// Explicit legacy sandbox-off.
+    LegacySandboxOff,
+    /// User-approved tool child.
+    UserApprovedToolChild,
+}
+
+/// Which denominator this cell belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    /// Install / unpack.
+    Install,
+    /// Startup / activation.
+    Activation,
+    /// Primary user workflow.
+    PrimaryWorkflow,
+    /// Full-feature conformance.
+    FullFeature,
+}
+
+impl OperationKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Activation => "activation",
+            Self::PrimaryWorkflow => "primary_workflow",
+            Self::FullFeature => "full_feature",
+        }
+    }
+}
+
+/// Product panel versus a named showcase / north-star corpus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    /// Median product corpus. Showcase results MUST NOT redefine these tiers.
+    Product,
+    /// Named stress corpus (VS Code and others later).
+    Showcase,
+}
+
+impl Panel {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Showcase => "showcase",
+        }
+    }
+}
+
+/// Pass / fail / unknown / waived. No silent fourth state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Semantic oracle passed.
+    Pass,
+    /// Semantic oracle failed.
+    Fail,
+    /// Not yet measured or inconclusive.
+    Unknown,
+    /// Explicit waiver with owner, reason, and expiry.
+    Waived,
+}
+
+/// Content-addressed artifact identity. The digest is not computed here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactIdentity {
+    /// Canonical `sha256:` + 64 lowercase hex.
+    pub sha256: String,
+    /// OS family.
+    pub platform: Platform,
+    /// Architecture.
+    pub arch: Arch,
+}
+
+/// Pinned runtime revisions. `latest` is rejected at parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revisions {
+    /// Keld revision (usually a git SHA).
+    pub keld: String,
+    /// Bun version string.
+    pub bun: String,
+    /// Engine id (`wkwebview`, `webview2`, `webkitgtk`, `cef`, …).
+    pub engine: String,
+}
+
+/// Semantic oracle identity. Import success is never an oracle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticOracle {
+    /// Stable oracle id.
+    pub id: String,
+    /// Pinned oracle revision. Not `latest`.
+    pub revision: String,
+}
+
+/// Operation cell inside a denominator kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Operation {
+    /// Closed-token operation id.
+    pub id: String,
+    /// Denominator kind this operation is scored under.
+    pub kind: OperationKind,
+    /// Semantic oracle that decides pass/fail.
+    pub oracle: SemanticOracle,
+}
+
+/// Required metadata when [`Verdict::Waived`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiver {
+    /// Human or team that owns the waiver.
+    pub owner: String,
+    /// Why the cell is waived.
+    pub reason: String,
+    /// Inclusive last valid date.
+    pub expires_on: CivilDate,
+}
+
+/// One versioned evidence record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceRecord {
+    /// Shipped artifact identity.
+    pub artifact: ArtifactIdentity,
+    /// Keld / Bun / engine pins.
+    pub revisions: Revisions,
+    /// Authority profile used for the run.
+    pub authority_profile: AuthorityProfile,
+    /// Operation and oracle.
+    pub operation: Operation,
+    /// Cell verdict.
+    pub result: Verdict,
+    /// Present only for [`Verdict::Waived`].
+    pub waiver: Option<Waiver>,
+    /// Immutable https or `sha256:` location.
+    pub evidence_uri: String,
+}
+
+impl EvidenceRecord {
+    fn cell_key(&self) -> CellKey {
+        CellKey {
+            operation_id: self.operation.id.clone(),
+            oracle_id: self.operation.oracle.id.clone(),
+        }
+    }
+}
+
+/// One required scoreboard cell.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CellKey {
+    /// Operation id.
+    pub operation_id: String,
+    /// Oracle id.
+    pub oracle_id: String,
+}
+
+impl CellKey {
+    fn label(&self) -> String {
+        format!("{}/{}", self.operation_id, self.oracle_id)
+    }
+}
+
+/// Committed corpus denominator. Required before any percentage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Denominator {
+    /// Product vs showcase panel.
+    pub panel: Panel,
+    /// Stable corpus name.
+    pub corpus_id: String,
+    /// Digest of the committed corpus manifest.
+    pub corpus_sha256: String,
+    /// Which of the four denominators this list is.
+    pub kind: OperationKind,
+    /// Required cells, unique.
+    pub cells: Vec<CellKey>,
+}
+
+/// Honest scoreboard row. Percentages never hide a missing denominator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scoreboard {
+    /// Echo of the denominator panel.
+    pub panel: Panel,
+    /// Echo of the corpus id.
+    pub corpus_id: String,
+    /// Echo of the corpus digest.
+    pub corpus_sha256: String,
+    /// Echo of the denominator kind.
+    pub kind: OperationKind,
+    /// Committed cell count (N).
+    pub denominator: usize,
+    /// Cells with [`Verdict::Pass`].
+    pub passed: usize,
+    /// Cells with [`Verdict::Fail`].
+    pub failed: usize,
+    /// Cells with [`Verdict::Unknown`].
+    pub unknown: usize,
+    /// Cells with [`Verdict::Waived`].
+    pub waived: usize,
+    /// Denominator cells with no record.
+    pub missing: usize,
+    /// `None` when the measurement is incomplete (`missing` or `unknown` > 0).
+    pub unweighted_percent: Option<u8>,
+    /// True only when every committed cell passed.
+    pub complete: bool,
+    /// `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
+    pub claim: String,
+}
+
+/// Magic-byte class of a shipped file prefix. Not a compatibility verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactClass {
+    /// Mach-O thin or fat.
+    MachO,
+    /// PE (`MZ`).
+    Pe,
+    /// ELF.
+    Elf,
+    /// WebAssembly (`\0asm`).
+    Wasm,
+    /// Unrecognized or too short.
+    Unknown,
+}
+
+/// Classify a shipped artifact by magic bytes. Import success is not returned.
+#[must_use]
+pub fn classify_artifact(prefix: &[u8]) -> ArtifactClass {
+    if prefix.len() >= 4 {
+        let mag = [prefix[0], prefix[1], prefix[2], prefix[3]];
+        if matches!(
+            mag,
+            [0xFE, 0xED, 0xFA, 0xCE | 0xCF]
+                | [0xCE | 0xCF, 0xFA, 0xED, 0xFE]
+                | [0xCA, 0xFE, 0xBA, 0xBE]
+                | [0xBE, 0xBA, 0xFE, 0xCA]
+        ) {
+            return ArtifactClass::MachO;
+        }
+        if mag == [0x7F, b'E', b'L', b'F'] {
+            return ArtifactClass::Elf;
+        }
+        if mag == [0x00, b'a', b's', b'm'] {
+            return ArtifactClass::Wasm;
+        }
+    }
+    if prefix.len() >= 2 && prefix[0] == b'M' && prefix[1] == b'Z' {
+        return ArtifactClass::Pe;
+    }
+    ArtifactClass::Unknown
+}
+
+/// Parse one `keld.compat.evidence/v1` object.
+///
+/// # Errors
+///
+/// Returns [`EvidenceError`] for oversize, encoding, JSON, schema, or field
+/// violations, including non-normative evidence URIs.
+pub fn parse_evidence(bytes: &[u8]) -> Result<EvidenceRecord, EvidenceError> {
+    let raw: RawEvidence = parse_object(bytes, MAX_EVIDENCE_BYTES)?;
+    if raw.schema != EVIDENCE_SCHEMA {
+        return Err(EvidenceError::UnsupportedSchema { found: raw.schema });
+    }
+    let artifact = ArtifactIdentity {
+        sha256: parse_digest(&raw.artifact.sha256)?,
+        platform: parse_platform(&raw.artifact.platform)?,
+        arch: parse_arch(&raw.artifact.arch)?,
+    };
+    let revisions = Revisions {
+        keld: pinned_revision("revisions.keld", &raw.revisions.keld)?,
+        bun: pinned_revision("revisions.bun", &raw.revisions.bun)?,
+        engine: pinned_revision("revisions.engine", &raw.revisions.engine)?,
+    };
+    let operation = Operation {
+        id: closed_token("operation.id", &raw.operation.id)?,
+        kind: parse_kind(&raw.operation.kind)?,
+        oracle: SemanticOracle {
+            id: required_token("operation.oracle.id", &raw.operation.oracle.id)?,
+            revision: pinned_revision("operation.oracle.revision", &raw.operation.oracle.revision)?,
+        },
+    };
+    let result = parse_verdict(&raw.result)?;
+    let waiver = match (&result, raw.waiver) {
+        (Verdict::Waived, Some(w)) => Some(parse_waiver(&w)?),
+        (Verdict::Waived, None) => {
+            return Err(EvidenceError::InvalidWaiver {
+                detail: "result is waived but waiver is missing".to_owned(),
+            });
+        }
+        (_, Some(_)) => {
+            return Err(EvidenceError::InvalidWaiver {
+                detail: "waiver is only allowed when result is waived".to_owned(),
+            });
+        }
+        (_, None) => None,
+    };
+    Ok(EvidenceRecord {
+        artifact,
+        revisions,
+        authority_profile: parse_authority(&raw.authority_profile)?,
+        operation,
+        result,
+        waiver,
+        evidence_uri: parse_evidence_uri(&raw.evidence_uri)?,
+    })
+}
+
+/// Parse one `keld.compat.denominator/v1` object.
+///
+/// # Errors
+///
+/// Returns [`EvidenceError`] for oversize, encoding, JSON, schema, empty
+/// cell lists, or duplicate cells.
+pub fn parse_denominator(bytes: &[u8]) -> Result<Denominator, EvidenceError> {
+    let raw: RawDenominator = parse_object(bytes, MAX_DENOMINATOR_BYTES)?;
+    if raw.schema != DENOMINATOR_SCHEMA {
+        return Err(EvidenceError::UnsupportedSchema { found: raw.schema });
+    }
+    if raw.cells.is_empty() {
+        return Err(EvidenceError::InvalidDenominator {
+            detail: "cells must contain at least one entry".to_owned(),
+        });
+    }
+    let mut seen = BTreeSet::new();
+    let mut cells = Vec::with_capacity(raw.cells.len());
+    for cell in raw.cells {
+        let key = CellKey {
+            operation_id: closed_token("cells.operation_id", &cell.operation_id)?,
+            oracle_id: required_token("cells.oracle_id", &cell.oracle_id)?,
+        };
+        if !seen.insert(key.clone()) {
+            return Err(EvidenceError::InvalidDenominator {
+                detail: format!("duplicate cell `{}`", key.label()),
+            });
+        }
+        cells.push(key);
+    }
+    Ok(Denominator {
+        panel: parse_panel(&raw.panel)?,
+        corpus_id: closed_token("corpus_id", &raw.corpus_id)?,
+        corpus_sha256: parse_digest(&raw.corpus_sha256)?,
+        kind: parse_kind(&raw.kind)?,
+        cells,
+    })
+}
+
+/// Score records against a committed denominator.
+///
+/// Extra records whose cell is not in the denominator are ignored. Records
+/// whose `operation.kind` differs from the denominator kind are ignored so a
+/// foreign kind cannot fill a cell.
+///
+/// # Errors
+///
+/// Returns [`EvidenceError::DuplicateCell`] when two records name the same
+/// cell, or [`EvidenceError::InvalidWaiver`] when a waiver is expired as of
+/// `as_of`.
+pub fn score(
+    denominator: &Denominator,
+    records: &[EvidenceRecord],
+    as_of: CivilDate,
+) -> Result<Scoreboard, EvidenceError> {
+    let required: BTreeSet<&CellKey> = denominator.cells.iter().collect();
+    let mut by_cell: BTreeMap<CellKey, &EvidenceRecord> = BTreeMap::new();
+    for record in records {
+        if record.operation.kind != denominator.kind {
+            continue;
+        }
+        let key = record.cell_key();
+        if !required.contains(&key) {
+            continue;
+        }
+        if by_cell.insert(key.clone(), record).is_some() {
+            return Err(EvidenceError::DuplicateCell { cell: key.label() });
+        }
+        if let Some(waiver) = &record.waiver
+            && waiver.expires_on < as_of
+        {
+            return Err(EvidenceError::InvalidWaiver {
+                detail: format!(
+                    "waiver for `{}` expired on {} (as_of {as_of})",
+                    key.label(),
+                    waiver.expires_on
+                ),
+            });
+        }
+    }
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut unknown = 0usize;
+    let mut waived = 0usize;
+    let mut missing = 0usize;
+    for cell in &denominator.cells {
+        match by_cell.get(cell).map(|record| record.result) {
+            Some(Verdict::Pass) => passed += 1,
+            Some(Verdict::Fail) => failed += 1,
+            Some(Verdict::Unknown) => unknown += 1,
+            Some(Verdict::Waived) => waived += 1,
+            None => missing += 1,
+        }
+    }
+
+    let n = denominator.cells.len();
+    let unweighted_percent = if missing == 0 && unknown == 0 && n > 0 {
+        let pct = passed.saturating_mul(100) / n;
+        u8::try_from(pct).ok()
+    } else {
+        None
+    };
+    let complete = passed == n && missing == 0 && unknown == 0 && failed == 0 && waived == 0;
+    let claim = format!(
+        "{passed}/{n} of {} corpus {}@{} ({})",
+        denominator.panel.as_str(),
+        denominator.corpus_id,
+        denominator.corpus_sha256,
+        denominator.kind.as_str()
+    );
+
+    Ok(Scoreboard {
+        panel: denominator.panel,
+        corpus_id: denominator.corpus_id.clone(),
+        corpus_sha256: denominator.corpus_sha256.clone(),
+        kind: denominator.kind,
+        denominator: n,
+        passed,
+        failed,
+        unknown,
+        waived,
+        missing,
+        unweighted_percent,
+        complete,
+        claim,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEvidence {
+    schema: String,
+    artifact: RawArtifact,
+    revisions: RawRevisions,
+    authority_profile: String,
+    operation: RawOperation,
+    result: String,
+    #[serde(default)]
+    waiver: Option<RawWaiver>,
+    evidence_uri: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawArtifact {
+    sha256: String,
+    platform: String,
+    arch: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRevisions {
+    keld: String,
+    bun: String,
+    engine: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOperation {
+    id: String,
+    kind: String,
+    oracle: RawOracle,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOracle {
+    id: String,
+    revision: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWaiver {
+    owner: String,
+    reason: String,
+    expires_on: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDenominator {
+    schema: String,
+    panel: String,
+    corpus_id: String,
+    corpus_sha256: String,
+    kind: String,
+    cells: Vec<RawCell>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCell {
+    operation_id: String,
+    oracle_id: String,
+}
+
+fn parse_object<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    max: usize,
+) -> Result<T, EvidenceError> {
+    if bytes.len() > max {
+        return Err(EvidenceError::TooLarge {
+            len: bytes.len(),
+            max,
+        });
+    }
+    if bytes.is_empty() {
+        return Err(EvidenceError::InvalidJson {
+            detail: "empty input".to_owned(),
+        });
+    }
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(EvidenceError::NotUtf8);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| EvidenceError::NotUtf8)?;
+    serde_json::from_str(text).map_err(|err| {
+        let msg = err.to_string();
+        if msg.contains("unknown field") || msg.contains("missing field") {
+            EvidenceError::InvalidRecord { detail: msg }
+        } else {
+            EvidenceError::InvalidJson { detail: msg }
+        }
+    })
+}
+
+fn parse_digest(value: &str) -> Result<String, EvidenceError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(EvidenceError::InvalidRecord {
+            detail: format!("digest `{value}` must start with sha256:"),
+        });
+    };
+    if hex.len() != 64 || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(EvidenceError::InvalidRecord {
+            detail: format!("digest `{value}` must be sha256: plus 64 lowercase hex chars"),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_platform(value: &str) -> Result<Platform, EvidenceError> {
+    match value {
+        "macos" => Ok(Platform::Macos),
+        "windows" => Ok(Platform::Windows),
+        "linux" => Ok(Platform::Linux),
+        other => Err(EvidenceError::InvalidRecord {
+            detail: format!("platform `{other}` is not macos|windows|linux"),
+        }),
+    }
+}
+
+fn parse_arch(value: &str) -> Result<Arch, EvidenceError> {
+    match value {
+        "aarch64" => Ok(Arch::Aarch64),
+        "x86_64" => Ok(Arch::X86_64),
+        other => Err(EvidenceError::InvalidRecord {
+            detail: format!("arch `{other}` is not aarch64|x86_64"),
+        }),
+    }
+}
+
+fn parse_authority(value: &str) -> Result<AuthorityProfile, EvidenceError> {
+    match value {
+        "strict_bun" => Ok(AuthorityProfile::StrictBun),
+        "sandboxed_addon_worker" => Ok(AuthorityProfile::SandboxedAddonWorker),
+        "legacy_sandbox_off" => Ok(AuthorityProfile::LegacySandboxOff),
+        "user_approved_tool_child" => Ok(AuthorityProfile::UserApprovedToolChild),
+        other => Err(EvidenceError::InvalidRecord {
+            detail: format!("unknown authority_profile `{other}`"),
+        }),
+    }
+}
+
+fn parse_kind(value: &str) -> Result<OperationKind, EvidenceError> {
+    match value {
+        "install" => Ok(OperationKind::Install),
+        "activation" => Ok(OperationKind::Activation),
+        "primary_workflow" => Ok(OperationKind::PrimaryWorkflow),
+        "full_feature" => Ok(OperationKind::FullFeature),
+        other => Err(EvidenceError::InvalidRecord {
+            detail: format!("kind `{other}` is not a v1 denominator kind"),
+        }),
+    }
+}
+
+fn parse_panel(value: &str) -> Result<Panel, EvidenceError> {
+    match value {
+        "product" => Ok(Panel::Product),
+        "showcase" => Ok(Panel::Showcase),
+        other => Err(EvidenceError::InvalidRecord {
+            detail: format!("panel `{other}` is not product|showcase"),
+        }),
+    }
+}
+
+fn parse_verdict(value: &str) -> Result<Verdict, EvidenceError> {
+    match value {
+        "pass" => Ok(Verdict::Pass),
+        "fail" => Ok(Verdict::Fail),
+        "unknown" => Ok(Verdict::Unknown),
+        "waived" => Ok(Verdict::Waived),
+        other => Err(EvidenceError::InvalidRecord {
+            detail: format!("result `{other}` is not pass|fail|unknown|waived"),
+        }),
+    }
+}
+
+fn parse_waiver(raw: &RawWaiver) -> Result<Waiver, EvidenceError> {
+    let owner = raw.owner.trim();
+    let reason = raw.reason.trim();
+    if owner.is_empty() || reason.is_empty() {
+        return Err(EvidenceError::InvalidWaiver {
+            detail: "owner and reason must be non-empty".to_owned(),
+        });
+    }
+    Ok(Waiver {
+        owner: owner.to_owned(),
+        reason: reason.to_owned(),
+        expires_on: CivilDate::parse(&raw.expires_on)?,
+    })
+}
+
+fn pinned_revision(field: &str, value: &str) -> Result<String, EvidenceError> {
+    let trimmed = required_token(field, value)?;
+    if trimmed.eq_ignore_ascii_case("latest") {
+        return Err(EvidenceError::InvalidRecord {
+            detail: format!("{field} must be a pinned revision, not `latest`"),
+        });
+    }
+    Ok(trimmed)
+}
+
+fn required_token(field: &str, value: &str) -> Result<String, EvidenceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(EvidenceError::InvalidRecord {
+            detail: format!("{field} must be non-empty"),
+        });
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn closed_token(field: &str, value: &str) -> Result<String, EvidenceError> {
+    let trimmed = required_token(field, value)?;
+    if !trimmed
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    {
+        return Err(EvidenceError::InvalidRecord {
+            detail: format!("{field} `{trimmed}` must match [a-z0-9._-]"),
+        });
+    }
+    Ok(trimmed)
+}
+
+fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
+    let trimmed = uri.trim();
+    if trimmed.is_empty() {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: "empty evidence_uri".to_owned(),
+        });
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("turn")
+        || lower.starts_with("file:")
+        || lower.starts_with("sandbox:")
+        || lower.contains("/tmp/")
+        || lower.contains("/private/tmp/")
+        || lower.contains("/var/folders/")
+        || lower.contains("\\temp\\")
+        || lower.contains("\\appdata\\local\\temp")
+    {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: format!("`{trimmed}` is a sandbox path or opaque turn citation"),
+        });
+    }
+    if let Some(hex) = trimmed.strip_prefix("sha256:") {
+        parse_digest(trimmed)?;
+        let _ = hex;
+        return Ok(trimmed.to_owned());
+    }
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        if rest.is_empty()
+            || rest.starts_with("localhost")
+            || rest.starts_with("127.0.0.1")
+            || rest.starts_with("[::1]")
+        {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{trimmed}` is not a public https location"),
+            });
+        }
+        if !rest.contains('.') || !rest.contains('/') {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{trimmed}` is not a resolvable https URL with a path"),
+            });
+        }
+        return Ok(trimmed.to_owned());
+    }
+    Err(EvidenceError::NonNormativeEvidence {
+        detail: format!("`{trimmed}` is not https:// or sha256:"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIGEST_A: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const DIGEST_B: &str =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const AS_OF: CivilDate = CivilDate {
+        year: 2026,
+        month: 8,
+        day: 19,
+    };
+
+    fn valid_evidence_json() -> String {
+        format!(
+            r#"{{
+  "schema": "keld.compat.evidence/v1",
+  "artifact": {{
+    "sha256": "{DIGEST_A}",
+    "platform": "macos",
+    "arch": "aarch64"
+  }},
+  "revisions": {{
+    "keld": "67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+    "bun": "1.3.14",
+    "engine": "wkwebview"
+  }},
+  "authority_profile": "strict_bun",
+  "operation": {{
+    "id": "hello.window.open",
+    "kind": "primary_workflow",
+    "oracle": {{
+      "id": "hello-window-visible",
+      "revision": "kel26-macos"
+    }}
+  }},
+  "result": "pass",
+  "evidence_uri": "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493"
+}}"#
+        )
+    }
+
+    fn valid_denominator_json() -> String {
+        format!(
+            r#"{{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "product",
+  "corpus_id": "phase2-hello",
+  "corpus_sha256": "{DIGEST_B}",
+  "kind": "primary_workflow",
+  "cells": [
+    {{ "operation_id": "hello.window.open", "oracle_id": "hello-window-visible" }},
+    {{ "operation_id": "hello.ipc.echo", "oracle_id": "kipc-echo-roundtrip" }}
+  ]
+}}"#
+        )
+    }
+
+    fn parse_ok() -> EvidenceRecord {
+        parse_evidence(valid_evidence_json().as_bytes()).expect("valid evidence")
+    }
+
+    fn second_pass() -> EvidenceRecord {
+        let mut json = valid_evidence_json();
+        json = json.replace("hello.window.open", "hello.ipc.echo");
+        json = json.replace("hello-window-visible", "kipc-echo-roundtrip");
+        parse_evidence(json.as_bytes()).expect("second cell")
+    }
+
+    #[test]
+    fn parse_evidence_accepts_closed_v1_record() {
+        let record = parse_ok();
+        assert_eq!(record.artifact.sha256, DIGEST_A);
+        assert_eq!(record.artifact.platform, Platform::Macos);
+        assert_eq!(record.artifact.arch, Arch::Aarch64);
+        assert_eq!(record.revisions.bun, "1.3.14");
+        assert_eq!(record.authority_profile, AuthorityProfile::StrictBun);
+        assert_eq!(record.operation.kind, OperationKind::PrimaryWorkflow);
+        assert_eq!(record.result, Verdict::Pass);
+        assert!(record.waiver.is_none());
+    }
+
+    #[test]
+    fn parse_rejects_oversize() {
+        let mut bytes = valid_evidence_json().into_bytes();
+        bytes.resize(MAX_EVIDENCE_BYTES + 1, b' ');
+        let err = parse_evidence(&bytes).expect_err("oversize");
+        assert_eq!(err.code(), "KELD-COMPAT-001");
+        assert!(err.to_string().contains("Split the ledger"));
+    }
+
+    #[test]
+    fn parse_rejects_non_utf8() {
+        let err = parse_evidence(&[0xFF, 0xFE, 0x00]).expect_err("latin1");
+        assert_eq!(err.code(), "KELD-COMPAT-002");
+        assert!(err.to_string().contains("Re-encode"));
+    }
+
+    #[test]
+    fn parse_rejects_trailing_junk() {
+        let mut json = valid_evidence_json();
+        json.push_str(" true");
+        let err = parse_evidence(json.as_bytes()).expect_err("junk");
+        assert_eq!(err.code(), "KELD-COMPAT-003");
+        assert!(err.to_string().contains("no trailing bytes"));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_schema() {
+        let json = valid_evidence_json().replace(EVIDENCE_SCHEMA, "keld.compat.evidence/v0");
+        let err = parse_evidence(json.as_bytes()).expect_err("schema");
+        assert_eq!(err.code(), "KELD-COMPAT-004");
+        assert!(err.to_string().contains(EVIDENCE_SCHEMA));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_field_and_bad_digest() {
+        let extra = valid_evidence_json().replacen('{', r#"{"extra":1,"#, 1);
+        let err = parse_evidence(extra.as_bytes()).expect_err("unknown field");
+        assert_eq!(err.code(), "KELD-COMPAT-005");
+        let bad = valid_evidence_json().replace(DIGEST_A, "sha256:DEADBEEF");
+        let err = parse_evidence(bad.as_bytes()).expect_err("digest");
+        assert_eq!(err.code(), "KELD-COMPAT-005");
+        assert!(err.to_string().contains("closed field set"));
+    }
+
+    #[test]
+    fn waived_requires_owner_reason_expiry() {
+        let json = valid_evidence_json().replace(r#""result": "pass""#, r#""result": "waived""#);
+        let err = parse_evidence(json.as_bytes()).expect_err("missing waiver");
+        assert_eq!(err.code(), "KELD-COMPAT-006");
+        assert!(err.to_string().contains("owner, reason"));
+    }
+
+    #[test]
+    fn waiver_forbidden_on_pass() {
+        let mut json = valid_evidence_json();
+        json = json.replacen(
+            r#""result": "pass""#,
+            r#""result": "pass",
+  "waiver": {"owner":"a","reason":"b","expires_on":"2026-12-31"}"#,
+            1,
+        );
+        let err = parse_evidence(json.as_bytes()).expect_err("extra waiver");
+        assert_eq!(err.code(), "KELD-COMPAT-006");
+    }
+
+    #[test]
+    fn parse_accepts_waived_with_complete_waiver() {
+        let mut json = valid_evidence_json();
+        json = json.replace(r#""result": "pass""#, r#""result": "waived""#);
+        json = json.replacen(
+            r#""evidence_uri""#,
+            r#""waiver": {"owner":"release","reason":"engine gap","expires_on":"2026-12-31"},
+  "evidence_uri""#,
+            1,
+        );
+        let record = parse_evidence(json.as_bytes()).expect("waived");
+        assert_eq!(record.result, Verdict::Waived);
+        assert_eq!(record.waiver.expect("waiver").owner, "release");
+    }
+
+    #[test]
+    fn rejects_turn_citation_and_tmp_path() {
+        for uri in [
+            "turn0file3",
+            "file:///tmp/out.json",
+            "https://example.com/tmp/not-this",
+            "/tmp/keld-out.json",
+        ] {
+            // The https example contains `/tmp/` and must still fail closed.
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+            assert!(err.to_string().contains("non-normative leads"), "{uri}");
+        }
+    }
+
+    #[test]
+    fn denominator_rejects_empty_and_duplicate_cells() {
+        let empty = valid_denominator_json().replace(
+            r#"cells": [
+    { "operation_id": "hello.window.open", "oracle_id": "hello-window-visible" },
+    { "operation_id": "hello.ipc.echo", "oracle_id": "kipc-echo-roundtrip" }
+  ]"#,
+            r#"cells": []"#,
+        );
+        let err = parse_denominator(empty.as_bytes()).expect_err("empty");
+        assert_eq!(err.code(), "KELD-COMPAT-008");
+        let dup = valid_denominator_json().replace("hello.ipc.echo", "hello.window.open");
+        let dup = dup.replace("kipc-echo-roundtrip", "hello-window-visible");
+        let err = parse_denominator(dup.as_bytes()).expect_err("dup");
+        assert_eq!(err.code(), "KELD-COMPAT-008");
+        assert!(err.to_string().contains("unique cells"));
+    }
+
+    #[test]
+    fn partial_corpus_refuses_percent_and_complete() {
+        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let board = score(&denom, &[parse_ok()], AS_OF).expect("score");
+        assert_eq!(board.passed, 1);
+        assert_eq!(board.missing, 1);
+        assert_eq!(board.denominator, 2);
+        assert_eq!(board.unweighted_percent, None);
+        assert!(!board.complete);
+        assert_eq!(
+            board.claim,
+            format!("1/2 of product corpus phase2-hello@{DIGEST_B} (primary_workflow)")
+        );
+        assert!(!board.claim.contains("100% compatible"));
+        assert!(!board.claim.contains("fully compatible"));
+    }
+
+    #[test]
+    fn full_pass_is_complete_and_still_names_denominator() {
+        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let board = score(&denom, &[parse_ok(), second_pass()], AS_OF).expect("score");
+        assert_eq!(board.unweighted_percent, Some(100));
+        assert!(board.complete);
+        assert_eq!(
+            board.claim,
+            format!("2/2 of product corpus phase2-hello@{DIGEST_B} (primary_workflow)")
+        );
+        assert!(!board.claim.contains("100% compatible"));
+    }
+
+    #[test]
+    fn extra_records_cannot_shrink_denominator() {
+        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let mut stray = valid_evidence_json();
+        stray = stray.replace("hello.window.open", "other.op");
+        stray = stray.replace("hello-window-visible", "other-oracle");
+        let stray = parse_evidence(stray.as_bytes()).expect("stray");
+        let board = score(&denom, &[parse_ok(), stray], AS_OF).expect("score");
+        assert_eq!(board.missing, 1);
+        assert_eq!(board.unweighted_percent, None);
+        assert!(!board.complete);
+    }
+
+    #[test]
+    fn unknown_cell_refuses_percent() {
+        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let mut unknown = valid_evidence_json();
+        unknown = unknown.replace(r#""result": "pass""#, r#""result": "unknown""#);
+        let unknown = parse_evidence(unknown.as_bytes()).expect("unknown");
+        let board = score(&denom, &[unknown, second_pass()], AS_OF).expect("score");
+        assert_eq!(board.unknown, 1);
+        assert_eq!(board.passed, 1);
+        assert_eq!(board.unweighted_percent, None);
+        assert!(!board.complete);
+    }
+
+    #[test]
+    fn expired_waiver_is_not_silent() {
+        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let mut json = valid_evidence_json();
+        json = json.replace(r#""result": "pass""#, r#""result": "waived""#);
+        json = json.replacen(
+            r#""evidence_uri""#,
+            r#""waiver": {"owner":"release","reason":"gap","expires_on":"2026-01-01"},
+  "evidence_uri""#,
+            1,
+        );
+        let waived = parse_evidence(json.as_bytes()).expect("parse waiver");
+        let err = score(&denom, &[waived], AS_OF).expect_err("expired");
+        assert_eq!(err.code(), "KELD-COMPAT-006");
+    }
+
+    #[test]
+    fn duplicate_cell_records_error() {
+        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let err = score(&denom, &[parse_ok(), parse_ok()], AS_OF).expect_err("dup");
+        assert_eq!(err.code(), "KELD-COMPAT-009");
+        assert!(err.to_string().contains("one record"));
+    }
+
+    #[test]
+    fn classify_artifact_magic_classes() {
+        assert_eq!(
+            classify_artifact(&[0xCF, 0xFA, 0xED, 0xFE, 0x00]),
+            ArtifactClass::MachO
+        );
+        assert_eq!(classify_artifact(b"MZ\x90\x00"), ArtifactClass::Pe);
+        assert_eq!(classify_artifact(b"\x7FELF...."), ArtifactClass::Elf);
+        assert_eq!(classify_artifact(b"\0asm\x01\x00"), ArtifactClass::Wasm);
+        assert_eq!(classify_artifact(b""), ArtifactClass::Unknown);
+        assert_eq!(classify_artifact(b"PK\x03\x04"), ArtifactClass::Unknown);
+    }
+
+    #[test]
+    fn error_display_table_has_code_and_fix() {
+        let cases: [(EvidenceError, &str, &str); 9] = [
+            (
+                EvidenceError::TooLarge { len: 9, max: 8 },
+                "KELD-COMPAT-001",
+                "Split the ledger",
+            ),
+            (EvidenceError::NotUtf8, "KELD-COMPAT-002", "Re-encode"),
+            (
+                EvidenceError::InvalidJson {
+                    detail: "x".to_owned(),
+                },
+                "KELD-COMPAT-003",
+                "no trailing bytes",
+            ),
+            (
+                EvidenceError::UnsupportedSchema {
+                    found: "v0".to_owned(),
+                },
+                "KELD-COMPAT-004",
+                EVIDENCE_SCHEMA,
+            ),
+            (
+                EvidenceError::InvalidRecord {
+                    detail: "x".to_owned(),
+                },
+                "KELD-COMPAT-005",
+                "closed field set",
+            ),
+            (
+                EvidenceError::InvalidWaiver {
+                    detail: "x".to_owned(),
+                },
+                "KELD-COMPAT-006",
+                "owner, reason",
+            ),
+            (
+                EvidenceError::NonNormativeEvidence {
+                    detail: "x".to_owned(),
+                },
+                "KELD-COMPAT-007",
+                "non-normative leads",
+            ),
+            (
+                EvidenceError::InvalidDenominator {
+                    detail: "x".to_owned(),
+                },
+                "KELD-COMPAT-008",
+                "unique cells",
+            ),
+            (
+                EvidenceError::DuplicateCell {
+                    cell: "a/b".to_owned(),
+                },
+                "KELD-COMPAT-009",
+                "one record",
+            ),
+        ];
+        for (err, code, fix) in cases {
+            let text = err.to_string();
+            assert_eq!(err.code(), code);
+            assert!(text.contains(code), "{text}");
+            assert!(text.contains(fix), "{text}");
+        }
+    }
+}

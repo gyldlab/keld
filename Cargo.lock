@@ -1282,6 +1282,8 @@ version = "0.0.1"
 dependencies = [
  "keld-core",
  "keld-ipc",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

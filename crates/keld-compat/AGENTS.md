@@ -8,3 +8,6 @@ Spec: `docs/architecture/04-electron-compat.md`.
 - No Electron-isms in `keld-core`/`keld-ipc`; compat pressure stays here via quirks flags.
 - Corpus score = release gate; any score drop = P1 regression.
 - Tests MUST follow repository `.agents/testing.md`.
+- `evidence` is framework-generic (KEL-74). Agents MUST NOT add VS Code
+  package names, Electron API tables, or a percentage that lacks a committed
+  denominator. Opaque turn citations and sandbox paths are leads, not evidence.

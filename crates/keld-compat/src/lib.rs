@@ -10,6 +10,12 @@
 //! `protocol` schemes, `session` cookie/proxy subsets, `webContents`
 //! routing identity, window parenting/modals, `nativeImage` codecs.
 //! Normative spec: `docs/architecture/04-electron-compat.md` §3.
+//!
+//! Generic compatibility evidence (KEL-74) lives in [`evidence`]: a versioned
+//! record + committed-denominator scorer. That module is not an Electron shim
+//! and does not encode VS Code or package names.
+
+pub mod evidence;
 
 /// Compat tiers, mirrored on the public scoreboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

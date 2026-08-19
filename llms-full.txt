@@ -1529,6 +1529,15 @@ does not prove compatibility. These contracts are not live in v0.
   (V8 flags, Chromium command-line switches, remote module).
 - Scoreboard: `keld.dev/compat` — per-API status (✔/▲/✘ + notes), per-corpus-app score,
   updated by CI. Honesty is the marketing.
+- Operation and workflow evidence (KEL-74) is a separate, versioned ledger:
+  each cell binds an artifact digest, platform/arch, Keld/Bun/engine revisions,
+  authority profile, and an immutable evidence URI to pass/fail/unknown/waived.
+  Public percentages require a committed denominator (`install`, `activation`,
+  `primary_workflow`, `full_feature`) and MUST NOT treat a partial measurement
+  as 100% compatibility. Product and showcase panels stay distinct; a named
+  stress corpus (including a future VS Code set) MUST NOT redefine product
+  tiers. Parser: `keld_compat::evidence`. Rules:
+  [`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
 
 ## 5. Native modules policy
 
@@ -2857,7 +2866,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -3208,6 +3217,60 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-native
 - message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
 - fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+
+## KELD-COMPAT-001
+
+- crate: keld-compat
+- message: Compatibility evidence or denominator JSON exceeded the size cap
+- fix: Split the ledger or shrink the document.
+
+## KELD-COMPAT-002
+
+- crate: keld-compat
+- message: Compatibility evidence bytes are not UTF-8
+- fix: Re-encode the document as UTF-8 without a BOM.
+
+## KELD-COMPAT-003
+
+- crate: keld-compat
+- message: Compatibility evidence JSON is invalid or has trailing bytes
+- fix: Supply a single UTF-8 JSON object with no trailing bytes.
+
+## KELD-COMPAT-004
+
+- crate: keld-compat
+- message: Compatibility evidence schema is not a known v1 id
+- fix: Use `keld.compat.evidence/v1` or `keld.compat.denominator/v1`.
+
+## KELD-COMPAT-005
+
+- crate: keld-compat
+- message: Compatibility evidence record failed closed-set validation
+- fix: Use the closed field set in docs/specs/kel74-compat-evidence-schema.md.
+
+## KELD-COMPAT-006
+
+- crate: keld-compat
+- message: Compatibility waiver is missing, extra, or expired
+- fix: Waive only with owner, reason, and a future YYYY-MM-DD expiry.
+
+## KELD-COMPAT-007
+
+- crate: keld-compat
+- message: Compatibility evidence URI is a lead, not an immutable location
+- fix: Use an https URL or sha256:<64 lowercase hex>; turn citations and sandbox paths are non-normative leads only.
+
+## KELD-COMPAT-008
+
+- crate: keld-compat
+- message: Compatibility denominator is empty, duplicated, or unusable
+- fix: Commit a v1 denominator with unique cells before scoring.
+
+## KELD-COMPAT-009
+
+- crate: keld-compat
+- message: Two evidence records named the same denominator cell
+- fix: Keep one record per (operation_id, oracle_id).
 
 ---
 
@@ -3758,7 +3821,36 @@ What the rewrite *did* measurably change:
 # Keld Electron compatibility scoreboard
 
 > **Placeholder:** Keld does not publish compatibility scores yet. Do not infer API
-> support from the planned tiers below.
+> support from the planned tiers below. There is **no committed product
+> denominator** in this repository, so no compatibility percentage may be
+> published — including `0%` or `100%`.
+
+## Denominator honesty (KEL-74)
+
+Machine evidence is the versioned JSON record parsed by
+`keld_compat::evidence` (`docs/specs/kel74-compat-evidence-schema.md`).
+That schema is framework-generic. VS Code and other named apps are later
+**showcase** corpus consumers; they do not redefine product tiers.
+
+Rules that keep a partial corpus from becoming a “100% compatible” claim:
+
+1. A percentage exists only against a committed denominator document
+   (`keld.compat.denominator/v1`) that names `panel`, `corpus_id`,
+   `corpus_sha256`, kind (`install` / `activation` / `primary_workflow` /
+   `full_feature`), and a non-empty unique cell list.
+2. `unweighted_percent` is omitted whenever any required cell is missing or
+   `unknown`. Extra records outside the denominator cannot shrink N.
+3. `complete` is true only when every committed cell is `pass`.
+4. The only allowed claim shape is
+   `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
+   Never “100% compatible” or “fully compatible.”
+5. Waivers need owner, reason, and expiry; expired waivers fail closed.
+6. Opaque turn citations and sandbox/`/tmp` paths are non-normative leads,
+   not evidence URIs.
+
+Until a product denominator is committed, this page stays a narrative API
+board (✔/▲/✘). Installer size/RSS stays on
+[`budget-scoreboard.md`](./budget-scoreboard.md).
 
 Installer size, host bytes, and idle RSS are a different board:
 [`budget-scoreboard.md`](./budget-scoreboard.md).

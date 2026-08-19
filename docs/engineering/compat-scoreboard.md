@@ -1,7 +1,36 @@
 # Keld Electron compatibility scoreboard
 
 > **Placeholder:** Keld does not publish compatibility scores yet. Do not infer API
-> support from the planned tiers below.
+> support from the planned tiers below. There is **no committed product
+> denominator** in this repository, so no compatibility percentage may be
+> published — including `0%` or `100%`.
+
+## Denominator honesty (KEL-74)
+
+Machine evidence is the versioned JSON record parsed by
+`keld_compat::evidence` (`docs/specs/kel74-compat-evidence-schema.md`).
+That schema is framework-generic. VS Code and other named apps are later
+**showcase** corpus consumers; they do not redefine product tiers.
+
+Rules that keep a partial corpus from becoming a “100% compatible” claim:
+
+1. A percentage exists only against a committed denominator document
+   (`keld.compat.denominator/v1`) that names `panel`, `corpus_id`,
+   `corpus_sha256`, kind (`install` / `activation` / `primary_workflow` /
+   `full_feature`), and a non-empty unique cell list.
+2. `unweighted_percent` is omitted whenever any required cell is missing or
+   `unknown`. Extra records outside the denominator cannot shrink N.
+3. `complete` is true only when every committed cell is `pass`.
+4. The only allowed claim shape is
+   `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
+   Never “100% compatible” or “fully compatible.”
+5. Waivers need owner, reason, and expiry; expired waivers fail closed.
+6. Opaque turn citations and sandbox/`/tmp` paths are non-normative leads,
+   not evidence URIs.
+
+Until a product denominator is committed, this page stays a narrative API
+board (✔/▲/✘). Installer size/RSS stays on
+[`budget-scoreboard.md`](./budget-scoreboard.md).
 
 Installer size, host bytes, and idle RSS are a different board:
 [`budget-scoreboard.md`](./budget-scoreboard.md).
