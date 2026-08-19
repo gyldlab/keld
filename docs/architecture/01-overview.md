@@ -74,9 +74,11 @@ Three principal classes, with host-minted instances inside each class:
    but **zero ambient OS authority** in the strict profile — every privileged operation
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
-   CLI-owned supervised primary-child echo slice with restart/backoff/output capture;
-   it does not bind an accepted link to a principal, mint a fresh role generation on
-   restart, preserve a live renderer through restart, or implement named roles.
+   CLI-owned supervised primary-child echo slice with restart/backoff/output capture,
+   plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
+   accepted link to a principal and mints a fresh role generation on restart. It
+   does not yet preserve a live renderer through restart, implement window-bound
+   roles, or attach per-role grants.
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 
