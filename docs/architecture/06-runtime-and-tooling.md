@@ -49,9 +49,14 @@ never a PID recovered after exit.
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. v0 implements none of this registry: it has KEL-70's generic one-child
-supervisor and KEL-75 T1a's Unix authenticated bootstrap listener, but no role
-generation/principal registry.
+authority. Current implementation is still one primary role, not a role family: it has
+KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authenticated bootstrap
+listener, and KEL-75 T1b's Unix `keld_runtime::primary::PrimaryRoleSupervisor`. The T1b
+coordinator mints a fresh endpoint/token per restart, binds only after a valid `HELLO`,
+reports redacted host-only bootstrap rejection, and revokes before successor
+provisioning while reusing the generic supervisor for spawn/backoff/reap. It does not
+implement a multi-role registry, role-specific grants, virtual ports, strict OS
+sandboxing, or Windows named-pipe/DACL bootstrap.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.

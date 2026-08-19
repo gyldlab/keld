@@ -138,6 +138,8 @@ struct PreparedChild<L> {
 }
 
 trait GenerationLease {
+    fn child_spawned(&mut self, pid: u32, attempt: u32) -> Result<(), RuntimeError>;
+    fn poll(&mut self) -> Result<(), RuntimeError>;
     fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError>;
 }
 
@@ -150,12 +152,15 @@ trait ChildPreparer {
 The supervisor calls `prepare` exactly once before every OS spawn. The primary-role
 preparer mints an opaque monotonic generation, binds a fresh Unix `BootstrapListener`,
 creates the trusted Bun command with only its generation-specific `KELD_APP_LINK` as
-role bootstrap metadata, and returns the listener as the generation lease. The
-supervisor keeps that lease beside the live `Child`; it releases it synchronously after
-natural exit and before any successor preparation. For
-explicit shutdown, it revokes the lease before it kills/reaps the `Child`. Initial or
-respawn preparation/spawn failure also revokes the unstarted lease and produces a typed
-terminal error rather than a bare `RespawnFailed` event.
+role bootstrap metadata, and returns the listener as the generation lease. After the OS
+spawn succeeds, the supervisor calls `child_spawned`; the lease starts cancellable
+admission without blocking the restart/reap owner. The supervisor then polls the lease
+while it watches the child, so bootstrap admission failure becomes a typed terminal
+failure instead of a hidden side-thread result. The supervisor keeps that lease beside
+the live `Child`; it releases it synchronously after natural exit and before any
+successor preparation. For explicit shutdown, it revokes the lease before it kills/reaps
+the `Child`. Initial or respawn preparation/spawn failure also revokes the unstarted
+lease and produces a typed terminal error rather than a bare `RespawnFailed` event.
 
 Successful `HELLO` binds the listener's still-live generation under one coordinator
 state transition and emits `LinkBound`. A foreign `HELLO` emits a host-only redacted
@@ -227,11 +232,11 @@ never silently weaken a strict profile.
   CLI echo server. It mints an owner-only endpoint/token, continues accepting after an
   invalid `HELLO`, and unlinks on drop. This proves one shared bootstrap primitive, not
   a role coordinator.
-- [ ] T1b: Reuse KEL-70's `Supervisor` for one host-owned `primary` role coordinator
-  through its internal prepared-child/lease seam. It provisions fresh identity before
-  every spawn, binds only a successful `HELLO`, revokes before successor provisioning,
-  reports redacted bootstrap rejection, and proves the black-box restart flow. No ports,
-  extra roles, sandbox or shared memory.
+- [x] T1b: Reuse KEL-70's `Supervisor` for one Unix host-owned `primary` role
+  coordinator through its internal prepared-child/lease seam. It provisions fresh
+  identity before every spawn, binds only a successful `HELLO`, revokes before successor
+  provisioning, reports redacted bootstrap rejection, and proves the black-box restart
+  flow. No Windows named pipe/DACL, ports, extra roles, sandbox or shared memory.
 - [ ] T2: Add one `app-bound` role and host-owned lifecycle registry; prove independent
   crash/restart isolation and stale-generation rejection.
 - [ ] T3: Add a bounded host-owned virtual-port pair between two authenticated roles;
