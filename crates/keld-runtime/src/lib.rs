@@ -22,6 +22,10 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 pub mod primary;
+#[cfg(unix)]
+pub mod registry;
+#[cfg(unix)]
+mod unix_role;
 
 /// How often the supervisor thread polls a running child for exit, and the
 /// granularity at which `shutdown()` is observed.

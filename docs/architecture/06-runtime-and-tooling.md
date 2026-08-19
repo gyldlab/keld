@@ -49,14 +49,13 @@ never a PID recovered after exit.
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. Current implementation is still one primary role, not a role family: it has
-KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authenticated bootstrap
-listener, and KEL-75 T1b's Unix `keld_runtime::primary::PrimaryRoleSupervisor`. The T1b
-coordinator mints a fresh endpoint/token per restart, binds only after a valid `HELLO`,
-reports redacted host-only bootstrap rejection, and revokes before successor
-provisioning while reusing the generic supervisor for spawn/backoff/reap. It does not
-implement a multi-role registry, role-specific grants, virtual ports, strict OS
-sandboxing, or Windows named-pipe/DACL bootstrap.
+authority. Current Unix implementation is a two-slot host registry, not a complete
+role family: KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authenticated
+bootstrap listener, T1b's per-role generation coordinator, and T2's
+`keld_runtime::registry::RoleRegistry` which owns one `primary` and one `app-bound`
+supervisor independently. A primary restart does not revoke or stop the app-bound
+role. It does not implement window-bound lifecycle, role-specific grants, virtual
+ports, strict OS sandboxing, or Windows named-pipe/DACL bootstrap.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
@@ -109,9 +108,10 @@ does not obtain a raw child endpoint, mapping handle or authority to spawn a pro
 Ports are FIFO per generation, transfers are one-shot and receiver-bound, and close or
 generation revocation disconnects the peer without exposing another principal. Exact
 Electron-observable queue/start, transfer validation and close-event behavior is owned
-by pinned conformance entries—not assumed from this generic runtime contract. The
-first implementation slice is one primary role with fresh identity/restart proof; named
-roles and ports follow only after that slice passes.
+by pinned conformance entries—not assumed from this generic runtime contract. Live Unix
+slices are T1b (one authenticated role generation) and T2 (one primary plus one
+independent app-bound role in `RoleRegistry`). Window-bound roles and virtual ports
+follow only after those slices.
 
 ## 2. keld CLI: verbs and guarantees
 
