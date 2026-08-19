@@ -23,7 +23,10 @@ pub mod session;
 pub mod token;
 
 #[cfg(unix)]
-pub use bootstrap::BootstrapListener;
+pub use bootstrap::{
+    BootstrapAdmission, BootstrapCancellation, BootstrapListener, BootstrapRejection,
+    BootstrapRejectionObserver,
+};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};

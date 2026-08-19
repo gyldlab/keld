@@ -355,6 +355,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The app-process child crashed repeatedly; the crash-loop breaker tripped
 - fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
 
+## KELD-RUNTIME-003
+
+- crate: keld-runtime
+- message: Prepared child lifecycle provisioning or revocation failed
+- fix: Check the role bootstrap endpoint and its owner-only directory, then retry `keld dev`.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

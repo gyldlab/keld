@@ -973,9 +973,12 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
   exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
   `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
   generation—not a PID, token or socket name—and old authority is revoked before a
-  successor is provisioned. v0 has KEL-70's generic one-child supervision plus one
-  fixed CLI echo link; additional roles and principalized restart require the KEL-75
-  binary fixtures before implementation.
+  successor is provisioned. Current implementation has KEL-70's generic one-child
+  supervision, the fixed CLI echo link, and KEL-75 T1b's Unix
+  `keld_runtime::primary::PrimaryRoleSupervisor` for one primary role with fresh
+  restart identity and stale-token rejection. Additional role categories, virtual
+  ports, role grants, strict sandbox admission, and Windows named-pipe/DACL bootstrap
+  remain later KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.
@@ -1078,7 +1081,11 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
   deadline. Its Unix `BootstrapListener` primitive is now live and used by the CLI echo
-  server; host-bound role generation and principal dispatch remain destination work.
+  server and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
+  observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
+  dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain
+  destination work.
   Channel-table exchange remains later work.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
@@ -1826,9 +1833,14 @@ never a PID recovered after exit.
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. v0 implements none of this registry: it has KEL-70's generic one-child
-supervisor and KEL-75 T1a's Unix authenticated bootstrap listener, but no role
-generation/principal registry.
+authority. Current implementation is still one primary role, not a role family: it has
+KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authenticated bootstrap
+listener, and KEL-75 T1b's Unix `keld_runtime::primary::PrimaryRoleSupervisor`. The T1b
+coordinator mints a fresh endpoint/token per restart, binds only after a valid `HELLO`,
+reports redacted host-only bootstrap rejection, and revokes before successor
+provisioning while reusing the generic supervisor for spawn/backoff/reap. It does not
+implement a multi-role registry, role-specific grants, virtual ports, strict OS
+sandboxing, or Windows named-pipe/DACL bootstrap.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
@@ -3217,6 +3229,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-runtime
 - message: The app-process child crashed repeatedly; the crash-loop breaker tripped
 - fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+
+## KELD-RUNTIME-003
+
+- crate: keld-runtime
+- message: Prepared child lifecycle provisioning or revocation failed
+- fix: Check the role bootstrap endpoint and its owner-only directory, then retry `keld dev`.
 
 ## KELD-NATIVE-001
 

@@ -59,7 +59,11 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
   deadline. Its Unix `BootstrapListener` primitive is now live and used by the CLI echo
-  server; host-bound role generation and principal dispatch remain destination work.
+  server and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
+  observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
+  dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain
+  destination work.
   Channel-table exchange remains later work.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one

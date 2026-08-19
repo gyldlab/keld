@@ -167,9 +167,12 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
   exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
   `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
   generation—not a PID, token or socket name—and old authority is revoked before a
-  successor is provisioned. v0 has KEL-70's generic one-child supervision plus one
-  fixed CLI echo link; additional roles and principalized restart require the KEL-75
-  binary fixtures before implementation.
+  successor is provisioned. Current implementation has KEL-70's generic one-child
+  supervision, the fixed CLI echo link, and KEL-75 T1b's Unix
+  `keld_runtime::primary::PrimaryRoleSupervisor` for one primary role with fresh
+  restart identity and stale-token rejection. Additional role categories, virtual
+  ports, role grants, strict sandbox admission, and Windows named-pipe/DACL bootstrap
+  remain later KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

@@ -125,6 +125,51 @@ and handles are closed by default. The endpoint is private, one successful accep
 consumes its bootstrap generation, and platform peer authentication is an additional
 admission check rather than a replacement for the possession secret.
 
+### T1b prepared-child lifecycle seam
+
+T1b extends the existing `keld_runtime::Supervisor`; it does not wrap it with another
+restart loop or consume its public events from a competing thread. The internal contract
+is conceptually:
+
+```rust
+struct PreparedChild<L> {
+    command: Command,
+    lease: L,
+}
+
+trait GenerationLease {
+    fn child_spawned(&mut self, pid: u32, attempt: u32) -> Result<(), RuntimeError>;
+    fn poll(&mut self) -> Result<(), RuntimeError>;
+    fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError>;
+}
+
+trait ChildPreparer {
+    type Lease: GenerationLease;
+    fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError>;
+}
+```
+
+The supervisor calls `prepare` exactly once before every OS spawn. The primary-role
+preparer mints an opaque monotonic generation, binds a fresh Unix `BootstrapListener`,
+creates the trusted Bun command with only its generation-specific `KELD_APP_LINK` as
+role bootstrap metadata, and returns the listener as the generation lease. After the OS
+spawn succeeds, the supervisor calls `child_spawned`; the lease starts cancellable
+admission without blocking the restart/reap owner. The supervisor then polls the lease
+while it watches the child, so bootstrap admission failure becomes a typed terminal
+failure instead of a hidden side-thread result. The supervisor keeps that lease beside
+the live `Child`; it releases it synchronously after natural exit and before any
+successor preparation. For explicit shutdown, it revokes the lease before it kills/reaps
+the `Child`. Initial or respawn preparation/spawn failure also revokes the unstarted
+lease and produces a typed terminal error rather than a bare `RespawnFailed` event.
+
+Successful `HELLO` binds the listener's still-live generation under one coordinator
+state transition and emits `LinkBound`. A foreign `HELLO` emits a host-only redacted
+`BootstrapRejected { code: KELD-IPC-007 }` record, closes the foreign stream, and leaves
+the generation available for the legitimate child. The peer may observe only a closed
+connection (`KELD-IPC-001`); T1b must not invent a wire reply that leaks authentication
+state. The coordinator must close/unlink the bootstrap endpoint immediately after a
+successful bind, so a stale client cannot connect to an unserved listener.
+
 ### Permissions and lifecycle
 
 `keld.config.ts` declares an entry and lifecycle owner; `keld.permissions.jsonc`
@@ -187,10 +232,11 @@ never silently weaken a strict profile.
   CLI echo server. It mints an owner-only endpoint/token, continues accepting after an
   invalid `HELLO`, and unlinks on drop. This proves one shared bootstrap primitive, not
   a role coordinator.
-- [ ] T1b: Reuse KEL-70's `Supervisor` for one host-owned `primary` role coordinator
-  that provisions fresh identity before every spawn, binds only a successful `HELLO`,
-  revokes before successor provisioning, and proves the black-box restart flow. No
-  ports, extra roles, sandbox or shared memory.
+- [x] T1b: Reuse KEL-70's `Supervisor` for one Unix host-owned `primary` role
+  coordinator through its internal prepared-child/lease seam. It provisions fresh
+  identity before every spawn, binds only a successful `HELLO`, revokes before successor
+  provisioning, reports redacted bootstrap rejection, and proves the black-box restart
+  flow. No Windows named pipe/DACL, ports, extra roles, sandbox or shared memory.
 - [ ] T2: Add one `app-bound` role and host-owned lifecycle registry; prove independent
   crash/restart isolation and stale-generation rejection.
 - [ ] T3: Add a bounded host-owned virtual-port pair between two authenticated roles;
@@ -207,7 +253,7 @@ never silently weaken a strict profile.
 
 | Acceptance | Future fixture | Independent oracle |
 |---|---|---|
-| T1 subset of 1–3 | real Bun subprocess + hostile raw kipc client | ordered `Provisioned(g1) → LinkBound(g1) → Revoked(g1) → Provisioned(g2) → LinkBound(g2)`, `KELD-IPC-007` for token reuse, and a successful legitimate second link |
+| T1b subset of 1–3 | real Bun subprocess + owner-only test control socket + hostile raw kipc client | ordered `Provisioned(g1) → Spawned(g1) → LinkBound(g1) → Revoked(g1) → Provisioned(g2) → Spawned(g2) → LinkBound(g2)`; host-only redacted `KELD-IPC-007` rejection; stale g1 locator fails; legitimate g2 client binds after foreign g1-token input |
 | 4 / T4 | host integration fixture with a real temporary window owner and child processes | observed role exits and unaffected app-bound role call |
 | 5 / T3 | virtual-port contract fixture | ordered received sequence, exactly-once disconnect, and no foreign delivery |
 | 6 | platform-specific hostile sandbox fixture | real OS-visible fs/net/handle attempts; untested OS stays unverified |
