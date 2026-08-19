@@ -59,14 +59,17 @@ default-deny.
    (artifact digest, token/profile, OS, archive id, or freshness), incomplete
    (missing §7 OS-containment rows), or layer-mismatched (a non-OS oracle
    recorded as OS containment), or admission otherwise fails, then the host
-   does not start an unconfined child and MUST NOT return `Strict`. It returns
-   a typed error that names the defect and the fix (install/enable the
+   does not start an unconfined child — including as a restart of a
+   previously-`Strict` role — and MUST NOT return `Strict`. It returns a
+   typed error that names the defect and the fix (install/enable the
    primitive, refresh or replace the archive, complete the OS-containment
    catalog against independent OS oracles, or declare `legacy` explicitly).
-3. Given a role declared `legacy` (`appSandbox` / profile off), when it starts,
-   then it remains authenticated and `keld-guard`-checked, and every
-   build/doctor/scoreboard/release metadata surface forfeits the zero-authority
-   claim.
+   Auto-downgrade to an unsandboxed `unverified` start is forbidden.
+3. Given a role declared `legacy` by an explicit Keld profile key (not by
+   Electron `sandbox`, `appSandbox: "off"`, package name, or architecture 03
+   prose), when it starts, then it remains authenticated and
+   `keld-guard`-checked, and every build/doctor/scoreboard/release metadata
+   surface forfeits the zero-authority claim.
 4. Given a successful `strict` spawn, when a process listing is taken, then the
    child has no raw host privilege handles: no inherited host filesystem,
    network, process-control, or update-staging handle. The only allowed extras
@@ -79,7 +82,7 @@ default-deny.
 
    | Layer | Independent oracle |
    |---|---|
-   | OS containment | OS deny/kill of the direct syscall/API (errno, NTSTATUS, sandbox violation, job/PID kill) |
+   | OS containment | OS deny of the direct syscall/API (errno, NTSTATUS, sandbox violation). Job/PID kill is **not** this oracle — it is supervisor cleanup. |
    | Host protocol denial | typed `KELD-IPC-007` (or documented successor) from the host on the app-link |
    | Supervisor cleanup | descendants reaped, generation revoked, next legitimate spawn works |
    | Resource limits | worker hang/OOM hits the worker limits; host and webviews remain up |
@@ -133,7 +136,8 @@ default-deny.
   only. Live `spawn_piped` currently inherits everything else; that is a
   defect relative to this contract, not a granted exception.
 - **Failure:** Missing primitives fail closed. There is no "best effort"
-  sandbox.
+  sandbox. Leaving `strict` is an admission failure: no replacement child
+  unless the app explicitly declares `legacy`.
 - **Reuse:** Reuse KEL-70 `Supervisor` and KEL-75 role identity. Reuse
   `keld-guard` for brokered calls. Do not invent a fifth unique (the four
   uniques stay: prebuilt host, supervised Bun family, kipc, default-deny).
@@ -155,23 +159,23 @@ Three states. They are not a confidence slider.
 | State | Who chooses it | Zero-authority claim | Child starts? |
 |---|---|---|---|
 | `unverified` | Default until a complete per-OS OS-containment archive exists | Forbidden | Only if the caller did not request `strict`. Reporting must say `unverified`. |
-| `legacy` | Explicit app/build declaration | Forfeited, and the forfeit is printed | Yes: authenticated + guarded, unsandboxed |
+| `legacy` | Explicit Keld profile key | Forfeited, and the forfeit is printed | Yes: authenticated + guarded, unsandboxed |
 | `strict` | Admission + complete OS-containment archive for that OS/artifact/profile | Allowed | Yes, only after admission |
 
 ```mermaid
 stateDiagram-v2
     accTitle: Strict, legacy, and unverified profile states
-    accDescr: Unverified is the default. Legacy requires an explicit declaration and forfeits the zero-authority claim. Strict requires OS admission plus an archived complete OS-containment catalog with a matching token/profile digest. A missing primitive, stale proof, incomplete catalog, or layer-mismatched archive returns Strict to Unverified. Dropping the legacy declaration without a new complete archive returns Legacy to Unverified. Dropping the legacy declaration and presenting a new complete archive may admit Strict.
+    accDescr: Unverified is the default. Legacy requires an explicit Keld declaration and forfeits the zero-authority claim. Strict requires OS admission plus an archived complete OS-containment catalog with a matching token/profile digest. Leaving Strict is an admission failure that does not start an unsandboxed replacement. Legacy to Strict uses the same admit function as Unverified to Strict. Dropping the legacy declaration without a new complete archive returns Legacy to Unverified.
 
     [*] --> Unverified
-    Unverified --> Legacy: explicit legacy declaration
+    Unverified --> Legacy: explicit Keld legacy declaration
     Unverified --> Strict: admission plus complete OS-containment archive
-    Strict --> Unverified: primitive missing or proof not admissible
+    Strict --> Unverified: admission failure, no replacement child
     Legacy --> Unverified: declaration removed without a new proof
-    Legacy --> Strict: declaration dropped plus new complete archive
+    Legacy --> Strict: declaration dropped plus same admit()
     note right of Strict
-        Missing primitive does not
-        start an unconfined strict child
+        Leaving Strict does not start
+        an unsandboxed replacement
     end note
 ```
 
@@ -181,20 +185,33 @@ Rules:
   No hostile test has been run.
 - `strict` cannot be reported from documentation.
 - Renderer sandbox status is a separate field (AC8).
-- Electron-compat apps do not silently start `legacy`. If they need it, they
-  declare it.
+- Profile is never inferred from Electron facade options (`sandbox`,
+  `appSandbox: "off"`), package name, or architecture 03's sandbox-off
+  sketch. Electron-compat apps do not silently start `legacy`. If they
+  need it, they declare the Keld profile key.
+- Leaving `strict` (primitive missing, proof stale/incomplete/mismatched,
+  or layer-mismatched) is an **admission failure**: no replacement child,
+  typed error, `requested` stays `Strict` so a KEL-70 restart also fails
+  closed. The only unsandboxed start is an explicit `legacy` declaration.
+  Auto-downgrade into an unsandboxed `unverified` start is forbidden.
+- `Legacy` → `Strict` uses the same `admit()` checks as
+  `Unverified` → `Strict`. Dropping the declaration is not admission. A
+  leftover Electron `sandbox` / `appSandbox: "off"` while `requested` is
+  `Strict` fails closed (do not start).
 
 ### Authority surface the profile must cover
 
 Every row is in scope for the threat model. "Denied" means the OS rejects the
-direct attempt; the host broker may still perform the operation after
-`keld-guard` allows it.
+direct attempt. The host broker may still perform the operation after
+`keld-guard` allows it. A guard allow MUST NOT widen the child's OS profile
+(no extra entitlement, capability SID, or seccomp allow as a consequence of
+the grant).
 
 | Resource | Strict child / addon worker |
 |---|---|
 | Files outside a reviewed role-private container | deny |
 | Secrets / keychain / credential tokens | deny (cannot impersonate the user) |
-| Network | deny unless a later reviewed grant is both entitled *and* proven |
+| Network | deny (always: direct `connect`/`bind`/`socket`). Brokered net is host-side after `keld-guard`. Extra entitlements/SIDs are a permission-model gate, not child-ambient `connect()` |
 | Devices (camera, mic, USB, GPS, …) | deny |
 | Process / IPC control of host or siblings | deny |
 | Inherited objects | none beyond app-link + log sinks |
@@ -239,30 +256,36 @@ under `strict`.
 
 Required:
 
-- App Sandbox on the launched Bun/helper binary (`com.apple.security.app-sandbox`).
-  Ledger M2–M3.
+- The launched Bun/helper is a **separately signed** binary with its own
+  App Sandbox entitlements (`com.apple.security.app-sandbox`, ledger M2–M3).
+  It MUST NOT use `com.apple.security.inherit` from `keld-host`. The host is
+  the TCB; inherit copies the parent's sandbox (ledger M5) and
+  `posix_spawn`/`NSTask` cannot put a helper in its own sandbox (ledger M6).
 - Hardened Runtime may be required for notarization; it is **not** sufficient
   for `strict` (ledger M8).
-- Child that inherits the host sandbox uses *exactly*
-  `com.apple.security.app-sandbox` + `com.apple.security.inherit`. Any other
-  App Sandbox entitlement aborts the child (ledger M5).
-- Privilege-separated helpers, if any, are XPC services with their own
-  sandbox, private to the host bundle, not root (ledger M6). The host enumerates
-  every XPC service, Powerbox path, and security-scoped bookmark it uses.
-  Default enumeration for a Bun role is empty.
+- Required helper keys: `com.apple.security.app-sandbox` plus only the
+  recorded JIT minimum if a Bun-start failure forces it. Any other App
+  Sandbox entitlement on that helper is an unexpected grant.
+- Privilege-separated helpers, if any, are XPC services with their **own**
+  sandbox, private to the host bundle, not root (ledger M6). The host
+  enumerates every XPC service, Powerbox path, and security-scoped bookmark
+  it uses. Default enumeration for a Bun role is empty.
 - Powerbox / user-selected files / security-scoped bookmarks stay on the host
   (ledger M4, M7). A Bun role does not get
   `com.apple.security.files.user-selected.*` or bookmark entitlements.
+- `com.apple.security.temporary-exception.*` is an unexpected grant.
 - Network, device, and personal-information entitlements are absent unless a
-  recorded experiment proves Bun cannot start without a named entitlement.
-  Each such entitlement is a permission-model review gate.
+  recorded Bun-start failure names them. Each such entitlement is a
+  permission-model review gate. A `keld-guard` network grant MUST NOT add
+  `com.apple.security.network.client` / `network.server` to the child — that
+  would be ambient `connect()` for native code. Direct net stays denied.
 - JIT: `com.apple.security.cs.allow-jit` is allowed only if a recorded
   Bun-start failure proves it is required. `allow-unsigned-executable-memory`
   and `disable-library-validation` stay denied until the same bar is met.
 
-Fail closed when: the binary is not App Sandboxed; inherit keys are wrong;
-an unexpected entitlement is present; or XPC/Powerbox grants cannot be
-enumerated.
+Fail closed when: the binary is not App Sandboxed; the helper inherits from
+the host; `temporary-exception.*` or another unexpected entitlement is
+present; or XPC/Powerbox grants cannot be enumerated.
 
 Packaging: signed `.app` with the reviewed entitlements embedded in the
 signature. Unsigned or ad-hoc signed children are `unverified`, never `strict`.
@@ -284,7 +307,9 @@ Required:
 - Reviewed ACLs on runtime, profile, and data objects: access is the
   intersection of user SID and package SID (ledger W4). Capability SIDs
   (`registryRead`, `lpacCom`, network, …) are absent unless a recorded
-  experiment proves them required.
+  experiment proves them required. Each such SID is a **permission-model
+  review gate** (same class as macOS extra entitlements). A network SID
+  MUST NOT be added because of a `keld-guard` net grant.
 - Handle allowlist via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Default
   `bInheritHandles = FALSE` (ledger W6).
 - Job object for descendants: no `BREAKAWAY_OK` / `SILENT_BREAKAWAY_OK`;
@@ -314,13 +339,12 @@ Required, together:
    - be proven by tests: host-path open/create fails with an OS error;
      role-private open/create succeeds;
    - fail closed: if the deny cannot be applied, do not admit `strict`.
-   The archive names the mechanism actually used. Item 2 is a distinct
-   **mount-table** host-path deny: bind-mount allowlist of the role container,
-   covering or unmount of host trees, or an equivalent mount operation that
-   removes host paths from the child's mount list. Landlock is a stackable
-   LSM (ledger L8) and MAY sit **on top of** that deny (item 6). It MUST NOT
-   be the sole implementation of item 2: a path-based LSM without the
-   mount-table deny does not satisfy this item.
+   The archive names the mechanism actually used. Item 2 is a
+   **mount-table** change only: bind-mount allowlist of the role container,
+   covering or unmount of host trees, or `pivot_root` (or an equivalent
+   mount operation that removes host paths from the child's mount list).
+   Landlock MAY only **stack** on top (item 6, ledger L8). It MUST NOT
+   substitute for item 2.
 3. `prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)` before seccomp. Ledger L5.
 4. Empty capability sets and dropped bounding set (`PR_CAPBSET_DROP`).
    Ledger L6.
@@ -345,10 +369,11 @@ Seccomp alone, Landlock alone, or `CLONE_NEWNS` without the host-path deny
 cannot admit `strict`.
 
 Fail closed when: any of 1–5 is missing; the host-path deny cannot be
-applied; Landlock is the only filesystem policy (item 2 missing); a
-capability remains; a descendant escapes the PID namespace or the seccomp
-filter; a descendant creates a user namespace via `clone`/`clone3`/
-`unshare`/`setns`; SCM_RIGHTS delivers a host FD (ledger L5).
+applied; Landlock is offered as the item-2 deny (stack-only, never a
+substitute); a capability remains; a descendant escapes the PID namespace
+or the seccomp filter; a descendant creates a user namespace via
+`clone`/`clone3`/`unshare`/`setns`. `SCM_RIGHTS` is a runtime hostile
+probe (ledger L5), not an `admit()` primitive.
 
 ### Types and channels (sketch; not implemented on this SHA)
 
@@ -359,8 +384,8 @@ enum ProfileState { Unverified, Legacy, Strict }
 struct ArtifactDigest([u8; 32]);
 
 /// SHA-256 of the token/profile this spawn will apply.
-/// macOS: App Sandbox entitlement set (inherit keys, JIT, enumerated
-///   XPC/Powerbox/bookmarks).
+/// macOS: App Sandbox entitlement set on the separately signed helper
+///   (no inherit-from-host; JIT; enumerated XPC/Powerbox/bookmarks).
 /// Windows: LPAC SECURITY_CAPABILITIES (count + SIDs) + All-Application-
 ///   Packages opt-out + reviewed ACL generation.
 /// Linux: namespace set + host-path deny mechanism + seccomp filter
@@ -379,7 +404,7 @@ struct ProofIdentity {
 
 struct AdmissionRequest {
     role: RoleInstance,          // KEL-75 generation
-    requested: ProfileState,     // never inferred from package name
+    requested: ProfileState,     // never inferred from package name or Electron sandbox/appSandbox
     artifact_digest: ArtifactDigest,
     profile_digest: ProfileDigest, // candidate this spawn will apply
     proof: Option<ProofIdentity>,
@@ -432,20 +457,26 @@ Otherwise the result is not `Strict`:
 | one or more §7 OS-containment rows missing | `ProofIncomplete` |
 | an OS-containment slot used another layer's oracle | `ProofLayerMismatch` |
 | required primitive or host-path deny missing | `PrimitiveUnavailable` |
+| leftover Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict`; inherit-from-host; unexpected entitlement/SID | `UnexpectedGrant` |
 
 An archive that contains only protocol, cleanup, or limit rows is
 `ProofIncomplete` (OS-containment rows absent). If those other-layer
 results were written into OS-containment slots, it is
 `ProofLayerMismatch`. Neither admits `Strict`.
 
-`Legacy` does not require a strict archive. Default / `Unverified` never
-becomes `Strict` through this function. T1 implements this state machine
+`Legacy` does not require a strict archive. `Legacy` → `Strict` uses this
+same `admit()` — dropping the declaration is not admission. Default /
+`Unverified` never becomes `Strict` through this function. A leftover
+Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
+`UnexpectedGrant` (do not start). Leaving `Strict` is this function
+returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
 Capabilities / manifest: a future `keld.permissions.jsonc` / `keld.config.ts`
 key may declare `profile: "strict" | "legacy"`. The key does not exist today.
-Adding it is a permission-model + public-API review gate. No VS Code or
-package-name branch.
+Adding it is a permission-model + public-API review gate. Electron
+`sandbox` / `appSandbox` is not this key and MUST NOT be read as `legacy`
+or `strict`. No VS Code or package-name branch.
 
 Wire/protocol: none. `KELD_APP_LINK` stays `<endpoint>#<64 hex chars>`.
 
@@ -480,16 +511,19 @@ Renderer sandbox is a different column.
       `ProofIncomplete` / `ProofLayerMismatch` / `ProofMismatch` including
       profile digest). No OS containment claim.
 - [ ] T2: macOS App Sandbox admission + hostile archive for the synthetic
-      fixture. JIT entitlements only if a recorded Bun-start failure
-      requires them. Name the host-death reaper from a primary source
-      before AC9 applies on macOS; do not invent process-group / `launchd`.
+      fixture on a **separately signed** helper (no `inherit` from the
+      host). JIT entitlements only if a recorded Bun-start failure
+      requires them. Enumerate `temporary-exception.*` as unexpected.
+      Name the host-death reaper from a primary source before AC9 applies
+      on macOS; do not invent process-group / `launchd`.
 - [ ] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
 - [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
-      work) + `no_new_privs` + cap drop + seccomp that denies `clone3` /
-      `setns` / descendant `CLONE_NEWUSER` (+ Landlock **on top** when
-      present) and unavailable-userns fail-closed proof. Landlock is extra,
-      not the item-2 mount-table deny.
+      work; mount-table change or `pivot_root`, not Landlock) +
+      `no_new_privs` + cap drop + seccomp that denies `clone3` / `setns` /
+      `unshare`+`CLONE_NEWUSER` (+ Landlock **stack only** when present)
+      and unavailable-userns fail-closed proof. `SCM_RIGHTS` is a T4
+      runtime probe, not an admit primitive.
 - [ ] T5: Crash/hang/OOM cleanup and updater-boundary probes on each OS
       that passed T2–T4.
 - [ ] T6: Doctor / build / release metadata surfaces. Then KEL-75 T6 may
@@ -505,8 +539,8 @@ OS. Mocks may test the admission state machine only.
 | AC | Future fixture | Independent oracle |
 |---|---|---|
 | 1 | doctor/build metadata unit | printed state string is `unverified`/`legacy`/`strict` |
-| 2 | admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong artifact digest / profile digest / OS / archive id); incomplete OS-containment catalog; layer-mismatched archive (protocol/cleanup/limit rows only, or those oracles in OS slots) | typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch` / `ProofIncomplete` / `ProofLayerMismatch`; no child PID; result is not `Strict` |
-| 3 | explicit legacy spawn | child runs; metadata forfeits the claim |
+| 2 | admission with primitive removed; `Strict` with missing, stale, or mismatched proof (wrong artifact digest / profile digest / OS / archive id); incomplete OS-containment catalog; layer-mismatched archive (protocol/cleanup/limit rows only, or those oracles in OS slots); Strict restart after stale/missing proof; leftover Electron `appSandbox: "off"` while requested Strict; Legacy→Strict without `admit()` | typed `PrimitiveUnavailable` / `ProofMissing` / `ProofStale` / `ProofMismatch` / `ProofIncomplete` / `ProofLayerMismatch` / `UnexpectedGrant`; no child PID (including no unsandboxed replacement); result is not `Strict` |
+| 3 | explicit Keld `legacy` spawn (Electron `sandbox` / `appSandbox` alone is not this declaration) | child runs; metadata forfeits the claim |
 | 4 | `/proc/pid/fd`, `lsof`, or `GetProcessHandleCount` + handle dump | only app-link + log sinks |
 | 5 | hostile catalog below | **per-layer** oracle in that row; JS shim deny fails OS-containment probes; host-protocol / cleanup / limit passes do not mark the OS contained and do not admit `Strict`; missing/incomplete/layer-mismatched archive stays `unverified` (`ProofIncomplete` / `ProofLayerMismatch`) |
 | 6 | synthetic addon matrix | one of the four outcomes; in-process load fails closed under `strict` |
@@ -521,10 +555,11 @@ Each row is one layer. Do not attribute every outcome to the OS.
 | Probe | Layer | Must observe |
 |---|---|---|
 | Direct filesystem | OS containment | create/read of a **host** path outside the role container fails with an OS error; create/read of a **role-private** path succeeds |
-| Direct network | OS containment | `connect`/`bind`/`socket` fails without a reviewed grant |
-| Direct shell / spawn | OS containment | `exec`/`CreateProcess`/`posix_spawn` of a helper fails or is job/PID-contained and equally sandboxed |
+| Direct network | OS containment | `connect`/`bind`/`socket` fails with an OS error even when a `keld-guard` net grant exists. Brokered net is host-side; a reviewed grant MUST NOT change this observation |
+| Direct shell / spawn | OS containment | `exec`/`CreateProcess`/`posix_spawn` of a helper fails with an OS deny, **or** the descendant is equally sandboxed (same App Sandbox / LPAC / namespace+seccomp+host-path profile). Job/PID kill of an unsandboxed helper is supervisor cleanup, not this pass |
 | Inherited handles | OS containment | leftover host FD/HANDLE cannot open host files, the update dir, or sibling links |
-| Descendants | OS containment | grandchild has the same profile or is killed; no job breakaway; no new user namespace (`clone`/`clone3`/`unshare`/`setns` with `CLONE_NEWUSER`) |
+| SCM_RIGHTS | OS containment | `recvmsg` of a usable host FD, or use of that FD on a host path, fails the archive. The host MUST NOT send ancillary FDs; the child MUST reject/close them. Runtime probe, not an `admit()` primitive (ledger L5) |
+| Descendants | OS containment | grandchild has the same profile; no job breakaway; no new user namespace (`clone`/`clone3`/`unshare`/`setns` with `CLONE_NEWUSER`). Job/PID reap is the supervisor-cleanup row, not this pass |
 | Broker bypass | OS containment | raw use of a host object the broker would have checked is denied by the OS |
 | Token theft | OS containment | cannot impersonate the interactive user (macOS keychain / Windows user token / Linux host UID 0) |
 | Addon escape | OS containment | synthetic native code cannot `dlopen` unsigned host code or join the host address space |

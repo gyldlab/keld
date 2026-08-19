@@ -81,7 +81,7 @@ of a sandbox, not containment.
 
 - **Source:** same as M2, section "Enabling App Sandbox Inheritance"
 - **Quote:** "To enable sandbox inheritance, a child target must use exactly two App Sandbox entitlement keys: `com.apple.security.app-sandbox` and `com.apple.security.inherit`. If you specify any other App Sandbox entitlement, the system aborts the child process." Also: "using a child process does not provide the security afforded by using an XPC service."
-- **Use:** A inherited-sandbox Bun child is not a privilege-separated helper. Extra entitlements on an inherit child abort it. Narrow XPC is the documented privilege-separation mechanism.
+- **Use:** Inherit copies the **parent** sandbox. `keld-host` is the privileged TCB, so a Bun helper MUST NOT inherit from the host. Extra entitlements on an inherit child abort it. Narrow XPC (M6) is the documented privilege-separation mechanism; a separately signed helper with its own App Sandbox is the KEL-78 launch path.
 
 ### M6. XPC services get their own sandbox; posix_spawn/NSTask do not
 
@@ -95,8 +95,9 @@ of a sandbox, not containment.
 
 - **Source:** same as M2, "Enabling Security-Scoped Bookmark and URL Access"
 - **Quote:** "If you want to provide your sandboxed app with persistent access to file system resources, you must enable security-scoped bookmark and URL access." Keys: `com.apple.security.files.bookmarks.app-scope`, `com.apple.security.files.bookmarks.document-scope`.
-- **Companion:** <https://developer.apple.com/documentation/foundation/nsurl/startaccessingsecurityscopedresource()> — "If you fail to relinquish your access to file-system resources when you no longer need them, your app leaks kernel resources."
-- **Use:** Bun roles do not receive bookmark entitlements. Powerbox and security-scoped grants, if used at all, stay on the host.
+- **Companion (official locator, fetch-limited):** <https://developer.apple.com/documentation/foundation/nsurl/startaccessingsecurityscopedresource()>
+- **Companion Quote:** not captured. This fetch returned a JavaScript shell ("This page requires JavaScript"), not the rendered documentation body. Forum posts, search-engine summaries, and entitlement-catalog siblings are **not** this page's Quote. Fail closed the same way as M8: do not invent an Apple sentence.
+- **Use:** Bun roles do not receive bookmark entitlements. Powerbox and security-scoped grants, if used at all, stay on the host. The archive entitlement Quote (M2 keys) remains the citable M7 body.
 
 ### M8. Hardened Runtime is a signing runtime, not App Sandbox
 
@@ -193,14 +194,14 @@ of a sandbox, not containment.
 - **Dated:** current kernel docs; accessed 2026-08-19
 - **Quote:** "Once the bit is set, it is inherited across fork, clone, and execve and cannot be unset. With no_new_privs set, execve() promises not to grant the privilege to do anything that could not have been done without the execve call." Also: "Note that no_new_privs does not prevent privilege changes that do not involve execve(). An appropriately privileged task can still call setuid(2) and receive SCM_RIGHTS datagrams."
 - **Companion:** <https://man7.org/linux/man-pages/man2/seccomp.2.html> — "In order to use the SECCOMP_SET_MODE_FILTER operation, either the calling thread must have the CAP_SYS_ADMIN capability in its user namespace, or the thread must already have the no_new_privs bit set. … Otherwise, the SECCOMP_SET_MODE_FILTER operation fails and returns EACCES."
-- **Use:** Strict Linux admission sets `PR_SET_NO_NEW_PRIVS` before seccomp. `no_new_privs` alone is not a filesystem or network sandbox. SCM_RIGHTS remains a hostile-test case.
+- **Use:** Strict Linux admission sets `PR_SET_NO_NEW_PRIVS` before seccomp. `no_new_privs` alone is not a filesystem or network sandbox. SCM_RIGHTS remains a **runtime** hostile-test case (not an `admit()` primitive).
 
 ### L6. Capabilities are independently droppable; the bounding set survives exec
 
 - **Source:** <https://man7.org/linux/man-pages/man7/capabilities.7.html>
 - **Publisher:** Linux man-pages project
 - **Dated:** man-pages 6.18 family; accessed 2026-08-19
-- **Quote:** "Starting with Linux 2.2, Linux divides the privileges traditionally associated with superuser into distinct units, known as capabilities, which can be independently enabled and disabled." Also: "The capability bounding set is a security mechanism that can be used to limit the capabilities that are dropped during execve(2)." `prctl(2) PR_CAPBSET_DROP` drops bounding-set bits.
+- **Quote:** "Starting with Linux 2.2, Linux divides the privileges traditionally associated with superuser into distinct units, known as capabilities, which can be independently enabled and disabled." Also: "The capability bounding set is a security mechanism that can be used to limit the capabilities that can be gained during an execve(2)." `prctl(2) PR_CAPBSET_DROP` removes bounding-set bits.
 - **Use:** Strict profile empties permitted/effective/inheritable/ambient sets and drops the bounding set after namespace setup. A leftover `CAP_SYS_ADMIN` / `CAP_NET_ADMIN` / `CAP_SYS_PTRACE` fails the proof.
 
 ### L7. Seccomp-BPF is inherited by children if `clone`/`fork` remain allowed
@@ -209,7 +210,7 @@ of a sandbox, not containment.
 - **Publisher:** Linux man-pages project
 - **Dated:** man-pages 6.18 family; accessed 2026-08-19
 - **Quote:** "If fork(2) or clone(2) is allowed by the filter, any child processes will be constrained to the same system call filters as the parent. If execve(2) is allowed, the existing filters will be preserved across a call to execve(2)."
-- **Use:** The filter must deny (or immediately kill) spawn/ptrace/mount/socket families that the profile does not explicitly need. Allowing `clone` without a descendant policy fails the descendant hostile test.
+- **Use:** The filter must deny (or immediately kill) spawn/ptrace/mount/socket families that the profile does not explicitly need. It MUST deny `clone`/`unshare` with `CLONE_NEWUSER`, `setns` into a user namespace, and `clone3`. Allowing those calls without a descendant policy fails the descendant hostile test.
 
 ### L8. Landlock is an additional unprivileged layer, not a replacement for namespaces
 
@@ -217,7 +218,7 @@ of a sandbox, not containment.
 - **Publisher:** The Linux Kernel documentation (Mickaël Salaün)
 - **Dated:** June 2026 (page header)
 - **Quote:** "The goal of Landlock is to enable restriction of ambient rights (e.g. global filesystem or network access) for a set of processes. Because Landlock is a stackable LSM, it makes it possible to create safe security sandboxes as new security layers in addition to the existing system-wide access-controls."
-- **Use:** Landlock is preferred *in addition* to the namespace + capability + `no_new_privs` + seccomp stack **and** the host-path deny (L9). Landlock or seccomp alone cannot admit the strict state. Missing Landlock on a kernel that lacks it is recorded; it does not by itself fail the candidate if the required namespace stack and host-path deny are present — but it also does not substitute for a missing namespace or a missing host-path deny. Landlock is extra, not the only filesystem story.
+- **Use:** Landlock is preferred *in addition* to the namespace + capability + `no_new_privs` + seccomp stack **and** the mount-table host-path deny (L9). Landlock MAY only **stack**. It MUST NOT implement or substitute for item 2. Landlock or seccomp alone cannot admit the strict state. Missing Landlock on a kernel that lacks it is recorded; it does not by itself fail the candidate if the required namespace stack and mount-table deny are present.
 
 ### L9. `CLONE_NEWNS` copies the parent's mount list
 
@@ -225,7 +226,7 @@ of a sandbox, not containment.
 - **Publisher:** Linux man-pages project (Michael Kerrisk)
 - **Dated:** man-pages 6.18, 2026-02-08
 - **Quote:** "A new mount namespace is created using either clone(2) or unshare(2) with the CLONE_NEWNS flag. When a new mount namespace is created, its mount list is initialized as follows: If the namespace is created using clone(2), the mount list of the child's namespace is a copy of the mount list in the parent process's mount namespace. If the namespace is created using unshare(2), the mount list of the new namespace is a copy of the mount list in the caller's previous mount namespace."
-- **Use:** Linux `strict` requires `CLONE_NEWNS` **and** an explicit host-path deny with tests that role-private paths still work. A copied host mount table is not containment. Landlock (L8) is additional, not the only filesystem policy.
+- **Use:** Linux `strict` requires `CLONE_NEWNS` **and** a mount-table host-path deny (bind-mount allowlist, cover/unmount, or `pivot_root`) with tests that role-private paths still work. A copied host mount table is not containment. Landlock (L8) may only stack; it is not the item-2 deny.
 
 ---
 
@@ -236,6 +237,7 @@ of a sandbox, not containment.
 | Architecture 03 §4.2 progressive sandbox sketch | Destination prose; names deprecated `sandbox_init` and insufficient Windows/Linux primitives |
 | Chromium LPAC / seatbelt write-ups | Practitioner synthesis, not the OS contract |
 | Apple Developer JS-only Hardened Runtime page | Official locator kept (M8); Quote stays empty; forum/search paraphrases are not Quote; HR-alone does not admit `strict` |
+| Apple Developer JS-only `startAccessingSecurityScopedResource` page | Official locator kept (M7 companion); Quote stays empty; same fail-closed as M8 |
 | `docs/research/` / Codex notes | Nested private research; not staged from this Keld PR |
 | Electron / VS Code sandbox flags | Product policy, not this spec |
 
