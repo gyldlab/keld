@@ -1337,7 +1337,11 @@ version = "0.0.1"
 name = "keld-runtime"
 version = "0.0.1"
 dependencies = [
+ "keld-compat",
  "keld-ipc",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

@@ -11,5 +11,17 @@ authors.workspace = true
 [dependencies]
 keld-ipc = { workspace = true }
 
+# KEL-77 differential harness only (test-only; no shipped API).
+# - serde_json: parse fixture observation lines and emit evidence JSON.
+# - keld-compat: reuse `keld_compat::evidence::parse_evidence` (KEL-74). Do not
+#   add a parallel evidence parser in this crate.
+# - sha2: corpus digest + observation-report `evidence_uri` (see workspace pin).
+# - tempfile: per-run evidence dump + isolated corpus copy for digest mutation.
+[dev-dependencies]
+serde_json = { workspace = true }
+keld-compat = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

@@ -78,6 +78,21 @@ tempfile = "3"
 #   one token per cold host bootstrap; `keld-ipc` owns the primitive and the
 #   CLI consumes it for the v0 echo session.
 getrandom = "0.4"
+# --- Dependency review (KEL-77 T2 / AGENTS.md gate) ---
+# Name: sha2 0.10 (RustCrypto)
+# Purpose: SHA-256 for the KEL-77 child-process fixture-corpus digest
+#   (`artifact.sha256`) and the run's raw-observation `evidence_uri`, both
+#   required as `sha256:` + 64 lowercase hex by `keld.compat.evidence/v1`.
+#   Used only as a `keld-runtime` dev-dependency (test harness); no shipped
+#   path hashes.
+# Alternatives rejected: (a) hand-rolled SHA-256 — forbidden duplicate of a
+#   primitive (KEL-77 spec §4.1); (b) `node -e` / `bun` — digest would depend
+#   on the runtime under test; (c) `git hash-object` — SHA-1 blob id, wrong
+#   algorithm; (d) reuse wry's *transitive* sha2 without a direct dep — Cargo
+#   forbids using an undeclared crate; (e) no first-party hasher exists in
+#   this workspace (`keld-update` is empty). Already in Cargo.lock at 0.10.9
+#   via wry. License: MIT OR Apache-2.0 (deny.toml allow-list).
+sha2 = "0.10"
 
 [workspace.lints.rust]
 missing_docs = "warn"
