@@ -197,6 +197,18 @@ Windows laptop. They are not current product measurements or live CI gates.
 evidence in `docs/engineering/budget-scoreboard.md` are measurements. Once the harness
 lands, valid regressions greater than 5% fail the PR or require a written waiver.
 
+Windows/WebView2 cold start → first paint currently misses its ≤ 300 ms row by ~1.6x
+(~470–510 ms measured), and that gap is not Keld's own cost: `CreateCoreWebView2Controller`
+boots a Chromium process and is, per Microsoft, "the bulk of starting a WebView2 control"
+(WebView2Feedback #1536) — Keld's attributable overhead is 3–6 ms (environment creation).
+A controlled same-session A/B isolated and refuted the one remaining Keld-owned hypothesis
+(wry's IPC-bridge injection); the direct-COM backend ties or leads Tauri on the identical
+engine. Full attribution chain and raw numbers: KEL-62; direct-COM measurement:
+`docs/engineering/budget-scoreboard.md` § "Windows first paint on the direct-COM backend".
+The only supported lever past this floor is hidden-webview prewarm + `put_ParentWindow`
+reparent — a memory-for-latency trade with no payoff for a bare hello window, deferred to
+KEL-83 pending a real concurrent-init consumer (Bun boot) to overlap it against.
+
 ## 6. What Keld is not (v1 non-goals)
 
 - Not a mobile framework (architecture reserves the seam — `keld-wv` backends — but no
