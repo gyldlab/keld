@@ -113,13 +113,30 @@ architecture §2's named file; treating that file as the resolver is a
 defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
 preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
 
+### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
+
+Tier 2's `utilityProcess`, `MessageChannelMain` and `MessagePortMain` must not
+introduce a second process model. The Electron facade asks the Keld host to create a
+declared app-bound or window-bound role; only the host resolves its bundled entry,
+creates the link/principal generation, captures permitted stdio and enforces lifecycle
+policy. `fork()` options that would widen process authority are translated to explicit
+Keld policy or fail with a scored compatibility result. A returned PID is diagnostic
+only, never a Keld identity or control handle.
+
+The host owns every virtual port. Port transfer is one-shot and target-bound, routes
+remain host-mediated, and a stale role/webview generation loses transferred ports before
+replacement. The facade must reproduce selected pinned Electron oracle queue/start,
+message, transfer-validation and close/disconnect behavior; generic routed IPC alone
+does not prove compatibility. These contracts are not live in v0.
+
 ## 4. Compat tiers & the public scoreboard
 
 - **Tier 1 (v0.2)**: app lifecycle, BrowserWindow core, ipcMain/ipcRenderer/invoke,
   contextBridge, dialog, shell, Menu/Tray, clipboard, Notification, screen, nativeImage
   subset. Exit criterion: electron-quick-start and 3 corpus apps run unmodified.
 - **Tier 2 (v0.4)**: globalShortcut, powerMonitor, safeStorage, session subset,
-  protocol, webContents surface, autoUpdater→keld-update adapter, crashReporter map.
+  protocol, webContents surface, `utilityProcess` + `MessageChannelMain` over named
+  principalized Bun roles, autoUpdater→keld-update adapter, crashReporter map.
   Exit criterion: ≥ 80% median call-site coverage across the 20-app corpus.
 - **Tier 3 (v0.6+)**: `<webview>`→multi-webview mapping, BrowserView mapping,
   desktopCapturer (host capture APIs), net module. Documented-never list published

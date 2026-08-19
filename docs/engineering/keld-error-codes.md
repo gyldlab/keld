@@ -337,6 +337,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Documentation generator invocation or file I/O failed
 - fix: Follow the command-specific fix, correct the path or permissions, and rerun the generator.
 
+## KELD-DOCS006
+
+- crate: Mermaid documentation tools
+- message: Mermaid documentation policy or pinned SVG rendering failed
+- fix: Add the required accessibility metadata and canonical palette, then run `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` with Docker available.
+
 ## KELD-RUNTIME-001
 
 - crate: keld-runtime

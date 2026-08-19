@@ -4,20 +4,23 @@
 
 - **Contract, not embedding.** Bun has no stable embedding C API (oven-sh/bun#12017 /
   #14252 remain unshipped; bun:ffi is explicitly experimental). Keld therefore treats
-  the runtime as a *versioned process contract*: spawn `bun <entry>` with
-  `KELD_LINK={fd|pipe}`, `KELD_SHM={handle}`, `KELD_CONTRACT=keld.app.json`; `@keld/api`
-  (pure TS + one tiny N-API glue for shm views) speaks kipc back. Pin exact Bun version
+  the runtime as a *versioned process contract*. The live bootstrap contract is exactly
+  `KELD_APP_LINK=<endpoint>#<64 hex chars>`; it names an endpoint and a one-session
+  possession secret, never role/principal/grant metadata. Destination `@keld/api`
+  (pure TS plus only reviewed enabled bulk glue) speaks kipc back. Pin exact Bun version
   per Keld release (`keld.lock`); CLI downloads the pinned runtime once per machine
-  (content-addressed cache), `keld-pack` embeds it per app at build.
+  (content-addressed cache), `keld-pack` embeds it per app at build. There are no
+  parallel `KELD_LINK`, `KELD_SHM` or `KELD_CONTRACT` contracts.
 - Trimming: ship Bun as-is first (compressed ~25–35 MB inside installers); track
   upstream size work; `runtime: "none"` mode omits it entirely (host-only apps score
   Tauri-class sizes). A `runtime: "node"` escape hatch is deliberately **not** in v1 —
   Bun's Node-compat is the compat plan; revisit only if corpus data forces it.
-- Supervision: exponential backoff restart, crash-loop breaker (3 crashes/30 s → error
-  window with diagnostics), stdout/stderr captured into unified logs, `--inspect`
-  passthrough, graceful-exit protocol (drain kipc, flush state, SIGTERM deadline).
-- The renderer outlives app-process restarts (host owns windows) — a reliability
-  property none of Electron/Electrobun/Deno has.
+- **v0 (KEL-70):** `keld_runtime::Supervisor` provides exponential-backoff restart,
+  crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one CLI-owned Bun
+  child. It does not provide role identity, per-role grants, link binding, strict OS
+  sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
+  proof. Host ownership makes renderer survival architecturally plausible, not yet an
+  exercised v0 claim.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
@@ -29,22 +32,25 @@ worker tied to one host window). These are lifecycle categories, not package, El
 or VS Code identities. The host—not the primary role—creates and owns every child, so a
 primary-role restart does not give it authority over an independent app-bound role.
 
-For every spawn the host makes a fresh principal/link generation, endpoint and 32-byte
+For every destination spawn the host makes a fresh principal/link generation, endpoint and 32-byte
 possession secret before it starts Bun. The child gets the canonical
 `KELD_APP_LINK=<endpoint>#<64 hex chars>` and fixed-direction stdout/stderr log sinks;
 those sinks are not authority handles. It receives no other inherited descriptor or OS
 handle unless a later reviewed platform contract explicitly permits it. A successful
 authenticated link accept consumes that bootstrap generation. On handshake failure,
 role exit, protocol abuse, deadline, window close or host shutdown, the host revokes the
-generation's link, grants, virtual ports and optional mapping handles before reaping or
-restarting it. A numeric PID is diagnostics only; reaping and termination use the host's
-live process handle, never a PID recovered after exit.
+generation's link, grants, virtual ports and optional mapping handles before it
+provisions or spawns a successor. For protocol failure, timeout and host shutdown,
+revocation precedes close/kill. KEL-70 observes natural exit through `try_wait`, which
+already reaps; this spec does not falsely promise portable pre-reap revocation. A numeric
+PID is diagnostics only; reaping and termination use the host's live process handle,
+never a PID recovered after exit.
 
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. v0 implements none of this registry: it only starts one bare Bun echo child
-from the CLI.
+authority. v0 implements none of this registry: it has only KEL-70's generic one-child
+supervisor and a CLI-owned echo listener.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.

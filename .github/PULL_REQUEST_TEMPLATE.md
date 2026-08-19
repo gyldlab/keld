@@ -6,6 +6,14 @@
 
 <!-- `docs/architecture/0N-*.md` sections, Linear KEL-n. Write "none" for a pure bug fix. -->
 
+## First-principles and reuse decision
+
+<!-- For architecture/public-contract/process/IPC/permission/lifecycle/performance work:
+ownership, trust, lifecycle, I/O and failure facts; existing shared/upstream options
+evaluated; named unmet requirement for any rewrite; compatibility fallback or `not
+required`; and reproducible measured baseline for any performance claim. Write `No
+boundary change` when not applicable. -->
+
 ## Review gates
 
 Human sign-off is required for any that apply (`AGENTS.md`). Check all that this PR touches, or check **none**.

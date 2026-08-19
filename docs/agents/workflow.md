@@ -11,7 +11,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    checked-out code and specs; read its spec, the governing `docs/architecture/*`
    sections, the target crate's `AGENTS.md`, and `docs/agents/learnings.md`. Set only
    the agent's own issue to `In Progress` and post scope, expected paths, non-goals,
-   dependencies and the first falsifiable acceptance check.
+   dependencies and the first falsifiable acceptance check. An agent MAY pick up only a
+   `Todo` and unassigned issue, unless a human or the orchestration explicitly assigns
+   it to that agent. Otherwise it MUST NOT change the issue or begin overlapping work;
+   it MUST record the ownership conflict on its own Linear issue (or the handoff if
+   Linear is unavailable) and notify the human/orchestrator.
 2. **Spec gate.** Larger than a bug fix and no spec? Write one from
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
@@ -23,7 +27,12 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    every contract decision, material pass/fail, blocker, scope change, and substantial
    milestone; name completed work, evidence, remaining work, risks and the next
    acceptance check. Small commits, conventional messages. No placeholder code on the
-   branch tip.
+   branch tip. A *material decision* changes a public API, permission, wire protocol,
+   dependency, architecture-spec interpretation, or crate/path boundary. A *substantial
+   milestone* is a named task or acceptance checkpoint in the issue/spec. On duplicate,
+   blocker, supersession or another active owner, stop the overlap, record the conflict
+   on the agent's own issue (or handoff), and notify the human/orchestrator; a worktree
+   does not authorize competing architecture decisions.
 5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test
    suite, plus the spec's test plan. Diagram changes additionally run
    `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the

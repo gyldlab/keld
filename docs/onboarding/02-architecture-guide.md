@@ -194,10 +194,16 @@ runs.
 
 ```mermaid
 sequenceDiagram
+    accTitle: Destination guarded Bun-to-host request flow
+    accDescr {
+      A future Bun main calls the typed API through an authenticated app link. The host
+      derives principal identity, checks the guard, then invokes an allowed native
+      service; this is destination behavior rather than the current echo slice.
+    }
     autonumber
     participant Main as main.ts<br/>(Bun child, unprivileged)
     participant API as @keld/api<br/>(TS, specified only)
-    participant Link as app-link<br/>UDS / named pipe
+    participant AppLink as app-link<br/>UDS / named pipe
     participant Rdr as host IPC reader thread
     participant Core as keld-core<br/>(dispatch)
     participant Guard as keld-guard
@@ -205,8 +211,8 @@ sequenceDiagram
 
     Main->>API: await dialog.open({ filters })
     Note over API: postcard-encode args,<br/>look up ChannelId from<br/>the handshake channel table
-    API->>Link: CALL frame<br/>16B header + payload<br/>channel=N corr=7
-    Link->>Rdr: bytes
+    API->>AppLink: CALL frame<br/>16B header + payload<br/>channel=N corr=7
+    AppLink->>Rdr: bytes
     Note over Rdr: state machine:<br/>Idle → Header → Payload → Dispatch
     Rdr->>Core: (Principal::AppProcess, channel, payload)
     Core->>Guard: check(principal, capability, args)
@@ -215,13 +221,13 @@ sequenceDiagram
         Guard-->>Core: Decision::Allow
         Core->>Impl: enqueue on command queue<br/>(UI-bound work only)
         Impl-->>Core: result
-        Core->>Link: REPLY frame, corr=7
-        Link->>API: bytes
+        Core->>AppLink: REPLY frame, corr=7
+        AppLink->>API: bytes
         API-->>Main: resolve(promise)
     else Deny
         Guard-->>Core: Decision::Deny(DenyReason)
-        Core->>Link: ERR frame, corr=7
-        Link->>API: bytes
+        Core->>AppLink: ERR frame, corr=7
+        AppLink->>API: bytes
         API-->>Main: reject(typed error + fix text)
     end
 ```
@@ -249,6 +255,12 @@ clearly before you start work.
 
 ```mermaid
 sequenceDiagram
+    accTitle: Current keld dev echo and subsequent window flow
+    accDescr {
+      The live CLI starts a token-authenticated Bun echo session and waits for it to
+      finish before opening the project webview window. The Bun session and window do
+      not coexist in this current diagnostic vertical slice.
+    }
     autonumber
     participant CLI as keld dev<br/>(keld-cli)
     participant Srv as EchoServer thread<br/>(keld-cli/echo_link.rs)
@@ -310,26 +322,38 @@ files today, which is a subset of the specified one:
 
 ```mermaid
 flowchart TD
-    cli[keld-cli · bin] --> core
-    cli --> ipc
-    cli --> pack[keld-pack]
-    cli --> update[keld-update]
-    host[keld-host · bin] --> core
-    compat[keld-compat] --> core
-    core[keld-core] --> ipc[keld-ipc]
-    core --> guard[keld-guard]
-    core --> wv[keld-wv]
-    native[keld-native] --> guard
-    native --> ipc
-    runtime[keld-runtime] --> ipc
-    wv --> guard
-    wv -.->|macOS only| ext["tao 0.35.3<br/>wry 0.56.1"]
-    ipc -.-> pc["postcard · serde"]
+    accTitle: Current Keld crate dependency graph
+    accDescr {
+      The diagram shows current declared workspace dependencies. Green current nodes
+      have live behavior, blue target nodes remain skeletons or are not yet reached by
+      the host; the graph is an onboarding map, not a product-completeness claim.
+    }
 
-    classDef live fill:#1b5e20,stroke:#a5d6a7,color:#fff
-    classDef skel fill:#37474f,stroke:#90a4ae,color:#fff
-    class ipc,wv,cli,guard,native,runtime live
-    class core,update,pack,compat,host skel
+    cli["CURRENT keld-cli · bin"] --> core
+    cli --> ipc
+    cli --> pack["TARGET keld-pack"]
+    cli --> update["TARGET keld-update"]
+    host["TARGET keld-host · bin"] --> core
+    compat["CURRENT keld-compat · lifecycle slice"] --> core
+    core["CURRENT keld-core · thin host slice"] --> ipc["CURRENT keld-ipc"]
+    core --> guard["CURRENT keld-guard"]
+    core --> wv["CURRENT keld-wv"]
+    native["CURRENT keld-native · scoped fs"] --> guard
+    native --> ipc
+    runtime["CURRENT keld-runtime · generic supervisor"] --> ipc
+    wv --> guard
+    wv -.->|macOS current backend| ext["EXTERNAL tao 0.35.3<br/>wry 0.56.1"]
+    ipc -.-> pc["EXTERNAL postcard · serde"]
+
+    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
+    classDef target fill:#dbeafe,stroke:#1d4ed8,color:#172554,stroke-width:2px
+    classDef showcase fill:#f3e8ff,stroke:#7e22ce,color:#3b0764,stroke-width:2px,stroke-dasharray:5 3
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
+    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
+    classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
+    class cli,compat,core,ipc,guard,wv,native,runtime current
+    class pack,update,host target
+    class ext,pc external
 ```
 
 Green = substantially implemented. Grey = skeleton. Two specified edges are missing today:

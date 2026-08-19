@@ -23,6 +23,12 @@ must say so and the same PR updates the architecture doc.
 3. …
 
 ## 4. Design
+- First-principles and reuse decision (for architecture/public-contract/process/IPC/
+  permission/lifecycle/performance work): ownership, trust, lifecycle, I/O and failure
+  facts; existing shared/upstream options evaluated; the named unmet requirement that
+  justifies any rewrite; compatibility fallback or `not required`; and a reproducible
+  measured baseline for any performance claim. Write `No boundary change` when not
+  applicable.
 - New/changed types & channels (Rust signatures, `.k.ts` contracts — sketch real code)
 - Capabilities required; manifest changes (spec 03) — "none" if none
 - Wire/protocol changes (spec 02) — "none" if none (else: version bump + review gate)

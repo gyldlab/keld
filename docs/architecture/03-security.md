@@ -7,20 +7,30 @@ enforcement, no per-window separation. Keld's job: Tauri's rigor with zero-confi
 
 ## 1. Principals and trust
 
+The three core principal classes are host, app-process role, and webview. Optional
+native-addon workers, reviewed native plugins and the signed update relaunch helper have
+their own policy; they do not inherit identity or grants from a core class.
+
 | Principal | Trust | Authority |
 |---|---|---|
-| keld-host | trusted | everything; enforces all policy |
-| app process (Bun) | semi-trusted (developer code, still fenced) | only what the manifest grants |
-| webview (per window × per origin) | untrusted | only what its capability block grants |
-| native plugin (Rust, in-host) | trusted-by-review | declared capabilities, checked at registration |
+| keld-host | trusted authority root | every framework-controlled privileged resource; enforces policy |
+| app-process role (supervised Bun; one or more) | semi-trusted developer/extension code | only that host-minted role's grants |
+| webview (host WebView id + navigation generation; origin is policy context) | untrusted | only what its capability block grants |
+| native-addon worker (optional compat process) | untrusted native code | OS-sandboxed bounded profile; broker only, never host authority |
+| native plugin (optional Rust, in-host) | trusted TCB code | manifest constrains registered channels; in-process code is not syscall-confined |
+| update relaunch helper (optional signed process) | trusted narrow mechanism | verified staged artifact + exact install target only |
 
-Every kipc frame carries the sender's principal id (minted by the host, unforgeable —
-peers never self-identify). The guard (`keld-guard`) evaluates
+Every dispatched kipc frame is associated with sender identity that the host minted;
+peers never self-identify. The destination supervisor binds a principal to the accepted
+link and passes it as trusted metadata beside the decoded frame—it is not a
+caller-controlled wire field. Webview identity is likewise derived from the host's
+engine/navigation registry. The guard (`keld-guard`) evaluates
 `(principal, channel, args) → allow | deny(reason)` before any handler runs.
-**Destination:** host-minted principal on every frame; guard-before-handler for
-every privileged call.
+**Destination:** host-minted principal in every dispatch context; guard-before-handler
+for every privileged call.
 **v0:** `FrameHeader` is `{kind, flags, channel, corr, len}` — there is no
-principal field on the wire. `keld-guard::evaluate` takes a `Principal` and
+principal field on the wire. KEL-70 supervises the generic child but does not bind its
+accepted link to a role principal. `keld-guard::evaluate` takes a `Principal` and
 default-denies anything other than `AppProcess` (`KELD-GUARD006`) so `app`
 scopes cannot be applied to a webview or plugin by accident. Channel grants
 are not evaluated. Echo dispatch does not call the guard — it is an
@@ -34,6 +44,15 @@ real filesystem side effect gated on the decision). Host `fs.read` /
 Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
 `LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
 OS-authority handlers, and stay ungated like echo.
+
+**Destination (KEL-75):** every supervised child role has a distinct principal and
+app-link. A role does not inherit the primary app principal merely because the same
+package spawned it. `keld.config.ts` declares the bundled entry and one lifecycle owner
+(`primary`, `app-bound`, or `window-bound`); `keld.permissions.jsonc` declares a
+generated role capability subset or an explicitly reviewed role-specific addition.
+Neither a role name, PID, token, `KELD_APP_LINK`, caller payload nor Electron facade
+option can select authority. The role schema is not live; the current manifest parser
+does not accept a `roles` key.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 
@@ -64,6 +83,10 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
   not in this slice.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
+- **Role grants (destination):** a generated role capability record must be a subset of
+  the app ceiling by default. Any additional role-specific authority is a separately
+  versioned, reviewable manifest change; it cannot arise from an Electron
+  `utilityProcess` option or child request. This schema is not live.
 - **CSP injection** by default on every webview (`default` = self + keld:// + declared
   net hosts; `static-only` = no script eval, no net). Opt-out is a named, linted grant.
 

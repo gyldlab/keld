@@ -91,23 +91,39 @@ this is the same thing in fewer boxes.
 
 ```mermaid
 flowchart TB
-    subgraph host["keld-host — Rust, prebuilt & signed (the only privileged code)"]
+    accTitle: Keld host, webview, and Bun trust topology
+    accDescr {
+      The host is the privileged authority process. Untrusted webviews and the Bun app
+      process communicate only through host-mediated bridges; the diagram is an
+      onboarding summary of architecture 01, whose live-versus-target status controls.
+    }
+
+    subgraph host["TARGET host — Rust, prebuilt and signed"]
         direction LR
-        wv["keld-wv<br/>webview layer<br/>3 engines"]
-        native["keld-native<br/>menus, tray,<br/>dialogs, fs"]
-        guard["keld-guard<br/>capability engine<br/>DEFAULT DENY"]
-        runtime["keld-runtime<br/>app-process<br/>supervisor"]
-        update["keld-update<br/>signed delta<br/>patches"]
+        wv["CURRENT keld-wv<br/>webview layer<br/>three engines"]
+        native["CURRENT keld-native<br/>scoped fs only<br/>other services target"]
+        guard["CURRENT keld-guard<br/>capability evaluator<br/>target dispatch binding"]
+        runtime["CURRENT keld-runtime<br/>one generic supervisor<br/>target role identity"]
+        update["TARGET keld-update<br/>signed delta patches"]
         native --> guard
         runtime --> guard
     end
 
-    ui["Webviews (UI) — untrusted documents<br/>WKWebView / WebView2 / WebKitGTK / pinned<br/>window.keld bridge"]
-    app["App process — Bun, supervised, restartable<br/>developer's main.ts<br/>@keld/api · @keld/electron shim · npm"]
+    ui["CURRENT webviews — untrusted documents<br/>WKWebView / WebView2 / WebKitGTK<br/>target window.keld bridge"]
+    app["CURRENT Bun child — one supervised echo role<br/>target named roles and @keld/api"]
 
     host -- "native bridge (control)<br/>keld:// scheme (bulk/stream)" --> ui
     host -- "kipc: UDS/pipe (control)<br/>+ shm rings (bulk)" --> app
     ui <-- "routed channels (host-mediated)" --> app
+
+    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
+    classDef target fill:#dbeafe,stroke:#1d4ed8,color:#172554,stroke-width:2px
+    classDef showcase fill:#f3e8ff,stroke:#7e22ce,color:#3b0764,stroke-width:2px,stroke-dasharray:5 3
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
+    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
+    classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
+    class wv,native,guard,runtime,ui,app current
+    class update target
 ```
 
 - **keld-host** owns every OS resource. App developers never compile it — they download a
