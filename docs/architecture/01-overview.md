@@ -159,10 +159,14 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
 - App-process family: plain Bun. Keld injects the canonical role-scoped
   `KELD_APP_LINK`; the host binds the accepted link to its principal and sends/negotiates
   contract metadata after authentication rather than accepting identity from env.
-  Supervisor policy is per role:
+  A destination role has exactly one host-owned lifecycle owner: `primary`, `app-bound`
+  or `window-bound`. The host alone creates and reaps roles; one role cannot parent,
+  select, upgrade or terminate another. Supervisor policy is per declared role:
   exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
-  `--inspect` passthrough in dev. v0 has one primary link; additional roles are a
-  compatibility destination and require their own tested spec slices.
+  `--inspect` passthrough in dev. Every spawn is a fresh principal/link generation—not
+  a PID, token or socket name—and revocation happens before restart. v0 has one primary
+  link; additional roles are a compatibility destination and require the KEL-75 binary
+  fixtures before implementation.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

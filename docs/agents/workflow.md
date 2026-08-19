@@ -6,16 +6,24 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
 
 ## The loop (one issue, one agent, one concern)
 
-1. **Pick up** a Linear issue (team KELD, status Todo, unassigned, current milestone
-   first). Read: the issue, its spec, the governing `docs/architecture/*` sections,
-   the target crate's `AGENTS.md`, and `docs/agents/learnings.md`.
+1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
+   including its description, comments, status and relations. Reconcile it with the
+   checked-out code and specs; read its spec, the governing `docs/architecture/*`
+   sections, the target crate's `AGENTS.md`, and `docs/agents/learnings.md`. Set only
+   the agent's own issue to `In Progress` and post scope, expected paths, non-goals,
+   dependencies and the first falsifiable acceptance check.
 2. **Spec gate.** Larger than a bug fix and no spec? Write one from
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
 3. **Isolate.** Work in a git worktree sibling directory (`../keld-<issue>`), branch
    `agent/<issue>-<slug>`, one issue per worktree. Never two agents in one tree.
-4. **Implement.** Tests with the change (conformance entries *first* for compat work).
-   Small commits, conventional messages. No placeholder code on the branch tip.
+4. **Implement and coordinate.** Tests with the change (conformance entries *first* for
+   compat work). Before a material design/scope decision and before integration,
+   refresh Linear to pick up other-agent changes. Post a Linear progress comment after
+   every contract decision, material pass/fail, blocker, scope change, and substantial
+   milestone; name completed work, evidence, remaining work, risks and the next
+   acceptance check. Small commits, conventional messages. No placeholder code on the
+   branch tip.
 5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test
    suite, plus the spec's test plan. Diagram changes additionally run
    `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
@@ -23,10 +31,19 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    `just llms-check` after regeneration. Paste real output in the PR; never "should work".
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review
    subagent): boundary violations? review gates missed? spec drift? slop (dead code,
-   duplicated helpers, drive-by refactors)? Fix before pushing.
-7. **PR.** Rebase on main first (linear history). Description per root `AGENTS.md`
-   (Summary · Spec refs · Review gates · Tests · Platforms · Perf impact). Append any
-   learnings to `docs/agents/learnings.md` in the same PR. Update the Linear issue.
+   duplicated helpers, drive-by refactors)? Before pushing, explicitly answer: what
+   existing abstraction/primitive was reused; if anything was rewritten, what named
+   ownership, correctness, security or measured-performance requirement made reuse
+   insufficient; and what falsifiable evidence proves the replacement. A duplicate
+   policy/helper, copied parser/state machine, silent compatibility regression or
+   performance claim based only on language choice blocks the PR until the root cause is
+   fixed.
+7. **PR and handoff.** Refresh Linear once more, then rebase on main first (linear
+   history). Description per root `AGENTS.md` (Summary · Spec refs · Review gates ·
+   Tests · Platforms · Perf impact). Append any learnings to `docs/agents/learnings.md`
+   in the same PR. Post actual gate output, unverified conditions, commit/PR links and
+   follow-up issue IDs. Move the issue to Done only when every acceptance criterion is
+   met; otherwise leave it In Progress or mark it Blocked with the exact dependency.
 
 ## Parallelism rules
 
