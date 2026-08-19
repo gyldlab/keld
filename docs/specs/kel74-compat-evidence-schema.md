@@ -76,7 +76,10 @@ Non-goals:
     segment) is itself that object id. Host checks parse authority (not
     `starts_with` after `https://`) and reject userinfo, loopback, IPv4-mapped
     loopback, unspecified addresses, RFC1918 private, IPv4 link-local, IPv6
-    unique-local (`fc00::/7`), IPv6 link-local, and IPv4-mapped copies of those.
+    unique-local (`fc00::/7`), IPv6 link-local, and IPv4-mapped,
+    IPv4-compatible (`::a.b.c.d`), or IPv4-translated (`::ffff:0:a.b.c.d`)
+    copies of those. A trailing FQDN dot (`10.0.0.1.`, `localhost.`) is the
+    same host.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
     SHA-256, authority profile, or engine, when `score` runs, then `complete`
     is false and `unweighted_percent` is `None`.
@@ -93,8 +96,9 @@ Non-goals:
   - **Trust:** a record is untrusted input. Opaque model-session citations and
     sandbox paths are not evidence. An immutable location is `sha256:<64 hex>`
     or an `https://` URL whose authority parses as a public host (no userinfo,
-    loopback, IPv4-mapped loopback, unspecified, RFC1918, link-local, or
-    unique-local address) and whose path contains a full git object id (40 or
+    loopback, IPv4-mapped / IPv4-compatible / IPv4-translated loopback,
+    unspecified, RFC1918, link-local, unique-local, or the FQDN-dot form of
+    those) and whose path contains a full git object id (40 or
     64 lowercase hex). A live branch/tag
     path such as `/blob/main/` is a lead, not a pin, even when another path
     segment is 40- or 64-hex; commit-pinned `/blob/<object-id>/` is allowed.
@@ -134,7 +138,7 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified / RFC1918 / link-local / unique-local) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name |
+| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified / RFC1918 / link-local / unique-local; trailing FQDN dots and IPv4-mapped/compatible/translated embeddings count as that address) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name |
 
 ### 4.2 Denominator (`keld.compat.denominator/v1`)
 

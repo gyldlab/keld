@@ -3864,7 +3864,9 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    `score` rejects that pairing even when the struct was constructed in
    memory rather than parsed.
 6. Opaque turn citations, absolute sandbox/`/tmp` paths, userinfo/loopback/
-   unspecified/RFC1918/link-local/unique-local https hosts, and live-mutable
+   unspecified/RFC1918/link-local/unique-local https hosts (including a trailing
+   FQDN dot and IPv4-mapped / IPv4-compatible / IPv4-translated embeddings),
+   and live-mutable
    https URLs (no git object id in the path, e.g. `/blob/main/` or
    `https://example.com/foo`) are
    non-normative leads. Allowed pins: `sha256:<64 hex>` or https with a

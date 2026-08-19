@@ -1232,8 +1232,10 @@ fn authority_has_userinfo(rest: &str) -> bool {
 }
 
 fn host_is_forbidden(host: &str) -> bool {
+    // Browsers treat a trailing FQDN dot as the same host; `Ipv4Addr` does not.
     let h = host.to_ascii_lowercase();
-    if h == "localhost" || h.ends_with(".localhost") {
+    let h = h.trim_end_matches('.');
+    if h.is_empty() || h == "localhost" || h.ends_with(".localhost") {
         return true;
     }
     if let Ok(v4) = h.parse::<Ipv4Addr>() {
@@ -1254,7 +1256,22 @@ fn ipv6_is_non_public(v6: Ipv6Addr) -> bool {
     {
         return true;
     }
-    v6.to_ipv4_mapped().is_some_and(ipv4_is_non_public)
+    ipv6_embedded_ipv4(v6).is_some_and(ipv4_is_non_public)
+}
+
+/// IPv4-mapped (`::ffff:a.b.c.d`), deprecated IPv4-compatible (`::a.b.c.d`),
+/// and IPv4-translated (`::ffff:0:a.b.c.d`, RFC 2765). `::` / `::1` are
+/// classified before this runs.
+fn ipv6_embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let o = v6.octets();
+    let tail = Ipv4Addr::new(o[12], o[13], o[14], o[15]);
+    let ipv4_compatible = o[..12] == [0; 12];
+    let ipv4_translated =
+        o[..8] == [0; 8] && o[8] == 0xff && o[9] == 0xff && o[10] == 0 && o[11] == 0;
+    (ipv4_compatible || ipv4_translated).then_some(tail)
 }
 
 fn path_has_git_object_id(path: &str) -> bool {
@@ -1887,6 +1904,17 @@ mod tests {
             format!("https://[fe80::1]/org/repo/commit/{sha}"),
             format!("https://[::ffff:10.0.0.1]/org/repo/commit/{sha}"),
             format!("https://[::ffff:c0a8:101]/org/repo/commit/{sha}"),
+            format!("https://10.0.0.1./org/repo/commit/{sha}"),
+            format!("https://192.168.1.1./org/repo/commit/{sha}"),
+            format!("https://169.254.0.1./org/repo/commit/{sha}"),
+            format!("https://[::10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::a00:1]/org/repo/commit/{sha}"),
+            format!("https://[0:0:0:0:0:0:10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::169.254.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::a9fe:1]/org/repo/commit/{sha}"),
+            format!("https://[::ffff:0:10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::ffff:0:a00:1]/org/repo/commit/{sha}"),
+            format!("https://localhost./org/repo/commit/{sha}"),
         ] {
             let json = valid_evidence_json().replace(
                 "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
@@ -1905,6 +1933,13 @@ mod tests {
             &public_ipv4,
         );
         parse_evidence(json.as_bytes()).expect("public unicast IPv4 is a public https host");
+        let public_fqdn_dot = format!("https://1.1.1.1./org/repo/commit/{sha}");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &public_fqdn_dot,
+        );
+        parse_evidence(json.as_bytes())
+            .expect("trailing FQDN dot on a public IPv4 is still a public host");
         let pinned = format!("https://github.com/gyldlab/keld/blob/{sha}/README.md");
         let json = valid_evidence_json().replace(
             "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
@@ -1965,6 +2000,10 @@ mod tests {
             format!("https://172.16.0.1/org/repo/commit/{sha}"),
             format!("https://169.254.0.1/org/repo/commit/{sha}"),
             format!("https://[fc00::1]/org/repo/commit/{sha}"),
+            format!("https://10.0.0.1./org/repo/commit/{sha}"),
+            format!("https://[::10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::ffff:0:10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://localhost./org/repo/commit/{sha}"),
         ] {
             let mut record = parse_ok();
             record.evidence_uri = uri.clone();

@@ -12,4 +12,5 @@ Spec: `docs/architecture/04-electron-compat.md`.
   package names, Electron API tables, or a percentage/`complete` that lacks a
   committed product corpus. Opaque turn citations and sandbox paths are leads,
   not evidence. RFC1918, link-local, and unique-local hosts are not public
-  https evidence.
+  https evidence (including a trailing FQDN dot, IPv4-mapped, IPv4-compatible
+  `::a.b.c.d`, and IPv4-translated `::ffff:0:a.b.c.d`).
