@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::link::handshake_server;
+use crate::APP_LINK_IO_DEADLINE;
+use crate::link::{AppLinkDeadlines, handshake_server};
 use crate::token::{SessionToken, format_app_link};
 
 /// Owner-only Unix listener that authenticates one role bootstrap connection.
@@ -82,8 +83,16 @@ impl BootstrapListener {
     /// connection. Peer handshake errors are untrusted input and are handled
     /// by continuing to accept.
     pub fn accept_authenticated(&self) -> io::Result<Option<UnixStream>> {
+        self.accept_authenticated_with_deadline(APP_LINK_IO_DEADLINE)
+    }
+
+    fn accept_authenticated_with_deadline(
+        &self,
+        handshake_deadline: std::time::Duration,
+    ) -> io::Result<Option<UnixStream>> {
         loop {
             let (mut stream, _) = self.listener.accept()?;
+            stream.set_app_link_deadlines(Some(handshake_deadline))?;
             match handshake_server(&mut stream, &self.token) {
                 Ok(()) => return Ok(Some(stream)),
                 Err(_) if self.stopping.load(Ordering::SeqCst) => return Ok(None),
@@ -225,6 +234,35 @@ mod tests {
             "drop must remove owner-only bootstrap directory: {}",
             directory.display()
         );
+    }
+
+    #[test]
+    fn silent_client_times_out_without_consuming_legitimate_bootstrap() {
+        let listener = Arc::new(BootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("link");
+
+        let acceptor = Arc::clone(&listener);
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let stream = acceptor
+                .accept_authenticated_with_deadline(Duration::from_millis(100))
+                .expect("listener I/O")
+                .expect("must not be stopped");
+            accepted_tx.send(()).expect("notify accepted");
+            drop(stream);
+        });
+
+        let silent = UnixStream::connect(endpoint).expect("silent connect");
+        let mut legitimate = UnixStream::connect(endpoint).expect("legitimate connect");
+        handshake_client(&mut legitimate, &token)
+            .expect("deadline must advance to legitimate client");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("silent client must not consume bootstrap listener");
+        drop(silent);
+        drop(legitimate);
+        server.join().expect("server join");
     }
 
     #[test]

@@ -58,7 +58,7 @@ impl EchoServer {
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] if the loopback listener cannot be bound.
+    /// Returns [`io::Error`] if the bootstrap endpoint cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
         #[cfg(unix)]
         {
@@ -113,7 +113,10 @@ impl EchoServer {
         }
     }
 
-    /// Waits for the server thread and removes the Unix session directory.
+    /// Waits for the server thread.
+    ///
+    /// On Unix, [`BootstrapListener`] removes the session directory when its
+    /// final owner drops after this method returns.
     ///
     /// # Errors
     ///
