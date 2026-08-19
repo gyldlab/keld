@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use serde::Deserialize;
 
@@ -119,8 +120,10 @@ impl fmt::Display for EvidenceError {
             Self::NonNormativeEvidence { detail } => write!(
                 f,
                 "KELD-COMPAT-007: evidence URI is not immutable ({detail}). \
-                 Use an https URL or sha256:<64 lowercase hex>; turn citations \
-                 and sandbox paths are non-normative leads only."
+                 Use sha256:<64 lowercase hex> or an https URL whose path \
+                 contains a full git object id (40 or 64 lowercase hex); \
+                 turn citations, sandbox paths, and mutable branch URLs \
+                 are non-normative leads only."
             ),
             Self::InvalidDenominator { detail } => write!(
                 f,
@@ -367,25 +370,64 @@ pub struct Waiver {
 }
 
 /// One versioned evidence record.
+///
+/// Fields are private: only [`parse_evidence`] constructs a record for callers
+/// outside this module. [`score`] still re-validates pairing, URI, and identity
+/// so a same-crate hand-built value cannot become a published percentage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceRecord {
-    /// Shipped artifact identity.
-    pub artifact: ArtifactIdentity,
-    /// Keld / Bun / engine pins.
-    pub revisions: Revisions,
-    /// Authority profile used for the run.
-    pub authority_profile: AuthorityProfile,
-    /// Operation and oracle.
-    pub operation: Operation,
-    /// Cell verdict.
-    pub result: Verdict,
-    /// Present only for [`Verdict::Waived`].
-    pub waiver: Option<Waiver>,
-    /// Immutable https or `sha256:` location.
-    pub evidence_uri: String,
+    artifact: ArtifactIdentity,
+    revisions: Revisions,
+    authority_profile: AuthorityProfile,
+    operation: Operation,
+    result: Verdict,
+    waiver: Option<Waiver>,
+    evidence_uri: String,
 }
 
 impl EvidenceRecord {
+    /// Shipped artifact identity.
+    #[must_use]
+    pub fn artifact(&self) -> &ArtifactIdentity {
+        &self.artifact
+    }
+
+    /// Keld / Bun / engine pins.
+    #[must_use]
+    pub fn revisions(&self) -> &Revisions {
+        &self.revisions
+    }
+
+    /// Authority profile used for the run.
+    #[must_use]
+    pub fn authority_profile(&self) -> AuthorityProfile {
+        self.authority_profile
+    }
+
+    /// Operation and oracle.
+    #[must_use]
+    pub fn operation(&self) -> &Operation {
+        &self.operation
+    }
+
+    /// Cell verdict.
+    #[must_use]
+    pub fn result(&self) -> Verdict {
+        self.result
+    }
+
+    /// Present only for [`Verdict::Waived`].
+    #[must_use]
+    pub fn waiver(&self) -> Option<&Waiver> {
+        self.waiver.as_ref()
+    }
+
+    /// Immutable `sha256:` digest or https URL with a git object id in the path.
+    #[must_use]
+    pub fn evidence_uri(&self) -> &str {
+        &self.evidence_uri
+    }
+
     fn cell_key(&self) -> CellKey {
         CellKey {
             operation_id: self.operation.id.clone(),
@@ -410,18 +452,49 @@ impl CellKey {
 }
 
 /// Committed corpus denominator. Required before any percentage.
+///
+/// Fields are private: only [`parse_denominator`] constructs a value for
+/// callers outside this module. [`score`] still rejects empty or duplicate
+/// `cells` so a hand-built list cannot claim `0/0` or double-count one pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Denominator {
+    panel: Panel,
+    corpus_id: String,
+    corpus_sha256: String,
+    kind: OperationKind,
+    cells: Vec<CellKey>,
+}
+
+impl Denominator {
     /// Product vs showcase panel.
-    pub panel: Panel,
+    #[must_use]
+    pub fn panel(&self) -> Panel {
+        self.panel
+    }
+
     /// Stable corpus name.
-    pub corpus_id: String,
+    #[must_use]
+    pub fn corpus_id(&self) -> &str {
+        &self.corpus_id
+    }
+
     /// Digest of the committed corpus manifest.
-    pub corpus_sha256: String,
+    #[must_use]
+    pub fn corpus_sha256(&self) -> &str {
+        &self.corpus_sha256
+    }
+
     /// Which of the four denominators this list is.
-    pub kind: OperationKind,
+    #[must_use]
+    pub fn kind(&self) -> OperationKind {
+        self.kind
+    }
+
     /// Required cells, unique.
-    pub cells: Vec<CellKey>,
+    #[must_use]
+    pub fn cells(&self) -> &[CellKey] {
+        &self.cells
+    }
 }
 
 /// Honest scoreboard row. Percentages never hide a missing denominator.
@@ -447,13 +520,22 @@ pub struct Scoreboard {
     pub waived: usize,
     /// Denominator cells with no record.
     pub missing: usize,
-    /// `None` when the measurement is incomplete (`missing` or `unknown` > 0).
+    /// `None` when incomplete, mixed-identity, or product with no committed corpus.
     pub unweighted_percent: Option<u8>,
-    /// True only when every committed cell passed.
+    /// True only when `N > 0`, every committed cell passed, and identities match.
     pub complete: bool,
     /// `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
     pub claim: String,
 }
+
+/// 32-bit Mach-O fat (`FAT_MAGIC`).
+const FAT_MAGIC: [u8; 4] = [0xCA, 0xFE, 0xBA, 0xBE];
+/// 32-bit Mach-O fat, opposite endian (`FAT_CIGAM`).
+const FAT_CIGAM: [u8; 4] = [0xBE, 0xBA, 0xFE, 0xCA];
+/// 64-bit Mach-O fat (`FAT_MAGIC_64`).
+const FAT_MAGIC_64: [u8; 4] = [0xCA, 0xFE, 0xBA, 0xBF];
+/// 64-bit Mach-O fat, opposite endian (`FAT_CIGAM_64`).
+const FAT_CIGAM_64: [u8; 4] = [0xBF, 0xBA, 0xFE, 0xCA];
 
 /// Magic-byte class of a shipped file prefix. Not a compatibility verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,13 +557,15 @@ pub enum ArtifactClass {
 pub fn classify_artifact(prefix: &[u8]) -> ArtifactClass {
     if prefix.len() >= 4 {
         let mag = [prefix[0], prefix[1], prefix[2], prefix[3]];
-        if matches!(
-            mag,
-            [0xFE, 0xED, 0xFA, 0xCE | 0xCF]
-                | [0xCE | 0xCF, 0xFA, 0xED, 0xFE]
-                | [0xCA, 0xFE, 0xBA, 0xBE]
-                | [0xBE, 0xBA, 0xFE, 0xCA]
-        ) {
+        if mag == [0xFE, 0xED, 0xFA, 0xCE]
+            || mag == [0xFE, 0xED, 0xFA, 0xCF]
+            || mag == [0xCE, 0xFA, 0xED, 0xFE]
+            || mag == [0xCF, 0xFA, 0xED, 0xFE]
+            || mag == FAT_MAGIC
+            || mag == FAT_CIGAM
+            || mag == FAT_MAGIC_64
+            || mag == FAT_CIGAM_64
+        {
             return ArtifactClass::MachO;
         }
         if mag == [0x7F, b'E', b'L', b'F'] {
@@ -563,25 +647,14 @@ pub fn parse_denominator(bytes: &[u8]) -> Result<Denominator, EvidenceError> {
     if raw.schema != DENOMINATOR_SCHEMA {
         return Err(EvidenceError::UnsupportedSchema { found: raw.schema });
     }
-    if raw.cells.is_empty() {
-        return Err(EvidenceError::InvalidDenominator {
-            detail: "cells must contain at least one entry".to_owned(),
-        });
-    }
-    let mut seen = BTreeSet::new();
     let mut cells = Vec::with_capacity(raw.cells.len());
     for cell in raw.cells {
-        let key = CellKey {
+        cells.push(CellKey {
             operation_id: closed_token("cells.operation_id", &cell.operation_id)?,
             oracle_id: required_token("cells.oracle_id", &cell.oracle_id)?,
-        };
-        if !seen.insert(key.clone()) {
-            return Err(EvidenceError::InvalidDenominator {
-                detail: format!("duplicate cell `{}`", key.label()),
-            });
-        }
-        cells.push(key);
+        });
     }
+    validate_denominator_cells(&cells)?;
     Ok(Denominator {
         panel: parse_panel(&raw.panel)?,
         corpus_id: closed_token("corpus_id", &raw.corpus_id)?,
@@ -599,14 +672,18 @@ pub fn parse_denominator(bytes: &[u8]) -> Result<Denominator, EvidenceError> {
 ///
 /// # Errors
 ///
-/// Returns [`EvidenceError::DuplicateCell`] when two records name the same
-/// cell, or [`EvidenceError::InvalidWaiver`] when a waiver is expired as of
-/// `as_of`.
+/// Returns [`EvidenceError::InvalidDenominator`] when `cells` is empty or
+/// contains duplicates, [`EvidenceError::DuplicateCell`] when two records
+/// name the same cell, [`EvidenceError::InvalidWaiver`] when a waiver is
+/// expired as of `as_of` or paired with a non-[`Verdict::Waived`] result,
+/// or [`EvidenceError::NonNormativeEvidence`] when a constructed URI is a
+/// lead rather than an immutable pin.
 pub fn score(
     denominator: &Denominator,
     records: &[EvidenceRecord],
     as_of: CivilDate,
 ) -> Result<Scoreboard, EvidenceError> {
+    validate_denominator_cells(&denominator.cells)?;
     let required: BTreeSet<&CellKey> = denominator.cells.iter().collect();
     let mut by_cell: BTreeMap<CellKey, &EvidenceRecord> = BTreeMap::new();
     for record in records {
@@ -617,19 +694,9 @@ pub fn score(
         if !required.contains(&key) {
             continue;
         }
+        validate_scored_record(record, &key, as_of)?;
         if by_cell.insert(key.clone(), record).is_some() {
             return Err(EvidenceError::DuplicateCell { cell: key.label() });
-        }
-        if let Some(waiver) = &record.waiver
-            && waiver.expires_on < as_of
-        {
-            return Err(EvidenceError::InvalidWaiver {
-                detail: format!(
-                    "waiver for `{}` expired on {} (as_of {as_of})",
-                    key.label(),
-                    waiver.expires_on
-                ),
-            });
         }
     }
 
@@ -648,14 +715,26 @@ pub fn score(
         }
     }
 
+    let identity_ok = contributing_identity_consistent(by_cell.values().copied());
     let n = denominator.cells.len();
-    let unweighted_percent = if missing == 0 && unknown == 0 && n > 0 {
+    let may_publish_percent = missing == 0
+        && unknown == 0
+        && n > 0
+        && identity_ok
+        && product_corpus_may_publish_percent(denominator.panel, &denominator.corpus_id);
+    let unweighted_percent = if may_publish_percent {
         let pct = passed.saturating_mul(100) / n;
         u8::try_from(pct).ok()
     } else {
         None
     };
-    let complete = passed == n && missing == 0 && unknown == 0 && failed == 0 && waived == 0;
+    let complete = n > 0
+        && passed == n
+        && missing == 0
+        && unknown == 0
+        && failed == 0
+        && waived == 0
+        && identity_ok;
     let claim = format!(
         "{passed}/{n} of {} corpus {}@{} ({})",
         denominator.panel.as_str(),
@@ -917,16 +996,7 @@ fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
             detail: "empty evidence_uri".to_owned(),
         });
     }
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("turn")
-        || lower.starts_with("file:")
-        || lower.starts_with("sandbox:")
-        || lower.contains("/tmp/")
-        || lower.contains("/private/tmp/")
-        || lower.contains("/var/folders/")
-        || lower.contains("\\temp\\")
-        || lower.contains("\\appdata\\local\\temp")
-    {
+    if is_lead_not_location(trimmed) {
         return Err(EvidenceError::NonNormativeEvidence {
             detail: format!("`{trimmed}` is a sandbox path or opaque turn citation"),
         });
@@ -937,18 +1007,31 @@ fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
         return Ok(trimmed.to_owned());
     }
     if let Some(rest) = trimmed.strip_prefix("https://") {
-        if rest.is_empty()
-            || rest.starts_with("localhost")
-            || rest.starts_with("127.0.0.1")
-            || rest.starts_with("[::1]")
-        {
+        let (host, path) = parse_https_host_and_path(rest, trimmed)?;
+        if host_is_forbidden(&host) {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a public https location"),
             });
         }
-        if !rest.contains('.') || !rest.contains('/') {
+        if host.parse::<Ipv4Addr>().is_err()
+            && host.parse::<Ipv6Addr>().is_err()
+            && !host.contains('.')
+        {
             return Err(EvidenceError::NonNormativeEvidence {
                 detail: format!("`{trimmed}` is not a resolvable https URL with a path"),
+            });
+        }
+        if path.is_empty() || path == "/" {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!("`{trimmed}` is not a resolvable https URL with a path"),
+            });
+        }
+        if !path_has_git_object_id(&path) {
+            return Err(EvidenceError::NonNormativeEvidence {
+                detail: format!(
+                    "`{trimmed}` has no git object id in the path; \
+                     a live-mutable URL is not an immutable pin"
+                ),
             });
         }
         return Ok(trimmed.to_owned());
@@ -956,6 +1039,219 @@ fn parse_evidence_uri(uri: &str) -> Result<String, EvidenceError> {
     Err(EvidenceError::NonNormativeEvidence {
         detail: format!("`{trimmed}` is not https:// or sha256:"),
     })
+}
+
+/// Turn citations and local temp *paths*. Not a substring search on https URLs.
+fn is_lead_not_location(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("sha256:") {
+        return false;
+    }
+    lower.starts_with("turn")
+        || lower.starts_with("file:")
+        || lower.starts_with("sandbox:")
+        || lower.starts_with("/tmp/")
+        || lower.starts_with("/private/tmp/")
+        || lower.starts_with("/var/folders/")
+        || lower.starts_with("\\temp\\")
+        || lower.contains(":\\users\\") && lower.contains("\\appdata\\local\\temp")
+}
+
+fn parse_https_host_and_path(
+    rest: &str,
+    original: &str,
+) -> Result<(String, String), EvidenceError> {
+    let without_hash = rest.split_once('#').map_or(rest, |(p, _)| p);
+    let without_query = without_hash
+        .split_once('?')
+        .map_or(without_hash, |(p, _)| p);
+    if without_query.is_empty() || authority_has_userinfo(without_query) {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: format!("`{original}` is not a public https location"),
+        });
+    }
+    if without_query.starts_with('[') {
+        let end = without_query
+            .find(']')
+            .ok_or_else(|| EvidenceError::NonNormativeEvidence {
+                detail: format!("`{original}` is not a resolvable https URL with a path"),
+            })?;
+        let host = without_query[1..end].to_owned();
+        let after = &without_query[end + 1..];
+        let path = match after.strip_prefix(':') {
+            Some(port_and_path) => {
+                let path_at =
+                    port_and_path
+                        .find('/')
+                        .ok_or_else(|| EvidenceError::NonNormativeEvidence {
+                            detail: format!(
+                                "`{original}` is not a resolvable https URL with a path"
+                            ),
+                        })?;
+                let port = &port_and_path[..path_at];
+                if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(EvidenceError::NonNormativeEvidence {
+                        detail: format!("`{original}` is not a public https location"),
+                    });
+                }
+                port_and_path[path_at..].to_owned()
+            }
+            None => {
+                if after.is_empty() {
+                    String::new()
+                } else if let Some(path) = after.strip_prefix('/') {
+                    format!("/{path}")
+                } else {
+                    return Err(EvidenceError::NonNormativeEvidence {
+                        detail: format!("`{original}` is not a resolvable https URL with a path"),
+                    });
+                }
+            }
+        };
+        return Ok((host, path));
+    }
+    if without_query.matches(':').count() > 1 {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: format!("`{original}` is not a resolvable https URL with a path"),
+        });
+    }
+    let slash = without_query.find('/');
+    let hostport = slash.map_or(without_query, |i| &without_query[..i]);
+    if hostport.is_empty() {
+        return Err(EvidenceError::NonNormativeEvidence {
+            detail: format!("`{original}` is not a public https location"),
+        });
+    }
+    let host = match hostport.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            if h.is_empty() {
+                return Err(EvidenceError::NonNormativeEvidence {
+                    detail: format!("`{original}` is not a public https location"),
+                });
+            }
+            h.to_owned()
+        }
+        _ => hostport.to_owned(),
+    };
+    let path = slash.map_or(String::new(), |i| without_query[i..].to_owned());
+    Ok((host, path))
+}
+
+fn authority_has_userinfo(rest: &str) -> bool {
+    let mut in_brackets = false;
+    for byte in rest.bytes() {
+        match byte {
+            b'[' => in_brackets = true,
+            b']' => in_brackets = false,
+            b'/' if !in_brackets => return false,
+            b'@' if !in_brackets => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn host_is_forbidden(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(v4) = h.parse::<Ipv4Addr>() {
+        return v4.is_loopback() || v4.is_unspecified();
+    }
+    if let Ok(v6) = h.parse::<Ipv6Addr>() {
+        if v6.is_loopback() || v6.is_unspecified() {
+            return true;
+        }
+        if let Some(v4) = v6.to_ipv4_mapped() {
+            return v4.is_loopback() || v4.is_unspecified();
+        }
+    }
+    false
+}
+
+fn path_has_git_object_id(path: &str) -> bool {
+    path.split('/').any(is_git_object_id)
+}
+
+fn is_git_object_id(segment: &str) -> bool {
+    (segment.len() == 40 || segment.len() == 64)
+        && segment
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn validate_denominator_cells(cells: &[CellKey]) -> Result<(), EvidenceError> {
+    if cells.is_empty() {
+        return Err(EvidenceError::InvalidDenominator {
+            detail: "cells must contain at least one entry".to_owned(),
+        });
+    }
+    let mut seen = BTreeSet::new();
+    for cell in cells {
+        if !seen.insert(cell) {
+            return Err(EvidenceError::InvalidDenominator {
+                detail: format!("duplicate cell `{}`", cell.label()),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_scored_record(
+    record: &EvidenceRecord,
+    key: &CellKey,
+    as_of: CivilDate,
+) -> Result<(), EvidenceError> {
+    validate_scored_waiver(record, key, as_of)?;
+    parse_evidence_uri(&record.evidence_uri)?;
+    Ok(())
+}
+
+fn validate_scored_waiver(
+    record: &EvidenceRecord,
+    key: &CellKey,
+    as_of: CivilDate,
+) -> Result<(), EvidenceError> {
+    match (record.result, record.waiver.as_ref()) {
+        (Verdict::Waived, Some(waiver)) => {
+            if waiver.expires_on < as_of {
+                return Err(EvidenceError::InvalidWaiver {
+                    detail: format!(
+                        "waiver for `{}` expired on {} (as_of {as_of})",
+                        key.label(),
+                        waiver.expires_on
+                    ),
+                });
+            }
+            Ok(())
+        }
+        (Verdict::Waived, None) => Err(EvidenceError::InvalidWaiver {
+            detail: "result is waived but waiver is missing".to_owned(),
+        }),
+        (_, Some(_)) => Err(EvidenceError::InvalidWaiver {
+            detail: "waiver is only allowed when result is waived".to_owned(),
+        }),
+        (_, None) => Ok(()),
+    }
+}
+
+fn contributing_identity_consistent<'a>(
+    mut records: impl Iterator<Item = &'a EvidenceRecord>,
+) -> bool {
+    let Some(first) = records.next() else {
+        return true;
+    };
+    records.all(|record| {
+        record.artifact.sha256 == first.artifact.sha256
+            && record.authority_profile == first.authority_profile
+            && record.revisions.engine == first.revisions.engine
+    })
+}
+
+/// T1: no committed product denominator exists (`compat-scoreboard.md`).
+fn product_corpus_may_publish_percent(panel: Panel, _corpus_id: &str) -> bool {
+    !matches!(panel, Panel::Product)
 }
 
 #[cfg(test)]
@@ -1132,13 +1428,7 @@ mod tests {
 
     #[test]
     fn rejects_turn_citation_and_tmp_path() {
-        for uri in [
-            "turn0file3",
-            "file:///tmp/out.json",
-            "https://example.com/tmp/not-this",
-            "/tmp/keld-out.json",
-        ] {
-            // The https example contains `/tmp/` and must still fail closed.
+        for uri in ["turn0file3", "file:///tmp/out.json", "/tmp/keld-out.json"] {
             let json = valid_evidence_json().replace(
                 "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
                 uri,
@@ -1186,13 +1476,14 @@ mod tests {
 
     #[test]
     fn full_pass_is_complete_and_still_names_denominator() {
-        let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.panel = Panel::Showcase;
         let board = score(&denom, &[parse_ok(), second_pass()], AS_OF).expect("score");
         assert_eq!(board.unweighted_percent, Some(100));
         assert!(board.complete);
         assert_eq!(
             board.claim,
-            format!("2/2 of product corpus phase2-hello@{DIGEST_B} (primary_workflow)")
+            format!("2/2 of showcase corpus phase2-hello@{DIGEST_B} (primary_workflow)")
         );
         assert!(!board.claim.contains("100% compatible"));
     }
@@ -1240,6 +1531,125 @@ mod tests {
     }
 
     #[test]
+    fn empty_cells_score_is_not_complete_and_not_one_hundred_percent() {
+        // parse_denominator already rejects `cells: []`. score must too: a
+        // hand-built empty Vec used to yield passed==n==0, complete=true, "0/0".
+        let denom = Denominator {
+            panel: Panel::Product,
+            corpus_id: "phase2-hello".to_owned(),
+            corpus_sha256: DIGEST_B.to_owned(),
+            kind: OperationKind::PrimaryWorkflow,
+            cells: Vec::new(),
+        };
+        match score(&denom, &[], AS_OF) {
+            Ok(board) => panic!(
+                "empty cells must not score: complete={} percent={:?} claim={}",
+                board.complete, board.unweighted_percent, board.claim
+            ),
+            Err(err) => {
+                assert_eq!(err.code(), "KELD-COMPAT-008");
+                assert!(err.to_string().contains("unique cells"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_denom_cells_cannot_double_count_one_pass() {
+        // parse_denominator rejects duplicate cells; a hand-built vec used to
+        // count one Pass twice (2/2 complete from a single record).
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        let cell = denom.cells[0].clone();
+        denom.cells = vec![cell.clone(), cell];
+        match score(&denom, &[parse_ok()], AS_OF) {
+            Ok(board) => panic!(
+                "duplicate cells must not score: passed={} n={} complete={} percent={:?}",
+                board.passed, board.denominator, board.complete, board.unweighted_percent
+            ),
+            Err(err) => {
+                assert_eq!(err.code(), "KELD-COMPAT-008");
+                assert!(err.to_string().contains("unique cells"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn tmp_and_turn_uri_rejected_at_score() {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.cells.truncate(1);
+        for uri in ["turn0file3", "/tmp/keld-out.json", "file:///tmp/out.json"] {
+            let mut record = parse_ok();
+            record.evidence_uri = uri.to_owned();
+            let err = score(&denom, &[record], AS_OF).expect_err(uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        }
+    }
+
+    #[test]
+    fn mixed_artifact_identity_refuses_complete_and_percent() {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.panel = Panel::Showcase;
+        let first = parse_ok();
+        let mut second = second_pass();
+        second.artifact.sha256 = DIGEST_B.to_owned();
+        second.authority_profile = AuthorityProfile::LegacySandboxOff;
+        second.revisions.engine = "cef".to_owned();
+        let board = score(&denom, &[first, second], AS_OF).expect("mixed stitch still counts");
+        assert_eq!(board.passed, 2);
+        assert_eq!(board.denominator, 2);
+        assert!(
+            !board.complete,
+            "mixed digest/profile/engine must not be complete"
+        );
+        assert_eq!(board.unweighted_percent, None);
+        assert!(!board.claim.contains("100%"));
+    }
+
+    #[test]
+    fn product_panel_omits_percent_for_uncommitted_corpus() {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.cells.truncate(1);
+        denom.corpus_id = "toy-uncommitted".to_owned();
+        let board = score(&denom, &[parse_ok()], AS_OF).expect("score");
+        assert_eq!(board.passed, 1);
+        assert_eq!(board.denominator, 1);
+        assert_eq!(board.unweighted_percent, None);
+        assert!(!board.claim.contains("100%"));
+        assert!(
+            board
+                .claim
+                .contains("1/1 of product corpus toy-uncommitted")
+        );
+    }
+
+    #[test]
+    fn constructed_pass_with_unexpired_waiver_is_not_a_pass() {
+        // parse_evidence rejects Pass+waiver JSON; public fields let a caller
+        // construct it anyway. score must not treat that as a pass.
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.cells.truncate(1);
+        let mut record = parse_ok();
+        record.result = Verdict::Pass;
+        record.waiver = Some(Waiver {
+            owner: "release".to_owned(),
+            reason: "gap".to_owned(),
+            expires_on: CivilDate {
+                year: 2026,
+                month: 12,
+                day: 31,
+            },
+        });
+        match score(&denom, &[record], AS_OF) {
+            Ok(board) => panic!(
+                "Pass+waiver must not score as pass: complete={} passed={} percent={:?}",
+                board.complete, board.passed, board.unweighted_percent
+            ),
+            Err(err) => {
+                assert_eq!(err.code(), "KELD-COMPAT-006");
+            }
+        }
+    }
+
+    #[test]
     fn duplicate_cell_records_error() {
         let denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
         let err = score(&denom, &[parse_ok(), parse_ok()], AS_OF).expect_err("dup");
@@ -1253,11 +1663,62 @@ mod tests {
             classify_artifact(&[0xCF, 0xFA, 0xED, 0xFE, 0x00]),
             ArtifactClass::MachO
         );
+        // FAT_MAGIC / FAT_CIGAM (32-bit fat) and FAT_MAGIC_64 / FAT_CIGAM_64.
+        assert_eq!(classify_artifact(&FAT_MAGIC), ArtifactClass::MachO);
+        assert_eq!(classify_artifact(&FAT_CIGAM), ArtifactClass::MachO);
+        assert_eq!(classify_artifact(&FAT_MAGIC_64), ArtifactClass::MachO);
+        assert_eq!(classify_artifact(&FAT_CIGAM_64), ArtifactClass::MachO);
         assert_eq!(classify_artifact(b"MZ\x90\x00"), ArtifactClass::Pe);
         assert_eq!(classify_artifact(b"\x7FELF...."), ArtifactClass::Elf);
         assert_eq!(classify_artifact(b"\0asm\x01\x00"), ArtifactClass::Wasm);
         assert_eq!(classify_artifact(b""), ArtifactClass::Unknown);
         assert_eq!(classify_artifact(b"PK\x03\x04"), ArtifactClass::Unknown);
+    }
+
+    #[test]
+    fn rejects_mutable_https_without_content_address() {
+        for uri in [
+            "https://example.com/foo",
+            "https://example.com/tmp/not-this",
+            "https://github.com/gyldlab/keld/blob/main/README.md",
+        ] {
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+            assert!(err.to_string().contains("non-normative leads"), "{uri}");
+        }
+    }
+
+    #[test]
+    fn rejects_loopback_userinfo_and_unspecified_https_hosts() {
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        for uri in [
+            format!("https://git@127.0.0.1/org/repo/commit/{sha}"),
+            format!("https://[::ffff:127.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://0.0.0.0/org/repo/commit/{sha}"),
+            format!("https://user@github.com/gyldlab/keld/commit/{sha}"),
+            format!("https://[::]/org/repo/commit/{sha}"),
+        ] {
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                &uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(&uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+        }
+    }
+
+    #[test]
+    fn accepts_sha256_evidence_uri() {
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            DIGEST_A,
+        );
+        let record = parse_evidence(json.as_bytes()).expect("sha256 uri");
+        assert_eq!(record.evidence_uri, DIGEST_A);
     }
 
     #[test]

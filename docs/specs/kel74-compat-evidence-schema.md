@@ -42,22 +42,42 @@ Non-goals:
    the matching `KELD-COMPAT-*` error whose message states the fix.
 3. Given `result: "waived"` without owner/reason/`expires_on`, or a waiver on any
    other verdict, when parse runs, then `KELD-COMPAT-006`.
-4. Given an evidence URI that is a `file:`, sandbox path, `/tmp/` path, or opaque
-   turn citation (`turn0…`), when parse runs, then `KELD-COMPAT-007`. Those strings
-   remain non-normative leads only.
+4. Given an evidence URI that is a `file:`, an absolute temp path (`/tmp/…`),
+   or an opaque turn citation (`turn0…`), when `parse_evidence` **or** `score`
+   runs, then `KELD-COMPAT-007`. https URLs are not rejected by a `/tmp/`
+   substring; they use host and content-address rules instead.
 5. Given a denominator with zero cells or duplicate `(operation_id, oracle_id)`
-   cells, when `parse_denominator` runs, then `KELD-COMPAT-008`.
+   cells, when `parse_denominator` **or** `score` runs, then `KELD-COMPAT-008`.
+   `complete` requires `N > 0`; empty cells MUST NOT yield `complete` or a `0/0`
+   claim. Duplicate cells MUST NOT count one Pass twice.
 6. Given a committed N-cell denominator and only `M < N` matching records, when
    `score` runs, then `unweighted_percent` is `None`, `complete` is false, and
    `claim` is `{passed}/{N} of …` with no "100% compatible" wording.
-7. Given every denominator cell `pass` and no extras colliding, when `score` runs,
-   then `complete` is true and `unweighted_percent` is `Some(100)` — the claim still
-   names panel, corpus id, corpus digest, and kind.
-8. Given an expired waiver relative to `as_of`, or two records for the same cell,
-   when `score` runs, then a typed error (no silent last-write-wins).
-9. Given Mach-O / PE / ELF / WASM magic prefixes (and empty/unknown bytes), when
+7. Given a **showcase** denominator where every cell `pass`es with matching
+   artifact digest, authority profile, and engine, when `score` runs, then
+   `complete` is true and `unweighted_percent` is `Some(100)` — the claim still
+   names panel, corpus id, corpus digest, and kind. Product panel T1 never
+   publishes `unweighted_percent` (no committed product corpus id).
+8. Given an expired waiver relative to `as_of`, two records for the same cell,
+   **or** a `Pass` (or any non-`waived` verdict) paired with a waiver object,
+   when `score` runs, then a typed error (no silent last-write-wins, no constructed
+   Pass+waiver counted as pass).
+9. Given Mach-O thin/fat (`FAT_MAGIC`, `FAT_CIGAM`, `FAT_MAGIC_64`, `FAT_CIGAM_64`)
+   / PE / ELF / WASM magic prefixes (and empty/unknown bytes), when
    `classify_artifact` runs, then it returns the matching class. Import success is
    not a verdict this function can produce.
+10. Given `https://example.com/foo` or a `/blob/main/`-style branch URL, when
+    `parse_evidence` runs, then `KELD-COMPAT-007`. An allowed URI is `sha256:<64
+    lowercase hex>` or an `https://` URL whose path contains a `/`-delimited git
+    object id (40 or 64 lowercase hex). Host checks parse authority (not
+    `starts_with` after `https://`) and reject userinfo, loopback, IPv4-mapped
+    loopback, and unspecified addresses.
+11. Given two pass records that fill a 2-cell denom but disagree on artifact
+    SHA-256, authority profile, or engine, when `score` runs, then `complete`
+    is false and `unweighted_percent` is `None`.
+12. Given `panel: product` and corpus id `toy-uncommitted` (or any id not on the
+    committed-product list — T1: empty), when every cell passes, then
+    `unweighted_percent` is `None`.
 
 ## 4. Design
 
@@ -65,8 +85,12 @@ Non-goals:
   - **Ownership:** the caller owns the JSON bytes and artifact prefix; the parser
     is pure and mints no principals, files, or percentages for unpublished corpora.
   - **Trust:** a record is untrusted input. Opaque model-session citations and
-    sandbox paths are not evidence. Only `https://` URLs or `sha256:<64 hex>`
-    content addresses qualify as an immutable location.
+    sandbox paths are not evidence. An immutable location is `sha256:<64 hex>`
+    or an `https://` URL whose authority parses as a public host (no userinfo,
+    loopback, IPv4-mapped loopback, or unspecified address) and whose path
+    contains a full git object id (40 or 64 lowercase hex). A live branch/tag
+    path such as `/blob/main/` is a lead, not a pin. `/tmp/` is a path-prefix
+    check on non-https URIs, not a substring search on https URLs.
   - **Lifecycle:** schema version is a closed string. Unknown versions fail closed.
   - **I/O:** no filesystem reads in this slice. Magic classification is prefix-only.
   - **Failure:** every reject is a `KELD-COMPAT-*` code plus a fix sentence.
@@ -101,7 +125,7 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `https://…` (not localhost) or `sha256:<64 hex>` |
+| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified) and a 40- or 64-hex git object id path segment |
 
 ### 4.2 Denominator (`keld.compat.denominator/v1`)
 
@@ -119,17 +143,28 @@ redefine product tiers. Scoring always echoes the denominator’s `panel`.
 
 ### 4.3 Scoreboard rules (the honesty gate)
 
-1. Scoring requires a parsed denominator. There is no implicit “all records I have.”
+1. Scoring requires a parsed denominator with at least one cell. Empty `cells`
+   is `KELD-COMPAT-008` (same as `parse_denominator`); there is no implicit
+   “all records I have,” and `0/0` is not a complete measurement.
 2. Extra records whose cell is not in the denominator are ignored (they cannot
    shrink the denominator).
 3. `missing` = denominator cells with no record. `unknown` counts recorded unknowns.
-4. `unweighted_percent` is `None` when `missing > 0` or `unknown > 0` — an incomplete
-   or unknown measurement MUST NOT become a percentage, including 100.
+4. `unweighted_percent` is `None` when `missing > 0`, `unknown > 0`, contributing
+   records disagree on artifact digest / authority profile / engine, or the
+   panel is `product` and `corpus_id` is not a documented committed product
+   corpus (T1: none). An incomplete or uncommitted measurement MUST NOT become
+   a percentage, including 100.
 5. Otherwise `unweighted_percent = floor(100 * passed / N)`. Waived and failed
    cells stay in N and are not passes.
-6. `complete` is true only when `passed == N`.
+6. `complete` is true only when `N > 0`, `passed == N`, and contributing
+   records share artifact digest, authority profile, and engine.
 7. `claim` is always `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
    It MUST NOT contain the phrase `100% compatible` or `fully compatible`.
+8. A waiver object is valid only with `result: waived`. `score` rejects
+   constructed `Pass`+waiver (and any other non-waived pairing) as
+   `KELD-COMPAT-006` even when the waiver has not expired. `score` also
+   re-validates `evidence_uri`.
+9. Duplicate `cells` in a hand-built denominator are `KELD-COMPAT-008`.
 
 ## 5. Boundaries
 

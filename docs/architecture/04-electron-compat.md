@@ -145,12 +145,15 @@ does not prove compatibility. These contracts are not live in v0.
   updated by CI. Honesty is the marketing.
 - Operation and workflow evidence (KEL-74) is a separate, versioned ledger:
   each cell binds an artifact digest, platform/arch, Keld/Bun/engine revisions,
-  authority profile, and an immutable evidence URI to pass/fail/unknown/waived.
+  authority profile, and an immutable evidence URI (`sha256:<64 hex>` or an
+  `https://` URL whose path contains a full git object id) to
+  pass/fail/unknown/waived.
   Public percentages require a committed denominator (`install`, `activation`,
   `primary_workflow`, `full_feature`) and MUST NOT treat a partial measurement
   as 100% compatibility. Product and showcase panels stay distinct; a named
   stress corpus (including a future VS Code set) MUST NOT redefine product
-  tiers. Parser: `keld_compat::evidence`. Rules:
+  tiers. Until a product corpus id is documented as committed, `score` omits
+  `unweighted_percent` for `panel: product`. Parser: `keld_compat::evidence`. Rules:
   [`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
 
 ## 5. Native modules policy

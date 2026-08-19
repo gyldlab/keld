@@ -17,16 +17,30 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
 1. A percentage exists only against a committed denominator document
    (`keld.compat.denominator/v1`) that names `panel`, `corpus_id`,
    `corpus_sha256`, kind (`install` / `activation` / `primary_workflow` /
-   `full_feature`), and a non-empty unique cell list.
+   `full_feature`), and a non-empty unique cell list. `score` rejects an
+   empty cell list (`KELD-COMPAT-008`); `0/0` is not complete.
 2. `unweighted_percent` is omitted whenever any required cell is missing or
-   `unknown`. Extra records outside the denominator cannot shrink N.
-3. `complete` is true only when every committed cell is `pass`.
+   `unknown`, when contributing records disagree on artifact digest / authority
+   profile / engine, or when `panel` is `product` and `corpus_id` is not a
+   documented committed product corpus. T1: that committed-id list is empty,
+   so a `toy-uncommitted` product 1-cell pass cannot publish `Some(100)`.
+   Extra records outside the denominator cannot shrink N.
+3. `complete` is true only when `N > 0`, every committed cell is `pass`, and
+   contributing records share digest, profile, and engine. Duplicate cells
+   in the denominator are `KELD-COMPAT-008` (one Pass cannot become 2/2).
 4. The only allowed claim shape is
    `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
    Never “100% compatible” or “fully compatible.”
 5. Waivers need owner, reason, and expiry; expired waivers fail closed.
-6. Opaque turn citations and sandbox/`/tmp` paths are non-normative leads,
-   not evidence URIs.
+   A waiver object cannot pair with `pass` (or any non-`waived` verdict);
+   `score` rejects that pairing even when the struct was constructed in
+   memory rather than parsed.
+6. Opaque turn citations, absolute sandbox/`/tmp` paths, userinfo/loopback/
+   unspecified https hosts, and live-mutable https URLs (no git object id in
+   the path, e.g. `/blob/main/` or `https://example.com/foo`) are
+   non-normative leads. Allowed pins: `sha256:<64 hex>` or https with a
+   parsed public host and a 40- or 64-hex git object id path segment.
+   `score` re-checks the URI; `/tmp/` is not a substring ban on https URLs.
 
 Until a product denominator is committed, this page stays a narrative API
 board (✔/▲/✘). Installer size/RSS stays on
