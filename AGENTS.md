@@ -23,6 +23,41 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 - Diagnose the root cause and keep execution scoped; park adjacent cleanup.
 - Ask one focused question only when a user-owned choice would materially change the result; otherwise take the smallest reversible path.
 
+## Engineering principles — non-negotiable
+
+Agents MUST apply first-principles systems engineering and DRY before choosing a design
+or writing code. Familiar framework shapes, a larger language rewrite, and a passing
+happy path are not evidence that a design is correct, secure or fast.
+
+1. **Start from facts, not analogies.** Decompose the change into ownership, process,
+   memory, I/O, lifecycle, trust and failure facts. State who owns each handle, who can
+   mint each identity, what can crash independently, where copies/queues occur, and
+   what observable contract proves the result. An unmeasured performance claim or an
+   uncited platform assumption MUST NOT decide architecture.
+2. **Reuse before rewrite.** Agents MUST search for and evaluate the existing shared
+   abstraction, platform primitive, verified upstream facility and generated contract
+   before adding a replacement. A rewrite is permitted only when the existing option
+   cannot meet a named correctness, security, ownership or measured-performance
+   requirement. The spec/PR MUST record the rejected alternative and preserve a
+   compatibility fallback whenever the published contract requires one.
+3. **One rule, one owner, one source of truth.** Agents MUST NOT duplicate policy,
+   schema, permission checks, wire parsing, lifecycle state, platform shims or helpers
+   because a shared implementation is inconvenient. Fix or extend the owning
+   abstraction with tests. Parallel copies, mirrored constants and diverging fallback
+   paths are defects, not expedient implementation choices.
+4. **Performance is an outcome, not a language property.** Rewriting an API in Rust,
+   adding shared memory, or removing a runtime does not by itself prove improvement.
+   Agents MUST establish semantic equivalence and use an attributed, reproducible
+   benchmark before claiming or retaining a performance-motivated replacement. The
+   baseline remains the simpler correct path until a measured end-to-end gain justifies
+   added complexity.
+5. **Reject violations at the boundary.** A design or PR that violates these rules MUST
+   stop for correction; agents MUST NOT hide it behind a local workaround, flag, special
+   case or broad permission. If the shared abstraction itself is wrong, propose its
+   smallest root-cause fix in an approved spec. Human review may choose a different
+   architecture, but it MUST record the new invariant rather than grant an undocumented
+   exception.
+
 ## Repo map
 | Crate | Role |
 |---|---|
@@ -127,6 +162,40 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 - Anti-flake: agents MUST NOT sleep-sync; MUST await conditions; MUST bind port 0; MUST use temp dirs; colocated tests; doc *why*.
 - Agents MUST NOT land `todo!()`/`unimplemented!()`/stubs on main. PRs SHOULD be small, one concern.
 - Before coding, agents MUST: grep the codebase; read the spec section; read crate `AGENTS.md`; read `docs/agents/learnings.md`.
+
+## Linear coordination (mandatory)
+
+For every task associated with a KELD Linear issue, Linear is the shared execution
+record, not a final reporting form. Agents MUST follow this loop when the Linear
+connector is available:
+
+1. **Refresh before action.** Fetch the issue, description, comments, status and
+   relations before starting a work session; refresh again before a material design or
+   scope decision, before integration/verification, and before handoff. Reconcile new
+   Linear evidence with the checked-out code and spec rather than assuming the issue is
+   current.
+2. **Start visibly.** Move only the agent's own issue to `In Progress`, then post a
+   concise plan naming scope, expected paths/crates, non-goals, dependencies and the
+   first falsifiable acceptance check. Never change another agent's status, ownership,
+   priority or scope without explicit authority.
+3. **Report material progress.** Post a comment after a frozen contract decision, a
+   meaningful test/prototype pass or fail, a discovered blocker/contradiction, a scope
+   change, or at least each substantial milestone. The comment MUST state completed
+   work, evidence/files, current result, remaining work, blockers/risks and the next
+   acceptance check. Agents MUST NOT use Linear comments to turn unverified inference
+   into a fact.
+4. **Resolve conflicts early.** If a refreshed issue shows a duplicate, blocker,
+   supersession or another active owner of the same contract, stop the overlapping work
+   and record the exact conflict. A worktree prevents filesystem races; it does not
+   authorize competing architecture decisions.
+5. **Close honestly.** Before handoff, refresh the issue once more and post actual gate
+   output, review gates, platforms/conditions not exercised, commit/PR links and
+   follow-up issue IDs. Move an issue to `Done` only after every stated acceptance
+   criterion is met. Otherwise leave it `In Progress` or mark it `Blocked` with the
+   precise external dependency.
+
+When Linear is unavailable, agents MUST record that limitation in the handoff and keep
+the same evidence in the PR or task report; they MUST NOT invent a ticket update.
 
 First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 1. Agents MUST decompose every design to OS/process/memory/trust-boundary facts across host / Bun child / webview. If it does not change who owns a handle, who can crash whom, or who can mint a principal, it is not architecture.

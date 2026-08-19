@@ -366,8 +366,9 @@ the process of record. Condensed:
 2. **Spec gate** — bigger than a bug fix and no approved spec? Write one from
    [`docs/agents/spec-template.md`](../agents/spec-template.md) into
    `docs/specs/<kebab-name>.md` and stop for human approval. Implementation starts only
-   at `Status: approved`. (There is no `docs/specs/` directory yet — the first spec
-   creates it.) Bug fixes skip the spec but not the regression test.
+   at `Status: approved`. Existing specs in `docs/specs/` are examples of the required
+   shape, not implicit approval for a new implementation. Bug fixes skip the spec but
+   not the regression test.
 3. **Isolate** — one concern per branch; the repo's convention is a git worktree sibling
    (`../keld-<issue>`) on branch `agent/<issue>-<slug>`, and never two people building in
    one tree at once.

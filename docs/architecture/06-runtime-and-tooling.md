@@ -19,6 +19,88 @@
 - The renderer outlives app-process restarts (host owns windows) — a reliability
   property none of Electron/Electrobun/Deno has.
 
+### 1.1 Named role and lifecycle contract (destination, KEL-75)
+
+The runtime accepts only host-declared roles. A role declaration names a trusted bundled
+entry, one lifecycle owner, a restart policy, a logging policy and generated permission
+policy. Initial lifecycle owners are `primary` (one app entry), `app-bound` (a shared
+worker, PTY facade or agent owned by the host's app session), and `window-bound` (a
+worker tied to one host window). These are lifecycle categories, not package, Electron
+or VS Code identities. The host—not the primary role—creates and owns every child, so a
+primary-role restart does not give it authority over an independent app-bound role.
+
+For every spawn the host makes a fresh principal/link generation, endpoint and 32-byte
+possession secret before it starts Bun. The child gets the canonical
+`KELD_APP_LINK=<endpoint>#<64 hex chars>` and fixed-direction stdout/stderr log sinks;
+those sinks are not authority handles. It receives no other inherited descriptor or OS
+handle unless a later reviewed platform contract explicitly permits it. A successful
+authenticated link accept consumes that bootstrap generation. On handshake failure,
+role exit, protocol abuse, deadline, window close or host shutdown, the host revokes the
+generation's link, grants, virtual ports and optional mapping handles before reaping or
+restarting it. A numeric PID is diagnostics only; reaping and termination use the host's
+live process handle, never a PID recovered after exit.
+
+`keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
+generated capability subset and any separately reviewed role-specific addition. No
+environment identity, child payload, token, PID or facade option can choose a role or
+authority. v0 implements none of this registry: it only starts one bare Bun echo child
+from the CLI.
+
+The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
+window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
+
+```mermaid
+sequenceDiagram
+    accTitle: Destination host-owned role spawn, routing, and restart
+    accDescr {
+      The host creates a fresh role generation before starting Bun, authenticates its
+      only app link, and mediates each virtual-port route. A window close revokes only
+      that window's routes and roles. A crash revokes all old generation capabilities
+      before a fresh restart; a webview never receives a Bun endpoint or handle.
+    }
+
+    box rgb(219, 234, 254) Target host ownership and policy
+        participant H as Keld host
+    end
+    box rgb(226, 232, 240) Untrusted engine principal
+        participant W as Webview generation
+    end
+    box rgb(219, 234, 254) Target supervised process
+        participant R as Bun role generation
+    end
+
+    H->>H: Declare role, mint principal generation, endpoint and token
+    H->>R: Spawn with KELD_APP_LINK and log sinks only
+    R->>H: HELLO with possession token
+    H->>H: Bind accepted link to host-minted principal
+    H-->>R: Handshake success and bounded contract
+    W->>H: Send to authorized virtual port
+    H->>H: Check webview generation, port target and credit
+    H->>R: Route bounded EVENT over authenticated app link
+    R-->>H: Reply or event
+    H-->>W: Route result through native webview bridge
+    alt Owner window closes
+        H->>H: Revoke window generation and virtual-port routes
+        H->>R: Drain and stop window-bound role only
+    else Role exits or protocol fails
+        H->>H: Revoke link, grants, ports and mappings
+        H->>H: Reap live process handle and apply restart policy
+        H->>R: Spawn fresh generation with new endpoint and token
+    end
+```
+
+### 1.2 Electron facade boundary (destination)
+
+`@keld/electron` maps `utilityProcess.fork` to a host request for a declared role and
+maps `MessageChannelMain` / `MessagePortMain` to host-owned virtual ports. The facade
+does not obtain a raw child endpoint, mapping handle or authority to spawn a process.
+Ports are FIFO per generation, transfers are one-shot and receiver-bound, and close or
+generation revocation disconnects the peer without exposing another principal. Exact
+Electron-observable queue/start, transfer validation and close-event behavior is owned
+by pinned conformance entries—not assumed from this generic runtime contract. The
+first implementation slice is one primary role with fresh identity/restart proof; named
+roles and ports follow only after that slice passes.
+
 ## 2. keld CLI: verbs and guarantees
 
 | Verb | Contract |
