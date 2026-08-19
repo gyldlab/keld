@@ -93,7 +93,7 @@ const SOURCES: &[Source] = &[
         section: "Reference",
         title: "Electron compatibility scoreboard",
         path: "docs/engineering/compat-scoreboard.md",
-        description: "Current measurement status and the future public scoreboard contract.",
+        description: "API ✔/▲/✘ rows plus KEL-74 denominator honesty (no percentage without a committed corpus).",
     },
 ];
 

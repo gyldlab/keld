@@ -285,7 +285,8 @@ dependency (`Cargo.toml`, grep of `crates/`). `AGENTS.md` § Rust: hand-rolled
 
 Canonical registry: [`keld-error-codes.md`](./keld-error-codes.md). CI
 (`crates/keld-cli/tests/error_registry.rs`) requires a 1:1 match with codes emitted
-from `keld-ipc`, `keld-wv`, `keld-cli`, `keld-guard`, CLI templates, and `tools/`.
+from `keld-ipc`, `keld-wv`, `keld-cli`, `keld-guard`, `keld-runtime`, `keld-native`,
+`keld-compat`, CLI templates, and `tools/`.
 Architecture 07 §2 is the message shape; `keld-guard`'s `DenyReason` is the floor.
 
 Enums in tree that follow this (not an exhaustive forever-list): `IpcError`,

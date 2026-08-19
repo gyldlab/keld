@@ -9,7 +9,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -360,3 +360,57 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-native
 - message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
 - fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+
+## KELD-COMPAT-001
+
+- crate: keld-compat
+- message: Compatibility evidence or denominator JSON exceeded the size cap
+- fix: Split the ledger or shrink the document.
+
+## KELD-COMPAT-002
+
+- crate: keld-compat
+- message: Compatibility evidence bytes are not UTF-8
+- fix: Re-encode the document as UTF-8 without a BOM.
+
+## KELD-COMPAT-003
+
+- crate: keld-compat
+- message: Compatibility evidence JSON is invalid or has trailing bytes
+- fix: Supply a single UTF-8 JSON object with no trailing bytes.
+
+## KELD-COMPAT-004
+
+- crate: keld-compat
+- message: Compatibility evidence schema is not a known v1 id
+- fix: Use `keld.compat.evidence/v1` or `keld.compat.denominator/v1`.
+
+## KELD-COMPAT-005
+
+- crate: keld-compat
+- message: Compatibility evidence record failed closed-set validation
+- fix: Use the closed field set in docs/specs/kel74-compat-evidence-schema.md.
+
+## KELD-COMPAT-006
+
+- crate: keld-compat
+- message: Compatibility waiver is missing, extra, or expired
+- fix: Waive only with owner, reason, and a future YYYY-MM-DD expiry.
+
+## KELD-COMPAT-007
+
+- crate: keld-compat
+- message: Compatibility evidence URI is a lead, not an immutable location
+- fix: Use sha256:<64 lowercase hex> or an https URL with a public host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, or unique-local; a colon in an unbracketed authority must be a decimal u16 port) whose blob/tree/raw (or GitHub raw CDN) ref is itself a 40- or 64-character lowercase-hex git object id — not a later path segment on a live branch; turn citations, sandbox paths, and mutable branch URLs are non-normative leads only.
+
+## KELD-COMPAT-008
+
+- crate: keld-compat
+- message: Compatibility denominator is empty, duplicated, or unusable
+- fix: Commit a v1 denominator with unique cells before scoring.
+
+## KELD-COMPAT-009
+
+- crate: keld-compat
+- message: Two evidence records named the same denominator cell
+- fix: Keep one record per (operation_id, oracle_id).

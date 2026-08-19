@@ -46,8 +46,9 @@ docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms
   status, the tracking issue, and the workaround doc — never a bare "not implemented".
 - The error-code registry is `docs/engineering/keld-error-codes.md` (one heading per
   code — that heading **is** the docs stub). A `KELD-*` code emitted in `keld-ipc`,
-  `keld-wv`, `keld-cli`, or `keld-guard` without a registry heading fails CI
-  (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
+  `keld-wv`, `keld-cli`, `keld-guard`, `keld-runtime`, `keld-native`, or `keld-compat`
+  (plus `keld-cli` templates and workspace `tools/`) without a registry heading fails
+  CI (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
   Error messages are tested (exact-match on `fix` text where feasible).
 
 ## 3. Docs for agents

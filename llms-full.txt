@@ -1529,6 +1529,19 @@ does not prove compatibility. These contracts are not live in v0.
   (V8 flags, Chromium command-line switches, remote module).
 - Scoreboard: `keld.dev/compat` — per-API status (✔/▲/✘ + notes), per-corpus-app score,
   updated by CI. Honesty is the marketing.
+- Operation and workflow evidence (KEL-74) is a separate, versioned ledger:
+  each cell binds an artifact digest, platform/arch, Keld/Bun/engine revisions,
+  authority profile, and an immutable evidence URI (`sha256:<64 hex>` or an
+  `https://` URL with a public host whose path contains a full git object id) to
+  pass/fail/unknown/waived.
+  Public percentages require a committed denominator (`install`, `activation`,
+  `primary_workflow`, `full_feature`) and MUST NOT treat a partial measurement
+  as 100% compatibility. Product and showcase panels stay distinct; a named
+  stress corpus (including a future VS Code set) MUST NOT redefine product
+  tiers. Until a product corpus id is documented as committed, `score` omits
+  `unweighted_percent` for `panel: product` and reports `complete` false.
+  Parser: `keld_compat::evidence`. Rules:
+  [`docs/engineering/compat-scoreboard.md`](../engineering/compat-scoreboard.md).
 
 ## 5. Native modules policy
 
@@ -2012,8 +2025,9 @@ docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms
   status, the tracking issue, and the workaround doc — never a bare "not implemented".
 - The error-code registry is `docs/engineering/keld-error-codes.md` (one heading per
   code — that heading **is** the docs stub). A `KELD-*` code emitted in `keld-ipc`,
-  `keld-wv`, `keld-cli`, or `keld-guard` without a registry heading fails CI
-  (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
+  `keld-wv`, `keld-cli`, `keld-guard`, `keld-runtime`, `keld-native`, or `keld-compat`
+  (plus `keld-cli` templates and workspace `tools/`) without a registry heading fails
+  CI (`crates/keld-cli/tests/error_registry.rs`). Per-code website pages are deferred.
   Error messages are tested (exact-match on `fix` text where feasible).
 
 ## 3. Docs for agents
@@ -2434,7 +2448,8 @@ dependency (`Cargo.toml`, grep of `crates/`). `AGENTS.md` § Rust: hand-rolled
 
 Canonical registry: [`keld-error-codes.md`](./keld-error-codes.md). CI
 (`crates/keld-cli/tests/error_registry.rs`) requires a 1:1 match with codes emitted
-from `keld-ipc`, `keld-wv`, `keld-cli`, `keld-guard`, CLI templates, and `tools/`.
+from `keld-ipc`, `keld-wv`, `keld-cli`, `keld-guard`, `keld-runtime`, `keld-native`,
+`keld-compat`, CLI templates, and `tools/`.
 Architecture 07 §2 is the message shape; `keld-guard`'s `DenyReason` is the floor.
 
 Enums in tree that follow this (not an exhaustive forever-list): `IpcError`,
@@ -2857,7 +2872,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -3208,6 +3223,60 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-native
 - message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
 - fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+
+## KELD-COMPAT-001
+
+- crate: keld-compat
+- message: Compatibility evidence or denominator JSON exceeded the size cap
+- fix: Split the ledger or shrink the document.
+
+## KELD-COMPAT-002
+
+- crate: keld-compat
+- message: Compatibility evidence bytes are not UTF-8
+- fix: Re-encode the document as UTF-8 without a BOM.
+
+## KELD-COMPAT-003
+
+- crate: keld-compat
+- message: Compatibility evidence JSON is invalid or has trailing bytes
+- fix: Supply a single UTF-8 JSON object with no trailing bytes.
+
+## KELD-COMPAT-004
+
+- crate: keld-compat
+- message: Compatibility evidence schema is not a known v1 id
+- fix: Use `keld.compat.evidence/v1` or `keld.compat.denominator/v1`.
+
+## KELD-COMPAT-005
+
+- crate: keld-compat
+- message: Compatibility evidence record failed closed-set validation
+- fix: Use the closed field set in docs/specs/kel74-compat-evidence-schema.md.
+
+## KELD-COMPAT-006
+
+- crate: keld-compat
+- message: Compatibility waiver is missing, extra, or expired
+- fix: Waive only with owner, reason, and a future YYYY-MM-DD expiry.
+
+## KELD-COMPAT-007
+
+- crate: keld-compat
+- message: Compatibility evidence URI is a lead, not an immutable location
+- fix: Use sha256:<64 lowercase hex> or an https URL with a public host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, or unique-local; a colon in an unbracketed authority must be a decimal u16 port) whose blob/tree/raw (or GitHub raw CDN) ref is itself a 40- or 64-character lowercase-hex git object id — not a later path segment on a live branch; turn citations, sandbox paths, and mutable branch URLs are non-normative leads only.
+
+## KELD-COMPAT-008
+
+- crate: keld-compat
+- message: Compatibility denominator is empty, duplicated, or unusable
+- fix: Commit a v1 denominator with unique cells before scoring.
+
+## KELD-COMPAT-009
+
+- crate: keld-compat
+- message: Two evidence records named the same denominator cell
+- fix: Keep one record per (operation_id, oracle_id).
 
 ---
 
@@ -3758,7 +3827,64 @@ What the rewrite *did* measurably change:
 # Keld Electron compatibility scoreboard
 
 > **Placeholder:** Keld does not publish compatibility scores yet. Do not infer API
-> support from the planned tiers below.
+> support from the planned tiers below. There is **no committed product
+> denominator** in this repository, so no compatibility percentage may be
+> published — including `0%` or `100%`.
+
+## Denominator honesty (KEL-74)
+
+Machine evidence is the versioned JSON record parsed by
+`keld_compat::evidence` (`docs/specs/kel74-compat-evidence-schema.md`).
+That schema is framework-generic. VS Code and other named apps are later
+**showcase** corpus consumers; they do not redefine product tiers.
+
+Rules that keep a partial corpus from becoming a “100% compatible” claim:
+
+1. A percentage exists only against a committed denominator document
+   (`keld.compat.denominator/v1`) that names `panel`, `corpus_id`,
+   `corpus_sha256`, kind (`install` / `activation` / `primary_workflow` /
+   `full_feature`), and a non-empty unique cell list. `score` rejects an
+   empty cell list (`KELD-COMPAT-008`); `0/0` is not complete.
+2. `unweighted_percent` is omitted whenever any required cell is missing or
+   `unknown`, when contributing records disagree on artifact digest / authority
+   profile / engine, or when `panel` is `product` and `corpus_id` is not a
+   documented committed product corpus. T1: that committed-id list is empty,
+   so a `toy-uncommitted` product 1-cell pass cannot publish `Some(100)`.
+   Extra records outside the denominator cannot shrink N.
+3. `complete` is true only when `N > 0`, every committed cell is `pass`,
+   contributing records share digest, profile, and engine, and — for
+   `panel: product` — `corpus_id` is a documented committed product corpus.
+   T1: that list is empty, so a `toy-uncommitted` product 1-cell pass is not
+   `complete`. Duplicate cells in the denominator are `KELD-COMPAT-008`
+   (one Pass cannot become 2/2). Only `score` constructs `Scoreboard`;
+   callers cannot mint `complete: true` with `unweighted_percent: Some(100)`.
+4. The only allowed claim shape is
+   `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
+   Never “100% compatible” or “fully compatible.”
+5. Waivers need owner, reason, and expiry; expired waivers fail closed.
+   A waiver object cannot pair with `pass` (or any non-`waived` verdict);
+   `score` rejects that pairing even when the struct was constructed in
+   memory rather than parsed.
+6. Opaque turn citations, absolute sandbox/`/tmp` paths, userinfo/loopback/
+   unspecified/RFC1918/CGNAT/NAT64/6to4/link-local/unique-local https hosts
+   (including a trailing FQDN dot and IPv4-mapped / IPv4-compatible /
+   IPv4-translated embeddings), and live-mutable
+   https URLs (no git object id in the path, e.g. `/blob/main/` or
+   `https://example.com/foo`) are
+   non-normative leads.    Host checks are literal (no DNS); abbreviated IPv4
+   (`127.1`, `010.0.0.1`, `1.1`) and DNS-to-private names (`nip.io`) are T1
+   residuals. A trailing FQDN dot is the same host, including GitHub raw CDN
+   live-ref checks. An unbracketed `host:port` (or `[v6]:port`) must use a
+   decimal `u16` port; `github.com:abc` and `github.com:65536` are leads.
+   Allowed pins: `sha256:<64 hex>` or https with a
+   parsed public host and a 40- or 64-hex git object id path segment.
+   A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object
+   id must be the `blob`/`tree`/`raw` (or GitHub raw CDN) ref itself.
+   `score` re-checks the URI; `/tmp/` is not a substring ban on https URLs.
+
+Until a product denominator is committed, this page stays a narrative API
+board (✔/▲/✘). Installer size/RSS stays on
+[`budget-scoreboard.md`](./budget-scoreboard.md).
 
 Installer size, host bytes, and idle RSS are a different board:
 [`budget-scoreboard.md`](./budget-scoreboard.md).

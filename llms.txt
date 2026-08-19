@@ -36,7 +36,7 @@ This file is generated from tracked authoritative Markdown by `tools/llms_docs.r
 
 - [Size, RSS, and installer scoreboard](docs/engineering/budget-scoreboard.md): Living hello-to-apps measurements against architecture 01 §5 budgets and competitors.
 
-- [Electron compatibility scoreboard](docs/engineering/compat-scoreboard.md): Current measurement status and the future public scoreboard contract.
+- [Electron compatibility scoreboard](docs/engineering/compat-scoreboard.md): API ✔/▲/✘ rows plus KEL-74 denominator honesty (no percentage without a committed corpus).
 
 ## Corpus policy
 
