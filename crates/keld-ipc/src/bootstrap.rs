@@ -313,11 +313,17 @@ impl BootstrapCancellation {
             let _ = stream.shutdown_app_link();
         }
         match UnixStream::connect(&self.path) {
-            Ok(stream) => stream.shutdown_app_link(),
+            Ok(stream) => match stream.shutdown_app_link() {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+                Err(error) => Err(error),
+            },
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    io::ErrorKind::NotConnected
+                        | io::ErrorKind::NotFound
+                        | io::ErrorKind::ConnectionRefused
                 ) =>
             {
                 Ok(())
