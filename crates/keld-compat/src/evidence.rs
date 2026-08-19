@@ -164,11 +164,18 @@ impl CivilDate {
                 detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
             });
         };
-        if ys.len() != 4 || ms.len() != 2 || ds.len() != 2 {
+        if ys.len() != 4
+            || ms.len() != 2
+            || ds.len() != 2
+            || !ascii_digits(ys)
+            || !ascii_digits(ms)
+            || !ascii_digits(ds)
+        {
             return Err(EvidenceError::InvalidWaiver {
                 detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
             });
         }
+        // Digit check above rejects signs; `parse` cannot fail for 4/2/2 ASCII digits.
         let year: u16 = ys.parse().map_err(|_| EvidenceError::InvalidWaiver {
             detail: format!("expires_on `{text}` is not YYYY-MM-DD"),
         })?;
@@ -197,6 +204,10 @@ impl fmt::Display for CivilDate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
+}
+
+fn ascii_digits(chunk: &str) -> bool {
+    !chunk.is_empty() && chunk.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn days_in_month(year: u16, month: u8) -> u8 {
@@ -1093,6 +1104,15 @@ mod tests {
         );
         let err = parse_evidence(json.as_bytes()).expect_err("extra waiver");
         assert_eq!(err.code(), "KELD-COMPAT-006");
+    }
+
+    #[test]
+    fn civil_date_rejects_signed_chunks() {
+        // Rust integer FromStr accepts a leading '+'; YYYY-MM-DD must not.
+        let err = CivilDate::parse("+026-+1-+1").expect_err("signed chunks");
+        assert_eq!(err.code(), "KELD-COMPAT-006");
+        assert!(err.to_string().contains("YYYY-MM-DD"), "{err}");
+        assert!(CivilDate::parse("2026-08-19").is_ok());
     }
 
     #[test]

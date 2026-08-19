@@ -47,7 +47,7 @@ Non-goals:
    remain non-normative leads only.
 5. Given a denominator with zero cells or duplicate `(operation_id, oracle_id)`
    cells, when `parse_denominator` runs, then `KELD-COMPAT-008`.
-6. Given a committed N-cell denominator and only M&lt;N matching records, when
+6. Given a committed N-cell denominator and only `M < N` matching records, when
    `score` runs, then `unweighted_percent` is `None`, `complete` is false, and
    `claim` is `{passed}/{N} of …` with no "100% compatible" wording.
 7. Given every denominator cell `pass` and no extras colliding, when `score` runs,
