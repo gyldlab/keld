@@ -11,6 +11,8 @@
 use std::io::ErrorKind;
 use std::time::Duration;
 
+#[cfg(unix)]
+pub mod bootstrap;
 pub mod codec;
 pub mod echo;
 pub mod frame;
@@ -20,11 +22,13 @@ pub mod link;
 pub mod session;
 pub mod token;
 
+#[cfg(unix)]
+pub use bootstrap::BootstrapListener;
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 pub use link::AppLinkDeadlines;
-pub use session::{echo_call, echo_invoke, serve_echo_session};
+pub use session::{echo_call, echo_invoke, serve_echo_requests, serve_echo_session};
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).

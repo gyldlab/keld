@@ -58,7 +58,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
-  deadline; the v0 CLI `EchoServer` accepts one client only and is not that primitive.
+  deadline. Its Unix `BootstrapListener` primitive is now live and used by the CLI echo
+  server; host-bound role generation and principal dispatch remain destination work.
   Channel-table exchange remains later work.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one

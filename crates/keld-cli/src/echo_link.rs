@@ -1,43 +1,32 @@
 //! Loopback app-link helpers shared by `ipc-echo` and `ipc-client`.
 
-#[cfg(unix)]
-use std::fs;
 use std::io;
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-#[cfg(unix)]
-use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 
-use keld_ipc::{
-    EchoRequest, EchoResponse, SESSION_TOKEN_LEN, SessionToken, echo_call, format_app_link,
-    parse_app_link, serve_echo_session,
-};
+#[cfg(windows)]
+use keld_ipc::serve_echo_session;
+#[cfg(unix)]
+use keld_ipc::{BootstrapListener, serve_echo_requests};
+use keld_ipc::{EchoRequest, EchoResponse, echo_call, parse_app_link};
+#[cfg(windows)]
+use keld_ipc::{SessionToken, format_app_link};
 
 /// Endpoint for the echo server (Unix socket path or TCP port).
+#[cfg(windows)]
 #[derive(Debug, Clone)]
 pub enum EchoEndpoint {
-    /// Unix domain socket path.
-    #[cfg(unix)]
-    Unix(PathBuf),
     /// Loopback TCP port (Windows).
-    #[cfg(windows)]
     Tcp(u16),
 }
 
+#[cfg(windows)]
 impl EchoEndpoint {
     fn endpoint_value(&self) -> String {
-        #[cfg(unix)]
-        {
-            let EchoEndpoint::Unix(path) = self;
-            path.display().to_string()
-        }
-        #[cfg(windows)]
-        {
-            let EchoEndpoint::Tcp(port) = self;
-            port.to_string()
-        }
+        let Self::Tcp(port) = self;
+        port.to_string()
     }
 
     /// String form passed to child processes via `KELD_APP_LINK`.
@@ -50,44 +39,16 @@ impl EchoEndpoint {
 /// Handle to a background echo server thread.
 #[derive(Debug)]
 pub struct EchoServer {
+    /// The Unix listener is reusable bootstrap infrastructure owned by kipc.
+    #[cfg(unix)]
+    bootstrap: Arc<BootstrapListener>,
+    /// Windows retains the v0 loopback implementation until KEL-75 names a
+    /// pipe/DACL transport slice.
+    #[cfg(windows)]
     endpoint: EchoEndpoint,
+    #[cfg(windows)]
     token: SessionToken,
     handle: Option<thread::JoinHandle<Result<(), keld_ipc::IpcError>>>,
-    /// Owner-only directory that contains the Unix socket; removed on join/Drop.
-    #[cfg(unix)]
-    session_dir: PathBuf,
-}
-
-fn mint_session_token() -> io::Result<SessionToken> {
-    let mut bytes = [0u8; SESSION_TOKEN_LEN];
-    getrandom::fill(&mut bytes).map_err(|err| io::Error::other(err.to_string()))?;
-    Ok(SessionToken::from_bytes(bytes))
-}
-
-#[cfg(unix)]
-fn bind_unix_echo() -> io::Result<(PathBuf, PathBuf, std::os::unix::net::UnixListener)> {
-    // `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). Long TMPDIR
-    // plus `keld-echo-{pid}-{nanos}/echo.sock` overflows (ENAMETOOLONG).
-    let session_dir = std::env::temp_dir().join(format!(
-        "ke-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    fs::DirBuilder::new().mode(0o700).create(&session_dir)?;
-    if let Err(err) = fs::set_permissions(&session_dir, fs::Permissions::from_mode(0o700)) {
-        let _ = fs::remove_dir(&session_dir);
-        return Err(err);
-    }
-    let path = session_dir.join("e.sock");
-    match std::os::unix::net::UnixListener::bind(&path) {
-        Ok(listener) => Ok((session_dir, path, listener)),
-        Err(err) => {
-            let _ = fs::remove_dir_all(&session_dir);
-            Err(err)
-        }
-    }
 }
 
 impl EchoServer {
@@ -99,25 +60,28 @@ impl EchoServer {
     ///
     /// Returns [`io::Error`] if the loopback listener cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
-        let token = mint_session_token()?;
         #[cfg(unix)]
         {
-            let (session_dir, path, listener) = bind_unix_echo()?;
+            let bootstrap = Arc::new(BootstrapListener::bind()?);
             ready.send(()).ok();
-            let serve_token = token;
+            let acceptor = Arc::clone(&bootstrap);
             let handle = thread::spawn(move || {
-                let (mut stream, _) = listener.accept()?;
-                serve_echo_session(&mut stream, &serve_token)
+                let Some(mut stream) = acceptor.accept_authenticated()? else {
+                    return Err(keld_ipc::IpcError::Io(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "echo bootstrap listener stopped before authentication",
+                    )));
+                };
+                serve_echo_requests(&mut stream)
             });
             Ok(Self {
-                endpoint: EchoEndpoint::Unix(path),
-                token,
+                bootstrap,
                 handle: Some(handle),
-                session_dir,
             })
         }
         #[cfg(windows)]
         {
+            let token = SessionToken::random()?;
             // Destination: named pipe + current-user DACL (02-ipc §1). v0 is
             // loopback TCP; peer auth is the v2 HELLO token (KEL-60).
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -139,7 +103,14 @@ impl EchoServer {
     /// App-link value for clients (`<endpoint>#<64 hex chars>`).
     #[must_use]
     pub fn link(&self) -> String {
-        self.endpoint.link_env(&self.token)
+        #[cfg(unix)]
+        {
+            self.bootstrap.app_link()
+        }
+        #[cfg(windows)]
+        {
+            self.endpoint.link_env(&self.token)
+        }
     }
 
     /// Waits for the server thread and removes the Unix session directory.
@@ -162,7 +133,7 @@ impl EchoServer {
         if interrupt {
             self.interrupt_accept();
         }
-        let result = if let Some(handle) = self.handle.take() {
+        if let Some(handle) = self.handle.take() {
             match handle.join() {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(err)) => Err(io::Error::other(err.to_string())),
@@ -170,29 +141,18 @@ impl EchoServer {
             }
         } else {
             Ok(())
-        };
-        self.cleanup_socket();
-        result
+        }
     }
 
     fn interrupt_accept(&self) {
         #[cfg(unix)]
         {
-            let EchoEndpoint::Unix(path) = &self.endpoint;
-            let _ = std::os::unix::net::UnixStream::connect(path);
+            let _ = self.bootstrap.shutdown();
         }
         #[cfg(windows)]
         {
             let EchoEndpoint::Tcp(port) = &self.endpoint;
             let _ = std::net::TcpStream::connect(("127.0.0.1", *port));
-        }
-    }
-
-    #[cfg_attr(windows, allow(clippy::unused_self))] // Unix unlinks `self.session_dir`; Windows TCP has no socket file.
-    fn cleanup_socket(&self) {
-        #[cfg(unix)]
-        {
-            let _ = fs::remove_dir_all(&self.session_dir);
         }
     }
 }
@@ -235,6 +195,14 @@ pub fn echo_roundtrip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::path::PathBuf;
+
+    use keld_ipc::{SESSION_TOKEN_LEN, SessionToken, format_app_link};
 
     fn fixture_token() -> SessionToken {
         SessionToken::from_bytes([0x11; SESSION_TOKEN_LEN])
@@ -300,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_token_is_ipc_007() {
+    fn wrong_token_is_ipc_007_and_does_not_consume_echo_listener() {
         let (ready_tx, ready_rx) = mpsc::channel();
         let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
@@ -317,14 +285,6 @@ mod tests {
             },
         )
         .expect_err("foreign token must fail");
-        let server_msg = server
-            .join()
-            .expect_err("host must reject the foreign HELLO")
-            .to_string();
-        assert!(
-            server_msg.contains("KELD-IPC-007"),
-            "host must fail closed with 007, got {server_msg}"
-        );
         let msg = err.to_string();
         assert!(
             msg.contains("KELD-IPC-001") || msg.contains("KELD-IPC-007"),
@@ -338,6 +298,18 @@ mod tests {
             !msg.contains(&token.to_hex()),
             "must not leak the session token: {msg}"
         );
+
+        let response = echo_roundtrip(
+            &link,
+            &EchoRequest {
+                message: "legitimate".to_owned(),
+                count: 2,
+            },
+        )
+        .expect("foreign connector must not consume the legitimate echo session");
+        assert_eq!(response.message, "legitimate");
+        assert_eq!(response.count, 2);
+        server.join().expect("legitimate session finishes");
     }
 
     #[test]
@@ -437,7 +409,7 @@ mod tests {
 
         assert_eq!(
             socket.file_name().and_then(|name| name.to_str()),
-            Some("e.sock")
+            Some("app.sock")
         );
         assert_ne!(session_dir, std::env::temp_dir());
         assert!(

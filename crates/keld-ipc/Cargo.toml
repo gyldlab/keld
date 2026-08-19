@@ -12,6 +12,7 @@ authors.workspace = true
 keld-guard = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
+getrandom = { workspace = true }
 
 [lints]
 workspace = true

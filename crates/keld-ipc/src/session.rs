@@ -24,6 +24,19 @@ pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
 ) -> Result<(), IpcError> {
     stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
     handshake_server(stream, token)?;
+    serve_echo_requests(stream)
+}
+
+/// Serves echo requests on an already authenticated app link until EOF.
+///
+/// [`serve_echo_session`] owns the authentication step. Host-owned bootstrap
+/// listeners use this function after they have already verified `HELLO`, so
+/// the wire handshake remains single-sourced in [`handshake_server`].
+///
+/// # Errors
+///
+/// Returns [`IpcError`] on I/O, protocol, handler, or deadline failures.
+pub fn serve_echo_requests<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
     loop {
         let (header, payload) = match read_frame(stream) {
             Ok(frame) => frame,

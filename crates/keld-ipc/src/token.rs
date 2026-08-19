@@ -36,6 +36,22 @@ impl PartialEq for SessionToken {
 impl Eq for SessionToken {}
 
 impl SessionToken {
+    /// Mints a fresh cryptographically random session token.
+    ///
+    /// This runs only during cold role/bootstrap provisioning. The token is
+    /// redacted by [`core::fmt::Debug`] and must be passed only through the
+    /// canonical `KELD_APP_LINK` bootstrap contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] if the operating system's cryptographic
+    /// random source is unavailable.
+    pub fn random() -> std::io::Result<Self> {
+        let mut bytes = [0u8; SESSION_TOKEN_LEN];
+        getrandom::fill(&mut bytes).map_err(|error| std::io::Error::other(error.to_string()))?;
+        Ok(Self(bytes))
+    }
+
     /// Wraps an already-minted 32-byte secret.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; SESSION_TOKEN_LEN]) -> Self {
