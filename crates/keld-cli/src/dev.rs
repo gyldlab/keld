@@ -177,7 +177,7 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     io::stderr().write_all(output.stderr.as_bytes())?;
 
     match outcome {
-        SupervisorOutcome::CrashLoop(err) => {
+        SupervisorOutcome::CrashLoop(err) | SupervisorOutcome::Failed(err) => {
             let _ = server.shutdown();
             Err(DevError::Runtime(err.to_string()))
         }

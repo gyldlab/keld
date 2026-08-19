@@ -62,6 +62,13 @@ pub fn backoff_delay(attempt: u8) -> Duration {
 pub enum RuntimeError {
     /// The very first spawn attempt failed (e.g. `bun` is not on PATH).
     Spawn(std::io::Error),
+    /// A prepared child lease could not be provisioned or revoked safely.
+    Lifecycle {
+        /// Stable lifecycle phase, suitable for diagnostics but never a secret.
+        phase: &'static str,
+        /// Underlying host I/O failure.
+        source: std::io::Error,
+    },
     /// The child crashed `crashes` times inside `window_secs`; the breaker
     /// stopped restarting it.
     CrashLoop {
@@ -83,6 +90,11 @@ impl std::fmt::Display for RuntimeError {
                 f,
                 "KELD-RUNTIME-001: failed to spawn the supervised child — {e}. \
                  Check that `bun` is on PATH and re-run `keld doctor`."
+            ),
+            Self::Lifecycle { phase, source } => write!(
+                f,
+                "KELD-RUNTIME-003: prepared child lifecycle failed during {phase} — {source}. \
+                 Check the role bootstrap endpoint and retry `keld dev`."
             ),
             Self::CrashLoop {
                 crashes,
@@ -150,6 +162,11 @@ pub enum SupervisorEvent {
     },
     /// A respawn attempt after a crash failed at the OS `spawn()` call.
     RespawnFailed,
+    /// A prepared child lifecycle phase failed; inspect the terminal outcome.
+    Failed {
+        /// Spawn attempt that failed.
+        attempt: u32,
+    },
     /// The crash-loop breaker tripped; supervision has stopped permanently.
     CrashLoopTripped,
     /// The child exited zero (or `shutdown()` was called); supervision has
@@ -164,6 +181,68 @@ pub enum SupervisorOutcome {
     Stopped,
     /// The crash-loop breaker tripped.
     CrashLoop(RuntimeError),
+    /// Provisioning, spawning, or revoking a prepared child failed.
+    Failed(RuntimeError),
+}
+
+/// Why a prepared generation lost authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RevocationCause {
+    /// The child was observed to have exited naturally.
+    ChildExited,
+    /// The host requested shutdown before killing/reaping the child.
+    Shutdown,
+    /// The operating system refused to spawn the prepared command.
+    SpawnFailed,
+}
+
+/// Host-owned authority that is invalidated with one prepared child attempt.
+pub(crate) trait GenerationLease: Send + 'static {
+    /// Revokes every capability owned by this attempt before returning.
+    fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError>;
+}
+
+/// Fresh command and host-owned authority for one supervisor attempt.
+pub(crate) struct PreparedChild<L> {
+    /// Command to spawn with captured stdout/stderr.
+    pub(crate) command: Command,
+    /// Authority lease revoked on every terminal attempt path.
+    pub(crate) lease: L,
+}
+
+/// Creates a fresh prepared child before each OS spawn attempt.
+pub(crate) trait ChildPreparer: Send + 'static {
+    /// Lease kept beside the spawned `Child`.
+    type Lease: GenerationLease;
+
+    /// Prepares exactly one fresh child attempt.
+    fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError>;
+}
+
+struct NoLease;
+
+impl GenerationLease for NoLease {
+    fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
+struct CommandPreparer<F> {
+    factory: F,
+}
+
+impl<F> ChildPreparer for CommandPreparer<F>
+where
+    F: FnMut() -> Command + Send + 'static,
+{
+    type Lease = NoLease;
+
+    fn prepare(&mut self, _attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+        Ok(PreparedChild {
+            command: (self.factory)(),
+            lease: NoLease,
+        })
+    }
 }
 
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -189,6 +268,7 @@ pub struct Supervisor {
     output: Arc<Mutex<CapturedOutput>>,
     current_pid: Arc<Mutex<Option<u32>>>,
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
+    terminal_error: Arc<Mutex<Option<RuntimeError>>>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -210,30 +290,55 @@ impl Supervisor {
     where
         F: FnMut() -> Command + Send + 'static,
     {
-        let child = spawn_piped(&mut command_factory).map_err(RuntimeError::Spawn)?;
+        Self::start_prepared(
+            policy,
+            CommandPreparer {
+                factory: move || command_factory(),
+            },
+        )
+    }
+
+    /// Starts supervision from a fresh prepared-child factory.
+    ///
+    /// This is crate-private because role generation is a host runtime concern.
+    /// It gives KEL-75 one synchronous authority handoff point without
+    /// introducing a second restart/reap loop.
+    pub(crate) fn start_prepared<P>(
+        policy: RestartPolicy,
+        mut preparer: P,
+    ) -> Result<Self, RuntimeError>
+    where
+        P: ChildPreparer,
+    {
+        let initial_child = preparer.prepare(1)?;
+        let (child, lease) = spawn_prepared(initial_child)?;
 
         let (events_tx, events_rx) = mpsc::channel();
         let output = Arc::new(Mutex::new(CapturedOutput::default()));
         let current_pid = Arc::new(Mutex::new(None));
         let crash_loop_error = Arc::new(Mutex::new(None));
+        let terminal_error = Arc::new(Mutex::new(None));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let thread = {
             let output = Arc::clone(&output);
             let current_pid = Arc::clone(&current_pid);
             let crash_loop_error = Arc::clone(&crash_loop_error);
+            let terminal_error = Arc::clone(&terminal_error);
             let shutdown = Arc::clone(&shutdown);
             thread::Builder::new()
                 .name("keld-runtime-supervisor".to_owned())
                 .spawn(move || {
                     supervise(
                         policy,
-                        command_factory,
+                        preparer,
                         child,
+                        lease,
                         &events_tx,
                         &output,
                         &current_pid,
                         &crash_loop_error,
+                        &terminal_error,
                         &shutdown,
                     );
                 })
@@ -245,6 +350,7 @@ impl Supervisor {
             output,
             current_pid,
             crash_loop_error,
+            terminal_error,
             shutdown,
             thread: Some(thread),
         })
@@ -271,6 +377,13 @@ impl Supervisor {
                         window_secs: 0,
                         last_exit_code: None,
                         stderr_tail: String::new(),
+                    }));
+                }
+                Ok(SupervisorEvent::Failed { .. }) => {
+                    let err = lock_or_recover(&self.terminal_error).take();
+                    return SupervisorOutcome::Failed(err.unwrap_or(RuntimeError::Lifecycle {
+                        phase: "unknown",
+                        source: std::io::Error::other("prepared child failed without diagnostic"),
                     }));
                 }
                 Ok(SupervisorEvent::Stopped) | Err(_) => return SupervisorOutcome::Stopped,
@@ -309,27 +422,35 @@ impl Drop for Supervisor {
     }
 }
 
-fn spawn_piped<F>(command_factory: &mut F) -> std::io::Result<Child>
+fn spawn_prepared<L>(prepared: PreparedChild<L>) -> Result<(Child, L), RuntimeError>
 where
-    F: FnMut() -> Command,
+    L: GenerationLease,
 {
-    let mut cmd = command_factory();
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.spawn()
+    let PreparedChild { mut command, lease } = prepared;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    match command.spawn() {
+        Ok(child) => Ok((child, lease)),
+        Err(source) => {
+            lease.revoke(RevocationCause::SpawnFailed)?;
+            Err(RuntimeError::Spawn(source))
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // internal worker; grouping into a struct would not reduce coupling
-fn supervise<F>(
+fn supervise<P>(
     policy: RestartPolicy,
-    mut command_factory: F,
+    mut preparer: P,
     mut child: Child,
+    mut lease: P::Lease,
     events_tx: &Sender<SupervisorEvent>,
     output: &Arc<Mutex<CapturedOutput>>,
     current_pid: &Arc<Mutex<Option<u32>>>,
     crash_loop_error: &Arc<Mutex<Option<RuntimeError>>>,
+    terminal_error: &Arc<Mutex<Option<RuntimeError>>>,
     shutdown: &Arc<AtomicBool>,
 ) where
-    F: FnMut() -> Command,
+    P: ChildPreparer,
 {
     let mut crash_times: Vec<Instant> = Vec::new();
     let mut attempt: u32 = 1;
@@ -344,23 +465,37 @@ fn supervise<F>(
         let stdout_thread = stdout.map(|r| spawn_capture_thread(r, Arc::clone(output), true));
         let stderr_thread = stderr.map(|r| spawn_capture_thread(r, Arc::clone(output), false));
 
-        let killed_for_shutdown = wait_or_shutdown(&mut child, shutdown);
+        let shutdown_requested = wait_or_shutdown(&mut child, shutdown);
 
-        if let Some(t) = stdout_thread {
-            let _ = t.join();
-        }
-        if let Some(t) = stderr_thread {
-            let _ = t.join();
-        }
-        *lock_or_recover(current_pid) = None;
-
-        if killed_for_shutdown {
+        if shutdown_requested {
+            if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
+                *lock_or_recover(terminal_error) = Some(error);
+                let _ = child.kill();
+                let _ = child.wait();
+                join_capture_threads(stdout_thread, stderr_thread);
+                *lock_or_recover(current_pid) = None;
+                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                return;
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            join_capture_threads(stdout_thread, stderr_thread);
+            *lock_or_recover(current_pid) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
         }
 
+        join_capture_threads(stdout_thread, stderr_thread);
+        *lock_or_recover(current_pid) = None;
+
         let code = child_exit_code(&mut child);
         let _ = events_tx.send(SupervisorEvent::Exited { pid, code });
+
+        if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
+            *lock_or_recover(terminal_error) = Some(error);
+            let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+            return;
+        }
 
         let crashed = code != Some(0);
         if !crashed {
@@ -393,12 +528,36 @@ fn supervise<F>(
         }
 
         attempt += 1;
-        if let Ok(c) = spawn_piped(&mut command_factory) {
-            child = c;
-        } else {
-            let _ = events_tx.send(SupervisorEvent::RespawnFailed);
-            return;
+        match preparer.prepare(attempt) {
+            Ok(next_prepared_child) => match spawn_prepared(next_prepared_child) {
+                Ok((next_child, next_lease)) => {
+                    child = next_child;
+                    lease = next_lease;
+                }
+                Err(error) => {
+                    *lock_or_recover(terminal_error) = Some(error);
+                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                    return;
+                }
+            },
+            Err(error) => {
+                *lock_or_recover(terminal_error) = Some(error);
+                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                return;
+            }
         }
+    }
+}
+
+fn join_capture_threads(
+    stdout_thread: Option<JoinHandle<()>>,
+    stderr_thread: Option<JoinHandle<()>>,
+) {
+    if let Some(thread) = stdout_thread {
+        let _ = thread.join();
+    }
+    if let Some(thread) = stderr_thread {
+        let _ = thread.join();
     }
 }
 
@@ -410,8 +569,6 @@ fn wait_or_shutdown(child: &mut Child, shutdown: &Arc<AtomicBool>) -> bool {
         match child.try_wait() {
             Ok(None) => {
                 if shutdown.load(Ordering::SeqCst) {
-                    let _ = child.kill();
-                    let _ = child.wait();
                     return true;
                 }
                 thread::sleep(POLL_INTERVAL);
@@ -459,6 +616,45 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
 
+    #[derive(Clone)]
+    struct RecordingLease {
+        attempt: u32,
+        record: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl GenerationLease for RecordingLease {
+        fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError> {
+            let cause = match cause {
+                RevocationCause::ChildExited => "exited",
+                RevocationCause::Shutdown => "shutdown",
+                RevocationCause::SpawnFailed => "spawn-failed",
+            };
+            lock_or_recover(&self.record).push(format!("revoke:{}:{cause}", self.attempt));
+            Ok(())
+        }
+    }
+
+    struct RecordingPreparer {
+        record: Arc<Mutex<Vec<String>>>,
+        commands: Vec<Command>,
+    }
+
+    impl ChildPreparer for RecordingPreparer {
+        type Lease = RecordingLease;
+
+        fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+            lock_or_recover(&self.record).push(format!("prepare:{attempt}"));
+            let command = self.commands.remove(0);
+            Ok(PreparedChild {
+                command,
+                lease: RecordingLease {
+                    attempt,
+                    record: Arc::clone(&self.record),
+                },
+            })
+        }
+    }
+
     fn shell_command(script: &str) -> Command {
         #[cfg(unix)]
         {
@@ -472,6 +668,56 @@ mod tests {
             cmd.args(["/C", script]);
             cmd
         }
+    }
+
+    #[test]
+    fn prepared_lease_revokes_before_successor_preparation() {
+        let record = Arc::new(Mutex::new(Vec::new()));
+        let policy = RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        };
+        let supervisor = Supervisor::start_prepared(
+            policy,
+            RecordingPreparer {
+                record: Arc::clone(&record),
+                commands: vec![shell_command("exit 1"), shell_command("exit 0")],
+            },
+        )
+        .expect("first prepared child must spawn");
+        match supervisor.wait_for_outcome() {
+            SupervisorOutcome::Stopped => {}
+            SupervisorOutcome::CrashLoop(error) => panic!("second child exits cleanly: {error}"),
+            SupervisorOutcome::Failed(error) => panic!("prepared lifecycle must not fail: {error}"),
+        }
+        assert_eq!(
+            *lock_or_recover(&record),
+            vec![
+                "prepare:1".to_owned(),
+                "revoke:1:exited".to_owned(),
+                "prepare:2".to_owned(),
+                "revoke:2:exited".to_owned(),
+            ],
+            "successor preparation must not run before the prior lease is revoked"
+        );
+    }
+
+    #[test]
+    fn prepared_spawn_failure_revokes_unstarted_lease() {
+        let record = Arc::new(Mutex::new(Vec::new()));
+        let result = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            RecordingPreparer {
+                record: Arc::clone(&record),
+                commands: vec![Command::new("keld-runtime-definitely-not-a-real-binary")],
+            },
+        );
+        assert!(matches!(result, Err(RuntimeError::Spawn(_))), "{result:?}");
+        assert_eq!(
+            *lock_or_recover(&record),
+            vec!["prepare:1".to_owned(), "revoke:1:spawn-failed".to_owned()],
+            "failed OS spawn must revoke its prepared lease"
+        );
     }
 
     /// Joins shell steps with the separator the OS's `shell_command` shell
@@ -517,6 +763,7 @@ mod tests {
         match sup.wait_for_outcome() {
             SupervisorOutcome::Stopped => {}
             SupervisorOutcome::CrashLoop(e) => panic!("must not crash-loop on a clean exit: {e}"),
+            SupervisorOutcome::Failed(e) => panic!("prepared lifecycle must not fail: {e}"),
         }
     }
 
@@ -552,6 +799,7 @@ mod tests {
         match sup.wait_for_outcome() {
             SupervisorOutcome::Stopped => {}
             SupervisorOutcome::CrashLoop(e) => panic!("second attempt exits 0: {e}"),
+            SupervisorOutcome::Failed(e) => panic!("prepared lifecycle must not fail: {e}"),
         }
     }
 
@@ -653,6 +901,7 @@ mod tests {
         match sup.wait_for_outcome() {
             SupervisorOutcome::Stopped => {}
             SupervisorOutcome::CrashLoop(e) => panic!("third attempt exits 0: {e}"),
+            SupervisorOutcome::Failed(e) => panic!("prepared lifecycle must not fail: {e}"),
         }
         assert_eq!(std::process::id(), host_pid);
     }
