@@ -25,9 +25,13 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    documented committed product corpus. T1: that committed-id list is empty,
    so a `toy-uncommitted` product 1-cell pass cannot publish `Some(100)`.
    Extra records outside the denominator cannot shrink N.
-3. `complete` is true only when `N > 0`, every committed cell is `pass`, and
-   contributing records share digest, profile, and engine. Duplicate cells
-   in the denominator are `KELD-COMPAT-008` (one Pass cannot become 2/2).
+3. `complete` is true only when `N > 0`, every committed cell is `pass`,
+   contributing records share digest, profile, and engine, and — for
+   `panel: product` — `corpus_id` is a documented committed product corpus.
+   T1: that list is empty, so a `toy-uncommitted` product 1-cell pass is not
+   `complete`. Duplicate cells in the denominator are `KELD-COMPAT-008`
+   (one Pass cannot become 2/2). Only `score` constructs `Scoreboard`;
+   callers cannot mint `complete: true` with `unweighted_percent: Some(100)`.
 4. The only allowed claim shape is
    `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
    Never “100% compatible” or “fully compatible.”
@@ -36,8 +40,9 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    `score` rejects that pairing even when the struct was constructed in
    memory rather than parsed.
 6. Opaque turn citations, absolute sandbox/`/tmp` paths, userinfo/loopback/
-   unspecified https hosts, and live-mutable https URLs (no git object id in
-   the path, e.g. `/blob/main/` or `https://example.com/foo`) are
+   unspecified/RFC1918/link-local/unique-local https hosts, and live-mutable
+   https URLs (no git object id in the path, e.g. `/blob/main/` or
+   `https://example.com/foo`) are
    non-normative leads. Allowed pins: `sha256:<64 hex>` or https with a
    parsed public host and a 40- or 64-hex git object id path segment.
    A `/blob/main/<40-hex>` URL is still a live branch, not a pin; the object

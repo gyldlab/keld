@@ -9,5 +9,7 @@ Spec: `docs/architecture/04-electron-compat.md`.
 - Corpus score = release gate; any score drop = P1 regression.
 - Tests MUST follow repository `.agents/testing.md`.
 - `evidence` is framework-generic (KEL-74). Agents MUST NOT add VS Code
-  package names, Electron API tables, or a percentage that lacks a committed
-  denominator. Opaque turn citations and sandbox paths are leads, not evidence.
+  package names, Electron API tables, or a percentage/`complete` that lacks a
+  committed product corpus. Opaque turn citations and sandbox paths are leads,
+  not evidence. RFC1918, link-local, and unique-local hosts are not public
+  https evidence.

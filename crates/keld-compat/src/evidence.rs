@@ -120,9 +120,10 @@ impl fmt::Display for EvidenceError {
             Self::NonNormativeEvidence { detail } => write!(
                 f,
                 "KELD-COMPAT-007: evidence URI is not immutable ({detail}). \
-                 Use sha256:<64 lowercase hex> or an https URL whose path \
-                 contains a full git object id (40 or 64 lowercase hex); \
-                 turn citations, sandbox paths, and mutable branch URLs \
+                 Use sha256:<64 lowercase hex> or an https URL with a public \
+                 host (not loopback, RFC1918, link-local, or unique-local) \
+                 whose path contains a full git object id (40 or 64 lowercase \
+                 hex); turn citations, sandbox paths, and mutable branch URLs \
                  are non-normative leads only."
             ),
             Self::InvalidDenominator { detail } => write!(
@@ -498,34 +499,106 @@ impl Denominator {
 }
 
 /// Honest scoreboard row. Percentages never hide a missing denominator.
+///
+/// Fields are private: only [`score`] constructs a value for callers
+/// outside this module. A same-crate (or downstream) struct literal MUST NOT
+/// mint `complete: true` or `unweighted_percent: Some(100)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scoreboard {
+    panel: Panel,
+    corpus_id: String,
+    corpus_sha256: String,
+    kind: OperationKind,
+    denominator: usize,
+    passed: usize,
+    failed: usize,
+    unknown: usize,
+    waived: usize,
+    missing: usize,
+    unweighted_percent: Option<u8>,
+    complete: bool,
+    claim: String,
+}
+
+impl Scoreboard {
     /// Echo of the denominator panel.
-    pub panel: Panel,
+    #[must_use]
+    pub fn panel(&self) -> Panel {
+        self.panel
+    }
+
     /// Echo of the corpus id.
-    pub corpus_id: String,
+    #[must_use]
+    pub fn corpus_id(&self) -> &str {
+        &self.corpus_id
+    }
+
     /// Echo of the corpus digest.
-    pub corpus_sha256: String,
+    #[must_use]
+    pub fn corpus_sha256(&self) -> &str {
+        &self.corpus_sha256
+    }
+
     /// Echo of the denominator kind.
-    pub kind: OperationKind,
+    #[must_use]
+    pub fn kind(&self) -> OperationKind {
+        self.kind
+    }
+
     /// Committed cell count (N).
-    pub denominator: usize,
+    #[must_use]
+    pub fn denominator(&self) -> usize {
+        self.denominator
+    }
+
     /// Cells with [`Verdict::Pass`].
-    pub passed: usize,
+    #[must_use]
+    pub fn passed(&self) -> usize {
+        self.passed
+    }
+
     /// Cells with [`Verdict::Fail`].
-    pub failed: usize,
+    #[must_use]
+    pub fn failed(&self) -> usize {
+        self.failed
+    }
+
     /// Cells with [`Verdict::Unknown`].
-    pub unknown: usize,
+    #[must_use]
+    pub fn unknown(&self) -> usize {
+        self.unknown
+    }
+
     /// Cells with [`Verdict::Waived`].
-    pub waived: usize,
+    #[must_use]
+    pub fn waived(&self) -> usize {
+        self.waived
+    }
+
     /// Denominator cells with no record.
-    pub missing: usize,
+    #[must_use]
+    pub fn missing(&self) -> usize {
+        self.missing
+    }
+
     /// `None` when incomplete, mixed-identity, or product with no committed corpus.
-    pub unweighted_percent: Option<u8>,
-    /// True only when `N > 0`, every committed cell passed, and identities match.
-    pub complete: bool,
+    #[must_use]
+    pub fn unweighted_percent(&self) -> Option<u8> {
+        self.unweighted_percent
+    }
+
+    /// True only when `N > 0`, every committed cell passed, identities match,
+    /// and a product panel names a documented committed corpus (T1: never).
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.complete
+    }
+
     /// `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
-    pub claim: String,
+    #[must_use]
+    pub fn claim(&self) -> &str {
+        &self.claim
+    }
 }
 
 /// 32-bit Mach-O fat (`FAT_MAGIC`).
@@ -717,11 +790,9 @@ pub fn score(
 
     let identity_ok = contributing_identity_consistent(by_cell.values().copied());
     let n = denominator.cells.len();
-    let may_publish_percent = missing == 0
-        && unknown == 0
-        && n > 0
-        && identity_ok
-        && product_corpus_may_publish_percent(denominator.panel, &denominator.corpus_id);
+    let corpus_ok =
+        product_corpus_is_documented_committed(denominator.panel, &denominator.corpus_id);
+    let may_publish_percent = missing == 0 && unknown == 0 && n > 0 && identity_ok && corpus_ok;
     let unweighted_percent = if may_publish_percent {
         let pct = passed.saturating_mul(100) / n;
         u8::try_from(pct).ok()
@@ -734,7 +805,8 @@ pub fn score(
         && unknown == 0
         && failed == 0
         && waived == 0
-        && identity_ok;
+        && identity_ok
+        && corpus_ok;
     let claim = format!(
         "{passed}/{n} of {} corpus {}@{} ({})",
         denominator.panel.as_str(),
@@ -1165,17 +1237,24 @@ fn host_is_forbidden(host: &str) -> bool {
         return true;
     }
     if let Ok(v4) = h.parse::<Ipv4Addr>() {
-        return v4.is_loopback() || v4.is_unspecified();
+        return ipv4_is_non_public(v4);
     }
     if let Ok(v6) = h.parse::<Ipv6Addr>() {
-        if v6.is_loopback() || v6.is_unspecified() {
-            return true;
-        }
-        if let Some(v4) = v6.to_ipv4_mapped() {
-            return v4.is_loopback() || v4.is_unspecified();
-        }
+        return ipv6_is_non_public(v6);
     }
     false
+}
+
+fn ipv4_is_non_public(v4: Ipv4Addr) -> bool {
+    v4.is_loopback() || v4.is_unspecified() || v4.is_private() || v4.is_link_local()
+}
+
+fn ipv6_is_non_public(v6: Ipv6Addr) -> bool {
+    if v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local()
+    {
+        return true;
+    }
+    v6.to_ipv4_mapped().is_some_and(ipv4_is_non_public)
 }
 
 fn path_has_git_object_id(path: &str) -> bool {
@@ -1282,9 +1361,17 @@ fn contributing_identity_consistent<'a>(
     })
 }
 
-/// T1: no committed product denominator exists (`compat-scoreboard.md`).
-fn product_corpus_may_publish_percent(panel: Panel, _corpus_id: &str) -> bool {
-    !matches!(panel, Panel::Product)
+/// Documented committed product corpus ids. T1: none, so product panels
+/// never publish `unweighted_percent` or `complete`.
+const DOCUMENTED_COMMITTED_PRODUCT_CORPORA: &[&str] = &[];
+
+/// Showcase may publish. Product may publish only when `corpus_id` is on
+/// `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` (empty today).
+fn product_corpus_is_documented_committed(panel: Panel, corpus_id: &str) -> bool {
+    match panel {
+        Panel::Showcase => true,
+        Panel::Product => DOCUMENTED_COMMITTED_PRODUCT_CORPORA.contains(&corpus_id),
+    }
 }
 
 #[cfg(test)]
@@ -1646,12 +1733,52 @@ mod tests {
         assert_eq!(board.passed, 1);
         assert_eq!(board.denominator, 1);
         assert_eq!(board.unweighted_percent, None);
+        assert!(
+            !board.complete,
+            "uncommitted product 1/1 must not be complete; consumers key off complete"
+        );
         assert!(!board.claim.contains("100%"));
+        assert!(!board.claim.contains("100% compatible"));
+        assert!(!board.claim.contains("fully compatible"));
         assert!(
             board
                 .claim
                 .contains("1/1 of product corpus toy-uncommitted")
         );
+    }
+
+    #[test]
+    fn showcase_one_cell_pass_publishes_percent_and_complete() {
+        let mut denom = parse_denominator(valid_denominator_json().as_bytes()).expect("denom");
+        denom.panel = Panel::Showcase;
+        denom.cells.truncate(1);
+        let board = score(&denom, &[parse_ok()], AS_OF).expect("score");
+        assert_eq!(board.unweighted_percent, Some(100));
+        assert!(board.complete);
+        assert!(board.claim.contains("1/1 of showcase corpus"));
+        assert!(!board.claim.contains("100% compatible"));
+    }
+
+    #[test]
+    fn scoreboard_struct_fields_are_not_public() {
+        // Independent of score(): a `pub complete` / `pub unweighted_percent`
+        // field is the same minting hole the Denominator list had. rustc
+        // privacy is the seal; this test fails if those fields are re-exported.
+        let src = include_str!("evidence.rs");
+        let marker = "pub struct Scoreboard {";
+        let start = src.find(marker).expect("Scoreboard struct");
+        let after = &src[start + marker.len()..];
+        let end = after.find('}').expect("struct close");
+        let fields = &after[..end];
+        assert!(
+            !fields.contains("pub "),
+            "Scoreboard fields must stay private so callers cannot mint 100%/complete:\n{fields}"
+        );
+        assert!(
+            fields.contains("unweighted_percent: Option<u8>"),
+            "{fields}"
+        );
+        assert!(fields.contains("complete: bool"), "{fields}");
     }
 
     #[test]
@@ -1748,6 +1875,45 @@ mod tests {
     }
 
     #[test]
+    fn rejects_rfc1918_link_local_and_unique_local_https_hosts() {
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        for uri in [
+            format!("https://10.0.0.1/org/repo/commit/{sha}"),
+            format!("https://192.168.1.1/org/repo/commit/{sha}"),
+            format!("https://172.16.0.1/org/repo/commit/{sha}"),
+            format!("https://169.254.0.1/org/repo/commit/{sha}"),
+            format!("https://[fc00::1]/org/repo/commit/{sha}"),
+            format!("https://[fd12:3456:789a::1]/org/repo/commit/{sha}"),
+            format!("https://[fe80::1]/org/repo/commit/{sha}"),
+            format!("https://[::ffff:10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[::ffff:c0a8:101]/org/repo/commit/{sha}"),
+        ] {
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                &uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(&uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+            assert!(
+                err.to_string().contains("not a public https location"),
+                "{uri}: {err}"
+            );
+        }
+        let public_ipv4 = format!("https://1.1.1.1/org/repo/commit/{sha}");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &public_ipv4,
+        );
+        parse_evidence(json.as_bytes()).expect("public unicast IPv4 is a public https host");
+        let pinned = format!("https://github.com/gyldlab/keld/blob/{sha}/README.md");
+        let json = valid_evidence_json().replace(
+            "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+            &pinned,
+        );
+        parse_evidence(json.as_bytes()).expect("commit-pinned blob is still a pin");
+    }
+
+    #[test]
     fn accepts_sha256_evidence_uri() {
         let json = valid_evidence_json().replace(
             "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
@@ -1794,6 +1960,11 @@ mod tests {
             format!("https://0.0.0.0/org/repo/commit/{sha}"),
             "https://github.com/gyldlab/keld/blob/main/README.md".to_owned(),
             format!("https://github.com/gyldlab/keld/blob/main/{hexfile}"),
+            format!("https://10.0.0.1/org/repo/commit/{sha}"),
+            format!("https://192.168.1.1/org/repo/commit/{sha}"),
+            format!("https://172.16.0.1/org/repo/commit/{sha}"),
+            format!("https://169.254.0.1/org/repo/commit/{sha}"),
+            format!("https://[fc00::1]/org/repo/commit/{sha}"),
         ] {
             let mut record = parse_ok();
             record.evidence_uri = uri.clone();

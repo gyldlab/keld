@@ -57,7 +57,7 @@ Non-goals:
    artifact digest, authority profile, and engine, when `score` runs, then
    `complete` is true and `unweighted_percent` is `Some(100)` — the claim still
    names panel, corpus id, corpus digest, and kind. Product panel T1 never
-   publishes `unweighted_percent` (no committed product corpus id).
+   publishes `unweighted_percent` or `complete` (no committed product corpus id).
 8. Given an expired waiver relative to `as_of`, two records for the same cell,
    **or** a `Pass` (or any non-`waived` verdict) paired with a waiver object,
    when `score` runs, then a typed error (no silent last-write-wins, no constructed
@@ -75,13 +75,15 @@ Non-goals:
     lowercase hex) and whose `blob`/`tree`/`raw` ref (or GitHub raw CDN ref
     segment) is itself that object id. Host checks parse authority (not
     `starts_with` after `https://`) and reject userinfo, loopback, IPv4-mapped
-    loopback, and unspecified addresses.
+    loopback, unspecified addresses, RFC1918 private, IPv4 link-local, IPv6
+    unique-local (`fc00::/7`), IPv6 link-local, and IPv4-mapped copies of those.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
     SHA-256, authority profile, or engine, when `score` runs, then `complete`
     is false and `unweighted_percent` is `None`.
 12. Given `panel: product` and corpus id `toy-uncommitted` (or any id not on the
     committed-product list — T1: empty), when every cell passes, then
-    `unweighted_percent` is `None`.
+    `unweighted_percent` is `None`, `complete` is false, and `claim` does not
+    contain `100%`.
 
 ## 4. Design
 
@@ -91,8 +93,9 @@ Non-goals:
   - **Trust:** a record is untrusted input. Opaque model-session citations and
     sandbox paths are not evidence. An immutable location is `sha256:<64 hex>`
     or an `https://` URL whose authority parses as a public host (no userinfo,
-    loopback, IPv4-mapped loopback, or unspecified address) and whose path
-    contains a full git object id (40 or 64 lowercase hex). A live branch/tag
+    loopback, IPv4-mapped loopback, unspecified, RFC1918, link-local, or
+    unique-local address) and whose path contains a full git object id (40 or
+    64 lowercase hex). A live branch/tag
     path such as `/blob/main/` is a lead, not a pin, even when another path
     segment is 40- or 64-hex; commit-pinned `/blob/<object-id>/` is allowed.
     `/tmp/` is a path-prefix check on non-https URIs, not a substring search
@@ -131,7 +134,7 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name |
+| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified / RFC1918 / link-local / unique-local) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name |
 
 ### 4.2 Denominator (`keld.compat.denominator/v1`)
 
@@ -162,8 +165,11 @@ redefine product tiers. Scoring always echoes the denominator’s `panel`.
    a percentage, including 100.
 5. Otherwise `unweighted_percent = floor(100 * passed / N)`. Waived and failed
    cells stay in N and are not passes.
-6. `complete` is true only when `N > 0`, `passed == N`, and contributing
-   records share artifact digest, authority profile, and engine.
+6. `complete` is true only when `N > 0`, `passed == N`, contributing
+   records share artifact digest, authority profile, and engine, and the
+   panel is not `product` unless `corpus_id` is a documented committed
+   product corpus (T1: none, so product `complete` is always false).
+   `Scoreboard` fields are private; only `score` constructs the type.
 7. `claim` is always `{passed}/{N} of {panel} corpus {id}@{digest} ({kind})`.
    It MUST NOT contain the phrase `100% compatible` or `fully compatible`.
 8. A waiver object is valid only with `result: waived`. `score` rejects
