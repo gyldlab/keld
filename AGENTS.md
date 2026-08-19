@@ -109,7 +109,9 @@ NOT use workflow-level `paths` or `paths-ignore` filters for a required workflow
 GitHub leaves its required check pending when it skips the whole workflow. The
 repository-owned CI router instead classifies changed paths and applies conditions at
 the **job** boundary; a skipped job reports success while unrelated expensive work is
-not scheduled.
+not scheduled. Job-level `if` MUST use `needs` (and `github` / `vars` / `inputs` only).
+Agents MUST NOT reference `matrix` there: GitHub evaluates that condition before matrix
+expansion, and an invalid `matrix.os` guard fails the workflow file so rustc never starts.
 
 - Every lane MUST name the observable contract and inputs it owns. A dependency install,
   OS runtime, browser engine, device, cross-target toolchain, or benchmark MAY run only

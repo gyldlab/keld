@@ -54,7 +54,11 @@ authority, process ownership, permissions, wire bytes, or performance claims.
 - The existing GitHub workflow is reused. GitHub documents that workflow-level path
   filtering leaves required checks pending, while job-level skipped checks report
   success. Therefore the router is an always-created Ubuntu job and every expensive job
-  consumes its outputs through a job-level condition.
+  consumes its outputs through a job-level condition. `jobs.<job_id>.if` may use
+  `needs` (and `github` / `vars` / `inputs`); it MUST NOT use `matrix`, which GitHub
+  evaluates only after that condition. A `matrix.os` guard there invalidates the
+  workflow file so rustc never starts on any OS. OS-specific apt/package selection
+  belongs on steps, where `matrix` is available.
 - `tools/ci_changes.sh` is the single classifier. It reads NUL-delimited paths and
   derives both (a) the `keld-host` local dependency closure for the graphical smoke and
   (b) the changed package's Cargo reverse-dependent consumers for Rust checks, from

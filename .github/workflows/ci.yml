@@ -86,11 +86,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     needs: changes
-    if: >
-      needs.changes.outputs.rust == 'true' &&
-      (matrix.os != 'ubuntu-latest' ||
-       needs.changes.outputs.webkitgtk == 'true' ||
-       needs.changes.outputs.nongtk_packages != '')
+    # Job-level `if` cannot use `matrix` (GitHub evaluates it before expansion).
+    # Ubuntu apt and GTK package selection stay on steps, which do have `matrix`.
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:

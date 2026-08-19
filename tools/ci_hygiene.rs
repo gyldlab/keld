@@ -359,6 +359,43 @@ fn check_package_loop_shell(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_check_job_if_avoids_matrix(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "check") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `check` job. Restore the cross-platform package verification job."
+        ));
+    };
+    let mut if_indent = None;
+    let mut if_text = String::new();
+    for line in block.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content == "steps:" {
+            break;
+        }
+        if let Some(if_at) = if_indent {
+            if indent <= if_at {
+                break;
+            }
+            if_text.push_str(content);
+            if_text.push('\n');
+            continue;
+        }
+        if let Some(value) = content.strip_prefix("if:") {
+            if_indent = Some(indent);
+            if_text.push_str(value.trim());
+            if_text.push('\n');
+        }
+    }
+    if if_text.contains("matrix.") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` job-level `if` must not use `matrix`. GitHub evaluates `jobs.<job_id>.if` before matrix expansion (contexts: github, needs, vars, inputs only). Referencing `matrix.os` invalidates the workflow so rustc never starts on any OS. Keep OS filters on steps, which do have `matrix`."
+        ));
+    }
+    Ok(())
+}
+
 fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
     let Some(block) = workflow_job_block(text, "msrv") else {
         return Err(format!(
@@ -551,6 +588,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     }
     check_change_router_job(&text)?;
     check_package_loop_shell(&text)?;
+    check_check_job_if_avoids_matrix(&text)?;
     check_msrv_avoids_apt(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
@@ -899,6 +937,22 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("zero-test package policy must remain explicit");
         assert!(error.contains("--no-tests=pass"), "{error}");
+    }
+
+    #[test]
+    fn check_job_if_must_not_use_matrix() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "  check:\n    steps:",
+                "  check:\n    if: needs.changes.outputs.rust == 'true' && matrix.os != 'ubuntu-latest'\n    steps:",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("job-level matrix.os must fail hygiene");
+        assert!(error.contains("matrix"), "{error}");
+        assert!(error.contains("check"), "{error}");
     }
 
     #[test]

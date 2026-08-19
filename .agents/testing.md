@@ -84,8 +84,9 @@ evidence only when a plausible defect can make it fail.
   The repository-owned change router then schedules each non-security CI lane at the
   job boundary from the observable contract and its inputs. It MUST NOT use
   workflow-level path filters for required workflows: those leave a required check
-  pending.   A skipped job is permitted only when it reports success and a falsifiable
-  router test covers that input class. Unknown/shared/build-graph inputs run
+  pending. A skipped job is permitted only when it reports success and a falsifiable
+  router test covers that input class. Job-level `if` must not use `matrix` (GitHub
+  evaluates it before expansion). Unknown/shared/build-graph inputs run
   every potentially affected lane, including Ubuntu WebKitGTK apt. Workflow/router
   edits still create every job (GUI smoke owns live apt) but must not duplicate
   `apt-get update` onto Ubuntu clippy and MSRV. No filename heuristic may silently
