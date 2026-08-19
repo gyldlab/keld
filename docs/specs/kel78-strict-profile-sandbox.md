@@ -507,7 +507,7 @@ Renderer sandbox is a different column.
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [x] T0: Draft this spec + primary-source ledger. All OS proofs unverified.
-- [ ] T1: Admission API + profile-state reporting. Synthetic in-process
+- [x] T1: Admission API + profile-state reporting. Synthetic in-process
       *probe binary* (not a third-party addon). Default state `unverified`.
       Fail closed when `strict` is requested (`ProofMissing` /
       `ProofIncomplete` / `ProofLayerMismatch` / `ProofMismatch` including
