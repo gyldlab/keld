@@ -121,10 +121,10 @@ impl fmt::Display for EvidenceError {
                 f,
                 "KELD-COMPAT-007: evidence URI is not immutable ({detail}). \
                  Use sha256:<64 lowercase hex> or an https URL with a public \
-                 host (not loopback, RFC1918, link-local, or unique-local) \
-                 whose path contains a full git object id (40 or 64 lowercase \
-                 hex); turn citations, sandbox paths, and mutable branch URLs \
-                 are non-normative leads only."
+                 host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, \
+                 or unique-local) whose path contains a full git object id \
+                 (40 or 64 lowercase hex); turn citations, sandbox paths, and \
+                 mutable branch URLs are non-normative leads only."
             ),
             Self::InvalidDenominator { detail } => write!(
                 f,
@@ -1233,6 +1233,9 @@ fn authority_has_userinfo(rest: &str) -> bool {
 
 fn host_is_forbidden(host: &str) -> bool {
     // Browsers treat a trailing FQDN dot as the same host; `Ipv4Addr` does not.
+    // Literal authority only: no DNS, and no abbreviated-IPv4 parser
+    // (`127.1`, `010.0.0.1`, `1.1`) — those plus DNS-to-private (`nip.io`)
+    // are T1 residuals (easy to mis-classify a public address).
     let h = host.to_ascii_lowercase();
     let h = h.trim_end_matches('.');
     if h.is_empty() || h == "localhost" || h.ends_with(".localhost") {
@@ -1248,7 +1251,18 @@ fn host_is_forbidden(host: &str) -> bool {
 }
 
 fn ipv4_is_non_public(v4: Ipv4Addr) -> bool {
-    v4.is_loopback() || v4.is_unspecified() || v4.is_private() || v4.is_link_local()
+    v4.is_loopback()
+        || v4.is_unspecified()
+        || v4.is_private()
+        || v4.is_link_local()
+        || ipv4_is_cgnat(v4)
+}
+
+/// RFC 6598 shared address space `100.64.0.0/10` (CGNAT).
+/// `Ipv4Addr::is_shared` is still unstable (`feature(ip)`).
+fn ipv4_is_cgnat(v4: Ipv4Addr) -> bool {
+    let [a, b, ..] = v4.octets();
+    a == 100 && (64..128).contains(&b)
 }
 
 fn ipv6_is_non_public(v6: Ipv6Addr) -> bool {
@@ -1256,7 +1270,22 @@ fn ipv6_is_non_public(v6: Ipv6Addr) -> bool {
     {
         return true;
     }
+    if ipv6_is_nat64_well_known(v6) || ipv6_is_6to4(v6) {
+        return true;
+    }
     ipv6_embedded_ipv4(v6).is_some_and(ipv4_is_non_public)
+}
+
+/// RFC 6052 well-known NAT64 prefix `64:ff9b::/96`.
+fn ipv6_is_nat64_well_known(v6: Ipv6Addr) -> bool {
+    let o = v6.octets();
+    o[..12] == [0x00, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+/// RFC 3056 6to4 prefix `2002::/16`.
+fn ipv6_is_6to4(v6: Ipv6Addr) -> bool {
+    let o = v6.octets();
+    o[0] == 0x20 && o[1] == 0x02
 }
 
 /// IPv4-mapped (`::ffff:a.b.c.d`), deprecated IPv4-compatible (`::a.b.c.d`),
@@ -1949,6 +1978,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_nat64_6to4_and_cgnat_https_hosts() {
+        let sha = "67f39cdc898254f1e0c9cd50800f242ae7a4c493";
+        for uri in [
+            format!("https://[64:ff9b::10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[2002:a00:1::1]/org/repo/commit/{sha}"),
+            format!("https://100.64.0.1/org/repo/commit/{sha}"),
+            format!("https://100.64.0.1./org/repo/commit/{sha}"),
+            format!("https://[::ffff:100.64.0.1]/org/repo/commit/{sha}"),
+            format!("https://[64:ff9b::1.1.1.1]/org/repo/commit/{sha}"),
+            format!("https://[2002:808:808::1]/org/repo/commit/{sha}"),
+        ] {
+            let json = valid_evidence_json().replace(
+                "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
+                &uri,
+            );
+            let err = parse_evidence(json.as_bytes()).expect_err(&uri);
+            assert_eq!(err.code(), "KELD-COMPAT-007", "{uri}");
+            assert!(
+                err.to_string().contains("not a public https location"),
+                "{uri}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn accepts_sha256_evidence_uri() {
         let json = valid_evidence_json().replace(
             "https://github.com/gyldlab/keld/commit/67f39cdc898254f1e0c9cd50800f242ae7a4c493",
@@ -2004,6 +2058,9 @@ mod tests {
             format!("https://[::10.0.0.1]/org/repo/commit/{sha}"),
             format!("https://[::ffff:0:10.0.0.1]/org/repo/commit/{sha}"),
             format!("https://localhost./org/repo/commit/{sha}"),
+            format!("https://[64:ff9b::10.0.0.1]/org/repo/commit/{sha}"),
+            format!("https://[2002:a00:1::1]/org/repo/commit/{sha}"),
+            format!("https://100.64.0.1/org/repo/commit/{sha}"),
         ] {
             let mut record = parse_ok();
             record.evidence_uri = uri.clone();

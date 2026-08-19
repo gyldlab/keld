@@ -146,7 +146,7 @@ does not prove compatibility. These contracts are not live in v0.
 - Operation and workflow evidence (KEL-74) is a separate, versioned ledger:
   each cell binds an artifact digest, platform/arch, Keld/Bun/engine revisions,
   authority profile, and an immutable evidence URI (`sha256:<64 hex>` or an
-  `https://` URL whose path contains a full git object id) to
+  `https://` URL with a public host whose path contains a full git object id) to
   pass/fail/unknown/waived.
   Public percentages require a committed denominator (`install`, `activation`,
   `primary_workflow`, `full_feature`) and MUST NOT treat a partial measurement

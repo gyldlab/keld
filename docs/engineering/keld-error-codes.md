@@ -401,7 +401,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-compat
 - message: Compatibility evidence URI is a lead, not an immutable location
-- fix: Use sha256:<64 lowercase hex> or an https URL with a public host (not loopback, RFC1918, link-local, or unique-local) whose path contains a full git object id (40 or 64 lowercase hex); turn citations, sandbox paths, and mutable branch URLs are non-normative leads only.
+- fix: Use sha256:<64 lowercase hex> or an https URL with a public host (not loopback, RFC1918, CGNAT, NAT64/6to4, link-local, or unique-local) whose path contains a full git object id (40 or 64 lowercase hex); turn citations, sandbox paths, and mutable branch URLs are non-normative leads only.
 
 ## KELD-COMPAT-008
 

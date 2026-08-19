@@ -76,10 +76,13 @@ Non-goals:
     segment) is itself that object id. Host checks parse authority (not
     `starts_with` after `https://`) and reject userinfo, loopback, IPv4-mapped
     loopback, unspecified addresses, RFC1918 private, IPv4 link-local, IPv6
-    unique-local (`fc00::/7`), IPv6 link-local, and IPv4-mapped,
-    IPv4-compatible (`::a.b.c.d`), or IPv4-translated (`::ffff:0:a.b.c.d`)
-    copies of those. A trailing FQDN dot (`10.0.0.1.`, `localhost.`) is the
-    same host.
+    unique-local (`fc00::/7`), IPv6 link-local, CGNAT (`100.64.0.0/10`),
+    NAT64 well-known prefix (`64:ff9b::/96`), 6to4 (`2002::/16`), and
+    IPv4-mapped, IPv4-compatible (`::a.b.c.d`), or IPv4-translated
+    (`::ffff:0:a.b.c.d`) copies of those. A trailing FQDN dot (`10.0.0.1.`,
+    `localhost.`) is the same host. Host checks are literal (no DNS).
+    Abbreviated IPv4 (`127.1`, `010.0.0.1`, `1.1`) and DNS-to-private names
+    (`10.0.0.1.nip.io`) are T1 residuals.
 11. Given two pass records that fill a 2-cell denom but disagree on artifact
     SHA-256, authority profile, or engine, when `score` runs, then `complete`
     is false and `unweighted_percent` is `None`.
@@ -97,13 +100,16 @@ Non-goals:
     sandbox paths are not evidence. An immutable location is `sha256:<64 hex>`
     or an `https://` URL whose authority parses as a public host (no userinfo,
     loopback, IPv4-mapped / IPv4-compatible / IPv4-translated loopback,
-    unspecified, RFC1918, link-local, unique-local, or the FQDN-dot form of
-    those) and whose path contains a full git object id (40 or
+    unspecified, RFC1918, CGNAT (`100.64.0.0/10`), NAT64 well-known prefix
+    (`64:ff9b::/96`), 6to4 (`2002::/16`), link-local, unique-local, or the
+    FQDN-dot form of those) and whose path contains a full git object id (40 or
     64 lowercase hex). A live branch/tag
     path such as `/blob/main/` is a lead, not a pin, even when another path
     segment is 40- or 64-hex; commit-pinned `/blob/<object-id>/` is allowed.
     `/tmp/` is a path-prefix check on non-https URIs, not a substring search
-    on https URLs.
+    on https URLs. Host checks are literal (no DNS). T1 residuals:
+    abbreviated IPv4 (`127.1`, `010.0.0.1`, `1.1`) is not parsed; DNS-to-private
+    names (`10.0.0.1.nip.io`) are not resolved.
   - **Lifecycle:** schema version is a closed string. Unknown versions fail closed.
   - **I/O:** no filesystem reads in this slice. Magic classification is prefix-only.
   - **Failure:** every reject is a `KELD-COMPAT-*` code plus a fix sentence.
@@ -138,7 +144,7 @@ Closed fields only (`deny_unknown_fields`):
 | `operation.oracle.id` / `revision` | non-empty; revision ≠ `latest` |
 | `result` | `pass` \| `fail` \| `unknown` \| `waived` |
 | `waiver` | required iff `waived`; `{owner, reason, expires_on: YYYY-MM-DD}` |
-| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified / RFC1918 / link-local / unique-local; trailing FQDN dots and IPv4-mapped/compatible/translated embeddings count as that address) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name |
+| `evidence_uri` | `sha256:<64 hex>`, or `https://` with a parsed public host (no userinfo / loopback / unspecified / RFC1918 / CGNAT / NAT64 `64:ff9b::/96` / 6to4 `2002::/16` / link-local / unique-local; trailing FQDN dots and IPv4-mapped/compatible/translated embeddings count as that address) and a 40- or 64-hex git object id path segment; `blob`/`tree`/`raw` (and GitHub raw CDN) refs MUST be that object id, not a branch name. Host check is literal (no DNS); abbreviated IPv4 and DNS-to-private are T1 residuals |
 
 ### 4.2 Denominator (`keld.compat.denominator/v1`)
 
