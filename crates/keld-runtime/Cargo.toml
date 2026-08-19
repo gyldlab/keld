@@ -16,7 +16,7 @@ keld-ipc = { workspace = true }
 # - keld-compat: reuse `keld_compat::evidence::parse_evidence` (KEL-74). Do not
 #   add a parallel evidence parser in this crate.
 # - sha2: corpus digest + observation-report `evidence_uri` (see workspace pin).
-# - tempfile: isolated corpus copy for the digest-mutation test.
+# - tempfile: per-run evidence dump + isolated corpus copy for digest mutation.
 [dev-dependencies]
 serde_json = { workspace = true }
 keld-compat = { workspace = true }

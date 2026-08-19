@@ -277,11 +277,11 @@ T2 maps that report onto the frozen schema and validates it with
 
 | Acceptance | Test | Oracle |
 |---|---|---|
-| 3.1 | `all_cases_produce_one_observation_per_arm` | exact count; missing-binary panic message |
+| 3.1 | `every_case_produces_one_observation_per_arm` | exact count; missing-binary panic message |
 | 3.2–3.5 | `specified_contracts_hold_on_both_arms` | exact event tuples vs cited Node sentences |
-| 3.6 | `kill_after_exit_matches_baseline_and_records_bun_fail` | `kill()`/`killed`/`ESRCH` triple; record `result` |
-| 3.7 | `abrupt_exit_flush_is_recorded_unknown` | both records `unknown`; drained variant equal on both arms |
-| 3.8 | `kill_after_exit_matches_baseline_and_records_bun_fail` (same test) | pinned defect expectation + remediation message |
+| 3.6 | `node_kill_after_exit_satisfies_the_oracle` + `bun_kill_after_exit_is_the_pinned_defect` | `kill()`/`killed`/`ESRCH` triple; record `result` |
+| 3.7 | `abrupt_exit_flush_is_unknown_and_the_drained_path_is_lossless` | both records `unknown`; drained variant equal on both arms |
+| 3.8 | `node_kill_after_exit_satisfies_the_oracle` + `bun_kill_after_exit_is_the_pinned_defect` (same tests) | pinned defect expectation + remediation message |
 | 3.9 | `differential_report_pins_revision_platform_and_oracle_for_every_cell` | non-empty revision / platform / arch / oracle per cell |
 | 3.10 | `emitted_records_parse_via_keld_compat` | the real `parse_evidence`, not a shape assertion; `runtime_semantics` kind is `KELD-COMPAT-005` |
 | 3.11 | `corpus_digest_changes_when_a_fixture_changes` | digest over a temp corpus copy with one byte flipped |
@@ -289,7 +289,8 @@ T2 maps that report onto the frozen schema and validates it with
 
 Anti-flake: no sleeps — case 2 kills only after the child's `READY` line is observed, and
 every case is driven by awaiting `'close'`. No network, no ports. Records are written to a
-per-run temporary directory under `target/`, never a fixed path. Case 6 asserts only the
+per-run `tempfile::tempdir()` (OS temp; dropped when the test ends), never a fixed
+`target/` or crate-relative path. Case 6 asserts only the
 byte counts that were shown deterministic across repeated runs on the measured platform, and
 its verdict is `unknown` regardless.
 

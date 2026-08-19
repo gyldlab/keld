@@ -834,9 +834,9 @@ fn emitted_records_parse_via_keld_compat() {
         "evidence_uri must be sha256: + 64 hex, got {evidence_uri}"
     );
 
-    let out_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/kel77-child-process-evidence");
-    fs::create_dir_all(&out_dir).expect("target/kel77-child-process-evidence");
+    let tmp = tempfile::tempdir().expect("per-run evidence dump");
+    let out_dir = tmp.path();
+    println!("KEL-77 evidence dump: {}", out_dir.display());
 
     let bun = bun_revision_raw();
     let keld = keld_revision();
