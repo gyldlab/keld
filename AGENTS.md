@@ -202,6 +202,13 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 - Agents MUST NOT land `todo!()`/`unimplemented!()`/stubs on main. PRs SHOULD be small, one concern.
 - Before coding, agents MUST: grep the codebase; read the spec section; read crate `AGENTS.md`; read `docs/agents/learnings.md`.
 
+Git worktrees:
+- Extra `git worktree`s (not the primary clone) that are unused MUST be removed: merged PR branch, no open PR, clean working tree.
+- In-use MUST stay: primary checkout, worktrees for **open** PRs, dirty trees with real uncommitted work.
+- When an agent will **add** a worktree, or at the start of a session that uses worktrees, it MUST run `git worktree list`, map branches to `gh pr list` (open vs merged), and `git worktree remove` unused + `git worktree prune` **before** creating a new one.
+- MUST NOT `--force` remove a dirty tree with real work; MUST NOT delete `main`; MUST NOT force-push; MUST NOT remove sibling repos (`keld-agent-prompts`, `docs/research` nested checkout).
+- `git worktree remove` is the owned mechanism; agents MUST NOT `rm -rf` a linked checkout unless `git worktree remove` already succeeded.
+
 ## Linear coordination (mandatory)
 
 For every task associated with a KELD Linear issue, Linear is the shared execution
