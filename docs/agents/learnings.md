@@ -115,3 +115,4 @@ small — it is loaded by every agent session.
 - 2026-08-20 [process] Deleting only the PR template's top HTML comment still leaves per-heading hints in `gh pr view`; strip every `<!-- -->` before submit. (evidence: KEL-84, `.github/PULL_REQUEST_TEMPLATE.md`)
 - 2026-08-21 [git] unused extra worktrees MUST be removed before creating another; open-PR and dirty trees stay. (evidence: disk; user 2026-08-21)
 - 2026-08-21 [runtime] Bun 1.4 fixed `subprocess.kill()` after `'exit'`; floating `oven-sh/setup-bun` `latest` would fail the former KEL-77 pinned-defect test — pin CI to exact `1.4.0`. (evidence: oven-sh/bun `fc1b448`, KEL-77, `.github/workflows/ci.yml`)
+- 2026-08-21 [process] Local analysis clones under gitignored `competitors/` (bun, wry, tao) are invisible to agents unless listed in `competitors.lock.toml`; `just competitors-sync` only fetches lock entries. (evidence: competitors.lock.toml, tools/competitors_sync.rs, KEL-68)
