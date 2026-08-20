@@ -74,9 +74,11 @@ Three principal classes, with host-minted instances inside each class:
    but **zero ambient OS authority** in the strict profile — every privileged operation
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
-   CLI-owned supervised primary-child echo slice with restart/backoff/output capture;
-   it does not bind an accepted link to a principal, mint a fresh role generation on
-   restart, preserve a live renderer through restart, or implement named roles.
+   CLI-owned supervised primary-child echo slice with restart/backoff/output capture,
+   plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
+   accepted link to a principal and mints a fresh role generation on restart. It
+   does not yet preserve a live renderer through restart, implement window-bound
+   roles, or attach per-role grants.
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 
@@ -168,11 +170,12 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
   `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
   generation—not a PID, token or socket name—and old authority is revoked before a
   successor is provisioned. Current implementation has KEL-70's generic one-child
-  supervision, the fixed CLI echo link, and KEL-75 T1b's Unix
-  `keld_runtime::primary::PrimaryRoleSupervisor` for one primary role with fresh
-  restart identity and stale-token rejection. Additional role categories, virtual
-  ports, role grants, strict sandbox admission, and Windows named-pipe/DACL bootstrap
-  remain later KEL-75/KEL-78 slices.
+  supervision, the fixed CLI echo link, KEL-75 T1b's Unix authenticated role
+  coordinator (`keld_runtime::primary`), and KEL-75 T2's Unix
+  `keld_runtime::registry::RoleRegistry` for one `primary` plus one independent
+  `app-bound` role. Window-bound roles, virtual ports, role grants, strict
+  sandbox admission, and Windows named-pipe/DACL bootstrap remain later
+  KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

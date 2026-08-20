@@ -237,7 +237,7 @@ never silently weaken a strict profile.
   identity before every spawn, binds only a successful `HELLO`, revokes before successor
   provisioning, reports redacted bootstrap rejection, and proves the black-box restart
   flow. No Windows named pipe/DACL, ports, extra roles, sandbox or shared memory.
-- [ ] T2: Add one `app-bound` role and host-owned lifecycle registry; prove independent
+- [x] T2: Add one `app-bound` role and host-owned lifecycle registry; prove independent
   crash/restart isolation and stale-generation rejection.
 - [ ] T3: Add a bounded host-owned virtual-port pair between two authenticated roles;
   prove transfer, close and cross-principal negative cases before Electron facade code.
