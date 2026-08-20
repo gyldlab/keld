@@ -263,7 +263,7 @@ sequenceDiagram
     }
     autonumber
     participant CLI as keld dev<br/>(keld-cli)
-    participant Srv as EchoServer thread<br/>(keld-cli/echo_link.rs)
+    participant Srv as EchoServer thread<br/>(keld-core/echo_link.rs)
     participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30)
     participant Win as WKWebView / WebView2 window
 
@@ -433,7 +433,7 @@ From [`01` §4](../architecture/01-overview.md). Four kinds of execution context
 | Context | Rule | Today |
 |---|---|---|
 | **Host main thread** | Is the platform UI thread (AppKit and GTK require it; Win32 tolerates it). *All* webview and window mutations happen here, delivered via a lock-free MPSC command queue into the event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add` | The macOS event loop exists (tao, in `keld-wv`), the command queue does **not**. Specified, not implemented |
-| **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | One blocking `std::thread` per echo session (`keld-cli/src/echo_link.rs:68`). No reader/writer split, no state machine. Partial |
+| **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | One blocking `std::thread` per echo session (`keld-core/src/echo_link.rs:68`). No reader/writer split, no state machine. Partial |
 | **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | Spawned by the CLI with two env vars, no supervision, no restart. Partial |
 | **Webview content processes** | Whatever the engine does — WKWebView WebContent, WebView2 helpers, WebKitGTK web process, CEF subprocesses. "We never fight the engine's model" | Inherited from WKWebView via wry on macOS. Live by delegation |
 
@@ -638,7 +638,7 @@ The summary table. "Live" means it works and a test proves it.
 | kipc frame format (16 B header, 11 kinds, flags, corr ids) | **Live** | `keld-ipc/src/frame.rs`; roundtrip test over all kinds, bad-magic and bad-kind rejection |
 | postcard codec for structured payloads | **Live** | `keld-ipc/src/codec.rs`; echo roundtrip test |
 | app-link transport (UDS on unix) | **Live** | `keld-ipc/tests/echo_link.rs`; real socket, real bytes |
-| Windows transport | **Partial / diverges** | Loopback **TCP** plus v2 HELLO token (KEL-60); named-pipe DACL is the destination (`keld-cli/src/echo_link.rs`) |
+| Windows transport | **Partial / diverges** | Loopback **TCP** plus v2 HELLO token (KEL-60); named-pipe DACL is the destination (`keld-core/src/echo_link.rs`) |
 | HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |

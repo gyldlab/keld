@@ -62,8 +62,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
-  deadline. Its Unix `BootstrapListener` primitive is now live and used by the CLI echo
-  server and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  deadline.   Its Unix `BootstrapListener` primitive is now live and used by the host-owned
+  echo server (`keld-core`) and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
   observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
   dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain

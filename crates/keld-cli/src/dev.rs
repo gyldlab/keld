@@ -164,8 +164,9 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     )?;
     // Observable wire contract: HELLO + CALL/REPLY printed by the child.
     // Stock template also prints `{name}: main process ready`; crash-recovery
-    // fixtures may only print `ipc-echo ok:`.
+    // fixtures may only print `ipc-echo ok:`, so the second wait stays optional.
     session.wait_until_output_contains("ipc-echo ok:", Duration::from_secs(30))?;
+    let _ = session.wait_until_output_contains("main process ready", Duration::from_secs(5));
     let stdout = session.output().stdout;
     let stderr = session.output().stderr;
     io::stdout().write_all(stdout.as_bytes())?;

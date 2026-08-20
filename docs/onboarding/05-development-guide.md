@@ -479,7 +479,7 @@ requires the link that `keld dev` injects; start it through the CLI.
 **A stale `keld-echo-*.sock` in `$TMPDIR`.**
 Not a problem: `EchoServer` removes the file on `join()` and on `Drop`, and the server
 unlinks any existing file before binding
-([`crates/keld-cli/src/echo_link.rs`](../../crates/keld-cli/src/echo_link.rs)). No manual
+([`crates/keld-core/src/echo_link.rs`](../../crates/keld-core/src/echo_link.rs)). No manual
 cleanup needed.
 
 **Clippy fails on code you did not touch.**

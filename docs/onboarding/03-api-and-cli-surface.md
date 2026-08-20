@@ -52,7 +52,7 @@ from `std::env::args()`.
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
 | `keld hello` | `keld_core::run_hello_window` | opens the WKWebView hello window (macOS) |
 | `keld ipc-echo` | `main.rs::run_ipc_echo_demo` | in-process kipc round-trip demo |
-| `keld ipc-client echo --link <path>` | [`echo_link.rs`](../../crates/keld-cli/src/echo_link.rs) | one-shot echo against an existing app-link; the hello template speaks kipc via `AppLinkSession` instead |
+| `keld ipc-client echo --link <path>` | [`echo_link.rs`](../../crates/keld-core/src/echo_link.rs) | one-shot echo against an existing app-link; the hello template speaks kipc via `AppLinkSession` instead |
 | `keld build` / `migrate` / `gen` / `ext` | [`verb.rs`](../../crates/keld-cli/src/verb.rs) | **`KELD-CLI-045`**, usage, exit **2** — reserved, not live |
 | anything else | [`verb.rs`](../../crates/keld-cli/src/verb.rs) | **`KELD-CLI-046`**, usage, exit **2** |
 
@@ -153,7 +153,7 @@ The one verb that ties everything together. Sequence, from
    ready (an `mpsc` channel, not a sleep). On Unix that endpoint is an owner-only
    session dir under the OS temp dir (`ke-<pid>-<nanos>/e.sock`); on Windows it is an
    ephemeral `127.0.0.1` TCP port
-   ([`echo_link.rs::EchoServer::start`](../../crates/keld-cli/src/echo_link.rs)).
+   ([`echo_link.rs::EchoServer::start`](../../crates/keld-core/src/echo_link.rs)).
    The server accepts exactly **one** connection.
 4. **Spawn Bun**: `bun run <root>/src/main.ts`, cwd set to the project root, stdout and
    stderr inherited, with one environment variable set:

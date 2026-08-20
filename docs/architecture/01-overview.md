@@ -170,12 +170,12 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
   exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
   `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
   generation—not a PID, token or socket name—and old authority is revoked before a
-  successor is provisioned. Current implementation has KEL-70's generic one-child
-  supervision, the fixed CLI echo link, KEL-75 T1b's Unix authenticated role
-  coordinator (`keld_runtime::primary`), and KEL-75 T2's Unix
-  `keld_runtime::registry::RoleRegistry` for one `primary` plus one independent
-  `app-bound` role. Window-bound roles, virtual ports, role grants, strict
-  sandbox admission, and Windows named-pipe/DACL bootstrap remain later
+  successor is provisioned.   Current implementation has KEL-70's generic one-child
+  supervision, the host-owned concurrent echo app-link (KEL-30), KEL-75 T1b's
+  Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
+  Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
+  independent `app-bound` role. Window-bound roles, virtual ports, role grants,
+  strict sandbox admission, and Windows named-pipe/DACL bootstrap remain later
   KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate

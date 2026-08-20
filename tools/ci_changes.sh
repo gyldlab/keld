@@ -84,8 +84,13 @@ host_dependency_dirs() {
     printf '%s\n' "$workspace_metadata_cache" |
         jq -r --arg root "$repo_root" '
             def package($name): .packages[] | select(.name == $name);
+            # Shipping host closure only — exclude cargo kind "dev"/"build" so a
+            # test-only edge (e.g. keld-runtime → keld-compat) cannot pull a crate
+            # into GUI smoke ownership.
             def local_deps($name):
-                [package($name).dependencies[] | select(.path != null) | .name];
+                [package($name).dependencies[]
+                 | select(.path != null and (.kind == null))
+                 | .name];
             def walk($pending; $seen):
                 if ($pending | length) == 0 then $seen
                 else $pending[0] as $next
