@@ -21,8 +21,10 @@ Engineering rules, the verification gate, and review gates are in
    cargo nextest run --workspace --profile ci
    ```
 
-5. Open a pull request with `.github/PULL_REQUEST_TEMPLATE.md`, including a
-   Linear issue id (`KEL-n`) and the five review gates (or `none`).
+5. Branch `agent/kel-<n>-<slug>` from `origin/main` (`AGENTS.md` § Commits & PRs).
+   Open a pull request with `.github/PULL_REQUEST_TEMPLATE.md` (Summary · Spec refs ·
+   Review gates · Tests · Platforms · Perf impact). Include `## Linear` only when a
+   KELD id exists.
 
 Do not bypass `keld-guard`. Do not add `unwrap` / `expect` / `panic!` in
 library code. Do not invent a fifth config filename.

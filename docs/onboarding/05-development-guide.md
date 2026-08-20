@@ -339,8 +339,8 @@ docs(research): fold the IPC survey into 10-ipc-state-of-the-art
 ## Perf impact
 ```
 
-- **Spec refs** — which `docs/architecture/*` sections govern the change. Code/spec
-  mismatch is a bug in one of them; fix both in the same PR or state why not.
+- **Spec refs** — architecture/spec paths and sections, or `No boundary change`.
+  Code/spec mismatch is a bug in one of them; fix both in the same PR or state why not.
 - **Review gates** — the five above, or `none`.
 - **Tests** — paste real command output.
 - **Platforms** — which OSes you actually exercised. "macOS only, Windows path untested"
@@ -348,8 +348,9 @@ docs(research): fold the IPC survey into 10-ipc-state-of-the-art
 - **Perf impact** — which budgets in [`docs/architecture/01-overview.md`](../architecture/01-overview.md)
   §5 could move, or `none`. A regression over 5% needs a written waiver.
 
-**Rebase on `main` before opening the PR** — the project keeps linear history. Small PRs,
-one concern each. No secrets, no `.env*` edits; destructive git operations need human
+**Rebase onto `origin/main` before opening the PR** — linear history; `--force-with-lease`
+the feature branch only, never `main` (`AGENTS.md` § Commits & PRs). Small PRs, one
+concern each. No secrets, no `.env*` edits; destructive git operations need human
 approval.
 
 ---
@@ -369,9 +370,9 @@ the process of record. Condensed:
    at `Status: approved`. Existing specs in `docs/specs/` are examples of the required
    shape, not implicit approval for a new implementation. Bug fixes skip the spec but
    not the regression test.
-3. **Isolate** — one concern per branch; the repo's convention is a git worktree sibling
-   (`../keld-<issue>`) on branch `agent/<issue>-<slug>`, and never two people building in
-   one tree at once.
+3. **Isolate** — one concern per branch; work in a git worktree sibling
+   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` from `origin/main` (`AGENTS.md`
+   § Commits & PRs). Never two people building in one tree at once.
 4. **Write the test first**, then implement. Vertical slices, no placeholders.
 5. **Run the gate** (§3) and paste the real output.
 6. **Self-review the whole diff** before pushing: boundary violations, missed review

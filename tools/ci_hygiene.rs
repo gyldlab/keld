@@ -34,7 +34,14 @@ const REQUIRED_OWNER_PATHS: &[&str] = &[
 ];
 
 const PR_NEEDLES: &[&str] = &[
-    "Review gates",
+    "## Summary",
+    "## Spec refs",
+    "## Review gates",
+    "## Tests",
+    "## Platforms",
+    "## Perf impact",
+    "No boundary change",
+    "agent/kel-",
     "cargo fmt",
     "clippy",
     "nextest",
@@ -529,7 +536,8 @@ fn check_pr_template(root: &Path) -> Result<(), String> {
         if !text.contains(needle) {
             return Err(format!(
                 "CI-HYGIENE: `{PR_TEMPLATE}` is missing `{needle}`. \
-                 Restore the verification-gate checklist from AGENTS.md."
+                 Restore the six required PR headings and the verification-gate \
+                 commands from AGENTS.md § Commits & PRs."
             ));
         }
     }
@@ -795,7 +803,9 @@ mod tests {
     }
 
     fn valid_pr() -> &'static str {
-        "## Review gates\n\nRun cargo fmt, clippy, nextest, and mermaid-render-check.\n"
+        "## Summary\n## Spec refs\nNo boundary change\n## Review gates\n\
+         ## Tests\nRun cargo fmt, clippy, nextest, and mermaid-render-check.\n\
+         ## Platforms\n## Perf impact\nagent/kel-\n"
     }
 
     fn complete_fixture() -> TempDir {
@@ -1106,12 +1116,17 @@ mod tests {
     fn missing_pr_gate_fails() {
         let temp = complete_fixture();
         temp.write(PR_TEMPLATE, "## Summary\n\nNo gates here.\n");
-        let error = check(temp.path()).expect_err("PR template without gates must fail");
+        let error = check(temp.path()).expect_err("incomplete PR template must fail");
         assert!(
-            error.contains("Review gates") || error.contains("cargo fmt"),
+            error.contains("Spec refs")
+                || error.contains("Review gates")
+                || error.contains("cargo fmt"),
             "{error}"
         );
-        assert!(error.contains("verification-gate"), "{error}");
+        assert!(
+            error.contains("verification-gate") || error.contains("required PR headings"),
+            "{error}"
+        );
     }
 
     #[test]
