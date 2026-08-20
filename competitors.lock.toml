@@ -3,6 +3,8 @@
 # kind = "competitor"       → competitors/<name>
 # kind = "migration-oracle" → competitors/migration/<name>
 # Optional `sha` pins a commit after shallow fetch; omit to track `branch`.
+# Unknown kinds are rejected. There is no `upstream-reference` kind; Bun / wry / tao
+# use `competitor` so `just competitors-sync` lands them at competitors/<name>.
 
 [[repo]]
 name = "electron"
@@ -39,6 +41,26 @@ name = "electrobun"
 kind = "competitor"
 url = "https://github.com/blackboardsh/electrobun.git"
 branch = "main"
+
+# Keld upstream checkouts (not framework competitors): Bun runtime, current wry
+# webview scaffolding, current tao event-loop scaffolding.
+[[repo]]
+name = "bun"
+kind = "competitor"
+url = "https://github.com/oven-sh/bun.git"
+branch = "main"
+
+[[repo]]
+name = "wry"
+kind = "competitor"
+url = "https://github.com/tauri-apps/wry.git"
+branch = "dev"
+
+[[repo]]
+name = "tao"
+kind = "competitor"
+url = "https://github.com/tauri-apps/tao.git"
+branch = "dev"
 
 # Flagship Electron app — migration/compat oracle, not a framework competitor.
 [[repo]]

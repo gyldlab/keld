@@ -216,7 +216,11 @@ fn clone_new(repo: &Repo, dest: &Path) -> Result<(), String> {
         // Fresh clone is clean; force is irrelevant.
         fetch_reset_sha(dest, sha, true)?;
     }
-    println!("competitors-sync: cloned {} → {}", repo.name, dest.display());
+    println!(
+        "competitors-sync: cloned {} → {}",
+        repo.name,
+        dest.display()
+    );
     Ok(())
 }
 
@@ -242,7 +246,11 @@ fn update_existing(repo: &Repo, dest: &Path, force: bool) -> Result<(), String> 
             run_git(&mut reset_fh, &format!("reset FETCH_HEAD {}", repo.name))?;
         }
     }
-    println!("competitors-sync: updated {} @ {}", repo.name, dest.display());
+    println!(
+        "competitors-sync: updated {} @ {}",
+        repo.name,
+        dest.display()
+    );
     Ok(())
 }
 
@@ -476,11 +484,95 @@ branch = "main"
     }
 
     #[test]
+    fn rejects_upstream_reference_kind() {
+        let text = r#"
+[[repo]]
+name = "bun"
+kind = "upstream-reference"
+url = "https://github.com/oven-sh/bun.git"
+branch = "main"
+"#;
+        let err = parse_lockfile(text).expect_err("kind");
+        assert!(err.contains("unknown kind"), "{err}");
+        assert!(err.contains("upstream-reference"), "{err}");
+    }
+
+    #[test]
+    fn bun_wry_tao_use_competitor_kind_under_competitors() {
+        let text = r#"
+[[repo]]
+name = "bun"
+kind = "competitor"
+url = "https://github.com/oven-sh/bun.git"
+branch = "main"
+
+[[repo]]
+name = "wry"
+kind = "competitor"
+url = "https://github.com/tauri-apps/wry.git"
+branch = "dev"
+
+[[repo]]
+name = "tao"
+kind = "competitor"
+url = "https://github.com/tauri-apps/tao.git"
+branch = "dev"
+"#;
+        let repos = parse_lockfile(text).expect("parse upstream checkouts");
+        assert_eq!(repos.len(), 3);
+        let root = Path::new("/tmp/keld");
+        for repo in &repos {
+            assert_eq!(repo.kind, Kind::Competitor);
+            let dest = resolve_path(root, repo).expect("path");
+            assert_eq!(
+                dest,
+                PathBuf::from(format!("/tmp/keld/competitors/{}", repo.name))
+            );
+        }
+        assert_eq!(repos[0].name, "bun");
+        assert_eq!(repos[0].branch, "main");
+        assert_eq!(repos[1].name, "wry");
+        assert_eq!(repos[1].branch, "dev");
+        assert_eq!(repos[2].name, "tao");
+        assert_eq!(repos[2].branch, "dev");
+    }
+
+    #[test]
+    fn committed_lockfile_lists_bun_wry_tao() {
+        let text = fs::read_to_string("competitors.lock.toml")
+            .expect("run parser tests from the repo root so competitors.lock.toml is readable");
+        let repos = parse_lockfile(&text).expect("committed lock parses");
+        let names: Vec<&str> = repos.iter().map(|repo| repo.name.as_str()).collect();
+        for required in ["bun", "wry", "tao"] {
+            assert!(
+                names.contains(&required),
+                "competitors.lock.toml must list `{required}` so just competitors-sync fetches it"
+            );
+        }
+        for repo in &repos {
+            if matches!(repo.name.as_str(), "bun" | "wry" | "tao") {
+                assert_eq!(repo.kind, Kind::Competitor);
+                let dest = resolve_path(Path::new("/tmp/keld"), repo).expect("path");
+                assert_eq!(
+                    dest,
+                    PathBuf::from(format!("/tmp/keld/competitors/{}", repo.name))
+                );
+            }
+        }
+        let vscode: Vec<&Repo> = repos.iter().filter(|repo| repo.name == "vscode").collect();
+        assert_eq!(vscode.len(), 1);
+        assert_eq!(vscode[0].kind, Kind::MigrationOracle);
+    }
+
+    #[test]
     fn rejects_parent_dir_name() {
         let mut repo = sample_repos().remove(0);
         repo.name = "..".into();
         let err = resolve_path(Path::new("/tmp/keld"), &repo).expect_err("name");
-        assert!(err.contains("not allowed") || err.contains("escapes"), "{err}");
+        assert!(
+            err.contains("not allowed") || err.contains("escapes"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -507,9 +599,6 @@ branch = "main"
         let mut repo = sample_repos().remove(0);
         repo.path_override = Some("competitors/custom/electron".into());
         let dest = resolve_path(Path::new("/tmp/keld"), &repo).expect("nested");
-        assert_eq!(
-            dest,
-            PathBuf::from("/tmp/keld/competitors/custom/electron")
-        );
+        assert_eq!(dest, PathBuf::from("/tmp/keld/competitors/custom/electron"));
     }
 }
