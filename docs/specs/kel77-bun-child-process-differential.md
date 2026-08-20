@@ -1,7 +1,7 @@
 # Spec: package-agnostic Bun differential harness — child-process lifecycle (KEL-77)
 
 Status: approved
-Linear: KEL-77 · Owner: GYLDLAB · Updated: 2026-08-19 (T2: evidence round-trip after KEL-74 merge `8ff4cd6`)
+Linear: KEL-77 · Owner: GYLDLAB · Updated: 2026-08-21 (Bun 1.4.0 CI pin + kill-after-exit rebaseline)
 
 ## 1. Goal & non-goals
 
@@ -26,7 +26,8 @@ Non-goals:
 - A second evidence schema, scorer, denominator, or percentage. `keld.compat.evidence/v1`
   is owned by KEL-74; this harness is a producer only.
 - Performance numbers of any kind. Semantic parity first (KEL-77 acceptance).
-- Any change to `keld-guard`, kipc frames, the permission model, or CI workflow files.
+- Any change to `keld-guard`, kipc frames, or the permission model. T1/T2 did not
+  edit CI; this follow-up pins `oven-sh/setup-bun` to exact `1.4.0` (never `latest`).
 - Windows and Linux *execution*. The harness is written to be OS-portable and records
   the platform it ran on; this slice claims macOS arm64 results only.
 
@@ -63,21 +64,21 @@ Non-goals:
 5. Given the `spawn-failure-order` case (spawning a path that does not exist), when either
    arm runs it, then `'error'` is emitted with `code == "ENOENT"`, `'close'` is emitted
    after `'error'`, and `'exit'` is never emitted.
-6. Given the `kill-after-exit` case, when the **Node** arm runs it, then
+6. Given the `kill-after-exit` case, when **either** arm runs it, then
    `subprocess.kill()` returns `false` and `subprocess.killed` is `false` while a raw
-   `process.kill(pid, 0)` throws `ESRCH`; when the **Bun** arm runs it at the baselined
-   revision, then `subprocess.kill()` returns `true` and `subprocess.killed` is `true`
-   with the same `ESRCH`, and the emitted record for the Bun arm carries
-   `result: "fail"` against oracle `nodejs.child_process.subprocess-kill-return`.
+   `process.kill(pid, 0)` throws `ESRCH`, and the emitted record for both arms carries
+   `result: "pass"` against oracle `nodejs.child_process.subprocess-kill-return`.
+   Bun 1.3.14 returned `true`/`true` with the same `ESRCH`; Bun 1.4.0 fixed that
+   (`oven-sh/bun` `fc1b448b715391c564273091223c2f0414b5933f`).
 7. Given the `stdout-flush-on-abrupt-exit` case, when both arms run it, then the observed
    byte counts are recorded and the emitted records carry `result: "unknown"` for both
    arms, because `process.exit()` is documented to discard pending asynchronous stdout.
    An observed divergence on an unspecified path MUST NOT be recorded as `fail`.
-8. Given the `kill-after-exit` case, when the Bun arm stops exhibiting the divergence in
-   acceptance §3.6 (i.e. upstream fixed it), then the test fails with a message naming the
-   case, the previous observation, the new one, and the required follow-up: update the
-   pinned expectation and flip the record verdict to `pass` in the same PR. A silent
-   absorption of an upstream fix is a harness defect.
+8. Given the `kill-after-exit` case, when the Bun arm satisfies the Node `kill()`
+   contract in acceptance §3.6, then the case lives in
+   `specified_contracts_hold_on_both_arms` and the Bun evidence record is `pass`.
+   A regression to the 1.3.14 `true`/`true` shape fails that shared-pass test. A
+   silent fail-verdict re-pin after an upstream fix remains a harness defect.
 9. Given any arm, when the harness runs, then the exact `--revision` / `--version` string
    of that arm is recorded in every record it produces, so a verdict is never readable
    without the revision it was measured against.
@@ -150,30 +151,27 @@ Non-goals:
 
 ### 4.2 Why this gate stays green today and still detects regressions
 
-An assertion of the form "Bun must satisfy every Node contract" would make `main` red on
-landing, because a real Bun defect is already reproduced (§4.4 case 5). An assertion-free
-recorder would violate `.agents/testing.md`. The harness therefore gates on two things
-that are both true today and both falsifiable:
+An assertion-free recorder would violate `.agents/testing.md`. The harness therefore
+gates on two things that are both true on Bun 1.4.0 and both falsifiable:
 
-1. **Contracts both arms currently honor are asserted for both arms, unconditionally**
-   (cases 1–4, and the drained variant of case 6). These are stable, cited Node contracts.
+1. **Specified contracts both arms honor are asserted for both arms, unconditionally**
+   (cases 1–5, and the drained variant of case 6). These are stable, cited Node contracts.
    If either runtime regresses on exit codes, signal names, `'close'`-after-`'exit'`
-   ordering or spawn-failure ordering, CI goes red. That is a genuine compat regression on
-   the runtime Keld ships and should stop a release.
-2. **The one reproduced divergence is pinned by an explicit defect assertion** (case 5).
-   The Node arm is asserted to satisfy the oracle; the Bun arm is asserted to exhibit the
-   *current defect*. When Bun fixes `kill()`, this test goes red and forces the expectation
-   and the record verdict to be updated to `pass` in the same PR — the harness notices
-   upstream fixes instead of silently carrying a stale claim.
-3. **Unspecified paths are never asserted as conformance** (case 6 abrupt variant). The
+   ordering, spawn-failure ordering, or `kill()` after `'exit'`, CI goes red. That is a
+   genuine compat regression on the runtime Keld ships and should stop a release.
+2. **Unspecified paths are never asserted as conformance** (case 6 abrupt variant). The
    observed byte counts are recorded because they are buffer-size dependent and may
    legitimately differ per OS; only the specified drained path is asserted.
 
-Deliberately *not* built: a revision-keyed baseline table. Both arms' revisions float (CI's
-`oven-sh/setup-bun` has no version pin and the Node version is whatever the runner ships),
-so a revision-keyed table would spend most of its life unbaselined and would emit `unknown`
-for nearly every cell — machinery that weakens the gate instead of sharpening it. Revisions
-are *recorded* in every record; assertions are oracle-based. (YAGNI, per `.agents/testing.md`.)
+(The 1.3.x `kill()`-after-exit defect was pinned as an explicit fail until Bun 1.4
+fixed it; the fail pin was then deleted and case 5 joined the shared-pass corpus.)
+
+Deliberately *not* built: a revision-keyed baseline table. CI pins Bun to exact `1.4.0`
+via `oven-sh/setup-bun` `bun-version`; the Node version is still whatever the runner
+ships. A revision-keyed table for Node would spend most of its life unbaselined and
+would emit `unknown` for nearly every cell — machinery that weakens the gate instead of
+sharpening it. Revisions are *recorded* in every record; assertions are oracle-based.
+(YAGNI, per `.agents/testing.md`.)
 
 The verdict written into the record is always derived from observation-versus-oracle, and
 is independent of whether the build is green.
@@ -255,11 +253,14 @@ T2 maps that report onto the frozen schema and validates it with
   `crates/keld-runtime/fixtures/child-process/` (2 fixture files),
   `crates/keld-runtime/Cargo.toml` (dev-dependencies: `serde_json`, `keld-compat`,
   `sha2`, `tempfile`), workspace `Cargo.toml` (`sha2` pin + review comment),
+  `.github/workflows/ci.yml` (`oven-sh/setup-bun` `bun-version: "1.4.0"` only),
   `docs/specs/kel77-bun-child-process-differential.md`, `docs/agents/learnings.md`.
-- Must not touch: `.github/workflows/*` (single-writer), `crates/keld-guard/**`,
+- Must not touch: `crates/keld-guard/**`,
   `crates/keld-ipc/**`, `crates/keld-compat/src/**` (KEL-74 owns `evidence.rs`; this
   harness is a producer only), `packages/@keld/electron/**`, `docs/research/**`,
   `docs/architecture/*` (no deviation), any other agent's worktree or branch.
+  CI edits in this follow-up are limited to the setup-bun version input; do not
+  revert unrelated Dependabot action bumps.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
@@ -270,18 +271,20 @@ T2 maps that report onto the frozen schema and validates it with
       Adds the `sha2` workspace pin (dev-only on `keld-runtime`) and its review gate.
       Does **not** call `score()` or mint a product percent.
 - [ ] T3 (follow-up issue) Windows and Linux execution + per-platform expectations.
-- [ ] T4 (follow-up issue) Upstream a minimized `kill()`-after-exit reproducer to
-      `oven-sh/bun` as a general fixture, and link the issue from the record.
+- [x] T4 Upstream `kill()`-after-exit fix: `oven-sh/bun` #32877 /
+      `fc1b448b715391c564273091223c2f0414b5933f`, shipped in Bun 1.4.0. Keld
+      rebaselined the cell (shared-pass + evidence `pass`) and pinned CI Bun to
+      exact `1.4.0`.
 
 ## 7. Test plan
 
 | Acceptance | Test | Oracle |
 |---|---|---|
 | 3.1 | `every_case_produces_one_observation_per_arm` | exact count; missing-binary panic message |
-| 3.2–3.5 | `specified_contracts_hold_on_both_arms` | exact event tuples vs cited Node sentences |
-| 3.6 | `node_kill_after_exit_satisfies_the_oracle` + `bun_kill_after_exit_is_the_pinned_defect` | `kill()`/`killed`/`ESRCH` triple; record `result` |
+| 3.2–3.6 | `specified_contracts_hold_on_both_arms` (includes `child-process.kill-after-exit`) | exact event tuples / `kill()`/`killed`/`ESRCH` vs cited Node sentences |
+| 3.6 | `node_kill_after_exit_satisfies_the_oracle` + shared-pass corpus | Node reference arm; Bun 1.4 shares the same Pass |
 | 3.7 | `abrupt_exit_flush_is_unknown_and_the_drained_path_is_lossless` | both records `unknown`; drained variant equal on both arms |
-| 3.8 | `node_kill_after_exit_satisfies_the_oracle` + `bun_kill_after_exit_is_the_pinned_defect` (same tests) | pinned defect expectation + remediation message |
+| 3.8 | `specified_contracts_hold_on_both_arms` + `emitted_records_parse_via_keld_compat` | Bun kill-after-exit evidence `pass`; 1.3.14 `true`/`true` shape fails the shared-pass test |
 | 3.9 | `differential_report_pins_revision_platform_and_oracle_for_every_cell` | non-empty revision / platform / arch / oracle per cell |
 | 3.10 | `emitted_records_parse_via_keld_compat` | the real `parse_evidence`, not a shape assertion; `runtime_semantics` kind is `KELD-COMPAT-005` |
 | 3.11 | `corpus_digest_changes_when_a_fixture_changes` | digest over a temp corpus copy with one byte flipped |
@@ -315,6 +318,10 @@ removing the length framing from §4.3 must fail `corpus_digest_changes_when_a_f
 5. Wire protocol: none for kipc. This harness *emits* KEL-74's versioned JSON document
    format without defining or modifying it.
 
+The Bun 1.4.0 follow-up adds no Cargo dependency. Pinning `oven-sh/setup-bun`
+`bun-version: "1.4.0"` is a CI workflow edit (CODEOWNERS on `.github/`), not a
+review-gate dependency addition.
+
 ## 9. Perf impact
 
 None on any shipped path — no code ships. Harness cost is 12 short-lived process pairs in
@@ -332,8 +339,6 @@ Blocking human decisions before Status: approved.
 2. ~~**T2 is blocked, deliberately.**~~ **Resolved 2026-08-19:** KEL-74 merged as
    `8ff4cd6`. T2 serializes through `parse_evidence` on that freeze. `operation.kind`
    remains `primary_workflow` (named constant). No `runtime_semantics` fork.
-3. **Baseline versus pinned Bun.** CI's `oven-sh/setup-bun` has no version pin, so the CI
-   Bun revision floats and will periodically become unbaselined (acceptance §3.9 makes that
-   `unknown`, not red). Pinning Bun in CI would make the gate sharper but edits a
-   single-writer CI workflow file, which this agent must not do. Confirm whether to open a
-   separate human-owned issue for the pin.
+3. ~~**Baseline versus pinned Bun.**~~ **Resolved 2026-08-21:** CI pins
+   `oven-sh/setup-bun` to exact `1.4.0`. Do not float `latest`. Node on the runner
+   still floats; revisions remain recorded per cell.
