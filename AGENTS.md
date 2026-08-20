@@ -270,5 +270,6 @@ Hello-window / installer / RSS fixtures for competitor frameworks and native Swi
 
 ## Commits & PRs
 - Conventional: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
-- PR MUST include: Summary · Spec refs · Review gates · Tests · Platforms · Perf impact (or none).
-- Agents MUST NOT commit secrets or edit `.env*`; destructive git ops MUST have human approval. Rebase on main before PR.
+- Long-lived branch: `main` only. Feature branch: `agent/kel-<n>-<slug>` from `origin/main` (one Linear issue, one worktree `../keld-<issue>`). Agents MUST NOT commit on another agent's checkout. Rebase onto `origin/main` before PR. `--force-with-lease` MAY rewrite the feature branch; agents MUST NOT force-push `main`.
+- PR intake: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — an intake form, not a second policy. Body MUST include headings Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Spec refs is architecture/spec paths or `No boundary change`. Review gates is the five names or `none`. Omit empty optional sections (Linear, rollback, screenshots); do not write N/A. Strip template HTML comments from the submitted body; do not delete them from the template file.
+- Agents MUST NOT commit secrets or edit `.env*`; destructive git ops MUST have human approval.

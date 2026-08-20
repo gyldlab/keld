@@ -1,49 +1,34 @@
+<!--
+Intake form. Policy lives in AGENTS.md — do not restate it here.
+Strip every HTML comment from the submitted PR body (this block and the per-heading hints). Do not delete them from this file — hygiene reads them. Leftover comments are paid on every later `gh pr view`.
+
+Branch: `agent/kel-<n>-<slug>` from `origin/main` (AGENTS.md § Commits & PRs).
+
+Required headings below: keep the names. Fill them. Omit any optional heading that would be empty — do not write N/A.
+Optional (only if they have content): `## Linear` (KEL-n), `## Rollback`, `## Screenshots`.
+Do not paste review-bot release notes into this body.
+-->
+
 ## Summary
 
-<!-- What changed and why. Conventional title: `feat(ipc):`, `fix(wv/macos):`, `docs(research):`. -->
+<!-- 1–3 bullets. Why, not a file list. -->
 
 ## Spec refs
 
-<!-- `docs/architecture/0N-*.md` sections, Linear KEL-n. Write "none" for a pure bug fix. -->
-
-## First-principles and reuse decision
-
-<!-- For architecture/public-contract/process/IPC/permission/lifecycle/performance work:
-ownership, trust, lifecycle, I/O and failure facts; existing shared/upstream options
-evaluated; named unmet requirement for any rewrite; compatibility fallback or `not
-required`; and reproducible measured baseline for any performance claim. Write `No
-boundary change` when not applicable. -->
+<!-- Architecture/spec paths + sections, or exactly: No boundary change -->
 
 ## Review gates
 
-Human sign-off is required for any that apply (`AGENTS.md`). Check all that this PR touches, or check **none**.
-
-- [ ] `unsafe` (new or changed)
-- [ ] Public API (new or changed)
-- [ ] Permission model
-- [ ] Dependency addition
-- [ ] Wire protocol (kipc frames, manifest schema, update feed)
-- [ ] none
+<!-- The five in AGENTS.md: `none`, or name those that apply (`unsafe`, public API, permission model, dependency addition, wire protocol). A false `none` on unsafe / permission / wire is a bad merge. -->
 
 ## Tests
 
-<!-- Paste real gate output. Never write "should work". -->
-
-```
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace --profile ci
-# When Mermaid changed:
-just mermaid-test && just mermaid-check && just mermaid-render-check
-```
-
-<!-- Mermaid PRs also report source files, Mermaid block count, renderer name/version/digest,
-exact render command, SVG output format, observed pass/fail, and visual inspection. -->
+<!-- Commands actually run, with counts if known. Never "should work". Use: cargo fmt --all --check · cargo clippy --workspace --all-targets -- -D warnings · cargo nextest run --workspace --profile ci. Mermaid diffs also run just mermaid-test && just mermaid-check && just mermaid-render-check. -->
 
 ## Platforms
 
-<!-- macOS / Windows / Linux — which were actually run. Say so if a path was not verified. -->
+<!-- Exercised vs not. Silence is a lie. -->
 
 ## Perf impact
 
-<!-- Architecture 01 §5 budgets, or "none". >5% regression needs a waiver. -->
+<!-- none | measured | waiver. A fake percent is a bad merge. -->

@@ -20,7 +20,8 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
 3. **Isolate.** Work in a git worktree sibling directory (`../keld-<issue>`), branch
-   `agent/<issue>-<slug>`, one issue per worktree. Never two agents in one tree.
+   `agent/kel-<n>-<slug>` from `origin/main` (root `AGENTS.md` § Commits & PRs). One
+   issue per worktree. Never two agents in one tree.
 4. **Implement and coordinate.** Tests with the change (conformance entries *first* for
    compat work). Before a material design/scope decision and before integration,
    refresh Linear to pick up other-agent changes. Post a Linear progress comment after
@@ -47,12 +48,16 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    policy/helper, copied parser/state machine, silent compatibility regression or
    performance claim based only on language choice blocks the PR until the root cause is
    fixed.
-7. **PR and handoff.** Refresh Linear once more, then rebase on main first (linear
-   history). Description per root `AGENTS.md` (Summary · Spec refs · Review gates ·
-   Tests · Platforms · Perf impact). Append any learnings to `docs/agents/learnings.md`
-   in the same PR. Post actual gate output, unverified conditions, commit/PR links and
-   follow-up issue IDs. Move the issue to Done only when every acceptance criterion is
-   met; otherwise leave it In Progress or mark it Blocked with the exact dependency.
+7. **PR and handoff.** Refresh Linear once more, then rebase onto `origin/main` first
+   (linear history; `--force-with-lease` the feature branch only — root `AGENTS.md`
+   § Commits & PRs). Description per the intake form
+   [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md):
+   Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Omit empty
+   optional sections. Strip every template HTML comment from the submitted PR
+   body. Append any learnings to `docs/agents/learnings.md` in the same PR.
+   Post actual gate output, unverified conditions, commit/PR links and follow-up issue
+   IDs. Move the issue to Done only when every acceptance criterion is met; otherwise
+   leave it In Progress or mark it Blocked with the exact dependency.
 
 ## Parallelism rules
 
