@@ -41,9 +41,8 @@
 //!
 //! # Gating (see spec §4.2)
 //!
-//! Contracts both runtimes currently honor are asserted for both arms. The one
-//! reproduced Bun defect is pinned by `bun_kill_after_exit_is_the_pinned_defect`,
-//! which fails loudly when upstream fixes it. Unspecified paths are recorded,
+//! Specified contracts both runtimes honor — including `kill()` after `'exit'`
+//! since Bun 1.4 — are asserted for both arms. Unspecified paths are recorded,
 //! never asserted as conformance.
 //!
 //! # Negative controls (executed; see PR body)
@@ -51,8 +50,7 @@
 //! - Inverting the `'close'`-after-`'exit'` comparison in `derive_verdict` makes
 //!   `comparator_rejects_close_before_exit` fail.
 //! - Replacing `derive_verdict` with a constant `Verdict::Pass` makes
-//!   `comparator_can_emit_fail` and `bun_kill_after_exit_is_the_pinned_defect`
-//!   fail.
+//!   `comparator_can_emit_fail` fail.
 //! - Making the fixture's `rawKillErrno` anything but `ESRCH` makes
 //!   `comparator_requires_proof_the_child_is_gone` fail.
 
@@ -608,8 +606,9 @@ fn every_case_produces_one_observation_per_arm() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance §3.2–§3.5 — contracts both runtimes currently honor. A regression
-// on either arm turns this red, which is the point.
+// Acceptance §3.2–§3.6 — specified contracts both runtimes honor. A regression
+// on either arm turns this red, which is the point. `kill-after-exit` moved
+// here when Bun 1.4 fixed the previously pinned 1.3.x defect.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -619,6 +618,7 @@ fn specified_contracts_hold_on_both_arms() {
         "child-process.signal-termination",
         "child-process.close-after-exit",
         "child-process.spawn-failure-order",
+        "child-process.kill-after-exit",
     ];
     for arm in [NODE, BUN] {
         let revision = arm_revision(arm);
@@ -637,8 +637,8 @@ fn specified_contracts_hold_on_both_arms() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance §3.6 + §3.8 — the one reproduced divergence, pinned in both
-// directions so an upstream fix cannot be absorbed silently.
+// Acceptance §3.6 + §3.8 — Node remains the documented reference; Bun 1.4
+// shares the same specified contract via `specified_contracts_hold_on_both_arms`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -653,27 +653,6 @@ fn node_kill_after_exit_satisfies_the_oracle() {
          subprocess.kill() contract and must satisfy it: {detail}",
         arm_revision(NODE)
     );
-}
-
-#[test]
-fn bun_kill_after_exit_is_the_pinned_defect() {
-    let case = case_by_id("child-process.kill-after-exit");
-    let revision = arm_revision(BUN);
-    let obs = run_case(BUN, case.operation_id);
-    let (verdict, detail) = derive_verdict(case, &obs);
-
-    assert_eq!(
-        verdict,
-        Verdict::Fail,
-        "[{revision}] subprocess.kill() after 'exit' now satisfies the Node contract \
-         ({detail}). Upstream appears to have FIXED this. Required follow-up in the same \
-         PR: delete this pinned-defect test, move `child-process.kill-after-exit` into \
-         `specified_contracts_hold_on_both_arms`, and flip the recorded verdict for this \
-         cell from `fail` to `pass`. Do not weaken this assertion to make it green."
-    );
-    // Pin the exact defect shape, so a *different* wrong answer is also caught.
-    assert_eq!(field(&obs, "killReturn"), "true", "[{revision}] {detail}");
-    assert_eq!(field(&obs, "killed"), "true", "[{revision}] {detail}");
 }
 
 #[test]
@@ -892,8 +871,8 @@ fn emitted_records_parse_via_keld_compat() {
         if record.case.operation_id == "child-process.kill-after-exit" && record.arm.name == "bun" {
             assert_eq!(
                 parsed.result(),
-                EvidenceVerdict::Fail,
-                "Bun kill-after-exit must stay fail in the evidence record"
+                EvidenceVerdict::Pass,
+                "Bun kill-after-exit must stay pass in the evidence record (Bun 1.4)"
             );
         }
         if record.case.operation_id == "child-process.stdout-flush-on-abrupt-exit" {
