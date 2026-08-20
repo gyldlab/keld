@@ -536,8 +536,8 @@ fn check_pr_template(root: &Path) -> Result<(), String> {
         if !text.contains(needle) {
             return Err(format!(
                 "CI-HYGIENE: `{PR_TEMPLATE}` is missing `{needle}`. \
-                 Restore the six required PR headings and the verification-gate \
-                 commands from AGENTS.md § Commits & PRs."
+                 Restore the six required PR headings from AGENTS.md § Commits & PRs \
+                 and the verification-gate commands from AGENTS.md § Commands & verification."
             ));
         }
     }
