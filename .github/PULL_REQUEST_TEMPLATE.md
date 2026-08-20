@@ -1,6 +1,6 @@
 <!--
 Intake form. Policy lives in AGENTS.md — do not restate it here.
-Strip every HTML comment in this file before submit (this block and the per-heading hints). Leftover comments are paid on every later `gh pr view`.
+Strip every HTML comment from the submitted PR body (this block and the per-heading hints). Do not delete them from this file — hygiene reads them. Leftover comments are paid on every later `gh pr view`.
 
 Branch: `agent/kel-<n>-<slug>` from `origin/main` (AGENTS.md § Commits & PRs).
 

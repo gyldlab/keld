@@ -53,8 +53,8 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    § Commits & PRs). Description per the intake form
    [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md):
    Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Omit empty
-   optional sections. Strip every template HTML comment before submit. Append any
-   learnings to `docs/agents/learnings.md` in the same PR.
+   optional sections. Strip every template HTML comment from the submitted PR
+   body. Append any learnings to `docs/agents/learnings.md` in the same PR.
    Post actual gate output, unverified conditions, commit/PR links and follow-up issue
    IDs. Move the issue to Done only when every acceptance criterion is met; otherwise
    leave it In Progress or mark it Blocked with the exact dependency.
