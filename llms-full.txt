@@ -3541,7 +3541,7 @@ Chromium-class arms (same session, **different engine** — not vs-WK):
 | NW.js 0.114.1 | 11/11 | **425.380 / 442.879 ms** | **682,304 / 682,848 KiB** |
 
 Earlier 2026-08-16 competitor extension @ recipe
-[`91fd3e6`](https://github.com/gyldlab/keld-benches/commit/91fd3e6): Wails
+[`91fd3e66b402cb9e4ba79133dc68a270011444c6`](https://github.com/gyldlab/keld-benches/commit/91fd3e66b402cb9e4ba79133dc68a270011444c6): Wails
 11/11, median **340.984 / 353.263 ms**, coalition **206,976 / 207,776 KiB**.
 NW.js / stock Neutralino / Electrobun / Electron were fail-closed that day
 (not slow scores). `/tmp` JSON; not in git.
@@ -3862,8 +3862,8 @@ reason not to build a claim on that column.
 Supersedes the 2026-08-14 ad-hoc first-paint figures above. Those came from a
 throwaway fixed-port beacon that was reverted, so they were not reproducible.
 Re-measured with the committed harness
-[`windows/bench/Measure-FirstPaint.ps1`](https://github.com/gyldlab/keld-benches/blob/e3f65f4/windows/bench/Measure-FirstPaint.ps1)
-at [`gyldlab/keld-benches@e3f65f4`](https://github.com/gyldlab/keld-benches/commit/e3f65f4);
+[`windows/bench/Measure-FirstPaint.ps1`](https://github.com/gyldlab/keld-benches/blob/e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f/windows/bench/Measure-FirstPaint.ps1)
+at [`gyldlab/keld-benches@e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f`](https://github.com/gyldlab/keld-benches/commit/e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f);
 raw samples (git SHAs, exe SHA-256, versions, exact command) in
 `windows/bench/windows-first-paint.json`. Median of 5, same machine/session.
 
