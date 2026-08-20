@@ -9,7 +9,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` / `keld-compat` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -468,3 +468,21 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-compat
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
+
+## KELD-CORE-030
+
+- crate: keld-core
+- message: Host-owned app-link I/O error
+- fix: Check that the temp/session directory is writable.
+
+## KELD-CORE-031
+
+- crate: keld-core
+- message: Host-owned hello session failed
+- fix: Re-run `keld doctor` and fix the reported checks.
+
+## KELD-CORE-032
+
+- crate: keld-core
+- message: Timed out waiting for a Bun ready marker
+- fix: Confirm Bun is on PATH and the project entry speaks kipc.

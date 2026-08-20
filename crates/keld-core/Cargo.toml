@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 keld-ipc = { workspace = true }
 keld-guard = { workspace = true }
+keld-runtime = { workspace = true }
 keld-wv = { workspace = true }
 
 [lints]

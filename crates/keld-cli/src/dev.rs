@@ -1,19 +1,18 @@
-//! `keld dev` — run the hello template with IPC echo + window (KEL-29).
+//! `keld dev` — run the hello template with IPC echo + window (KEL-29/KEL-30).
 
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 use keld_core::{
-    DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, read_config_renderer, read_config_title,
-    run_hello_window_html,
+    DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, HostOwnedHelloSession, read_config_renderer,
+    read_config_title, run_hello_window_html,
 };
-use keld_runtime::{RestartPolicy, Supervisor, SupervisorOutcome};
+use keld_runtime::RestartPolicy;
 
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
-use crate::echo_link::EchoServer;
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
 
@@ -61,6 +60,12 @@ impl std::error::Error for DevError {}
 impl From<io::Error> for DevError {
     fn from(value: io::Error) -> Self {
         Self::Io(value)
+    }
+}
+
+impl From<keld_core::HelloSessionError> for DevError {
+    fn from(value: keld_core::HelloSessionError) -> Self {
+        Self::Runtime(value.to_string())
     }
 }
 
@@ -128,83 +133,95 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
     Ok(Path::new(renderer.trim()))
 }
 
-/// Doctor checks, then one Bun IPC echo round-trip. Does not open a window.
+fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
+    let checks = run_checks(Some(project_root));
+    if all_ok(&checks) {
+        return Ok(());
+    }
+    let mut msg = String::from("KELD-CLI-032: environment checks failed:\n");
+    for check in &checks {
+        let mark = if check.ok { "ok" } else { "FAIL" };
+        let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
+    }
+    Err(DevError::Doctor(msg))
+}
+
+/// Doctor checks, then one Bun IPC echo round-trip without opening a window.
 ///
-/// The template speaks kipc directly (`src/kipc.ts`, KEL-30) — Bun needs only
-/// `KELD_APP_LINK`, not a `keld` binary path to shell out to. Bun runs under
-/// a [`keld_runtime::Supervisor`] (KEL-70): a crash (non-zero exit) is
-/// retried per [`RestartPolicy::default`] before this call gives up, instead
-/// of failing on the first non-zero exit.
+/// Starts the host-owned app-link + supervised Bun, awaits the ready marker,
+/// then reaps the child. The hello template stays alive until reaped (KEL-30).
 ///
 /// # Errors
 ///
 /// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the
-/// supervisor's crash-loop breaker trips.
+/// ready marker never appears.
 pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
-    let checks = run_checks(Some(project_root));
-    if !all_ok(&checks) {
-        let mut msg = String::from("KELD-CLI-032: environment checks failed:\n");
-        for check in &checks {
-            let mark = if check.ok { "ok" } else { "FAIL" };
-            let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
-        }
-        return Err(DevError::Doctor(msg));
-    }
-
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let server = EchoServer::start(&ready_tx)?;
-    ready_rx
-        .recv()
-        .map_err(|_| DevError::Runtime("echo server failed to start".to_owned()))?;
-    let link = server.link();
-    let link_for_child = link.clone();
-
-    let bun_main = project_root.join("src/main.ts");
-    let project_root = project_root.to_path_buf();
-    let supervisor = Supervisor::start(RestartPolicy::default(), move || {
-        let mut cmd = Command::new("bun");
-        cmd.arg("run")
-            .arg(&bun_main)
-            .current_dir(&project_root)
-            .env("KELD_APP_LINK", &link_for_child);
-        cmd
-    })
-    .map_err(|e| DevError::Runtime(e.to_string()))?;
-
-    let outcome = supervisor.wait_for_outcome();
-    let output = supervisor.output();
-    io::stdout().write_all(output.stdout.as_bytes())?;
-    io::stderr().write_all(output.stderr.as_bytes())?;
-
-    match outcome {
-        SupervisorOutcome::CrashLoop(err) | SupervisorOutcome::Failed(err) => {
-            let _ = server.shutdown();
-            Err(DevError::Runtime(err.to_string()))
-        }
-        SupervisorOutcome::Stopped => {
-            server.shutdown()?;
-            Ok(DevEchoResult {
-                stdout: output.stdout,
-                link,
-            })
-        }
-    }
+    doctor_or_err(project_root)?;
+    let session = HostOwnedHelloSession::start(
+        project_root,
+        project_root.join("src/main.ts"),
+        RestartPolicy::default(),
+    )?;
+    // Observable wire contract: HELLO + CALL/REPLY printed by the child.
+    // Stock template also prints `{name}: main process ready`; crash-recovery
+    // fixtures may only print `ipc-echo ok:`.
+    session.wait_until_output_contains("ipc-echo ok:", Duration::from_secs(30))?;
+    let stdout = session.output().stdout;
+    let stderr = session.output().stderr;
+    io::stdout().write_all(stdout.as_bytes())?;
+    io::stderr().write_all(stderr.as_bytes())?;
+    let link = session.link().to_owned();
+    session.shutdown()?;
+    Ok(DevEchoResult { stdout, link })
 }
 
-/// Runs `keld dev` in `project_root`: echo session, then the hello window.
+/// Runs `keld dev` in `project_root`: host-owned echo + Bun live across the
+/// hello window (KEL-30 concurrent slice).
 ///
 /// # Errors
 ///
-/// Returns [`DevError`] when checks fail, Bun exits non-zero, or the window fails.
+/// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    let _echo = run_dev_echo(project_root)?;
-    open_dev_window(project_root)
-}
+    doctor_or_err(project_root)?;
+    let session = HostOwnedHelloSession::start(
+        project_root,
+        project_root.join("src/main.ts"),
+        RestartPolicy::default(),
+    )?;
+    let ready = format!(
+        "{}: main process ready (IPC echo ok)",
+        hello_title_for_project(project_root)
+    );
+    session.wait_until_output_contains(&ready, Duration::from_secs(30))?;
+    let stdout = session.output().stdout;
+    let stderr = session.output().stderr;
+    io::stdout().write_all(stdout.as_bytes())?;
+    io::stderr().write_all(stderr.as_bytes())?;
 
-fn open_dev_window(project_root: &Path) -> Result<(), DevError> {
+    // Window phase while echo listener + Bun are still live.
     let title = hello_title_for_project(project_root);
     let html = load_dev_window_html(project_root)?;
-    run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()))
+    let window_result =
+        run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()));
+    // Window returned (tao `run_return`) — reap Bun and stop the listener.
+    session.shutdown()?;
+    window_result
+}
+
+/// Starts a host-owned hello session for tests that must observe Bun/wire
+/// coexistence without entering the GUI event loop.
+///
+/// # Errors
+///
+/// Returns [`DevError`] when doctor checks fail or the session cannot start.
+pub fn start_dev_session(project_root: &Path) -> Result<HostOwnedHelloSession, DevError> {
+    doctor_or_err(project_root)?;
+    HostOwnedHelloSession::start(
+        project_root,
+        project_root.join("src/main.ts"),
+        RestartPolicy::default(),
+    )
+    .map_err(DevError::from)
 }
 
 #[cfg(test)]

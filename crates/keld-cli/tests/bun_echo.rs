@@ -175,29 +175,10 @@ fn created_template_main_runs_ipc_echo() {
     create_project(dir.path(), "app").expect("create");
     let project = dir.path().join("app");
 
-    let (ready_tx, ready_rx) = mpsc::channel();
-    let server = EchoServer::start(&ready_tx).expect("bind echo server");
-    ready_rx.recv().expect("server ready");
-    let link = server.link();
-
-    let keld_bin = env!("CARGO_BIN_EXE_keld");
-    let output = Command::new("bun")
-        .arg("run")
-        .arg("src/main.ts")
-        .current_dir(&project)
-        .env("KELD_APP_LINK", &link)
-        .env("KELD_BIN", keld_bin)
-        .output()
-        .expect("spawn bun");
-
-    server.join().expect("server join");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "template bun failed: stdout={stdout} stderr={stderr}"
-    );
+    // Template stays alive for the host window; `run_dev_echo` awaits the
+    // ready marker then reaps (KEL-30). Do not `.output()` the stay-alive child.
+    let result = keld_cli::dev::run_dev_echo(&project).expect("dev echo");
+    let stdout = result.stdout;
     assert!(
         stdout.contains("ipc-echo ok: message=\"keld\" count=1"),
         "template must speak kipc echo: stdout={stdout}"

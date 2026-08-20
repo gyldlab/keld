@@ -254,6 +254,10 @@ mod tests {
             main.contains("demo: main process ready (IPC echo ok)"),
             "{main}"
         );
+        assert!(
+            main.contains("await new Promise(() => {})"),
+            "KEL-30: stay alive for host window duration: {main}"
+        );
         assert!(!main.contains("{{name}}"), "{main}");
 
         let kipc = fs::read_to_string(root.join("src/kipc.ts")).expect("kipc");

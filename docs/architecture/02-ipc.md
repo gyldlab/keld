@@ -33,12 +33,16 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
-**v0 app-link (KEL-60/KEL-70):** one CLI-owned primary link is a domain socket inside an owner-only (`0o700`) session
+**v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
+`HostOwnedHelloSession`) is a domain socket inside an owner-only (`0o700`) session
 directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
 section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
-`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. Destination
-Windows transport remains `\\.\pipe\keld-<random>` with a current-user DACL.
+`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
+shipping `keld dev` path keeps the listener and supervised Bun live for the hello
+window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
+same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
+current-user DACL.
 
 ## 2. Wire protocol (control plane)
 

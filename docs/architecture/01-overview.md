@@ -11,23 +11,23 @@ flowchart LR
     accTitle: Keld process and trust topology
     accDescr {
       The trusted Rust host owns privileged resources and mediates webview and Bun-role
-      requests. The live v0 slice has three webview backends, a guard evaluator, one
-      CLI-owned token-authenticated echo link, and KEL-70's generic supervised Bun child
-      restart loop. Host-bound role identity, guarded role dispatch, native services,
-      role-specific lifecycle and an optional sandboxed native-addon worker remain
-      destination behavior.
+      requests. The live v0 slice has three webview backends, a guard evaluator, a
+      host-owned token-authenticated echo link co-lived with the hello window (KEL-30),
+      and KEL-70's generic supervised Bun child restart loop. Full role-bound app-link
+      identity, guarded role dispatch, native services, and an optional sandboxed
+      native-addon worker remain destination behavior.
     }
 
-    subgraph Host["Trusted authority process: keld-host"]
-        Core["TARGET<br/>window registry and lifecycle"]
-        Link["TARGET<br/>host-owned role-bound app-link"]
+    subgraph Host["Trusted authority process: keld-host / keld-core"]
+        Core["PARTIAL LIVE<br/>hello window + lifecycle session<br/>TARGET window registry"]
+        Link["PARTIAL LIVE<br/>host-owned hello echo app-link<br/>TARGET role-bound"]
         Guard["PARTIAL LIVE<br/>guard evaluator exists<br/>TARGET guard-before-handler"]
         Native["SKELETON<br/>guarded native services"]
         Runtime["PARTIAL LIVE<br/>generic Bun supervisor<br/>TARGET role identity"]
     end
 
     subgraph Prototype["Current diagnostic process: keld-cli"]
-        CliLink["LIVE v0<br/>token-authenticated echo listener"]
+        CliDiag["LIVE diagnostic<br/>ipc-echo / ipc-client"]
     end
 
     subgraph UI["Untrusted UI principals"]
@@ -35,13 +35,13 @@ flowchart LR
     end
 
     subgraph JS["Semi-trusted and untrusted code processes"]
-        App["PARTIAL LIVE<br/>one supervised Bun echo child<br/>TARGET primary and named roles"]
+        App["PARTIAL LIVE<br/>supervised Bun echo child<br/>co-lived with hello window<br/>TARGET primary and named roles"]
         Addon["FUTURE OPTIONAL<br/>sandboxed native-addon worker"]
     end
 
     Runtime -->|LIVE v0 supervise, restart and capture logs| App
-    App -->|LIVE v0 HELLO and echo CALL| CliLink
-    App -.->|TARGET role link| Link
+    App -->|LIVE v0 HELLO and echo CALL| Link
+    CliDiag -.->|diagnostic only| Link
     Link -->|TARGET bind principal before dispatch| Guard
     Webview -->|engine bridge: TARGET guarded calls| Guard
     Addon -->|typed broker requests only| Guard
@@ -54,9 +54,9 @@ flowchart LR
     classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px;
     classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px;
 
-    class Core,Link,Runtime,Native target;
-    class Guard gate;
-    class CliLink,Webview,App current;
+    class Native target;
+    class Core,Link,Runtime,Guard gate;
+    class CliDiag,Webview,App current;
     class Addon external;
 ```
 
@@ -74,7 +74,8 @@ Three principal classes, with host-minted instances inside each class:
    but **zero ambient OS authority** in the strict profile — every privileged operation
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
-   CLI-owned supervised primary-child echo slice with restart/backoff/output capture,
+   host-owned supervised primary-child echo slice with restart/backoff/output capture
+   co-lived with the hello window (KEL-30),
    plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
    accepted link to a principal and mints a fresh role generation on restart. It
    does not yet preserve a live renderer through restart, implement window-bound
