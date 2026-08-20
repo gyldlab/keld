@@ -3197,6 +3197,54 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Camera/microphone requires a minted webview principal
 - fix: Mint the requesting webview principal before evaluating the capability. Do not present AppProcess.
 
+## KELD-GUARD008
+
+- crate: keld-guard
+- message: Required strict-profile OS primitive is unavailable
+- fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
+## KELD-GUARD009
+
+- crate: keld-guard
+- message: Unexpected grant while requesting Strict
+- fix: Do not start. Electron sandbox/appSandbox is not the Keld profile key; do not inherit the host sandbox.
+
+## KELD-GUARD010
+
+- crate: keld-guard
+- message: Host handle would leak into the Strict child
+- fix: Strip inherited handles to app-link + log sinks, then retry admission. Do not start.
+
+## KELD-GUARD011
+
+- crate: keld-guard
+- message: Strict requested but the OS-containment proof is missing
+- fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
+## KELD-GUARD012
+
+- crate: keld-guard
+- message: Strict proof archive is stale for this artifact or policy generation
+- fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
+## KELD-GUARD013
+
+- crate: keld-guard
+- message: Strict proof identity does not match this spawn
+- fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
+## KELD-GUARD014
+
+- crate: keld-guard
+- message: Strict OS-containment catalog is incomplete
+- fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
+## KELD-GUARD015
+
+- crate: keld-guard
+- message: Strict archive row used the wrong layer or oracle (Display names recorded oracle, not only layer)
+- fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
 ## KELD-DOCS001
 
 - crate: llms-docs

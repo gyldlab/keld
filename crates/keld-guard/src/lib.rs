@@ -13,8 +13,15 @@
 //! [`Principal::AppProcess`] are [`DenyReason::MediaPrincipalRequired`]
 //! (`KELD-GUARD007`). `$VARS` resolution, symlink/`..` canonicalization
 //! beyond rejecting a `..` segment, and channel grants are not in this slice.
+//!
+//! KEL-78 T1 adds [`admit`]: Strict is fail-closed without a complete
+//! OS-containment catalog, matching profile digest, and observed §4
+//! primitives. [`HostFacts::observe_uncontained`] reports every primitive
+//! missing. That is not an OS-containment claim.
 
+mod admit;
 mod jsonc;
+mod probe;
 
 use std::fmt;
 use std::fs;
@@ -25,6 +32,14 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::jsonc::strip_jsonc_comments;
+
+pub use admit::{
+    AdmissionError, AdmissionRequest, ArchiveId, ArtifactDigest, CURRENT_POLICY_GENERATION,
+    HostFacts, HostOs, MismatchField, OS_CONTAINMENT_PROBES, ProbeLayer, ProbeOracle, ProbeRecord,
+    ProbeVerdict, ProfileDigest, ProfileState, ProofArchive, ProofIdentity, RoleInstance, admit,
+    expected_layer_for,
+};
+pub use probe::{ProbeReport, run_synthetic_probes};
 
 /// An unforgeable identity minted by the host for each peer.
 ///

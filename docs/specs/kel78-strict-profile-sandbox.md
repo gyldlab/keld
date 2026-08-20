@@ -421,7 +421,7 @@ enum AdmissionError {
     ProofStale { os, archive_id, reason, fix },
     ProofMismatch { os, field, expected, found, fix }, // artifact, profile, OS, archive_id
     ProofIncomplete { os, missing, fix }, // §7 OS-containment rows absent
-    ProofLayerMismatch { os, probe, expected_layer, recorded_layer, fix },
+    ProofLayerMismatch { os, probe, expected_layer, recorded_layer, oracle, fix },
 }
 
 fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
@@ -447,7 +447,10 @@ fn admit(req: AdmissionRequest) -> Result<ProfileState, AdmissionError>
 9. Each recorded OS-containment pass used that row's independent OS oracle
    (deny of the direct syscall/API). A JavaScript-shim deny, a
    `KELD-IPC-007` / host-protocol pass, a supervisor reap, or a resource-limit
-   hit recorded in an OS-containment slot is `ProofLayerMismatch`.
+   hit recorded in an OS-containment slot is `ProofLayerMismatch`. The error
+   MUST carry the recorded oracle so Display can name `js_shim` /
+   `host_protocol` versus required `os_deny` even when `recorded_layer` is
+   already `os_containment`.
 
 Otherwise the result is not `Strict`:
 
@@ -507,7 +510,7 @@ Renderer sandbox is a different column.
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [x] T0: Draft this spec + primary-source ledger. All OS proofs unverified.
-- [ ] T1: Admission API + profile-state reporting. Synthetic in-process
+- [x] T1: Admission API + profile-state reporting. Synthetic in-process
       *probe binary* (not a third-party addon). Default state `unverified`.
       Fail closed when `strict` is requested (`ProofMissing` /
       `ProofIncomplete` / `ProofLayerMismatch` / `ProofMismatch` including
