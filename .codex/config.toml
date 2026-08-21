@@ -1,0 +1,13 @@
+# Project-scoped MCP configuration for Codex.
+# Each contributor must authenticate locally with: codex mcp login linear
+
+[mcp_servers.linear]
+url = "https://mcp.linear.app/mcp"
+auth = "oauth"
+enabled = true
+default_tools_approval_mode = "writes"
+
+[mcp_servers.context7]
+command = "bunx"
+args = ["-y", "@upstash/context7-mcp"]
+startup_timeout_ms = 20_000
