@@ -1292,6 +1292,7 @@ version = "0.0.1"
 dependencies = [
  "keld-guard",
  "keld-ipc",
+ "keld-runtime",
  "keld-wv",
 ]
 

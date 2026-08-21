@@ -414,8 +414,9 @@ host    ⇄ app process "app-link"  UDS/named pipe (control) + shm rings (bulk)
 webview ⇄ app process             routed via host (both links), never direct
 ```
 
-Only the app-link control plane exists, and it is implemented in `crates/keld-cli/src/echo_link.rs`
-rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and operates on any `Read + Write`.
+Only the app-link control plane exists, and it is implemented in `crates/keld-core/src/echo_link.rs`
+(CLI diagnostics re-export it) rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and
+operates on any `Read + Write`.
 
 | | Unix | Windows |
 |---|---|---|

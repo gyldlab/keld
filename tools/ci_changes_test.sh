@@ -65,7 +65,9 @@ expect_empty_packages() {
 }
 
 all_false=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
-runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nwebkitgtk=false'
+# keld-core depends on keld-runtime (KEL-30 host-owned session), so runtime lives
+# in the keld-host dependency closure and a runtime-only path change enables GUI smoke.
+runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=false'
 docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
 hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
 host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=false'
@@ -80,9 +82,10 @@ expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classific
 expect_empty_packages "empty diff selects no package" "$empty_classification"
 
 runtime_classification="$(result_for_paths crates/keld-runtime/src/lib.rs)"
-expect_flags "runtime-only Rust change avoids host GUI smoke and Ubuntu GTK apt" "$runtime_flags" "$runtime_classification"
+expect_flags "runtime-only Rust change enables host GUI smoke without Ubuntu GTK apt" "$runtime_flags" "$runtime_classification"
 expect_package_token "runtime-only change includes its owner package" keld-runtime "$runtime_classification"
 expect_package_token "runtime-only change still clippy's keld-cli consumers on macOS/Windows" keld-cli "$runtime_classification"
+expect_package_token "runtime-only change clippy's host-owned session consumer" keld-core "$runtime_classification"
 expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli without GTK" keld-cli "$runtime_classification"
 
 docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
@@ -116,12 +119,17 @@ workflow_classification="$(result_for_paths .github/workflows/ci.yml)"
 expect_flags "workflow input exercises all jobs; GTK apt stays on GUI smoke only" "$workflow_all" "$workflow_classification"
 
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
-for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-wv; do
+for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-runtime crates/keld-wv; do
     if ! grep -Fxq "$required_dir" <<<"$actual_host_dirs"; then
         echo "FAIL: keld-host dependency closure omits $required_dir" >&2
         exit 1
     fi
 done
+if grep -Fxq "crates/keld-compat" <<<"$actual_host_dirs"; then
+    echo "FAIL: host-dirs must exclude keld-runtime's cargo kind=dev edge to keld-compat" >&2
+    printf '%s\n' "$actual_host_dirs" >&2
+    exit 1
+fi
 echo "ok: cargo metadata derives current keld-host closure"
 
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/keld-ci-changes.XXXXXX")"

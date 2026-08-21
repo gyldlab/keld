@@ -33,12 +33,16 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
-**v0 app-link (KEL-60/KEL-70):** one CLI-owned primary link is a domain socket inside an owner-only (`0o700`) session
+**v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
+`HostOwnedHelloSession`) is a domain socket inside an owner-only (`0o700`) session
 directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
 section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
-`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. Destination
-Windows transport remains `\\.\pipe\keld-<random>` with a current-user DACL.
+`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
+shipping `keld dev` path keeps the listener and supervised Bun live for the hello
+window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
+same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
+current-user DACL.
 
 ## 2. Wire protocol (control plane)
 
@@ -58,8 +62,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
-  deadline. Its Unix `BootstrapListener` primitive is now live and used by the CLI echo
-  server and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  deadline.   Its Unix `BootstrapListener` primitive is now live and used by the host-owned
+  echo server (`keld-core`) and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
   observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
   dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain

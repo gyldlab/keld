@@ -5,7 +5,8 @@
  * Rust process. Full schema-driven codegen (`keld gen`, `@keld/schema`) is a
  * later slice; `./kipc.ts` is the hand-written, wire-exact v0 client.
  * `AppLinkSession` holds one HELLO'd connection so further CALLs do not
- * handshake again.
+ * handshake again. The process stays alive for the host-owned hello window
+ * duration; `keld dev` reaps it after the window returns.
  */
 import { AppLinkSession } from "./kipc";
 
@@ -21,8 +22,10 @@ const session = await AppLinkSession.connect(link);
 try {
   const response = await session.echo({ message: "keld", count: 1 });
   console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+  console.log("{{name}}: main process ready (IPC echo ok)");
+  // Stay alive while the host owns the hello window. The host supervisor
+  // kills this child on window close (KEL-30 concurrent app-link).
+  await new Promise(() => {});
 } finally {
   session.close();
 }
-
-console.log("{{name}}: main process ready (IPC echo ok)");

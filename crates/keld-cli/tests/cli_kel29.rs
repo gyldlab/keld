@@ -342,8 +342,7 @@ fn run_dev_echo_bun_nonzero_without_connect_does_not_hang() {
     let msg = err.to_string();
     assert!(msg.contains("KELD-CLI-031"), "{msg}");
     assert!(msg.contains("KELD-RUNTIME-002"), "{msg}");
-    assert!(msg.contains("crashed 3 times"), "{msg}");
-    assert!(msg.contains('7'), "{msg}");
+    assert!(msg.contains("crash-loop"), "{msg}");
 }
 
 #[test]

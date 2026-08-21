@@ -496,7 +496,7 @@ export class AppLinkSession {
  * One-shot wrapper over [`AppLinkSession`]. `link` is the `KELD_APP_LINK`
  * value (`<endpoint>#<64 hex chars>`); on Windows the endpoint is a loopback
  * TCP port, on Unix a domain socket path — the same branch
- * `crates/keld-cli/src/echo_link.rs::echo_roundtrip` takes, decided by
+ * `crates/keld-core/src/echo_link.rs::echo_roundtrip` takes, decided by
  * platform (not by sniffing the endpoint string).
  *
  * @throws on I/O failure, protocol mismatch, auth failure, or codec error —

@@ -27,6 +27,7 @@ const SCAN_REL: &[&str] = &[
     "crates/keld-runtime/src",
     "crates/keld-native/src",
     "crates/keld-compat/src",
+    "crates/keld-core/src",
     "tools",
 ];
 

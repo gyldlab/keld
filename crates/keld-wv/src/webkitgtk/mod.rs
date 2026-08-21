@@ -31,6 +31,7 @@ use std::fmt;
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
+use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::unix::WindowExtUnix;
 use tao::window::{Window, WindowBuilder};
 use wry::WebViewBuilderExtUnix;
@@ -146,9 +147,8 @@ struct View {
 /// The Linux [`WebEngine`] backend.
 ///
 /// Owns the tao event loop until [`WebKitGtkEngine::run_until_closed`]
-/// consumes it, mirroring `crate::wkwebview::WkWebViewEngine`; keld-core
-/// takes ownership of the loop once the command-queue design lands (crate
-/// `AGENTS.md`).
+/// consumes it. Uses tao `run_return` so the host can reap supervised children
+/// after the last window closes (KEL-30 concurrent hello app-link).
 pub struct WebKitGtkEngine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<()>>,
@@ -192,20 +192,21 @@ impl WebKitGtkEngine {
         self.gpu_safe_mode
     }
 
-    /// Runs the event loop until the user closes a window, then exits the
-    /// process (tao's `EventLoop::run` owns the thread and never returns).
+    /// Runs the event loop until the user closes the last window, then
+    /// returns so the caller can tear down host-owned app-link state.
     ///
     /// # Errors
     ///
-    /// Returns [`WvError::EventLoop`] if the run loop was already started.
+    /// Returns [`WvError::EventLoop`] if the run loop was already started, or if
+    /// tao reports a non-zero `run_return` status (e.g. display disconnect).
     pub fn run_until_closed(mut self) -> Result<(), WvError> {
-        let Some(event_loop) = self.event_loop.take() else {
+        let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
                 "run loop already started; call run_until_closed once",
             )));
         };
         let mut views = std::mem::take(&mut self.views);
-        event_loop.run(move |event, _, control_flow| {
+        let code = event_loop.run_return(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
             if let Event::WindowEvent {
                 window_id,
@@ -221,6 +222,13 @@ impl WebKitGtkEngine {
                 }
             }
         });
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(WvError::EventLoop(format!(
+                "event loop exited with status {code}"
+            )))
+        }
     }
 
     fn view(&self, id: WebviewId) -> Result<&View, WvError> {

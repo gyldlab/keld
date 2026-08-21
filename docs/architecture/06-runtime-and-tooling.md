@@ -15,9 +15,9 @@
   upstream size work; `runtime: "none"` mode omits it entirely (host-only apps score
   Tauri-class sizes). A `runtime: "node"` escape hatch is deliberately **not** in v1 —
   Bun's Node-compat is the compat plan; revisit only if corpus data forces it.
-- **v0 (KEL-70):** `keld_runtime::Supervisor` provides exponential-backoff restart,
-  crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one CLI-owned Bun
-  child. It does not provide role identity, per-role grants, link binding, strict OS
+- **v0 (KEL-70/KEL-30):** `keld_runtime::Supervisor` provides exponential-backoff restart,
+  crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one host-owned Bun
+  child co-lived with the hello window via `keld_core::HostOwnedHelloSession`. It does not provide role identity, per-role grants, link binding, strict OS
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.

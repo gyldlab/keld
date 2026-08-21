@@ -486,8 +486,9 @@ host    ⇄ app process "app-link"  UDS/named pipe (control) + shm rings (bulk)
 webview ⇄ app process             routed via host (both links), never direct
 ```
 
-Only the app-link control plane exists, and it is implemented in `crates/keld-cli/src/echo_link.rs`
-rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and operates on any `Read + Write`.
+Only the app-link control plane exists, and it is implemented in `crates/keld-core/src/echo_link.rs`
+(CLI diagnostics re-export it) rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and
+operates on any `Read + Write`.
 
 | | Unix | Windows |
 |---|---|---|
@@ -817,23 +818,23 @@ flowchart LR
     accTitle: Keld process and trust topology
     accDescr {
       The trusted Rust host owns privileged resources and mediates webview and Bun-role
-      requests. The live v0 slice has three webview backends, a guard evaluator, one
-      CLI-owned token-authenticated echo link, and KEL-70's generic supervised Bun child
-      restart loop. Host-bound role identity, guarded role dispatch, native services,
-      role-specific lifecycle and an optional sandboxed native-addon worker remain
-      destination behavior.
+      requests. The live v0 slice has three webview backends, a guard evaluator, a
+      host-owned token-authenticated echo link co-lived with the hello window (KEL-30),
+      and KEL-70's generic supervised Bun child restart loop. Full role-bound app-link
+      identity, guarded role dispatch, native services, and an optional sandboxed
+      native-addon worker remain destination behavior.
     }
 
-    subgraph Host["Trusted authority process: keld-host"]
-        Core["TARGET<br/>window registry and lifecycle"]
-        Link["TARGET<br/>host-owned role-bound app-link"]
+    subgraph Host["Trusted authority process: keld-host / keld-core"]
+        Core["PARTIAL LIVE<br/>hello window + lifecycle session<br/>TARGET window registry"]
+        Link["PARTIAL LIVE<br/>host-owned hello echo app-link<br/>TARGET role-bound"]
         Guard["PARTIAL LIVE<br/>guard evaluator exists<br/>TARGET guard-before-handler"]
         Native["SKELETON<br/>guarded native services"]
         Runtime["PARTIAL LIVE<br/>generic Bun supervisor<br/>TARGET role identity"]
     end
 
     subgraph Prototype["Current diagnostic process: keld-cli"]
-        CliLink["LIVE v0<br/>token-authenticated echo listener"]
+        CliDiag["LIVE diagnostic<br/>ipc-echo / ipc-client"]
     end
 
     subgraph UI["Untrusted UI principals"]
@@ -841,13 +842,13 @@ flowchart LR
     end
 
     subgraph JS["Semi-trusted and untrusted code processes"]
-        App["PARTIAL LIVE<br/>one supervised Bun echo child<br/>TARGET primary and named roles"]
+        App["PARTIAL LIVE<br/>supervised Bun echo child<br/>co-lived with hello window<br/>TARGET primary and named roles"]
         Addon["FUTURE OPTIONAL<br/>sandboxed native-addon worker"]
     end
 
     Runtime -->|LIVE v0 supervise, restart and capture logs| App
-    App -->|LIVE v0 HELLO and echo CALL| CliLink
-    App -.->|TARGET role link| Link
+    App -->|LIVE v0 HELLO and echo CALL| Link
+    CliDiag -.->|diagnostic only| Link
     Link -->|TARGET bind principal before dispatch| Guard
     Webview -->|engine bridge: TARGET guarded calls| Guard
     Addon -->|typed broker requests only| Guard
@@ -860,9 +861,9 @@ flowchart LR
     classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px;
     classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px;
 
-    class Core,Link,Runtime,Native target;
-    class Guard gate;
-    class CliLink,Webview,App current;
+    class Native target;
+    class Core,Link,Runtime,Guard gate;
+    class CliDiag,Webview,App current;
     class Addon external;
 ```
 
@@ -880,7 +881,8 @@ Three principal classes, with host-minted instances inside each class:
    but **zero ambient OS authority** in the strict profile — every privileged operation
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
-   CLI-owned supervised primary-child echo slice with restart/backoff/output capture,
+   host-owned supervised primary-child echo slice with restart/backoff/output capture
+   co-lived with the hello window (KEL-30),
    plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
    accepted link to a principal and mints a fresh role generation on restart. It
    does not yet preserve a live renderer through restart, implement window-bound
@@ -975,12 +977,12 @@ everywhere except `keld-wv` backends and the shm module of `keld-ipc`, where eac
   exponential-backoff restart, crash-loop breaker, window/app lifetime binding and
   `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
   generation—not a PID, token or socket name—and old authority is revoked before a
-  successor is provisioned. Current implementation has KEL-70's generic one-child
-  supervision, the fixed CLI echo link, KEL-75 T1b's Unix authenticated role
-  coordinator (`keld_runtime::primary`), and KEL-75 T2's Unix
-  `keld_runtime::registry::RoleRegistry` for one `primary` plus one independent
-  `app-bound` role. Window-bound roles, virtual ports, role grants, strict
-  sandbox admission, and Windows named-pipe/DACL bootstrap remain later
+  successor is provisioned.   Current implementation has KEL-70's generic one-child
+  supervision, the host-owned concurrent echo app-link (KEL-30), KEL-75 T1b's
+  Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
+  Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
+  independent `app-bound` role. Window-bound roles, virtual ports, role grants,
+  strict sandbox admission, and Windows named-pipe/DACL bootstrap remain later
   KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
@@ -1070,12 +1072,16 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
-**v0 app-link (KEL-60/KEL-70):** one CLI-owned primary link is a domain socket inside an owner-only (`0o700`) session
+**v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
+`HostOwnedHelloSession`) is a domain socket inside an owner-only (`0o700`) session
 directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
 section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
-`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. Destination
-Windows transport remains `\\.\pipe\keld-<random>` with a current-user DACL.
+`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
+shipping `keld dev` path keeps the listener and supervised Bun live for the hello
+window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
+same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
+current-user DACL.
 
 ## 2. Wire protocol (control plane)
 
@@ -1095,8 +1101,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
-  deadline. Its Unix `BootstrapListener` primitive is now live and used by the CLI echo
-  server and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  deadline.   Its Unix `BootstrapListener` primitive is now live and used by the host-owned
+  echo server (`keld-core`) and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
   observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
   dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain
@@ -1814,9 +1820,9 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   upstream size work; `runtime: "none"` mode omits it entirely (host-only apps score
   Tauri-class sizes). A `runtime: "node"` escape hatch is deliberately **not** in v1 —
   Bun's Node-compat is the compat plan; revisit only if corpus data forces it.
-- **v0 (KEL-70):** `keld_runtime::Supervisor` provides exponential-backoff restart,
-  crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one CLI-owned Bun
-  child. It does not provide role identity, per-role grants, link binding, strict OS
+- **v0 (KEL-70/KEL-30):** `keld_runtime::Supervisor` provides exponential-backoff restart,
+  crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one host-owned Bun
+  child co-lived with the hello window via `keld_core::HostOwnedHelloSession`. It does not provide role identity, per-role grants, link binding, strict OS
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.
@@ -2899,7 +2905,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` / `keld-compat` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -3358,6 +3364,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-compat
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
+
+## KELD-CORE-030
+
+- crate: keld-core
+- message: Host-owned app-link I/O error
+- fix: Check that the temp/session directory is writable.
+
+## KELD-CORE-031
+
+- crate: keld-core
+- message: Host-owned hello session failed
+- fix: Re-run `keld doctor` and fix the reported checks.
+
+## KELD-CORE-032
+
+- crate: keld-core
+- message: Timed out waiting for a Bun ready marker
+- fix: Confirm Bun is on PATH and the project entry speaks kipc.
 
 ---
 
