@@ -1,6 +1,8 @@
 # keld-guard — adds root AGENTS.md
 
-Spec: `docs/architecture/03-security.md`. Security boundary; threat model in crate docs.
+Spec: `docs/architecture/03-security.md`. Security boundary. Threat model lives in
+architecture 03 (and any future dedicated crate threat-model section) — do not claim a
+crate-local threat model doc exists until one is checked in.
 
 - Default-deny: unknown cap/channel/scope, missing manifest → `Deny`. No interim allow.
 - Principals host-minted, unforgeable; webview principals rotate on navigation.

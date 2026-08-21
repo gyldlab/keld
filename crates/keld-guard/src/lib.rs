@@ -1,11 +1,20 @@
 //! keld-guard — the capability engine.
 //!
-//! Every privileged operation in Keld passes through this crate's
-//! `(principal, capability, args) -> Decision` check. Normative spec:
-//! `docs/architecture/03-security.md`.
+//! Normative spec: `docs/architecture/03-security.md`.
 //!
-//! v0: parse `keld.permissions.jsonc` and default-deny `evaluate` for
-//! dotted capabilities (`fs.read`) against path/host scopes.
+//! **Destination:** every privileged host operation passes through this crate's
+//! `(principal, capability, args) -> Decision` check before the handler runs.
+//!
+//! **v0 live callers:** webview media capture (`web.camera` / `web.microphone`)
+//! on the three `keld-wv` backends, and host `fs.read` / `fs.write` via
+//! `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69 / KEL-71). Those
+//! media paths currently pass [`PermissionsManifest::default()`] (empty grants
+//! → default-deny), not a disk-loaded app manifest. `keld-core` depends on this
+//! crate but does not call [`evaluate`]. Echo and host-lifecycle session control
+//! stay ungated on purpose.
+//!
+//! v0 engine surface: parse `keld.permissions.jsonc` and default-deny
+//! [`evaluate`] for dotted capabilities (`fs.read`) against path/host scopes.
 //! [`evaluate`] requires a [`Principal`] and denies anything other than
 //! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
 //! or plugin by omitting identity. Webview-originated media capture must

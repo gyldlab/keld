@@ -1348,8 +1348,11 @@ One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
 
 ## 3. Zero-config feel: the manifest is generated, not hand-written
 
-- `keld dev` runs with a **dev-permissive profile + recorder**: every would-be denial
-  is allowed but recorded with a stack.
+- **Destination:** `keld dev` runs with a **dev-permissive profile + recorder**: every
+  would-be denial is allowed but recorded with a stack.
+  **v0:** no dev-permissive profile and no denial recorder exist in the workspace;
+  `evaluate` remains default-deny for the live call sites (media + host `fs`), and
+  echo / lifecycle stay ungated as in §1.
 - `keld doctor --permissions` (and `keld build`) is **planned**: diffs recorded
   usage against the manifest and prints exact JSON patches ("your app called
   fs.read('~/Library/…'): add `$APPDATA/**` or change the call"). v0 `keld doctor`
