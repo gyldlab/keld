@@ -70,7 +70,7 @@ tempfile = "3"
 # Purpose: CSPRNG for the kipc v2 HELLO session token. `std::random` is
 #   unstable on 1.93 (rust-lang/rust#130703). `/dev/urandom` is Unix-only;
 #   Windows ProcessPrng would be `unsafe` in Keld code (forbidden outside
-#   keld-wv backends / keld-ipc shm).
+#   keld-wv backends; keld-ipc shm once that module exists).
 # Alternatives rejected: (a) getrandom 0.2 — older `getrandom()` API; 0.4 is
 #   current (`fill`), MSRV 1.85 ≤ 1.93; (b) `rand` — extra surface; (c)
 #   `uuid` — 16 bytes, wrong type; (d) `HashMap` `RandomState` — not a CSPRNG
@@ -97,9 +97,9 @@ sha2 = "0.10"
 [workspace.lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"
-# `deny` rather than `forbid` so the two sanctioned locations (`keld-wv` platform
-# backends, `keld-ipc::shm`) can opt in with an explicit, reviewable module-scope
-# `#[allow(unsafe_code)]` + `// SAFETY:` proofs, per AGENTS.md.
+# `deny` rather than `forbid` so the sanctioned location (`keld-wv` platform backends
+# today; `keld-ipc::shm` once that module exists) can opt in with an explicit,
+# reviewable module-scope `#[allow(unsafe_code)]` + `// SAFETY:` proof, per AGENTS.md.
 unsafe_code = "deny"
 
 [workspace.lints.clippy]
