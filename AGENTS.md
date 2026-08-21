@@ -70,7 +70,7 @@ is `docs/architecture/01-overview.md` §1.
 
 | Crate | Role |
 |---|---|
-| keld-core | Event loop, windows, lifecycle — spec 01 |
+| keld-core | Hello window + lifecycle session; TARGET event loop integration, window registry — spec 01 |
 | keld-wv | WebEngine; wkwebview/webview2/webkitgtk; TARGET cef — spec 05; `AGENTS.md` |
 | keld-ipc | kipc framing/codecs; TARGET channel registry + shm — spec 02; `AGENTS.md` |
 | keld-guard | Capabilities, manifest, scopes — spec 03; `AGENTS.md` |
