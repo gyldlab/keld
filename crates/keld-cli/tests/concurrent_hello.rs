@@ -3,7 +3,6 @@
 #![allow(clippy::expect_used)]
 
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -23,7 +22,7 @@ fn host_owned_session_keeps_bun_alive_and_second_echo_after_window_phase() {
         format!(
             r#"
 import {{ AppLinkSession }} from "./kipc";
-import {{ watchFile, existsSync }} from "node:fs";
+import {{ watchFile, unwatchFile, existsSync }} from "node:fs";
 
 const link = process.env.KELD_APP_LINK;
 if (!link) {{
@@ -37,8 +36,14 @@ try {{
   console.log("concurrent-ready");
   const again = {marker_lit:?};
   await new Promise<void>((resolve, reject) => {{
+    let started = false;
+    const onChange = () => {{
+      void tryEcho();
+    }};
     const tryEcho = async () => {{
-      if (!existsSync(again)) return;
+      if (started || !existsSync(again)) return;
+      started = true;
+      unwatchFile(again, onChange);
       try {{
         const second = await session.echo({{ message: "after-window", count: 2 }});
         console.log(
@@ -49,9 +54,7 @@ try {{
         reject(e);
       }}
     }};
-    watchFile(again, {{ interval: 20 }}, () => {{
-      void tryEcho();
-    }});
+    watchFile(again, {{ interval: 20 }}, onChange);
     void tryEcho();
   }});
   await new Promise(() => {{}});
@@ -96,6 +99,7 @@ try {{
         session.output().stdout
     );
 
+    #[cfg(unix)]
     let link = session.link().to_owned();
     session.shutdown().expect("shutdown");
     assert!(
@@ -104,6 +108,7 @@ try {{
     );
     #[cfg(unix)]
     {
+        use std::path::Path;
         let endpoint = link.split('#').next().expect("endpoint");
         let socket = Path::new(endpoint);
         assert!(

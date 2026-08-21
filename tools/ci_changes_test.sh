@@ -125,6 +125,11 @@ for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/k
         exit 1
     fi
 done
+if grep -Fxq "crates/keld-compat" <<<"$actual_host_dirs"; then
+    echo "FAIL: host-dirs must exclude keld-runtime's cargo kind=dev edge to keld-compat" >&2
+    printf '%s\n' "$actual_host_dirs" >&2
+    exit 1
+fi
 echo "ok: cargo metadata derives current keld-host closure"
 
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/keld-ci-changes.XXXXXX")"
