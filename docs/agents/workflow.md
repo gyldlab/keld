@@ -56,8 +56,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    optional sections. Strip every template HTML comment from the submitted PR
    body. Append any learnings to `docs/agents/learnings.md` in the same PR.
    Post actual gate output, unverified conditions, commit/PR links and follow-up issue
-   IDs. Move the issue to Done only when every acceptance criterion is met; otherwise
-   leave it In Progress or mark it Blocked with the exact dependency.
+   IDs. Before finishing, leave a Linear `## Branch handoff` block per root
+   `AGENTS.md` § Branch + Linear handoff (merge intent is `do-not-merge` /
+   `merge-when-CI-green` / `merge-after:<deps>` / `human-decide` — not every branch
+   merges). Move the issue to Done only when every acceptance criterion is met;
+   otherwise leave it In Progress or mark it Blocked with the exact dependency.
 
 ## Parallelism rules
 
