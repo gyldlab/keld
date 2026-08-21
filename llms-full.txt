@@ -925,14 +925,16 @@ Why this shape (each competitor fails differently — see `docs/research/00-land
 
 ## 3. Crate & package topology
 
-Cargo workspace (all crates `keld-*`, lib names `keld_*`):
+Cargo workspace (all crates `keld-*`, lib names `keld_*`). Role and `Depends on` state
+what each crate **is** today; `TARGET` marks specified destination scope that is not
+implemented. The per-crate status legend is the §1 diagram above.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `keld-core` | host runtime: event loop integration, window registry, lifecycle, plugin host | wv, ipc, guard, native, runtime |
+| `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard (TARGET: native, runtime) |
 | `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | — |
-| `keld-ipc` | kipc protocol: framing, codecs, channel registry, shm rings, schema runtime | — |
-| `keld-native` | native APIs: menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, fs-scoped, secure storage | guard |
+| `keld-ipc` | kipc protocol: framing, codecs; TARGET channel registry, shm rings, schema runtime | — |
+| `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | guard |
 | `keld-guard` | capability engine: manifest parsing, scope matching, per-window/per-principal grants, audit log | — |
 | `keld-runtime` | app-process-family supervisor: Bun discovery/pinning, named role spawn, health, per-role principal/lifecycle/restart policy, stdio capture | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |

@@ -64,13 +64,17 @@ distinction would otherwise be ambiguous.
 
 ## Repo map
 
+Role is what the crate **is** today. `TARGET` marks specified destination scope that is
+not implemented; `SKELETON` marks a name-only module surface. Per-crate current status
+is `docs/architecture/01-overview.md` §1.
+
 | Crate | Role |
 |---|---|
 | keld-core | Event loop, windows, lifecycle — spec 01 |
-| keld-wv | WebEngine; wkwebview/webview2/webkitgtk/cef — spec 05; `AGENTS.md` |
-| keld-ipc | kipc framing/codecs/channels/shm — spec 02; `AGENTS.md` |
+| keld-wv | WebEngine; wkwebview/webview2/webkitgtk; TARGET cef — spec 05; `AGENTS.md` |
+| keld-ipc | kipc framing/codecs; TARGET channel registry + shm — spec 02; `AGENTS.md` |
 | keld-guard | Capabilities, manifest, scopes — spec 03; `AGENTS.md` |
-| keld-native | menu/tray/dialog/process/PTY brokers; guard-checked — spec 05 |
+| keld-native | guard-checked brokers; `fs` live, rest SKELETON — spec 05 |
 | keld-runtime | Bun child-role supervisor — spec 06 |
 | keld-update | bsdiff+zstd, signed manifests — spec 06 |
 | keld-pack | Installers, signing, cross-compile — spec 06 |
@@ -137,7 +141,7 @@ expansion, and an invalid `matrix.os` guard fails the workflow file so rustc nev
 
 ## Rust
 - Lints: workspace `Cargo.toml` — `clippy::pedantic`, `missing_docs` warn (CI denies). A new `allow` MUST have an inline justification.
-- `unsafe` MUST appear only in `keld-wv` backends + `keld-ipc` shm; `#![deny(unsafe_op_in_unsafe_fn)]`, `// SAFETY:` proof. Else = human review.
+- `unsafe` MUST appear only in `keld-wv` backends (and in `keld-ipc` shm once that module exists; it does not today); `#![deny(unsafe_op_in_unsafe_fn)]`, `// SAFETY:` proof. Else = human review.
 - Agents MUST NOT add `unwrap`/`expect`/`panic!` in libs. Typed errors: hand-rolled `Display` + `KELD-*` codes (not `thiserror`). `expect` MAY appear in tests + `keld-cli` top-level (state invariant).
 - Errors MUST state the fix — see `docs/architecture/07-agent-experience.md` §2; model `DenyReason`.
 - Hot paths (kipc, event-loop, guard): callbacks/state machines. Agents MUST NOT add an async runtime or steady-state alloc there. Async MAY appear only in cold tooling (cli/pack/update).
