@@ -221,6 +221,41 @@ the canonical lifecycle in [`docs/agents/workflow.md`](docs/agents/workflow.md).
 is unavailable or permissions prevent an update, agents MUST record that limitation in
 the PR or handoff and MUST NOT invent a ticket update.
 
+### Branch + Linear handoff (MUST)
+
+Paste chrome for multi-device agents lives in Prompt Tracker
+(`0monish/prompt-tracker` `prompts/SHARED/branch-linear-handoff.md`). Monorepo agents
+who never see that paste MUST still follow these rules — Linear is the shared merge-intent
+record across devices.
+
+1. If the agent creates or uses a git branch in `gyldlab/keld`, `0monish/keld-research`
+   (nested `docs/research`), or `0monish/prompt-tracker`, it MUST comment on the relevant
+   Linear issue(s) **before finishing** with a `## Branch handoff` block (template below).
+2. Agents MUST NOT silently abandon a branch with no Linear note.
+3. Agents MUST NOT auto-merge to `main` unless the paste explicitly authorizes
+   `MERGE: yes` / merge-when-green for that ticket, **or** Linear already records
+   `Merge: merge-when-CI-green`, required checks are green, and the paste allows merge.
+4. Research-note commits still follow Private research / `just research-push`. An incidental
+   **product** (`gyldlab/keld`) branch from research defaults to
+   `Merge: do-not-merge` or `human-decide` plus a Linear handoff unless the prompt
+   explicitly authorizes a PR merge.
+5. Not every branch should merge to `main`. Prefer `merge-after:<deps>` or `human-decide`
+   over guessing. Multi-device agents MUST read the latest Branch handoff comment before
+   creating a duplicate branch or merging.
+
+```text
+## Branch handoff
+- Repo:
+- Branch:
+- Tip SHA:
+- PR: (url or none)
+- Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
+- Depends on: (tickets/PRs/notes or none)
+- Reason:
+```
+
+One block per branch (one per repo when several were touched).
+
 First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 1. Apply the Engineering principles above across host / Bun child / webview; Keld-specific architecture additionally changes who owns a handle, who can crash whom, or who can mint a principal. If it changes none of those facts, it is not architecture.
 2. Agents MUST treat wry layout, Tauri ACL, Electron docs, and platform event loops as evidence of facts — not templates. Copying crate graphs, tokio-in-core, ACL wildcards, or in-process Node is cargo-cult.
