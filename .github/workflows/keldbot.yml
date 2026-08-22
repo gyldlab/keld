@@ -4,7 +4,11 @@ name: KeldBot                    # Actions tab mein jo naam dikhega
 
 on:                              # DOORBELL — kab jagana hai robot ko 🛎️
   pull_request:
-    types: [opened]              # sirf naye PR pe, har push pe nahi (spam se bachao)
+    types: [opened, edited]      # naya PR ya description edit — synchronize (naya push) pe nahi, spam se bachao
+
+concurrency:                     # ek PR pe do edits jaldi-jaldi ho toh purana run cancel, race/duplicate comment na ho
+  group: keldbot-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:                     # DEFAULT-DENY! 🎉 Sirf ye hi power do:
   pull-requests: write           # comment + label karne ki ijaazat
@@ -18,27 +22,71 @@ jobs:
         uses: actions/github-script@v7      # GitHub ka built-in JS runner
         with:
           script: |
+            // Template ke saare required headings — .github/PULL_REQUEST_TEMPLATE.md se (source of truth).
+            // Naya heading template mein add ho toh yahan bhi add karo, warna gatekeeper drift ho jaayega.
+            const REQUIRED = ["Summary", "Spec refs", "Review gates", "Tests", "Platforms", "Perf impact"];
+            const MARKER = "<!-- keldbot:template-check -->";
+            const LABEL = "needs-template-fix";
+
             const body = context.payload.pull_request.body ?? "";
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
 
-            const required = ["Summary", "Spec refs", "Review gates", "Tests"];
-            const missing = required.filter((h) => !body.includes(h));
+            // Sirf heading ka naam dhoondna kaafi nahi — leftover template boilerplate (jaise
+            // "<!-- 1–3 bullets -->") bhi "## Summary" ke saath aata hai aur khaali section ko pass kara dega.
+            // Isliye har heading ke neeche ka actual content nikaalo, HTML comments strip karo, phir check karo.
+            function sectionContent(heading) {
+              const headingRe = new RegExp(`^##\\s+${heading}\\s*$`, "m");
+              const match = headingRe.exec(body);
+              if (!match) return null; // heading hi missing hai
 
-            if (missing.length === 0) {
-              core.info("Template complete hai ✅");   // log only, koi spam nahi
+              const afterHeading = body.slice(match.index + match[0].length);
+              const nextHeadingIdx = afterHeading.search(/^##\s+/m);
+              const raw = nextHeadingIdx === -1 ? afterHeading : afterHeading.slice(0, nextHeadingIdx);
+              return raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+            }
+
+            const missing = REQUIRED.filter((h) => {
+              const content = sectionContent(h);
+              return content === null || content.length === 0;
+            });
+
+            // Pichla bot comment dhoondo (agar hai) taaki har edit pe naya comment na banaye — update karo instead.
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find((c) => c.body?.includes(MARKER));
+
+            if (missing.length > 0) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
+
+              const commentBody =
+                `${MARKER}\n👋 Ye sections PR description mein missing ya khaali hain: **${missing.join(", ")}**\n\n` +
+                `Template yahan hai: .github/PULL_REQUEST_TEMPLATE.md — edit karke add kar do, phir description save karte hi main dobara check karunga.`;
+
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number, body: commentBody });
+              }
+
+              core.setFailed(`Missing/empty required PR template sections: ${missing.join(", ")}`);
               return;
             }
 
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              labels: ["needs-template-fix"],
-            });
+            // Sab sections complete hain — agar pehle label laga tha toh hata do, purana comment resolve kar do.
+            try {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number, name: LABEL });
+            } catch (err) {
+              if (err.status !== 404) throw err; // label pehle se nahi tha, koi baat nahi
+            }
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: `👋 Ye sections PR description mein missing hain: **${missing.join(", ")}**\n\n` +
-                    `Template yahan hai: .github/PULL_REQUEST_TEMPLATE.md — edit karke add kar do!`,
-            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body: `${MARKER}\n✅ Template ab complete hai, thanks for fixing it!`,
+              });
+            }
+
+            core.info("Template complete hai ✅");
