@@ -407,6 +407,12 @@ impl VirtualPortRegistry {
                 presented: target,
             });
         }
+        if !self.is_generation_live(target) {
+            return Err(VirtualPortError::StaleGeneration {
+                capability,
+                presented: target,
+            });
+        }
         let pair = self.pair_mut(capability.generation)?;
         if pair.revoked {
             return Err(VirtualPortError::Closed { capability });
@@ -563,8 +569,7 @@ impl VirtualPortRegistry {
     pub fn revoke_generation(&mut self, principal: RolePrincipal) {
         self.mark_generation_revoked(principal);
         self.live_generations.remove(&principal);
-        let mut to_remove = Vec::new();
-        for (generation, pair) in &mut self.pairs {
+        for pair in self.pairs.values_mut() {
             if pair.revoked {
                 continue;
             }
@@ -586,11 +591,7 @@ impl VirtualPortRegistry {
                 pair.revoked = true;
                 pair.end_a.queue.clear();
                 pair.end_b.queue.clear();
-                to_remove.push(*generation);
             }
-        }
-        for generation in to_remove {
-            self.pairs.remove(&generation);
         }
     }
 
@@ -778,6 +779,42 @@ mod tests {
     }
 
     #[test]
+    fn peer_observes_generation_revoked_once_after_revoke() {
+        let mut registry = VirtualPortRegistry::new();
+        let p1 = primary(1);
+        let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
+        let (_, cap_a) = registry.create_pair(p1, a1).expect("create pair");
+        registry.revoke_generation(p1);
+        let reason = registry
+            .poll_disconnect(cap_a, a1)
+            .expect("poll disconnect")
+            .expect("generation revoked");
+        assert_eq!(reason, PortDisconnectReason::GenerationRevoked);
+        assert!(
+            registry
+                .poll_disconnect(cap_a, a1)
+                .expect("second poll")
+                .is_none(),
+            "revocation disconnect must be observed exactly once"
+        );
+    }
+
+    #[test]
+    fn transfer_rejects_unregistered_target() {
+        let mut registry = VirtualPortRegistry::new();
+        let p1 = primary(1);
+        let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
+        let (_, cap_a) = registry.create_pair(p1, a1).expect("create pair");
+        let unregistered = primary(99);
+        let err = registry
+            .transfer(cap_a, a1, unregistered)
+            .expect_err("unregistered transfer target");
+        assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
+    }
+
+    #[test]
     fn contract_fixture_exactly_once_disconnect_on_peer_close() {
         let mut registry = VirtualPortRegistry::new();
         let p1 = primary(1);
@@ -885,8 +922,10 @@ mod tests {
             .send(cap_p, p1, b"x")
             .expect_err("send after peer close");
         assert!(err.to_string().contains("KELD-RUNTIME-006"), "{err}");
+        let a2 = app_bound(2);
+        registry.register_generation(a2);
         let err = registry
-            .transfer(cap_p, p1, app_bound(2))
+            .transfer(cap_p, p1, a2)
             .expect_err("transfer after peer close");
         assert!(err.to_string().contains("KELD-RUNTIME-006"), "{err}");
         let err = registry.close(cap_a, a1).expect_err("duplicate close");
