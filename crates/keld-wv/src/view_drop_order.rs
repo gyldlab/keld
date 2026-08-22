@@ -3,11 +3,18 @@
 //! Platform bindings require the webview to release before the host window
 //! closes. Rust drops struct fields in declaration order, so `webview` MUST be
 //! declared before `window` in every `View` struct.
+//!
+//! wry-backed [`View`] types MUST use `#[repr(C)]` so field offsets match
+//! declaration order under the default `repr(Rust)` size optimization (`WebKitGTK`
+//! proved `offset_of!(webview) > offset_of!(window)` with correct source order but
+//! no `repr(C)`).
 
 /// Asserts that `$ty` declares `webview` before `window`.
 ///
 /// Each wry-backed backend MUST call this from a `#[cfg(test)]` module against
-/// its real [`View`] type so swapping fields fails CI on that platform.
+/// its real [`View`] type so swapping fields fails CI on that platform. The
+/// type MUST be `#[repr(C)]` — see module docs.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 macro_rules! assert_wry_view_field_order {
     ($ty:ty) => {
         assert!(
@@ -16,6 +23,7 @@ macro_rules! assert_wry_view_field_order {
         );
     };
 }
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) use assert_wry_view_field_order;
 
 #[cfg(test)]

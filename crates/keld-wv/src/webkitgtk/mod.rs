@@ -139,6 +139,7 @@ pub fn probe_gpu_stack() -> GpuSafeMode {
 }
 
 /// One live webview and the host window it fills (v0: one per window).
+#[repr(C)]
 struct View {
     webview: wry::WebView,
     window: Window,

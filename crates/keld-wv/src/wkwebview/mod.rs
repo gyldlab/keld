@@ -33,6 +33,7 @@ use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
 
 /// One live webview and the host window it fills (v0: one per window).
+#[repr(C)]
 struct View {
     webview: wry::WebView,
     window: Window,
