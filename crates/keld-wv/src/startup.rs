@@ -6,7 +6,7 @@
 //!
 //! This trace measures **construction and navigation-completion diagnostics**
 //! on a post-`WkWebViewEngine::new` clock. A titled native window (`window-visible`
-//! / `MainWindowHandle`) is the wrong metric — on Windows WebView2 it can fire
+//! / `MainWindowHandle`) is the wrong metric — on Windows `WebView2` it can fire
 //! during `WebViewBuilder::build` before content paints (see
 //! `docs/engineering/budget-scoreboard.md` § "Time to first paint", KEL-62).
 //!
