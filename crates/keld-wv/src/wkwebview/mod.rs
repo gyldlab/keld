@@ -296,27 +296,33 @@ mod startup_tests {
     }
 
     #[test]
-    fn page_load_handler_marks_nav_finished_on_finished() {
+    fn page_load_handler_marks_nav_finished_on_finished() -> Result<(), String> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
         let handler = page_load_trace_handler(Arc::clone(&startup));
         handler(wry::PageLoadEvent::Finished, String::new());
-        let guard = startup.lock().expect("startup lock");
-        assert!(
-            guard.offset(StartupPhase::NavFinished).is_some(),
-            "Finished must mark nav_finished; omitting the handler leaves it unset"
-        );
+        let guard = startup
+            .lock()
+            .map_err(|e| format!("startup lock poisoned: {e}"))?;
+        if guard.offset(StartupPhase::NavFinished).is_none() {
+            return Err(String::from(
+                "Finished must mark nav_finished; omitting the handler leaves it unset",
+            ));
+        }
+        Ok(())
     }
 
     #[test]
-    fn page_load_handler_ignores_started_for_nav_finished() {
+    fn page_load_handler_ignores_started_for_nav_finished() -> Result<(), String> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
         let handler = page_load_trace_handler(Arc::clone(&startup));
         handler(wry::PageLoadEvent::Started, String::new());
-        let guard = startup.lock().expect("startup lock");
-        assert!(
-            guard.offset(StartupPhase::NavFinished).is_none(),
-            "Started must not mark nav_finished"
-        );
+        let guard = startup
+            .lock()
+            .map_err(|e| format!("startup lock poisoned: {e}"))?;
+        if guard.offset(StartupPhase::NavFinished).is_some() {
+            return Err(String::from("Started must not mark nav_finished"));
+        }
+        Ok(())
     }
 
     #[test]

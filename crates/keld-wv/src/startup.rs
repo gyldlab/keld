@@ -6,8 +6,9 @@
 //!
 //! This trace measures **construction and navigation-completion diagnostics**
 //! on a post-`WkWebViewEngine::new` clock. A titled native window (`window-visible`
-//! / `MainWindowHandle`) is the wrong metric — it fires during `WebViewBuilder::build`
-//! on Windows before content paints.
+//! / `MainWindowHandle`) is the wrong metric — on Windows WebView2 it can fire
+//! during `WebViewBuilder::build` before content paints (see
+//! `docs/engineering/budget-scoreboard.md` § "Time to first paint", KEL-62).
 //!
 //! wry `PageLoadEvent::Finished` is **navigation completion**, not composited
 //! first paint. `PageLoadEvent::Started` is navigation begin and MUST NOT count.
@@ -192,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn finished_is_nav_finished_not_window_created() {
+    fn finished_is_nav_finished_not_window_created() -> Result<(), String> {
         assert_eq!(
             phase_for_page_load(PageLoad::Finished),
             Some(StartupPhase::NavFinished)
@@ -210,10 +211,10 @@ mod tests {
         trace.on_page_load(PageLoad::Finished);
         let window = trace
             .offset(StartupPhase::WindowCreated)
-            .expect("window_created");
+            .ok_or("window_created must be marked")?;
         let nav = trace
             .offset(StartupPhase::NavFinished)
-            .expect("nav_finished");
+            .ok_or("nav_finished must be marked after Finished")?;
         assert!(
             nav >= window,
             "nav_finished must not precede window_created: {nav:?} vs {window:?}"
@@ -229,15 +230,19 @@ mod tests {
             !report.contains("first_paint="),
             "KEL-64 first paint is external beacon, not this trace: {report}"
         );
+        Ok(())
     }
 
     #[test]
-    fn nav_finished_first_write_wins() {
+    fn nav_finished_first_write_wins() -> Result<(), String> {
         let mut trace = StartupTrace::new();
         trace.on_page_load(PageLoad::Finished);
-        let first = trace.offset(StartupPhase::NavFinished).expect("first");
+        let first = trace
+            .offset(StartupPhase::NavFinished)
+            .ok_or("nav_finished must be set after Finished")?;
         trace.on_page_load(PageLoad::Finished);
         assert_eq!(trace.offset(StartupPhase::NavFinished), Some(first));
+        Ok(())
     }
 
     #[test]
