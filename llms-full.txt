@@ -1141,10 +1141,13 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   u16 handles resolved at handshake from schema names (string names never travel per-call).
 - **Cancellation**: `STREAM_CANCEL`/`CALL_CANCEL` carry corr id; handlers observe an
   `AbortSignal` in JS, a `CancelToken` in Rust.
-- **Backpressure**: per-channel credit windows granted in `GRANT` frames (SPSC credit
-  counting); senders suspend (JS: promise; Rust: state-machine pause) at zero credit.
-  No unbounded queues anywhere — Electron's frame-starving chatty-IPC failure is
-  structurally impossible.
+- **Backpressure (destination):** per-channel credit windows granted in `GRANT`
+  frames (SPSC credit counting); senders suspend (JS: promise; Rust:
+  state-machine pause) at zero credit. The design goal is no unbounded queues
+  anywhere — Electron's frame-starving chatty-IPC failure becomes structurally
+  impossible once credit windows ship. **v0:** `FrameKind::Grant` exists in the
+  wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
+  and the readiness-driven reader are the current backpressure surface (see §7).
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
