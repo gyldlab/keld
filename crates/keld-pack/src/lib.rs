@@ -1,9 +1,13 @@
-//! keld-pack — packaging and cross-compilation.
+//! keld-pack — packaging and cross-compilation (destination).
 //!
-//! Because the host ships prebuilt per platform and app code is portable JS,
-//! packaging is data assembly + signing — enabling `keld build --target ...`
-//! for every platform from one machine (pure-Rust installer authoring).
-//! Normative spec: `docs/architecture/06-runtime-and-tooling.md` §3.
+//! **v0:** this crate exports [`Format`] only — no installer authoring,
+//! signing, or cross-target bundling yet. `[dependencies]` is empty.
+//!
+//! **Destination:** because the host ships prebuilt per platform and app code
+//! is portable JS, packaging is data assembly + signing — enabling
+//! `keld build --target ...` for every platform from one machine
+//! (pure-Rust installer authoring). Normative spec:
+//! `docs/architecture/06-runtime-and-tooling.md` §3.
 
 /// Installer formats keld-pack can author.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
