@@ -143,3 +143,59 @@ If no fixes were applied, skip the success template or use a neutral review-comp
 ## 5. Optional Reaction
 
 If useful, react to the main CodeRabbit comment with 👍 after the summary is posted.
+
+## 6. Resolve Review Threads
+
+After fixes land (same PR or a follow-up), resolve the corresponding GitHub review threads. Agents MUST do this before calling CodeRabbit work done.
+
+### List unresolved CodeRabbit threads
+
+```bash
+owner=$(gh repo view --json owner --jq '.owner.login')
+repo=$(gh repo view --json name --jq '.name')
+
+gh api graphql -f owner="$owner" -f repo="$repo" -F pr="$pr_number" -f query='
+  query($owner:String!, $repo:String!, $pr:Int!) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100) {
+          nodes {
+            id
+            isResolved
+            comments(first:1) {
+              nodes { author { login } path line }
+            }
+          }
+        }
+      }
+    }
+  }
+' --jq '
+  .data.repository.pullRequest.reviewThreads.nodes[]
+  | select(.isResolved == false)
+  | select(.comments.nodes[0].author.login == "coderabbitai"
+      or .comments.nodes[0].author.login == "coderabbit[bot]"
+      or .comments.nodes[0].author.login == "coderabbitai[bot]")
+  | {id, path: .comments.nodes[0].path, line: .comments.nodes[0].line}
+'
+```
+
+### Resolve one thread
+
+```bash
+gh api graphql -f query='
+  mutation($threadId:ID!) {
+    resolveReviewThread(input: {threadId: $threadId}) {
+      thread { isResolved }
+    }
+  }
+' -f threadId="$thread_id"
+```
+
+When a fix merged in a follow-up PR, comment on the **original** PR before resolving:
+
+```bash
+gh pr comment "$original_pr" --body "Resolved CodeRabbit thread: fix landed in #<follow-up> (merge SHA \`<sha>\` on \`main\`)."
+```
+
+Do not resolve threads whose fixes have not landed.

@@ -113,6 +113,7 @@ When user requests implementation + review:
 4. Fix critical and warning issues systematically
 5. Re-run review to verify fixes
 6. Repeat until clean or only info-level issues remain
+7. Resolve addressed CodeRabbit GitHub review threads on the PR (and on an earlier PR when a follow-up merged the fix) per `.agents/skills/autofix/github.md` § Resolve review threads before calling work done
 
 ### 5. Review Specific Changes
 
