@@ -13,6 +13,8 @@ mod engine;
 mod error;
 mod hello;
 mod media;
+#[cfg(target_os = "macos")]
+mod startup;
 #[cfg(test)]
 mod view_drop_order;
 #[cfg(target_os = "linux")]

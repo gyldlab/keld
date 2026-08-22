@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
@@ -31,6 +32,7 @@ use crate::WebviewId;
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
+use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
 /// One live webview and the host window it fills (v0: one per window).
 #[repr(C)]
@@ -49,6 +51,8 @@ pub struct WkWebViewEngine {
     event_loop: Option<EventLoop<()>>,
     views: BTreeMap<u32, View>,
     next_id: u32,
+    /// KEL-62: navigation completion (`PageLoadEvent::Finished`), not window create.
+    startup: Arc<Mutex<StartupTrace>>,
 }
 
 impl fmt::Debug for WkWebViewEngine {
@@ -68,15 +72,19 @@ impl WkWebViewEngine {
     /// contract, enforced by tao (which aborts otherwise).
     #[must_use]
     pub fn new() -> Self {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let event_loop = EventLoop::new();
+        mark_startup(&startup, StartupPhase::EventLoop);
         Self {
-            event_loop: Some(EventLoop::new()),
+            event_loop: Some(event_loop),
             views: BTreeMap::new(),
             next_id: 1,
+            startup,
         }
     }
 
     /// Runs the event loop until the user closes the last window, then
-    /// returns so the caller can tear down host-owned app-link state.
+    /// returns so the caller can reap supervised children after the last window closes.
     ///
     /// # Errors
     ///
@@ -105,6 +113,10 @@ impl WkWebViewEngine {
                 }
             }
         });
+        match self.startup.lock() {
+            Ok(guard) => guard.emit_if_nav_never_finished(),
+            Err(poisoned) => poisoned.into_inner().emit_if_nav_never_finished(),
+        }
         if code == 0 {
             Ok(())
         } else {
@@ -152,6 +164,7 @@ impl WebEngine for WkWebViewEngine {
             .with_closable(true)
             .build(event_loop)
             .map_err(|e| WvError::Window(e.to_string()))?;
+        mark_startup(&self.startup, StartupPhase::WindowCreated);
 
         // Developer extras are debug-only until keld-guard owns `web.devtools`.
         let builder = wry::WebViewBuilder::new();
@@ -166,6 +179,9 @@ impl WebEngine for WkWebViewEngine {
             PermissionsManifest::default(),
             webview_media_principal(WebviewId(id)),
         );
+        // KEL-62: navigation completion trace — Finished, not titled HWND.
+        let builder =
+            builder.with_on_page_load_handler(page_load_trace_handler(Arc::clone(&self.startup)));
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
@@ -173,6 +189,7 @@ impl WebEngine for WkWebViewEngine {
         let webview = builder
             .build(&window)
             .map_err(|e| WvError::Webview(e.to_string()))?;
+        mark_startup(&self.startup, StartupPhase::WebviewAttached);
 
         self.next_id += 1;
         self.views.insert(id, View { webview, window });
@@ -224,6 +241,107 @@ impl WebEngine for WkWebViewEngine {
 }
 
 impl WkWebViewEngineExt for WkWebViewEngine {}
+
+fn mark_startup(startup: &Mutex<StartupTrace>, phase: StartupPhase) {
+    let mut guard = match startup.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.mark(phase);
+}
+
+/// wry `PageLoadEvent::Finished` → navigation completion (`nav_finished`).
+fn page_load_trace_handler(
+    startup: Arc<Mutex<StartupTrace>>,
+) -> impl Fn(wry::PageLoadEvent, String) + 'static {
+    move |event, _url| {
+        let mut guard = match startup.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let had_nav = guard.offset(StartupPhase::NavFinished).is_some();
+        guard.on_page_load(wry_page_load(&event));
+        if !had_nav && guard.offset(StartupPhase::NavFinished).is_some() && trace_enabled() {
+            eprintln!("{}", guard.report());
+        }
+    }
+}
+
+/// KEL-62: wry Finished → navigation completion. Started is navigation begin.
+fn wry_page_load(event: &wry::PageLoadEvent) -> PageLoad {
+    match event {
+        wry::PageLoadEvent::Started => PageLoad::Started,
+        wry::PageLoadEvent::Finished => PageLoad::Finished,
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{page_load_trace_handler, wry_page_load};
+    use crate::startup::{PageLoad, StartupPhase, StartupTrace, phase_for_page_load};
+
+    #[test]
+    fn wry_finished_maps_to_nav_finished_started_does_not() {
+        assert_eq!(
+            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Finished)),
+            Some(StartupPhase::NavFinished)
+        );
+        assert_eq!(
+            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Started)),
+            None,
+            "KEL-62: Started is navigation begin, not completion"
+        );
+    }
+
+    #[test]
+    fn page_load_handler_marks_nav_finished_on_finished() -> Result<(), String> {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let handler = page_load_trace_handler(Arc::clone(&startup));
+        handler(wry::PageLoadEvent::Finished, String::new());
+        let guard = startup
+            .lock()
+            .map_err(|e| format!("startup lock poisoned: {e}"))?;
+        if guard.offset(StartupPhase::NavFinished).is_none() {
+            return Err(String::from(
+                "Finished must mark nav_finished; omitting the handler leaves it unset",
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn page_load_handler_ignores_started_for_nav_finished() -> Result<(), String> {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let handler = page_load_trace_handler(Arc::clone(&startup));
+        handler(wry::PageLoadEvent::Started, String::new());
+        let guard = startup
+            .lock()
+            .map_err(|e| format!("startup lock poisoned: {e}"))?;
+        if guard.offset(StartupPhase::NavFinished).is_some() {
+            return Err(String::from("Started must not mark nav_finished"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nav_never_finished_report_condition() {
+        let mut trace = StartupTrace::new();
+        trace.mark(StartupPhase::EventLoop);
+        assert!(
+            trace.offset(StartupPhase::NavFinished).is_none(),
+            "nav_finished unset before Finished"
+        );
+        let report = trace.report();
+        assert!(report.contains("nav_finished=never"), "{report}");
+        trace.on_page_load(PageLoad::Finished);
+        assert!(
+            trace.offset(StartupPhase::NavFinished).is_some(),
+            "Finished must set nav_finished for terminal-path guard"
+        );
+    }
+}
 
 /// Opens a window from `spec` and runs until the user closes it.
 ///

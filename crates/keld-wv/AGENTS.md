@@ -28,3 +28,10 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
     navigation MUST present the `GuardInstalled` proof; agents MUST NOT add a
     second navigation path that bypasses it.
   Agents MUST NOT pass `AppProcess` to inherit `/app` media grants.
+- Architecture 01 §5 **first paint** is the KEL-64 external double-rAF image
+  beacon on a pre-spawn monotonic clock — not wry `PageLoadEvent::Finished`,
+  not `WindowBuilder::build`, and not titled HWND / `window-visible` (KEL-62,
+  KEL-64). `PageLoadEvent::Finished` is navigation completion only; the macOS
+  `startup` trace records it as `nav_finished` for construction diagnostics.
+  Dump that trace with `KELD_STARTUP_TRACE=1`. The `startup` module is
+  macOS-only; do not compile it on Linux/Windows (CodeRabbit #10).
