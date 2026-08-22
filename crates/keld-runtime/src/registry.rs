@@ -5,6 +5,8 @@
 //! the reverse. KEL-75 T3 adds host-owned bounded virtual ports between live
 //! authenticated role generations.
 
+use std::collections::VecDeque;
+
 use crate::RuntimeError;
 
 pub use crate::unix_role::{
@@ -22,8 +24,8 @@ pub struct RoleRegistry {
     app_bound: RoleSupervisor,
     virtual_ports: VirtualPortRegistry,
     /// Non-revocation events buffered during [`Self::sync_role_events`].
-    primary_buffered_events: Vec<RoleEvent>,
-    app_bound_buffered_events: Vec<RoleEvent>,
+    primary_buffered_events: VecDeque<RoleEvent>,
+    app_bound_buffered_events: VecDeque<RoleEvent>,
 }
 
 impl RoleRegistry {
@@ -57,8 +59,8 @@ impl RoleRegistry {
                 primary,
                 app_bound,
                 virtual_ports: VirtualPortRegistry::new(),
-                primary_buffered_events: Vec::new(),
-                app_bound_buffered_events: Vec::new(),
+                primary_buffered_events: VecDeque::new(),
+                app_bound_buffered_events: VecDeque::new(),
             }),
             Err(error) => {
                 primary.shutdown();
@@ -142,14 +144,14 @@ impl RoleRegistry {
     #[must_use]
     pub fn try_recv_primary_event(&mut self) -> Option<RoleEvent> {
         self.sync_role_events();
-        self.primary_buffered_events.pop()
+        self.primary_buffered_events.pop_front()
     }
 
     /// Returns the next buffered or queued app-bound lifecycle event.
     #[must_use]
     pub fn try_recv_app_bound_event(&mut self) -> Option<RoleEvent> {
         self.sync_role_events();
-        self.app_bound_buffered_events.pop()
+        self.app_bound_buffered_events.pop_front()
     }
 
     fn sync_role_events(&mut self) {
@@ -172,13 +174,13 @@ fn drain_supervisor_role_events(
     owner: RoleOwner,
     supervisor: &RoleSupervisor,
     virtual_ports: &mut VirtualPortRegistry,
-    buffered_events: &mut Vec<RoleEvent>,
+    buffered_events: &mut VecDeque<RoleEvent>,
 ) {
     while let Some(event) = supervisor.try_recv_event() {
         if let RoleEvent::Revoked { generation, .. } = event {
             virtual_ports.revoke_generation(RolePrincipal::new(owner, generation));
         } else {
-            buffered_events.push(event);
+            buffered_events.push_back(event);
         }
     }
 }
@@ -714,5 +716,37 @@ mod tests {
         registry.shutdown();
         assert_stopped(registry.primary(), "primary");
         assert_stopped(registry.app_bound(), "app-bound");
+    }
+
+    #[test]
+    fn buffered_role_events_preserve_fifo_order() {
+        let generation = RoleGeneration::from_test_counter(1);
+        let mut buffer = VecDeque::new();
+        buffer.push_back(RoleEvent::Provisioned {
+            generation,
+            attempt: 1,
+        });
+        buffer.push_back(RoleEvent::Spawned {
+            generation,
+            pid: 42,
+            attempt: 1,
+        });
+        buffer.push_back(RoleEvent::LinkBound {
+            generation,
+            attempt: 1,
+        });
+        assert!(matches!(
+            buffer.pop_front(),
+            Some(RoleEvent::Provisioned { .. })
+        ));
+        assert!(matches!(
+            buffer.pop_front(),
+            Some(RoleEvent::Spawned { .. })
+        ));
+        assert!(matches!(
+            buffer.pop_front(),
+            Some(RoleEvent::LinkBound { .. })
+        ));
+        assert!(buffer.pop_front().is_none());
     }
 }
