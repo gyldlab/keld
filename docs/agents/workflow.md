@@ -50,7 +50,9 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    fixed.
 7. **PR and handoff.** Refresh Linear once more, then rebase onto `origin/main` first
    (linear history; `--force-with-lease` the feature branch only — root `AGENTS.md`
-   § Commits & PRs). Description per the intake form
+   § Commits & PRs). After CodeRabbit fixes, resolve the addressed GitHub review
+   threads on that PR (and on an earlier PR when a follow-up merged the fix) per root
+   `AGENTS.md` § Commits & PRs. Description per the intake form
    [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md):
    Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Omit empty
    optional sections. Strip every template HTML comment from the submitted PR
