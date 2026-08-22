@@ -21,6 +21,9 @@ pub struct RoleRegistry {
     primary: RoleSupervisor,
     app_bound: RoleSupervisor,
     virtual_ports: VirtualPortRegistry,
+    /// Non-revocation events buffered during [`Self::sync_role_events`].
+    primary_buffered_events: Vec<RoleEvent>,
+    app_bound_buffered_events: Vec<RoleEvent>,
 }
 
 impl RoleRegistry {
@@ -54,6 +57,8 @@ impl RoleRegistry {
                 primary,
                 app_bound,
                 virtual_ports: VirtualPortRegistry::new(),
+                primary_buffered_events: Vec::new(),
+                app_bound_buffered_events: Vec::new(),
             }),
             Err(error) => {
                 primary.shutdown();
@@ -130,12 +135,35 @@ impl RoleRegistry {
         self.sync_role_events();
     }
 
+    /// Returns the next buffered or queued primary lifecycle event.
+    ///
+    /// Non-revocation events observed during virtual port synchronization are
+    /// retained here so callers can still observe the public lifecycle feed.
+    #[must_use]
+    pub fn try_recv_primary_event(&mut self) -> Option<RoleEvent> {
+        self.sync_role_events();
+        self.primary_buffered_events.pop()
+    }
+
+    /// Returns the next buffered or queued app-bound lifecycle event.
+    #[must_use]
+    pub fn try_recv_app_bound_event(&mut self) -> Option<RoleEvent> {
+        self.sync_role_events();
+        self.app_bound_buffered_events.pop()
+    }
+
     fn sync_role_events(&mut self) {
-        drain_supervisor_role_events(RoleOwner::Primary, &self.primary, &mut self.virtual_ports);
+        drain_supervisor_role_events(
+            RoleOwner::Primary,
+            &self.primary,
+            &mut self.virtual_ports,
+            &mut self.primary_buffered_events,
+        );
         drain_supervisor_role_events(
             RoleOwner::AppBound,
             &self.app_bound,
             &mut self.virtual_ports,
+            &mut self.app_bound_buffered_events,
         );
     }
 }
@@ -144,10 +172,13 @@ fn drain_supervisor_role_events(
     owner: RoleOwner,
     supervisor: &RoleSupervisor,
     virtual_ports: &mut VirtualPortRegistry,
+    buffered_events: &mut Vec<RoleEvent>,
 ) {
     while let Some(event) = supervisor.try_recv_event() {
         if let RoleEvent::Revoked { generation, .. } = event {
             virtual_ports.revoke_generation(RolePrincipal::new(owner, generation));
+        } else {
+            buffered_events.push(event);
         }
     }
 }
