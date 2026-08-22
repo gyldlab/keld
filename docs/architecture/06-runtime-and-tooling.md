@@ -54,8 +54,10 @@ role family: KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authentica
 bootstrap listener, T1b's per-role generation coordinator, and T2's
 `keld_runtime::registry::RoleRegistry` which owns one `primary` and one `app-bound`
 supervisor independently. A primary restart does not revoke or stop the app-bound
-role. It does not implement window-bound lifecycle, role-specific grants, virtual
-ports, strict OS sandboxing, or Windows named-pipe/DACL bootstrap.
+role. It does not implement window-bound lifecycle, role-specific grants, or
+strict OS sandboxing. KEL-75 T3 adds bounded host-owned virtual ports between
+authenticated role generations in `VirtualPortRegistry`. Windows named-pipe/DACL
+bootstrap remains later work.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
@@ -109,9 +111,9 @@ Ports are FIFO per generation, transfers are one-shot and receiver-bound, and cl
 generation revocation disconnects the peer without exposing another principal. Exact
 Electron-observable queue/start, transfer validation and close-event behavior is owned
 by pinned conformance entries—not assumed from this generic runtime contract. Live Unix
-slices are T1b (one authenticated role generation) and T2 (one primary plus one
-independent app-bound role in `RoleRegistry`). Window-bound roles and virtual ports
-follow only after those slices.
+slices are T1b (one authenticated role generation), T2 (one primary plus one
+independent app-bound role in `RoleRegistry`), and T3 (bounded virtual ports between
+authenticated roles). Window-bound roles follow only after those slices.
 
 ## 2. keld CLI: verbs and guarantees
 
