@@ -105,7 +105,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   anywhere — Electron's frame-starving chatty-IPC failure becomes structurally
   impossible once credit windows ship. **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
-  and the readiness-driven reader are the current backpressure surface (see §7).
+  and the current drain-driven writer are the v0 backpressure surface; the
+  readiness-driven reader remains destination work (see §7).
 
 ## 3. Bulk plane (measured copies, optional shared memory)
 
