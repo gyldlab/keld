@@ -33,6 +33,7 @@ use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
 
 /// One live webview and the host window it fills (v0: one per window).
+#[repr(C)]
 struct View {
     webview: wry::WebView,
     window: Window,
@@ -236,4 +237,15 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
     let mut engine = WkWebViewEngine::new();
     engine.create(spec)?;
     engine.run_until_closed()
+}
+
+#[cfg(test)]
+mod view_drop_order_tests {
+    use super::View;
+    use crate::view_drop_order::assert_wry_view_field_order;
+
+    #[test]
+    fn view_declares_webview_before_window() {
+        assert_wry_view_field_order!(View);
+    }
 }

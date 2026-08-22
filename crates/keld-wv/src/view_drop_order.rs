@@ -3,11 +3,32 @@
 //! Platform bindings require the webview to release before the host window
 //! closes. Rust drops struct fields in declaration order, so `webview` MUST be
 //! declared before `window` in every `View` struct.
+//!
+//! wry-backed [`View`] types MUST use `#[repr(C)]` so field offsets match
+//! declaration order under the default `repr(Rust)` size optimization (`WebKitGTK`
+//! proved `offset_of!(webview) > offset_of!(window)` with correct source order but
+//! no `repr(C)`).
+
+/// Asserts that `$ty` declares `webview` before `window`.
+///
+/// Each wry-backed backend MUST call this from a `#[cfg(test)]` module against
+/// its real [`View`] type so swapping fields fails CI on that platform. The
+/// type MUST be `#[repr(C)]` — see module docs.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+macro_rules! assert_wry_view_field_order {
+    ($ty:ty) => {
+        assert!(
+            std::mem::offset_of!($ty, webview) < std::mem::offset_of!($ty, window),
+            "wry View must declare webview before window so drop releases webview first"
+        );
+    };
+}
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) use assert_wry_view_field_order;
 
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::mem::offset_of;
     use std::rc::Rc;
 
     struct DropTag(&'static str, Rc<RefCell<Vec<&'static str>>>);
@@ -18,26 +39,23 @@ mod tests {
         }
     }
 
-    /// Mirrors field order required by `wkwebview::View` and `webkitgtk::View`.
-    struct MirrorView {
-        webview: DropTag,
-        window: DropTag,
+    /// Stand-in for any two-field struct; proves Rust's drop-order rule that
+    /// backend `View` layouts rely on — not a substitute for backend tests.
+    #[expect(dead_code, reason = "fields exist only to observe Drop order")]
+    struct TwoFieldStruct {
+        first: DropTag,
+        second: DropTag,
     }
 
     #[test]
-    fn wry_view_drops_webview_before_window() {
+    fn rust_drops_struct_fields_in_declaration_order() {
         let log = Rc::new(RefCell::new(Vec::new()));
         {
-            let _view = MirrorView {
-                webview: DropTag("webview", log.clone()),
-                window: DropTag("window", log.clone()),
+            let _value = TwoFieldStruct {
+                first: DropTag("first", log.clone()),
+                second: DropTag("second", log.clone()),
             };
         }
-        assert_eq!(&*log.borrow(), &["webview", "window"]);
-    }
-
-    #[test]
-    fn mirror_field_order_matches_documented_contract() {
-        assert!(offset_of!(MirrorView, webview) < offset_of!(MirrorView, window));
+        assert_eq!(&*log.borrow(), &["first", "second"]);
     }
 }
