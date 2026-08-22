@@ -4,7 +4,7 @@
 //! invalidates routes when a role generation is revoked. There is no direct
 //! peer transport — delivery always passes through [`VirtualPortRegistry`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::unix_role::{RoleGeneration, RoleOwner};
 
@@ -112,7 +112,7 @@ pub enum PortDisconnectReason {
     GenerationRevoked,
 }
 
-/// Virtual port routing and transfer failures. `KELD-RUNTIME-004`–`KELD-RUNTIME-009`.
+/// Virtual port routing and transfer failures. `KELD-RUNTIME-004`–`KELD-RUNTIME-011`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VirtualPortError {
     /// The caller does not own the referenced end.
@@ -235,13 +235,13 @@ impl std::error::Error for VirtualPortError {}
 pub struct VirtualPortRegistry {
     next_generation: u64,
     queue_capacity: usize,
-    pairs: Vec<PairState>,
-    revoked_generations: Vec<RolePrincipal>,
+    pairs: HashMap<VirtualPortGeneration, PairState>,
+    live_generations: HashSet<RolePrincipal>,
+    revoked_generations: HashSet<RolePrincipal>,
 }
 
 #[derive(Debug)]
 struct PairState {
-    generation: VirtualPortGeneration,
     end_a: EndState,
     end_b: EndState,
     revoked: bool,
@@ -272,30 +272,44 @@ impl VirtualPortRegistry {
         Self {
             next_generation: 1,
             queue_capacity,
-            pairs: Vec::new(),
-            revoked_generations: Vec::new(),
+            pairs: HashMap::new(),
+            live_generations: HashSet::new(),
+            revoked_generations: HashSet::new(),
         }
+    }
+
+    /// Records one live role generation that may mint or receive port pairs.
+    pub(crate) fn register_generation(&mut self, principal: RolePrincipal) {
+        if !self.is_generation_revoked(principal) {
+            self.live_generations.insert(principal);
+        }
+    }
+
+    /// Snapshot of principals currently registered as live.
+    #[must_use]
+    pub(crate) fn live_principals(&self) -> Vec<RolePrincipal> {
+        self.live_generations.iter().copied().collect()
     }
 
     /// Mints a fresh pair between two authenticated role principals.
     ///
     /// # Errors
     ///
-    /// Returns [`VirtualPortError::StaleGeneration`] when either principal's
-    /// generation was previously revoked in this registry.
+    /// Returns [`VirtualPortError::StaleGeneration`] when either principal is
+    /// unregistered, not live, or was previously revoked in this registry.
     pub fn create_pair(
         &mut self,
         owner_a: RolePrincipal,
         owner_b: RolePrincipal,
     ) -> Result<(PortCapability, PortCapability), VirtualPortError> {
-        if self.is_generation_revoked(owner_a) || self.is_generation_revoked(owner_b) {
-            return Err(VirtualPortError::StaleGeneration {
-                capability: PortCapability {
-                    generation: VirtualPortGeneration(0),
-                    end: PortEnd::A,
-                },
-                presented: owner_a,
-            });
+        if let Some(presented) = stale_principal(owner_a, owner_b, self) {
+            return Err(stale_generation_at_create(presented));
+        }
+        if !self.is_generation_live(owner_a) {
+            return Err(stale_generation_at_create(owner_a));
+        }
+        if !self.is_generation_live(owner_b) {
+            return Err(stale_generation_at_create(owner_b));
         }
         let generation = self.mint_generation()?;
         let cap_a = PortCapability {
@@ -306,12 +320,14 @@ impl VirtualPortRegistry {
             generation,
             end: PortEnd::B,
         };
-        self.pairs.push(PairState {
+        self.pairs.insert(
             generation,
-            end_a: EndState::new(owner_a, self.queue_capacity),
-            end_b: EndState::new(owner_b, self.queue_capacity),
-            revoked: false,
-        });
+            PairState {
+                end_a: EndState::new(owner_a, self.queue_capacity),
+                end_b: EndState::new(owner_b, self.queue_capacity),
+                revoked: false,
+            },
+        );
         Ok((cap_a, cap_b))
     }
 
@@ -340,12 +356,10 @@ impl VirtualPortRegistry {
             });
         }
         let capacity = self.queue_capacity;
-        let pair_idx = self
+        let pair = self
             .pairs
-            .iter()
-            .position(|pair| pair.generation == from.generation)
+            .get(&from.generation)
             .ok_or(VirtualPortError::Closed { capability: from })?;
-        let pair = &self.pairs[pair_idx];
         if pair.revoked {
             return Err(VirtualPortError::Closed { capability: from });
         }
@@ -360,7 +374,10 @@ impl VirtualPortRegistry {
                 capacity,
             });
         }
-        let pair = &mut self.pairs[pair_idx];
+        let pair = self
+            .pairs
+            .get_mut(&from.generation)
+            .ok_or(VirtualPortError::Closed { capability: from })?;
         let (_, peer_end) = pair.ends(from.end);
         peer_end.queue.push_back(PortMessage::from_bytes(payload));
         Ok(())
@@ -385,6 +402,12 @@ impl VirtualPortRegistry {
             });
         }
         if self.is_generation_revoked(target) {
+            return Err(VirtualPortError::StaleGeneration {
+                capability,
+                presented: target,
+            });
+        }
+        if !self.is_generation_live(target) {
             return Err(VirtualPortError::StaleGeneration {
                 capability,
                 presented: target,
@@ -427,17 +450,20 @@ impl VirtualPortRegistry {
     /// Closes one end owned by `owner`.
     ///
     /// The peer observes exactly one disconnect through [`Self::poll_disconnect`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when the end is already closed, revoked, or
+    /// not owned by `owner`.
     pub fn close(
         &mut self,
         capability: PortCapability,
         owner: RolePrincipal,
     ) -> Result<(), VirtualPortError> {
-        let pair_idx = self
+        let pair = self
             .pairs
-            .iter()
-            .position(|pair| pair.generation == capability.generation)
+            .get(&capability.generation)
             .ok_or(VirtualPortError::Closed { capability })?;
-        let pair = &self.pairs[pair_idx];
         if pair.revoked {
             return Err(VirtualPortError::Closed { capability });
         }
@@ -446,7 +472,10 @@ impl VirtualPortRegistry {
         if end.closed {
             return Err(VirtualPortError::Closed { capability });
         }
-        let pair = &mut self.pairs[pair_idx];
+        let pair = self
+            .pairs
+            .get_mut(&capability.generation)
+            .ok_or(VirtualPortError::Closed { capability })?;
         let (end, peer) = pair.ends(capability.end);
         end.closed = true;
         if !peer.closed && !peer.disconnect_observed {
@@ -472,18 +501,19 @@ impl VirtualPortRegistry {
                 presented: owner,
             });
         }
-        let pair_idx = self
+        let pair = self
             .pairs
-            .iter()
-            .position(|pair| pair.generation == capability.generation)
+            .get(&capability.generation)
             .ok_or(VirtualPortError::Closed { capability })?;
-        let pair = &self.pairs[pair_idx];
         if pair.revoked {
             return Err(VirtualPortError::Closed { capability });
         }
         let end = pair.end_ref(capability.end);
         check_end_owner(capability, owner, end)?;
-        let pair = &mut self.pairs[pair_idx];
+        let pair = self
+            .pairs
+            .get_mut(&capability.generation)
+            .ok_or(VirtualPortError::Closed { capability })?;
         Ok(pair.end_mut(capability.end).queue.pop_front())
     }
 
@@ -504,16 +534,17 @@ impl VirtualPortRegistry {
                 presented: owner,
             });
         }
-        let pair_idx = self
+        let pair = self
             .pairs
-            .iter()
-            .position(|pair| pair.generation == capability.generation)
+            .get(&capability.generation)
             .ok_or(VirtualPortError::Closed { capability })?;
-        let pair = &self.pairs[pair_idx];
         let revoked = pair.revoked;
         let end = pair.end_ref(capability.end);
         check_end_owner(capability, owner, end)?;
-        let pair = &mut self.pairs[pair_idx];
+        let pair = self
+            .pairs
+            .get_mut(&capability.generation)
+            .ok_or(VirtualPortError::Closed { capability })?;
         let end = pair.end_mut(capability.end);
         if end.disconnect_observed {
             return Ok(None);
@@ -537,7 +568,8 @@ impl VirtualPortRegistry {
     /// Revokes every route owned by one role generation.
     pub fn revoke_generation(&mut self, principal: RolePrincipal) {
         self.mark_generation_revoked(principal);
-        for pair in &mut self.pairs {
+        self.live_generations.remove(&principal);
+        for pair in self.pairs.values_mut() {
             if pair.revoked {
                 continue;
             }
@@ -557,6 +589,8 @@ impl VirtualPortRegistry {
                 || pair.end_b.owner == principal
             {
                 pair.revoked = true;
+                pair.end_a.queue.clear();
+                pair.end_b.queue.clear();
             }
         }
     }
@@ -580,8 +614,7 @@ impl VirtualPortRegistry {
         generation: VirtualPortGeneration,
     ) -> Result<&mut PairState, VirtualPortError> {
         self.pairs
-            .iter_mut()
-            .find(|pair| pair.generation == generation)
+            .get_mut(&generation)
             .ok_or(VirtualPortError::Closed {
                 capability: PortCapability {
                     generation,
@@ -590,14 +623,16 @@ impl VirtualPortRegistry {
             })
     }
 
+    fn is_generation_live(&self, principal: RolePrincipal) -> bool {
+        self.live_generations.contains(&principal)
+    }
+
     fn is_generation_revoked(&self, principal: RolePrincipal) -> bool {
         self.revoked_generations.contains(&principal)
     }
 
     fn mark_generation_revoked(&mut self, principal: RolePrincipal) {
-        if !self.is_generation_revoked(principal) {
-            self.revoked_generations.push(principal);
-        }
+        self.revoked_generations.insert(principal);
     }
 }
 
@@ -665,6 +700,34 @@ fn check_end_owner(
     Ok(())
 }
 
+fn stale_principal(
+    owner_a: RolePrincipal,
+    owner_b: RolePrincipal,
+    registry: &VirtualPortRegistry,
+) -> Option<RolePrincipal> {
+    if registry.is_generation_revoked(owner_a) {
+        Some(owner_a)
+    } else if registry.is_generation_revoked(owner_b) {
+        Some(owner_b)
+    } else {
+        None
+    }
+}
+
+fn stale_generation_at_create(presented: RolePrincipal) -> VirtualPortError {
+    VirtualPortError::StaleGeneration {
+        capability: PortCapability {
+            generation: VirtualPortGeneration(0),
+            end: if presented.owner() == RoleOwner::AppBound {
+                PortEnd::B
+            } else {
+                PortEnd::A
+            },
+        },
+        presented,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,11 +744,21 @@ mod tests {
         principal(RoleOwner::AppBound, g)
     }
 
+    fn register_pair(
+        registry: &mut VirtualPortRegistry,
+        owner_a: RolePrincipal,
+        owner_b: RolePrincipal,
+    ) {
+        registry.register_generation(owner_a);
+        registry.register_generation(owner_b);
+    }
+
     #[test]
     fn contract_fixture_ordered_delivery_and_fifo() {
         let mut registry = VirtualPortRegistry::new();
         let p1 = primary(1);
         let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
         let (cap_p, cap_a) = registry.create_pair(p1, a1).expect("create pair");
         registry.send(cap_p, p1, b"one").expect("send one");
         registry.send(cap_p, p1, b"two").expect("send two");
@@ -706,10 +779,47 @@ mod tests {
     }
 
     #[test]
+    fn peer_observes_generation_revoked_once_after_revoke() {
+        let mut registry = VirtualPortRegistry::new();
+        let p1 = primary(1);
+        let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
+        let (_, cap_a) = registry.create_pair(p1, a1).expect("create pair");
+        registry.revoke_generation(p1);
+        let reason = registry
+            .poll_disconnect(cap_a, a1)
+            .expect("poll disconnect")
+            .expect("generation revoked");
+        assert_eq!(reason, PortDisconnectReason::GenerationRevoked);
+        assert!(
+            registry
+                .poll_disconnect(cap_a, a1)
+                .expect("second poll")
+                .is_none(),
+            "revocation disconnect must be observed exactly once"
+        );
+    }
+
+    #[test]
+    fn transfer_rejects_unregistered_target() {
+        let mut registry = VirtualPortRegistry::new();
+        let p1 = primary(1);
+        let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
+        let (_, cap_a) = registry.create_pair(p1, a1).expect("create pair");
+        let unregistered = primary(99);
+        let err = registry
+            .transfer(cap_a, a1, unregistered)
+            .expect_err("unregistered transfer target");
+        assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
+    }
+
+    #[test]
     fn contract_fixture_exactly_once_disconnect_on_peer_close() {
         let mut registry = VirtualPortRegistry::new();
         let p1 = primary(1);
         let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
         let (cap_p, cap_a) = registry.create_pair(p1, a1).expect("create pair");
         registry.close(cap_p, p1).expect("close primary end");
         let first = registry
@@ -738,6 +848,7 @@ mod tests {
         let mut registry = VirtualPortRegistry::new();
         let p1 = primary(1);
         let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
         let (cap_p, cap_a) = registry.create_pair(p1, a1).expect("create pair");
         let err = registry
             .send(cap_p, a1, b"hostile")
@@ -756,6 +867,8 @@ mod tests {
         let p1 = primary(1);
         let a1 = app_bound(1);
         let p2 = primary(2);
+        register_pair(&mut registry, p1, a1);
+        registry.register_generation(p2);
         let (cap_p, cap_a) = registry.create_pair(p1, a1).expect("create pair");
         let transferred = registry.transfer(cap_a, a1, p2).expect("transfer to p2");
         assert_eq!(transferred, cap_a);
@@ -784,6 +897,7 @@ mod tests {
         let mut registry = VirtualPortRegistry::new();
         let p1 = primary(1);
         let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
         let (cap_p, _) = registry.create_pair(p1, a1).expect("create pair");
         registry.revoke_generation(p1);
         let err = registry
@@ -801,14 +915,17 @@ mod tests {
         let mut registry = VirtualPortRegistry::new();
         let p1 = primary(1);
         let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
         let (cap_p, cap_a) = registry.create_pair(p1, a1).expect("create pair");
         registry.close(cap_a, a1).expect("close app end");
         let err = registry
             .send(cap_p, p1, b"x")
             .expect_err("send after peer close");
         assert!(err.to_string().contains("KELD-RUNTIME-006"), "{err}");
+        let a2 = app_bound(2);
+        registry.register_generation(a2);
         let err = registry
-            .transfer(cap_p, p1, app_bound(2))
+            .transfer(cap_p, p1, a2)
             .expect_err("transfer after peer close");
         assert!(err.to_string().contains("KELD-RUNTIME-006"), "{err}");
         let err = registry.close(cap_a, a1).expect_err("duplicate close");
@@ -820,6 +937,7 @@ mod tests {
         let mut registry = VirtualPortRegistry::with_queue_capacity(2);
         let p1 = primary(1);
         let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
         let (cap_p, cap_a) = registry.create_pair(p1, a1).expect("create pair");
         registry.send(cap_p, p1, b"1").expect("first");
         registry.send(cap_p, p1, b"2").expect("second");
@@ -842,5 +960,39 @@ mod tests {
                 == b"2",
             "third message must not have been delivered"
         );
+    }
+
+    #[test]
+    fn create_pair_stale_generation_reports_revoked_owner_b() {
+        let mut registry = VirtualPortRegistry::new();
+        let p1 = primary(1);
+        let a1 = app_bound(1);
+        register_pair(&mut registry, p1, a1);
+        registry.revoke_generation(a1);
+        let err = registry.create_pair(p1, a1).expect_err("stale owner b");
+        match err {
+            VirtualPortError::StaleGeneration { presented, .. } => {
+                assert_eq!(presented, a1, "stale principal must name the revoked end");
+            }
+            other => panic!("expected StaleGeneration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_pair_rejects_unregistered_generation() {
+        let mut registry = VirtualPortRegistry::new();
+        let p1 = primary(1);
+        let a1 = app_bound(1);
+        registry.register_generation(a1);
+        let err = registry
+            .create_pair(p1, a1)
+            .expect_err("unregistered primary");
+        match err {
+            VirtualPortError::StaleGeneration { presented, .. } => {
+                assert_eq!(presented, p1);
+            }
+            other => panic!("expected StaleGeneration, got {other:?}"),
+        }
+        assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
     }
 }

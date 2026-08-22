@@ -26,8 +26,11 @@ let app = RolePrincipal::new(RoleOwner::AppBound, generation);
 let (cap_a, cap_b) = registry.create_role_port_pair(primary, app)?;
 ```
 
-Both principals must be live generations not previously revoked in the
-registry.
+Both principals must be registered live generations (call
+`RoleRegistry::register_bound_principal` after bootstrap bind, or rely on
+role-event sync for revocation) and not previously revoked in the registry.
+`RoleRegistry::create_role_port_pair` drains pending `Revoked` events before
+minting.
 
 ### Send (FIFO)
 
