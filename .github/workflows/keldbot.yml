@@ -1,0 +1,44 @@
+# .github/workflows/keldbot.yml
+
+name: KeldBot                    # Actions tab mein jo naam dikhega
+
+on:                              # DOORBELL — kab jagana hai robot ko 🛎️
+  pull_request:
+    types: [opened]              # sirf naye PR pe, har push pe nahi (spam se bachao)
+
+permissions:                     # DEFAULT-DENY! 🎉 Sirf ye hi power do:
+  pull-requests: write           # comment + label karne ki ijaazat
+  issues: write                  # labels ke liye (PR internally issue hota hai)
+
+jobs:
+  gatekeeper:                    # job ka internal naam
+    runs-on: ubuntu-latest       # GitHub ki free VM — Linux box
+    steps:
+      - name: Check PR template sections
+        uses: actions/github-script@v7      # GitHub ka built-in JS runner
+        with:
+          script: |
+            const body = context.payload.pull_request.body ?? "";
+
+            const required = ["Summary", "Spec refs", "Review gates", "Tests"];
+            const missing = required.filter((h) => !body.includes(h));
+
+            if (missing.length === 0) {
+              core.info("Template complete hai ✅");   // log only, koi spam nahi
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ["needs-template-fix"],
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `👋 Ye sections PR description mein missing hain: **${missing.join(", ")}**\n\n` +
+                    `Template yahan hai: .github/PULL_REQUEST_TEMPLATE.md — edit karke add kar do!`,
+            });
