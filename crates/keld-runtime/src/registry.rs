@@ -2,13 +2,18 @@
 //!
 //! KEL-75 T2: each slot is an independent [`RoleSupervisor`]. A primary crash
 //! or restart MUST NOT revoke, stop, or re-provision the app-bound role, and
-//! the reverse. Window-bound roles, virtual ports, Electron facades, sandbox
-//! admission and bulk mapping are later slices.
+//! the reverse. KEL-75 T3 adds host-owned bounded virtual ports between live
+//! authenticated role generations.
+
+use crate::virtual_port::{PortCapability, VirtualPortError, VirtualPortRegistry};
 
 use crate::RuntimeError;
 
 pub use crate::unix_role::{
     RoleConfig, RoleEvent, RoleGeneration, RoleOwner, RoleRevocationCause, RoleSupervisor,
+};
+pub use crate::virtual_port::{
+    PortDisconnectReason, PortEnd, PortMessage, RolePrincipal, VirtualPortGeneration,
 };
 
 /// Host-owned pair of independently supervised Unix Bun roles.
@@ -16,6 +21,7 @@ pub use crate::unix_role::{
 pub struct RoleRegistry {
     primary: RoleSupervisor,
     app_bound: RoleSupervisor,
+    virtual_ports: VirtualPortRegistry,
 }
 
 impl RoleRegistry {
@@ -45,7 +51,11 @@ impl RoleRegistry {
         }
         let primary = RoleSupervisor::start(primary)?;
         match RoleSupervisor::start(app_bound) {
-            Ok(app_bound) => Ok(Self { primary, app_bound }),
+            Ok(app_bound) => Ok(Self {
+                primary,
+                app_bound,
+                virtual_ports: VirtualPortRegistry::new(),
+            }),
             Err(error) => {
                 primary.shutdown();
                 let _ = primary.wait_for_outcome();
@@ -64,6 +74,37 @@ impl RoleRegistry {
     #[must_use]
     pub fn app_bound(&self) -> &RoleSupervisor {
         &self.app_bound
+    }
+
+    /// Host-owned bounded virtual port registry for authenticated roles.
+    #[must_use]
+    pub fn virtual_ports(&self) -> &VirtualPortRegistry {
+        &self.virtual_ports
+    }
+
+    /// Mutable access to the virtual port registry.
+    #[must_use]
+    pub fn virtual_ports_mut(&mut self) -> &mut VirtualPortRegistry {
+        &mut self.virtual_ports
+    }
+
+    /// Mints a port pair between two authenticated role principals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when either generation is stale in the
+    /// port registry.
+    pub fn create_role_port_pair(
+        &mut self,
+        owner_a: RolePrincipal,
+        owner_b: RolePrincipal,
+    ) -> Result<(PortCapability, PortCapability), VirtualPortError> {
+        self.virtual_ports.create_pair(owner_a, owner_b)
+    }
+
+    /// Revokes virtual port routes for one role generation.
+    pub fn revoke_role_ports(&mut self, principal: RolePrincipal) {
+        self.virtual_ports.revoke_generation(principal);
     }
 
     /// Stops both roles. Application-session stop, not window close (T4).
@@ -85,7 +126,9 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use super::{RoleConfig, RoleEvent, RoleOwner, RoleRegistry, RoleRevocationCause};
+    use super::{
+        RoleConfig, RoleEvent, RoleOwner, RolePrincipal, RoleRegistry, RoleRevocationCause,
+    };
     use crate::unix_role::fixture::{FamilyFixture, assert_ready_line, connect_with_foreign_token};
     use crate::{RestartPolicy, RuntimeError, SupervisorOutcome};
 
@@ -369,5 +412,65 @@ mod tests {
             Some(other) => panic!("{label}: unexpected queued event {other:?}"),
             None => {}
         }
+    }
+
+    #[test]
+    fn registry_virtual_port_pair_routes_between_bound_roles() {
+        let fixture = FamilyFixture::new();
+        let policy = RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        };
+        let (primary_probe_tx, primary_probe_rx) = mpsc::channel();
+        let (app_probe_tx, app_probe_rx) = mpsc::channel();
+        let mut registry = RoleRegistry::start(
+            bun_role(
+                RoleConfig::primary("bun"),
+                &fixture,
+                fixture.primary_control_path(),
+                policy,
+            )
+            .with_probe(primary_probe_tx),
+            bun_role(
+                RoleConfig::app_bound("bun"),
+                &fixture,
+                fixture.app_bound_control_path(),
+                policy,
+            )
+            .with_probe(app_probe_tx),
+        )
+        .expect("roles spawn");
+
+        let primary_g1 = recv_probe(&primary_probe_rx, "primary g1");
+        let app_g1 = recv_probe(&app_probe_rx, "app-bound g1");
+        bind_attempt(registry.primary(), &primary_g1, 1, fixture.accept_primary());
+        bind_attempt(registry.app_bound(), &app_g1, 1, fixture.accept_app_bound());
+
+        let primary_principal = RolePrincipal::new(RoleOwner::Primary, primary_g1.generation);
+        let app_principal = RolePrincipal::new(RoleOwner::AppBound, app_g1.generation);
+        let (cap_primary, cap_app) = registry
+            .create_role_port_pair(primary_principal, app_principal)
+            .expect("mint pair");
+
+        registry
+            .virtual_ports_mut()
+            .send(cap_primary, primary_principal, b"ping")
+            .expect("primary send");
+        let msg = registry
+            .virtual_ports_mut()
+            .recv(cap_app, app_principal)
+            .expect("app recv")
+            .expect("payload");
+        assert_eq!(msg.as_bytes(), b"ping");
+
+        registry.revoke_role_ports(primary_principal);
+        let err = registry
+            .virtual_ports_mut()
+            .send(cap_primary, primary_principal, b"stale")
+            .expect_err("stale send");
+        assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
+        registry.shutdown();
+        assert_stopped(registry.primary(), "primary");
+        assert_stopped(registry.app_bound(), "app-bound");
     }
 }

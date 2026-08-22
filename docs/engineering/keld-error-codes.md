@@ -409,6 +409,54 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Prepared child lifecycle provisioning or revocation failed
 - fix: Check the role bootstrap endpoint and its owner-only directory, then retry `keld dev`.
 
+## KELD-RUNTIME-004
+
+- crate: keld-runtime
+- message: Virtual port end is not owned by the presented principal
+- fix: Use the capability minted for the live role generation.
+
+## KELD-RUNTIME-005
+
+- crate: keld-runtime
+- message: Virtual port principal generation is stale
+- fix: Provision a fresh role generation before routing or transferring ports.
+
+## KELD-RUNTIME-006
+
+- crate: keld-runtime
+- message: Virtual port end is closed or its pair was revoked
+- fix: Create a new host-owned pair for the live role generations.
+
+## KELD-RUNTIME-007
+
+- crate: keld-runtime
+- message: Virtual port transfer target is the current owner
+- fix: Choose a different authenticated role generation.
+
+## KELD-RUNTIME-008
+
+- crate: keld-runtime
+- message: Virtual port end was already transferred once
+- fix: Port transfer is one-shot per end generation.
+
+## KELD-RUNTIME-009
+
+- crate: keld-runtime
+- message: Original virtual port owner cannot transfer after relinquishing the end
+- fix: Use the current owner's capability.
+
+## KELD-RUNTIME-010
+
+- crate: keld-runtime
+- message: Virtual port queue is full
+- fix: Drain the peer or close the end before sending more.
+
+## KELD-RUNTIME-011
+
+- crate: keld-runtime
+- message: Virtual port message exceeds inline length limit
+- fix: Split the payload or use a later bulk lane when available.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

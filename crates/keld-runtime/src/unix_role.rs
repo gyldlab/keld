@@ -101,6 +101,14 @@ impl RoleOwner {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RoleGeneration(u64);
 
+impl RoleGeneration {
+    /// Creates a generation counter for crate-internal tests.
+    #[cfg(test)]
+    pub(crate) fn from_test_counter(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 impl std::fmt::Debug for RoleGeneration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RoleGeneration(..)")

@@ -239,7 +239,7 @@ never silently weaken a strict profile.
   flow. No Windows named pipe/DACL, ports, extra roles, sandbox or shared memory.
 - [x] T2: Add one `app-bound` role and host-owned lifecycle registry; prove independent
   crash/restart isolation and stale-generation rejection.
-- [ ] T3: Add a bounded host-owned virtual-port pair between two authenticated roles;
+- [x] T3: Add a bounded host-owned virtual-port pair between two authenticated roles;
   prove transfer, close and cross-principal negative cases before Electron facade code.
 - [ ] T4: Add `window-bound` role lifecycle and real host-window-close integration.
 - [ ] T5: Add the `utilityProcess`/`MessageChannelMain` compatibility facade through

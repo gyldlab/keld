@@ -177,7 +177,8 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-75 T1b's
   Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
-  independent `app-bound` role. Window-bound roles, virtual ports, role grants,
+  independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
+  between authenticated role generations. Window-bound roles, role grants,
   strict sandbox admission, and Windows named-pipe/DACL bootstrap remain later
   KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
