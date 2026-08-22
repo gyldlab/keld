@@ -1,19 +1,22 @@
 //! Hello-window startup phases (KEL-62).
 //!
-//! Architecture 01 §5 budgets **cold start → first paint**, not a titled native
-//! window becoming observable (`window-visible` / `MainWindowHandle`). That
-//! HWND metric fires during `WebViewBuilder::build` on Windows — before
-//! content paints — and is not comparable to a framework that surfaces its
-//! window earlier relative to webview construction.
+//! Architecture 01 §5 budgets **cold start → first paint** via the KEL-64
+//! external double-rAF image beacon on a monotonic clock armed before process
+//! spawn. That oracle is not this module.
 //!
-//! v0 first paint is wry `PageLoadEvent::Finished` (navigation completed).
-//! `PageLoadEvent::Started` is navigation begin and MUST NOT count.
+//! This trace measures **construction and navigation-completion diagnostics**
+//! on a post-`WkWebViewEngine::new` clock. A titled native window (`window-visible`
+//! / `MainWindowHandle`) is the wrong metric — it fires during `WebViewBuilder::build`
+//! on Windows before content paints.
+//!
+//! wry `PageLoadEvent::Finished` is **navigation completion**, not composited
+//! first paint. `PageLoadEvent::Started` is navigation begin and MUST NOT count.
 
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-/// Ordered hello-window phases. `FirstPaint` is not window creation.
+/// Ordered hello-window construction phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartupPhase {
     /// tao `EventLoop::new` returned.
@@ -22,18 +25,18 @@ pub(crate) enum StartupPhase {
     WindowCreated,
     /// Webview attached (`WebViewBuilder::build`).
     WebviewAttached,
-    /// Document finished loading (wry `PageLoadEvent::Finished`).
-    FirstPaint,
+    /// wry `PageLoadEvent::Finished` (navigation completed; not KEL-64 paint).
+    NavFinished,
 }
 
 impl StartupPhase {
-    /// Wire/report name. `first_paint` is never `window_visible`.
+    /// Wire/report name. `nav_finished` is never `window_visible` or `first_paint`.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::EventLoop => "event_loop",
             Self::WindowCreated => "window_created",
             Self::WebviewAttached => "webview_attached",
-            Self::FirstPaint => "first_paint",
+            Self::NavFinished => "nav_finished",
         }
     }
 
@@ -42,7 +45,7 @@ impl StartupPhase {
             Self::EventLoop => 0,
             Self::WindowCreated => 1,
             Self::WebviewAttached => 2,
-            Self::FirstPaint => 3,
+            Self::NavFinished => 3,
         }
     }
 }
@@ -50,21 +53,21 @@ impl StartupPhase {
 /// wry page-load kinds without taking a wry dependency on every OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageLoad {
-    /// Navigation began. Not first paint.
+    /// Navigation began. Not navigation completion.
     Started,
-    /// Navigation completed. v0 first-paint oracle.
+    /// Navigation completed (wry `PageLoadEvent::Finished`).
     Finished,
 }
 
 /// Maps a page-load event to a startup phase.
 ///
-/// `Started` is not first paint — treating it as paint would reintroduce the
-/// KEL-62 `window-visible` artifact (too early).
+/// `Started` is not navigation completion — treating it as such would reintroduce
+/// the KEL-62 `window-visible` artifact (too early).
 #[must_use]
 pub(crate) fn phase_for_page_load(event: PageLoad) -> Option<StartupPhase> {
     match event {
         PageLoad::Started => None,
-        PageLoad::Finished => Some(StartupPhase::FirstPaint),
+        PageLoad::Finished => Some(StartupPhase::NavFinished),
     }
 }
 
@@ -82,6 +85,12 @@ pub(crate) fn trace_enabled_from(value: Option<&OsStr>) -> bool {
 #[must_use]
 pub(crate) fn trace_enabled() -> bool {
     trace_enabled_from(std::env::var_os("KELD_STARTUP_TRACE").as_deref())
+}
+
+/// Whether a terminal trace dump should run because navigation never finished.
+#[must_use]
+pub(crate) fn should_emit_nav_never_finished(trace: &StartupTrace) -> bool {
+    trace_enabled() && trace.offset(StartupPhase::NavFinished).is_none()
 }
 
 /// Monotonic offsets from construction. No heap on the mark path.
@@ -109,7 +118,7 @@ impl StartupTrace {
         }
     }
 
-    /// Records first paint only for [`PageLoad::Finished`].
+    /// Records navigation completion only for [`PageLoad::Finished`].
     pub(crate) fn on_page_load(&mut self, event: PageLoad) {
         if let Some(phase) = phase_for_page_load(event) {
             self.mark(phase);
@@ -122,9 +131,10 @@ impl StartupTrace {
         self.offsets[phase.index()]
     }
 
-    /// One-line dump: `event_loop=…ms window_created=…ms … first_paint=…ms`.
+    /// One-line dump: `event_loop=…ms window_created=…ms … nav_finished=…ms`.
     ///
-    /// Missing phases are `never`. The string never contains `window_visible`.
+    /// Missing phases are `never`. The string never contains `window_visible` or
+    /// architecture `first_paint`.
     #[must_use]
     pub(crate) fn report(&self) -> String {
         let mut out = String::from("KELD_STARTUP");
@@ -132,7 +142,7 @@ impl StartupTrace {
             StartupPhase::EventLoop,
             StartupPhase::WindowCreated,
             StartupPhase::WebviewAttached,
-            StartupPhase::FirstPaint,
+            StartupPhase::NavFinished,
         ] {
             out.push(' ');
             out.push_str(phase.as_str());
@@ -146,23 +156,34 @@ impl StartupTrace {
         }
         out
     }
+
+    /// Emits [`Self::report`] when tracing is enabled and [`StartupPhase::NavFinished`]
+    /// was never marked (for example the user closed before `Finished`).
+    pub(crate) fn emit_if_nav_never_finished(&self) {
+        if should_emit_nav_never_finished(self) {
+            eprintln!("{}", self.report());
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
 
-    use super::{PageLoad, StartupPhase, StartupTrace, phase_for_page_load, trace_enabled_from};
+    use super::{
+        PageLoad, StartupPhase, StartupTrace, phase_for_page_load, should_emit_nav_never_finished,
+        trace_enabled_from,
+    };
 
     #[test]
-    fn started_is_not_first_paint() {
+    fn started_is_not_nav_finished() {
         assert_eq!(phase_for_page_load(PageLoad::Started), None);
         let mut trace = StartupTrace::new();
         trace.mark(StartupPhase::WindowCreated);
         trace.on_page_load(PageLoad::Started);
         assert!(
-            trace.offset(StartupPhase::FirstPaint).is_none(),
-            "KEL-62: PageLoad::Started must not count as first paint"
+            trace.offset(StartupPhase::NavFinished).is_none(),
+            "KEL-62: PageLoad::Started must not count as navigation completion"
         );
         assert!(
             trace.offset(StartupPhase::WindowCreated).is_some(),
@@ -171,16 +192,17 @@ mod tests {
     }
 
     #[test]
-    fn finished_is_first_paint_not_window_created() {
+    fn finished_is_nav_finished_not_window_created() {
         assert_eq!(
             phase_for_page_load(PageLoad::Finished),
-            Some(StartupPhase::FirstPaint)
+            Some(StartupPhase::NavFinished)
         );
         assert_ne!(
-            StartupPhase::FirstPaint.as_str(),
+            StartupPhase::NavFinished.as_str(),
             StartupPhase::WindowCreated.as_str()
         );
-        assert_ne!(StartupPhase::FirstPaint.as_str(), "window_visible");
+        assert_ne!(StartupPhase::NavFinished.as_str(), "window_visible");
+        assert_ne!(StartupPhase::NavFinished.as_str(), "first_paint");
 
         let mut trace = StartupTrace::new();
         trace.mark(StartupPhase::WindowCreated);
@@ -189,37 +211,52 @@ mod tests {
         let window = trace
             .offset(StartupPhase::WindowCreated)
             .expect("window_created");
-        let paint = trace.offset(StartupPhase::FirstPaint).expect("first_paint");
+        let nav = trace
+            .offset(StartupPhase::NavFinished)
+            .expect("nav_finished");
         assert!(
-            paint >= window,
-            "first_paint must not precede window_created: {paint:?} vs {window:?}"
+            nav >= window,
+            "nav_finished must not precede window_created: {nav:?} vs {window:?}"
         );
         let report = trace.report();
-        assert!(report.contains("first_paint="), "{report}");
+        assert!(report.contains("nav_finished="), "{report}");
         assert!(report.contains("window_created="), "{report}");
         assert!(
             !report.contains("window_visible"),
             "KEL-62: report must not use the HWND metric name: {report}"
         );
+        assert!(
+            !report.contains("first_paint="),
+            "KEL-64 first paint is external beacon, not this trace: {report}"
+        );
     }
 
     #[test]
-    fn first_paint_first_write_wins() {
+    fn nav_finished_first_write_wins() {
         let mut trace = StartupTrace::new();
         trace.on_page_load(PageLoad::Finished);
-        let first = trace.offset(StartupPhase::FirstPaint).expect("first");
+        let first = trace.offset(StartupPhase::NavFinished).expect("first");
         trace.on_page_load(PageLoad::Finished);
-        assert_eq!(trace.offset(StartupPhase::FirstPaint), Some(first));
+        assert_eq!(trace.offset(StartupPhase::NavFinished), Some(first));
     }
 
     #[test]
-    fn missing_first_paint_is_never_not_window_created() {
+    fn missing_nav_finished_is_never_not_window_created() {
         let mut trace = StartupTrace::new();
         trace.mark(StartupPhase::EventLoop);
         let report = trace.report();
-        assert!(report.contains("first_paint=never"), "{report}");
+        assert!(report.contains("nav_finished=never"), "{report}");
         assert!(report.contains("event_loop="), "{report}");
         assert!(report.starts_with("KELD_STARTUP "), "{report}");
+    }
+
+    #[test]
+    fn should_emit_nav_never_finished_when_trace_off() {
+        let trace = StartupTrace::new();
+        assert!(
+            !should_emit_nav_never_finished(&trace),
+            "opt-in trace must not dump without KELD_STARTUP_TRACE"
+        );
     }
 
     #[test]

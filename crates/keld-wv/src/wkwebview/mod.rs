@@ -51,7 +51,7 @@ pub struct WkWebViewEngine {
     event_loop: Option<EventLoop<()>>,
     views: BTreeMap<u32, View>,
     next_id: u32,
-    /// KEL-62: first paint is wry `PageLoadEvent::Finished`, not window create.
+    /// KEL-62: navigation completion (`PageLoadEvent::Finished`), not window create.
     startup: Arc<Mutex<StartupTrace>>,
 }
 
@@ -113,6 +113,10 @@ impl WkWebViewEngine {
                 }
             }
         });
+        match self.startup.lock() {
+            Ok(guard) => guard.emit_if_nav_never_finished(),
+            Err(poisoned) => poisoned.into_inner().emit_if_nav_never_finished(),
+        }
         if code == 0 {
             Ok(())
         } else {
@@ -175,8 +179,9 @@ impl WebEngine for WkWebViewEngine {
             PermissionsManifest::default(),
             webview_media_principal(WebviewId(id)),
         );
-        // KEL-62: first paint is PageLoadEvent::Finished, not titled HWND.
-        let builder = with_first_paint_trace(builder, Arc::clone(&self.startup));
+        // KEL-62: navigation completion trace — Finished, not titled HWND.
+        let builder =
+            builder.with_on_page_load_handler(page_load_trace_handler(Arc::clone(&self.startup)));
         let builder = match &spec.initial {
             NavTarget::Html(html) => builder.with_html(html),
             NavTarget::Url(url) => builder.with_url(url),
@@ -245,6 +250,24 @@ fn mark_startup(startup: &Mutex<StartupTrace>, phase: StartupPhase) {
     guard.mark(phase);
 }
 
+/// wry `PageLoadEvent::Finished` → navigation completion (`nav_finished`).
+fn page_load_trace_handler(
+    startup: Arc<Mutex<StartupTrace>>,
+) -> impl Fn(wry::PageLoadEvent, String) + 'static {
+    move |event, _url| {
+        let mut guard = match startup.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let had_nav = guard.offset(StartupPhase::NavFinished).is_some();
+        guard.on_page_load(wry_page_load(&event));
+        if !had_nav && guard.offset(StartupPhase::NavFinished).is_some() && trace_enabled() {
+            eprintln!("{}", guard.report());
+        }
+    }
+}
+
+/// KEL-62: wry Finished → navigation completion. Started is navigation begin.
 fn wry_page_load(event: &wry::PageLoadEvent) -> PageLoad {
     match event {
         wry::PageLoadEvent::Started => PageLoad::Started,
@@ -252,22 +275,66 @@ fn wry_page_load(event: &wry::PageLoadEvent) -> PageLoad {
     }
 }
 
-/// KEL-62: wry Finished → first paint. Started is navigation begin, not paint.
-fn with_first_paint_trace(
-    builder: wry::WebViewBuilder<'_>,
-    startup: Arc<Mutex<StartupTrace>>,
-) -> wry::WebViewBuilder<'_> {
-    builder.with_on_page_load_handler(move |event, _url| {
-        let mut guard = match startup.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let already = guard.offset(StartupPhase::FirstPaint).is_some();
-        guard.on_page_load(wry_page_load(&event));
-        if !already && guard.offset(StartupPhase::FirstPaint).is_some() && trace_enabled() {
-            eprintln!("{}", guard.report());
-        }
-    })
+#[cfg(test)]
+mod startup_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{page_load_trace_handler, wry_page_load};
+    use crate::startup::{PageLoad, StartupPhase, StartupTrace, phase_for_page_load};
+
+    #[test]
+    fn wry_finished_maps_to_nav_finished_started_does_not() {
+        assert_eq!(
+            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Finished)),
+            Some(StartupPhase::NavFinished)
+        );
+        assert_eq!(
+            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Started)),
+            None,
+            "KEL-62: Started is navigation begin, not completion"
+        );
+    }
+
+    #[test]
+    fn page_load_handler_marks_nav_finished_on_finished() {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let handler = page_load_trace_handler(Arc::clone(&startup));
+        handler(wry::PageLoadEvent::Finished, String::new());
+        let guard = startup.lock().expect("startup lock");
+        assert!(
+            guard.offset(StartupPhase::NavFinished).is_some(),
+            "Finished must mark nav_finished; omitting the handler leaves it unset"
+        );
+    }
+
+    #[test]
+    fn page_load_handler_ignores_started_for_nav_finished() {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let handler = page_load_trace_handler(Arc::clone(&startup));
+        handler(wry::PageLoadEvent::Started, String::new());
+        let guard = startup.lock().expect("startup lock");
+        assert!(
+            guard.offset(StartupPhase::NavFinished).is_none(),
+            "Started must not mark nav_finished"
+        );
+    }
+
+    #[test]
+    fn nav_never_finished_report_condition() {
+        let mut trace = StartupTrace::new();
+        trace.mark(StartupPhase::EventLoop);
+        assert!(
+            trace.offset(StartupPhase::NavFinished).is_none(),
+            "nav_finished unset before Finished"
+        );
+        let report = trace.report();
+        assert!(report.contains("nav_finished=never"), "{report}");
+        trace.on_page_load(PageLoad::Finished);
+        assert!(
+            trace.offset(StartupPhase::NavFinished).is_some(),
+            "Finished must set nav_finished for terminal-path guard"
+        );
+    }
 }
 
 /// Opens a window from `spec` and runs until the user closes it.
@@ -292,47 +359,5 @@ mod view_drop_order_tests {
     #[test]
     fn view_declares_webview_before_window() {
         assert_wry_view_field_order!(View);
-    }
-}
-
-#[cfg(test)]
-mod startup_tests {
-    use std::sync::{Arc, Mutex};
-
-    use super::{with_first_paint_trace, wry_page_load};
-    use crate::startup::{StartupPhase, StartupTrace, phase_for_page_load};
-
-    #[test]
-    fn wry_finished_maps_to_first_paint_started_does_not() {
-        assert_eq!(
-            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Finished)),
-            Some(StartupPhase::FirstPaint)
-        );
-        assert_eq!(
-            phase_for_page_load(wry_page_load(&wry::PageLoadEvent::Started)),
-            None,
-            "KEL-62: Started is navigation begin, not first paint"
-        );
-    }
-
-    #[test]
-    fn macos_backend_installs_first_paint_trace() {
-        let src = include_str!("mod.rs");
-        assert!(
-            src.contains("with_first_paint_trace"),
-            "KEL-62: omitting the page-load handler leaves first paint unmeasured"
-        );
-        assert!(
-            src.contains("with_on_page_load_handler"),
-            "KEL-62: the helper must call wry's page-load handler"
-        );
-        assert!(
-            src.contains("PageLoadEvent::Finished"),
-            "KEL-62: first paint must be Finished, not window create"
-        );
-        let _ = with_first_paint_trace(
-            wry::WebViewBuilder::new(),
-            Arc::new(Mutex::new(StartupTrace::new())),
-        );
     }
 }
