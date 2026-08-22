@@ -13,10 +13,10 @@ mod engine;
 mod error;
 mod hello;
 mod media;
-#[cfg(test)]
-mod view_drop_order;
 #[cfg(target_os = "macos")]
 mod startup;
+#[cfg(test)]
+mod view_drop_order;
 #[cfg(target_os = "linux")]
 pub mod webkitgtk;
 #[cfg(target_os = "windows")]
