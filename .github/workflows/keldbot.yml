@@ -22,6 +22,7 @@ jobs:
       - name: Check PR template sections
         uses: actions/github-script@v7      # GitHub ka built-in JS runner
         with:
+          github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
           script: |
             // Template ke saare required headings — .github/PULL_REQUEST_TEMPLATE.md se (source of truth).
             // Naya heading template mein add ho toh yahan bhi add karo, warna gatekeeper drift ho jaayega.
@@ -99,6 +100,7 @@ jobs:
       - name: Apply size/* label
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se label post ho, github-actions[bot] se nahi
           script: |
             // Tiers ascending order mein — max = us tier ki upper-bound (inclusive) line count.
             // NOTE: sirf XS/S abhi defined hain. Isse bade PRs (>=50 lines) filhaal unlabeled rehte hain —
