@@ -436,4 +436,12 @@ mod tests {
         let err = WvError::UnknownWebview { id: 3 };
         assert!(err.to_string().contains("KELD-WV-007"));
     }
+
+    #[test]
+    fn view_declares_webview_before_window() {
+        use super::View;
+        use crate::view_drop_order::assert_wry_view_field_order;
+
+        assert_wry_view_field_order!(View);
+    }
 }

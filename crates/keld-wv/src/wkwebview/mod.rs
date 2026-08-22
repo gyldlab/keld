@@ -237,3 +237,14 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
     engine.create(spec)?;
     engine.run_until_closed()
 }
+
+#[cfg(test)]
+mod view_drop_order_tests {
+    use super::View;
+    use crate::view_drop_order::assert_wry_view_field_order;
+
+    #[test]
+    fn view_declares_webview_before_window() {
+        assert_wry_view_field_order!(View);
+    }
+}
