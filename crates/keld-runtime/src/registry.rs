@@ -194,6 +194,7 @@ fn owner_error(message: &'static str) -> RuntimeError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::sync::mpsc;
     use std::time::Duration;
 
