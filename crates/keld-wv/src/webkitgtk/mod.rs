@@ -140,8 +140,8 @@ pub fn probe_gpu_stack() -> GpuSafeMode {
 
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
-    window: Window,
     webview: wry::WebView,
+    window: Window,
 }
 
 /// The Linux [`WebEngine`] backend.
@@ -310,7 +310,7 @@ impl WebEngine for WebKitGtkEngine {
             .map_err(|e| WvError::Webview(e.to_string()))?;
 
         self.next_id += 1;
-        self.views.insert(id, View { window, webview });
+        self.views.insert(id, View { webview, window });
         Ok(WebviewId(id))
     }
 

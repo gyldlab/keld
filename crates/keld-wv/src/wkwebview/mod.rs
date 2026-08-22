@@ -15,6 +15,7 @@
 // transitive platform calls and future direct objc2 bindings, which must each
 // carry their own `// SAFETY:` proof.
 #![allow(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,8 +34,8 @@ use crate::media::{webview_media_principal, with_guarded_media_permissions};
 
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
-    window: Window,
     webview: wry::WebView,
+    window: Window,
 }
 
 /// The macOS [`WebEngine`] backend.
@@ -173,7 +174,7 @@ impl WebEngine for WkWebViewEngine {
             .map_err(|e| WvError::Webview(e.to_string()))?;
 
         self.next_id += 1;
-        self.views.insert(id, View { window, webview });
+        self.views.insert(id, View { webview, window });
         Ok(WebviewId(id))
     }
 
