@@ -321,3 +321,29 @@ Hello-window / installer / RSS fixtures for competitor frameworks and native Swi
 - PR intake: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — an intake form, not a second policy. Body MUST include headings Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Spec refs is architecture/spec paths or `No boundary change`. Review gates is the five names or `none`. Omit empty optional sections (Linear, rollback, screenshots); do not write N/A. Strip template HTML comments from the submitted body; do not delete them from the template file.
 - **CodeRabbit review threads:** after addressing CodeRabbit feedback (same PR or a follow-up), agents MUST resolve the corresponding GitHub review thread(s) on that PR before calling work done. If the fix landed in a follow-up PR, resolve on the original PR too and comment with the merge SHA. Procedure: `.agents/skills/autofix/github.md` § Resolve review threads. Do not resolve threads whose fixes have not landed.
 - Agents MUST NOT commit secrets or edit `.env*`; destructive git ops MUST have human approval.
+
+## KeldBot (automated PR checks)
+Before opening a PR, agents SHOULD self-check against this so the checks pass on the first
+try instead of round-tripping through a CI failure — `.github/workflows/keldbot.yml` is the
+source of truth if this drifts:
+1. PR title matches `type(scope): subject` (§ Commits & PRs above) — `title-lint` is a
+   **required** status check on `main`.
+2. PR body has all six non-empty template sections (§ Commits & PRs' PR intake bullet) —
+   `gatekeeper` is a **required** status check on `main`.
+3. `size-label` auto-labels `size/XS`…`size/XL` from added+deleted lines — informational
+   only, never fails, not a required check.
+
+All three re-check on `edited` (title/body) or `synchronize` (new commits) and self-resolve:
+fixing the title/body removes the failing label and updates KeldBot's own PR comment to ✅ —
+agents MUST NOT wait for a human to clear it, just push the fix and let it re-run. If a check
+is red, read KeldBot's own comment first (it names exactly what's missing) before re-deriving
+the rule from this file. Comments/labels post from the `keldrobo` account, not
+`github-actions[bot]`.
+
+Label taxonomy on `gyldlab/keld` — bot-applied vs. human-applied differ, don't assume either:
+- `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*` (8, one per allowed
+  commit type) — bot-applied, per the three checks above.
+- `gate:*` (5, matching the § Review gates names exactly) and `crate:*` (12, one per crate in
+  the repo-map table) — human-applied only, for reviewer/triage visibility. KeldBot does NOT
+  auto-detect `unsafe`/public-API/permission-model/dependency/wire-protocol changes or infer
+  which crate a diff touches; agents/reviewers apply these by hand.
