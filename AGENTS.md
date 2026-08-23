@@ -360,8 +360,44 @@ Agents MUST grep first (no dupes/opinions). Stale rule here → fixing it *is* t
 Hello-window / installer / RSS fixtures for competitor frameworks and native Swift live in [`https://github.com/gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) (public) under **OS-first** paths `{macos|windows|linux}/<framework>/...` (e.g. `macos/swift/appkit-wk`, `windows/electron/hello`). When an agent creates or updates such benchmark apps, it MUST commit and push to `gyldlab/keld-benches`, not into the Keld monorepo. If direct push access is unavailable, agents MUST open a fork PR to `gyldlab/keld-benches`, or warn and skip (do not leave fixtures only under `/tmp` or inside Keld). Agents MUST pick the OS folder for the machine / pack they actually ran. Agents MUST NOT put OS-agnostic dumps at the `keld-benches` repo root. Agents MUST NOT add Electron / Tauri / Wails / Neutralino / NW.js / Electrobun / Swift hello apps under Keld `docs/`, `competitors/` (shallow reference clones from the lockfile), or `/tmp`-only without pushing to `keld-benches`. Measured numbers MAY be recorded in `docs/engineering/budget-scoreboard.md` (Keld); rows SHOULD link the OS-qualified fixture path **and an immutable commit SHA or tag** in `keld-benches` (not only `main`).
 
 ## Commits & PRs
-- Conventional: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
+- Conventional commit format for the PR title (KeldBot's `title-lint` job enforces this on `opened`/`edited` and auto-applies the matching `type:*` label, since squash-merge uses the PR title as the final commit message): `type(scope): subject` — `type` MUST be one of `feat fix docs test chore ci style build` (the eight in actual use in this repo's history; agents MUST NOT invent a ninth without adding its `type:*` label and updating this list and `title-lint`'s allowed set in the same PR). `scope` is optional, lower-kebab, usually a crate/package/area (`ipc`, `wv/macos`, `research`). `subject` is imperative mood, no trailing period. Examples: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
+- Individual commits within a branch are not linted and MAY be less formal (e.g. WIP fixups) — only the PR title, which becomes the merged history's commit message, MUST follow the standard.
 - Long-lived branch: `main` only. Feature branch: `agent/kel-<n>-<slug>` from `origin/main` (one Linear issue, one worktree `../keld-<issue>`). Agents MUST NOT commit on another agent's checkout. Rebase onto `origin/main` before PR. `--force-with-lease` MAY rewrite the feature branch; agents MUST NOT force-push `main`.
 - PR intake: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — an intake form, not a second policy. Body MUST include headings Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Spec refs is architecture/spec paths or `No boundary change`. Review gates is the five names or `none`. Omit empty optional sections (Linear, rollback, screenshots); do not write N/A. Strip template HTML comments from the submitted body; do not delete them from the template file.
 - **CodeRabbit review threads:** after addressing CodeRabbit feedback (same PR or a follow-up), agents MUST resolve the corresponding GitHub review thread(s) on that PR before calling work done. If the fix landed in a follow-up PR, resolve on the original PR too and comment with the merge SHA. Procedure: `.agents/skills/autofix/github.md` § Resolve review threads. Do not resolve threads whose fixes have not landed.
 - Agents MUST NOT commit secrets or edit `.env*`; destructive git ops MUST have human approval.
+
+## KeldBot (automated PR checks)
+Before opening a PR, agents SHOULD self-check against this so the checks pass on the first
+try instead of round-tripping through a CI failure — `.github/workflows/keldbot.yml` is the
+source of truth if this drifts:
+1. PR title matches `type(scope): subject` (§ Commits & PRs above) — `title-lint` always
+   runs and posts a failing check either way; whether it's wired into `main`'s branch
+   protection as a **required** check is a repo-admin setting, check
+   `github.com/gyldlab/keld/settings/branches` for current status.
+2. PR body has all six non-empty template sections (§ Commits & PRs' PR intake bullet) —
+   `gatekeeper` always runs; same caveat on required-status-check enforcement as above.
+3. `size-label` auto-labels `size/XS`…`size/XL` from added+deleted lines — informational
+   only, never fails, not a required check.
+
+All three re-check on `edited` (title/body) or `synchronize` (new commits) and self-resolve:
+fixing the title/body removes the failing label and updates KeldBot's own PR comment to ✅ —
+agents MUST NOT wait for a human to clear it, just push the fix and let it re-run. If a check
+is red, read KeldBot's own comment first (it names exactly what's missing) before re-deriving
+the rule from this file. Comments/labels post from the `keldrobo` account, not
+`github-actions[bot]`.
+
+**Known limitation:** GitHub does not pass repository secrets to `pull_request`-triggered
+runs from a forked repository, so `ROBOKELD_TOKEN` is unavailable and all three jobs fail
+with an auth error on fork PRs rather than doing their job. Since `gyldlab/keld` is public
+and accepts fork contributions, an external contributor's PR gets a red, unhelpful KeldBot
+check today. Fixing this (e.g. degrade to no-op on forks instead of failing loud) is a known
+follow-up, not yet done.
+
+Label taxonomy on `gyldlab/keld` — bot-applied vs. human-applied differ, don't assume either:
+- `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*` (8, one per allowed
+  commit type) — bot-applied, per the three checks above.
+- `gate:*` (5, matching the § Review gates names exactly) and `crate:*` (12, one per crate in
+  the repo-map table) — human-applied only, for reviewer/triage visibility. KeldBot does NOT
+  auto-detect `unsafe`/public-API/permission-model/dependency/wire-protocol changes or infer
+  which crate a diff touches; agents/reviewers apply these by hand.
