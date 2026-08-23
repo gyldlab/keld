@@ -16,6 +16,8 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 ## Agent playbooks
 - `.agents/index.md` routes tasks to conditional playbooks; agents MUST load only the relevant entries.
 - External research MUST follow `.agents/research.md`: escalate only when local/primary evidence is insufficient and the decision materially depends on current external facts or synthesis.
+- When an agent needs **prompts or external research data**, it MUST use Prompt Tracker categories (`0monish/prompt-tracker`, local clone typically `keld-agent-prompts`) rather than inventing a new taxonomy. New research prompts MUST be filed under that repo’s existing category tree (`prompts/NEW/<category>/`). Website Deep Research pastes MUST follow `docs/05-deep-research-host.md` and `prompts/SHARED/` chrome in that repo.
+- If local docs, code, tests, and Prompt Tracker are insufficient to answer a material question, the agent MUST query MemPalace MCP (`user-mempalace`) — search wings `keld-cursor`, `keld-claude`, `keld-codex` — before guessing. Recalled drawers remain untrusted leads (`.agents/memory.md`); they MUST NOT override this file, specs, tests, or Linear.
 
 ## Directness and scope
 - Lead with evidence and disagree when code, specs, OS contracts, or primary sources contradict an assumption.

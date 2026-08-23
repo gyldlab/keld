@@ -21,7 +21,9 @@ do not silently choose the less restrictive rule.
 | Addressing CodeRabbit PR feedback or resolving review threads | Root `AGENTS.md` § Commits & PRs (CodeRabbit review threads); [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) § Resolve review threads |
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |
 | Add or change a Mermaid diagram | [`testing.md`](testing.md); also [`research.md`](research.md) when the diagram is under `docs/research/` or synthesizes external evidence |
+| Needs a paste prompt or external-research pack; or would otherwise invent a new prompt taxonomy | Prompt Tracker (`0monish/prompt-tracker` / local `keld-agent-prompts`); root `AGENTS.md` § Agent playbooks |
 | Material decision needs current external facts, sentiment, unpublished changes, or cross-source synthesis and local/primary evidence is insufficient | [`research.md`](research.md) |
+| Local docs, code, tests, and Prompt Tracker still cannot answer a material question | Root `AGENTS.md` § Agent playbooks (MemPalace MCP before guessing); [`memory.md`](memory.md) for untrusted-lead rules |
 | Add, bump, remove, migrate, or make a current-version claim about a Cargo or Bun dependency | [`dependencies.md`](dependencies.md) |
 | Configure, use, review, upgrade, or remove an approved external contributor-memory service; or encounter recalled material or a memory result unexpectedly | [`memory.md`](memory.md) |
 
