@@ -16,6 +16,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    it to that agent. Otherwise it MUST NOT change the issue or begin overlapping work;
    it MUST record the ownership conflict on its own Linear issue (or the handoff if
    Linear is unavailable) and notify the human/orchestrator.
+   Before implementation, classify every acceptance criterion as `CI-only`, `real
+   OS/device`, or `not applicable`. For a real OS/device criterion, the initial Linear
+   comment MUST include `## OS acceptance` with the required OS/device, exact observable
+   check, and current availability. A CI lane on that OS is not user-facing product
+   evidence unless the approved issue/spec explicitly says it is.
 2. **Spec gate.** Larger than a bug fix and no spec? Write one from
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
@@ -33,12 +38,18 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    milestone* is a named task or acceptance checkpoint in the issue/spec. On duplicate,
    blocker, supersession or another active owner, stop the overlap, record the conflict
    on the agent's own issue (or handoff), and notify the human/orchestrator; a worktree
-   does not authorize competing architecture decisions.
+   does not authorize competing architecture decisions. For a real OS/device criterion,
+   record the executed OS and evidence after each attempt; if its system is unavailable,
+   leave an `## OS handoff` naming the exact remaining check, availability blocker, and
+   next operator action rather than treating generic CI as completion.
 5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test
    suite, plus the spec's test plan. Diagram changes additionally run
    `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
    visual/report gate from `.agents/testing.md`; authoritative-doc changes run
    `just llms-check` after regeneration. Paste real output in the PR; never "should work".
+   Run a real OS/device acceptance on its named platform. Cross-compilation, emulation,
+   and a different-OS test cannot replace it. CI on the named OS proves only its declared
+   automation contract unless the issue/spec defines that job as the product fixture.
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review
    subagent): boundary violations? review gates missed? spec drift? slop (dead code,
    duplicated helpers, drive-by refactors)? Before pushing, explicitly answer: what
@@ -61,8 +72,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    IDs. Before finishing, leave a Linear `## Branch handoff` block per root
    `AGENTS.md` § Branch + Linear handoff (merge intent is `do-not-merge` /
    `merge-when-CI-green` / `merge-after:<deps>` / `human-decide` — not every branch
-   merges). Move the issue to Done only when every acceptance criterion is met;
-   otherwise leave it In Progress or mark it Blocked with the exact dependency.
+   merges). The handoff MUST include its OS acceptance and status. For an unavailable
+   real OS/device, also leave `## OS handoff`; a partial merge needs explicit human
+   authorization and does not close the parent issue. Move the issue to Done only when
+   every acceptance criterion is met; otherwise leave it In Progress or mark it Blocked
+   with the exact dependency.
 
 ## Parallelism rules
 
@@ -72,6 +86,9 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
   protocol, manifest schema, CI workflows, root `AGENTS.md` — are single-writer:
   human-owned or one designated agent with human review. Everything else: first PR to
   green wins; later PRs rebase.
+- Assign `real OS/device` work only to an agent that has the required system. Agents on
+  another OS MAY complete disjoint CI-only work, but MUST hand off the named OS acceptance
+  in Linear instead of duplicating or approximating it.
 - Subagents for search/read (fan out freely); exactly one builder runs
   `cargo test`/`cargo build` per worktree (no concurrent builds in one tree).
 - Long-running autonomy: fresh context per issue; re-read ground-truth files each

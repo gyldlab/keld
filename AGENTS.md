@@ -206,6 +206,28 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 - Agents MUST NOT land `todo!()`/`unimplemented!()`/stubs on main. PRs SHOULD be small, one concern.
 - Before coding, agents MUST: grep the codebase; read the spec section; read crate `AGENTS.md`; read `docs/agents/learnings.md`.
 
+### OS-scoped acceptance (MUST)
+
+- Before implementation, agents MUST classify each acceptance criterion as `CI-only`,
+  `real OS/device`, or `not applicable`. A criterion that names an operating system,
+  device, native backend, visible window, installer, sandbox, or user-facing product
+  behavior is `real OS/device` unless its approved issue/spec explicitly says that a
+  CI fixture is the acceptance evidence.
+- For `real OS/device`, the first Linear scope comment MUST state the required OS/device,
+  exact observable acceptance, and availability. It passes only after an agent runs it
+  on that named OS/device and records evidence. Cross-compilation, emulation, a different
+  OS, and a generic CI lane MUST NOT be presented as that product evidence. A CI job on
+  the named OS proves only the job's declared automation contract unless the issue/spec
+  explicitly makes it the product-acceptance fixture.
+- When the required system is unavailable, agents MUST leave an `## OS handoff` comment
+  on Linear with the required OS/device, exact command or observable, evidence already
+  collected, availability blocker, and next operator action. They MUST leave the issue
+  `In Progress` while other work remains or mark it `Blocked` once that system is the
+  only remaining dependency; they MUST NOT mark it Done or imply the OS path passed.
+- A partial PR may merge before its `real OS/device` criterion only with explicit human
+  authorization. Its PR and Linear record MUST name the remaining OS acceptance, and
+  the parent issue remains open until it is executed.
+
 Git worktrees:
 - Extra `git worktree`s (not the primary clone) that are unused MUST be removed: merged PR branch, no open PR, clean working tree.
 - In-use MUST stay: primary checkout, worktrees for **open** PRs, dirty trees with real uncommitted work.
@@ -251,10 +273,24 @@ record across devices.
 - PR: (url or none)
 - Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
 - Depends on: (tickets/PRs/notes or none)
+- OS acceptance: none | CI-only:<contract> | real:<OS/device + observable>
+- OS status: passed:<evidence> | awaiting:<system/operator> | not-applicable
 - Reason:
 ```
 
 One block per branch (one per repo when several were touched).
+
+When `OS status` is `awaiting`, agents MUST also leave this separate Linear comment:
+
+```text
+## OS handoff
+- Required OS/device:
+- Exact command or observable:
+- Current evidence:
+- Availability blocker:
+- Next operator action:
+- Ticket status: In Progress | Blocked
+```
 
 First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 1. Apply the Engineering principles above across host / Bun child / webview; Keld-specific architecture additionally changes who owns a handle, who can crash whom, or who can mint a principal. If it changes none of those facts, it is not architecture.
