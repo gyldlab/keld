@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest       # GitHub ki free VM — Linux box
     steps:
       - name: Check PR template sections
-        uses: actions/github-script@v7      # GitHub ka built-in JS runner
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7 -- pinned SHA, not mutable tag
         with:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
           script: |
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Apply size/* label
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7 -- pinned SHA, not mutable tag
         with:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se label post ho, github-actions[bot] se nahi
           script: |
@@ -141,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title format
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7 -- pinned SHA, not mutable tag
         with:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
           script: |
