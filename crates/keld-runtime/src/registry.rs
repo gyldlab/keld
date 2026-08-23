@@ -403,22 +403,8 @@ mod tests {
         registry.shutdown();
         assert_stopped(registry.primary(), "primary");
         assert_stopped(registry.app_bound(), "app-bound");
-        assert!(matches!(
-            registry.try_recv_primary_event(),
-            Some(RoleEvent::Revoked {
-                generation,
-                attempt: 2,
-                cause: RoleRevocationCause::Shutdown,
-            }) if generation == primary_g2.generation
-        ));
-        assert!(matches!(
-            registry.try_recv_app_bound_event(),
-            Some(RoleEvent::Revoked {
-                generation,
-                attempt: 2,
-                cause: RoleRevocationCause::Shutdown,
-            }) if generation == app_g2.generation
-        ));
+        assert_registry_shutdown_revoke(&mut registry, RoleOwner::Primary, primary_g2.generation);
+        assert_registry_shutdown_revoke(&mut registry, RoleOwner::AppBound, app_g2.generation);
         drop(primary_g2_control);
         drop(app_control);
     }
@@ -559,6 +545,25 @@ mod tests {
             SupervisorOutcome::Stopped => {}
             other => panic!("{label} shutdown should stop cleanly, got {other:?}"),
         }
+    }
+
+    fn assert_registry_shutdown_revoke(
+        registry: &mut RoleRegistry,
+        owner: RoleOwner,
+        expected_generation: RoleGeneration,
+    ) {
+        let event = match owner {
+            RoleOwner::Primary => registry.try_recv_primary_event(),
+            RoleOwner::AppBound => registry.try_recv_app_bound_event(),
+        };
+        assert!(matches!(
+            event,
+            Some(RoleEvent::Revoked {
+                generation,
+                attempt: 2,
+                cause: RoleRevocationCause::Shutdown,
+            }) if generation == expected_generation
+        ));
     }
 
     fn assert_next(
