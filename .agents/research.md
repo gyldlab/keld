@@ -12,6 +12,13 @@ Hello / installer / RSS competitor fixtures MUST live in
 never under Keld `docs/` or `competitors/`, and never as OS-agnostic dumps at the
 `keld-benches` repo root.
 
+## Where prompts live
+
+Agents MUST NOT invent a parallel prompt taxonomy. Copy-ready packs and new research
+prompts live in Prompt Tracker (`0monish/prompt-tracker`) under the existing category
+tree. Website Deep Research pastes follow that repo’s `docs/05-deep-research-host.md`
+and `prompts/SHARED/` chrome. This playbook still owns the escalation trigger below.
+
 ## Escalation trigger
 
 Agents MUST ask the user to run one copy-ready external-research prompt only when all
