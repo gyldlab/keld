@@ -124,6 +124,16 @@ expect_package_token "unknown input selects all workspace packages" keld-host "$
 workflow_classification="$(result_for_paths .github/workflows/ci.yml)"
 expect_flags "workflow input exercises all jobs; GTK apt stays on GUI smoke only" "$workflow_all" "$workflow_classification"
 
+other_workflow_classification="$(result_for_paths .github/workflows/keldbot.yml)"
+expect_flags "unrelated bot workflow has no path into any conditional lane" "$all_false" "$other_workflow_classification"
+expect_empty_packages "unrelated bot workflow selects no package" "$other_workflow_classification"
+
+router_script_classification="$(result_for_paths tools/ci_changes.sh)"
+expect_flags "router script edit still exercises all jobs" "$workflow_all" "$router_script_classification"
+
+router_test_classification="$(result_for_paths tools/ci_changes_test.sh)"
+expect_flags "router test edit still exercises all jobs" "$workflow_all" "$router_test_classification"
+
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
 for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-runtime crates/keld-wv; do
     if ! grep -Fxq "$required_dir" <<<"$actual_host_dirs"; then
