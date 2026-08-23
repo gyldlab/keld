@@ -47,9 +47,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
    visual/report gate from `.agents/testing.md`; authoritative-doc changes run
    `just llms-check` after regeneration. Paste real output in the PR; never "should work".
-   Run a real OS/device acceptance on its named platform. Cross-compilation, emulation,
-   and a different-OS test cannot replace it. CI on the named OS proves only its declared
-   automation contract unless the issue/spec defines that job as the product fixture.
+   If any criterion is `real OS/device`, run it on its named platform. Otherwise run only
+   the applicable CI-only checks and record `not applicable` criteria. Cross-compilation,
+   emulation, and a different-OS test cannot replace a real OS/device acceptance. CI on
+   the named OS proves only its declared automation contract unless the issue/spec defines
+   that job as the product fixture.
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review
    subagent): boundary violations? review gates missed? spec drift? slop (dead code,
    duplicated helpers, drive-by refactors)? Before pushing, explicitly answer: what

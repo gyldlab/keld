@@ -224,6 +224,9 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
   collected, availability blocker, and next operator action. They MUST leave the issue
   `In Progress` while other work remains or mark it `Blocked` once that system is the
   only remaining dependency; they MUST NOT mark it Done or imply the OS path passed.
+- When a required OS/device check runs and fails, agents MUST record
+  `failed:<evidence>` in the handoff and keep the issue `In Progress` until the
+  acceptance passes or a human changes its scope.
 - A partial PR may merge before its `real OS/device` criterion only with explicit human
   authorization. Its PR and Linear record MUST name the remaining OS acceptance, and
   the parent issue remains open until it is executed.
@@ -274,7 +277,7 @@ record across devices.
 - Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
 - Depends on: (tickets/PRs/notes or none)
 - OS acceptance: none | CI-only:<contract> | real:<OS/device + observable>
-- OS status: passed:<evidence> | awaiting:<system/operator> | not-applicable
+- OS status: passed:<evidence> | failed:<evidence> | awaiting:<system/operator> | not-applicable
 - Reason:
 ```
 
