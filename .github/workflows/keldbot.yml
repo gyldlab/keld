@@ -3,7 +3,12 @@
 name: KeldBot                    # Actions tab mein jo naam dikhega
 
 on:                              # DOORBELL — kab jagana hai robot ko 🛎️
-  pull_request:
+  # pull_request_target (not pull_request): fork PRs se bhi secrets milte hain, isliye external
+  # contributors ke liye bhi checks kaam karte hain. Safe hai kyunki koi actions/checkout nahi
+  # hai (PR ka code kabhi runner pe nahi aata) aur title/body sirf context.payload se JS data ke
+  # taur pe padhte hain, kabhi shell/script text mein interpolate nahi hote — same pattern
+  # jo oven-sh/bun apne comment-cop.yml/on-slop.yml mein use karta hai.
+  pull_request_target:
     types: [opened, edited, synchronize]   # opened/edited: template; opened/synchronize: size — har job apna type khud chunta hai neeche
 
 concurrency:                     # ek PR pe do edits jaldi-jaldi ho toh purana run cancel, race/duplicate comment na ho
@@ -61,8 +66,8 @@ jobs:
               await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
 
               const commentBody =
-                `${MARKER}\n👋 Ye sections PR description mein missing ya khaali hain: **${missing.join(", ")}**\n\n` +
-                `Template yahan hai: .github/PULL_REQUEST_TEMPLATE.md — edit karke add kar do, phir description save karte hi main dobara check karunga.`;
+                `${MARKER}\n👋 These sections are missing or empty in the PR description: **${missing.join(", ")}**\n\n` +
+                `The template is here: .github/PULL_REQUEST_TEMPLATE.md — fill them in and save the description, and I'll re-check automatically.`;
 
               if (existing) {
                 await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });
@@ -86,11 +91,11 @@ jobs:
                 owner,
                 repo,
                 comment_id: existing.id,
-                body: `${MARKER}\n✅ Template ab complete hai, thanks for fixing it!`,
+                body: `${MARKER}\n✅ Template is complete now, thanks for fixing it!`,
               });
             }
 
-            core.info("Template complete hai ✅");
+            core.info("Template complete ✅");
 
   size-label:                    # doosra job — PR size (added+deleted lines) ke hisaab se label
     if: github.event.action != 'edited'   # description edit se diff size nahi badalta, sirf opened/synchronize pe chalao
@@ -164,9 +169,9 @@ jobs:
               await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
 
               const commentBody =
-                `${MARKER}\n👋 PR title conventional-commit format follow nahi karta: \`type(scope): subject\`\n\n` +
+                `${MARKER}\n👋 The PR title doesn't match the conventional-commit format: \`type(scope): subject\`\n\n` +
                 `Allowed types: \`${TYPES.join("`, `")}\`. Example: \`feat(ipc): add shm channel\`. ` +
-                `Title edit karte hi main dobara check karunga (AGENTS.md § Commits & PRs).`;
+                `Edit the title and I'll re-check automatically (AGENTS.md § Commits & PRs).`;
 
               if (existing) {
                 await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });
@@ -210,7 +215,7 @@ jobs:
                 owner,
                 repo,
                 comment_id: existing.id,
-                body: `${MARKER}\n✅ Title ab conventional-commit format follow karta hai, thanks!`,
+                body: `${MARKER}\n✅ Title matches the conventional-commit format now, thanks!`,
               });
             }
 
