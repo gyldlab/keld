@@ -276,8 +276,10 @@ record across devices.
 - PR: (url or none)
 - Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
 - Depends on: (tickets/PRs/notes or none)
-- OS acceptance: none | CI-only:<contract> | real:<OS/device + observable>
-- OS status: passed:<evidence> | failed:<evidence> | awaiting:<system/operator> | not-applicable
+- OS evidence (repeat this pair for each acceptance criterion; use one
+  `not-applicable` pair only when none is OS-scoped):
+  - Acceptance: CI-only:<contract> | real:<OS/device + observable> | not-applicable
+  - Status: passed:<evidence> | failed:<evidence> | awaiting:<system/operator> | not-applicable
 - Reason:
 ```
 
@@ -287,6 +289,10 @@ When `OS status` is `awaiting`, agents MUST also leave this separate Linear comm
 
 ```text
 ## OS handoff
+
+Repeat this block for each remaining OS/device criterion:
+
+- Criterion:
 - Required OS/device:
 - Exact command or observable:
 - Current evidence:
