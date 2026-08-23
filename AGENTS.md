@@ -387,12 +387,14 @@ is red, read KeldBot's own comment first (it names exactly what's missing) befor
 the rule from this file. Comments/labels post from the `keldrobo` account, not
 `github-actions[bot]`.
 
-**Known limitation:** GitHub does not pass repository secrets to `pull_request`-triggered
-runs from a forked repository, so `ROBOKELD_TOKEN` is unavailable and all three jobs fail
-with an auth error on fork PRs rather than doing their job. Since `gyldlab/keld` is public
-and accepts fork contributions, an external contributor's PR gets a red, unhelpful KeldBot
-check today. Fixing this (e.g. degrade to no-op on forks instead of failing loud) is a known
-follow-up, not yet done.
+The workflow trigger is `pull_request_target`, not `pull_request` — deliberately, so PRs from
+forks also get real secrets and working checks (GitHub does not pass repo secrets to
+`pull_request`-triggered runs from a forked repo). Safe here specifically because
+`keldbot.yml` never runs `actions/checkout` and never interpolates PR title/body into
+shell/script text — only reads them as JS data via `context.payload` inside
+`actions/github-script`. Do not add a checkout step to this workflow without re-deriving this
+safety argument from scratch; that combination (`pull_request_target` + checking out
+untrusted PR code) is the classic vulnerable pattern this file avoids.
 
 Label taxonomy on `gyldlab/keld` — bot-applied vs. human-applied differ, don't assume either:
 - `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*` (8, one per allowed
