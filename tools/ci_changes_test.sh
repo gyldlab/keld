@@ -13,7 +13,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(packages|nongtk_packages)=' <<<"$actual")"
+    actual="$(grep -Ev '^(packages|nongtk_packages|ubuntu_packages)=' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -26,13 +26,18 @@ expect_flags() {
 }
 
 expect_package_token() {
+    expect_output_package_token "$1" packages "$2" "$3"
+}
+
+expect_output_package_token() {
     local label="$1"
-    local token="$2"
-    local actual="$3"
+    local output_name="$2"
+    local token="$3"
+    local actual="$4"
     local package_line
-    package_line="$(grep '^packages=' <<<"$actual")"
-    if ! grep -Eq "(^| )${token}( |$)" <<<"${package_line#packages=}"; then
-        echo "FAIL: $label: package set does not contain $token" >&2
+    package_line="$(grep "^${output_name}=" <<<"$actual")"
+    if ! grep -Eq "(^| )${token}( |$)" <<<"${package_line#"${output_name}"=}"; then
+        echo "FAIL: $label: ${output_name} does not contain $token" >&2
         printf '%s\n' "$actual" >&2
         exit 1
     fi
@@ -67,11 +72,11 @@ expect_empty_packages() {
 all_false=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
 # keld-core depends on keld-runtime (KEL-30 host-owned session), so runtime lives
 # in the keld-host dependency closure and a runtime-only path change enables GUI smoke.
-runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=false'
+runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=true'
 docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
 hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
-host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=false'
-compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nwebkitgtk=false'
+host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=true'
+compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nwebkitgtk=true'
 wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=true'
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=true'
 workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=false'
@@ -82,8 +87,9 @@ expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classific
 expect_empty_packages "empty diff selects no package" "$empty_classification"
 
 runtime_classification="$(result_for_paths crates/keld-runtime/src/lib.rs)"
-expect_flags "runtime-only Rust change enables host GUI smoke without Ubuntu GTK apt" "$runtime_flags" "$runtime_classification"
+expect_flags "runtime-only Rust change enables host GUI smoke and Ubuntu GTK for its selected test closure" "$runtime_flags" "$runtime_classification"
 expect_package_token "runtime-only change includes its owner package" keld-runtime "$runtime_classification"
+expect_output_package_token "runtime-only Ubuntu selection includes its owner package" ubuntu_packages keld-runtime "$runtime_classification"
 expect_package_token "runtime-only change still clippy's keld-cli consumers on macOS/Windows" keld-cli "$runtime_classification"
 expect_package_token "runtime-only change clippy's host-owned session consumer" keld-core "$runtime_classification"
 expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli without GTK" keld-cli "$runtime_classification"
@@ -96,11 +102,11 @@ hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"
 
 host_classification="$(result_for_paths crates/keld-ipc/src/lib.rs)"
-expect_flags "host dependency closure routes IPC change to GUI smoke without extra GTK apt" "$host_dependency" "$host_classification"
+expect_flags "host dependency closure routes IPC change to GUI smoke and GTK for its selected test closure" "$host_dependency" "$host_classification"
 expect_package_token "IPC change includes host consumer" keld-host "$host_classification"
 
 compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
-expect_flags "compat-only change skips GUI smoke and Ubuntu WebKitGTK apt" "$compat_flags" "$compat_classification"
+expect_flags "compat-only change skips GUI smoke but installs GTK for its selected test closure" "$compat_flags" "$compat_classification"
 expect_package_token "compat-only change includes its owner package" keld-compat "$compat_classification"
 
 wv_classification="$(result_for_paths crates/keld-wv/src/lib.rs)"
@@ -166,6 +172,7 @@ pr_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAM
 fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nwebkitgtk=false'
 expect_flags "pull-request base/head classifies the actual diff" "$fake_runtime_flags" "$pr_result"
 expect_package_token "pull-request base/head selects changed package" keld-runtime "$pr_result"
+expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
 
 mkdir -p "$temp_dir/docs"
 printf 'docs\n' >"$temp_dir/docs/guide.md"
@@ -181,3 +188,23 @@ expect_flags "same push base/head is an empty diff" "$all_false" "$empty_result"
 unknown_base_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA=0000000000000000000000000000000000000000 GITHUB_SHA="$docs_sha" "$router" github)"
 fake_all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=true'
 expect_flags "missing comparison base fails safe" "$fake_all_true" "$unknown_base_result"
+
+mkdir -p "$temp_dir/empty-bin"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'printf "{\\\"packages\\\":[]}\\n"' \
+    >"$temp_dir/empty-bin/cargo"
+chmod +x "$temp_dir/empty-bin/cargo"
+
+if empty_metadata_output="$(cd "$temp_dir" && PATH="$temp_dir/empty-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$base_sha" KELD_CI_HEAD_SHA="$runtime_sha" "$router" github 2>&1)"; then
+    echo "FAIL: missing workspace metadata must fail before it can emit an empty Ubuntu package set" >&2
+    printf '%s\n' "$empty_metadata_output" >&2
+    exit 1
+fi
+if ! grep -Fq "ci router: Rust checks selected no Ubuntu packages" <<<"$empty_metadata_output"; then
+    echo "FAIL: empty Ubuntu package selection did not report the fail-closed router error" >&2
+    printf '%s\n' "$empty_metadata_output" >&2
+    exit 1
+fi
+echo "ok: empty Ubuntu package selection fails closed"

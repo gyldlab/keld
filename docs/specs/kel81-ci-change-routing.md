@@ -25,15 +25,17 @@ Non-goals:
 ## 3. Acceptance criteria (binary, each becomes a test)
 
 1. Given a pull-request diff that changes only `keld-runtime`, when CI classifies it,
-   then Rust/MSRV run, Linux GUI smoke is a successful skipped job, and Ubuntu clippy
-   does not `apt-get` WebKitGTK (`webkitgtk=false`; `keld-cli` is omitted from
-   `nongtk_packages`).
+   then Rust/MSRV and the Linux GUI smoke run, and the Ubuntu package set is non-empty
+   and contains `keld-runtime`. Because CI builds `--all-targets` and the selected
+   `keld-runtime` test closure reaches `keld-wv` through its local dev-dependency,
+   Ubuntu clippy installs WebKitGTK (`webkitgtk=true`).
 2. Given a change under Keld's actual `keld-host` local dependency closure, when CI
-   classifies it, then the Linux GUI smoke runs. An IPC-only change does not also
-   install WebKitGTK on Ubuntu clippy.
+   classifies it, then the Linux GUI smoke runs. An IPC-only change whose selected
+   `--all-targets` closure reaches `keld-wv` also installs WebKitGTK on Ubuntu clippy.
 3. Given a docs-only or `keld-compat`-only diff, when CI classifies it, then
-   documentation contracts (docs) or macOS/Windows clippy (compat) run while Ubuntu
-   WebKitGTK apt and GUI smoke are successful skips.
+   documentation contracts (docs) or macOS/Windows clippy (compat) run. Docs-only
+   leaves Rust and GUI jobs as successful skips; compat-only leaves GUI smoke as a
+   successful skip but installs WebKitGTK when its selected closure reaches `keld-wv`.
 4. Given an unknown, workspace-graph, or unavailable comparison base, when CI
    classifies it, then every potentially affected non-security job runs, including
    Ubuntu WebKitGTK apt. A workflow/router edit still creates every job and runs GUI
@@ -63,12 +65,14 @@ authority, process ownership, permissions, wire bytes, or performance claims.
   derives both (a) the `keld-host` local dependency closure for the graphical smoke and
   (b) the changed package's Cargo reverse-dependent consumers for Rust checks, from
   `cargo metadata --no-deps`. It also derives whether those selected package closures
-  compile `keld-wv` so Ubuntu clippy can run GTK-free packages without apt. Live
-  `apt-get` for WebKitGTK on Ubuntu clippy is owned by changed `keld-wv` / `keld-core` /
-  `keld-host` paths (or unknown/lockfile fail-safe), not by every reverse-dependent that
-  happens to compile `keld-core`. MSRV runs on macOS so rustc-version checking never
-  waits on Azure Ubuntu mirrors. Linux GUI smoke remains the job that always apts when
-  the host graphical contract is affected.
+  compile `keld-wv` with every dependency kind needed by `--all-targets`. It emits one
+  Ubuntu package set: the selected packages when that closure needs GTK, otherwise the
+  GTK-free subset. The workflow consumes that output directly rather than recomputing
+  package selection. A workflow/router edit retains its explicit GTK-free subset so
+  only the GUI-smoke job owns live `apt-get`; unknown and lockfile inputs remain
+  fail-safe GTK lanes. MSRV runs on macOS so rustc-version checking never waits on Azure
+  Ubuntu mirrors. Linux GUI smoke remains the job that apts when the host graphical
+  contract is affected.
 - Build graph, workflow, router and unknown inputs fail safe to all affected lanes.
   `gitleaks` is unconditional because secret ownership includes every changed file.
 - A missing comparison commit enables all conditional lanes. If Cargo metadata or `jq`
@@ -95,9 +99,11 @@ authority, process ownership, permissions, wire bytes, or performance claims.
 
 `tools/ci_changes_test.sh` exercises empty, runtime-only, docs-only, hygiene-only,
 host-dependency, manifest, workflow, unknown, pull-request base/head, push before/head,
-and unavailable-comparison-base cases. It also checks the live Cargo metadata closure
-contains the actual host packages. The router uses NUL-delimited Git output so spaces or
-unusual file names cannot split a classification record.
+and unavailable-comparison-base cases. It checks the runtime-only Ubuntu package set is
+non-empty, and an empty metadata fixture fails before the router can emit an empty
+Ubuntu package set. It also checks the live Cargo metadata closure contains the actual
+host packages. The router uses NUL-delimited Git output so spaces or unusual file names
+cannot split a classification record.
 
 ## 8. Review gates triggered
 
