@@ -371,12 +371,10 @@ Hello-window / installer / RSS fixtures for competitor frameworks and native Swi
 Before opening a PR, agents SHOULD self-check against this so the checks pass on the first
 try instead of round-tripping through a CI failure — `.github/workflows/keldbot.yml` is the
 source of truth if this drifts:
-1. PR title matches `type(scope): subject` (§ Commits & PRs above) — `title-lint` always
-   runs and posts a failing check either way; whether it's wired into `main`'s branch
-   protection as a **required** check is a repo-admin setting, check
-   `github.com/gyldlab/keld/settings/branches` for current status.
+1. PR title matches `type(scope): subject` (§ Commits & PRs above) — `title-lint` is a
+   **required** status check on `main`'s branch protection: a failing PR cannot merge.
 2. PR body has all six non-empty template sections (§ Commits & PRs' PR intake bullet) —
-   `gatekeeper` always runs; same caveat on required-status-check enforcement as above.
+   `gatekeeper` is likewise a **required** status check; a failing PR cannot merge.
 3. `size-label` auto-labels `size/XS`…`size/XL` from added+deleted lines — informational
    only, never fails, not a required check.
 
