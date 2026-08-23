@@ -50,17 +50,23 @@ remote-client rejection, and deletes an instance after its last handle closes
    instance, created before child spawn from a nonce independent of the token;
    the child receives only `KELD_APP_LINK`.
 2. Given that instance, when its descriptor is read back, then its protected
-   DACL has exactly one allow ACE for the host `TokenUser` SID with mask
-   `0x0012_019B` (`PipeAccessRights::ReadWrite`), and it has no
-   `FILE_CREATE_PIPE_INSTANCE`/`FILE_APPEND_DATA` bit (`0x4`), inherited ACE,
-   or allow ACE for Everyone, Anonymous, Users, or Administrators.
+   DACL has exactly one allow ACE for the host `TokenUser` SID with final
+   serialized mask `0x0012_019B`: the future adapter explicitly ORs the
+   `PipeAccessRights::ReadWrite`-equivalent base (`0x0002_019B`) with
+   `SYNCHRONIZE` (`0x0010_0000`) before descriptor construction, and must not
+   assume a wrapper adds that right. It reads back and compares that final mask
+   exactly; it has no `FILE_CREATE_PIPE_INSTANCE`/`FILE_APPEND_DATA` bit (`0x4`),
+   inherited ACE, or allow ACE for Everyone, Anonymous, Users, or Administrators.
 3. Given a different ordinary Windows user, when it calls `CreateFileW` with
    the client mask, then Windows returns `ERROR_ACCESS_DENIED`; no host session
    is accepted, and the intended child can subsequently authenticate.
-4. Given a same-user client with pipe name but no token, when it sends an empty,
-   truncated, or foreign `HELLO`, then it receives no host `HELLO` or echo reply;
-   the host records only redacted `KELD-IPC-007`, disconnects that client, and
-   continues accepting until the legitimate child succeeds or admission expires.
+4. Given a same-user client with pipe name but no token, when it sends a complete
+   empty, wrong-length, or foreign `HELLO`, then it receives no host `HELLO` or
+   echo reply; the host records only redacted `KELD-IPC-007`, disconnects that
+   client, and continues accepting until the legitimate child succeeds or admission
+   expires. A physical EOF or partial wire frame is instead a non-terminal I/O
+   failure, not `HelloAuth`; it receives no reply and follows the shared error
+   classification after cleanup and re-accept.
 5. Given the intended Bun child and complete link, when it connects with
    `node:net` and sends the matching v2 `HELLO`, then the host replies only after
    verification and one echo succeeds. Header bytes, protocol version 2, and
@@ -122,9 +128,13 @@ security-correctness change and makes no performance claim.
    Do not use a null/default descriptor. The default named-pipe descriptor can
    grant broader access, including Everyone/anonymous
    ([SECURITY_ATTRIBUTES](https://learn.microsoft.com/en-us/windows/win32/api/wtypesbase/ns-wtypesbase-security_attributes)).
-3. ACE mask is `0x0012_019B`: `FILE_READ_DATA`, `FILE_WRITE_DATA`, read/write
-   EA, read/write attributes, `READ_CONTROL`, and `SYNCHRONIZE`. It excludes
-   `FILE_CREATE_PIPE_INSTANCE`. Microsoft warns that `FILE_GENERIC_WRITE`
+3. The future adapter explicitly serializes the `PipeAccessRights::ReadWrite`-
+   equivalent base (`0x0002_019B`) OR `SYNCHRONIZE` (`0x0010_0000`) as the final
+   `0x0012_019B` ACE mask: `FILE_READ_DATA`, `FILE_WRITE_DATA`, read/write EA,
+   read/write attributes, `READ_CONTROL`, and `SYNCHRONIZE`. Descriptor read-back
+   compares that final mask; the contract does not rely on a wrapper adding
+   `SYNCHRONIZE`. It excludes `FILE_CREATE_PIPE_INSTANCE`. Microsoft warns that
+   `FILE_GENERIC_WRITE`
    includes the overlapping append/create-instance bit; individual rights are
    required ([Named Pipe Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)).
 4. Create one byte-stream instance with
@@ -154,15 +164,24 @@ completion ([CancelIoEx](https://learn.microsoft.com/en-us/windows/win32/api/ioa
 
 Treat `ERROR_PIPE_CONNECTED` as a successful connection; Microsoft documents the
 [create/connect race](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe).
-If cancellation/deadline wins, close that connection before handshake. Each `HELLO` uses the shorter of remaining generation deadline and
-`APP_LINK_IO_DEADLINE`. The Windows adapter must supply overlapped read/write
-waits with the existing overall started-frame deadline; `std::io::Read` alone is
-not claimed to provide a named-pipe timeout.
+If cancellation/deadline wins, close that connection before handshake. Each `HELLO`
+uses the shorter of remaining generation deadline and `APP_LINK_IO_DEADLINE`. The
+Windows adapter must supply overlapped read/write waits with the existing overall
+started-frame deadline; `std::io::Read` alone is not claimed to provide a named-pipe
+timeout.
 
-On bad `HELLO`, send no rejection frame, record only
-`BootstrapRejection::HelloAuth`, call `DisconnectNamedPipe`, and re-enter
-overlapped `ConnectNamedPipe` on the same instance. Windows requires disconnect
-before reconnecting an instance ([DisconnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-disconnectnamedpipe)).
+Until a valid `HELLO` consumes bootstrap, every handshake result other than host
+cancellation or elapsed generation deadline is non-terminal. A complete wrong-length
+or mismatched token sends no rejection frame and records only
+`BootstrapRejection::HelloAuth`; EOF, a physical partial frame, a protocol-envelope
+failure, a handshake I/O failure, and a per-handshake timeout do not masquerade as
+`HelloAuth`. For each non-terminal result, the adapter completes or calls
+`CancelIoEx` on every pending overlapped read/write and observes each completion with
+`GetOverlappedResult` before it reuses that `OVERLAPPED` state. It then calls
+`DisconnectNamedPipe` and issues a new overlapped `ConnectNamedPipe` on the same
+instance. If cancellation or the generation deadline wins during that cleanup, it
+does not reconnect and instead closes the instance. Windows requires disconnect before
+reconnecting an instance ([DisconnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-disconnectnamedpipe)).
 On valid `HELLO`, consume bootstrap: the connected server handle becomes the
 session and is never disconnected/relisted. On any terminal lifecycle event,
 close it. The object then disappears when its last handle closes; a successor
@@ -197,9 +216,9 @@ protected DACL granting the current `TokenUser` SID produced:
 
 | ACE mask | Result |
 | --- | --- |
-| `0x0010_0003` (`ReadData | WriteData | Synchronize`) | no server accept; Bun exit 2 |
-| `0x0012_019B` (`PipeAccessRights::ReadWrite`) | accepted `KI`; Bun exit 0 |
-| `0x0012_019F` (`ReadWrite | CreateNewInstance`) | accepted `KI`; Bun exit 0 |
+| `0x0010_0003` (`ReadData + WriteData + Synchronize`) | no server accept; Bun exit 2 |
+| `0x0012_019B` (`ReadWrite + Synchronize`) | accepted `KI`; Bun exit 0 |
+| `0x0012_019F` (`ReadWrite + CreateNewInstance + Synchronize`) | accepted `KI`; Bun exit 0 |
 
 This establishes why `0x0012_019B` is selected and why create-instance access
 is unnecessary for that pinned client. It does not prove foreign-user denial,
@@ -248,8 +267,8 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
 | --- | --- |
 | 1–2 | Windows `keld-ipc` integration test uses `GetSecurityInfo`, enumerates ACEs, and byte-compares SID/mask. Removing the protected explicit DACL is the negative control. |
 | 3 | Pre-provisioned non-admin foreign-user helper calls `CreateFileW` with `0x0012_019B` and must observe `ERROR_ACCESS_DENIED`; `ConnectionRefused`/not-found are not DACL proof. It then permits a valid same-user child run. No fork or normal PR uses its credential. |
-| 4–5 | Real-pipe raw client sends empty/31-byte/foreign HELLO, asserts EOF/no host HELLO and redacted observer `KELD-IPC-007`, then valid Bun child proves exact echo. Reply-before-verify and stop-after-one-bad-peer mutations must fail. |
-| 6 | Tests cancel pending accept and silent partial HELLO, and exercise deadline. They await events/join, not sleeps; `CancelIoEx` completion is observed before free. Link deadline is `KELD-IPC-006`. |
+| 4–5 | Real-pipe raw client sends complete empty/31-byte/foreign HELLO, asserts EOF/no host HELLO and redacted observer `KELD-IPC-007`, then valid Bun child proves exact echo. A physical EOF, partial frame, protocol failure, and I/O failure each reconnect to the same instance before that valid client. Reply-before-verify and stop-after-one-bad-peer mutations must fail. |
+| 6 | Tests cancel pending accept and silent partial HELLO, and exercise deadline. They await events/join, not sleeps; before reuse each pending overlapped read/write is completed or cancelled and its completion observed. Link deadline is `KELD-IPC-006`. |
 | 7 | Valid session ends, stale link cannot create dispatchable session, successor endpoint/token differ. Deleting consumed latch is the negative control. |
 | 8 | `GetHandleInformation` verifies no inherit flag; Bun child proves it opens client endpoint. Setting the flag is negative control. |
 | 9–10 | TS/Rust paired tests pin pipe vs decimal parsing and captured errors/observer records: endpoint/token never leak; malformed forms are `007`; open failures are `001`. |
