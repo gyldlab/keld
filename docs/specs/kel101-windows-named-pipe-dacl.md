@@ -61,19 +61,27 @@ remote-client rejection, and deletes an instance after its last handle closes
    the client mask, then Windows returns `ERROR_ACCESS_DENIED`; no host session
    is accepted, and the intended child can subsequently authenticate.
 4. Given a same-user client with pipe name but no token, when it sends a complete
-   empty, wrong-length, or foreign `HELLO`, then it receives no host `HELLO` or
-   echo reply; the host records only redacted `KELD-IPC-007`, disconnects that
-   client, and continues accepting until the legitimate child succeeds or admission
-   expires. A physical EOF or partial wire frame is instead a non-terminal I/O
-   failure, not `HelloAuth`; it receives no reply and follows the shared error
-   classification after cleanup and re-accept.
+   empty, wrong-length, or foreign `HELLO`, then it receives no host `HELLO`, `ERR`,
+   or echo reply; the host records exactly one redacted `HelloAuth`/
+   `KELD-IPC-007` record, disconnects that client, and continues accepting until the
+   legitimate child succeeds or admission expires. Every other pre-authentication
+   failure has the exact existing-code host record in §4's admission mapping: EOF or
+   non-timeout I/O is `KELD-IPC-001`; a started partial frame that reaches
+   `APP_LINK_IO_DEADLINE` is `KELD-IPC-006`; a malformed header is
+   `KELD-IPC-002`; an oversized envelope is `KELD-IPC-004`; and a well-formed
+   non-`HELLO`/wrong-reserved-fields frame is `KELD-IPC-005`. None is `HelloAuth`.
+   They receive no host frame, clean up, and re-accept while generation time remains.
 5. Given the intended Bun child and complete link, when it connects with
    `node:net` and sends the matching v2 `HELLO`, then the host replies only after
    verification and one echo succeeds. Header bytes, protocol version 2, and
    32-byte raw `HELLO` are unchanged.
 6. Given cancellation, host shutdown, deadline, or a silent partial `HELLO`,
    when the operation completes, then no frame dispatch occurs, the worker joins
-   without a sleep, and no peer/log/error receives the token or its hex form.
+   without a sleep, and no peer/log/error receives the token or its hex form. In
+   particular, if `APP_LINK_IO_DEADLINE` expires before the generation deadline,
+   the host records `KELD-IPC-006`, disconnects and re-accepts on the **same** pipe
+   instance, and a valid child can still authenticate; if the generation deadline
+   wins, it is terminal and no reconnect occurs.
 7. Given valid admission followed by session completion, child crash, or host
    shutdown, when the server handle closes, then it never re-listens after valid
    `HELLO`; a stale locator cannot form another session and a successor has a
@@ -171,17 +179,39 @@ started-frame deadline; `std::io::Read` alone is not claimed to provide a named-
 timeout.
 
 Until a valid `HELLO` consumes bootstrap, every handshake result other than host
-cancellation or elapsed generation deadline is non-terminal. A complete wrong-length
-or mismatched token sends no rejection frame and records only
-`BootstrapRejection::HelloAuth`; EOF, a physical partial frame, a protocol-envelope
-failure, a handshake I/O failure, and a per-handshake timeout do not masquerade as
-`HelloAuth`. For each non-terminal result, the adapter completes or calls
-`CancelIoEx` on every pending overlapped read/write and observes each completion with
-`GetOverlappedResult` before it reuses that `OVERLAPPED` state. It then calls
-`DisconnectNamedPipe` and issues a new overlapped `ConnectNamedPipe` on the same
-instance. If cancellation or the generation deadline wins during that cleanup, it
-does not reconnect and instead closes the instance. Windows requires disconnect before
-reconnecting an instance ([DisconnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-disconnectnamedpipe)).
+cancellation or elapsed generation deadline is non-terminal. Each rejected connection
+produces exactly one redacted host `BootstrapRejection` record: no endpoint, token,
+raw bytes, OS-error detail, or second Windows-only logging taxonomy. The future shared
+observer extends its current `HelloAuth` record with the existing `IpcError` classes
+and their existing codes: `Io` (`KELD-IPC-001`), `Header` (`KELD-IPC-002`),
+`PayloadTooLarge` (`KELD-IPC-004`), `Protocol` (`KELD-IPC-005`), and `Timeout`
+(`KELD-IPC-006`). `HelloAuth` remains `KELD-IPC-007`. This is a future public-API
+change under the already-declared public-API review gate, not a new error value or
+wire-message type.
+
+Before a successful `HELLO`, the host never writes `HELLO`, `ERR`, or an echo reply.
+Thus the wire result for every rejected connector is close-without-reply. A connector
+which waits to read after that host close observes its local existing
+`IpcError::Io`/`KELD-IPC-001`; a connector that caused physical EOF has no response to
+observe. The redacted host record, not a new pre-auth wire error, distinguishes the
+failure classes:
+
+| Pre-authentication failure | Host observer record | Connector-visible result |
+| --- | --- | --- |
+| EOF before a complete header/payload, or non-timeout handshake read/write I/O | `Io` / `KELD-IPC-001` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Started partial header/payload remains open until the shorter handshake deadline expires | `Timeout` / `KELD-IPC-006` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Bad magic, version, or kind in the frame header | `Header` / `KELD-IPC-002` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Decoded envelope length exceeds `MAX_FRAME_LEN` | `PayloadTooLarge` / `KELD-IPC-004` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Valid envelope but non-`HELLO`, or `HELLO` with nonzero reserved channel/correlation | `Protocol` / `KELD-IPC-005` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Empty, wrong-length, or foreign 32-byte `HELLO` token | `HelloAuth` / `KELD-IPC-007` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+
+For each non-terminal result, the adapter completes or calls `CancelIoEx` on every
+pending overlapped read/write and observes each completion with `GetOverlappedResult`
+before it reuses that `OVERLAPPED` state. It then calls `DisconnectNamedPipe` and
+issues a new overlapped `ConnectNamedPipe` on the same instance. If cancellation or
+the generation deadline wins during that cleanup, it does not reconnect and instead
+closes the instance. Windows requires disconnect before reconnecting an instance
+([DisconnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-disconnectnamedpipe)).
 On valid `HELLO`, consume bootstrap: the connected server handle becomes the
 session and is never disconnected/relisted. On any terminal lifecycle event,
 close it. The object then disappears when its last handle closes; a successor
@@ -207,6 +237,16 @@ supplied string.
 | Connect, HELLO, started-read, or started-write deadline | `KELD-IPC-006` | Never token/raw prefix |
 | Invalid token | Peer sees close/`KELD-IPC-001`; host observer sees `KELD-IPC-007` | Host does not send HELLO first |
 | Invalid endpoint/token text before connect | `KELD-IPC-007` | State syntax only |
+
+### Required Electron migration conformance entry
+
+Before accepting the migration compatibility tests in §7 AC 9–10, record this
+conformance entry. It is a process-boundary entry, not a claim that Electron defines
+Keld's endpoint or token protocol.
+
+| Entry | Electron documentation oracle | Keld migration contract | Status and falsifiable test |
+| --- | --- | --- | --- |
+| `KEL101.electron-main-node-app-link` | [Electron Process Model: main process](https://www.electronjs.org/docs/latest/tutorial/process-model#the-main-process) says Electron's main process runs in a Node.js environment with Node APIs, while renderer code has no direct Node API access. | A migrated Electron-main entry may use its Node-capable main-process equivalent to open the host-provided `KELD_APP_LINK` through `node:net`; no renderer or preload receives the endpoint, token, or pipe handle. Electron supplies no equivalent host-issued app-link, so Keld's endpoint/token is an explicit `▲` migration contract, not an Electron behavior match. | Planned until T3. A Windows main-process migration fixture proves pipe and legacy decimal parsing from the main entry, and a renderer/preload fixture proves the link value is absent there. It fails if the test exposes `KELD_APP_LINK` outside the child main entry or calls the parser before this entry is recorded. |
 
 ### Local compatibility evidence (not security proof)
 
@@ -267,11 +307,11 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
 | --- | --- |
 | 1–2 | Windows `keld-ipc` integration test uses `GetSecurityInfo`, enumerates ACEs, and byte-compares SID/mask. Removing the protected explicit DACL is the negative control. |
 | 3 | Pre-provisioned non-admin foreign-user helper calls `CreateFileW` with `0x0012_019B` and must observe `ERROR_ACCESS_DENIED`; `ConnectionRefused`/not-found are not DACL proof. It then permits a valid same-user child run. No fork or normal PR uses its credential. |
-| 4–5 | Real-pipe raw client sends complete empty/31-byte/foreign HELLO, asserts EOF/no host HELLO and redacted observer `KELD-IPC-007`, then valid Bun child proves exact echo. A physical EOF, partial frame, protocol failure, and I/O failure each reconnect to the same instance before that valid client. Reply-before-verify and stop-after-one-bad-peer mutations must fail. |
-| 6 | Tests cancel pending accept and silent partial HELLO, and exercise deadline. They await events/join, not sleeps; before reuse each pending overlapped read/write is completed or cancelled and its completion observed. Link deadline is `KELD-IPC-006`. |
+| 4–5 | Real-pipe raw clients cover each row in §4's admission mapping: EOF/non-timeout I/O, partial-frame timeout, bad header, oversized envelope, wrong `HELLO` state, and empty/31-byte/foreign token. Each asserts no host `HELLO`/`ERR`/echo reply, the exact one redacted host observer record, cleanup, and same-instance re-accept before a valid Bun child proves exact echo. A client read after host close is `KELD-IPC-001`; a client that caused EOF has no reply to observe. Reply-before-verify, collapse-to-`HelloAuth`, and stop-after-one-bad-peer mutations must fail. |
+| 6 | Separate deadline tests are mandatory. `per_handshake_io_deadline_reaccepts_same_instance_then_authenticates` leaves a started partial `HELLO` open until `APP_LINK_IO_DEADLINE` expires while the generation deadline is still in the future; it asserts redacted `Timeout`/`KELD-IPC-006`, completed-or-cancelled-and-observed overlapped I/O, the same pipe instance's next `ConnectNamedPipe`, then valid child authentication. `generation_deadline_is_terminal` independently expires the generation deadline and asserts `DeadlineElapsed`, closed instance, and no reconnect. Tests cancel pending accept and silent partial `HELLO`; they await readiness/completion events and joins, never sleeps. Treating per-handshake timeout as terminal, or treating generation expiry as reconnectable, must fail its respective test. |
 | 7 | Valid session ends, stale link cannot create dispatchable session, successor endpoint/token differ. Deleting consumed latch is the negative control. |
 | 8 | `GetHandleInformation` verifies no inherit flag; Bun child proves it opens client endpoint. Setting the flag is negative control. |
-| 9–10 | TS/Rust paired tests pin pipe vs decimal parsing and captured errors/observer records: endpoint/token never leak; malformed forms are `007`; open failures are `001`. |
+| 9–10 | First record `KEL101.electron-main-node-app-link` above against its Electron documentation oracle. Only then do TS/Rust paired migration tests pin main-entry pipe vs decimal parsing and captured errors/observer records: endpoint/token never leak; malformed forms are `007`; open failures are `001`. |
 
 The Bun preflight above runs on each pinned Bun upgrade but never substitutes for
 Keld integration tests. Tests use random names, readiness events, isolated
