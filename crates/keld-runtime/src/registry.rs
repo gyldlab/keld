@@ -179,6 +179,11 @@ impl RoleRegistry {
     /// Stops both roles and revokes every live virtual port route.
     ///
     /// Application-session stop, not window close (T4).
+    ///
+    /// Shutdown requests are asynchronous. Observe the resulting lifecycle
+    /// revocations through [`Self::try_recv_primary_event`] and
+    /// [`Self::try_recv_app_bound_event`], which retain events while
+    /// synchronizing virtual port state.
     pub fn shutdown(&mut self) {
         self.sync_role_events();
         for principal in self.virtual_ports.live_principals() {
@@ -263,7 +268,6 @@ fn owner_error(message: &'static str) -> RuntimeError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -397,10 +401,24 @@ mod tests {
         );
 
         registry.shutdown();
-        expect_shutdown_revoke(registry.primary(), &primary_g2, 2, "primary shutdown");
-        expect_shutdown_revoke(registry.app_bound(), &app_g2, 2, "app-bound shutdown");
         assert_stopped(registry.primary(), "primary");
         assert_stopped(registry.app_bound(), "app-bound");
+        assert!(matches!(
+            registry.try_recv_primary_event(),
+            Some(RoleEvent::Revoked {
+                generation,
+                attempt: 2,
+                cause: RoleRevocationCause::Shutdown,
+            }) if generation == primary_g2.generation
+        ));
+        assert!(matches!(
+            registry.try_recv_app_bound_event(),
+            Some(RoleEvent::Revoked {
+                generation,
+                attempt: 2,
+                cause: RoleRevocationCause::Shutdown,
+            }) if generation == app_g2.generation
+        ));
         drop(primary_g2_control);
         drop(app_control);
     }
@@ -529,28 +547,6 @@ mod tests {
                         generation,
                         attempt: a,
                         cause: RoleRevocationCause::ChildExited
-                    } if *generation == probe.generation && *a == attempt
-                )
-            },
-            label,
-        );
-    }
-
-    fn expect_shutdown_revoke(
-        supervisor: &super::RoleSupervisor,
-        probe: &crate::unix_role::ProvisionedProbe,
-        attempt: u32,
-        label: &str,
-    ) {
-        assert_next(
-            supervisor,
-            |event| {
-                matches!(
-                    event,
-                    RoleEvent::Revoked {
-                        generation,
-                        attempt: a,
-                        cause: RoleRevocationCause::Shutdown
                     } if *generation == probe.generation && *a == attempt
                 )
             },
@@ -710,7 +706,7 @@ mod tests {
             .expect("mint pair");
 
         primary_control.write_line("CRASH");
-        let _primary_g2 = recv_probe(&primary_probe_rx, "primary g2 after crash");
+        let primary_g2 = recv_probe(&primary_probe_rx, "primary g2 after crash");
 
         let err = registry
             .send_role_port(cap_primary, primary_principal, b"stale")
@@ -742,6 +738,21 @@ mod tests {
                 attempt: 1,
                 cause: RoleRevocationCause::ChildExited,
             }) if generation == primary_g1.generation
+        ));
+        assert!(matches!(
+            registry.try_recv_primary_event(),
+            Some(RoleEvent::Provisioned {
+                generation,
+                attempt: 2,
+            }) if generation == primary_g2.generation
+        ));
+        assert!(matches!(
+            registry.try_recv_primary_event(),
+            Some(RoleEvent::Spawned {
+                generation,
+                attempt: 2,
+                ..
+            }) if generation == primary_g2.generation
         ));
 
         registry.shutdown();
@@ -873,37 +884,5 @@ mod tests {
         registry.shutdown();
         assert_stopped(registry.primary(), "primary");
         assert_stopped(registry.app_bound(), "app-bound");
-    }
-
-    #[test]
-    fn buffered_role_events_preserve_fifo_order() {
-        let generation = RoleGeneration::from_test_counter(1);
-        let mut buffer = VecDeque::new();
-        buffer.push_back(RoleEvent::Provisioned {
-            generation,
-            attempt: 1,
-        });
-        buffer.push_back(RoleEvent::Spawned {
-            generation,
-            pid: 42,
-            attempt: 1,
-        });
-        buffer.push_back(RoleEvent::LinkBound {
-            generation,
-            attempt: 1,
-        });
-        assert!(matches!(
-            buffer.pop_front(),
-            Some(RoleEvent::Provisioned { .. })
-        ));
-        assert!(matches!(
-            buffer.pop_front(),
-            Some(RoleEvent::Spawned { .. })
-        ));
-        assert!(matches!(
-            buffer.pop_front(),
-            Some(RoleEvent::LinkBound { .. })
-        ));
-        assert!(buffer.pop_front().is_none());
     }
 }

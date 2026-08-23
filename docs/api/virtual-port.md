@@ -61,7 +61,7 @@ let reason = registry
     .expect("exactly one peer disconnect");
 ```
 
-`poll_disconnect` returns `Some` exactly once per end generation.
+`poll_role_port_disconnect` returns `Some` exactly once per end generation.
 
 ### Revoke generation
 
