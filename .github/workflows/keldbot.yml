@@ -10,9 +10,8 @@ concurrency:                     # ek PR pe do edits jaldi-jaldi ho toh purana r
   group: keldbot-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-permissions:                     # DEFAULT-DENY! 🎉 Sirf ye hi power do:
-  pull-requests: write           # comment + label karne ki ijaazat
-  issues: write                  # labels ke liye (PR internally issue hota hai)
+permissions: {}                  # DEFAULT-DENY! Har job apna kaam ROBOKELD_TOKEN se karta hai,
+                                  # default GITHUB_TOKEN kabhi use hi nahi hota — isko koi power dene ki zaroorat nahi.
 
 jobs:
   gatekeeper:                    # job ka internal naam

@@ -342,6 +342,13 @@ is red, read KeldBot's own comment first (it names exactly what's missing) befor
 the rule from this file. Comments/labels post from the `keldrobo` account, not
 `github-actions[bot]`.
 
+**Known limitation:** GitHub does not pass repository secrets to `pull_request`-triggered
+runs from a forked repository, so `ROBOKELD_TOKEN` is unavailable and all three jobs fail
+with an auth error on fork PRs rather than doing their job. Since `gyldlab/keld` is public
+and accepts fork contributions, an external contributor's PR gets a red, unhelpful KeldBot
+check today. Fixing this (e.g. degrade to no-op on forks instead of failing loud) is a known
+follow-up, not yet done.
+
 Label taxonomy on `gyldlab/keld` — bot-applied vs. human-applied differ, don't assume either:
 - `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*` (8, one per allowed
   commit type) — bot-applied, per the three checks above.
