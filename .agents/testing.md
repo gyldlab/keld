@@ -94,9 +94,10 @@ evidence only when a plausible defect can make it fail.
 - **Rust-affecting PRs:** CI runs `cargo fmt --all --check` plus clippy, tests and MSRV
   checks for the changed workspace package and every Cargo reverse-dependent consumer.
   MSRV is a rustc-version gate on macOS (WKWebView, no apt). Ubuntu WebKitGTK apt for
-  clippy/test runs only when changed paths own `keld-wv` / `keld-core` / `keld-host` (or
-  an unknown/lockfile fail-safe). Other Ubuntu clippy uses packages whose Cargo closure
-  does not compile `keld-wv`. The Xvfb smoke separately runs when the current `keld-host`
+  clippy/test runs when the selected `--all-targets` package closure compiles `keld-wv`
+  (or an unknown/lockfile fail-safe). Other Ubuntu clippy uses the router's GTK-free
+  package set. A workflow/router edit preserves the explicit GTK-free subset so the GUI
+  smoke remains the only live apt owner for that input class. The Xvfb smoke separately runs when the current `keld-host`
   dependency closure or graphical build/runtime inputs change. Replay
   committed fuzz regressions as normal tests; build changed fuzz harnesses. A
   documentation-affecting PR runs the generated docs and Mermaid render gates. Agents
