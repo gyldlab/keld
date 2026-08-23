@@ -160,7 +160,7 @@ pub enum VirtualPortError {
         /// Configured capacity.
         capacity: usize,
     },
-    /// Payload exceeds [`MAX_PORT_MESSAGE_LEN`].
+    /// Payload exceeds the configured 4 KiB maximum message length.
     InvalidMessageLen {
         /// Attempted length in bytes.
         len: usize,
@@ -232,7 +232,7 @@ impl std::error::Error for VirtualPortError {}
 
 /// Host-owned registry of bounded virtual port pairs.
 #[derive(Debug)]
-pub struct VirtualPortRegistry {
+pub(crate) struct VirtualPortRegistry {
     next_generation: u64,
     queue_capacity: usize,
     pairs: HashMap<VirtualPortGeneration, PairState>,
@@ -260,15 +260,15 @@ struct EndState {
 }
 
 impl VirtualPortRegistry {
-    /// Creates a registry with [`DEFAULT_PORT_QUEUE_CAPACITY`].
+    /// Creates a registry with the default queue capacity.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_queue_capacity(DEFAULT_PORT_QUEUE_CAPACITY)
     }
 
     /// Creates a registry with a custom per-end queue bound.
     #[must_use]
-    pub fn with_queue_capacity(queue_capacity: usize) -> Self {
+    pub(crate) fn with_queue_capacity(queue_capacity: usize) -> Self {
         Self {
             next_generation: 1,
             queue_capacity,
@@ -297,7 +297,7 @@ impl VirtualPortRegistry {
     ///
     /// Returns [`VirtualPortError::StaleGeneration`] when either principal is
     /// unregistered, not live, or was previously revoked in this registry.
-    pub fn create_pair(
+    pub(crate) fn create_pair(
         &mut self,
         owner_a: RolePrincipal,
         owner_b: RolePrincipal,
@@ -337,7 +337,7 @@ impl VirtualPortRegistry {
     ///
     /// Returns [`VirtualPortError`] when ownership, closure, queue bounds, or
     /// generation validity fail.
-    pub fn send(
+    pub(crate) fn send(
         &mut self,
         from: PortCapability,
         sender: RolePrincipal,
@@ -389,7 +389,7 @@ impl VirtualPortRegistry {
     ///
     /// Returns [`VirtualPortError`] for duplicate, self, source, closed, or
     /// stale-generation transfers.
-    pub fn transfer(
+    pub(crate) fn transfer(
         &mut self,
         capability: PortCapability,
         from: RolePrincipal,
@@ -455,7 +455,7 @@ impl VirtualPortRegistry {
     ///
     /// Returns [`VirtualPortError`] when the end is already closed, revoked, or
     /// not owned by `owner`.
-    pub fn close(
+    pub(crate) fn close(
         &mut self,
         capability: PortCapability,
         owner: RolePrincipal,
@@ -490,7 +490,7 @@ impl VirtualPortRegistry {
     ///
     /// Returns [`VirtualPortError::ForeignDelivery`] when `owner` is not the
     /// live holder of the end.
-    pub fn recv(
+    pub(crate) fn recv(
         &mut self,
         capability: PortCapability,
         owner: RolePrincipal,
@@ -523,7 +523,7 @@ impl VirtualPortRegistry {
     ///
     /// Returns [`VirtualPortError::ForeignDelivery`] when `owner` is not the
     /// live holder of the end.
-    pub fn poll_disconnect(
+    pub(crate) fn poll_disconnect(
         &mut self,
         capability: PortCapability,
         owner: RolePrincipal,
@@ -566,7 +566,7 @@ impl VirtualPortRegistry {
     }
 
     /// Revokes every route owned by one role generation.
-    pub fn revoke_generation(&mut self, principal: RolePrincipal) {
+    pub(crate) fn revoke_generation(&mut self, principal: RolePrincipal) {
         self.mark_generation_revoked(principal);
         self.live_generations.remove(&principal);
         for pair in self.pairs.values_mut() {

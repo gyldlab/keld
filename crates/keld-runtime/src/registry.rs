@@ -12,9 +12,10 @@ use crate::RuntimeError;
 pub use crate::unix_role::{
     RoleConfig, RoleEvent, RoleGeneration, RoleOwner, RoleRevocationCause, RoleSupervisor,
 };
+use crate::virtual_port::VirtualPortRegistry;
 pub use crate::virtual_port::{
     PortCapability, PortDisconnectReason, PortEnd, PortMessage, RolePrincipal, VirtualPortError,
-    VirtualPortGeneration, VirtualPortRegistry,
+    VirtualPortGeneration,
 };
 
 /// Host-owned pair of independently supervised Unix Bun roles.
@@ -23,7 +24,7 @@ pub struct RoleRegistry {
     primary: RoleSupervisor,
     app_bound: RoleSupervisor,
     virtual_ports: VirtualPortRegistry,
-    /// Non-revocation events buffered during [`Self::sync_role_events`].
+    /// Lifecycle events buffered during [`Self::sync_role_events`].
     primary_buffered_events: VecDeque<RoleEvent>,
     app_bound_buffered_events: VecDeque<RoleEvent>,
 }
@@ -82,18 +83,6 @@ impl RoleRegistry {
         &self.app_bound
     }
 
-    /// Host-owned bounded virtual port registry for authenticated roles.
-    #[must_use]
-    pub fn virtual_ports(&self) -> &VirtualPortRegistry {
-        &self.virtual_ports
-    }
-
-    /// Mutable access to the virtual port registry.
-    #[must_use]
-    pub fn virtual_ports_mut(&mut self) -> &mut VirtualPortRegistry {
-        &mut self.virtual_ports
-    }
-
     /// Mints a port pair between two authenticated role principals.
     ///
     /// # Errors
@@ -109,8 +98,81 @@ impl RoleRegistry {
         self.virtual_ports.create_pair(owner_a, owner_b)
     }
 
+    /// Sends one bounded message through a live host-owned role port.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when lifecycle revocation, ownership,
+    /// closure, queue bounds, or message length reject the operation.
+    pub fn send_role_port(
+        &mut self,
+        from: PortCapability,
+        sender: RolePrincipal,
+        payload: &[u8],
+    ) -> Result<(), VirtualPortError> {
+        self.with_synchronized_virtual_ports(|ports| ports.send(from, sender, payload))
+    }
+
+    /// Transfers one role-port end once to a live host-approved principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when lifecycle revocation, ownership, or
+    /// the one-shot transfer rules reject the operation.
+    pub fn transfer_role_port(
+        &mut self,
+        capability: PortCapability,
+        from: RolePrincipal,
+        target: RolePrincipal,
+    ) -> Result<PortCapability, VirtualPortError> {
+        self.with_synchronized_virtual_ports(|ports| ports.transfer(capability, from, target))
+    }
+
+    /// Closes one live role-port end.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when lifecycle revocation, ownership, or
+    /// port state rejects the operation.
+    pub fn close_role_port(
+        &mut self,
+        capability: PortCapability,
+        owner: RolePrincipal,
+    ) -> Result<(), VirtualPortError> {
+        self.with_synchronized_virtual_ports(|ports| ports.close(capability, owner))
+    }
+
+    /// Receives the next queued role-port message for `owner`, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when lifecycle revocation, ownership, or
+    /// port state rejects the operation.
+    pub fn recv_role_port(
+        &mut self,
+        capability: PortCapability,
+        owner: RolePrincipal,
+    ) -> Result<Option<PortMessage>, VirtualPortError> {
+        self.with_synchronized_virtual_ports(|ports| ports.recv(capability, owner))
+    }
+
+    /// Observes one pending disconnect for a live role-port end, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirtualPortError`] when lifecycle revocation, ownership, or
+    /// port state rejects the operation.
+    pub fn poll_role_port_disconnect(
+        &mut self,
+        capability: PortCapability,
+        owner: RolePrincipal,
+    ) -> Result<Option<PortDisconnectReason>, VirtualPortError> {
+        self.with_synchronized_virtual_ports(|ports| ports.poll_disconnect(capability, owner))
+    }
+
     /// Revokes virtual port routes for one role generation.
     pub fn revoke_role_ports(&mut self, principal: RolePrincipal) {
+        self.sync_role_events();
         self.virtual_ports.revoke_generation(principal);
     }
 
@@ -139,8 +201,8 @@ impl RoleRegistry {
 
     /// Returns the next buffered or queued primary lifecycle event.
     ///
-    /// Non-revocation events observed during virtual port synchronization are
-    /// retained here so callers can still observe the public lifecycle feed.
+    /// Events observed during virtual port synchronization are retained here
+    /// so callers can still observe the public lifecycle feed.
     #[must_use]
     pub fn try_recv_primary_event(&mut self) -> Option<RoleEvent> {
         self.sync_role_events();
@@ -168,6 +230,14 @@ impl RoleRegistry {
             &mut self.app_bound_buffered_events,
         );
     }
+
+    fn with_synchronized_virtual_ports<T>(
+        &mut self,
+        operation: impl FnOnce(&mut VirtualPortRegistry) -> Result<T, VirtualPortError>,
+    ) -> Result<T, VirtualPortError> {
+        self.sync_role_events();
+        operation(&mut self.virtual_ports)
+    }
 }
 
 fn drain_supervisor_role_events(
@@ -177,11 +247,10 @@ fn drain_supervisor_role_events(
     buffered_events: &mut VecDeque<RoleEvent>,
 ) {
     while let Some(event) = supervisor.try_recv_event() {
-        if let RoleEvent::Revoked { generation, .. } = event {
-            virtual_ports.revoke_generation(RolePrincipal::new(owner, generation));
-        } else {
-            buffered_events.push_back(event);
+        if let RoleEvent::Revoked { generation, .. } = &event {
+            virtual_ports.revoke_generation(RolePrincipal::new(owner, *generation));
         }
+        buffered_events.push_back(event);
     }
 }
 
@@ -570,22 +639,111 @@ mod tests {
             .expect("mint pair");
 
         registry
-            .virtual_ports_mut()
-            .send(cap_primary, primary_principal, b"ping")
+            .send_role_port(cap_primary, primary_principal, b"ping")
             .expect("primary send");
         let msg = registry
-            .virtual_ports_mut()
-            .recv(cap_app, app_principal)
+            .recv_role_port(cap_app, app_principal)
             .expect("app recv")
             .expect("payload");
         assert_eq!(msg.as_bytes(), b"ping");
 
         registry.revoke_role_ports(primary_principal);
         let err = registry
-            .virtual_ports_mut()
-            .send(cap_primary, primary_principal, b"stale")
+            .send_role_port(cap_primary, primary_principal, b"stale")
             .expect_err("stale send");
         assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
+        registry.shutdown();
+        assert_stopped(registry.primary(), "primary");
+        assert_stopped(registry.app_bound(), "app-bound");
+        drop(primary_control);
+        drop(app_control);
+    }
+
+    #[test]
+    fn role_port_operations_sync_revocation_and_preserve_lifecycle_event() {
+        let fixture = FamilyFixture::new();
+        let policy = RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        };
+        let (primary_probe_tx, primary_probe_rx) = mpsc::channel();
+        let (app_probe_tx, app_probe_rx) = mpsc::channel();
+        let mut registry = RoleRegistry::start(
+            bun_role(
+                RoleConfig::primary("bun"),
+                &fixture,
+                fixture.primary_control_path(),
+                policy,
+            )
+            .with_probe(primary_probe_tx),
+            bun_role(
+                RoleConfig::app_bound("bun"),
+                &fixture,
+                fixture.app_bound_control_path(),
+                policy,
+            )
+            .with_probe(app_probe_tx),
+        )
+        .expect("roles spawn");
+
+        let primary_g1 = recv_probe(&primary_probe_rx, "primary g1");
+        let app_g1 = recv_probe(&app_probe_rx, "app-bound g1");
+        let mut primary_control = bind_attempt(
+            &mut registry,
+            RoleOwner::Primary,
+            &primary_g1,
+            1,
+            fixture.accept_primary(),
+        );
+        let app_control = bind_attempt(
+            &mut registry,
+            RoleOwner::AppBound,
+            &app_g1,
+            1,
+            fixture.accept_app_bound(),
+        );
+
+        let primary_principal = RolePrincipal::new(RoleOwner::Primary, primary_g1.generation);
+        let app_principal = RolePrincipal::new(RoleOwner::AppBound, app_g1.generation);
+        let (cap_primary, cap_app) = registry
+            .create_role_port_pair(primary_principal, app_principal)
+            .expect("mint pair");
+
+        primary_control.write_line("CRASH");
+        let _primary_g2 = recv_probe(&primary_probe_rx, "primary g2 after crash");
+
+        let err = registry
+            .send_role_port(cap_primary, primary_principal, b"stale")
+            .expect_err("synchronized send must reject the revoked generation");
+        assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
+        let err = registry
+            .recv_role_port(cap_app, app_principal)
+            .expect_err("synchronized receive must observe the revoked pair");
+        assert!(err.to_string().contains("KELD-RUNTIME-006"), "{err}");
+        let err = registry
+            .transfer_role_port(cap_app, app_principal, primary_principal)
+            .expect_err("synchronized transfer must observe the revoked target");
+        assert!(err.to_string().contains("KELD-RUNTIME-005"), "{err}");
+        let err = registry
+            .close_role_port(cap_app, app_principal)
+            .expect_err("synchronized close must observe the revoked pair");
+        assert!(err.to_string().contains("KELD-RUNTIME-006"), "{err}");
+        let disconnect = registry
+            .poll_role_port_disconnect(cap_app, app_principal)
+            .expect("synchronized disconnect polling");
+        assert!(matches!(
+            disconnect,
+            Some(super::PortDisconnectReason::GenerationRevoked)
+        ));
+        assert!(matches!(
+            registry.try_recv_primary_event(),
+            Some(RoleEvent::Revoked {
+                generation,
+                attempt: 1,
+                cause: RoleRevocationCause::ChildExited,
+            }) if generation == primary_g1.generation
+        ));
+
         registry.shutdown();
         assert_stopped(registry.primary(), "primary");
         assert_stopped(registry.app_bound(), "app-bound");
@@ -643,14 +801,12 @@ mod tests {
             .create_role_port_pair(primary_principal, app_principal)
             .expect("mint pair");
         registry
-            .virtual_ports_mut()
-            .send(cap_primary, primary_principal, b"pre-shutdown")
+            .send_role_port(cap_primary, primary_principal, b"pre-shutdown")
             .expect("send before shutdown");
 
         registry.shutdown();
         let err = registry
-            .virtual_ports_mut()
-            .send(cap_app, app_principal, b"after-shutdown")
+            .send_role_port(cap_app, app_principal, b"after-shutdown")
             .expect_err("shutdown must revoke routes");
         assert!(
             err.to_string().contains("KELD-RUNTIME-005")

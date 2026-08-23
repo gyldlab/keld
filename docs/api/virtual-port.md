@@ -14,7 +14,7 @@ mediates send, one-shot transfer, close, and generation revocation.
 | `RolePrincipal` | Host-minted `(RoleOwner, RoleGeneration)` identity |
 | `PortCapability` | Reference to one live end of a pair |
 | `PortMessage` | Inline bounded payload (`MAX_PORT_MESSAGE_LEN` = 4096) |
-| `VirtualPortRegistry` | Host-owned pair table and route state |
+| `RoleRegistry` | Host-owned role lifecycle and port routing boundary |
 
 ## Operations
 
@@ -26,17 +26,18 @@ let app = RolePrincipal::new(RoleOwner::AppBound, generation);
 let (cap_a, cap_b) = registry.create_role_port_pair(primary, app)?;
 ```
 
-Both principals must be registered live generations (call
-`RoleRegistry::register_bound_principal` after bootstrap bind, or rely on
-role-event sync for revocation) and not previously revoked in the registry.
+Both principals must be registered live generations by the host after their
+bootstrap bind (call `RoleRegistry::register_bound_principal`) and not
+previously revoked in the registry. Lifecycle synchronization only removes
+authority after revocation; it never admits a principal.
 `RoleRegistry::create_role_port_pair` drains pending `Revoked` events before
 minting.
 
 ### Send (FIFO)
 
 ```rust
-registry.virtual_ports_mut().send(cap_a, primary, b"hello")?;
-let msg = registry.virtual_ports_mut().recv(cap_b, app)?.expect("one message");
+registry.send_role_port(cap_a, primary, b"hello")?;
+let msg = registry.recv_role_port(cap_b, app)?.expect("one message");
 ```
 
 Queue capacity defaults to 64 messages per end (`DEFAULT_PORT_QUEUE_CAPACITY`).
@@ -45,7 +46,7 @@ Overflow returns `KELD-RUNTIME-010`.
 ### Transfer (one-shot)
 
 ```rust
-registry.virtual_ports_mut().transfer(cap_b, app, target_principal)?;
+registry.transfer_role_port(cap_b, app, target_principal)?;
 ```
 
 Failures: self (`007`), duplicate (`008`), source after relinquish (`009`),
@@ -54,10 +55,9 @@ closed (`006`), stale generation (`005`).
 ### Close and disconnect
 
 ```rust
-registry.virtual_ports_mut().close(cap_a, primary)?;
+registry.close_role_port(cap_a, primary)?;
 let reason = registry
-    .virtual_ports_mut()
-    .poll_disconnect(cap_b, app)?
+    .poll_role_port_disconnect(cap_b, app)?
     .expect("exactly one peer disconnect");
 ```
 
