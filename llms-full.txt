@@ -1115,9 +1115,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
   CALL). Further CALLs on the same stream use `echo_invoke` and must not send a
-  second `HELLO`. Correlation id `0` stays reserved for `HELLO`. This is the
-  session loop a persistent Bun child needs; it is not a 10k-call latency bench
-  (KEL-30 AC3 / KEL-39 remain parked).
+  second `HELLO`. Correlation id `0` stays reserved for `HELLO`. After `HELLO`,
+  a host-owned persistent echo reader uses the same reader-only short-poll rule
+  as lifecycle: idle polls retry, the writer keeps its five-second deadline,
+  and a started frame still must finish within that deadline. This is the session
+  loop a persistent Bun child needs; it is not a 10k-call latency bench (KEL-30
+  AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
   `Call` `Quit` and the host replies, then the serve loop returns. Handshake
@@ -1243,12 +1246,13 @@ compromised keeps the host's threat model uniform).
 - Webview navigation: principal generation rotates; pending replies to the old principal
   drop; guard re-evaluates capabilities using origin/resource policy context.
 - Host never blocks on either peer; every await point has a deadline. v0 app-link
-  applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) on the
-  connected stream; expiry is `KELD-IPC-006`. That is an OS socket timeout, not
-  an async timer. **Exception (KEL-72):** after a successful lifecycle `HELLO`,
-  cleanup is `set_app_link_read_deadline` with a short poll (reader-only).
-  Writer `SO_SNDTIMEO` stays `APP_LINK_IO_DEADLINE`. Idle timeouts retry so a
-  quiet `whenReady` wait is not `KELD-IPC-006` and so Drop can join (Win32
+  applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) during
+  authentication and on writes; expiry is `KELD-IPC-006`. That is an OS socket
+  timeout, not an async timer. **Persistent-session exception (KEL-30/KEL-72):**
+  after a successful echo or lifecycle `HELLO`, cleanup is
+  `set_app_link_read_deadline` with a short poll (reader-only). Writer
+  `SO_SNDTIMEO` stays `APP_LINK_IO_DEADLINE`. Idle timeouts retry so a quiet
+  persistent child or `whenReady` wait is not `KELD-IPC-006` and so Drop can join (Win32
   clone-shutdown does not wake a local blocking `read`; rust-lang/rust#121594).
   A started frame that stalls still expires at `APP_LINK_IO_DEADLINE`
   (`KELD-IPC-006`); per-`recv` `SO_RCVTIMEO` is not that overall deadline.
