@@ -103,11 +103,13 @@ jobs:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se label post ho, github-actions[bot] se nahi
           script: |
             // Tiers ascending order mein — max = us tier ki upper-bound (inclusive) line count.
-            // NOTE: sirf XS/S abhi defined hain. Isse bade PRs (>=50 lines) filhaal unlabeled rehte hain —
-            // naya tier (size/M, size/L, ...) add karna ho toh: label pehle GitHub pe banao, phir yahan array mein daalo.
+            // Naya tier add karna ho toh: label pehle GitHub pe banao, phir yahan array mein daalo.
             const SIZE_TIERS = [
               { name: "size/XS", max: 9 },
               { name: "size/S", max: 49 },
+              { name: "size/M", max: 199 },
+              { name: "size/L", max: 499 },
+              { name: "size/XL", max: Infinity },
             ];
             const ALL_SIZE_LABELS = SIZE_TIERS.map((t) => t.name);
 
@@ -117,10 +119,10 @@ jobs:
 
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
             const changed = pr.additions + pr.deletions;
-            const tier = SIZE_TIERS.find((t) => changed <= t.max);
+            const tier = SIZE_TIERS.find((t) => changed <= t.max); // XL ka max Infinity hai, hamesha koi na koi tier milega
 
             const currentLabels = pr.labels.map((l) => l.name);
-            const stale = ALL_SIZE_LABELS.filter((n) => currentLabels.includes(n) && n !== tier?.name);
+            const stale = ALL_SIZE_LABELS.filter((n) => currentLabels.includes(n) && n !== tier.name);
             for (const name of stale) {
               try {
                 await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
@@ -129,11 +131,88 @@ jobs:
               }
             }
 
-            if (tier) {
-              if (!currentLabels.includes(tier.name)) {
-                await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [tier.name] });
-              }
-              core.info(`${changed} lines changed -> ${tier.name}`);
-            } else {
-              core.info(`${changed} lines changed -> koi size/* tier nahi (size/S ki upper bound 49 lines hai) — abhi unlabeled.`);
+            if (!currentLabels.includes(tier.name)) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [tier.name] });
             }
+            core.info(`${changed} lines changed -> ${tier.name}`);
+
+  title-lint:                    # teesra job — PR title ko conventional-commit format se match karo
+    if: github.event.action != 'synchronize'   # title sirf opened/edited pe badalta hai, har push pe nahi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title format
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
+          script: |
+            // Squash-merge PR title ko hi final commit message banata hai, isliye title yahan lint hota hai —
+            // individual commits nahi. Types AGENTS.md § Commits & PRs se (source of truth) — dono jagah साथ update karo.
+            const TYPES = ["feat", "fix", "docs", "test", "chore", "ci", "style", "build"];
+            const TITLE_RE = new RegExp(`^(${TYPES.join("|")})(\\([\\w./-]+\\))?!?: .+`);
+            const MARKER = "<!-- keldbot:title-check -->";
+            const LABEL = "needs-conventional-title";
+
+            const title = context.payload.pull_request.title ?? "";
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find((c) => c.body?.includes(MARKER));
+            const match = TITLE_RE.exec(title);
+
+            if (!match) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
+
+              const commentBody =
+                `${MARKER}\n👋 PR title conventional-commit format follow nahi karta: \`type(scope): subject\`\n\n` +
+                `Allowed types: \`${TYPES.join("`, `")}\`. Example: \`feat(ipc): add shm channel\`. ` +
+                `Title edit karte hi main dobara check karunga (AGENTS.md § Commits & PRs).`;
+
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number, body: commentBody });
+              }
+
+              core.setFailed(`PR title doesn't match type(scope): subject — got "${title}"`);
+              return;
+            }
+
+            // Title valid hai — usse type nikaal ke matching type:* label lagao, purana stale type:* label hatao.
+            const type = match[1];
+            const typeLabel = `type:${type}`;
+            const allTypeLabels = TYPES.map((t) => `type:${t}`);
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            const currentLabels = pr.labels.map((l) => l.name);
+
+            const stale = allTypeLabels.filter((n) => currentLabels.includes(n) && n !== typeLabel);
+            for (const name of stale) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+              } catch (err) {
+                if (err.status !== 404) throw err;
+              }
+            }
+
+            if (!currentLabels.includes(typeLabel)) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [typeLabel] });
+            }
+
+            try {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number, name: LABEL });
+            } catch (err) {
+              if (err.status !== 404) throw err;
+            }
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body: `${MARKER}\n✅ Title ab conventional-commit format follow karta hai, thanks!`,
+              });
+            }
+
+            core.info(`Title OK -> ${typeLabel}`);
