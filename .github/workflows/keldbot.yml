@@ -3,7 +3,12 @@
 name: KeldBot                    # Actions tab mein jo naam dikhega
 
 on:                              # DOORBELL — kab jagana hai robot ko 🛎️
-  pull_request:
+  # pull_request_target (not pull_request): fork PRs se bhi secrets milte hain, isliye external
+  # contributors ke liye bhi checks kaam karte hain. Safe hai kyunki koi actions/checkout nahi
+  # hai (PR ka code kabhi runner pe nahi aata) aur title/body sirf context.payload se JS data ke
+  # taur pe padhte hain, kabhi shell/script text mein interpolate nahi hote — same pattern
+  # jo oven-sh/bun apne comment-cop.yml/on-slop.yml mein use karta hai.
+  pull_request_target:
     types: [opened, edited, synchronize]   # opened/edited: template; opened/synchronize: size — har job apna type khud chunta hai neeche
 
 concurrency:                     # ek PR pe do edits jaldi-jaldi ho toh purana run cancel, race/duplicate comment na ho
