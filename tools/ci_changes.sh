@@ -267,11 +267,19 @@ classify_path() {
             docs="$TRUE"
             ;;
 
-        # The router and workflow decide which jobs execute. Any edit here must
+        # The router and ci.yml decide which jobs execute. Any edit here must
         # exercise every conditional lane, otherwise a classification defect can
         # hide the very job that would expose it.
-        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh)
+        .github/workflows/ci.yml | tools/ci_changes.sh | tools/ci_changes_test.sh)
             mark_all
+            ;;
+
+        # Any other workflow file (e.g. an unrelated bot automation) has no path
+        # into the Rust workspace, GUI, or the ci.yml router itself -- ci_hygiene.rs
+        # only reads .github/workflows/ci.yml by name, so it cannot validate these
+        # either. Nothing to mark; a diff touching only such a file legitimately
+        # needs no conditional lane.
+        .github/workflows/*)
             ;;
 
         # Workspace and toolchain inputs can alter every Rust build, keld-host's
