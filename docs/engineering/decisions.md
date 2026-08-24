@@ -184,9 +184,10 @@ SmartScreen (KEL-66), and it owns the environment options Keld needs to control.
 environment, controller, `add_PermissionRequested` guard before first navigation
 (compile-enforced), bounds, navigate — with tao still providing window + event
 loop. wry stays the macOS interim and a quirks catalog. Honest ledger: a
-controlled same-session A/B showed first paint unchanged (472 vs 467 ms — the
+controlled same-session A/B showed first paint unchanged (469 vs 467 ms — the
 bridge wait overlapped renderer boot), so the rewrite is carried by security
-(SmartScreen on, at 0 measured cost), binary size (−24%, 625,152 → 484,864 B),
+(SmartScreen on; its one-session 469 ms ON vs 453 ms OFF comparison is
+inconclusive), binary size (−22.4%, 625,152 → 484,864 B),
 and owning the create sequence — not by a speed claim.
 
 **Update (2026-08-16, KEL-28): Linux create path is wry, same interim step

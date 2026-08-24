@@ -59,7 +59,7 @@ this scoreboard does not publish a ≤ 300 ms pass/fail label.
 |---|---|---|---|
 | Installer (runtime = bun) | ≤ 20 MB | 85–150 MB | N/A — Bun not packed |
 | Installer (runtime = none) | ≤ 6 MB | — | N/A — no `.app` / DMG |
-| Cold start → first paint | ≤ 300 ms | 1–3 s | **macOS WK, untraced double-rAF proxy:** last recorded `--publish` median **342.911 ms** (Keld `5ba4672`, benches recipe [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b); raw JSON not in keld-benches git). **Not** traced-arm beacon 352.211 ms. **Not** gyldlab/keld#10 `PageLoadEvent::Finished`. **Not** RSS. **Windows WebView2:** **472 ms** (2026-08-15 direct-COM, [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a)); architecture 01 §5 records the Chromium controller-creation floor. Measurement only, not a scoreboard pass/fail. |
+| Cold start → first paint | ≤ 300 ms | 1–3 s | **macOS WK, untraced double-rAF proxy:** last recorded `--publish` median **342.911 ms** (Keld `5ba4672`, benches recipe [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b); raw JSON not in keld-benches git). **Not** traced-arm beacon 352.211 ms. **Not** gyldlab/keld#10 `PageLoadEvent::Finished`. **Not** RSS. **Windows WebView2:** **469 ms** (2026-08-15 direct-COM, [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab632f023488227fcb5e7b44009df899653/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab632f023488227fcb5e7b44009df899653)); architecture 01 §5 records the Chromium controller-creation floor. Measurement only, not a scoreboard pass/fail. |
 | Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB | **72.6–77.8 MiB** host-only @ Keld `b93ebb6` (under budget; no Bun; WebKit XPCs excluded). Coalition (host+WebKit helpers) is a different column — see Memory |
 | kipc small-message p99 | ≤ 100 µs | ~ms-class | echo exists; not bench'd |
 | kipc bulk (shm) | ≥ 1 GB/s | n/a | no shm |
@@ -188,14 +188,14 @@ median of 7, committed JSON.
 
 | Stack | first paint | Cite |
 |---|---:|---|
-| **Keld** `39be9cc` direct COM | **472 ms** | [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a); also `MEASUREMENTS.md` |
-| Tauri 2.11.5 (same session) | 483 ms | same files |
-| Electron 43.4.0 (same session) | 278 ms | same files |
-| Keld wry baseline `137633f` | 467 ms | [`windows-first-paint-kel65-baseline.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a/windows/bench/windows-first-paint-kel65-baseline.json) |
+| **Keld** `39be9cc` direct COM | **469 ms** | [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab632f023488227fcb5e7b44009df899653/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab632f023488227fcb5e7b44009df899653); also `MEASUREMENTS.md` |
+| Tauri 2.11.5 (same session) | 479 ms | same files |
+| Electron 43.4.0 (same session) | 275 ms | same files |
+| Keld wry baseline `137633f` | 467 ms | [`windows-first-paint-kel65-baseline.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab632f023488227fcb5e7b44009df899653/windows/bench/windows-first-paint-kel65-baseline.json) |
 
 This is a measurement row, not a ≤ 300 ms pass/fail label. Architecture 01 §5
 records the WebView2 controller-creation floor. Titled `HWND` is **not** this
-metric. Historical Windows sessions (906 ms ad-hoc, 1,289 ms, 590 ms) are superseded; see
+metric. Historical Windows sessions (906 ms ad-hoc, 1,289 ms, 573 ms) are superseded; see
 [Windows measured rows](#windows-measured-rows-2026-08-13) below. Do not
 compare Windows WebView2 paint to macOS WK paint.
 
@@ -297,7 +297,7 @@ Electron `.app` 288,448,512 B are **other lanes**.
 | Bun lane in installer | Not packed; this-Mac `bun` 1.3.14 = 63,096,576 B extracted; gzip-9 = 23,548,666; zstd-19 = 16,838,595 |
 | Electrobun complete RSS @ `0308d55` | Launcher 72,032 KB only; Bun child + WebKit GPU/WebContent not enumerated |
 | Committed untraced macOS `--publish` JSON | Last untraced median 342.911 ms is a Keld-scoreboard/Linear record; not a file in keld-benches after AC4 |
-| First-paint measurement evidence | Windows **472 ms** (JSON @ `686d1ab`). macOS last recorded untraced proxy **342.911 ms**; traced beacon **352.211 ms** is not that score. Construction ~149 ms vs traced beacon ~352 ms is residual WebKit, not a `keld-wv` build target. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Linux has a live backend and an Xvfb/`xdotool` attachment smoke after the `default_vbox` fix, but no first-paint measurement. No ≤ 300 ms pass/fail label until the gate exists. |
+| First-paint measurement evidence | Windows **469 ms** (JSON @ `686d1ab`). macOS last recorded untraced proxy **342.911 ms**; traced beacon **352.211 ms** is not that score. Construction ~149 ms vs traced beacon ~352 ms is residual WebKit, not a `keld-wv` build target. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Linux has a live backend and an Xvfb/`xdotool` attachment smoke after the `default_vbox` fix, but no first-paint measurement. No ≤ 300 ms pass/fail label until the gate exists. |
 | kipc p99 / shm / update patch | No shm, no updater, no `bench/` |
 | CI > 5% regression gate | Architecture 01 §5 once `bench/` lands (KEL-39) |
 | Windows / Linux competitor hellos | keld-benches stubs; not this machine |
@@ -351,7 +351,7 @@ Four uniques only — no fifth.
 | 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
-| 5 | Cold start first paint (architecture target ≤300 ms) | **measurement only — no current gate** | Windows JSON @ `686d1ab`: Keld **472 ms** vs Tauri 483; Electron 278; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced** double-rAF proxy **342.911 ms** (recipe `9e7c83d`; JSON not in benches git). Traced construction **149.031 ms** vs traced beacon **352.211 ms** @ `aae2e12` is residual WebKit (`external_webkit_scheduling`), **not** a paint score and **not** a `keld-wv` rewrite. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Do not use RSS. |
+| 5 | Cold start first paint (architecture target ≤300 ms) | **measurement only — no current gate** | Windows JSON @ `686d1ab`: Keld **469 ms** vs Tauri 479; Electron 275; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced** double-rAF proxy **342.911 ms** (recipe `9e7c83d`; JSON not in benches git). Traced construction **149.031 ms** vs traced beacon **352.211 ms** @ `aae2e12` is residual WebKit (`external_webkit_scheduling`), **not** a paint score and **not** a `keld-wv` rewrite. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Do not use RSS. |
 | 6 | Chromium-complete web platform **and** beat Electron on disk | **cannot win honestly** | Chromium *is* the disk (this-Mac Electron `.app` 288,448,512; NW.js `.app` 410,271,744). Spec 01 §6: no CEF-by-default. |
 | 7 | Default-deny / crash isolation / zero ambient OS authority | **can win with work** | The product bet (architecture 01 §1). Specified, not enforced on hello. |
 | 8 | Flutter Skia hello | **cannot win honestly** | Different engine. Spec 01 §6: not a UI toolkit. |
@@ -379,7 +379,7 @@ Cite the path **and** an immutable SHA — not only `main`. Not in this monorepo
 - KEL-64 macOS oracle + recipes @ [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b): [`macos/harness`](https://github.com/gyldlab/keld-benches/tree/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b/macos/harness), [`macos/keld/hello`](https://github.com/gyldlab/keld-benches/tree/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b/macos/keld/hello), [`macos/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b/macos/tauri/hello)
 - KEL-64 attribution fixture [`macos/keld/hello`](https://github.com/gyldlab/keld-benches/tree/aae2e12f998ff47805eed38083c624525d87b9a8/macos/keld/hello): AC1 [`a5b517c`](https://github.com/gyldlab/keld-benches/commit/a5b517c281da5555dcf7d310151af105ce589d02), AC4 [`c3030d5`](https://github.com/gyldlab/keld-benches/commit/c3030d579b606ac00d3ba9e0fba8f57987a41baa), AC6 [`aae2e12`](https://github.com/gyldlab/keld-benches/commit/aae2e12f998ff47805eed38083c624525d87b9a8); JSON [`kel64-startup-attribution.json`](https://github.com/gyldlab/keld-benches/blob/aae2e12f998ff47805eed38083c624525d87b9a8/macos/keld/hello/kel64-startup-attribution.json)
 - Native Swift @ [`646be79`](https://github.com/gyldlab/keld-benches/commit/646be7972706158ff744a1cb33547eddfe127445): [`macos/swift/appkit-wk`](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/appkit-wk), [`macos/swift/swiftui-wk`](https://github.com/gyldlab/keld-benches/tree/646be7972706158ff744a1cb33547eddfe127445/macos/swift/swiftui-wk)
-- Windows first-paint JSON @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a) `windows/bench/`
+- Windows first-paint JSON @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab632f023488227fcb5e7b44009df899653) `windows/bench/`
 - Budgets: [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5
 - Packing / Bun size: [`docs/architecture/06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §1, §3
 - Four uniques / parked `bench/`: [`decisions.md`](./decisions.md) §1, §11
@@ -485,7 +485,7 @@ reason not to build a claim on that column.
 | Keld has the smallest binary on Windows | **Yes.** 625,152 B is 13.8x under Tauri's exe, 16.5x under Wails'. |
 | Keld has the lowest main-process RSS on Windows | **Yes** — 21,880 KB, lowest of every arm that opened a window, and well under the ≤ 90 MB idle budget. |
 | Keld starts faster than Tauri | **No.** On the budgeted metric — cold start → first paint — Tauri is **504 ms against Keld's 906 ms: 1.8x against us** (2026-08-14, median of 5). The earlier entry here said 6.6x; that figure came from titled-`HWND` times and was **inflated by a metric artifact** — that column times when a framework chooses to present its window, not when either renders. Fixing the metric shrinks the gap; it does **not** close it. Keld is still ~400 ms behind Tauri. Do not publish a startup claim. See KEL-62. |
-| Historical 2026-08-14 relation to the ≤ 300 ms target | Keld **906 ms**, Tauri **504 ms**. This dated row is superseded by the 2026-08-15 JSON median **472 ms** and is not the current scoreboard pass/fail label. |
+| Historical 2026-08-14 relation to the ≤ 300 ms target | Keld **906 ms**, Tauri **504 ms**. This dated row is superseded by the 2026-08-15 direct-COM JSON median **469 ms** and is not the current scoreboard pass/fail label. |
 | Keld uses less total memory than Electron | **No.** Electron 305,036 KB total beats every WebView2 arm because it runs 4 processes to WebView2's 7. |
 | Keld beats Tauri on total RSS | **Not meaningfully** — ~3%, inside run-to-run noise. The ~330 MB helper tier is engine-fixed and near-identical across all WebView2 arms. |
 | Electrobun comparison | **No.** Windows `--env=stable` emitted a macOS-shaped bundle and no window opened; the sample is a launcher that never rendered. |
@@ -500,7 +500,13 @@ Re-measured with the committed harness
 [`windows/bench/Measure-FirstPaint.ps1`](https://github.com/gyldlab/keld-benches/blob/e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f/windows/bench/Measure-FirstPaint.ps1)
 at [`gyldlab/keld-benches@e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f`](https://github.com/gyldlab/keld-benches/commit/e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f);
 raw samples (git SHAs, exe SHA-256, versions, exact command) in
-`windows/bench/windows-first-paint.json`. Median of 5, same machine/session.
+[`windows/bench/windows-first-paint.json`](https://github.com/gyldlab/keld-benches/blob/e3f65f42aa550ed8d6ccfdf0d5c8cad74b85704f/windows/bench/windows-first-paint.json).
+Median of 5, same machine/session.
+
+> **Evidence caveat:** that generic path was later overwritten by the
+> 2026-08-15 `f28d696` median-of-7 session. The table below is derivable from the
+> immutable `e3f65f4` blob linked above, not from the file at `main`'s tip. New
+> result files are session-named and immutable because of this overwrite.
 
 | Stack | first paint | main RSS | helper RSS | total RSS | procs |
 |---|---|---|---|---|---|
@@ -524,7 +530,7 @@ Absolutes here run higher than the earlier ad-hoc pass (Keld 906 ms, Tauri
 session, never across.
 
 
-## Windows first paint after the controller-bounds fix (2026-08-14, median of 7)
+## Windows first paint after the controller-bounds fix (2026-08-15, median of 7)
 
 Supersedes the table above. Two defects moved every number:
 
@@ -543,9 +549,13 @@ Harness at [`windows/bench/`](https://github.com/gyldlab/keld-benches/tree/39bab
 
 | Stack | first paint | main RSS | helper RSS | procs |
 |---|---|---|---|---|
-| **Electron** 43.4.0 | **395 ms** | 92,140 KB | 226,908 KB | **4** |
-| **Keld** `b935830` | **590 ms** | **23,084 KB** | 351,680 KB | 7 |
-| Tauri 2.11.5 | 596 ms | 28,280 KB | 354,316 KB | 7 |
+| **Electron** 43.4.0 | **372 ms** | 91,988 KB | 224,252 KB | **4** |
+| **Keld** `f28d696` | **573 ms** | **23,068 KB** | 351,472 KB | 7 |
+| Tauri 2.11.5 | 589 ms | 28,256 KB | 352,316 KB | 7 |
+
+Corrected from the committed raw after the PowerShell median-index defect was
+found; the shared derivation check is in
+[`gyldlab/keld-benches#10`](https://github.com/gyldlab/keld-benches/pull/10).
 
 Raw (ms): Keld 759/627/527/573/558/555/590 · Tauri 912/585/596/565/614/584/589 ·
 Electron 1165/395/321/333/410/317/372. First run of each arm is cold. 7/7 valid.
@@ -554,10 +564,10 @@ Electron 1165/395/321/333/410/317/372. First run of each arm is cold. 7/7 valid.
 
 | Claim | Now |
 |---|---|
-| "Keld first-paints 1.87x slower than Tauri" | **Retired.** 590 vs 596 ms is a statistical tie on the identical engine. The published gap was the bounds defect plus harness spawn overhead, both fixed. |
+| "Keld first-paints 1.87x slower than Tauri" | **Retired.** 573 vs 589 ms is a statistical tie on the identical engine. The published gap was the bounds defect plus harness spawn overhead, both fixed. |
 | Keld starts fast | **Parity with Tauri, not leadership.** Electron still first-paints ~1.5x faster than both WebView2 arms. |
-| Historical relation to the ≤ 300 ms target | Keld **590 ms**, Tauri **596 ms**, Electron **395 ms**. The remaining Keld cost is `WebViewBuilder::build` (~550 ms: WebView2 environment + controller creation), which is engine-inherent on this path. Measurement only; no current pass/fail label. Tracked on KEL-62. |
-| Keld has the lowest main-process RSS | **Yes** — unchanged (23,084 KB this session; absolutes drift with machine warmth, ordering does not). |
+| Historical relation to the ≤ 300 ms target | Keld **573 ms**, Tauri **589 ms**, Electron **372 ms**. The remaining Keld cost is `WebViewBuilder::build` (~550 ms: WebView2 environment + controller creation), which is engine-inherent on this path. Measurement only; no current pass/fail label. Tracked on KEL-62. |
+| Keld has the lowest main-process RSS | **Yes** — unchanged (23,068 KB this session; absolutes drift with machine warmth, ordering does not). |
 
 Absolutes in this table are lower than the previous one for every arm because the
 spawn overhead left the measurement. Ratios between arms are the durable signal;
@@ -573,22 +583,23 @@ the paint critical path:
 
 | Stack | Run A (direct COM `39be9cc`) | Run B (wry baseline `137633f`) |
 |---|---|---|
-| Electron 43.4.0 | 278 ms | 294 ms |
-| **Keld** | **472 ms** | **467 ms** |
-| Tauri 2.11.5 | 483 ms | 506 ms |
+| Electron 43.4.0 | 275 ms | 286 ms |
+| **Keld** | **469 ms** | **467 ms** |
+| Tauri 2.11.5 | 479 ms | 490 ms |
 
-Both runs: [`windows/bench/`](https://github.com/gyldlab/keld-benches/tree/686d1ab8ed57fc3b96b1a828d20bcf07adfab86a/windows/bench)
-@ `686d1ab` (raw samples `windows-first-paint-kel65-*.json`). Every arm sits
-~110–120 ms below the 2026-08-14 session — session conditions, which is why
-absolutes are never compared across sessions.
+Both runs: [`windows/bench/`](https://github.com/gyldlab/keld-benches/tree/686d1ab632f023488227fcb5e7b44009df899653/windows/bench)
+@ `686d1ab` (raw samples `windows-first-paint-kel65-*.json`). Across the two
+A/B runs, each arm sits 86–110 ms below the earlier 2026-08-15 `f28d696`
+session — session conditions, which is why absolutes are never compared across
+sessions. Corrected raw derivation: [`gyldlab/keld-benches#10`](https://github.com/gyldlab/keld-benches/pull/10).
 
 What the rewrite *did* measurably change:
 
 | Metric | wry backend | direct COM |
 |---|---|---|
-| `keld-host.exe` (release) | 625,152 B | **484,864 B** (−24%) |
+| `keld-host.exe` (release) | 625,152 B | **484,864 B** (−22.4%) |
 | Effective browser args | `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection` | **none** (SmartScreen on, KEL-66) — live cmdline verified |
-| SmartScreen cost | — | ON 472 ms vs OFF 466 ms: **free** (noise) |
+| SmartScreen comparison | — | ON 469 ms vs OFF 453 ms: **inconclusive** without a confidence interval |
 | UI-thread block before navigate | 96–109 ms (bridge injection) | ~0 (matters for input responsiveness and future multi-webview creation, not paint) |
 
 ### Claims this changes
@@ -596,7 +607,7 @@ What the rewrite *did* measurably change:
 | Claim | Now |
 |---|---|
 | "Dropping wry's bridge injection speeds first paint ~100 ms" | **Refuted by the A/B.** The blocking wait overlapped renderer boot. First paint is engine-floor-bound: `CreateCoreWebView2Controller` is "the bulk of starting a WebView2 control" (Microsoft, WebView2Feedback #1536) and not reducible from app code; environment creation is 3–6 ms. |
-| Keld vs Tauri | **Keld led in both same-session runs** (472 vs 483; 467 vs 506). Margin 11–39 ms is small against noise — claim "consistently ahead this session", not a ratio. |
-| Keld ships SmartScreen-disabled (inherited wry default) | **Fixed and free** — no browser args, verified on the live process; 0 measurable startup cost. |
+| Keld vs Tauri | **Keld led in both same-session runs** (469 vs 479; 467 vs 490). Margin 10–23 ms is small against noise — claim "consistently ahead this session", not a ratio. |
+| Keld ships SmartScreen-disabled (inherited wry default) | **Fixed.** No browser args, verified on the live process. The one-session 469 ms ON vs 453 ms OFF comparison is inconclusive and does not establish a startup cost. |
 | Smallest Windows binary of the measured stacks | **Strengthened** — 484,864 B vs Tauri 8,634,880 B (17.8x) and the Electron ~120 MB class. |
-| Historical relation to the ≤ 300 ms target | Direct COM **472 ms**, wry baseline **467 ms**. Measurement only; no current pass/fail label. The floor is Chromium process boot inside controller creation. Supported levers per Microsoft: early env creation (already done, 3–6 ms), hidden-webview prewarm + `put_ParentWindow` reparent (a memory-for-latency trade that fits real apps with init work, not the hello bench). Tracked on KEL-62. |
+| Historical relation to the ≤ 300 ms target | Direct COM **469 ms**, wry baseline **467 ms**. Measurement only; no current pass/fail label. The floor is Chromium process boot inside controller creation. Supported levers per Microsoft: early env creation (already done, 3–6 ms), hidden-webview prewarm + `put_ParentWindow` reparent (a memory-for-latency trade that fits real apps with init work, not the hello bench). Tracked on KEL-62. |
