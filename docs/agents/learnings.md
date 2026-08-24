@@ -11,7 +11,11 @@ Format — one line each, newest last:
 ```
 
 `[area]` is a crate short name (`ipc`, `wv`, `guard`, `native`, `runtime`, `update`,
-`pack`, `compat`, `core`, `cli`), `bench`, `docs`, `ts`, `build`, `ci`, or `process`.
+`pack`, `compat`, `core`, `cli`, `host`), optionally suffixed with an OS when the fact is
+OS-specific (`wv/macos`, `wv/windows`, `wv/linux`, `bench/macos`); or one of the
+cross-cutting areas `bench`, `bridge`, `build`, `ci`, `deps`, `docs`, `git`, `process`,
+`shell`, `tooling`, `ts`. A new value is added to this list in the same PR that first
+uses it — an entry whose area is not listed here is the defect, not the list.
 
 Compaction (maintainers, roughly when this list passes ~40 entries): move learnings
 that proved stable into the root `AGENTS.md`, the relevant spec, or a crate
