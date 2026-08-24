@@ -19,6 +19,10 @@ import {
   encodeHeader,
   parseWin32Port,
   withIoDeadline,
+  decodeCallError,
+  errorFromErrFrame,
+  isCallError,
+  type KeldCallError,
 } from "./link";
 
 const TOKEN_HEX = "72".repeat(32);
@@ -41,14 +45,31 @@ function countKiMagic(bytes: number[]): number {
   return n;
 }
 
+/** Encodes the postcard `CallError { code, message }` a host writes on Err. */
+function encodeCallError(code: string, message: string): Uint8Array {
+  const c = encodePostcardString(code);
+  const m = encodePostcardString(message);
+  const out = new Uint8Array(c.length + m.length);
+  out.set(c, 0);
+  out.set(m, c.length);
+  return out;
+}
+
 function encodePostcardString(text: string): Uint8Array {
   const utf8 = new TextEncoder().encode(text);
-  if (utf8.length > 127) {
-    throw new Error("test helper only encodes short postcard strings");
-  }
-  const out = new Uint8Array(1 + utf8.length);
-  out[0] = utf8.length;
-  out.set(utf8, 1);
+  // Real LEB128 varint: postcard uses multi-byte lengths past 127, and the
+  // production decoder must handle them, so the fixture must be able to emit them.
+  const len: number[] = [];
+  let n = utf8.length;
+  do {
+    let byte = n & 0x7f;
+    n >>>= 7;
+    if (n > 0) byte |= 0x80;
+    len.push(byte);
+  } while (n > 0);
+  const out = new Uint8Array(len.length + utf8.length);
+  out.set(len, 0);
+  out.set(utf8, len.length);
   return out;
 }
 
@@ -246,6 +267,60 @@ describe("WriteQueue", () => {
     ).rejects.toThrow("KELD-IPC-001");
     expect(countKiMagic(out)).toBe(1);
     expect(out.length).toBe(8);
+  });
+});
+
+describe("CallError payload (platform-independent)", () => {
+  // The SAME 16 bytes pinned in crates/keld-ipc/src/call_error.rs::PINNED, so the
+  // two implementations share one wire oracle. Runs on every OS: the socket tests
+  // below are Unix-only, which left KEL-102 with no Windows coverage at all.
+  const PINNED = new Uint8Array([
+    0x0d, 0x4b, 0x45, 0x4c, 0x44, 0x2d, 0x47, 0x55, 0x41, 0x52, 0x44, 0x30, 0x30, 0x31, 0x01,
+    0x78,
+  ]);
+
+  test("decodes the bytes the Rust encoder pins", () => {
+    expect(decodeCallError(PINNED)).toEqual({ code: "KELD-GUARD001", message: "x" });
+  });
+
+  test("a pre-KEL-102 bare postcard string is refused", () => {
+    const legacy = encodePostcardString("KELD-GUARD001: capability is not granted.");
+    expect(() => decodeCallError(legacy)).toThrow("KELD-IPC-003");
+    const err = errorFromErrFrame(legacy);
+    expect(err.message).toContain("not a CallError");
+    expect(isCallError(err)).toBe(false);
+  });
+
+  test("trailing bytes are rejected", () => {
+    const extra = new Uint8Array([...PINNED, 0x00]);
+    expect(() => decodeCallError(extra)).toThrow("KELD-IPC-003");
+  });
+
+  test("a code that is not a KELD-* identifier is refused", () => {
+    const bogus = new Uint8Array([...encodePostcardString("oops"), ...encodePostcardString("x")]);
+    expect(() => decodeCallError(bogus)).toThrow("KELD-IPC-003");
+    // ...and never reaches a consumer as a half-valid error.
+    expect(isCallError(errorFromErrFrame(bogus))).toBe(false);
+  });
+
+  test("an empty payload is a protocol error, not a CallError", () => {
+    const err = errorFromErrFrame(new Uint8Array());
+    expect(err.message).toContain("KELD-IPC-005");
+    expect(isCallError(err)).toBe(false);
+  });
+
+  test("a well-formed payload yields a code field and keeps the fix text", () => {
+    const payload = new Uint8Array([
+      ...encodePostcardString("KELD-GUARD001"),
+      ...encodePostcardString(
+        "KELD-GUARD001: capability `fs.read` is not granted. Append \"/tmp/x\" to " +
+          "`/app/fs/read` in keld.permissions.jsonc.",
+      ),
+    ]);
+    const err = errorFromErrFrame(payload);
+    expect(isCallError(err)).toBe(true);
+    expect((err as KeldCallError).code).toBe("KELD-GUARD001");
+    expect(err.message).toContain("keld.permissions.jsonc");
   });
 });
 
@@ -496,10 +571,64 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
           FrameKind.Err,
           LIFECYCLE_CHANNEL,
           call.header.corr,
-          encodePostcardString("KELD-IPC-005: quit refused"),
+          encodeCallError(
+            "KELD-GUARD003",
+            "KELD-GUARD003: channel `lifecycle` is not granted to this principal. " +
+              "Add `lifecycle` to this principal's channels list in keld.permissions.jsonc.",
+          ),
         ),
       );
-      await expect(quitP).rejects.toThrow("KELD-IPC-005");
+      // The code arrives as a field; the peer never parses it out of the text.
+      const denied = await quitP.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      // The public guard is what a consumer would use — no cast.
+      expect(isCallError(denied)).toBe(true);
+      expect((denied as KeldCallError).code).toBe("KELD-GUARD003");
+      // `message` carries the actionable fix; a decoder that drops it must fail here.
+      expect((denied as Error).message).toContain("keld.permissions.jsonc");
+    } finally {
+      peer.listener.stop(true);
+    }
+  });
+
+  test("a pre-KEL-102 bare-string Err payload is refused, never half-decoded", async () => {
+    const peer = bindPeer();
+    try {
+      const connectP = LifecycleLink.connect(peer.link, handlers);
+      const socket = await peer.opened;
+      const hello = await peer.reader.readFrame();
+      expect(hello.header.kind).toBe(FrameKind.Hello);
+      writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+      const session = await connectP;
+
+      const quitP = session.quit();
+      const call = await peer.reader.readFrame();
+      expect(call.header.kind).toBe(FrameKind.Call);
+      writeAll(
+        socket,
+        encodeFrame(
+          FrameKind.Err,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          // The pre-KEL-102 shape: one bare postcard string. The CallError
+          // decoder must refuse it outright rather than surface a
+          // plausible-looking error, so a host left on the old encoding
+          // cannot go unnoticed in a mixed rollout.
+          encodePostcardString("KELD-GUARD001: capability `fs.read` is not granted."),
+        ),
+      );
+      const err = await quitP.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("not a CallError");
+      // No code field: the guard must refuse it, so no consumer can branch on it.
+      expect(isCallError(err)).toBe(false);
+      // The old text must not leak through as if it had been understood.
+      expect((err as Error).message).not.toContain("fs.read");
     } finally {
       peer.listener.stop(true);
     }

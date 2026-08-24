@@ -13,6 +13,7 @@ use std::time::Duration;
 
 #[cfg(unix)]
 pub mod bootstrap;
+pub mod call_error;
 pub mod codec;
 pub mod echo;
 pub mod frame;
@@ -27,6 +28,7 @@ pub use bootstrap::{
     BootstrapAdmission, BootstrapCancellation, BootstrapListener, BootstrapRejection,
     BootstrapRejectionObserver,
 };
+pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};

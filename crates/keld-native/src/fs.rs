@@ -70,20 +70,64 @@ pub enum FsError {
     Io(io::Error),
 }
 
+impl FsError {
+    /// Stable registered `KELD-*` code for this failure.
+    ///
+    /// Single source of the literal: [`Display`](std::fmt::Display) and the
+    /// [`keld_ipc::CallError`] wire mapping both read it here, so the `code`
+    /// field of a wire payload can never disagree with its own `message`.
+    /// A denial forwards `keld-guard`'s code unchanged.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Denied(reason) => reason.code(),
+            Self::Io(_) => "KELD-NATIVE-001",
+        }
+    }
+}
+
 impl std::fmt::Display for FsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Denied(reason) => write!(f, "{reason}"),
             Self::Io(e) => write!(
                 f,
-                "KELD-NATIVE-001: filesystem I/O error — {e}. \
-                 Check the path exists and is accessible."
+                "{}: filesystem I/O error — {e}. \
+                 Check the path exists and is accessible.",
+                self.code()
             ),
         }
     }
 }
 
 impl std::error::Error for FsError {}
+
+#[cfg(test)]
+fn keld_guard_deny_for_test() -> DenyReason {
+    let manifest = keld_guard::parse_manifest("{}").expect("empty manifest parses");
+    match keld_guard::evaluate(&manifest, Principal::AppProcess, "fs.read", "/tmp/x") {
+        keld_guard::Decision::Deny(reason) => reason,
+        keld_guard::Decision::Allow => unreachable!("empty manifest must deny fs.read"),
+    }
+}
+
+impl From<&FsError> for keld_ipc::CallError {
+    /// Maps this broker's failure onto the one wire payload every privileged
+    /// channel uses ([`keld_ipc::CallError`]).
+    ///
+    /// A denial forwards `keld-guard`'s own code and text unchanged; an OS
+    /// failure carries this crate's `KELD-NATIVE-001`. The broker does not
+    /// invent an encoding — see `docs/architecture/02-ipc.md` §2.
+    fn from(err: &FsError) -> Self {
+        match err {
+            FsError::Denied(reason) => Self::from(reason),
+            FsError::Io(_) => Self {
+                code: err.code().to_owned(),
+                message: err.to_string(),
+            },
+        }
+    }
+}
 
 /// Reads `path` after a guard check. `path` is also the resource `evaluate`
 /// checks — a `..` segment or an out-of-scope path is
@@ -170,8 +214,8 @@ pub fn serve_fs_session<S: Read + Write>(
                         write_frame(stream, FrameKind::Reply, 0, FS_CHANNEL, header.corr, &bytes)?;
                     }
                     Err(err) => {
-                        let bytes = encode(&err.to_string())?;
-                        write_frame(stream, FrameKind::Err, 0, FS_CHANNEL, header.corr, &bytes)?;
+                        let call_error = keld_ipc::CallError::from(&err);
+                        keld_ipc::write_call_error(stream, FS_CHANNEL, header.corr, &call_error)?;
                     }
                 }
             }
@@ -187,6 +231,47 @@ pub fn serve_fs_session<S: Read + Write>(
 
 #[cfg(test)]
 mod tests {
+    /// Every `FsError` renders its own `code()` as the prefix of its `Display`,
+    /// so a `CallError`'s `code` field can never disagree with its `message`.
+    /// Applies the invariant `keld-ipc` already enforces for `DenyReason`.
+    #[test]
+    fn every_fs_error_message_starts_with_its_code() {
+        use super::{FsError, keld_guard_deny_for_test};
+        // Pin the literal: `Display` renders `code()`, so comparing the two to each
+        // other can never fail. Renaming the constant must break THIS line.
+        assert_eq!(
+            FsError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "x")).code(),
+            "KELD-NATIVE-001"
+        );
+        assert_eq!(
+            FsError::Denied(keld_guard_deny_for_test()).code(),
+            "KELD-GUARD001"
+        );
+        let errors = [
+            FsError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+            FsError::Denied(keld_guard_deny_for_test()),
+        ];
+        for err in &errors {
+            let rendered = err.to_string();
+            assert!(
+                rendered.starts_with(err.code()),
+                "`{}` must lead with `{}`",
+                rendered,
+                err.code()
+            );
+            let wire = keld_ipc::CallError::from(err);
+            assert_eq!(
+                wire.code,
+                err.code(),
+                "wire code must equal FsError::code()"
+            );
+            assert_eq!(
+                wire.message, rendered,
+                "wire message must be the Display text"
+            );
+        }
+    }
+
     use super::*;
     use keld_guard::parse_manifest;
 

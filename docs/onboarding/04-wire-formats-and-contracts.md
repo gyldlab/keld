@@ -379,9 +379,11 @@ identity and `AppProcess` are `KELD-GUARD007`), and privileged kipc via
 
 **FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
 `fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
-touching disk. A deny or I/O failure is a `FrameKind::Err` carrying the guard's
-`KELD-GUARD*` text or `KELD-NATIVE-001`. Echo remaining ungated does not mean
-privileged frames skip the guard.
+touching disk. A deny or I/O failure is a `FrameKind::Err` carrying a postcard
+`CallError { code, message }` (spec 02 §2) whose `code` is the guard's
+`KELD-GUARD*` or the broker's own `KELD-NATIVE-001` — read as a field, never
+parsed out of the text. Echo remaining ungated does not mean privileged frames
+skip the guard.
 
 **Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)
 sends `FrameKind::Event` `Ready` / `LastWindowClosed` and accepts `Call` `Quit`.

@@ -19,7 +19,7 @@ use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{ChannelId, CorrelationId, FrameKind};
 use keld_ipc::guard_dispatch::dispatch_privileged;
 use keld_ipc::link::{handshake_client, handshake_server, read_frame, write_frame};
-use keld_ipc::{IpcError, SessionToken};
+use keld_ipc::{CallError, IpcError, SessionToken};
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -90,25 +90,32 @@ fn serve_marker_session<S: Read + Write>(
                         )?;
                     }
                     Ok(Err(io_err)) => {
-                        let bytes = encode(&io_err.to_string())?;
-                        write_frame(
+                        // A post-allow failure still carries a code the peer can match.
+                        // The code is this test channel's own: borrowing `keld-native`'s
+                        // literal would be a second untested source of truth, and borrowing
+                        // `KELD-IPC-005` would collapse the application-level `CallError`
+                        // taxonomy into the transport faults `IpcError` owns — the very
+                        // distinction this payload exists to keep.
+                        let call_error = CallError {
+                            code: "KELD-TEST-001".to_owned(),
+                            message: format!(
+                                "KELD-TEST-001: marker handler failed — {io_err}. \
+                                 Check the marker path is writable."
+                            ),
+                        };
+                        keld_ipc::write_call_error(
                             stream,
-                            FrameKind::Err,
-                            0,
                             MARKER_CHANNEL,
                             header.corr,
-                            &bytes,
+                            &call_error,
                         )?;
                     }
                     Err(deny) => {
-                        let bytes = encode(&deny.to_string())?;
-                        write_frame(
+                        keld_ipc::write_call_error(
                             stream,
-                            FrameKind::Err,
-                            0,
                             MARKER_CHANNEL,
                             header.corr,
-                            &bytes,
+                            &CallError::from(&deny),
                         )?;
                     }
                 }
@@ -123,7 +130,7 @@ fn serve_marker_session<S: Read + Write>(
     Ok(())
 }
 
-fn call_marker(stream: &mut Stream, path: &str) -> Result<Result<(), String>, IpcError> {
+fn call_marker(stream: &mut Stream, path: &str) -> Result<Result<(), CallError>, IpcError> {
     handshake_client(stream, &test_token())?;
     let payload = encode(&MarkerRequest {
         path: path.to_owned(),
@@ -139,7 +146,7 @@ fn call_marker(stream: &mut Stream, path: &str) -> Result<Result<(), String>, Ip
     let (header, reply) = read_frame(stream)?;
     match header.kind {
         FrameKind::Reply => Ok(Ok(())),
-        FrameKind::Err => Ok(Err(decode::<String>(&reply)?)),
+        FrameKind::Err => Ok(Err(decode::<CallError>(&reply)?)),
         _ => Err(IpcError::Protocol {
             detail: "unexpected reply frame kind",
         }),
@@ -218,7 +225,7 @@ fn deny_manifest_handler_never_runs_no_file_is_written() {
     handle.join().expect("server thread").expect("serve");
 
     let err = result.expect_err("empty manifest must deny");
-    assert!(err.contains("KELD-GUARD001"), "{err}");
+    assert_eq!(err.code, "KELD-GUARD001", "{err:?}");
     assert!(
         !marker.exists(),
         "handler's OS side-effect (file write) must NOT happen on Deny — this is the negative \
@@ -253,7 +260,7 @@ fn webview_principal_is_denied_even_with_an_in_scope_grant() {
     handle.join().expect("server thread").expect("serve");
 
     let err = result.expect_err("webview principal must be denied");
-    assert!(err.contains("KELD-GUARD006"), "{err}");
+    assert_eq!(err.code, "KELD-GUARD006", "{err:?}");
     assert!(
         !marker.exists(),
         "a webview must not inherit the /app grant even though the path is in scope for AppProcess"
