@@ -20,10 +20,14 @@ peers never self-identify). The guard (`keld-guard`) evaluates
 **Destination:** host-minted principal on every frame; guard-before-handler for
 every privileged call.
 **v0:** `FrameHeader` is `{kind, flags, channel, corr, len}` — there is no
-principal field on the wire. `keld-guard::evaluate` takes a `Principal` and
-default-denies anything other than `AppProcess` (`KELD-GUARD006`) so `app`
-scopes cannot be applied to a webview or plugin by accident. Channel grants
-are not evaluated. Echo dispatch does not call the guard.
+principal field on the wire. The host supplies `Principal` at dispatch.
+`keld-guard::evaluate` takes a `Principal` and default-denies anything other
+than `AppProcess` (`KELD-GUARD006`) so `app` scopes cannot be applied to a
+webview or plugin by accident. Channel grants are not evaluated. Privileged
+`Call` on `FS_READ_CHANNEL` (`keld-core::dispatch_privileged`) is evaluated
+before the handler; deny is a `FrameKind::Err` postcard `CallError` with
+`KELD-GUARD*` and no handler side-effect. Echo dispatch (`ECHO_CHANNEL`) does
+not call the guard.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 

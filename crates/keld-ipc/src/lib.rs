@@ -11,6 +11,7 @@
 use std::io::ErrorKind;
 use std::time::Duration;
 
+pub mod call_error;
 pub mod codec;
 pub mod echo;
 pub mod frame;
@@ -18,6 +19,7 @@ pub mod link;
 pub mod session;
 pub mod token;
 
+pub use call_error::CallError;
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use link::AppLinkDeadlines;

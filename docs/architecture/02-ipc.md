@@ -43,6 +43,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify).
   Channel-table exchange remains later work.
+- **ERR payload (v0, KEL-69):** postcard `CallError { code, message }`. Privileged
+  deny fills `code` with `KELD-GUARD001` / `002` / `006` as applicable and
+  `message` with the full deny text (code + fix). This is a correlated
+  call-level failure — the session stays up — not `IpcError`. Frame layout,
+  `FrameKind`, flags, and `PROTOCOL_VERSION` (2) are unchanged; `Err` was
+  already kind `3` with no prior sender.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
   measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
   exists only for `--inspect-ipc` debugging (human dump), never on the hot path.

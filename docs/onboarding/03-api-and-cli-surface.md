@@ -428,8 +428,9 @@ magic:u16 | ver:u8 | kind:u8 | flags:u16 | channel:u16 | corr:u32 | len:u32
   `decode(&[u8; 16]) -> Result<Self, HeaderError>`.
 - `FrameKind` (`#[repr(u8)]`): `Hello=0`, `Call=1`, `Reply=2`, `Err=3`, `Event=4`,
   `StreamOpen=5`, `StreamChunk=6`, `StreamClose=7`, `Cancel=8`, `Grant=9`, `Ping=10`,
-  plus `from_u8`. All eleven round-trip through the header; only `Hello`, `Call`,
-  `Reply`, and `Ping` are *handled* by any session code today.
+  plus `from_u8`. All eleven round-trip through the header. Echo sessions handle
+  `Hello`, `Call` (echo), `Reply`, and `Ping`. Privileged sessions (KEL-69) also
+  handle `Call` on `FS_READ_CHANNEL` and write `Err` (`CallError`) on deny.
 - `ChannelId(pub u16)`, `CorrelationId(pub u32)` — newtypes, both `Copy`.
 - `FLAG_RAW: u16 = 1 << 0` — payload is raw bytes rather than codec-encoded.
 - `HeaderError::{BadMagic, BadVersion, BadKind}`.
@@ -450,6 +451,8 @@ Transport and session:
 The echo vertical slice ([`echo.rs`](../../crates/keld-ipc/src/echo.rs)):
 `ECHO_CHANNEL: ChannelId = ChannelId(1)`, `EchoRequest { message: String, count: u32 }`,
 `EchoResponse { message: String, count: u32 }`, and `handle_echo(&[u8]) -> Result<Vec<u8>, IpcError>`.
+`CallError { code: String, message: String }` is the postcard payload of a `FrameKind::Err`
+reply (KEL-69 privileged deny).
 
 `IpcError`: `Io`, `Header`, `Codec`, `PayloadTooLarge`, `Protocol { detail }`, `HelloAuth { detail }`, `Timeout` — codes
 `KELD-IPC-001..007`. Note this crate hand-writes `Display`/`Error` rather than deriving
@@ -529,12 +532,17 @@ pub fn run_hello_window() -> Result<(), keld_wv::WvError>  // "Keld" + HELLO_HTM
 pub fn run_hello_window_titled(title: &str) -> Result<(), keld_wv::WvError>  // title + HELLO_HTML
 pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // keld dev
 pub const VERSION: &str                                    // = CARGO_PKG_VERSION
+pub const FS_READ_CHANNEL: ChannelId                       // ChannelId(2)
+pub const FS_READ_OPERATION: &str                          // "fs.read"
+pub fn dispatch_privileged(...) -> Result<T, DenyReason>   // evaluate, then handler
+pub fn serve_privileged_session(...) -> Result<(), IpcError>
 ```
 
 Hello-window and config-title helpers live in
-[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The event loop,
-window registry, lifecycle, and kipc↔native dispatch described in spec 01 do not exist
-yet.
+[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). Privileged kipc
+dispatch (KEL-69) lives in `privileged.rs`: `dispatch_privileged`,
+`serve_privileged_session`, `FS_READ_CHANNEL`. The window registry, lifecycle, and
+native module implementations described in spec 01 are not this slice.
 
 ### 3.4 `keld_cli` — a library, not just a binary
 
@@ -562,7 +570,7 @@ subsystems:
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden}`, `parse_manifest` / `load_manifest` / `evaluate`. Host IPC still does not call evaluate; MCP `keld_permissions_explain` and the macOS webview media-capture handler do. |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess}`, `parse_manifest` / `load_manifest` / `evaluate`. Privileged kipc `FS_READ_CHANNEL` calls evaluate before the handler (KEL-69); echo does not. MCP `keld_permissions_explain` and webview media-capture also call it. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_runtime` | `RestartPolicy { max_crashes: 3, window_secs: 30 }` (via `Default`). No supervisor |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |

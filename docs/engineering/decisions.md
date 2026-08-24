@@ -67,8 +67,10 @@ it changes who owns a handle, who can crash whom, or who can mint a principal.
 **Implemented vs specified.** The four uniques are the design. Today the tree has live
 macOS WKWebView and Windows WebView2 hello paths plus a kipc echo slice; Linux remains a
 compiled layout slot. `keld-guard::evaluate` exists;
-`keld_permissions_explain` and the macOS webview media-capture handler call it;
-`keld-core` / `keld-native` do not invoke the guard on privileged IPC.
+`keld_permissions_explain` and the webview media-capture handlers call it;
+privileged kipc `Call` on `FS_READ_CHANNEL` is evaluated in `keld-core` before
+the handler (KEL-69). Echo stays ungated. Host `fs.read` / `fs.write` OS
+implementation is not this slice (KEL-71).
 `keld-runtime` is still a `RestartPolicy` struct; `keld dev` spawns `bun` from the
 CLI. Hold both facts.
 
@@ -410,8 +412,9 @@ destination; v0 must not be silently treated as “we decided not to resolve.”
 Pretending v0 already expands env vars would hide scope-bypass bugs the fixture
 corpus exists to catch.
 
-**Next.** Host-side `$VARS` / symlink canonicalization before match, then wire
-`evaluate` into privileged IPC — not a matcher rewrite that allows `..`.
+**Next.** Host-side `$VARS` / symlink canonicalization before match — not a
+matcher rewrite that allows `..`. Privileged IPC `evaluate` landed (KEL-69);
+host `fs.read` / `fs.write` (KEL-71) MUST use `keld-core::dispatch_privileged`.
 
 ---
 

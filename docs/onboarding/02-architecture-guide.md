@@ -370,8 +370,8 @@ but written down next to the code with the reason and the milestone that closes 
 
 | Crate | Lines | Status | Role | Spec | What's actually in it |
 |---|---|---|---|---|---|
-| `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
-| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain` and the macOS webview media-capture handler call it; privileged IPC still does not. `$VARS`/symlink resolution is not in this slice. |
+| `keld-core` | — | Partial | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | Hello window plus privileged kipc dispatch (`dispatch_privileged` / `serve_privileged_session`, KEL-69). The event loop currently lives in `keld-wv`'s backends, which their own docs flag as temporary |
+| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. Callers: MCP `keld_permissions_explain`, webview media-capture, and privileged kipc `FS_READ_CHANNEL`. Echo stays ungated. `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | 25 | Skeleton | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules (`window`, `menu`, `tray`, `dialog`, `notify`, `clipboard`, `shortcut`, `screen`, `power`, `shell`, `fs`, `secrets`, `deeplink`, `autostart`, `dock`). Zero implementations |
 | `keld-runtime` | 25 | Skeleton | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `RestartPolicy { max_crashes: 3, window_secs: 30 }`. Nothing reads it; the actual spawn is in `keld-cli/src/dev.rs` |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
@@ -419,9 +419,10 @@ because tao's `EventLoop::run` takes ownership of the thread and exits the proce
 
 ## 7. The security model
 
-Normative source: [`03-security.md`](../architecture/03-security.md). Status: **the types exist,
-the enforcement does not.** Read this section as a description of what you will be building, not
-of what protects users today.
+Normative source: [`03-security.md`](../architecture/03-security.md). Status: **partial** —
+`evaluate` runs before privileged kipc handlers (`FS_READ_CHANNEL`) and before webview
+camera/microphone capture; echo is ungated; channel grants, on-wire principal, and
+`$VARS` resolution are not this slice.
 
 ### Default deny
 
@@ -613,8 +614,8 @@ The summary table. "Live" means it works and a test proves it.
 | Linux webview backend | **Implemented + build-tested (KEL-28); window unverified on a real desktop** | `keld-wv/src/webkitgtk/`, wry interim (GTK3 + WebKit2GTK 4.1, `build_gtk` for Wayland) mirroring how macOS/Windows started; GPU-stack probe (NVIDIA+Wayland safe-mode) built in. Compiles/clippy/225-test-green on real Ubuntu; `Xvfb`+`xdotool` finds a real correctly-titled window; nobody has watched pixels render yet |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; `dev` runs echo and window side by side, not integrated |
-| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain` and macOS + Windows `web.camera`/`web.microphone` capture call them; host IPC does not |
-| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is live default-deny; host IPC still does not call them. `$VARS` matched literally in v0 |
+| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain`, webview `web.camera`/`web.microphone`, and privileged kipc `FS_READ_CHANNEL` call them; echo does not |
+| Capability enforcement, manifest, scopes, recorder | **Partial** | Privileged kipc `Call` is evaluated before the handler (KEL-69); webview camera/mic is live default-deny; recorder / `$VARS` host resolution are not this slice |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash-loop breaker) | **Specified, not implemented** | `RestartPolicy` exists; the spawn is in the CLI and unsupervised |
@@ -628,8 +629,10 @@ The summary table. "Live" means it works and a test proves it.
 | CI: fmt + clippy + nextest on 3 OSes, cargo-deny, MSRV | **Live** | `.github/workflows/ci.yml`; mirrored locally by `just ci` |
 | `llms.txt` + `llms-full.txt` | **Live** | Deterministically generated from an ordered allowlist by `tools/llms_docs.rs`; `just llms-check` rejects stale output |
 
-Roughly: **the wire format and the macOS window are real; the security model, the runtime
-supervisor, the native API surface, the bulk lanes, and everything TypeScript are not.**
+Roughly: **the wire format, the macOS window, and privileged kipc guard-before-dispatch
+are real; the runtime supervisor, the native API surface, the bulk lanes, and
+everything TypeScript are not.** Echo stays ungated; `$VARS` resolution and channel
+grants are not this slice.
 
 ---
 
