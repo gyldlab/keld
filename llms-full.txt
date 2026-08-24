@@ -2005,6 +2005,40 @@ before giving up with a typed `KELD-RUNTIME-002`. `keld dev` (`crates/keld-cli/s
 `run_dev_echo`) spawns through that supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
+Teardown of the host-owned hello session reads that supervision verdict rather than
+dropping it (KEL-105): if the app process dies while the host owns the window,
+`keld dev` exits 1 with `KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error
+and the captured stderr, instead of exiting 0 with no diagnostic.
+
+The breaker alone cannot carry that verdict, which is why the supervisor also
+publishes a crash ledger. `KELD-RUNTIME-002` requires three crashes inside a 30s
+sliding window (`RestartPolicy::default()`, `crash_times.retain`), so an app that
+dies once — or dies repeatedly but slower than that window — never trips it while
+still leaving the developer with no running app. That case produces
+`KELD-RUNTIME-012` under a clean `Stopped` outcome, read from durable ledger state
+the host never has to drain.
+
+The two codes are not alternatives. `KELD-CORE-033` is always the outer session
+diagnostic `keld dev` exits with; the `KELD-RUNTIME-*` code it quotes is the nested
+cause — `012` for a crash that did not trip the breaker, `002` for one that did,
+`003` for a generation that failed to provision. Assert on the outer code for the
+command's contract and on the nested one for the cause.
+
+Whether the breaker also trips depends on how the restarted generation fails, which
+is not something the host should have to predict. In a live macOS run the restarted
+children could not re-enter the session at all — the v0 echo listener admits exactly
+one authenticated session (`crates/keld-core/src/echo_link.rs`) and their `connect`
+failed outright — so they crashed fast enough to trip the breaker. The ledger makes
+the verdict independent of that timing.
+
+A crash the supervisor *recovered* from before the app reported ready stays a
+success (KEL-70 AC1/AC3): the session records the crash count at its ready marker,
+and only crashes above that count fail the run.
+
+Two limits are current behaviour, not destination: the app process's death does not
+close the window — the developer still closes it, and the exit code appears only
+then — and recovering the link across a restart is KEL-96 AC5 (no-flag host boot),
+not this path.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
@@ -3920,6 +3954,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Virtual port message exceeds inline length limit
 - fix: Split the payload or use a later bulk lane when available.
 
+## KELD-RUNTIME-012
+
+- crate: keld-runtime
+- message: A supervised app-process generation crashed without tripping the crash-loop breaker
+- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
@@ -3997,6 +4037,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: Timed out waiting for a Bun ready marker
 - fix: Confirm Bun is on PATH and the project entry speaks kipc.
+
+## KELD-CORE-033
+
+- crate: keld-core
+- message: The supervised app process stopped while the host owned the window
+- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then re-run `keld dev`.
 
 ---
 

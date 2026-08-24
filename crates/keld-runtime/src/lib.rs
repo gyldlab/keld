@@ -91,6 +91,17 @@ pub enum RuntimeError {
         /// Last captured stderr, truncated to a bounded tail.
         stderr_tail: String,
     },
+    /// A supervised generation exited non-zero without the crash-loop breaker
+    /// tripping. Recorded so a host that never drains events still observes a
+    /// dead app process (KEL-105).
+    ChildCrashed {
+        /// OS process id of the generation that crashed.
+        pid: u32,
+        /// Exit code, when the OS reported one (`None` for a signal death).
+        exit_code: Option<i32>,
+        /// Last captured stderr, truncated to a bounded tail.
+        stderr_tail: String,
+    },
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -123,6 +134,32 @@ impl std::fmt::Display for RuntimeError {
                 }
                 Ok(())
             }
+            Self::ChildCrashed {
+                pid,
+                exit_code,
+                stderr_tail,
+            } => {
+                match exit_code {
+                    Some(code) => write!(
+                        f,
+                        "KELD-RUNTIME-012: the supervised app process (pid {pid}) exited \
+                         {code}; the crash-loop breaker did not trip."
+                    ),
+                    None => write!(
+                        f,
+                        "KELD-RUNTIME-012: the supervised app process (pid {pid}) was \
+                         terminated by a signal; the crash-loop breaker did not trip."
+                    ),
+                }?;
+                write!(
+                    f,
+                    " Fix the crash shown in the captured stderr, then re-run `keld dev`."
+                )?;
+                if !stderr_tail.is_empty() {
+                    write!(f, " stderr tail:\n{stderr_tail}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -148,6 +185,15 @@ impl Clone for RuntimeError {
                 crashes: *crashes,
                 window_secs: *window_secs,
                 last_exit_code: *last_exit_code,
+                stderr_tail: stderr_tail.clone(),
+            },
+            Self::ChildCrashed {
+                pid,
+                exit_code,
+                stderr_tail,
+            } => Self::ChildCrashed {
+                pid: *pid,
+                exit_code: *exit_code,
                 stderr_tail: stderr_tail.clone(),
             },
         }
@@ -209,10 +255,33 @@ pub enum SupervisorEvent {
     Stopped,
 }
 
+/// Crashes a [`Supervisor`] has observed so far, as durable state rather than
+/// a consumed event.
+///
+/// A host that blocks — `keld dev` sits in the window event loop and drains no
+/// events for the whole window phase — can snapshot this before and after that
+/// interval and learn whether the app process died inside it. Comparing two
+/// snapshots is what separates a crash the supervisor *recovered* from
+/// (KEL-70 AC1/AC3: still a success) from one that happened after the session
+/// was already live (KEL-105: not a success).
+#[derive(Debug, Clone, Default)]
+pub struct CrashLedger {
+    /// Non-zero exits observed across every generation, never reset. Restarts
+    /// do not decrement it and the crash-loop window does not evict from it:
+    /// this counts events, while the breaker's own sliding window decides
+    /// policy.
+    pub count: u32,
+    /// Diagnostic for the most recent crash, carrying its `KELD-RUNTIME-012`
+    /// code and a bounded stderr tail. `None` exactly when `count` is 0.
+    pub last: Option<RuntimeError>,
+}
+
 /// Terminal outcome of [`Supervisor::wait_for_outcome`].
 #[derive(Debug)]
 pub enum SupervisorOutcome {
-    /// The child exited zero; supervision ended without error.
+    /// The child exited zero; supervision ended without error. A generation
+    /// may still have crashed and been recovered — read
+    /// [`Supervisor::crash_ledger`] for that fact (KEL-105).
     Stopped,
     /// The crash-loop breaker tripped.
     CrashLoop(RuntimeError),
@@ -319,6 +388,7 @@ pub struct Supervisor {
     output: Arc<Mutex<CapturedOutput>>,
     current_pid: Arc<Mutex<Option<u32>>>,
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
+    crashes: Arc<Mutex<CrashLedger>>,
     terminal_error: Arc<Mutex<Option<RuntimeError>>>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -367,6 +437,7 @@ impl Supervisor {
         let output = Arc::new(Mutex::new(CapturedOutput::default()));
         let current_pid = Arc::new(Mutex::new(None));
         let crash_loop_error = Arc::new(Mutex::new(None));
+        let crashes = Arc::new(Mutex::new(CrashLedger::default()));
         let terminal_error = Arc::new(Mutex::new(None));
         let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -374,6 +445,7 @@ impl Supervisor {
             let output = Arc::clone(&output);
             let current_pid = Arc::clone(&current_pid);
             let crash_loop_error = Arc::clone(&crash_loop_error);
+            let crashes = Arc::clone(&crashes);
             let terminal_error = Arc::clone(&terminal_error);
             let shutdown = Arc::clone(&shutdown);
             thread::Builder::new()
@@ -405,6 +477,7 @@ impl Supervisor {
                         &output,
                         &current_pid,
                         &crash_loop_error,
+                        &crashes,
                         &terminal_error,
                         &shutdown,
                     );
@@ -438,6 +511,7 @@ impl Supervisor {
             output,
             current_pid,
             crash_loop_error,
+            crashes,
             terminal_error,
             shutdown,
             thread: Some(thread),
@@ -486,6 +560,16 @@ impl Supervisor {
                 Ok(_) => {}
             }
         }
+    }
+
+    /// Snapshot of the crashes observed so far, across every spawn attempt.
+    ///
+    /// Readable at any time and never consumed, so a host that drains no
+    /// events still sees them. Two snapshots bound an interval: if `count`
+    /// grew across it, a supervised generation died inside it (KEL-105).
+    #[must_use]
+    pub fn crash_ledger(&self) -> CrashLedger {
+        lock_or_recover(&self.crashes).clone()
     }
 
     /// Snapshot of stdout/stderr captured so far, across every spawn attempt.
@@ -544,6 +628,7 @@ fn supervise<P>(
     output: &Arc<Mutex<CapturedOutput>>,
     current_pid: &Arc<Mutex<Option<u32>>>,
     crash_loop_error: &Arc<Mutex<Option<RuntimeError>>>,
+    crash_ledger: &Arc<Mutex<CrashLedger>>,
     terminal_error: &Arc<Mutex<Option<RuntimeError>>>,
     shutdown: &Arc<AtomicBool>,
 ) where
@@ -631,7 +716,7 @@ fn supervise<P>(
                 return;
             }
             let _ = child.kill();
-            let _ = child.wait();
+            reap_and_record_own_exit(&mut child, crash_ledger, output, pid);
             join_capture_threads(capture_threads);
             *lock_or_recover(current_pid) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
@@ -662,6 +747,13 @@ fn supervise<P>(
         let window = Duration::from_secs(u64::from(policy.window_secs));
         crash_times.retain(|t| now.duration_since(*t) <= window);
         crash_times.push(now);
+
+        // KEL-105: publish the crash as durable state at the one site that
+        // knows a generation died. The host blocks in the window event loop
+        // across this whole interval and drains no events, so the
+        // `Exited` event above is unobservable to it. Count and diagnostic
+        // move together under one lock so they cannot disagree.
+        record_crash(crash_ledger, output, pid, code);
 
         let crash_count = u8::try_from(crash_times.len()).unwrap_or(u8::MAX);
         if crash_count >= policy.max_crashes {
@@ -807,7 +899,19 @@ where
         match child.try_wait() {
             Ok(None) => {
                 if shutdown.load(Ordering::SeqCst) {
-                    return Ok(WaitResult::ShutdownRequested);
+                    // KEL-105: the child can die between the `try_wait` above
+                    // and this load, which would report its crash as a clean
+                    // stop and let `keld dev` exit 0 over a dead app. Look
+                    // once more before conceding: an exit observed now is the
+                    // child's own, whereas after the caller's kill the status
+                    // is ours (a signal on unix, exit code 1 on Windows) and
+                    // no longer says who died first. Routing it back to
+                    // `Exited` reuses the one crash-accounting path rather
+                    // than adding a second.
+                    return match child.try_wait() {
+                        Ok(Some(status)) => Ok(WaitResult::Exited(status)),
+                        _ => Ok(WaitResult::ShutdownRequested),
+                    };
                 }
                 if let Err(error) = lease.poll() {
                     return Ok(WaitResult::LeaseFailed(error));
@@ -818,6 +922,58 @@ where
             Err(error) => return Err(error),
         }
     }
+}
+
+/// Exit code the host's own [`Child::kill`] makes the OS report, when it
+/// reports one at all.
+///
+/// Unix records a signal death with no exit code, so any reported code is the
+/// child's own. Windows' `TerminateProcess(1)` records exit code 1, so on
+/// Windows that single value is indistinguishable from an app that genuinely
+/// exited 1; it is left to the crash-loop breaker rather than guessed at.
+#[cfg(unix)]
+const HOST_KILL_EXIT_CODE: Option<i32> = None;
+#[cfg(windows)]
+const HOST_KILL_EXIT_CODE: Option<i32> = Some(1);
+
+/// Reaps a child the host has just asked to stop, and records a crash when the
+/// reaped status proves the child had already died on its own.
+///
+/// KEL-105: the child can exit between the last `try_wait` and the kill above.
+/// Dropping that status would report a dead app as a clean stop and let
+/// `keld dev` exit 0 over it. A reported non-zero exit code that is not
+/// [`HOST_KILL_EXIT_CODE`] cannot have come from the host's own kill, so it is
+/// the child's crash.
+fn reap_and_record_own_exit(
+    child: &mut Child,
+    crash_ledger: &Arc<Mutex<CrashLedger>>,
+    output: &Arc<Mutex<CapturedOutput>>,
+    pid: u32,
+) {
+    let Ok(status) = child.wait() else { return };
+    let code = status.code();
+    if !status.success() && code.is_some() && code != HOST_KILL_EXIT_CODE {
+        record_crash(crash_ledger, output, pid, code);
+    }
+}
+
+/// Records one observed crash in the shared ledger. The single owner of that
+/// write: both the natural-exit path and the shutdown-race check below go
+/// through here so the count and the diagnostic cannot disagree.
+fn record_crash(
+    crash_ledger: &Arc<Mutex<CrashLedger>>,
+    output: &Arc<Mutex<CapturedOutput>>,
+    pid: u32,
+    exit_code: Option<i32>,
+) {
+    let stderr_tail = lock_or_recover(output).stderr_tail(2000);
+    let mut ledger = lock_or_recover(crash_ledger);
+    ledger.count = ledger.count.saturating_add(1);
+    ledger.last = Some(RuntimeError::ChildCrashed {
+        pid,
+        exit_code,
+        stderr_tail,
+    });
 }
 
 fn spawn_capture_thread(

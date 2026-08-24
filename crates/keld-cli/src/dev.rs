@@ -25,6 +25,11 @@ pub enum DevError {
     Io(io::Error),
     /// IPC or host failure surfaced as text.
     Runtime(String),
+    /// The supervised app process died while the host owned the window
+    /// (KEL-105). Rendered verbatim: `keld-core` already produced a
+    /// `KELD-CORE-033` diagnostic carrying the crash and its fix, and
+    /// appending `KELD-CLI-031`'s "re-run `keld doctor`" would contradict it.
+    WindowPhase(String),
     /// Project renderer HTML could not be loaded.
     Renderer {
         /// Configured or defaulted relative path.
@@ -37,7 +42,10 @@ pub enum DevError {
 impl std::fmt::Display for DevError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Doctor(msg) => write!(f, "{msg}"),
+            // Both already carry a rendered, registered diagnostic with its
+            // own fix; wrapping either in `KELD-CLI-031` would append a second,
+            // contradicting one.
+            Self::Doctor(msg) | Self::WindowPhase(msg) => write!(f, "{msg}"),
             Self::Io(e) => write!(
                 f,
                 "KELD-CLI-030: dev session I/O error — {e}. \
@@ -65,7 +73,13 @@ impl From<io::Error> for DevError {
 
 impl From<keld_core::HelloSessionError> for DevError {
     fn from(value: keld_core::HelloSessionError) -> Self {
-        Self::Runtime(value.to_string())
+        let rendered = value.to_string();
+        match value {
+            keld_core::HelloSessionError::WindowPhase { .. } => Self::WindowPhase(rendered),
+            keld_core::HelloSessionError::Io(_)
+            | keld_core::HelloSessionError::Runtime(_)
+            | keld_core::HelloSessionError::Timeout { .. } => Self::Runtime(rendered),
+        }
     }
 }
 
@@ -183,6 +197,28 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
 ///
 /// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
+    run_dev_with_window(project_root, |title, html| {
+        run_hello_window_html(title, html).map_err(|e| DevError::Runtime(e.to_string()))
+    })
+}
+
+/// `run_dev` with the window phase injected, so the exit-status seam after it
+/// is reachable without a GUI.
+///
+/// `window` stands exactly where `tao`'s `run_return` does: it borrows the
+/// thread for the whole window phase, during which the host observes nothing
+/// about the app process. Everything after it — reaping Bun, reading the
+/// supervision verdict, choosing the returned status — is the KEL-105 seam,
+/// and a test that cannot drive it cannot prove `keld dev` stops exiting 0.
+///
+/// # Errors
+///
+/// Returns [`DevError`] when checks fail, Bun cannot be spawned, the window
+/// fails, or the supervised app process died across the window phase.
+pub fn run_dev_with_window<W>(project_root: &Path, window: W) -> Result<(), DevError>
+where
+    W: FnOnce(&str, &str) -> Result<(), DevError>,
+{
     doctor_or_err(project_root)?;
     let session = HostOwnedHelloSession::start(
         project_root,
@@ -202,11 +238,33 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
     // Window phase while echo listener + Bun are still live.
     let title = hello_title_for_project(project_root);
     let html = load_dev_window_html(project_root)?;
-    let window_result =
-        run_hello_window_html(&title, &html).map_err(|e| DevError::Runtime(e.to_string()));
-    // Window returned (tao `run_return`) — reap Bun and stop the listener.
-    session.shutdown()?;
-    window_result
+    let window_result = window(&title, &html);
+    // Window returned (tao `run_return`) — reap Bun, stop the listener, and
+    // read how supervision actually ended across the window phase (KEL-105).
+    window_phase_outcome(session.shutdown(), window_result)
+}
+
+/// Decides `keld dev`'s result after the window phase (KEL-105).
+///
+/// `supervision` is [`HostOwnedHelloSession::shutdown`]'s verdict on the app
+/// process; `window` is the event loop's own result. A terminal supervision
+/// failure wins: a dead app process is upstream of any window fault, and its
+/// diagnostic is the one naming the crash. The window error is appended as
+/// context rather than dropped.
+///
+/// Pure so the exit decision is testable without a GUI: every `Err` here is
+/// exit 1 (`docs/architecture/07-agent-experience.md` §7) via `main`.
+fn window_phase_outcome(
+    supervision: Result<(), keld_core::HelloSessionError>,
+    window: Result<(), DevError>,
+) -> Result<(), DevError> {
+    match (supervision, window) {
+        (Ok(()), window) => window,
+        (Err(supervision), Ok(())) => Err(supervision.into()),
+        (Err(supervision), Err(window)) => Err(DevError::WindowPhase(format!(
+            "{supervision} The window also failed: {window}"
+        ))),
+    }
 }
 
 /// Starts a host-owned hello session for tests that must observe Bun/wire
@@ -229,6 +287,60 @@ pub fn start_dev_session(project_root: &Path) -> Result<HostOwnedHelloSession, D
 mod tests {
     use super::*;
     use std::fs;
+
+    fn window_phase_failure() -> keld_core::HelloSessionError {
+        keld_core::HelloSessionError::WindowPhase {
+            cause: "KELD-RUNTIME-002: child crashed 3 times within 30s".to_owned(),
+        }
+    }
+
+    #[test]
+    fn clean_window_phase_preserves_the_window_result() {
+        // The shipping success path: supervision fine, window closed normally.
+        // `keld dev` must still exit 0.
+        assert!(window_phase_outcome(Ok(()), Ok(())).is_ok());
+    }
+
+    #[test]
+    fn clean_supervision_still_surfaces_a_window_failure() {
+        let err = window_phase_outcome(Ok(()), Err(DevError::Runtime("wv boom".to_owned())))
+            .expect_err("a window fault must not be swallowed");
+        assert!(err.to_string().contains("wv boom"), "{err}");
+    }
+
+    #[test]
+    fn window_phase_app_death_fails_the_run() {
+        let err = window_phase_outcome(Err(window_phase_failure()), Ok(()))
+            .expect_err("a dead app process must not exit 0 (KEL-105)");
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-CORE-033"), "{msg}");
+        assert!(msg.contains("KELD-RUNTIME-002"), "{msg}");
+        // The crash diagnostic must reach the user intact. `KELD-CLI-031`'s
+        // registered fix is "re-run `keld doctor`", which contradicts
+        // KELD-CORE-033's "fix the crash shown in the captured stderr" —
+        // wrapping the one in the other shipped both at once.
+        assert!(!msg.contains("KELD-CLI-031"), "{msg}");
+        assert!(!msg.contains("keld doctor"), "{msg}");
+        assert!(msg.starts_with("KELD-CORE-033"), "{msg}");
+    }
+
+    #[test]
+    fn app_death_wins_over_a_window_error_without_discarding_it() {
+        let err = window_phase_outcome(
+            Err(window_phase_failure()),
+            Err(DevError::Runtime("wv boom".to_owned())),
+        )
+        .expect_err("either failure alone must fail the run");
+        let msg = err.to_string();
+        assert!(
+            msg.find("KELD-CORE-033") < msg.find("wv boom"),
+            "supervision failure must lead, window error must follow: {msg}"
+        );
+        // The window's own error keeps its own registered fix — two faults,
+        // two fixes. What must not happen is the crash diagnostic being
+        // wrapped so that `KELD-CLI-031`'s advice overrides its own.
+        assert!(msg.starts_with("KELD-CORE-033"), "{msg}");
+    }
 
     #[test]
     fn finds_config_from_nested_dir() {
