@@ -14,6 +14,7 @@ const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
 const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
 const WORKFLOW: &str = ".github/workflows/ci.yml";
 const GITIGNORE: &str = ".gitignore";
+const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
@@ -505,6 +506,59 @@ fn is_pinned_sha(spec: &str) -> bool {
     sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The verification gate AGENTS.md mandates is `--profile ci`, so that profile
+/// must not retry: a retry reports a flaky test as green and hides the first
+/// failure from the summary a human or agent reads (KEL-112).
+///
+/// Deliberately narrow, and its limits are the point. It catches the literal
+/// reappearance of a `retries` key under `[profile.ci]` — the regression that
+/// actually happened. It does NOT catch, and cannot:
+///
+/// - `cargo nextest run --profile ci --retries 2`
+/// - `NEXTEST_RETRIES=2` in the job's environment
+/// - `--profile local` pointed at a profile that does retry
+///
+/// All three were reproduced against this exact config with the guard green.
+/// nextest resolves retries from config UNION flag UNION env, with flag and env
+/// taking precedence, so no amount of parsing this file can decide the
+/// question — the inputs are not in it. Three rounds of hardening this parser
+/// each produced a new bypass from outside its frame. KEL-115 replaces it with
+/// a behavioural check: run the real gate command against a deliberately
+/// failing test and assert exactly one attempt.
+///
+/// Do not extend this to chase a new spelling. Extending it makes it look more
+/// authoritative without making it more correct, which is the worse failure.
+fn check_ci_profile_does_not_retry(root: &Path) -> Result<(), String> {
+    let text = read(root, NEXTEST_CONFIG)?;
+    if profile_section_sets_retries(&text, "ci") {
+        return Err(format!(
+            "CI-HYGIENE: `{NEXTEST_CONFIG}` sets `retries` under `[profile.ci]`, the profile \
+             AGENTS.md mandates as the verification gate — a flaky test would report green and \
+             its first failure would never be shown. Remove the `retries` key and fix the \
+             non-deterministic test instead (await the condition, bind port 0, use a temp dir)."
+        ));
+    }
+    Ok(())
+}
+
+/// True when `[profile.<name>]` declares a `retries` key. Reads only that
+/// section: a `retries` line under any other profile is not this contract.
+fn profile_section_sets_retries(text: &str, name: &str) -> bool {
+    let header = format!("[profile.{name}]");
+    let mut inside = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == header;
+            continue;
+        }
+        if inside && line.split('=').next().is_some_and(|key| key.trim() == "retries") {
+            return true;
+        }
+    }
+    false
+}
+
 fn check_gitignore(root: &Path) -> Result<(), String> {
     let text = read(root, GITIGNORE)?;
     if github_dir_is_ignored(&text) {
@@ -663,6 +717,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
 
 fn check(root: &Path) -> Result<(), String> {
     check_gitignore(root)?;
+    check_ci_profile_does_not_retry(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
     check_issue_templates(root)?;
@@ -819,6 +874,7 @@ mod tests {
         );
         temp.write(WORKFLOW, &valid_workflow());
         temp.write(MERMAID_CHECKER, "fn main() {}\n");
+        temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
             MERMAID_RENDERER,
             "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 120 docker run\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\n",
@@ -834,6 +890,41 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn ci_profile_that_retries_is_rejected() {
+        let temp = complete_fixture();
+        temp.write(NEXTEST_CONFIG, "[profile.ci]\nretries = 1\n");
+        let error = check(temp.path())
+            .expect_err("the mandated verification profile must not retry (KEL-112)");
+        assert!(error.contains("retries"), "{error}");
+        assert!(error.contains(NEXTEST_CONFIG), "{error}");
+    }
+
+    #[test]
+    fn ci_profile_without_retries_passes() {
+        let temp = complete_fixture();
+        temp.write(NEXTEST_CONFIG, "[profile.ci]\nfail-fast = false\n");
+        check(temp.path()).expect("a ci profile with no retries is the contract");
+    }
+
+    #[test]
+    fn retries_under_a_different_profile_is_not_this_contract() {
+        // Guards over-matching: only the profile AGENTS.md mandates is bound.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.local]\nretries = 3\n\n[profile.ci]\n",
+        );
+        check(temp.path()).expect("only `[profile.ci]` is the verification gate");
+    }
+
+    #[test]
+    fn commented_out_retries_is_not_a_retry() {
+        let temp = complete_fixture();
+        temp.write(NEXTEST_CONFIG, "[profile.ci]\n# retries = 1 (removed, KEL-112)\n");
+        check(temp.path()).expect("a comment is documentation, not configuration");
     }
 
     #[test]

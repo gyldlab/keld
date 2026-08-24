@@ -1,6 +1,24 @@
-# cargo-nextest configuration — CI profile with flaky-test retry.
+# cargo-nextest configuration.
 # Install locally: cargo install cargo-nextest --locked
 # Run: cargo nextest run --workspace --profile ci
+#
+# The `ci` profile is the verification gate AGENTS.md mandates, so it MUST NOT
+# retry. A retry turns exactly the non-determinism the anti-flake rules exist to
+# prevent into a green summary, and hides the first failure from the human or
+# agent reading it — the same "papering over a failure" that AGENTS.md forbids
+# everywhere else, applied to the gate that enforces it. A test that is not
+# deterministic is fixed at the test (await the condition, bind port 0, use a
+# temp dir), never absorbed here.
+#
+# The profile is kept (empty, inheriting `default`) because `--profile ci` is
+# named by AGENTS.md, the `justfile`, and `.github/workflows/ci.yml`.
+#
+# `tools/ci_hygiene.rs` fails if a literal `retries` key reappears under
+# `[profile.ci]`. That is a speed bump, NOT enforcement of the rule above:
+# nextest resolves retries from this file UNION `--retries` UNION
+# `NEXTEST_RETRIES`, and flag and env win over the file, so a retrying gate can
+# be produced without editing this file at all. Reading the config cannot decide
+# the question. KEL-115 tracks proving it by behaviour instead — running the real
+# gate command against a deliberately failing test and asserting one attempt.
 
 [profile.ci]
-retries = 1
