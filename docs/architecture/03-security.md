@@ -52,7 +52,8 @@ package spawned it. `keld.config.ts` declares the bundled entry and one lifecycl
 generated role capability subset or an explicitly reviewed role-specific addition.
 Neither a role name, PID, token, `KELD_APP_LINK`, caller payload nor Electron facade
 option can select authority. The role schema is not live; the current manifest parser
-does not accept a `roles` key.
+accepts and ignores unknown keys (a `roles` key is ignored like `$schema`), so it
+cannot grant any authority.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 

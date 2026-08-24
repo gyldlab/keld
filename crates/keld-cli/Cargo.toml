@@ -1,6 +1,6 @@
 [package]
 name = "keld-cli"
-description = "keld: create, dev, build, migrate, doctor — the developer entrypoint"
+description = "keld: the developer entrypoint (create, dev, doctor, mcp live; build/migrate reserved)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,8 +18,6 @@ path = "src/lib.rs"
 
 [dependencies]
 keld-core = { workspace = true }
-keld-pack = { workspace = true }
-keld-update = { workspace = true }
 keld-ipc = { workspace = true }
 keld-guard = { workspace = true }
 keld-runtime = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "keld-native"
-description = "Keld native APIs: menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, scoped fs, secrets"
+description = "Keld native brokers: guard-checked scoped fs (live); destination: menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secrets"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

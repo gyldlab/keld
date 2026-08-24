@@ -1,6 +1,6 @@
 [package]
 name = "keld-guard"
-description = "Keld's capability engine: default-deny permission manifest, scopes, audit"
+description = "Keld's capability engine: default-deny permission manifest, scopes, strict-profile admission (KEL-78 T1)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

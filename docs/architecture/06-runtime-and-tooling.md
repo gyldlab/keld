@@ -120,7 +120,7 @@ authenticated roles). Window-bound roles follow only after those slices.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | starts app's own dev server (delegation, Deno lesson D4), spawns host with dev profile (permission recorder, hot-restart of app process on change via Bun watch, devtools open policy) |
+| `keld dev` | **Today:** runs the hello session + window in the CLI process (no host spawn, no recorder). **Destination:** starts app's own dev server (delegation, Deno lesson D4), spawns host with dev profile (permission recorder, hot-restart of app process on change via Bun watch, devtools open policy) |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |

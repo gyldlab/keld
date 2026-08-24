@@ -1,6 +1,6 @@
 [package]
 name = "keld-runtime"
-description = "Keld app-process supervisor: pinned Bun discovery, spawn, health, restart policy"
+description = "Keld app-process supervisor: spawn, capture, restart policy, role registry (destination: pinned Bun discovery)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

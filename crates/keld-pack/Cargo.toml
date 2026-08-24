@@ -1,6 +1,6 @@
 [package]
 name = "keld-pack"
-description = "Keld packaging: dmg/msi/nsis/deb/rpm/AppImage authoring, signing, cross-target assembly"
+description = "Keld packaging (skeleton: format enum; destination: dmg/msi/nsis/deb/rpm/AppImage authoring, signing, cross-target assembly)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

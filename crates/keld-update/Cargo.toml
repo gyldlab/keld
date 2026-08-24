@@ -1,6 +1,6 @@
 [package]
 name = "keld-update"
-description = "Keld updater: signed manifests, bsdiff+zstd delta patches, atomic swap, rollback"
+description = "Keld updater (skeleton: channel enum; destination: signed manifests, bsdiff+zstd delta patches, atomic swap, rollback)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
