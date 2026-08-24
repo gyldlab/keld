@@ -188,9 +188,25 @@ impl ControlPeer {
     /// already received — `BufRead::read_line` leaves its buffer unspecified
     /// on error, so it cannot be retried safely (KEL-113).
     pub(crate) fn read_line(&mut self) -> String {
-        let deadline = Instant::now() + CONTROL_LINE_DEADLINE;
+        self.read_line_before(Instant::now() + CONTROL_LINE_DEADLINE)
+    }
+
+    /// [`Self::read_line`] with an explicit deadline, so a test can bind the
+    /// deadline contract without waiting [`CONTROL_LINE_DEADLINE`].
+    ///
+    /// The deadline is checked at the top of every iteration, not only after a
+    /// transient error: a peer that keeps sending bytes but never a newline
+    /// makes every `read_exact` succeed, and a deadline checked only on the
+    /// error path would never run at all.
+    fn read_line_before(&mut self, deadline: Instant) -> String {
         let mut line = Vec::new();
         loop {
+            assert!(
+                Instant::now() < deadline,
+                "control peer produced no complete line before its deadline; \
+                 received so far: {:?}",
+                String::from_utf8_lossy(&line)
+            );
             let mut byte = [0_u8; 1];
             match self.reader.read_exact(&mut byte) {
                 Ok(()) if byte[0] == b'\n' => {
@@ -201,15 +217,7 @@ impl ControlPeer {
                     if matches!(
                         error.kind(),
                         ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                    ) =>
-                {
-                    assert!(
-                        Instant::now() < deadline,
-                        "control peer produced no complete line within \
-                         {CONTROL_LINE_DEADLINE:?}; received so far: {:?}",
-                        String::from_utf8_lossy(&line)
-                    );
-                }
+                    ) => {}
                 Err(error) => panic!("read control line: {error}"),
             }
         }
@@ -399,8 +407,63 @@ mod tests {
     use super::{CONTROL_POLL_INTERVAL, ControlPeer, accept_control, unique_test_dir};
     use std::io::{ErrorKind, Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::thread;
-    use std::time::Instant;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    use std::{panic, thread};
+
+    /// KEL-113 review regression: bytes arriving is not progress toward a line.
+    ///
+    /// The deadline was checked only after a transient read error, so a peer
+    /// that sends one non-newline byte per poll made every `read_exact`
+    /// succeed and `read_line` ran unbounded — well past its own deadline.
+    ///
+    /// The read runs on its own thread and the assertion is a bounded
+    /// `recv_timeout`, so a regression FAILS the test rather than hanging it.
+    #[test]
+    fn a_peer_that_drips_bytes_without_a_newline_still_hits_the_deadline() {
+        let dir = unique_test_dir();
+        let path = dir.join("control.sock");
+        let listener = UnixListener::bind(&path).expect("bind control");
+        listener
+            .set_nonblocking(true)
+            .expect("listener is non-blocking by design");
+
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            let Ok(mut stream) = UnixStream::connect(&writer_path) else {
+                return;
+            };
+            // Drip far past the reader's deadline, never a newline. Stops on the
+            // first write error, which is how the reader's teardown ends it.
+            for _ in 0..200 {
+                if stream.write_all(b"x").is_err() || stream.flush().is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        let mut peer = accept_control(&listener);
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let outcome = panic::catch_unwind(panic::AssertUnwindSafe(move || {
+                peer.read_line_before(deadline)
+            }));
+            let _ = tx.send(outcome.is_err());
+        });
+
+        let gave_up = rx.recv_timeout(Duration::from_secs(3)).expect(
+            "read_line must give up at its deadline; a peer that keeps sending bytes \
+             without a newline is not progress toward a line",
+        );
+        assert!(
+            gave_up,
+            "the deadline must be enforced by failing, not by returning a partial line"
+        );
+        let _ = writer.join();
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// KEL-113 regression: the accepted control stream must actually block.
     ///
