@@ -10,8 +10,13 @@ Format — one line each, newest last:
 - YYYY-MM-DD [area] fact. (evidence: path, issue, or command)
 ```
 
-`[area]` is a crate short name (`ipc`, `wv`, `guard`, `native`, `runtime`, `update`,
-`pack`, `compat`, `core`, `cli`), `bench`, `docs`, `ts`, `build`, `ci`, or `process`.
+`[area]` is a base area, optionally suffixed with an OS when the fact is OS-specific
+(`wv/macos`, `wv/windows`, `wv/linux`, `bench/macos`). Base areas are the crate short
+names (`ipc`, `wv`, `guard`, `native`, `runtime`, `update`, `pack`, `compat`, `core`,
+`cli`, `host`) and the cross-cutting areas (`bench`, `bridge`, `build`, `ci`, `deps`,
+`docs`, `git`, `process`, `shell`, `tooling`, `ts`). A new value is added to this list in
+the same PR that first uses it — an entry whose area is not listed here is the defect,
+not the list.
 
 Compaction (maintainers, roughly when this list passes ~40 entries): move learnings
 that proved stable into the root `AGENTS.md`, the relevant spec, or a crate
