@@ -716,7 +716,7 @@ fn supervise<P>(
                 return;
             }
             let _ = child.kill();
-            let _ = child.wait();
+            reap_and_record_own_exit(&mut child, crash_ledger, output, pid);
             join_capture_threads(capture_threads);
             *lock_or_recover(current_pid) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
@@ -921,6 +921,39 @@ where
             Ok(Some(status)) => return Ok(WaitResult::Exited(status)),
             Err(error) => return Err(error),
         }
+    }
+}
+
+/// Exit code the host's own [`Child::kill`] makes the OS report, when it
+/// reports one at all.
+///
+/// Unix records a signal death with no exit code, so any reported code is the
+/// child's own. Windows' `TerminateProcess(1)` records exit code 1, so on
+/// Windows that single value is indistinguishable from an app that genuinely
+/// exited 1; it is left to the crash-loop breaker rather than guessed at.
+#[cfg(unix)]
+const HOST_KILL_EXIT_CODE: Option<i32> = None;
+#[cfg(windows)]
+const HOST_KILL_EXIT_CODE: Option<i32> = Some(1);
+
+/// Reaps a child the host has just asked to stop, and records a crash when the
+/// reaped status proves the child had already died on its own.
+///
+/// KEL-105: the child can exit between the last `try_wait` and the kill above.
+/// Dropping that status would report a dead app as a clean stop and let
+/// `keld dev` exit 0 over it. A reported non-zero exit code that is not
+/// [`HOST_KILL_EXIT_CODE`] cannot have come from the host's own kill, so it is
+/// the child's crash.
+fn reap_and_record_own_exit(
+    child: &mut Child,
+    crash_ledger: &Arc<Mutex<CrashLedger>>,
+    output: &Arc<Mutex<CapturedOutput>>,
+    pid: u32,
+) {
+    let Ok(status) = child.wait() else { return };
+    let code = status.code();
+    if !status.success() && code.is_some() && code != HOST_KILL_EXIT_CODE {
+        record_crash(crash_ledger, output, pid, code);
     }
 }
 

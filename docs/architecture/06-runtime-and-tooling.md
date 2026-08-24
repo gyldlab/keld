@@ -163,9 +163,15 @@ The breaker alone cannot carry that verdict, which is why the supervisor also
 publishes a crash ledger. `KELD-RUNTIME-002` requires three crashes inside a 30s
 sliding window (`RestartPolicy::default()`, `crash_times.retain`), so an app that
 dies once — or dies repeatedly but slower than that window — never trips it while
-still leaving the developer with no running app. That case surfaces as
+still leaving the developer with no running app. That case produces
 `KELD-RUNTIME-012` under a clean `Stopped` outcome, read from durable ledger state
 the host never has to drain.
+
+The two codes are not alternatives. `KELD-CORE-033` is always the outer session
+diagnostic `keld dev` exits with; the `KELD-RUNTIME-*` code it quotes is the nested
+cause — `012` for a crash that did not trip the breaker, `002` for one that did,
+`003` for a generation that failed to provision. Assert on the outer code for the
+command's contract and on the nested one for the cause.
 
 Whether the breaker also trips depends on how the restarted generation fails, which
 is not something the host should have to predict. In a live macOS run the restarted

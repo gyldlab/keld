@@ -8,7 +8,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use keld_runtime::{CrashLedger, RestartPolicy, Supervisor, SupervisorEvent, SupervisorOutcome};
@@ -59,8 +59,8 @@ impl std::fmt::Display for HelloSessionError {
             Self::WindowPhase { cause } => write!(
                 f,
                 "KELD-CORE-033: the supervised app process stopped while the host owned \
-                 the window. Fix the crash shown in the captured stderr, then re-run \
-                 `keld dev`. Supervisor outcome: {cause}"
+                 the window. Fix the cause named by the supervisor outcome below, then \
+                 re-run `keld dev`. Supervisor outcome: {cause}"
             ),
         }
     }
@@ -83,8 +83,11 @@ pub struct HostOwnedHelloSession {
     server: Option<EchoServer>,
     supervisor: Option<Supervisor>,
     link: String,
+    /// Whether a ready marker has been observed at all. Separate from the
+    /// count below so the baseline is written exactly once.
+    ready_recorded: AtomicBool,
     /// Crashes the supervisor had already recovered from when this session
-    /// last reached its ready marker. Crashes at or below this count are the
+    /// *first* reached its ready marker. Crashes at or below this count are the
     /// supervisor doing its job (KEL-70 AC1/AC3); crashes above it happened
     /// after the app was live, which is what `keld dev` must not call success
     /// (KEL-105). Stays 0 until a ready marker is observed, so a session that
@@ -131,6 +134,7 @@ impl HostOwnedHelloSession {
             server: Some(server),
             supervisor: Some(supervisor),
             link,
+            ready_recorded: AtomicBool::new(false),
             recovered_crashes: AtomicU32::new(0),
         })
     }
@@ -288,11 +292,19 @@ impl HostOwnedHelloSession {
     }
 
     /// Records the crashes already recovered from at the moment this session
-    /// reached its ready marker, so [`Self::finish`] can tell a recovered
-    /// crash (KEL-70 AC1/AC3) from one that killed a live app (KEL-105).
+    /// *first* reached its ready marker, so [`Self::finish`] can tell a
+    /// recovered crash (KEL-70 AC1/AC3) from one that killed a live app
+    /// (KEL-105).
+    ///
+    /// First transition only. [`Self::wait_until_output_contains`] matches
+    /// against cumulative stdout, so a later call for a marker the app already
+    /// printed returns immediately — re-baselining there would absorb a crash
+    /// that happened *after* the app was live and report it as recovered.
     fn mark_ready(&self, supervisor: &Supervisor) {
-        self.recovered_crashes
-            .store(supervisor.crash_ledger().count, Ordering::SeqCst);
+        if !self.ready_recorded.swap(true, Ordering::SeqCst) {
+            self.recovered_crashes
+                .store(supervisor.crash_ledger().count, Ordering::SeqCst);
+        }
     }
 }
 

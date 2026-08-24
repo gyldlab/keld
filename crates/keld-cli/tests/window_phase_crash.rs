@@ -61,7 +61,8 @@ use std::fs;
 use std::process::Command;
 
 use keld_cli::create::create_project;
-use keld_cli::dev::run_dev_with_window;
+use keld_cli::dev::{run_dev_with_window, start_dev_session};
+use std::time::Duration;
 
 /// Stderr the fixture emits before it is killed, so the assertion that the
 /// captured tail reaches the developer has something real to find.
@@ -200,6 +201,72 @@ fn crash_recovered_before_ready_still_reports_success() {
 
     run_dev_with_window(&root, |_title, _html| Ok(()))
         .expect("a crash the supervisor recovered from before ready is not a failure");
+}
+
+/// Regression for the crash baseline being re-recorded on a later readiness wait.
+///
+/// `wait_until_output_contains` matches against *cumulative* stdout, so a second
+/// call for a marker the app already printed returns immediately. If that
+/// re-recorded the baseline, a crash that happened after the app was live would
+/// be counted as already-recovered and the run would report success.
+///
+/// The fixture's restarted generation parks instead of crashing, so exactly one
+/// crash occurs and the supervisor's terminal outcome stays `Stopped` — only the
+/// ledger can dissent. That is what makes this falsify the baseline rule itself
+/// rather than the crash-loop breaker.
+#[test]
+fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("b{}", std::process::id());
+    let root = create_project(dir.path(), &name).expect("create");
+    let pid_path = root.join("kel105-app.pid");
+    let gen_path = root.join("kel105-generation");
+    let main = root.join("src/main.ts");
+    let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
+    let pid_lit = pid_path.display().to_string();
+    let gen_lit = gen_path.display().to_string();
+    fs::write(
+        &main,
+        format!(
+            "import {{ existsSync as kel105Exists, writeFileSync as kel105Write }} from \"node:fs\";\n\
+             const kel105Restarted = kel105Exists({gen_lit:?});\n\
+             kel105Write({gen_lit:?}, \"1\");\n\
+             kel105Write({pid_lit:?}, String(process.pid));\n\
+             if (kel105Restarted) {{ console.log(\"kel105-generation-2\"); await new Promise(() => {{}}); }}\n\
+             {scaffolded}"
+        ),
+    )
+    .expect("write generation-aware fixture");
+
+    let session = start_dev_session(&root).expect("start host-owned session");
+    let ready = format!("{name}: main process ready (IPC echo ok)");
+    session
+        .wait_until_output_contains(&ready, Duration::from_secs(30))
+        .expect("the stock template must complete HELLO + CALL");
+
+    let pid: u32 = fs::read_to_string(&pid_path)
+        .expect("the app must record its pid before it reports ready")
+        .trim()
+        .parse()
+        .expect("pid breadcrumb must be a number");
+    kill_process(pid);
+
+    // Await the restart rather than polling process state: the supervisor
+    // records the crash before it spawns the next generation, so seeing this
+    // marker proves the ledger already counted it.
+    session
+        .wait_until_output_contains("kel105-generation-2", Duration::from_secs(30))
+        .expect("the supervisor must restart the killed app");
+
+    // The trigger: this marker is already in buffered stdout, so the wait
+    // returns at once — and must not re-baseline the ledger.
+    session
+        .wait_until_output_contains(&ready, Duration::from_secs(30))
+        .expect("the ready marker is still in captured stdout");
+
+    session.shutdown().expect_err(
+        "a crash after the app was live must not be forgiven by a later readiness wait",
+    );
 }
 
 #[cfg(unix)]

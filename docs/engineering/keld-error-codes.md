@@ -545,4 +545,4 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-core
 - message: The supervised app process stopped while the host owned the window
-- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then re-run `keld dev`.
