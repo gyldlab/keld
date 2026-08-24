@@ -13,7 +13,7 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(packages|nongtk_packages|ubuntu_packages)=' <<<"$actual")"
+    actual="$(grep -Ev '^(packages|nongtk_packages|ubuntu_packages|ts_packages)=' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
@@ -59,32 +59,43 @@ expect_nongtk_excludes() {
 }
 
 expect_empty_packages() {
+    expect_empty_output "$1" packages "$2"
+}
+
+expect_empty_output() {
     local label="$1"
-    local actual="$2"
-    if ! grep -Fxq 'packages=' <<<"$actual"; then
-        echo "FAIL: $label: expected no selected workspace package" >&2
+    local output_name="$2"
+    local actual="$3"
+    if ! grep -Fxq "${output_name}=" <<<"$actual"; then
+        echo "FAIL: $label: expected an empty ${output_name} selection" >&2
         printf '%s\n' "$actual" >&2
         exit 1
     fi
     echo "ok: $label"
 }
 
-all_false=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
+all_false=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 # keld-core depends on keld-runtime (KEL-30 host-owned session), so runtime lives
 # in the keld-host dependency closure and a runtime-only path change enables GUI smoke.
-runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=true'
-docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
-hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nwebkitgtk=false'
-host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=true'
-compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nwebkitgtk=true'
-wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nwebkitgtk=true'
-manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=true'
-workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=false'
-all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=true'
+runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
+docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
+hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
+host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
+compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
+# A TypeScript package change owns the Bun lane and the crates that read that
+# package directory (keld-compat spawns the @keld/electron fixtures). It cannot
+# change rustc, the workspace dependency policy, or the host window, so MSRV,
+# cargo-deny and GUI smoke stay off; GTK follows the selected Rust closure.
+ts_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
+wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
+manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
+workflow_all=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=false'
+all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
 
 empty_classification="$(printf '' | "$router" classify)"
 expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classification"
 expect_empty_packages "empty diff selects no package" "$empty_classification"
+expect_empty_output "empty diff selects no Bun suite" ts_packages "$empty_classification"
 
 runtime_classification="$(result_for_paths crates/keld-runtime/src/lib.rs)"
 expect_flags "runtime-only Rust change enables host GUI smoke and Ubuntu GTK for its selected test closure" "$runtime_flags" "$runtime_classification"
@@ -109,6 +120,24 @@ compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
 expect_flags "compat-only change skips GUI smoke but installs GTK for its selected test closure" "$compat_flags" "$compat_classification"
 expect_package_token "compat-only change includes its owner package" keld-compat "$compat_classification"
 
+compat_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
+expect_flags "Rust-only change does not select the TypeScript lane" "$compat_flags" "$compat_test_classification"
+expect_empty_output "Rust-only change selects no Bun suite" ts_packages "$compat_test_classification"
+
+ts_classification="$(result_for_paths packages/@keld/electron/src/link.ts)"
+expect_flags "TypeScript package change runs the Bun lane and its Rust consumer only" "$ts_flags" "$ts_classification"
+expect_output_package_token "TypeScript package change selects its Bun suite root" ts_packages packages/@keld/electron "$ts_classification"
+expect_package_token "TypeScript package change re-runs the crate that spawns its fixtures" keld-compat "$ts_classification"
+
+ts_fixture_classification="$(result_for_paths packages/@keld/electron/fixtures/app_ready.ts)"
+expect_flags "TypeScript fixture change routes like its owning package" "$ts_flags" "$ts_fixture_classification"
+expect_output_package_token "TypeScript fixture change selects the owning Bun suite root" ts_packages packages/@keld/electron "$ts_fixture_classification"
+expect_package_token "TypeScript fixture change re-runs its Rust conformance consumer" keld-compat "$ts_fixture_classification"
+
+ts_docs_classification="$(result_for_paths packages/@keld/electron/README.md)"
+expect_flags "Markdown inside a TypeScript package stays in the docs lane" "$docs_only" "$ts_docs_classification"
+expect_empty_output "Markdown inside a TypeScript package selects no Bun suite" ts_packages "$ts_docs_classification"
+
 wv_classification="$(result_for_paths crates/keld-wv/src/lib.rs)"
 expect_flags "keld-wv change enables GUI smoke and Ubuntu WebKitGTK apt" "$wv_flags" "$wv_classification"
 expect_package_token "keld-wv change includes host consumer" keld-host "$wv_classification"
@@ -118,11 +147,17 @@ expect_flags "workspace manifest routes every dependent Rust lane" "$manifest" "
 expect_package_token "workspace manifest selects host" keld-host "$manifest_classification"
 
 unknown_classification="$(result_for_paths packages/new-package/index.ts)"
-expect_flags "unknown input fails safe" "$all_true" "$unknown_classification"
-expect_package_token "unknown input selects all workspace packages" keld-host "$unknown_classification"
+expect_flags "packages path that no package.json owns fails safe" "$all_true" "$unknown_classification"
+expect_package_token "unowned packages path selects all workspace packages" keld-host "$unknown_classification"
+
+unknown_root_classification="$(result_for_paths some-future-dir/thing.bin)"
+expect_flags "unknown input fails safe" "$all_true" "$unknown_root_classification"
+expect_package_token "unknown input selects all workspace packages" keld-host "$unknown_root_classification"
+expect_output_package_token "unknown input still exercises the Bun lane" ts_packages packages/@keld/electron "$unknown_root_classification"
 
 workflow_classification="$(result_for_paths .github/workflows/ci.yml)"
 expect_flags "workflow input exercises all jobs; GTK apt stays on GUI smoke only" "$workflow_all" "$workflow_classification"
+expect_output_package_token "workflow input exercises the Bun lane over every suite" ts_packages packages/@keld/electron "$workflow_classification"
 
 other_workflow_classification="$(result_for_paths .github/workflows/keldbot.yml)"
 expect_flags "unrelated bot workflow has no path into any conditional lane" "$all_false" "$other_workflow_classification"
@@ -179,7 +214,7 @@ git -C "$temp_dir" add crates/keld-runtime/src/lib.rs
 git -C "$temp_dir" commit -qm runtime
 runtime_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 pr_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$base_sha" KELD_CI_HEAD_SHA="$runtime_sha" "$router" github)"
-fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nwebkitgtk=false'
+fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=false'
 expect_flags "pull-request base/head classifies the actual diff" "$fake_runtime_flags" "$pr_result"
 expect_package_token "pull-request base/head selects changed package" keld-runtime "$pr_result"
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
@@ -192,12 +227,52 @@ docs_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$runtime_sha" GITHUB_SHA="$docs_sha" "$router" github)"
 expect_flags "push before/head classifies the actual diff" "$docs_only" "$push_result"
 
-empty_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$docs_sha" GITHUB_SHA="$docs_sha" "$router" github)"
+# A packages/ diff with no Bun suite anywhere must fail the router, not emit a
+# selected-but-empty TypeScript lane. This runs before the suite fixture below
+# exists, which is the only moment that state is reachable.
+mkdir -p "$temp_dir/packages/@fake/untested/src"
+printf '{"name":"@fake/untested","type":"module"}\n' >"$temp_dir/packages/@fake/untested/package.json"
+printf 'export const noop = () => {};\n' >"$temp_dir/packages/@fake/untested/src/index.ts"
+git -C "$temp_dir" add packages
+git -C "$temp_dir" commit -qm untested
+untested_sha="$(git -C "$temp_dir" rev-parse HEAD)"
+if no_suite_output="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$docs_sha" KELD_CI_HEAD_SHA="$untested_sha" "$router" github 2>&1)"; then
+    echo "FAIL: a selected TypeScript lane with no Bun suite must fail before it emits a skipped-green success" >&2
+    printf '%s\n' "$no_suite_output" >&2
+    exit 1
+fi
+if ! grep -Fq "ci router: the TypeScript lane is selected but no packages/ Bun suite was found" <<<"$no_suite_output"; then
+    echo "FAIL: empty Bun suite selection did not report the fail-closed router error" >&2
+    printf '%s\n' "$no_suite_output" >&2
+    exit 1
+fi
+echo "ok: empty Bun suite selection fails closed"
+
+# A Bun suite the Keld workspace does not own: this fixture proves the lane is
+# derived from the checked-out packages/ tree, not from a hard-coded path.
+mkdir -p "$temp_dir/packages/@fake/pkg/src"
+printf '{"name":"@fake/pkg","type":"module"}\n' >"$temp_dir/packages/@fake/pkg/package.json"
+printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/pkg/src/unit.test.ts"
+git -C "$temp_dir" add packages
+git -C "$temp_dir" commit -qm packages
+ts_sha="$(git -C "$temp_dir" rev-parse HEAD)"
+ts_pr_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$untested_sha" KELD_CI_HEAD_SHA="$ts_sha" "$router" github)"
+fake_ts_flags=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=false'
+expect_flags "pull-request TypeScript-only diff runs the Bun lane with no Rust consumer" "$fake_ts_flags" "$ts_pr_result"
+expect_output_package_token "pull-request TypeScript-only diff selects the changed Bun suite" ts_packages 'packages/@fake/pkg' "$ts_pr_result"
+expect_empty_packages "pull-request TypeScript-only diff selects no workspace package" "$ts_pr_result"
+
+ts_push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$untested_sha" GITHUB_SHA="$ts_sha" "$router" github)"
+expect_flags "push TypeScript-only diff runs the Bun lane" "$fake_ts_flags" "$ts_push_result"
+expect_output_package_token "push TypeScript-only diff selects the changed Bun suite" ts_packages 'packages/@fake/pkg' "$ts_push_result"
+
+empty_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$ts_sha" GITHUB_SHA="$ts_sha" "$router" github)"
 expect_flags "same push base/head is an empty diff" "$all_false" "$empty_result"
 
 unknown_base_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA=0000000000000000000000000000000000000000 GITHUB_SHA="$docs_sha" "$router" github)"
-fake_all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nwebkitgtk=true'
+fake_all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
 expect_flags "missing comparison base fails safe" "$fake_all_true" "$unknown_base_result"
+expect_output_package_token "missing comparison base still exercises the Bun lane" ts_packages 'packages/@fake/pkg' "$unknown_base_result"
 
 mkdir -p "$temp_dir/empty-bin"
 printf '%s\n' \
