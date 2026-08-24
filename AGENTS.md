@@ -346,7 +346,7 @@ When the real fix is genuinely out of scope, agents MUST stop and say so — nam
 
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
-- Agents MUST NOT add hollow stubs; MUST NOT add files for crates whose invariants are all stated here (`keld-core`, `keld-native`, `keld-runtime`, `keld-host`) or for the skeletons (`keld-update`, `keld-pack`); MUST NOT add one for `keld-cli` (`expect` already sanctioned in § Rust); MUST NOT add one under `packages/` until a TS package carries invariants not stated in § TypeScript (`@keld/electron` exists and is governed there). Point at the spec in the repo-map table instead.
+- Agents MUST NOT add hollow stubs; MUST NOT add files for crates whose invariants are all stated here (`keld-core`, `keld-native`, `keld-runtime`, `keld-host`) or for the skeletons (`keld-update`, `keld-pack`); MUST NOT add one for `keld-cli` — the root § Rust rules already govern it (`expect` only at its binary top-level, never in libs); MUST NOT add one under `packages/` until a TS package carries invariants not stated in § TypeScript (`@keld/electron` exists and is governed there). Point at the spec in the repo-map table instead.
 - Enforcement: `just agents-md` — fails if a crate with `unsafe` / `allow(unsafe_code)` has no `AGENTS.md`. Not a Codex.
 
 ## Self-improvement (mandatory)

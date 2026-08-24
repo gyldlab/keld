@@ -204,10 +204,11 @@ compromised keeps the host's threat model uniform).
   live until the host application session stops.
 - Webview navigation: principal generation rotates; pending replies to the old principal
   drop; guard re-evaluates capabilities using origin/resource policy context.
-- Host never blocks indefinitely on either peer; every await point has a per-operation
-  deadline. Known v0 gap: on the ordinary `read_frame` path the per-recv timeout renews
-  whenever bytes arrive, so a byte-trickling peer can hold a session open (only the
-  lifecycle reader has a frame-wide stall clock; research 115). v0 app-link
+- Every individual I/O wait on either peer carries a deadline; that bounds each wait, not
+  a whole frame. Known v0 gap: on the ordinary `read_frame` path the per-receive deadline
+  renews whenever bytes arrive, so a byte-trickling peer can keep a session open
+  indefinitely — only the lifecycle reader has a frame-wide stall clock (research 115).
+  v0 app-link
   applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) during
   authentication and on writes; expiry is `KELD-IPC-006`. That is an OS socket
   timeout, not an async timer. **Persistent-session exception (KEL-30/KEL-72):**

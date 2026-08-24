@@ -934,14 +934,14 @@ implemented. The per-crate status legend is the §1 diagram above.
 |---|---|---|
 | `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard, runtime (TARGET: native) |
 | `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | guard |
-| `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch; TARGET channel registry, shm rings, schema runtime | guard |
+| `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing, scope matching, per-window/per-principal grants, audit log | — |
-| `keld-runtime` | app-process-family supervisor: Bun discovery/pinning, named role spawn, health, per-role principal/lifecycle/restart policy, stdio capture | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash-loop breaker (live on the shipping path); RoleRegistry + bounded virtual ports live as a Unix library/test surface only (KEL-75 T3, not wired into `keld dev`); TARGET Bun discovery/pinning, named role spawn on the shipping path, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
-| `keld-cli` | `keld` binary: create/dev/build/migrate/doctor; downloads pinned host+Bun; delegates bundling to the app's tool | core, ipc, guard, runtime |
+| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):
@@ -1247,10 +1247,11 @@ compromised keeps the host's threat model uniform).
   live until the host application session stops.
 - Webview navigation: principal generation rotates; pending replies to the old principal
   drop; guard re-evaluates capabilities using origin/resource policy context.
-- Host never blocks indefinitely on either peer; every await point has a per-operation
-  deadline. Known v0 gap: on the ordinary `read_frame` path the per-recv timeout renews
-  whenever bytes arrive, so a byte-trickling peer can hold a session open (only the
-  lifecycle reader has a frame-wide stall clock; research 115). v0 app-link
+- Every individual I/O wait on either peer carries a deadline; that bounds each wait, not
+  a whole frame. Known v0 gap: on the ordinary `read_frame` path the per-receive deadline
+  renews whenever bytes arrive, so a byte-trickling peer can keep a session open
+  indefinitely — only the lifecycle reader has a frame-wide stall clock (research 115).
+  v0 app-link
   applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) during
   authentication and on writes; expiry is `KELD-IPC-006`. That is an OS socket
   timeout, not an async timer. **Persistent-session exception (KEL-30/KEL-72):**

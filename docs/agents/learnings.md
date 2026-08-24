@@ -11,7 +11,7 @@ Format — one line each, newest last:
 ```
 
 `[area]` is a crate short name (`ipc`, `wv`, `guard`, `native`, `runtime`, `update`,
-`pack`, `compat`, `core`, `cli`), `ts`, `build`, `ci`, or `process`.
+`pack`, `compat`, `core`, `cli`), `docs`, `ts`, `build`, `ci`, or `process`.
 
 Compaction (maintainers, roughly when this list passes ~40 entries): move learnings
 that proved stable into the root `AGENTS.md`, the relevant spec, or a crate
