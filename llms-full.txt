@@ -2019,6 +2019,353 @@ global install. Host + runtime binaries fetched signed, verified, cached.
 - All three platforms at v1 — explicitly ahead of Electrobun (Windows stability caveats)
   and Deno Desktop (no Windows auto-update).
 
+### 4a. v0 manifest & feed wire contract (KEL-53 trigger)
+
+The paragraph above names the pieces; this subsection is the byte-level contract KEL-53
+needs before its fixtures (valid/tampered manifest, corrupted patch, full-package
+fallback, N-1 rollback) can be written as executable acceptance tests instead of
+prose. **Not decided here:** bsdiff vs HDiffPatch (KEL-53 AC2 benchmarks that), the
+exact `ed25519-dalek`/`zstd`/delta crate choices (KEL-53 AC3, dependency review gate),
+or a TUF-style rotating root (03-security.md §4 point 4 names it as a target; v0 below
+is a single pinned key, stated as a v0 limitation, not silently narrowed).
+
+**Feed layout**, one static tree per channel **and target**, servable from any
+CDN/S3/GitHub Releases (no server logic required):
+
+```text
+<feed-base>/<channel>/<target>/updates.json         # manifest payload (unsigned in-band)
+<feed-base>/<channel>/<target>/updates.json.sig     # detached signature over updates.json's raw bytes
+<feed-base>/<channel>/<target>/<version>/full.zst                     # full package, zstd-compressed
+<feed-base>/<channel>/<target>/<version>/from-<from-version>.delta.zst  # delta, zstd-compressed (diff format: KEL-53 AC2)
+```
+
+`<target>` is one of the fixed platform/architecture triples Keld actually ships
+(`macos-arm64`, `macos-x64`, `windows-x64`, `linux-x64`, …, matching `keld-pack`'s own
+target list — not a wire-level enum defined here). A client polls only the path for its
+own compiled-in target, so cross-target confusion would require the feed operator (or
+an attacker who can write to the feed) to physically publish the wrong bytes at the
+right path — the URL structure is the primary defense. The manifest's own `target`
+field (below) is the second, redundant layer: the same defense-in-depth shape as the
+`app.id`/`channel` check, for the same reason a single control is not trusted alone.
+
+The signature is a **separate file over the manifest's literal bytes**, not a field
+embedded inside the JSON. This removes the need for a canonicalization rule (key order,
+whitespace, number formatting) *between signer and verifier* — the client verifies the
+exact response bytes before parsing them at all, so no JSON serialization step sits
+between what was signed and what was checked. It does **not** by itself remove parser
+ambiguity between different JSON implementations; §4a settles that separately: `schema`
+must be an unrecognized-value-fails-closed integer (already specified below), and a
+parser that accepts duplicate object keys **MUST** reject the manifest rather than
+silently taking the last (or first) value — the wire contract has exactly one value per
+key, and a parser that can't guarantee that is not a valid implementation of it.
+
+`updates.json.sig` — one line, base64-encoded 64-byte ed25519 signature, no wrapper.
+
+`updates.json` — v0 schema. Every release requires `full`; `deltas` is the only
+optional piece (a release **MUST NOT** omit `full` — the full-package fallback and the
+post-delta-failure fallback below both assume it exists, so a fixture that rejects a
+release missing `full` is part of AC1):
+
+```json
+{
+  "schema": 1,
+  "channel": "stable",
+  "target": "macos-arm64",
+  "app": { "id": "com.example.app" },
+  "releases": [
+    {
+      "version": "1.4.2",
+      "publishedAt": "2026-08-18T00:00:00Z",
+      "full": {
+        "url": "1.4.2/full.zst",
+        "size": 12345678,
+        "blake3": "<64 hex chars>",
+        "contentSize": 23456789,
+        "contentBlake3": "<64 hex chars>"
+      },
+      "deltas": [
+        {
+          "fromVersion": "1.4.1",
+          "url": "1.4.2/from-1.4.1.delta.zst",
+          "size": 45678,
+          "blake3": "<64 hex chars>"
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `schema` is an integer, bumped on any incompatible field change — a client that does
+  not recognize the value fails closed (refuses the feed) rather than guessing.
+- `app.id`, `channel`, and `target` **MUST** match the host's compiled-in application
+  identity, the channel it actually requested, and its own compiled-in target, checked
+  fail-closed *after* signature verification and *before* any release is selected (step
+  2 below). A correctly-signed manifest for a different app, channel, or target is not
+  this host's update — accepting it on signature validity alone is exactly how feed
+  misrouting, a shared signing key, or a wrong-target URL turns into a cross-app,
+  cross-channel, or cross-platform install.
+- `version` **MUST** be strict semver (`MAJOR.MINOR.PATCH`, no build-metadata suffix
+  participating in ordering). Two `releases[]` entries with the same `version`, or two
+  `deltas[]` entries within one release with the same `fromVersion`, make the whole
+  manifest invalid — reject it outright (a schema violation, the same as an unknown
+  `schema` value), not "pick one arbitrarily." Different clients silently picking
+  different entries from the same signed manifest is the specific failure a duplicate
+  would cause if it were merely tolerated.
+- Release selection is deterministic: among releases that pass the version-floor check
+  (step 4 below), the client selects the single **highest** version, never "any
+  newer" — there is exactly one answer to "what does this manifest ask me to install,"
+  not a client-dependent choice among several eligible releases.
+- Each release's `deltas` array may be empty or contain zero or more entries; how many
+  prior versions a publisher generates deltas for (the "last N releases" in the prose
+  above) is a publish-time/`keld-pack` decision, not part of this wire contract — the
+  client only ever looks for one entry whose `fromVersion` equals its own installed
+  version.
+- `size` is **normative, not advisory**: downloads are bounded, streaming reads that
+  reject an artifact once received bytes exceed `size` and reject a stream that ends
+  short of it. A `size` field that nothing checks is not a contract; this fixture
+  (short and long artifacts) is part of AC1. `size` bounds only the **compressed**
+  bytes on the wire — it says nothing about decompressed size, so it is not a
+  decompression-bomb defense by itself (a small, valid zstd stream can still expand to
+  an enormous one). `full.contentSize` is the separate, explicit bound on that: the
+  decompressor **MUST** be given that ceiling up front and abort mid-stream the moment
+  produced output exceeds it, checked incrementally as bytes are produced — never by
+  fully decompressing first and measuring after.
+- Two hash domains, not one. `blake3` (present on both `full` and every `deltas[]`
+  entry) is the digest of the **artifact's bytes as downloaded** — the `.zst` file
+  exactly as served — and proves transport integrity of what was fetched, nothing
+  about what it decompresses or reconstructs to. `full.contentBlake3` is the digest of
+  the **decompressed, installable package bytes**: the full-package path decompresses
+  `full.zst` and checks the result against `contentBlake3` before install; the delta
+  path decompresses the patch and applies it against the currently-installed content,
+  then checks *its* result against that same `full.contentBlake3` — both paths
+  converge on one deterministic, checkable content stream regardless of which artifact
+  produced it. Deltas carry no `contentBlake3` of their own; there is nothing to check
+  a delta's reconstruction against except the release's one canonical content hash.
+- **The canonical content stream those bytes are a hash of** is a v0-defined package
+  format, not "whatever bytes happen to decompress": a single POSIX ustar archive
+  (`.tar`, before the outer zstd wrapper) with an exact, exhaustive byte-level
+  profile — deliberately minimal, skipping the GNU/PAX long-name and sparse-file
+  extensions entirely, so there is no optional-extension ambiguity for two
+  implementations to disagree on:
+  - Entries are **regular files (`typeflag '0'`) and directories (`typeflag '5'`)
+    only** — no symlinks, hardlinks, device files, FIFOs, or extended attributes in
+    v0 (a v1 packaging-format gap, named here, not solved by this contract; macOS
+    `.app` bundles in particular are symlink-heavy). Any other `typeflag` is a
+    manifest-shape violation.
+  - `name`: a UTF-8 relative path, no leading `/`, no `.`/`..` path components, no
+    empty segments, **at most 100 bytes** (the plain ustar `name` field's own limit —
+    a path that doesn't fit is a v0 limitation; the ustar `prefix` field and
+    GNU/PAX long-name extensions are explicitly out of scope, not silently assumed).
+    No two entries may share a `name`.
+  - `mode`: exactly `0644` for regular files, exactly `0755` for directories — no
+    other value.
+  - `uid`/`gid`: `0`. `uname`/`gname`: empty. `mtime`: `0`. `devmajor`/`devminor`: `0`.
+    `linkname`: empty.
+  - `magic`: `"ustar\0"`, `version`: `"00"` (POSIX ustar; not the pre-POSIX v7 or GNU
+    tar variants). `chksum`: computed per the POSIX header-checksum algorithm.
+  - Entries sorted by `name` (byte order). Archive terminated by exactly two 512-byte
+    zero blocks; every header and data section padded to a 512-byte boundary with
+    zero bytes — the standard tar block format, stated here so an implementer does
+    not have to re-derive it from the POSIX spec.
+  - Any producer and consumer that agree on every rule above produce and read
+    byte-identical archives for the same input tree — that agreement is what makes
+    `contentBlake3` reproducible at all; "roughly tar-shaped" is not enough.
+
+  `contentBlake3`/`contentSize` are the digest and byte count of that exact tar
+  stream. **Extraction is a two-pass operation — a full validation pass over every
+  header, then writing — never validate-as-you-go while already writing:**
+  1. Read every entry's header first, without writing any file. Reject the whole
+     archive (no partial writes to clean up, because none happened) if any entry's
+     `name` is absolute, contains a `..` component, is empty, or — after being joined
+     against the destination versioned directory — does not stay lexically within it
+     (standard "tar slip" defense; sorted names and the 100-byte/no-`..` `name` rule
+     above narrow what a *valid* archive can contain, but do not by themselves stop a
+     crafted or corrupted stream from attempting the escape during extraction). Also
+     reject on any **namespace collision**: the same path claimed by two entries
+     (already invalid per the no-duplicate-`name` rule, checked again here since this
+     is the enforcement point), or a path that requires a directory where an *ancestor*
+     path is already claimed as a regular file (e.g. entries for both `a` and `a/b` —
+     `a` cannot be a file and a directory at once).
+  2. Only after every header in the archive passes pass 1 does pass 2 write anything,
+     directories before the regular files inside them (guaranteed satisfiable because
+     pass 1 already proved no file/directory collisions exist).
+
+  Every directory created during extraction is `fsync`ed **bottom-up** — each
+  directory's own `fsync` happens only after every entry inside it (files and
+  subdirectories alike) is already durable — ending with the versioned directory
+  itself and then its parent (`<app-data>/versions/`, since adding a new child
+  directory entry to it is itself a metadata change that needs its own directory
+  `fsync`, the same rule this contract already applies everywhere else). Only once
+  that full bottom-up sync completes is the `.complete` marker created — a marker
+  that's durable while a nested child directory underneath it is not is not a
+  meaningful "this write finished" signal.
+
+**Client verification order — no step may be skipped or reordered:**
+
+1. Fetch `updates.json` + `updates.json.sig`. Verify the detached signature against the
+   ed25519 public key **compiled into the host binary at build time** (never fetched
+   from the feed itself — a feed that can serve a fake manifest could equally serve a
+   fake "trusted" key, so the key cannot be feed-supplied and stay a trust root).
+   Reject and stop on any signature failure, before parsing a single field for meaning.
+2. Parse JSON only after step 1 passes, with a parser that rejects duplicate keys.
+   Reject unknown `schema`. Reject if `app.id`, `channel`, or `target` do not match this
+   host's identity/requested channel/own target (fail closed on any mismatch).
+3. Reject the whole manifest if any two `releases[]` entries share a `version`, or any
+   two `deltas[]` entries within one release share a `fromVersion` — see the schema
+   bullets above; this is a shape-validity check, independent of which release ends up
+   selected.
+4. **Filter** the remaining releases down to those whose `version` is **strictly
+   greater than the persisted version floor** (see below) — not merely greater than
+   the currently-installed version. This is filtering the eligible set, not rejecting
+   the manifest: a normal feed legitimately carries its whole release history (1.0,
+   1.1, … up to current), and a manifest is not invalid just because most of its
+   releases are older than this host's floor — only step 2/3's checks (signature,
+   schema, identity, duplicates) reject the manifest as a whole. The floor, not the
+   running version, is the replay/downgrade defense: after a local rollback the
+   running version can be lower than the floor on purpose, so anything **remaining
+   after this filter** that a client would otherwise act on is either a legitimate
+   forward update or an attacker replaying an old signed manifest — never both.
+   Among the filtered set, select the single **highest** version.
+5. Prefer a `deltas[]` entry whose `fromVersion` equals the installed version; else use
+   `full`. Download the chosen artifact as a size-bounded stream: reject once received
+   bytes exceed the artifact's `size`, and reject a stream that ends short of it.
+6. BLAKE3 the downloaded bytes; compare to that artifact's own `blake3`. Reject and
+   discard on mismatch — do not attempt to decompress or apply a patch that failed its
+   own transport-integrity check.
+7. Decompress, bounded incrementally by `contentSize` (abort the instant produced
+   output exceeds it — see the `size`/`contentSize` bullet above). For `full`, check
+   the decompressed tar bytes against `contentBlake3` — that is the installable
+   package (see the canonical-content-stream bullet above for what "decompressed"
+   means precisely, and for the path-safety rules extraction must enforce). For a
+   delta, apply it against the **previous version's retained exact tar bytes** (see
+   "Atomic swap and rollback" below — the delta base is never re-derived from an
+   already-extracted directory tree), then check the *reconstructed* bytes against
+   that same release's `full.contentBlake3`. This is the oracle step 6 cannot provide:
+   step 6 only proves the patch file itself downloaded intact, not that applying it
+   against this host's actual base produces the intended result.
+8. **Any** failure on the delta path — size mismatch, transport `blake3` mismatch
+   (step 6), a decompression error, a patch-application error, or a reconstructed-
+   content `contentBlake3` mismatch (step 7) — triggers one `full` attempt (steps 5–7
+   again, for the full artifact) **within the same update attempt**, not deferred to
+   the next poll. Deferring would just re-select the same `deltas[]` entry next time
+   (step 5's preference for a matching delta never changes on its own) and retry the
+   identical failure forever.
+9. Only content that passed a `contentBlake3` check (full path directly, delta path via
+   reconstruction) is eligible to install.
+
+**Atomic swap and rollback:**
+
+- Each verified package is written to its own versioned directory
+  (`<app-data>/versions/<version>/`), and that directory retains **both** the exact
+  canonical tar bytes (`content.tar`, the literal stream `contentBlake3` was computed
+  over) **and** the tree extracted from it per the rules above. A delta's base is
+  always the previous version's retained `content.tar`, never a re-derivation from the
+  extracted tree on disk — extraction is the lossy direction (entry order, block
+  padding, and every v0-excluded metadata field are not guaranteed recoverable from an
+  already-extracted directory), so only the retained bytes are a valid patch base.
+  Every file — `content.tar`, every extracted file — is `fsync`ed, then the directory
+  itself is `fsync`ed (POSIX: `fsync` on an open directory fd — durability for a
+  directory entry is a metadata operation the file's own `fsync` does not cover, per
+  the same rename-durability contract POSIX `rename(2)` documents: the rename is
+  atomic but not durable without a following directory `fsync`). **Only then** is a
+  `.complete` marker file created in that directory, and the marker file itself is
+  `fsync`ed, followed by one more directory `fsync` to make the marker's own existence
+  durable — a marker that isn't itself durably persisted is not a durable "this write
+  finished" signal. A versioned directory without a durably-persisted `.complete`
+  marker is a crash-interrupted write, never a candidate for `current`, rollback, or a
+  future delta base.
+- **A `publish-intent` file names the one thing that distinguishes "an update was
+  interrupted mid-flight" from "the host deliberately rolled back."** Both can leave
+  `current` pointing behind the persisted floor, and conflating them is a real bug:
+  recovery logic that blindly republishes whatever `.complete`-marked directory
+  matches the floor would silently *undo* an intentional rollback the moment the host
+  restarts. `publish-intent` (containing the target version) is written durably (same
+  temp-file + `fsync` + atomic-rename + directory-`fsync` sequence used everywhere
+  else here) immediately **before** the floor is advanced for a forward update, and
+  removed durably immediately **after** `current` is republished to that version.
+  Rollback never writes it — rollback is a direct, one-step pointer flip to
+  already-verified state, not a publish sequence with an in-flight version to name.
+- **The version floor and the `current` pointer are two separate durable files, and
+  their publish order is load-bearing**: `publish-intent` is written, then the floor
+  is advanced, and only once that succeeds is `current` published to the new version,
+  and only then is `publish-intent` removed. Floor-before-pointer (never the reverse)
+  guarantees the floor is never behind whatever `current` could possibly show, even
+  across a crash between the writes; the reverse order — pointer before floor — would
+  leave a window where `current` already shows the new version but the floor still
+  allows a replayed old signed manifest, exactly the gap this ordering exists to close.
+- Publishing any of the three files above (`content.tar`'s directory, the floor, the
+  pointer) is a durable-replace, not an in-place edit: write a temporary file **in the
+  same directory as the target it will replace** — POSIX `rename()` requires both
+  paths on one filesystem (cross-filesystem `rename()` fails `EXDEV`, and papering
+  over that with a copy+delete fallback is exactly the non-atomic operation this whole
+  scheme exists to avoid, so `EXDEV` is a hard error, not a fallback trigger); Windows
+  `ReplaceFile`/`MoveFileEx` carry the same same-volume requirement. `fsync` the temp
+  file, then atomically publish it over the target — POSIX `rename()` (atomic within
+  one filesystem; the directory is `fsync`ed afterward for the same reason above);
+  Windows `ReplaceFile`/`MoveFileEx(..., MOVEFILE_REPLACE_EXISTING |
+  MOVEFILE_WRITE_THROUGH)` on the temp file. **None of these files is ever removed
+  before its replacement is durably in place** — there is no window where a required
+  pointer is absent.
+- **All of the above — a full update attempt, a rollback, and startup recovery — are
+  serialized by a single-writer lock** (a host-process-lifetime lock, e.g. an
+  exclusively-held lock file under `<app-data>/`, held for the entire sequence from
+  "start selecting a release" through "publish-intent removed"). Every ordering
+  guarantee above (floor before pointer, publish-intent written before either) assumes
+  exactly one writer; two concurrent update polls, or a poll racing a manual rollback,
+  can otherwise interleave their steps and produce a floor/pointer pair neither writer
+  ever intended (e.g. an older poll's pointer publish landing after a newer one's).
+  `keld-update` owning this lock, not merely documenting the ordering, is what makes
+  the ordering guarantees actually hold.
+- The **previous** version's directory is kept, not deleted, until the new version has
+  been confirmed healthy (e.g. survives `keld-runtime`'s crash-loop breaker window,
+  KEL-70) — kept specifically for both rollback *and* as the next delta's base.
+- **Startup recovery, in order (holding the single-writer lock above):**
+  1. If `publish-intent` exists and `current` **already points at the version it
+     names**, the publish itself finished before the crash — only its removal
+     didn't. Durably remove `publish-intent` and stop; there is nothing else to
+     recover. (This case matters on its own: a `publish-intent` left over from an
+     already-completed publish, with no removal step ever reached, is exactly the
+     stale marker that a later rollback would otherwise leave sitting on disk —
+     without this step, step 2 below could see that stale intent, plus `current`
+     now behind the floor after the rollback, and wrongly conclude an update needs
+     completing, undoing the rollback.)
+  2. Otherwise, if `publish-intent` names a version whose directory carries a
+     durable `.complete` marker and matches the persisted floor, **and** `current`
+     does not already point there, complete the interrupted publish: republish
+     `current` to that directory, then remove `publish-intent`. No re-download, no
+     re-verification — the marker and the floor already prove this exact version was
+     fully verified before the crash; this is finishing an interrupted local write,
+     not trusting new, unverified state.
+  3. Otherwise, if `current` is behind the floor with **no** `publish-intent` on
+     disk, that is not an interrupted publish to fix — leave `current` exactly where
+     it is. This is the intentional-rollback case: the operator/host chose to run an
+     older, already-verified version, and startup recovery must not silently move it
+     forward again.
+  4. Otherwise, if `current` is missing, unreadable, or points at a versioned
+     directory with no `.complete` marker, fall back to the most recent kept
+     versioned directory that *does* have one.
+  5. If none of the above recovers to a valid state, startup fails closed with a
+     typed error — it never runs a partially-written install.
+- **Rollback** is a host/user-authorized local action: flipping `current` back to the
+  kept N-1 directory via the same durable-pointer mechanism above — no re-download, no
+  re-verification of already-verified bytes, and (as above) no `publish-intent`
+  written, since there is no in-flight publish to name. Rollback **does not** touch
+  the persisted version floor: it only changes what is currently running, so a
+  subsequent feed poll still can't be tricked by a replayed old signed manifest into
+  re-offering, as if new, anything at or below a version this host has already run.
+  Authorization for rollback (what triggers it — the crash-loop breaker automatically,
+  or an explicit host/operator action) is `keld-update`'s own decision to make when it
+  exists; this contract only fixes what rollback *does* to the pointer and the floor,
+  not what decides to invoke it.
+- **Version floor storage**: a small file alongside `current` (e.g. `version-floor`,
+  containing just the semver string), written durably as specified above, updated only
+  on a successful install (never by rollback). Missing on first run (no floor yet — any
+  signed release for this app/channel/target is accepted); unreadable or corrupt on a
+  run that has already installed at least one update is treated the same as an absent
+  `current` with no `.complete` marker — fail closed, do not silently treat it as "no
+  floor."
+
 ## 5. Dev loop targets
 
 - `keld dev` cold → window ≤ 2 s (host prebuilt, Bun start ~10 ms class, webview init
@@ -2897,6 +3244,177 @@ value fails, remove the external pilot without changing Keld.
 **Evidence.** [`optional-agent-memory-pilot.md`](../specs/optional-agent-memory-pilot.md),
 [`08-optional-agent-memory.md`](../onboarding/08-optional-agent-memory.md),
 [TencentDB Agent Memory beta install guide](https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/29d609a729704ae31ff1848dc6f8acb7e712106d/INSTALL.md).
+
+---
+
+## 14. `keld-update` v0 manifest/feed wire contract (KEL-53 trigger)
+
+**Chose (2026-08-18).** KEL-53 ("updater: signed manifest and delta patch vertical
+slice") names its own trigger: start only once the update artifact/feed contract in
+architecture 06 §4 is concrete enough for executable acceptance tests. §4 was prose —
+"signed manifests", "ed25519", "BLAKE3 post-conditions" — with no byte-level shape, so
+the ticket was not actually unblocked. Added §4a: a static feed layout keyed by
+**channel and target** (`<channel>/<target>/updates.json` + a **detached**
+`<channel>/<target>/updates.json.sig` file, not a signature field embedded in the
+JSON — avoids a canonicalization requirement between signer and verifier because the
+signature covers the exact response bytes, checked before parsing; §4a separately
+specifies duplicate-key rejection and an unrecognized-`schema` fail-closed rule, since
+detached signing alone does not remove parser-level ambiguity), a v0 `updates.json`
+schema (`schema`, `channel`, `target`, `app.id`, `releases[].{version, full,
+deltas[]}`, `full` required on every release, no duplicate `version`/`fromVersion`), a
+multi-step client verification order (fetch/verify → parse/identity-check →
+shape-validity → floor-filter/select → download → transport-hash → decompress/
+content-hash → full-fallback on any delta failure → install) ending in
+atomic-swap/N-1-rollback. Facts worth holding onto: the ed25519 public key **must** be
+compiled into the host binary, never fetched from the feed; every artifact's `blake3`
+proves only that *its own downloaded bytes* are intact, so `full.contentBlake3` is a
+second, separate hash domain over the *decompressed, installable* content — itself a
+fully byte-specified POSIX-tar profile, not "whatever decompresses" — that both the
+full path and the post-delta reconstruction path must converge on; `app.id`/`channel`/
+`target` are checked fail-closed against the host's own identity so a correctly-signed
+manifest for a different app, channel, or target is rejected on principle, not just on
+missing content; and a **persisted
+version floor** (not the running version) is what a replayed old signed manifest is
+checked against, so an authorized local rollback can run an older version without
+reopening the door to an attacker replaying a stale feed.
+
+**Why.** `AGENTS.md` §Working rules forbids landing an RFC that "restates
+`docs/architecture/` without binary acceptance tests" — the fix for prose that can't be
+tested is a concrete schema, not a longer paragraph. This is also explicitly a wire
+protocol change (root `AGENTS.md` review gate #5), so it is docs-only and flagged for
+human sign-off rather than paired with code.
+
+**Why not.** Did not pick bsdiff vs HDiffPatch (KEL-53 AC2 is an explicit benchmark,
+not a docs-time guess), did not add `ed25519-dalek`/`zstd`/a delta crate (KEL-53 AC3,
+its own dependency-review gate), and did not spec a TUF-style rotating root — 03
+§4 point 4 names one as a future target; v0 here is a single pinned key, stated as a
+limitation rather than silently narrowed. All three stay KEL-53's decisions, not this
+change's.
+
+**Update (2026-08-18, review pass before human sign-off).** An adversarial review of
+the first draft found eight real gaps, not style nits, each fixed in §4a directly
+rather than patched around: (1) the feed layout hardcoded a `.bsdiff.zst` extension
+while this same record says the algorithm is undecided — renamed to algorithm-neutral
+`.delta.zst`, and softened `crates/keld-update/src/lib.rs`'s module doc, which flatly
+asserted "bsdiff" two lines above its own "not yet chosen" caveat; (2) `full` read as
+optional by omission — now explicit that every release requires it; (3) one `blake3`
+field was doing two jobs (artifact-transport integrity and reconstructed-content
+correctness) with no way to tell which failure a mismatch meant — split into `blake3`
+(downloaded bytes) and `full.contentBlake3` (decompressed, installable bytes both the
+full and delta paths converge on); (4) nothing bound a manifest to *this* app or
+channel beyond a valid signature, so a correctly-signed manifest for a different app or
+a different channel would have passed — added a fail-closed identity check; (5) a
+delta that failed content verification would be re-selected forever, since the fallback
+said "try `full` on the next poll" but the next poll re-picks the same delta — fixed to
+fall back to `full` within the same attempt; (6) atomic swap named the mechanism
+(symlink / pointer rename) but not the crash-safety sequence — added the
+temp-pointer/fsync/durable-rename discipline (POSIX and Windows), a `.complete`
+directory marker, and startup recovery for an absent/corrupt pointer; (7) rollback had
+no defense against a stale signed manifest being replayed through the feed to force a
+downgrade — added a persisted version floor, separate from the running version, that a
+local rollback intentionally does not reset; (8) the signature section's own claim
+overstated what detached signing buys (no canonicalization *between signer and
+verifier*, not immunity to parser-level ambiguity) — narrowed the wording and added
+duplicate-key rejection. None of this reopens KEL-53 AC2/AC3 (algorithm, dependencies)
+or the TUF-root deferral — all three exclusions from "Why not" stand unchanged.
+
+**Update (2026-08-18, second review pass).** A second, deeper pass over the now-larger
+§4a found seven more gaps — including a real bug in the first pass's own fix. Fixed
+directly: (1) nothing bound the manifest to a *platform/architecture* the way `app.id`/
+`channel` bound it to an app/channel — added `<target>` to the feed path and a
+redundant `target` field, same defense-in-depth shape as the app/channel check; (2)
+release/delta selection wasn't fully deterministic — duplicate `version`/`fromVersion`
+now invalidate the whole manifest, and among eligible releases the client takes the
+single highest version, not "any newer"; (3) `contentBlake3` hashed "decompressed
+bytes" with no defined package format, so two clients could verify identical bytes and
+extract different trees — defined v0's canonical content stream as a single POSIX tar,
+sorted entries, regular files and directories only, uniform modes, named as a v0
+limitation for symlink-heavy formats like macOS `.app` bundles; (4) `size` was carried
+in the schema
+but never checked — made it normative: bounded, streaming downloads that reject over-
+and under-sized artifacts before decompression; (5) the full-fallback step only
+triggered on a content-hash failure, missing transport-hash, decompression, and
+patch-application failures on the delta path — broadened to any delta-path failure;
+(6) the `.complete` marker's own fsync was unspecified, so the crash-safety fix from
+the first pass had a hole in itself — added explicit fsync-the-marker-then-fsync-the-
+directory-again ordering; (7) the real bug: `current` and the version floor (added in
+the first pass specifically to stop replay/downgrade attacks) are two separate durable
+files with no shared transaction, so a crash between publishing one and the other could
+leave `current` ahead of the floor — fixed by making publish order load-bearing (floor
+always advances *before* `current` is republished) and adding a startup-recovery case
+that completes an interrupted publish from already-verified local state, never from
+anything the crash left ambiguous.
+
+**Update (2026-08-18, third review pass).** A deeper pass over the now-much-larger
+§4a found a second real bug plus real gaps, not restated nits: (1) nothing bound the
+manifest to a target platform/architecture — added `<target>` to the feed path and a
+redundant manifest field, mirroring the app/channel check; (2) release/delta selection
+still had a documented ambiguity between "the floor rejects the manifest" and "the
+floor filters the eligible set" — resolved explicitly as filtering (a normal feed's
+historical releases are not a schema violation); (3) `contentBlake3` covered
+"decompressed bytes" with no byte-exact package format, so two conforming
+implementations could still disagree — replaced with a fully specified POSIX-tar
+profile (entry types, name/mode/uid/gid/mtime/magic/version/checksum, sort order,
+block padding — an exhaustive list, not an example); (4) that same tar definition
+exposed a real vulnerability class: sorted paths alone do not stop path-traversal
+during extraction, so added explicit reject-before-write rules for absolute paths,
+`..` components, and anything that resolves outside the destination directory
+("tar slip"); (5) `size` was in the schema but bounded only the compressed download,
+not decompressed output — a valid small artifact could still be a decompression bomb;
+added `contentSize` as an explicit, incrementally-enforced decompression ceiling; (6)
+**the second real bug**: after extraction, the previous version exists only as a
+directory tree on disk, but a delta's base was specified as "the currently-installed
+content" with no defined byte stream to patch against — extraction is lossy relative
+to exact reproduction, so a re-serialized tree is not guaranteed to match the original
+tar bytes; fixed by retaining each version's exact `content.tar` alongside its
+extracted form, specifically as the only valid delta base; (7) **the third real bug**:
+the first pass's own replay/downgrade fix (the persisted version floor) could be
+silently defeated by its own recovery logic — after an intentional rollback, `current`
+legitimately sits behind the floor, which is exactly the state the first pass's
+"complete an interrupted publish" recovery rule would have auto-corrected, undoing the
+rollback on the next restart. Fixed with a `publish-intent` marker that names an
+in-flight forward publish and is never written by rollback, so recovery can tell "an
+update was interrupted" from "the host deliberately rolled back" instead of conflating
+them.
+
+**Update (2026-08-18, fourth review pass — last automated round).** A fourth pass
+found six more real issues, including a third bug in the spec's own fixes: (1) this
+record's own summary still said "regular files only," stale against §4a's directories
+rule — synced; (2) extraction validated paths per-entry while already writing, which
+can leave partial files before a later entry is rejected, and never caught a file/
+directory ancestor collision (`a` as a file, `a/b` as its child) — replaced with a
+two-pass extractor (validate every header first, write nothing until the whole archive
+passes); (3) only the leaf versioned directory's `fsync` was specified, not each
+nested directory created during extraction or the parent `versions/` directory itself
+— added bottom-up directory `fsync`; (4) the durable-replace steps never said *where*
+the temporary file must live, so an implementation could place it on a different
+filesystem/volume than its target and hit `EXDEV`, or worse "fix" that with a
+non-atomic copy+delete fallback — required same-directory placement and made `EXDEV`
+a hard error, never a fallback trigger; (5) every ordering guarantee in this section
+(floor-before-pointer, publish-intent-before-either) implicitly assumed one writer —
+made that explicit as a single-writer lock held for the whole sequence; (6) **the
+third real bug**: recovery's own "complete an interrupted publish" step never
+accounted for `current` already matching `publish-intent`'s named version (crash after
+publish, before removing the marker) — the stale marker survives, and a *later*,
+unrelated rollback would then present exactly the state step 2 treats as "resume this
+publish," undoing the rollback. Fixed by making "current already matches → just clear
+the stale marker" the first recovery check, before the resume-publish check. Stopping
+the automated-review loop here — four rounds have found three genuine bugs in the
+contract's own crash-safety logic, which is real signal this depth is warranted, but
+the fix for "is this loop still finding signal or noise" is a human reviewer's
+judgment call, not another round.
+
+**Next.** KEL-53 can now write its failing-first fixtures (valid/tampered manifest,
+corrupted patch, full-package fallback, N-1 rollback, identity mismatch, replay/
+downgrade, crash-interrupted install, wrong-target manifest, duplicate release/delta
+entries, oversized/undersized artifact, decompression-bomb content, path-traversal and
+namespace-collision archive entries, rollback surviving a restart, stale
+publish-intent cleared without resurrecting a completed publish, cross-filesystem temp
+placement rejected) against a concrete shape instead of inventing one mid-ticket.
+`crates/keld-update/src/lib.rs`'s module doc points here; still zero verification
+code — nothing in this change reads or checks the contract it describes.
+
+**Evidence.** `docs/architecture/06-runtime-and-tooling.md` §4a; `crates/keld-update/src/lib.rs`.
 
 ---
 
