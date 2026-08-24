@@ -2,208 +2,204 @@
 //!
 //! # The defect this pins
 //!
-//! `run_dev` (`crates/keld-cli/src/dev.rs:185`) completes HELLO+CALL, then blocks
-//! in `run_hello_window_html` for the whole window phase. When the supervised Bun
-//! child dies mid-window the host observes nothing: the echo listener admits
-//! exactly one authenticated session (`crates/keld-core/src/echo_link.rs:75`), so
-//! every restart fails and the crash-loop breaker trips, but
-//! `HostOwnedHelloSession::finish` drops the `Supervisor` — and with it the whole
-//! terminal-outcome record — unread (`crates/keld-core/src/hello_session.rs:202`).
-//! `shutdown()` is hard-coded `Ok(())` (`hello_session.rs:196`), so the `?` at
-//! `dev.rs:208` is dead, `run_dev` returns the window's `Ok(())`, and `main.rs`
-//! exits 0 with no diagnostic over a dead app process.
+//! `run_dev` completes HELLO+CALL, then blocks in `run_hello_window_html` for the
+//! whole window phase. When the supervised Bun child dies mid-window the host
+//! observes nothing, and `keld dev` exits 0 with no diagnostic over a dead app.
+//!
+//! Surfacing only the crash-loop breaker is not a fix. `KELD-RUNTIME-002`
+//! requires three crashes inside a 30s sliding window
+//! (`RestartPolicy::default()` and `crash_times.retain`), so a single death —
+//! or a slower crash cadence — leaves the terminal outcome a clean `Stopped`
+//! while the developer has no running app. Whether the breaker happens to trip
+//! depends on how fast the restarted generations fail, which is timing the host
+//! must not depend on.
+//!
+//! This test therefore kills the app **once** and never manufactures a crash
+//! loop: a fixture that supplies three crashes tests the breaker, not the
+//! defect. The verdict must come from durable crash state instead.
 //!
 //! # The observable this test pins
 //!
-//! `HostOwnedHelloSession::shutdown()` is the surfacing point, because it is the
-//! call `run_dev` already makes at exactly the right moment — after the window
-//! returns and *before* `finish()` destroys the supervisor — and its own doc
-//! already anticipates becoming fallible in fact ("currently always `Ok`").
-//! Making it report the terminal supervision outcome revives the existing `?`,
-//! and `main.rs:88` already maps any `Err` to exit 1
-//! (`docs/architecture/07-agent-experience.md` §7). No new exit code is needed.
+//! `run_dev_with_window` is `run_dev` with only the GUI injected, so the
+//! KEL-105 seam — reap Bun, read the supervision verdict, choose the returned
+//! status — runs here exactly as it ships. `main.rs` maps any `Err` to exit 1
+//! (`docs/architecture/07-agent-experience.md` §7), so an `Err` here is the
+//! process exiting non-zero. Asserting on the seam rather than on
+//! `shutdown()` alone is deliberate: a fix that computes the verdict and then
+//! drops it on the floor still returns `Ok(())` and would otherwise pass.
 //!
-//! Three requirements, each separately falsifiable:
+//! Four requirements, each separately falsifiable:
 //!
-//! 1. **Not silently successful.** `shutdown()` must be `Err` when the app
-//!    process that completed HELLO died during the window phase.
-//! 2. **Typed and registered.** The message must carry `KELD-CORE-033`, a new
-//!    code. `KELD-CORE-031` is deliberately *not* reused: its registered fix is
-//!    "Re-run `keld doctor` and fix the reported checks"
-//!    (`docs/engineering/keld-error-codes.md`), which is wrong here — doctor
-//!    passes, and the developer needs the crash instead.
+//! 1. **Not silently successful.** The run must be `Err` when the app process
+//!    that completed HELLO died during the window phase.
+//! 2. **Typed and registered.** `KELD-CORE-033`. `KELD-CORE-031` is deliberately
+//!    not reused: its registered fix is "Re-run `keld doctor`", which is wrong
+//!    here — doctor passes, and the developer needs the crash.
 //! 3. **Diagnostic, not just a code.** The message must nest the owning
-//!    `keld-runtime` error's own `Display` — its `KELD-RUNTIME-002` code and its
-//!    captured stderr tail — rather than a third hand-written copy of that text
-//!    (AGENTS.md principle 3; `hello_session.rs:167` is the second copy).
+//!    `keld-runtime` error's own `Display` — its `KELD-RUNTIME-012` code and the
+//!    captured stderr — rather than a third hand-written copy of that text
+//!    (AGENTS.md principle 3).
+//! 4. **One fix, not two.** The crash diagnostic must not be wrapped in
+//!    `KELD-CLI-031`, whose registered fix ("re-run `keld doctor`") contradicts
+//!    it.
 //!
-//! The surfaced outcome MUST be drain-independent. Shipping `run_dev` already
-//! drains supervisor events before the window (`dev.rs:196`), and this test
-//! drains again to await the terminal state without sleeping, so a fix that only
-//! re-reads the event queue is not a fix. `keld-runtime` contracts the
-//! drain-independent path (`Supervisor::wait_for_outcome`, whose Arc-backed
-//! fallback is asserted by its own
-//! `draining_crash_loop_event_does_not_erase_terminal_outcome`).
+//! The verdict MUST be drain-independent. Shipping `run_dev` already drains
+//! supervisor events before the window, so a fix that only re-reads the event
+//! queue is not a fix; `keld-runtime` publishes the crash as durable ledger
+//! state instead.
 //!
 //! # Scope
 //!
 //! This is the ticket's option (a), SURFACE. Option (b), RECOVER — minting a
-//! fresh link generation so the restarted child can re-handshake — is KEL-96 AC5
-//! and is deliberately kept out of the test's critical path: the fixture's
-//! restarted generations refuse to connect rather than blocking on the retired
-//! listener.
+//! fresh link generation so the restarted child can re-handshake — is KEL-96
+//! AC5 and is human-gated; without it the restarted generation hangs, which is
+//! precisely the condition documented above.
 
 #![allow(clippy::expect_used)]
 
 use std::fs;
 use std::process::Command;
-use std::time::Duration;
 
 use keld_cli::create::create_project;
-use keld_cli::dev::start_dev_session;
+use keld_cli::dev::run_dev_with_window;
 
-/// A needle no generation of any fixture here ever prints.
+/// Stderr the fixture emits before it is killed, so the assertion that the
+/// captured tail reaches the developer has something real to find.
+const BREADCRUMB: &str = "kel105-app-stderr-breadcrumb";
+
+/// Scaffolds the shipping template and prepends a pid breadcrumb.
 ///
-/// `wait_until_output_contains` returns early on a terminal supervisor event,
-/// so waiting on an unprintable needle is how this test *awaits* the crash-loop
-/// breaker instead of sleep-polling process state (AGENTS.md anti-flake).
-const NEVER_PRINTED: &str = "kel105-marker-no-child-ever-prints";
+/// The app itself is left stock on purpose: a hand-written fixture would prove
+/// something about the fixture, not about the app `keld create` produces.
+fn project_with_pid_breadcrumb(
+    dir: &std::path::Path,
+    name: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = create_project(dir, name).expect("create");
+    let pid_path = root.join("kel105-app.pid");
+    let main = root.join("src/main.ts");
+    let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
+    let pid_lit = pid_path.display().to_string();
+    fs::write(
+        &main,
+        format!(
+            "import {{ writeFileSync as kel105WritePid }} from \"node:fs\";\n\
+             kel105WritePid({pid_lit:?}, String(process.pid));\n\
+             console.error({BREADCRUMB:?});\n{scaffolded}"
+        ),
+    )
+    .expect("write fixture main");
+    (root, pid_path)
+}
 
 #[test]
 fn window_phase_app_death_is_surfaced_not_reported_as_success() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("w{}", std::process::id());
-    let root = create_project(dir.path(), &name).expect("create");
-    let refuse_marker = root.join("kel105-refuse-restart");
-    let refuse_lit = refuse_marker.display().to_string();
+    let (root, pid_path) = project_with_pid_breadcrumb(dir.path(), &name);
 
-    fs::write(
-        root.join("src/main.ts"),
-        format!(
-            r#"
-import {{ AppLinkSession }} from "./kipc";
-import {{ existsSync }} from "node:fs";
+    let mut killed = None;
+    let result = run_dev_with_window(&root, |_title, _html| {
+        // Stands exactly where tao's `run_return` does: the host owns the
+        // window here and observes nothing about the app process.
+        let pid: u32 = fs::read_to_string(&pid_path)
+            .expect("the app must record its pid before it reports ready")
+            .trim()
+            .parse()
+            .expect("pid breadcrumb must be a number");
+        assert!(
+            process_is_alive(pid),
+            "precondition: supervised Bun pid {pid} must be alive before the kill"
+        );
+        kill_process(pid);
+        killed = Some(pid);
+        Ok(())
+    });
 
-// KEL-105 fixture. The host-owned echo listener admits exactly one
-// authenticated session, so a supervisor-restarted generation can never
-// re-handshake -- it would block on the retired listener instead of exiting.
-// Refusing here keeps the crash loop deterministic and keeps that separate
-// defect (ticket option (b) / KEL-96 AC5) out of this test's critical path.
-const refuse = {refuse_lit:?};
-if (existsSync(refuse)) {{
-  console.error("kel105-restart-refused");
-  process.exit(3);
-}}
-
-const link = process.env.KELD_APP_LINK;
-if (!link) {{
-  console.error("kel105-app-link-unset");
-  process.exit(1);
-}}
-const session = await AppLinkSession.connect(link);
-const response = await session.echo({{ message: "kel105", count: 1 }});
-console.log(`ipc-echo ok: message=${{JSON.stringify(response.message)}} count=${{response.count}}`);
-console.log("kel105-window-phase-ready");
-// Park exactly like the shipping template: the host owns the window from here.
-await new Promise(() => {{}});
-"#
-        ),
-    )
-    .expect("overwrite main");
-
-    let session = start_dev_session(&root).expect("start host-owned session");
-    session
-        .wait_until_output_contains("kel105-window-phase-ready", Duration::from_secs(30))
-        .expect("HELLO + CALL must complete before the window phase opens");
-    let pid = session
-        .current_pid()
-        .expect("supervised Bun must be live once the window phase opens");
-    assert!(
-        process_is_alive(pid),
-        "precondition: supervised Bun pid {pid} must be alive before the kill"
-    );
-
-    // ---- window-phase stand-in begins; shipping `run_dev` blocks in
-    // `run_hello_window_html` across exactly this region (dev.rs:205). ----
-    fs::write(&refuse_marker, "1").expect("restart-refusal marker");
-    kill_process(pid);
-
-    // Await the terminal supervision state; no sleep, no process polling.
-    let terminal = session
-        .wait_until_output_contains(NEVER_PRINTED, Duration::from_secs(30))
-        .expect_err("supervision must reach a terminal state after the window-phase kill");
-    let terminal = terminal.to_string();
-    assert!(
-        terminal.contains("KELD-RUNTIME-002"),
-        "harness precondition failed: expected the crash-loop breaker to trip, got: {terminal}"
-    );
-    assert!(
-        terminal.contains("kel105-restart-refused"),
-        "harness precondition failed: restarted generations must have refused and crashed, got: {terminal}"
-    );
-    assert_eq!(
-        session.current_pid(),
-        None,
-        "harness precondition failed: no app process may survive the crash loop"
-    );
-    // ---- window-phase stand-in ends; shipping `run_dev` runs `session.shutdown()?`
-    // here (dev.rs:208) and returns the window's own result. ----
-
-    let err = session.shutdown().expect_err(
+    let pid = killed.expect("the window phase must have run");
+    let err = result.expect_err(
         "KEL-105 defect: the app process that completed HELLO died during the window \
-         phase and the crash-loop breaker tripped, yet the host reported success. \
-         `run_dev` propagates this result (crates/keld-cli/src/dev.rs:208) and \
-         `main.rs:88` exits 0, so `keld dev` is silently green over a dead app",
+         phase, yet `keld dev` returned success. `main.rs` exits 0 on `Ok`, so the \
+         command is silently green over a dead app",
     );
     let msg = err.to_string();
     assert!(
         msg.contains("KELD-CORE-033"),
-        "window-phase supervision failure must carry its own registered code \
-         (KELD-CORE-031's registered fix, `re-run keld doctor`, is wrong here): {msg}"
+        "window-phase supervision failure must carry its own registered code: {msg}"
     );
     assert!(
-        msg.contains("KELD-RUNTIME-002"),
+        msg.contains("KELD-RUNTIME-012"),
         "must nest the owning keld-runtime error rather than restate it: {msg}"
     );
     assert!(
-        msg.contains("kel105-restart-refused"),
+        msg.contains(BREADCRUMB),
         "must carry the captured stderr so the developer can see the crash: {msg}"
+    );
+    assert!(
+        !msg.contains("KELD-CLI-031") && !msg.contains("keld doctor"),
+        "the crash diagnostic must not be wrapped in a code whose registered fix \
+         contradicts it: {msg}"
+    );
+    assert!(
+        !process_is_alive(pid),
+        "teardown must reap the app process; pid {pid} still live"
     );
 }
 
-/// Guard: the fix must not make every teardown a failure.
+/// Guard: the fix must not make every run a failure.
 ///
 /// A supervised app process that is still healthy when the window closes is the
-/// shipping success path (`run_dev` -> exit 0). This passes on unfixed `main`
-/// and must keep passing after the fix.
+/// shipping success path (`run_dev` -> exit 0). Driven through the same seam,
+/// so a fix that unconditionally reports failure fails here.
 #[test]
-fn healthy_window_phase_still_reports_success() {
+fn healthy_window_phase_still_exits_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let name = format!("h{}", std::process::id());
-    let root = create_project(dir.path(), &name).expect("create");
+    let name = format!("s{}", std::process::id());
+    let (root, pid_path) = project_with_pid_breadcrumb(dir.path(), &name);
 
-    let session = start_dev_session(&root).expect("start host-owned session");
-    let ready = format!("{name}: main process ready (IPC echo ok)");
-    session
-        .wait_until_output_contains(&ready, Duration::from_secs(30))
-        .expect("stock template must complete HELLO + CALL");
-    let pid = session
-        .current_pid()
-        .expect("supervised Bun must be live once the window phase opens");
-
-    // Window-phase stand-in: nothing crashes.
-    assert!(
-        process_is_alive(pid),
-        "precondition: supervised Bun pid {pid} must be alive across the window phase"
-    );
-
-    session
-        .shutdown()
-        .expect("a live app process across the window phase must not be reported as a failure");
+    let mut observed = None;
+    run_dev_with_window(&root, |_title, _html| {
+        let pid: u32 = fs::read_to_string(&pid_path)
+            .expect("pid breadcrumb")
+            .trim()
+            .parse()
+            .expect("pid breadcrumb must be a number");
+        assert!(process_is_alive(pid), "app must be live across the window");
+        observed = Some(pid);
+        Ok(())
+    })
+    .expect("a live app process across the window phase must exit 0");
+    let pid = observed.expect("the window phase must have run");
     assert!(
         !process_is_alive(pid),
-        "shutdown must reap Bun; pid {pid} still live"
+        "teardown must reap the app process; pid {pid} still live"
     );
+}
+
+/// Guard: a crash the supervisor *recovers* from before the app is ready stays
+/// a success (KEL-70 AC1/AC3). Without this, "any crash fails the run" would
+/// look like a valid fix for KEL-105 while silently breaking recovery.
+#[test]
+fn crash_recovered_before_ready_still_reports_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("r{}", std::process::id());
+    let root = create_project(dir.path(), &name).expect("create");
+    let marker = root.join("kel105-crash-once");
+    let marker_lit = marker.display().to_string();
+    let main = root.join("src/main.ts");
+    let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
+    fs::write(
+        &main,
+        format!(
+            "import {{ existsSync as kel105Exists, writeFileSync as kel105Write }} from \"node:fs\";\n\
+             if (!kel105Exists({marker_lit:?})) {{ kel105Write({marker_lit:?}, \"1\"); \
+             console.error(\"kel105-crash-once\"); process.exit(1); }}\n{scaffolded}"
+        ),
+    )
+    .expect("write once-crashing fixture");
+
+    run_dev_with_window(&root, |_title, _html| Ok(()))
+        .expect("a crash the supervisor recovered from before ready is not a failure");
 }
 
 #[cfg(unix)]

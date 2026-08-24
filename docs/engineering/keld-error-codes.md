@@ -457,6 +457,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Virtual port message exceeds inline length limit
 - fix: Split the payload or use a later bulk lane when available.
 
+## KELD-RUNTIME-012
+
+- crate: keld-runtime
+- message: A supervised app-process generation crashed without tripping the crash-loop breaker
+- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
@@ -534,3 +540,9 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: Timed out waiting for a Bun ready marker
 - fix: Confirm Bun is on PATH and the project entry speaks kipc.
+
+## KELD-CORE-033
+
+- crate: keld-core
+- message: The supervised app process stopped while the host owned the window
+- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
