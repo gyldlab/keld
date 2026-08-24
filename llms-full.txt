@@ -3690,10 +3690,12 @@ are **not** in the host figure.
 `WKNavigationDelegate.didFinish` as a settle signal for `ps`; that is still
 not KEL-64 first paint.
 
-### Coalition RSS (KEL-64, host + WebKit helpers)
+### Coalition RSS (KEL-64, host + WebKit helpers) — non-publishable diagnostics
 
 Different contract from host-only `ps`. Not comparable to 72.6–77.8 MiB.
-Not paint.
+Not paint. These rows are explicitly **non-publishable diagnostics** because
+their raw JSON lived only under `/tmp` and cannot satisfy the immutable
+SHA-plus-path rule.
 
 | Arm | Samples | Coalition RSS median (min–max) | Recipe |
 |---|---:|---:|---|
@@ -3899,7 +3901,8 @@ That metric is **cold start → first paint ≤ 300 ms**, and this is it.
 **Instrumentation — identical for every arm.** Every arm serves byte-identical
 hello HTML (M-01). The page fires an image beacon —
 `new Image().src = "http://127.0.0.1:45877/painted"` — from inside a double
-`requestAnimationFrame`, i.e. after the first frame has been composited. A
+`requestAnimationFrame`, as a paint-opportunity proxy; it does not establish
+compositor completion or display scanout. A
 single local `HttpListener` timestamps arrival, so **every arm shares one clock**
 and none gets privileged in-process instrumentation the others lack.
 
@@ -4026,8 +4029,8 @@ Electron 1165/395/321/333/410/317/372. First run of each arm is cold. 7/7 valid.
 
 | Claim | Now |
 |---|---|
-| "Keld first-paints 1.87x slower than Tauri" | **Retired.** 573 vs 589 ms is a statistical tie on the identical engine. The published gap was the bounds defect plus harness spawn overhead, both fixed. |
-| Keld starts fast | **Parity with Tauri, not leadership.** Electron still first-paints ~1.5x faster than both WebView2 arms. |
+| "Keld first-paints 1.87x slower than Tauri" | **Retired.** 573 vs 589 ms is numerically close in this session, with no demonstrated lead because the evidence has no paired uncertainty analysis. The published gap was the bounds defect plus harness spawn overhead, both fixed. |
+| Keld starts fast | **Near parity with Tauri in this session, not leadership.** Electron still first-paints ~1.5x faster than both WebView2 arms. |
 | Historical relation to the ≤ 300 ms target | Keld **573 ms**, Tauri **589 ms**, Electron **372 ms**. The remaining Keld cost is `WebViewBuilder::build` (~550 ms: WebView2 environment + controller creation), which is engine-inherent on this path. Measurement only; no current pass/fail label. Tracked on KEL-62. |
 | Keld has the lowest main-process RSS | **Yes** — unchanged (23,068 KB this session; absolutes drift with machine warmth, ordering does not). |
 
