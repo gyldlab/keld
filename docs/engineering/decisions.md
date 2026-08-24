@@ -184,9 +184,10 @@ SmartScreen (KEL-66), and it owns the environment options Keld needs to control.
 environment, controller, `add_PermissionRequested` guard before first navigation
 (compile-enforced), bounds, navigate — with tao still providing window + event
 loop. wry stays the macOS interim and a quirks catalog. Honest ledger: a
-controlled same-session A/B showed first paint unchanged (472 vs 467 ms — the
+controlled same-session A/B showed first paint unchanged (469 vs 467 ms — the
 bridge wait overlapped renderer boot), so the rewrite is carried by security
-(SmartScreen on, at 0 measured cost), binary size (−24%, 625,152 → 484,864 B),
+(SmartScreen on; its one-session 469 ms ON vs 453 ms OFF comparison is
+inconclusive), binary size (−22.4%, 625,152 → 484,864 B),
 and owning the create sequence — not by a speed claim.
 
 **Update (2026-08-16, KEL-28): Linux create path is wry, same interim step
@@ -686,7 +687,7 @@ value fails, remove the external pilot without changing Keld.
 | Bindings for agents | [`AGENTS.md`](../../AGENTS.md), crate `AGENTS.md`, [`docs/agents/workflow.md`](../agents/workflow.md) |
 | Design target | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Error codes | [`keld-error-codes.md`](./keld-error-codes.md) |
-| Hello size / RSS / installer | [`budget-scoreboard.md`](./budget-scoreboard.md) |
+| Hello disk / RSS / untraced first-paint proxy | [`budget-scoreboard.md`](./budget-scoreboard.md) |
 | Licenses for binaries | [`third-party-licenses.md`](./third-party-licenses.md) |
 | Toolchain history | [`tooling-audit.md`](./tooling-audit.md) |
 | Linear vs ROADMAP phases | [`linear-roadmap-mapping.md`](./linear-roadmap-mapping.md) |
