@@ -90,25 +90,16 @@ fn serve_marker_session<S: Read + Write>(
                         )?;
                     }
                     Ok(Err(io_err)) => {
-                        // A post-allow failure still carries a code the peer can match.
-                        // The code is this test channel's own: borrowing `keld-native`'s
-                        // literal would be a second untested source of truth, and borrowing
-                        // `KELD-IPC-005` would collapse the application-level `CallError`
-                        // taxonomy into the transport faults `IpcError` owns — the very
-                        // distinction this payload exists to keep.
-                        let call_error = CallError {
-                            code: "KELD-TEST-001".to_owned(),
-                            message: format!(
-                                "KELD-TEST-001: marker handler failed — {io_err}. \
-                                 Check the marker path is writable."
-                            ),
-                        };
-                        keld_ipc::write_call_error(
-                            stream,
-                            MARKER_CHANNEL,
-                            header.corr,
-                            &call_error,
-                        )?;
+                        // The fixture's own write failing is a broken fixture, not an
+                        // application-level condition this test models, so it fails the
+                        // session instead of minting a `CallError` code. A real broker
+                        // maps its OS failure to its own registered code — see
+                        // `keld_native::FsError::code` and its wire test; inventing a
+                        // code here would put an unregistered one on the wire (the
+                        // registry requires registered and emitted to match exactly),
+                        // and borrowing `KELD-IPC-005` would collapse `CallError` into
+                        // the transport faults `IpcError` owns.
+                        return Err(IpcError::Io(io_err));
                     }
                     Err(deny) => {
                         keld_ipc::write_call_error(
