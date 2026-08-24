@@ -1,19 +1,25 @@
 //! Blocking app-link session helpers (echo server + client for KEL-30).
 
 use std::io::{ErrorKind, Read, Write};
+use std::sync::atomic::AtomicBool;
 
 use crate::codec::{decode, encode};
 use crate::echo::{ECHO_CHANNEL, EchoRequest, EchoResponse, handle_echo};
 use crate::frame::{CorrelationId, FrameKind};
-use crate::link::{AppLinkDeadlines, handshake_client, handshake_server, read_frame, write_frame};
+use crate::link::{
+    AppLinkDeadlines, handshake_client, handshake_server, read_frame, read_frame_interruptible,
+    write_frame,
+};
 use crate::token::SessionToken;
-use crate::{APP_LINK_IO_DEADLINE, IpcError};
+use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, IpcError};
 
 /// Serves one connected app-link peer until the stream closes.
 ///
-/// Applies [`APP_LINK_IO_DEADLINE`] so a silent peer cannot block the host.
-/// `token` is required in the v2 `HELLO` (`handshake_server`) before any `Call`
-/// is dispatched.
+/// `token` is required in the v2 `HELLO` (`handshake_server`) before any
+/// `Call` is dispatched. The HELLO and all writes use
+/// [`APP_LINK_IO_DEADLINE`]. After authentication, idle reader polls are
+/// retried so a persistent peer can wait quietly between calls; a partial
+/// frame still has the five-second stall limit.
 ///
 /// # Errors
 ///
@@ -22,9 +28,30 @@ pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
     stream: &mut S,
     token: &SessionToken,
 ) -> Result<(), IpcError> {
+    let never_stopped = AtomicBool::new(false);
+    serve_echo_session_until_stopped(stream, token, &never_stopped)
+}
+
+/// Serves one connected echo peer until it closes or `stop` is observed.
+///
+/// The HELLO handshake uses [`APP_LINK_IO_DEADLINE`]. After it succeeds, the
+/// reader uses [`APP_LINK_READER_POLL`] and
+/// [`read_frame_interruptible`] so a quiet persistent session is not a
+/// timeout. The writer keeps its five-second deadline. A partial frame that
+/// stalls still returns [`IpcError::Timeout`].
+///
+/// # Errors
+///
+/// Returns [`IpcError`] on I/O, protocol, handler, auth, or frame-stall
+/// failures.
+pub fn serve_echo_session_until_stopped<S: Read + Write + AppLinkDeadlines>(
+    stream: &mut S,
+    token: &SessionToken,
+    stop: &AtomicBool,
+) -> Result<(), IpcError> {
     stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
     handshake_server(stream, token)?;
-    serve_echo_requests(stream)
+    serve_echo_requests_until_stopped(stream, stop)
 }
 
 /// Serves echo requests on an already authenticated app link until EOF.
@@ -43,26 +70,61 @@ pub fn serve_echo_requests<S: Read + Write>(stream: &mut S) -> Result<(), IpcErr
             Err(IpcError::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e),
         };
-        match header.kind {
-            FrameKind::Call if header.channel == ECHO_CHANNEL => {
-                let reply = handle_echo(&payload)?;
-                write_frame(
-                    stream,
-                    FrameKind::Reply,
-                    0,
-                    ECHO_CHANNEL,
-                    header.corr,
-                    &reply,
-                )?;
-            }
-            FrameKind::Ping => {
-                write_frame(stream, FrameKind::Ping, 0, header.channel, header.corr, &[])?;
-            }
-            _ => {
-                return Err(IpcError::Protocol {
-                    detail: "unexpected frame kind in echo session",
-                });
-            }
+        serve_echo_frame(stream, header, &payload)?;
+    }
+    Ok(())
+}
+
+/// Serves authenticated echo requests until EOF or `stop`.
+///
+/// This is the persistent-session variant for a host that owns cancellation.
+/// It changes the reader deadline only; the caller's configured writer
+/// deadline is retained.
+///
+/// # Errors
+///
+/// Returns [`IpcError`] on I/O, protocol, handler, or a started-frame stall.
+pub fn serve_echo_requests_until_stopped<S: Read + Write + AppLinkDeadlines>(
+    stream: &mut S,
+    stop: &AtomicBool,
+) -> Result<(), IpcError> {
+    stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL))?;
+    loop {
+        let (header, payload) = match read_frame_interruptible(stream, stop) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error),
+        };
+        serve_echo_frame(stream, header, &payload)?;
+    }
+    Ok(())
+}
+
+fn serve_echo_frame<S: Write>(
+    stream: &mut S,
+    header: crate::FrameHeader,
+    payload: &[u8],
+) -> Result<(), IpcError> {
+    match header.kind {
+        FrameKind::Call if header.channel == ECHO_CHANNEL => {
+            let reply = handle_echo(payload)?;
+            write_frame(
+                stream,
+                FrameKind::Reply,
+                0,
+                ECHO_CHANNEL,
+                header.corr,
+                &reply,
+            )?;
+        }
+        FrameKind::Ping => {
+            write_frame(stream, FrameKind::Ping, 0, header.channel, header.corr, &[])?;
+        }
+        _ => {
+            return Err(IpcError::Protocol {
+                detail: "unexpected frame kind in echo session",
+            });
         }
     }
     Ok(())

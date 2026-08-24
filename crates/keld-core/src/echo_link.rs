@@ -4,15 +4,14 @@
 //! depending on `keld-cli`. CLI diagnostics re-export this module.
 
 use std::io;
-#[cfg(unix)]
-use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 #[cfg(windows)]
-use keld_ipc::serve_echo_session;
+use keld_ipc::serve_echo_session_until_stopped;
 #[cfg(unix)]
-use keld_ipc::{BootstrapListener, serve_echo_requests};
+use keld_ipc::{BootstrapListener, serve_echo_requests_until_stopped};
 use keld_ipc::{EchoRequest, EchoResponse, echo_call, parse_app_link};
 #[cfg(windows)]
 use keld_ipc::{SessionToken, format_app_link};
@@ -51,6 +50,8 @@ pub struct EchoServer {
     endpoint: EchoEndpoint,
     #[cfg(windows)]
     token: SessionToken,
+    /// Stops an authenticated idle reader before joining its worker thread.
+    stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<Result<(), keld_ipc::IpcError>>>,
 }
 
@@ -63,11 +64,13 @@ impl EchoServer {
     ///
     /// Returns [`io::Error`] if the bootstrap endpoint cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
         #[cfg(unix)]
         {
             let bootstrap = Arc::new(BootstrapListener::bind()?);
             ready.send(()).ok();
             let acceptor = Arc::clone(&bootstrap);
+            let stop_for_worker = Arc::clone(&stop);
             let handle = thread::spawn(move || {
                 let Some(mut stream) = acceptor.accept_authenticated()? else {
                     return Err(keld_ipc::IpcError::Io(io::Error::new(
@@ -75,10 +78,11 @@ impl EchoServer {
                         "echo bootstrap listener stopped before authentication",
                     )));
                 };
-                serve_echo_requests(&mut stream)
+                serve_echo_requests_until_stopped(&mut stream, stop_for_worker.as_ref())
             });
             Ok(Self {
                 bootstrap,
+                stop,
                 handle: Some(handle),
             })
         }
@@ -91,13 +95,19 @@ impl EchoServer {
             let port = listener.local_addr()?.port();
             ready.send(()).ok();
             let serve_token = token;
+            let stop_for_worker = Arc::clone(&stop);
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept()?;
-                serve_echo_session(&mut stream, &serve_token)
+                serve_echo_session_until_stopped(
+                    &mut stream,
+                    &serve_token,
+                    stop_for_worker.as_ref(),
+                )
             });
             Ok(Self {
                 endpoint: EchoEndpoint::Tcp(port),
                 token,
+                stop,
                 handle: Some(handle),
             })
         }
@@ -142,6 +152,7 @@ impl EchoServer {
 
     fn finish(&mut self, interrupt: bool) -> io::Result<()> {
         if interrupt {
+            self.stop.store(true, Ordering::Release);
             self.interrupt_accept();
         }
         if let Some(handle) = self.handle.take() {
@@ -213,7 +224,11 @@ mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use keld_ipc::{SESSION_TOKEN_LEN, SessionToken, format_app_link};
+    use keld_ipc::link::{AppLinkDeadlines, handshake_client};
+    use keld_ipc::{
+        APP_LINK_IO_DEADLINE, CorrelationId, SESSION_TOKEN_LEN, SessionToken, echo_invoke,
+        format_app_link,
+    };
 
     fn fixture_token() -> SessionToken {
         SessionToken::from_bytes([0x11; SESSION_TOKEN_LEN])
@@ -223,6 +238,39 @@ mod tests {
     fn unix_socket_path(link: &str) -> PathBuf {
         let (endpoint, _) = parse_app_link(link).expect("KELD_APP_LINK");
         PathBuf::from(endpoint)
+    }
+
+    #[cfg(unix)]
+    type PersistentClient = std::os::unix::net::UnixStream;
+    #[cfg(windows)]
+    type PersistentClient = std::net::TcpStream;
+
+    fn open_persistent_client(server: &EchoServer) -> PersistentClient {
+        let link = server.link();
+        let (endpoint, token) = parse_app_link(&link).expect("KELD_APP_LINK");
+        #[cfg(unix)]
+        let mut stream = PersistentClient::connect(endpoint).expect("connect unix app link");
+        #[cfg(windows)]
+        let mut stream = PersistentClient::connect((
+            "127.0.0.1",
+            endpoint.parse::<u16>().expect("Windows app-link TCP port"),
+        ))
+        .expect("connect loopback app link");
+        stream
+            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+            .expect("set client deadlines");
+        handshake_client(&mut stream, &token).expect("authenticated HELLO");
+        let reply = echo_invoke(
+            &mut stream,
+            &EchoRequest {
+                message: "quiet-client-ready".to_owned(),
+                count: 1,
+            },
+            CorrelationId(1),
+        )
+        .expect("first echo");
+        assert_eq!(reply.message, "quiet-client-ready");
+        stream
     }
 
     #[test]
@@ -409,6 +457,29 @@ mod tests {
             result.is_err(),
             "interrupt connect is not a kipc session: {result:?}"
         );
+    }
+
+    #[test]
+    fn shutdown_interrupts_a_quiet_authenticated_client() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let server = EchoServer::start(&ready_tx).expect("bind echo server");
+        ready_rx.recv().expect("server ready");
+        let client = open_persistent_client(&server);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = server.shutdown();
+            let _ = done_tx.send(result);
+        });
+        let result = done_rx.recv_timeout(std::time::Duration::from_secs(2)).expect(
+            "shutdown must interrupt a quiet authenticated reader; waiting for the old 5-second \
+             read deadline means the host cannot promptly reap the app-link",
+        );
+        assert!(
+            result.is_ok(),
+            "quiet authenticated shutdown failed: {result:?}"
+        );
+        drop(client);
     }
 
     #[test]

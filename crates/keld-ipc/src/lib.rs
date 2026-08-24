@@ -31,7 +31,10 @@ pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 pub use link::AppLinkDeadlines;
-pub use session::{echo_call, echo_invoke, serve_echo_requests, serve_echo_session};
+pub use session::{
+    echo_call, echo_invoke, serve_echo_requests, serve_echo_requests_until_stopped,
+    serve_echo_session, serve_echo_session_until_stopped,
+};
 pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link};
 
 /// Deadline for one blocking app-link read or write (arch/02 §7).
@@ -40,6 +43,14 @@ pub use token::{SESSION_TOKEN_LEN, SessionToken, format_app_link, parse_app_link
 /// timer and not the eventual readiness-driven reader. Expiry is
 /// [`IpcError::Timeout`] (`KELD-IPC-006`).
 pub const APP_LINK_IO_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Reader poll interval for an idle persistent app-link session.
+///
+/// This replaces the handshake's [`APP_LINK_IO_DEADLINE`] on the reader only
+/// after authentication. [`link::read_frame_interruptible`] retries an idle
+/// poll, but enforces [`APP_LINK_IO_DEADLINE`] once a frame has started. The
+/// writer retains its five-second deadline.
+pub const APP_LINK_READER_POLL: Duration = Duration::from_millis(200);
 
 /// Protocol magic: `b"KI"` little-endian.
 pub const MAGIC: u16 = u16::from_le_bytes(*b"KI");

@@ -3,9 +3,9 @@
 #![allow(clippy::expect_used, clippy::needless_pass_by_value)] // extra test crate: expect is the assertion oracle; listen_and_serve owns PathBuf for the worker
 
 use std::io::Write;
-#[cfg(unix)]
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use keld_ipc::codec::encode;
 use keld_ipc::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
@@ -404,6 +404,49 @@ fn echo_invoke_two_calls_on_one_handshake() {
         first.message, second.message,
         "two invokes must not share a hardcoded reply"
     );
+}
+
+#[test]
+fn persistent_echo_session_retries_idle_reader_polls() {
+    let (mut client, server) = connected_pair();
+    let (terminal_tx, terminal_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stream = server;
+        let _ = terminal_tx.send(serve_echo_session(&mut stream, &test_token()));
+    });
+
+    let first = echo_call(
+        &mut client,
+        &EchoRequest {
+            message: "before-idle".to_owned(),
+            count: 1,
+        },
+        &test_token(),
+    )
+    .expect("first echo");
+    assert_eq!(first.message, "before-idle");
+
+    let early = terminal_rx.recv_timeout(Duration::from_millis(750));
+    assert!(
+        early.is_err(),
+        "idle reader polls must not end a persistent session before the next CALL: {early:?}"
+    );
+
+    let second = echo_invoke(
+        &mut client,
+        &EchoRequest {
+            message: "after-idle".to_owned(),
+            count: 2,
+        },
+        CorrelationId(2),
+    )
+    .expect("second CALL after idle reader polls");
+    assert_eq!(second.message, "after-idle");
+    drop(client);
+    terminal_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("server must finish after peer EOF")
+        .expect("persistent session must end cleanly at peer EOF");
 }
 
 #[test]

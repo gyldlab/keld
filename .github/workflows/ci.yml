@@ -46,6 +46,7 @@ jobs:
       webkitgtk: ${{ steps.classify.outputs.webkitgtk }}
       packages: ${{ steps.classify.outputs.packages }}
       nongtk_packages: ${{ steps.classify.outputs.nongtk_packages }}
+      ubuntu_packages: ${{ steps.classify.outputs.ubuntu_packages }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -117,12 +118,11 @@ jobs:
         shell: bash
         env:
           KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
-          KELD_CI_NONGTK_PACKAGES: ${{ needs.changes.outputs.nongtk_packages }}
-          KELD_CI_WEBKITGTK: ${{ needs.changes.outputs.webkitgtk }}
+          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
         run: |
           packages="$KELD_CI_PACKAGES"
-          if [ "${{ matrix.os }}" = ubuntu-latest ] && [ "$KELD_CI_WEBKITGTK" != true ]; then
-            packages="$KELD_CI_NONGTK_PACKAGES"
+          if [ "${{ matrix.os }}" = ubuntu-latest ]; then
+            packages="$KELD_CI_UBUNTU_PACKAGES"
           fi
           for package in $packages; do
             cargo clippy -p "$package" --all-targets -- -D warnings
@@ -143,12 +143,11 @@ jobs:
         shell: bash
         env:
           KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
-          KELD_CI_NONGTK_PACKAGES: ${{ needs.changes.outputs.nongtk_packages }}
-          KELD_CI_WEBKITGTK: ${{ needs.changes.outputs.webkitgtk }}
+          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
         run: |
           packages="$KELD_CI_PACKAGES"
-          if [ "${{ matrix.os }}" = ubuntu-latest ] && [ "$KELD_CI_WEBKITGTK" != true ]; then
-            packages="$KELD_CI_NONGTK_PACKAGES"
+          if [ "${{ matrix.os }}" = ubuntu-latest ]; then
+            packages="$KELD_CI_UBUNTU_PACKAGES"
           fi
           for package in $packages; do
             cargo nextest run -p "$package" --profile ci --no-tests=pass
@@ -157,15 +156,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         env:
           RUSTDOCFLAGS: -D warnings
-          KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
-          KELD_CI_NONGTK_PACKAGES: ${{ needs.changes.outputs.nongtk_packages }}
-          KELD_CI_WEBKITGTK: ${{ needs.changes.outputs.webkitgtk }}
+          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
         run: |
-          packages="$KELD_CI_PACKAGES"
-          if [ "$KELD_CI_WEBKITGTK" != true ]; then
-            packages="$KELD_CI_NONGTK_PACKAGES"
-          fi
-          for package in $packages; do
+          for package in $KELD_CI_UBUNTU_PACKAGES; do
             cargo doc -p "$package" --no-deps
           done
 

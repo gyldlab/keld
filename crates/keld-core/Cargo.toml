@@ -1,6 +1,6 @@
 [package]
 name = "keld-core"
-description = "Keld host runtime: event loop integration, window registry, lifecycle, plugin host"
+description = "Keld host runtime: lifecycle session + hello window (destination: event loop integration, window registry, plugin host)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

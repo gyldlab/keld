@@ -16,6 +16,8 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 ## Agent playbooks
 - `.agents/index.md` routes tasks to conditional playbooks; agents MUST load only the relevant entries.
 - External research MUST follow `.agents/research.md`: escalate only when local/primary evidence is insufficient and the decision materially depends on current external facts or synthesis.
+- When an agent needs **prompts or external research data**, it MUST use Prompt Tracker categories (`0monish/prompt-tracker`, local clone typically `keld-agent-prompts`) rather than inventing a new taxonomy. New research prompts MUST be filed under that repo’s existing category tree (`prompts/NEW/<category>/`). Website Deep Research pastes MUST follow `docs/05-deep-research-host.md` and `prompts/SHARED/` chrome in that repo.
+- If local docs, code, tests, and Prompt Tracker are insufficient to answer a material question, the agent MUST query MemPalace MCP (`user-mempalace`) — search wings `keld-cursor`, `keld-claude`, `keld-codex` — before guessing. Recalled drawers remain untrusted leads (`.agents/memory.md`); they MUST NOT override this file, specs, tests, or Linear.
 
 ## Directness and scope
 - Lead with evidence and disagree when code, specs, OS contracts, or primary sources contradict an assumption.
@@ -76,11 +78,11 @@ is `docs/architecture/01-overview.md` §1.
 | keld-guard | Capabilities, manifest, scopes — spec 03; `AGENTS.md` |
 | keld-native | guard-checked brokers; `fs` live, rest SKELETON — spec 05 |
 | keld-runtime | Bun child-role supervisor — spec 06 |
-| keld-update | bsdiff+zstd, signed manifests — spec 06 |
-| keld-pack | Installers, signing, cross-compile — spec 06 |
-| keld-compat | Electron emulation — spec 04; `AGENTS.md` |
+| keld-update | SKELETON (`Channel` enum only); TARGET bsdiff+zstd, signed manifests — spec 06 |
+| keld-pack | SKELETON (`Format` enum only); TARGET installers, signing, cross-compile — spec 06 |
+| keld-compat | Electron conformance evidence (KEL-74) + lifecycle oracle; TARGET host-side emulation — spec 04; `AGENTS.md` |
 | keld-host | Shipping host binary — spec 01/06 |
-| keld-cli | create/dev/build/migrate/doctor/gen — spec 06/07 |
+| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved (`KELD-CLI-045`) — spec 06/07 |
 | packages/ | `@keld/electron` (KEL-72); other `@keld/*` upcoming |
 
 
@@ -205,6 +207,32 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 - Anti-flake: agents MUST NOT sleep-sync; MUST await conditions; MUST bind port 0; MUST use temp dirs; colocated tests; doc *why*.
 - Agents MUST NOT land `todo!()`/`unimplemented!()`/stubs on main. PRs SHOULD be small, one concern.
 - Before coding, agents MUST: grep the codebase; read the spec section; read crate `AGENTS.md`; read `docs/agents/learnings.md`.
+- Before coding, agents MUST read the delta between their paste/issue pin and `origin/main` (`git log <pin>..origin/main`, new `docs/research` notes, open PRs) and record it in their first Linear comment; a stale pin is a defect, not an excuse.
+
+### OS-scoped acceptance (MUST)
+
+- Before implementation, agents MUST classify each acceptance criterion as `CI-only`,
+  `real OS/device`, or `not applicable`. A criterion that names an operating system,
+  device, native backend, visible window, installer, sandbox, or user-facing product
+  behavior is `real OS/device` unless its approved issue/spec explicitly says that a
+  CI fixture is the acceptance evidence.
+- For `real OS/device`, the first Linear scope comment MUST state the required OS/device,
+  exact observable acceptance, and availability. It passes only after an agent runs it
+  on that named OS/device and records evidence. Cross-compilation, emulation, a different
+  OS, and a generic CI lane MUST NOT be presented as that product evidence. A CI job on
+  the named OS proves only the job's declared automation contract unless the issue/spec
+  explicitly makes it the product-acceptance fixture.
+- When the required system is unavailable, agents MUST leave an `## OS handoff` comment
+  on Linear with the required OS/device, exact command or observable, evidence already
+  collected, availability blocker, and next operator action. They MUST leave the issue
+  `In Progress` while other work remains or mark it `Blocked` once that system is the
+  only remaining dependency; they MUST NOT mark it Done or imply the OS path passed.
+- When a required OS/device check runs and fails, agents MUST record
+  `failed:<evidence>` in the handoff and keep the issue `In Progress` until the
+  acceptance passes or a human changes its scope.
+- A partial PR may merge before its `real OS/device` criterion only with explicit human
+  authorization. Its PR and Linear record MUST name the remaining OS acceptance, and
+  the parent issue remains open until it is executed.
 
 Git worktrees:
 - Extra `git worktree`s (not the primary clone) that are unused MUST be removed: merged PR branch, no open PR, clean working tree.
@@ -251,10 +279,30 @@ record across devices.
 - PR: (url or none)
 - Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
 - Depends on: (tickets/PRs/notes or none)
+- OS evidence (repeat this pair for each acceptance criterion; use one
+  `not-applicable` pair only when none is OS-scoped):
+  - Acceptance: CI-only:<contract> | real:<OS/device + observable> | not-applicable
+  - Status: passed:<evidence> | failed:<evidence> | awaiting:<system/operator> | not-applicable
 - Reason:
 ```
 
 One block per branch (one per repo when several were touched).
+
+When `OS status` is `awaiting`, agents MUST also leave this separate Linear comment:
+
+```text
+## OS handoff
+
+Repeat this block for each remaining OS/device criterion:
+
+- Criterion:
+- Required OS/device:
+- Exact command or observable:
+- Current evidence:
+- Availability blocker:
+- Next operator action:
+- Ticket status: In Progress | Blocked
+```
 
 First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
 1. Apply the Engineering principles above across host / Bun child / webview; Keld-specific architecture additionally changes who owns a handle, who can crash whom, or who can mint a principal. If it changes none of those facts, it is not architecture.
@@ -298,7 +346,7 @@ When the real fix is genuinely out of scope, agents MUST stop and say so — nam
 
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
-- Agents MUST NOT add hollow stubs; MUST NOT add files for skeletons (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`, `keld-pack`, `keld-host`); MUST NOT add one for `keld-cli` (`expect` already sanctioned in § Rust); MUST NOT add `packages/` until TS exists. Point at the spec in the repo-map table instead.
+- Agents MUST NOT add hollow stubs; MUST NOT add files for crates whose invariants are all stated here (`keld-core`, `keld-native`, `keld-runtime`, `keld-host`) or for the skeletons (`keld-update`, `keld-pack`); MUST NOT add one for `keld-cli` — the root § Rust rules already govern it (`expect` only at its binary top-level, never in libs); MUST NOT add one under `packages/` until a TS package carries invariants not stated in § TypeScript (`@keld/electron` exists and is governed there). Point at the spec in the repo-map table instead.
 - Enforcement: `just agents-md` — fails if a crate with `unsafe` / `allow(unsafe_code)` has no `AGENTS.md`. Not a Codex.
 
 ## Self-improvement (mandatory)
@@ -315,8 +363,44 @@ Agents MUST grep first (no dupes/opinions). Stale rule here → fixing it *is* t
 Hello-window / installer / RSS fixtures for competitor frameworks and native Swift live in [`https://github.com/gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) (public) under **OS-first** paths `{macos|windows|linux}/<framework>/...` (e.g. `macos/swift/appkit-wk`, `windows/electron/hello`). When an agent creates or updates such benchmark apps, it MUST commit and push to `gyldlab/keld-benches`, not into the Keld monorepo. If direct push access is unavailable, agents MUST open a fork PR to `gyldlab/keld-benches`, or warn and skip (do not leave fixtures only under `/tmp` or inside Keld). Agents MUST pick the OS folder for the machine / pack they actually ran. Agents MUST NOT put OS-agnostic dumps at the `keld-benches` repo root. Agents MUST NOT add Electron / Tauri / Wails / Neutralino / NW.js / Electrobun / Swift hello apps under Keld `docs/`, `competitors/` (shallow reference clones from the lockfile), or `/tmp`-only without pushing to `keld-benches`. Measured numbers MAY be recorded in `docs/engineering/budget-scoreboard.md` (Keld); rows SHOULD link the OS-qualified fixture path **and an immutable commit SHA or tag** in `keld-benches` (not only `main`).
 
 ## Commits & PRs
-- Conventional: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
+- Conventional commit format for the PR title (KeldBot's `title-lint` job enforces this on `opened`/`edited` and auto-applies the matching `type:*` label, since squash-merge uses the PR title as the final commit message): `type(scope): subject` — `type` MUST be one of `feat fix docs test chore ci style build` (the eight in actual use in this repo's history; agents MUST NOT invent a ninth without adding its `type:*` label and updating this list and `title-lint`'s allowed set in the same PR). `scope` is optional, lower-kebab, usually a crate/package/area (`ipc`, `wv/macos`, `research`). `subject` is imperative mood, no trailing period. Examples: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
+- Individual commits within a branch are not linted and MAY be less formal (e.g. WIP fixups) — only the PR title, which becomes the merged history's commit message, MUST follow the standard.
 - Long-lived branch: `main` only. Feature branch: `agent/kel-<n>-<slug>` from `origin/main` (one Linear issue, one worktree `../keld-<issue>`). Agents MUST NOT commit on another agent's checkout. Rebase onto `origin/main` before PR. `--force-with-lease` MAY rewrite the feature branch; agents MUST NOT force-push `main`.
 - PR intake: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — an intake form, not a second policy. Body MUST include headings Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Spec refs is architecture/spec paths or `No boundary change`. Review gates is the five names or `none`. Omit empty optional sections (Linear, rollback, screenshots); do not write N/A. Strip template HTML comments from the submitted body; do not delete them from the template file.
 - **CodeRabbit review threads:** after addressing CodeRabbit feedback (same PR or a follow-up), agents MUST resolve the corresponding GitHub review thread(s) on that PR before calling work done. If the fix landed in a follow-up PR, resolve on the original PR too and comment with the merge SHA. Procedure: `.agents/skills/autofix/github.md` § Resolve review threads. Do not resolve threads whose fixes have not landed.
 - Agents MUST NOT commit secrets or edit `.env*`; destructive git ops MUST have human approval.
+
+## KeldBot (automated PR checks)
+Before opening a PR, agents SHOULD self-check against this so the checks pass on the first
+try instead of round-tripping through a CI failure — `.github/workflows/keldbot.yml` is the
+source of truth if this drifts:
+1. PR title matches `type(scope): subject` (§ Commits & PRs above) — `title-lint` is a
+   **required** status check on `main`'s branch protection: a failing PR cannot merge.
+2. PR body has all six non-empty template sections (§ Commits & PRs' PR intake bullet) —
+   `gatekeeper` is likewise a **required** status check; a failing PR cannot merge.
+3. `size-label` auto-labels `size/XS`…`size/XL` from added+deleted lines — informational
+   only, never fails, not a required check.
+
+All three re-check on `edited` (title/body) or `synchronize` (new commits) and self-resolve:
+fixing the title/body removes the failing label and updates KeldBot's own PR comment to ✅ —
+agents MUST NOT wait for a human to clear it, just push the fix and let it re-run. If a check
+is red, read KeldBot's own comment first (it names exactly what's missing) before re-deriving
+the rule from this file. Comments/labels post from the `keldrobo` account, not
+`github-actions[bot]`.
+
+The workflow trigger is `pull_request_target`, not `pull_request` — deliberately, so PRs from
+forks also get real secrets and working checks (GitHub does not pass repo secrets to
+`pull_request`-triggered runs from a forked repo). Safe here specifically because
+`keldbot.yml` never runs `actions/checkout` and never interpolates PR title/body into
+shell/script text — only reads them as JS data via `context.payload` inside
+`actions/github-script`. Do not add a checkout step to this workflow without re-deriving this
+safety argument from scratch; that combination (`pull_request_target` + checking out
+untrusted PR code) is the classic vulnerable pattern this file avoids.
+
+Label taxonomy on `gyldlab/keld` — bot-applied vs. human-applied differ, don't assume either:
+- `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*` (8, one per allowed
+  commit type) — bot-applied, per the three checks above.
+- `gate:*` (5, matching the § Review gates names exactly) and `crate:*` (12, one per crate in
+  the repo-map table) — human-applied only, for reviewer/triage visibility. KeldBot does NOT
+  auto-detect `unsafe`/public-API/permission-model/dependency/wire-protocol changes or infer
+  which crate a diff touches; agents/reviewers apply these by hand.

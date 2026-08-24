@@ -1,9 +1,10 @@
 //! keld-runtime — the app-process supervisor.
 //!
-//! Spawns the developer's JS/TS main under a pinned Bun, supervises it
-//! (exponential backoff, crash-loop breaker), and hands it the kipc link and
-//! shared-memory handles at spawn. The renderer outlives app-process restarts
-//! because the host owns all windows. Normative spec:
+//! Spawns the developer's JS/TS main under the caller-provided Bun, supervises
+//! it (exponential backoff, crash-loop breaker), and hands it the kipc link at
+//! spawn. Because the host owns all windows, renderer survival across an
+//! app-process restart is architecturally plausible but not yet an exercised
+//! v0 contract — no committed oracle proves it (spec 06 §1). Normative spec:
 //! `docs/architecture/06-runtime-and-tooling.md` §1.
 //!
 //! v0 scope (KEL-70): spawn + capture + restart-on-crash + crash-loop

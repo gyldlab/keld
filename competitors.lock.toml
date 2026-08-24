@@ -2,7 +2,9 @@
 # Trees land under gitignored `competitors/` (never commit those trees).
 # kind = "competitor"       → competitors/<name>
 # kind = "migration-oracle" → competitors/migration/<name>
-# Optional `sha` pins a commit after shallow fetch; omit to track `branch`.
+# `sha` pins a commit after shallow fetch (REQUIRED as of KEL-68 audit-191 follow-up: research
+# notes cite competitor path:line at these SHAs; an unpinned "locked clone" is whatever a
+# machine happened to fetch that day). Bump pins in one commit per surveillance sweep.
 # Unknown kinds are rejected. There is no `upstream-reference` kind; Bun / wry / tao
 # use `competitor` so `just competitors-sync` lands them at competitors/<name>.
 
@@ -11,36 +13,42 @@ name = "electron"
 kind = "competitor"
 url = "https://github.com/electron/electron.git"
 branch = "main"
+sha = "465fc7636865eaf9093fef959fcc3c3aff2942d4"
 
 [[repo]]
 name = "tauri"
 kind = "competitor"
 url = "https://github.com/tauri-apps/tauri.git"
 branch = "dev"
+sha = "56d19c39e457b528433dc546106cd0bff4066bc2"
 
 [[repo]]
 name = "wails"
 kind = "competitor"
 url = "https://github.com/wailsapp/wails.git"
 branch = "master"
+sha = "f38ae268344700a3f48dd1e95b716f2059f7269e"
 
 [[repo]]
 name = "neutralino"
 kind = "competitor"
 url = "https://github.com/neutralinojs/neutralinojs.git"
 branch = "main"
+sha = "8b99cb6122ed04ad2408e1bc67809c0da12ad14a"
 
 [[repo]]
 name = "nwjs"
 kind = "competitor"
 url = "https://github.com/nwjs/nw.js.git"
 branch = "main"
+sha = "71e4e25322a91f080513eb0ba121b6708075eef2"
 
 [[repo]]
 name = "electrobun"
 kind = "competitor"
 url = "https://github.com/blackboardsh/electrobun.git"
 branch = "main"
+sha = "cba306e9665dc88409442a586c95b3c43e98109c"
 
 # Keld upstream checkouts (not framework competitors): Bun runtime, current wry
 # webview scaffolding, current tao event-loop scaffolding.
@@ -49,18 +57,28 @@ name = "bun"
 kind = "competitor"
 url = "https://github.com/oven-sh/bun.git"
 branch = "main"
+sha = "abe2ad4f0064334ebe83427ee689eb3e8d713a2e"
 
 [[repo]]
 name = "wry"
 kind = "competitor"
 url = "https://github.com/tauri-apps/wry.git"
 branch = "dev"
+sha = "d2937514ee5b01f4b52b6132f895180e90dd0fc7"
 
 [[repo]]
 name = "tao"
 kind = "competitor"
 url = "https://github.com/tauri-apps/tao.git"
 branch = "dev"
+sha = "2f9eecf236f4f6a8acfa03329c57039224a3ce99"
+
+[[repo]]
+name = "tauri-plugins-workspace"
+kind = "competitor"
+url = "https://github.com/tauri-apps/plugins-workspace.git"
+branch = "v2"
+sha = "db9c5998feff9384f9cbbefcbe0d45937c00a1fc"
 
 # Flagship Electron app — migration/compat oracle, not a framework competitor.
 [[repo]]
@@ -68,3 +86,4 @@ name = "vscode"
 kind = "migration-oracle"
 url = "https://github.com/microsoft/vscode.git"
 branch = "main"
+sha = "0984c920744f2013d0ad2bc5e826fa45a64069ab"

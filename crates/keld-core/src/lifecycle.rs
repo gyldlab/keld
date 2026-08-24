@@ -10,27 +10,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::link::{AppLinkDeadlines, handshake_server, read_frame_interruptible, write_frame};
 use keld_ipc::{
-    APP_LINK_IO_DEADLINE, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest,
-    LifecycleResponse, SessionToken,
+    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent,
+    LifecycleRequest, LifecycleResponse, SessionToken,
 };
-
-/// Bounded `SO_RCVTIMEO` on the lifecycle reader after `HELLO`.
-///
-/// Handshake uses [`APP_LINK_IO_DEADLINE`]. The persistent reader cannot
-/// block forever: Win32 `TcpStream::shutdown` on a cloned handle does not
-/// wake a blocking `read`
-/// ([rust-lang/rust#121594](https://github.com/rust-lang/rust/issues/121594)).
-/// Idle polls are retried by `read_frame_interruptible` and are not
-/// `KELD-IPC-006`. A started frame that stalls still is, at
-/// [`APP_LINK_IO_DEADLINE`]. Must stay well under the Drop-join kill
-/// switch (2s).
-const LIFECYCLE_READER_POLL: Duration = Duration::from_millis(200);
 
 /// Host side of one app-link lifecycle session.
 ///
@@ -80,7 +67,7 @@ impl<W: Write + Send + AppLinkDeadlines + 'static> LifecycleSession<W> {
         // poll lets Drop join on Windows (clone-shutdown does not wake a
         // local `read`; rust-lang/rust#121594). `SO_SNDTIMEO` stays the
         // handshake send deadline — spec exception is reader-only.
-        reader.set_app_link_read_deadline(Some(LIFECYCLE_READER_POLL))?;
+        reader.set_app_link_read_deadline(Some(APP_LINK_READER_POLL))?;
 
         let writer = Arc::new(Mutex::new(writer));
         let writer_for_reader = Arc::clone(&writer);

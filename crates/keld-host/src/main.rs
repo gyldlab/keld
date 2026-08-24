@@ -1,8 +1,10 @@
-//! keld-host — the prebuilt host binary.
+//! keld-host — the shipping host binary (pre-alpha).
 //!
-//! App developers never compile this; `@keld/cli` resolves a signed platform
-//! build. It boots from the compiled form of `keld.config.ts` and owns every
-//! OS resource for the lifetime of the app.
+//! Destination (spec 01/06): app developers never compile this; `@keld/cli`
+//! resolves a signed platform build that boots from the compiled form of
+//! `keld.config.ts` and owns every OS resource for the app's lifetime.
+//! Today: `--hello` opens the diagnostic hello window; any other invocation
+//! prints the pre-alpha banner (no `@keld/cli`, no signed build, no config boot).
 
 use std::env;
 use std::process;

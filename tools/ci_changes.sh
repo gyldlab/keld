@@ -18,6 +18,7 @@ deny="$FALSE"
 webkitgtk="$FALSE"
 packages=""
 nongtk_packages=""
+ubuntu_packages=""
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
@@ -60,6 +61,7 @@ emit() {
     printf 'webkitgtk=%s\n' "$webkitgtk"
     printf 'packages=%s\n' "$packages"
     printf 'nongtk_packages=%s\n' "$nongtk_packages"
+    printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
 }
 
 load_workspace_metadata() {
@@ -164,6 +166,8 @@ package_requires_webkitgtk() {
         jq -e --arg root "$root_package" '
             def package($name): .packages[] | select(.name == $name);
             def local_deps($name):
+                # CI builds `--all-targets`, so dev-dependencies can be required
+                # to compile selected package test targets on Ubuntu.
                 [package($name).dependencies[] | select(.path != null) | .name];
             def walk($pending; $seen):
                 if ($pending | length) == 0 then $seen
@@ -203,12 +207,34 @@ finalize_rust_packages() {
     packages="$(printf '%s' "$expanded" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
 
     local nongtk=""
+    local selected_requires_webkitgtk="$FALSE"
     for package_name in $packages; do
-        if ! package_requires_webkitgtk "$package_name"; then
+        if package_requires_webkitgtk "$package_name"; then
+            selected_requires_webkitgtk="$TRUE"
+        else
             nongtk+="$package_name"$'\n'
         fi
     done
     nongtk_packages="$(printf '%s' "$nongtk" | sed '/^$/d' | sort -u | paste -sd ' ' -)"
+
+    # An attributable selected `--all-targets` closure that reaches keld-wv
+    # installs GTK and runs its original package set on Ubuntu. The workflow
+    # consumes this derived selection directly instead of recomputing policy.
+    # The all-workspace workflow/router fallback keeps its documented GTK-free
+    # subset because GUI smoke is the sole live apt owner for that input class.
+    if [[ "$selected_requires_webkitgtk" == "$TRUE" && "$all_workspace_packages" != "$TRUE" ]]; then
+        webkitgtk="$TRUE"
+    fi
+    if [[ "$webkitgtk" == "$TRUE" ]]; then
+        ubuntu_packages="$packages"
+    else
+        ubuntu_packages="$nongtk_packages"
+    fi
+
+    if [[ -z "$ubuntu_packages" ]]; then
+        echo "ci router: Rust checks selected no Ubuntu packages; refusing to emit a skipped-green success" >&2
+        exit 1
+    fi
 }
 
 host_path_is_affected() {
@@ -241,11 +267,19 @@ classify_path() {
             docs="$TRUE"
             ;;
 
-        # The router and workflow decide which jobs execute. Any edit here must
+        # The router and ci.yml decide which jobs execute. Any edit here must
         # exercise every conditional lane, otherwise a classification defect can
         # hide the very job that would expose it.
-        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh)
+        .github/workflows/ci.yml | tools/ci_changes.sh | tools/ci_changes_test.sh)
             mark_all
+            ;;
+
+        # Any other workflow file (e.g. an unrelated bot automation) has no path
+        # into the Rust workspace, GUI, or the ci.yml router itself -- ci_hygiene.rs
+        # only reads .github/workflows/ci.yml by name, so it cannot validate these
+        # either. Nothing to mark; a diff touching only such a file legitimately
+        # needs no conditional lane.
+        .github/workflows/*)
             ;;
 
         # Workspace and toolchain inputs can alter every Rust build, keld-host's

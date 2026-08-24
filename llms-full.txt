@@ -932,16 +932,16 @@ implemented. The per-crate status legend is the §1 diagram above.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard (TARGET: native, runtime) |
-| `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | — |
-| `keld-ipc` | kipc protocol: framing, codecs; TARGET channel registry, shm rings, schema runtime | — |
+| `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard, runtime (TARGET: native) |
+| `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | guard |
+| `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing, scope matching, per-window/per-principal grants, audit log | — |
-| `keld-runtime` | app-process-family supervisor: Bun discovery/pinning, named role spawn, health, per-role principal/lifecycle/restart policy, stdio capture | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash-loop breaker (live on the shipping path); RoleRegistry + bounded virtual ports live as a Unix library/test surface only (KEL-75 T3, not wired into `keld dev`); TARGET Bun discovery/pinning, named role spawn on the shipping path, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
-| `keld-compat` | host-side Electron behavior emulation (session/protocol/webContents semantics) | core |
-| `keld-cli` | `keld` binary: create/dev/build/migrate/doctor; downloads pinned host+Bun; delegates bundling to the app's tool | pack, update |
+| `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
+| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):
@@ -1115,9 +1115,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
   CALL). Further CALLs on the same stream use `echo_invoke` and must not send a
-  second `HELLO`. Correlation id `0` stays reserved for `HELLO`. This is the
-  session loop a persistent Bun child needs; it is not a 10k-call latency bench
-  (KEL-30 AC3 / KEL-39 remain parked).
+  second `HELLO`. Correlation id `0` stays reserved for `HELLO`. After `HELLO`,
+  a host-owned persistent echo reader uses the same reader-only short-poll rule
+  as lifecycle: idle polls retry, the writer keeps its five-second deadline,
+  and a started frame still must finish within that deadline. This is the session
+  loop a persistent Bun child needs; it is not a 10k-call latency bench (KEL-30
+  AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
   `Call` `Quit` and the host replies, then the serve loop returns. Handshake
@@ -1136,8 +1139,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   these onto `app.whenReady` / `app.quit` / `window-all-closed` — the wire names
   are host-lifecycle, not Electron-isms.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
-  measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
-  exists only for `--inspect-ipc` debugging (human dump), never on the hot path.
+  expected to be materially cheaper than JSON for typical shapes (no committed Keld
+  measurement yet; the kipc bench lane owns that number). A JSON fallback codec is
+  planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
+  never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
   u16 handles resolved at handshake from schema names (string names never travel per-call).
 - **Cancellation**: `STREAM_CANCEL`/`CALL_CANCEL` carry corr id; handlers observe an
@@ -1242,13 +1247,18 @@ compromised keeps the host's threat model uniform).
   live until the host application session stops.
 - Webview navigation: principal generation rotates; pending replies to the old principal
   drop; guard re-evaluates capabilities using origin/resource policy context.
-- Host never blocks on either peer; every await point has a deadline. v0 app-link
-  applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) on the
-  connected stream; expiry is `KELD-IPC-006`. That is an OS socket timeout, not
-  an async timer. **Exception (KEL-72):** after a successful lifecycle `HELLO`,
-  cleanup is `set_app_link_read_deadline` with a short poll (reader-only).
-  Writer `SO_SNDTIMEO` stays `APP_LINK_IO_DEADLINE`. Idle timeouts retry so a
-  quiet `whenReady` wait is not `KELD-IPC-006` and so Drop can join (Win32
+- Every individual I/O wait on either peer carries a deadline; that bounds each wait, not
+  a whole frame. Known v0 gap: on the ordinary `read_frame` path the per-receive deadline
+  renews whenever bytes arrive, so a byte-trickling peer can keep a session open
+  indefinitely — only the lifecycle reader has a frame-wide stall clock (research 115).
+  v0 app-link
+  applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) during
+  authentication and on writes; expiry is `KELD-IPC-006`. That is an OS socket
+  timeout, not an async timer. **Persistent-session exception (KEL-30/KEL-72):**
+  after a successful echo or lifecycle `HELLO`, cleanup is
+  `set_app_link_read_deadline` with a short poll (reader-only). Writer
+  `SO_SNDTIMEO` stays `APP_LINK_IO_DEADLINE`. Idle timeouts retry so a quiet
+  persistent child or `whenReady` wait is not `KELD-IPC-006` and so Drop can join (Win32
   clone-shutdown does not wake a local blocking `read`; rust-lang/rust#121594).
   A started frame that stalls still expires at `APP_LINK_IO_DEADLINE`
   (`KELD-IPC-006`); per-`recv` `SO_RCVTIMEO` is not that overall deadline.
@@ -1313,7 +1323,8 @@ package spawned it. `keld.config.ts` declares the bundled entry and one lifecycl
 generated role capability subset or an explicitly reviewed role-specific addition.
 Neither a role name, PID, token, `KELD_APP_LINK`, caller payload nor Electron facade
 option can select authority. The role schema is not live; the current manifest parser
-does not accept a `roles` key.
+accepts and ignores unknown keys (a `roles` key is ignored like `$schema`), so it
+cannot grant any authority.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 
@@ -1936,7 +1947,7 @@ authenticated roles). Window-bound roles follow only after those slices.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | starts app's own dev server (delegation, Deno lesson D4), spawns host with dev profile (permission recorder, hot-restart of app process on change via Bun watch, devtools open policy) |
+| `keld dev` | **Today:** runs the hello session + window in the CLI process (no host spawn, no recorder). **Destination:** starts app's own dev server (delegation, Deno lesson D4), spawns host with dev profile (permission recorder, hot-restart of app process on change via Bun watch, devtools open policy) |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |

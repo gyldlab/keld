@@ -12,6 +12,13 @@ Hello / installer / RSS competitor fixtures MUST live in
 never under Keld `docs/` or `competitors/`, and never as OS-agnostic dumps at the
 `keld-benches` repo root.
 
+## Where prompts live
+
+Agents MUST NOT invent a parallel prompt taxonomy. Copy-ready packs and new research
+prompts live in Prompt Tracker (`0monish/prompt-tracker`) under the existing category
+tree. Website Deep Research pastes follow that repo’s `docs/05-deep-research-host.md`
+and `prompts/SHARED/` chrome. This playbook still owns the escalation trigger below.
+
 ## Escalation trigger
 
 Agents MUST ask the user to run one copy-ready external-research prompt only when all
@@ -57,39 +64,9 @@ uncertainty.
 
 ## Copy-ready prompt pack
 
-### Perplexity — focused source discovery
-
-> Investigate **[QUESTION]** for **[KELD DECISION]** during **[DATE RANGE]**. Prefer
-> primary sources: official docs, release notes, repositories, issue trackers, talks,
-> and maintainer posts. Cite every material claim with a direct URL, owner/author,
-> publication date, access date, and short exact quote. Include sections named
-> **Contradictions** and **Confidence and unverified claims**. Exclude SEO summaries
-> except as leads, and do not recommend a decision from unverified claims.
-
-### Google Deep Research — cross-source comparison
-
-> Compare **[OPTIONS]** for **[KELD USE CASE]** during **[DATE RANGE]**, testing
-> **[HYPOTHESES]**. Cover maintenance, security, performance, platform support, known
-> failures, and migration cost. For every material claim cite a primary source with
-> direct URL, publisher/author, publication date, access date, and exact supporting
-> passage. Separate verified facts, vendor claims, practitioner reports, and inference.
-> Include **Contradictions** and **Confidence and unverified claims** sections.
-
-### X — maintainer and practitioner leads
-
-> Search X for **[TOPIC/VERSION]** during **[DATE RANGE]**, prioritizing maintainers,
-> release authors, and firsthand reproducible reports. Return each permalink, author
-> and role, date, exact quote, linked primary artifact, and whether it is firsthand,
-> hearsay, or promotion. Sample positive and negative reports; do not infer consensus
-> from engagement. Include **Contradictions** and **Confidence and unverified claims**,
-> and identify the official source or local reproduction needed to verify each lead.
-
-### Reddit — failures and sentiment sampling
-
-> Sample **[TOPIC/VERSION]** in **[COMMUNITIES]** during **[DATE RANGE]**. Focus on
-> repeated concrete failures, migration pain, workarounds, and adoption or exit reasons.
-> Return thread/comment permalinks, community, date, exact quote, environment/version,
-> reproducibility details, and count of independent reports. Require primary-source
-> citations for technical claims where available. Include contrary cases, sampling
-> limits, **Contradictions**, and **Confidence and unverified claims**; mark every claim
-> that still needs official-source verification or local reproduction.
+Canonical paste bodies live in Prompt Tracker (`0monish/prompt-tracker`, local clone
+typically `keld-agent-prompts`), not in this playbook. Agents MUST copy from that
+repo’s category tree (`prompts/NEW/<category>/`) and `prompts/SHARED/` chrome
+(`deep-research-chrome.paste.md` for website Deep Research; `branch-linear-handoff.md`
+for git/Linear). Website host policy: that repo’s `docs/05-deep-research-host.md`.
+Do not keep a parallel prompt pack here.

@@ -1,6 +1,6 @@
 [package]
 name = "keld-host"
-description = "The shipping Keld host executable: prebuilt, signed, data-driven"
+description = "The Keld host executable (pre-alpha: hello window; destination: prebuilt, signed, data-driven)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

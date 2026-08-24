@@ -392,12 +392,15 @@ impl ChildPreparer for RolePreparer {
             attempt,
         });
         #[cfg(test)]
-        if let Some(probe_tx) = &self.config.probe_tx {
-            let _ = probe_tx.send(ProvisionedProbe {
-                generation,
-                app_link,
-            });
-        }
+        let probe = self.config.probe_tx.as_ref().map(|probe_tx| {
+            (
+                probe_tx.clone(),
+                ProvisionedProbe {
+                    generation,
+                    app_link: app_link.clone(),
+                },
+            )
+        });
         Ok(PreparedChild {
             command,
             lease: RoleGenerationLease {
@@ -413,6 +416,8 @@ impl ChildPreparer for RolePreparer {
                 admission_done: false,
                 link,
                 events_tx: self.events_tx.clone(),
+                #[cfg(test)]
+                probe,
             },
         })
     }
@@ -431,6 +436,8 @@ struct RoleGenerationLease {
     admission_done: bool,
     link: Arc<Mutex<Option<UnixStream>>>,
     events_tx: Sender<RoleEvent>,
+    #[cfg(test)]
+    probe: Option<(Sender<ProvisionedProbe>, ProvisionedProbe)>,
 }
 
 impl GenerationLease for RoleGenerationLease {
@@ -485,6 +492,10 @@ impl GenerationLease for RoleGenerationLease {
             pid,
             attempt,
         });
+        #[cfg(test)]
+        if let Some((probe_tx, probe)) = self.probe.take() {
+            let _ = probe_tx.send(probe);
+        }
         Ok(())
     }
 

@@ -27,7 +27,7 @@ Do not paste review-bot release notes into this body.
 
 ## Platforms
 
-<!-- Exercised vs not. Silence is a lie. -->
+<!-- For every relevant OS, distinguish CI automation from real product/device evidence. State exercised, unverified, and the exact remaining OS handoff; silence is a lie. -->
 
 ## Perf impact
 
