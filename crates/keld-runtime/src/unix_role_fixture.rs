@@ -4,7 +4,7 @@
 //! paths stay under `SUN_LEN`.
 
 use std::fs;
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufReader, ErrorKind, Read, Write};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -139,6 +139,17 @@ impl RoleScriptEnv {
     }
 }
 
+/// How long a read blocks before the loop re-checks its deadline. This is a
+/// polling granularity, not a deadline: one expiry means "nothing yet", never
+/// "never" (KEL-113).
+const CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How long a control peer may take to produce one line before the fixture
+/// gives up. Matches the 30s the rest of the repo already allows a real Bun
+/// child to become ready (`keld-cli` `run_dev`), rather than the 2s that was
+/// previously implied by the socket timeout alone.
+const CONTROL_LINE_DEADLINE: Duration = Duration::from_secs(30);
+
 pub(crate) struct ControlPeer {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
@@ -146,8 +157,20 @@ pub(crate) struct ControlPeer {
 
 impl ControlPeer {
     fn new(stream: UnixStream) -> Self {
+        // KEL-113: BSD accept() gives the new socket the listener's file
+        // status flags, and these listeners are deliberately non-blocking
+        // (`accept_control` polls). On macOS the accepted stream therefore
+        // arrives with `O_NONBLOCK` set, which makes the `SO_RCVTIMEO` below
+        // inert — a read returns `EAGAIN` at once instead of waiting, so
+        // `read_line` failed the instant the peer had not written *yet*.
+        // Linux's `accept4` does not inherit, which is why this only ever
+        // flaked on macOS. Clear it explicitly rather than relying on the
+        // platform's choice.
         stream
-            .set_app_link_deadlines(Some(Duration::from_secs(2)))
+            .set_nonblocking(false)
+            .expect("control stream must be blocking for its read deadline to apply");
+        stream
+            .set_app_link_deadlines(Some(CONTROL_POLL_INTERVAL))
             .expect("control deadline");
         let writer = stream.try_clone().expect("clone control stream");
         Self {
@@ -156,10 +179,40 @@ impl ControlPeer {
         }
     }
 
+    /// Reads one `\n`-terminated line, waiting up to [`CONTROL_LINE_DEADLINE`].
+    ///
+    /// Awaits the line rather than failing on the first quiet interval: the
+    /// socket timeout is a polling granularity, and a real `bun` child under
+    /// load can take longer than one of them to reach its first write. Reads a
+    /// byte at a time so a timeout that lands mid-line cannot lose the bytes
+    /// already received — `BufRead::read_line` leaves its buffer unspecified
+    /// on error, so it cannot be retried safely (KEL-113).
     pub(crate) fn read_line(&mut self) -> String {
-        let mut line = String::new();
-        self.reader.read_line(&mut line).expect("read control line");
-        line.trim_end_matches('\n').to_owned()
+        let deadline = Instant::now() + CONTROL_LINE_DEADLINE;
+        let mut line = Vec::new();
+        loop {
+            let mut byte = [0_u8; 1];
+            match self.reader.read_exact(&mut byte) {
+                Ok(()) if byte[0] == b'\n' => {
+                    return String::from_utf8(line).expect("control line is UTF-8");
+                }
+                Ok(()) => line.push(byte[0]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) =>
+                {
+                    assert!(
+                        Instant::now() < deadline,
+                        "control peer produced no complete line within \
+                         {CONTROL_LINE_DEADLINE:?}; received so far: {:?}",
+                        String::from_utf8_lossy(&line)
+                    );
+                }
+                Err(error) => panic!("read control line: {error}"),
+            }
+        }
     }
 
     pub(crate) fn write_line(&mut self, line: &str) {
@@ -340,3 +393,100 @@ if (command === "STOP") {
 }
 await new Promise(() => {});
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{CONTROL_POLL_INTERVAL, ControlPeer, accept_control, unique_test_dir};
+    use std::io::{ErrorKind, Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::thread;
+    use std::time::Instant;
+
+    /// KEL-113 regression: the accepted control stream must actually block.
+    ///
+    /// The deadline loop in `read_line` tolerates a quiet interval, so it hides
+    /// a non-blocking socket behind a busy-spin: correct, but burning a core
+    /// for the whole wait on the very machine whose load caused the wait. This
+    /// binds the other half of the fix by timing a read against a peer that
+    /// never writes. A blocking socket honours `SO_RCVTIMEO` and returns after
+    /// roughly one poll interval; an `O_NONBLOCK` one returns `EAGAIN`
+    /// immediately. The bound is deliberately loose — `SO_RCVTIMEO` never
+    /// returns *early*, so only the lower bound is asserted.
+    #[test]
+    fn accepted_control_stream_blocks_for_its_read_deadline() {
+        let dir = unique_test_dir();
+        let path = dir.join("control.sock");
+        let listener = UnixListener::bind(&path).expect("bind control");
+        listener
+            .set_nonblocking(true)
+            .expect("listener is non-blocking by design");
+        let silent = UnixStream::connect(&path).expect("connect control");
+
+        let mut peer = accept_control(&listener);
+        let start = Instant::now();
+        let mut byte = [0_u8; 1];
+        let error = peer
+            .reader
+            .get_mut()
+            .read(&mut byte)
+            .expect_err("a silent peer cannot produce a byte");
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+            "expected the read deadline to expire, got {error}"
+        );
+        assert!(
+            elapsed >= CONTROL_POLL_INTERVAL / 2,
+            "the accepted stream returned in {elapsed:?}, so it never blocked — \
+             it inherited O_NONBLOCK from the listener and SO_RCVTIMEO is inert"
+        );
+        drop(silent);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// KEL-113 regression: a peer slower than one poll interval must still be
+    /// read, not reported as a failure.
+    ///
+    /// BSD `accept()` gives the new socket the listener's file status flags,
+    /// and these listeners are non-blocking on purpose. On macOS the accepted
+    /// stream therefore arrived with `O_NONBLOCK` set, which makes
+    /// `SO_RCVTIMEO` inert: the read returned `EAGAIN` immediately and
+    /// `read_line` panicked with `WouldBlock` the instant the peer had not
+    /// written *yet*. Linux's `accept4` does not inherit, so this only ever
+    /// flaked on macOS — and only when the writer happened to lose the race.
+    ///
+    /// The delay below is the condition under test — a writer slower than the
+    /// reader — not a sleep standing in for a wait. Reverting either half of
+    /// the fix fails this test on macOS.
+    #[test]
+    fn control_peer_waits_for_a_writer_slower_than_one_poll_interval() {
+        let dir = unique_test_dir();
+        let path = dir.join("control.sock");
+        let listener = UnixListener::bind(&path).expect("bind control");
+        listener
+            .set_nonblocking(true)
+            .expect("listener is non-blocking by design");
+
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            let mut stream = UnixStream::connect(&writer_path).expect("connect control");
+            // Quiet for longer than one poll interval, so a reader that treats
+            // one quiet interval as terminal cannot pass.
+            thread::sleep(CONTROL_POLL_INTERVAL * 3);
+            stream
+                .write_all(b"READY late\n")
+                .expect("write control line");
+            stream.flush().expect("flush control line");
+        });
+
+        let mut peer: ControlPeer = accept_control(&listener);
+        assert_eq!(
+            peer.read_line(),
+            "READY late",
+            "a writer slower than one poll interval must still be read"
+        );
+        writer.join().expect("writer thread");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
