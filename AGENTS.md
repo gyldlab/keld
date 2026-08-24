@@ -78,11 +78,11 @@ is `docs/architecture/01-overview.md` §1.
 | keld-guard | Capabilities, manifest, scopes — spec 03; `AGENTS.md` |
 | keld-native | guard-checked brokers; `fs` live, rest SKELETON — spec 05 |
 | keld-runtime | Bun child-role supervisor — spec 06 |
-| keld-update | bsdiff+zstd, signed manifests — spec 06 |
-| keld-pack | Installers, signing, cross-compile — spec 06 |
-| keld-compat | Electron emulation — spec 04; `AGENTS.md` |
+| keld-update | SKELETON (`Channel` enum only); TARGET bsdiff+zstd, signed manifests — spec 06 |
+| keld-pack | SKELETON (`Format` enum only); TARGET installers, signing, cross-compile — spec 06 |
+| keld-compat | Electron conformance evidence (KEL-74) + lifecycle oracle; TARGET host-side emulation — spec 04; `AGENTS.md` |
 | keld-host | Shipping host binary — spec 01/06 |
-| keld-cli | create/dev/build/migrate/doctor/gen — spec 06/07 |
+| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved (`KELD-CLI-045`) — spec 06/07 |
 | packages/ | `@keld/electron` (KEL-72); other `@keld/*` upcoming |
 
 
@@ -207,6 +207,7 @@ Agents MUST list these five (or write "none") in the PR. Human sign-off is requi
 - Anti-flake: agents MUST NOT sleep-sync; MUST await conditions; MUST bind port 0; MUST use temp dirs; colocated tests; doc *why*.
 - Agents MUST NOT land `todo!()`/`unimplemented!()`/stubs on main. PRs SHOULD be small, one concern.
 - Before coding, agents MUST: grep the codebase; read the spec section; read crate `AGENTS.md`; read `docs/agents/learnings.md`.
+- Before coding, agents MUST read the delta between their paste/issue pin and `origin/main` (`git log <pin>..origin/main`, new `docs/research` notes, open PRs) and record it in their first Linear comment; a stale pin is a defect, not an excuse.
 
 ### OS-scoped acceptance (MUST)
 
@@ -345,7 +346,7 @@ When the real fix is genuinely out of scope, agents MUST stop and say so — nam
 
 Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
-- Agents MUST NOT add hollow stubs; MUST NOT add files for skeletons (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`, `keld-pack`, `keld-host`); MUST NOT add one for `keld-cli` (`expect` already sanctioned in § Rust); MUST NOT add `packages/` until TS exists. Point at the spec in the repo-map table instead.
+- Agents MUST NOT add hollow stubs; MUST NOT add files for crates whose invariants are all stated here (`keld-core`, `keld-native`, `keld-runtime`, `keld-host`) or for the skeletons (`keld-update`, `keld-pack`); MUST NOT add one for `keld-cli` (`expect` already sanctioned in § Rust); MUST NOT add one under `packages/` until a TS package carries invariants not stated in § TypeScript (`@keld/electron` exists and is governed there). Point at the spec in the repo-map table instead.
 - Enforcement: `just agents-md` — fails if a crate with `unsafe` / `allow(unsafe_code)` has no `AGENTS.md`. Not a Codex.
 
 ## Self-improvement (mandatory)

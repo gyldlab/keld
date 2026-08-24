@@ -96,8 +96,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   these onto `app.whenReady` / `app.quit` / `window-all-closed` — the wire names
   are host-lifecycle, not Electron-isms.
 - **Codec**: postcard (serde, compact, no_std-friendly) for structured payloads —
-  measured order-of-magnitude cheaper than JSON for typical shapes; JSON fallback codec
-  exists only for `--inspect-ipc` debugging (human dump), never on the hot path.
+  expected to be materially cheaper than JSON for typical shapes (no committed Keld
+  measurement yet; the kipc bench lane owns that number). A JSON fallback codec is
+  planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
+  never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
   u16 handles resolved at handshake from schema names (string names never travel per-call).
 - **Cancellation**: `STREAM_CANCEL`/`CALL_CANCEL` carry corr id; handlers observe an
@@ -202,7 +204,10 @@ compromised keeps the host's threat model uniform).
   live until the host application session stops.
 - Webview navigation: principal generation rotates; pending replies to the old principal
   drop; guard re-evaluates capabilities using origin/resource policy context.
-- Host never blocks on either peer; every await point has a deadline. v0 app-link
+- Host never blocks indefinitely on either peer; every await point has a per-operation
+  deadline. Known v0 gap: on the ordinary `read_frame` path the per-recv timeout renews
+  whenever bytes arrive, so a byte-trickling peer can hold a session open (only the
+  lifecycle reader has a frame-wide stall clock; research 115). v0 app-link
   applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) during
   authentication and on writes; expiry is `KELD-IPC-006`. That is an OS socket
   timeout, not an async timer. **Persistent-session exception (KEL-30/KEL-72):**

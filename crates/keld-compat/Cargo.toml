@@ -1,6 +1,6 @@
 [package]
 name = "keld-compat"
-description = "Host-side Electron behavior emulation: protocol, session, webContents routing semantics"
+description = "Electron conformance evidence + lifecycle oracle (KEL-74); destination: host-side protocol/session/webContents emulation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

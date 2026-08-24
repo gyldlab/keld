@@ -125,16 +125,16 @@ implemented. The per-crate status legend is the §1 diagram above.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard (TARGET: native, runtime) |
-| `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | — |
-| `keld-ipc` | kipc protocol: framing, codecs; TARGET channel registry, shm rings, schema runtime | — |
+| `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard, runtime (TARGET: native) |
+| `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | guard |
+| `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch; TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing, scope matching, per-window/per-principal grants, audit log | — |
 | `keld-runtime` | app-process-family supervisor: Bun discovery/pinning, named role spawn, health, per-role principal/lifecycle/restart policy, stdio capture | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
-| `keld-compat` | host-side Electron behavior emulation (session/protocol/webContents semantics) | core |
-| `keld-cli` | `keld` binary: create/dev/build/migrate/doctor; downloads pinned host+Bun; delegates bundling to the app's tool | pack, update |
+| `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
+| `keld-cli` | `keld` binary: create/dev/build/migrate/doctor; downloads pinned host+Bun; delegates bundling to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):
