@@ -274,6 +274,16 @@ pub struct CrashLedger {
     /// Diagnostic for the most recent crash, carrying its `KELD-RUNTIME-012`
     /// code and a bounded stderr tail. `None` exactly when `count` is 0.
     pub last: Option<RuntimeError>,
+    /// Length of captured stdout at the moment of the most recent crash, so a
+    /// host can order that crash against something the app printed.
+    ///
+    /// The supervisor publishes stdout and its `Exited` event *before* it
+    /// records the crash, so a host that only compares crash counts cannot
+    /// tell "crashed, then printed" from "printed, then crashed" — it sees
+    /// both at once and forgives a death that happened after the app was
+    /// live. Comparing a marker's offset against this length answers that
+    /// question without any timing assumption (KEL-105).
+    pub stdout_len_at_last_crash: usize,
 }
 
 /// Terminal outcome of [`Supervisor::wait_for_outcome`].
@@ -716,8 +726,15 @@ fn supervise<P>(
                 return;
             }
             let _ = child.kill();
-            reap_and_record_own_exit(&mut child, crash_ledger, output, pid);
+            let own_crash = reap_own_crash_code(&mut child);
+            // Join before recording: the capture threads may still hold unread
+            // bytes, and the natural-exit path below already joins first. A
+            // crash must not produce a complete diagnostic on one path and a
+            // truncated one on the other.
             join_capture_threads(capture_threads);
+            if let Some(code) = own_crash {
+                record_crash(crash_ledger, output, pid, Some(code));
+            }
             *lock_or_recover(current_pid) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
@@ -936,24 +953,25 @@ const HOST_KILL_EXIT_CODE: Option<i32> = None;
 #[cfg(windows)]
 const HOST_KILL_EXIT_CODE: Option<i32> = Some(1);
 
-/// Reaps a child the host has just asked to stop, and records a crash when the
-/// reaped status proves the child had already died on its own.
+/// Reaps a child the host has just asked to stop, returning its exit code when
+/// the reaped status proves the child had already died on its own.
+///
+/// `None` covers every non-crash case together — the wait failed, the child was
+/// killed by us (a signal reports no code at all), or it exited cleanly — which
+/// is exactly the set the caller treats identically.
 ///
 /// KEL-105: the child can exit between the last `try_wait` and the kill above.
 /// Dropping that status would report a dead app as a clean stop and let
 /// `keld dev` exit 0 over it. A reported non-zero exit code that is not
 /// [`HOST_KILL_EXIT_CODE`] cannot have come from the host's own kill, so it is
 /// the child's crash.
-fn reap_and_record_own_exit(
-    child: &mut Child,
-    crash_ledger: &Arc<Mutex<CrashLedger>>,
-    output: &Arc<Mutex<CapturedOutput>>,
-    pid: u32,
-) {
-    let Ok(status) = child.wait() else { return };
-    let code = status.code();
-    if !status.success() && code.is_some() && code != HOST_KILL_EXIT_CODE {
-        record_crash(crash_ledger, output, pid, code);
+fn reap_own_crash_code(child: &mut Child) -> Option<i32> {
+    let status = child.wait().ok()?;
+    let code = status.code()?;
+    if !status.success() && Some(code) != HOST_KILL_EXIT_CODE {
+        Some(code)
+    } else {
+        None
     }
 }
 
@@ -966,9 +984,16 @@ fn record_crash(
     pid: u32,
     exit_code: Option<i32>,
 ) {
-    let stderr_tail = lock_or_recover(output).stderr_tail(2000);
+    // One snapshot under one lock: the tail and the length must describe the
+    // same stdout, or the host would order a marker against a different point
+    // in the stream than the diagnostic reports.
+    let (stderr_tail, stdout_len) = {
+        let captured = lock_or_recover(output);
+        (captured.stderr_tail(2000), captured.stdout.len())
+    };
     let mut ledger = lock_or_recover(crash_ledger);
     ledger.count = ledger.count.saturating_add(1);
+    ledger.stdout_len_at_last_crash = stdout_len;
     ledger.last = Some(RuntimeError::ChildCrashed {
         pid,
         exit_code,

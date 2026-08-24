@@ -2032,8 +2032,14 @@ failed outright — so they crashed fast enough to trip the breaker. The ledger 
 the verdict independent of that timing.
 
 A crash the supervisor *recovered* from before the app reported ready stays a
-success (KEL-70 AC1/AC3): the session records the crash count at its ready marker,
-and only crashes above that count fail the run.
+success (KEL-70 AC1/AC3). Separating the two cases cannot be done by counting
+crashes, because the supervisor publishes stdout and its `Exited` event *before* it
+records the crash: a host that samples the count when it notices the ready marker
+can already see a death that happened after the app was live, and would forgive it.
+The ledger therefore also records how long stdout was at the moment of each crash,
+and the session compares the ready marker's offset against it — answering "printed,
+then crashed" versus "crashed, then printed" from recorded facts rather than from
+when the host happened to look.
 
 Two limits are current behaviour, not destination: the app process's death does not
 close the window — the developer still closes it, and the exit code appears only

@@ -269,6 +269,95 @@ fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
     );
 }
 
+/// Regression: an app that reports ready and *then* dies must fail the run.
+///
+/// This is KEL-105 reopening after #84. `keld-runtime` publishes stdout and its
+/// `Exited` event *before* it calls `record_crash`, so by the time the host
+/// notices the ready marker the crash is usually already in the ledger. A
+/// baseline taken from the crash *count* then folds that post-ready death into
+/// "recovered" and `keld dev` exits 0 over a dead app — the exact defect the
+/// ticket exists to prevent. Ordering the marker against the ledger's recorded
+/// stdout position is what separates "crashed, then printed" from "printed,
+/// then crashed".
+///
+/// The fixture is the shipping template with only its parking line changed, so
+/// generation 1 does a real HELLO + CALL and prints the real ready line before
+/// dying. Generation 2 parks *before* the handshake, so exactly one crash
+/// occurs and the supervisor's terminal outcome stays `Stopped` — otherwise the
+/// breaker would trip and the run would fail for an unrelated reason.
+#[test]
+fn an_app_that_dies_after_reporting_ready_fails_the_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("d{}", std::process::id());
+    let root = create_project(dir.path(), &name).expect("create");
+    let gen_path = root.join("kel105-generation");
+    let gen_lit = gen_path.display().to_string();
+    let main = root.join("src/main.ts");
+    let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
+    let parked = "  await new Promise(() => {});";
+    assert!(
+        scaffolded.contains(parked),
+        "template shape changed; this fixture edits its parking line"
+    );
+    let body = scaffolded.replace(parked, "  process.exit(1);");
+    fs::write(
+        &main,
+        format!(
+            "import {{ existsSync as kel105Exists, writeFileSync as kel105Write }} from \"node:fs\";\n\
+             const kel105Restarted = kel105Exists({gen_lit:?});\n\
+             kel105Write({gen_lit:?}, \"1\");\n\
+             if (kel105Restarted) {{ console.log(\"kel105-generation-2\"); await new Promise(() => {{}}); }}\n\
+             {body}"
+        ),
+    )
+    .expect("write die-after-ready fixture");
+
+    let session = start_dev_session(&root).expect("start host-owned session");
+
+    // Await generation 2 WITHOUT `wait_until_output_contains`: that call is the
+    // thing under test, and using it here would record the baseline early and
+    // hide the defect. Seeing generation 2's marker proves generation 1 crashed
+    // *and* that the supervisor already recorded it, because `record_crash`
+    // runs before the restart is spawned.
+    await_stdout(&session, "kel105-generation-2", Duration::from_secs(30));
+
+    // Now the host looks for the ready marker for the first time — exactly the
+    // ordering the product hits when an app dies immediately after reporting
+    // ready.
+    let ready = format!("{name}: main process ready (IPC echo ok)");
+    session
+        .wait_until_output_contains(&ready, Duration::from_secs(30))
+        .expect("generation 1's ready line is still in captured stdout");
+
+    let err = session
+        .shutdown()
+        .expect_err("the app reported ready and then died; reporting success over it is KEL-105");
+    let msg = err.to_string();
+    assert!(msg.contains("KELD-CORE-033"), "{msg}");
+    assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+}
+
+/// Awaits a needle in captured stdout with a deadline, without going through
+/// `wait_until_output_contains`.
+///
+/// Deliberately not the production helper: the test above needs to observe the
+/// app's progress *before* the host records its readiness baseline, and the
+/// production helper records it.
+fn await_stdout(session: &keld_core::HostOwnedHelloSession, needle: &str, timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if session.output().stdout.contains(needle) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never saw {needle:?} in stdout within {timeout:?}; captured: {}",
+            session.output().stdout
+        );
+        std::thread::yield_now();
+    }
+}
+
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
     Command::new("kill")
