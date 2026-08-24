@@ -3,6 +3,11 @@
 Spec: `docs/architecture/02-ipc.md`. Hot path.
 
 - Wire = versioned protocol. Frame layout/`FrameKind`/flags/handshake change → version bump + wire review gate + spec §2, one PR.
+- Every privileged-channel `Err` reply MUST be written with `write_call_error` and a
+  `CallError { code, message }` whose `code` is a registered `KELD-*` owned by the crate that
+  failed. A per-channel `Err` encoding, or a payload with no code, is a defect: peers match on
+  `code` and MUST NOT parse it out of `message`. Changing the payload's fields is a public-API
+  review gate (onboarding 04 §14), not a `PROTOCOL_VERSION` bump. Shape: spec 02 §2.
 - Test wire constants as facts (`HEADER_LEN == 16`), not struct layout. Assert hot struct sizes.
 - Tests MUST follow repository `.agents/testing.md`.
 - State-machine readers/writers. No async, no steady-state alloc (`Vec`/frame = wrong design).

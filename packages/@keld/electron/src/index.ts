@@ -26,6 +26,7 @@ Object.defineProperty(proc, "type", {
 });
 
 export { app };
+export { isCallError, type KeldCallError } from "./link";
 
 const electron = { app };
 export default electron;

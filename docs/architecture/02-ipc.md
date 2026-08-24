@@ -55,6 +55,28 @@ kind   := HELLO | CALL | REPLY | ERR | EVENT | STREAM_* | GRANT | PING
 payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 ```
 
+- **ERR payload (v0):** a postcard `CallError { code: String, message: String }`
+  (`crates/keld-ipc/src/call_error.rs`), written by `write_call_error` on the
+  channel and correlation id of the `CALL` being answered. `code` is the
+  registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
+  for a guard denial, the broker's own code (e.g. `KELD-NATIVE-001`) for a
+  post-allow OS failure — and `message` is that error's full `Display` text,
+  which already contains the imperative fix sentence (07 §2). Peers match on
+  `code` and do not parse it back out of `message`; every privileged channel
+  uses this one payload rather than a per-channel `ERR` encoding (the binding
+  rule lives in `crates/keld-ipc/AGENTS.md`). An `ERR` answers one call and
+  leaves the session up — that is what distinguishes it from `IpcError`, which
+  is a transport or session fault and tears the link down. Before KEL-102 this
+  payload was one bare postcard `String` per broker, which forced peers to
+  string-parse the code and had already drifted (one writer shipped a payload
+  carrying no code at all). The two shapes are mutually undecodable — a bare
+  `String` is self-terminating, so it leaves no second field, and a `CallError`
+  always leaves trailing bytes a `String` decode rejects — so a mixed rollout
+  fails deterministically rather than mis-reporting: `KELD-IPC-003` from
+  `keld_ipc::codec::decode`, surfaced by `@keld/electron` as `KELD-IPC-005`
+  ("not a CallError"). The generated hello scaffold
+  (`crates/keld-cli/templates/hello/src/kipc.ts`) speaks only the ungated echo
+  channel and does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Empty, truncated, or mismatched tokens
   are `KELD-IPC-007`. The client writes `HELLO` first. The server reads and

@@ -357,23 +357,25 @@ function decodeEvent(bytes: Uint8Array): LifecycleEventName {
   throw kipcError("KELD-IPC-003", `unknown LifecycleEvent discriminant ${disc}`);
 }
 
-function decodePostcardString(bytes: Uint8Array): string {
-  if (bytes.length === 0) {
-    throw kipcError("KELD-IPC-003", "empty postcard string");
-  }
+/**
+ * Reads one postcard string starting at `offset`; returns it with the index
+ * one past its last byte. It does not require the string to span the whole
+ * buffer, so a multi-field payload (`CallError`) is decoded field by field.
+ */
+function decodePostcardStringAt(bytes: Uint8Array, offset: number): [string, number] {
   let len = 0;
   let shift = 0;
-  let i = 0;
+  let i = offset;
   while (i < bytes.length) {
-    const b = bytes[i];
+    const b = bytes[i]!;
     i += 1;
     len |= (b & 0x7f) << shift;
     if ((b & 0x80) === 0) {
       const text = bytes.subarray(i, i + len);
-      if (text.length !== len || i + len !== bytes.length) {
+      if (text.length !== len) {
         throw kipcError("KELD-IPC-003", "postcard string length does not match payload");
       }
-      return new TextDecoder().decode(text);
+      return [new TextDecoder("utf-8", { fatal: true }).decode(text), i + len];
     }
     shift += 7;
     if (shift > 28) {
@@ -383,18 +385,68 @@ function decodePostcardString(bytes: Uint8Array): string {
   throw kipcError("KELD-IPC-003", "truncated postcard string");
 }
 
-function errorFromErrFrame(payload: Uint8Array): Error {
-  let detail: string;
-  try {
-    detail = decodePostcardString(payload);
-  } catch {
-    detail =
-      payload.length === 0
-        ? "peer sent Err with empty payload"
-        : new TextDecoder().decode(payload);
+/**
+ * A rejected privileged `Call`: the `Error` carries the registered `KELD-*`
+ * code as a field, so callers branch on `code` instead of parsing `message`.
+ */
+export type KeldCallError = Error & { code: string };
+
+/** True when `e` is a rejected `Call` carrying a registered `KELD-*` code. */
+export function isCallError(e: unknown): e is KeldCallError {
+  return (
+    e instanceof Error &&
+    typeof (e as { code?: unknown }).code === "string" &&
+    (e as { code: string }).code.startsWith("KELD-")
+  );
+}
+
+/**
+ * Decodes the `Err` payload every privileged channel writes: a postcard
+ * `CallError { code, message }` (`crates/keld-ipc/src/call_error.rs`,
+ * `docs/architecture/02-ipc.md` §2).
+ *
+ * `code` is read as a field — never parsed back out of `message` — so a peer
+ * branches on the registered `KELD-*` code directly.
+ */
+export function decodeCallError(payload: Uint8Array): { code: string; message: string } {
+  const [code, afterCode] = decodePostcardStringAt(payload, 0);
+  const [message, end] = decodePostcardStringAt(payload, afterCode);
+  if (end !== payload.length) {
+    throw kipcError("KELD-IPC-003", "trailing bytes after CallError");
   }
-  if (detail.startsWith("KELD-")) return new Error(detail);
-  return kipcError("KELD-IPC-005", detail || "peer sent Err for in-flight Call");
+  if (!code.startsWith("KELD-")) {
+    // A `code` is a registered `KELD-*` identifier by contract (spec 02 §2).
+    // Refusing here keeps the decoded value and `isCallError` from disagreeing.
+    throw kipcError("KELD-IPC-003", "CallError code is not a KELD-* identifier");
+  }
+  return { code, message };
+}
+
+export function errorFromErrFrame(payload: Uint8Array): Error {
+  if (payload.length === 0) {
+    return kipcError("KELD-IPC-005", "peer sent Err with empty payload");
+  }
+  let call: { code: string; message: string };
+  try {
+    call = decodeCallError(payload);
+  } catch {
+    // Not a CallError: a pre-KEL-102 host, or a corrupt frame. Surface it as a
+    // protocol error rather than guessing at the bytes.
+    return kipcError("KELD-IPC-005", "peer sent an Err payload that is not a CallError");
+  }
+  const error = new Error(
+    call.message.startsWith(call.code) ? call.message : `${call.code}: ${call.message}`,
+  );
+  // Machine-readable: callers match on `code`, not on the message text.
+  // Writable/configurable so a consumer may re-wrap or forward it without a
+  // TypeError under ESM strict mode.
+  Object.defineProperty(error, "code", {
+    value: call.code,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  return error;
 }
 
 export type LifecycleHandler = {
