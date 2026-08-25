@@ -11,6 +11,7 @@
 use std::io::ErrorKind;
 use std::time::Duration;
 
+pub mod admission;
 #[cfg(unix)]
 pub mod bootstrap;
 pub mod call_error;
@@ -23,11 +24,9 @@ pub mod link;
 pub mod session;
 pub mod token;
 
+pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
 #[cfg(unix)]
-pub use bootstrap::{
-    BootstrapAdmission, BootstrapCancellation, BootstrapListener, BootstrapRejection,
-    BootstrapRejectionObserver,
-};
+pub use bootstrap::{BootstrapAdmission, BootstrapCancellation, BootstrapListener};
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};

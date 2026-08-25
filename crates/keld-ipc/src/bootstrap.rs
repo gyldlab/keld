@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::APP_LINK_IO_DEADLINE;
 use crate::IpcError;
+use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
 use crate::link::{AppLinkDeadlines, handshake_server};
 use crate::token::{SessionToken, format_app_link};
 
@@ -46,29 +47,6 @@ pub enum BootstrapAdmission {
     Cancelled,
     /// The generation-wide admission deadline elapsed before authentication.
     DeadlineElapsed,
-}
-
-/// Redacted reason recorded by the host for an untrusted bootstrap rejection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BootstrapRejection {
-    /// The peer sent a missing, malformed, or foreign `HELLO` session token.
-    HelloAuth,
-}
-
-impl BootstrapRejection {
-    /// Stable error code for host-only logs/tests. Never includes endpoint or token.
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::HelloAuth => "KELD-IPC-007",
-        }
-    }
-}
-
-/// Host-only observer for redacted bootstrap rejection records.
-pub trait BootstrapRejectionObserver {
-    /// Records one rejected peer without token, endpoint, or raw parser detail.
-    fn rejected(&self, rejection: BootstrapRejection);
 }
 
 struct NoopRejectionObserver;
@@ -248,10 +226,14 @@ impl BootstrapListener {
                     self.close_endpoint()?;
                     return Ok(BootstrapAdmission::DeadlineElapsed);
                 }
-                Err(IpcError::HelloAuth { .. }) => {
-                    observer.rejected(BootstrapRejection::HelloAuth);
+                // Every pre-authentication failure is recorded, not only token
+                // failure. This arm used to be `Err(_) => {}`, so a peer that
+                // failed on a bad header, an oversized envelope, or a partial
+                // frame was indistinguishable from no peer at all and the host
+                // saw an admission that simply never completed.
+                Err(err) => {
+                    observer.rejected(BootstrapRejection::classify(&err));
                 }
-                Err(_) => {}
             }
         }
     }
