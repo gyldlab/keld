@@ -211,8 +211,30 @@ impl BootstrapListener {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             }
-            stream.set_app_link_deadlines(Some(timeout))?;
-            let active_stream = stream.try_clone()?;
+            // Both calls act on the ACCEPTED PEER's socket, not on the
+            // listener, so a failure is a fact about that one peer. `?` made
+            // them fatal to admission instead.
+            //
+            // macOS returns EINVAL from SO_RCVTIMEO/SO_SNDTIMEO on an accepted
+            // socket whose peer has already closed, so a bare connect-then-
+            // close -- a port scan, a health check, a racing restart -- killed
+            // the whole accept loop: the worker died with `listener I/O:
+            // InvalidInput`, and the next legitimate client then blocked
+            // forever in recvfrom waiting for a HELLO nobody would send.
+            // Linux accepts the same setsockopt, which is why this only ever
+            // reproduced on macOS (measured: 5ms there, >2640s here).
+            //
+            // Classified per peer and skipped, so the listener keeps accepting.
+            // Setting the deadline earlier cannot fix this: a peer may close at
+            // any point, including between accept() and setsockopt.
+            if stream.set_app_link_deadlines(Some(timeout)).is_err() {
+                observer.rejected(BootstrapRejection::Io);
+                continue;
+            }
+            let Ok(active_stream) = stream.try_clone() else {
+                observer.rejected(BootstrapRejection::Io);
+                continue;
+            };
             *lock_or_recover(&self.active_stream) = Some(active_stream);
             let _active = ActiveHandshake {
                 active_stream: Arc::clone(&self.active_stream),
@@ -593,6 +615,58 @@ mod tests {
         let seen = super::lock_or_recover(&seen);
         assert_eq!(*seen, vec![BootstrapRejection::HelloAuth]);
         assert_eq!(seen[0].code(), "KELD-IPC-007");
+    }
+
+    /// A peer that connects and closes without sending anything must not be
+    /// able to take down admission.
+    ///
+    /// On macOS `set_app_link_deadlines` returns `EINVAL` on an accepted socket
+    /// whose peer has already closed. That error used to propagate out of
+    /// `accept_loop` with `?` as fatal listener I/O, killing the worker; the
+    /// next legitimate client then blocked forever in `recvfrom` waiting for a
+    /// HELLO from a dead thread. A port scan, a health check or a racing
+    /// restart was enough -- no malformed bytes required.
+    ///
+    /// FALSIFICATION IS PLATFORM-SPECIFIC, and that is a real limit of this
+    /// test: reverting the fix fails it on macOS in ~30s and it still passes on
+    /// Linux, because Linux accepts the same setsockopt. The defect only exists
+    /// where the OS refuses the call.
+    #[test]
+    fn a_peer_that_connects_and_closes_does_not_kill_admission() {
+        let listener = Arc::new(BootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("link");
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer = RecordingObserver {
+            seen: Arc::clone(&seen),
+        };
+
+        let acceptor = Arc::clone(&listener);
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let result = acceptor
+                .accept_authenticated_until(Instant::now() + Duration::from_secs(2), &observer)
+                .expect("a closed peer must not surface as listener I/O");
+            accepted_tx.send(result).expect("notify accepted");
+        });
+
+        // No bytes at all: connect, then close. This is the whole trigger.
+        drop(UnixStream::connect(endpoint).expect("transient connect"));
+
+        let mut role = UnixStream::connect(endpoint).expect("legitimate connect");
+        handshake_client(&mut role, &token).expect("legitimate token accepted");
+        let result = accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a closed peer must not consume the bootstrap opportunity");
+        assert!(matches!(result, BootstrapAdmission::Authenticated(_)));
+        drop(role);
+        server.join().expect("server join");
+
+        let seen = super::lock_or_recover(&seen);
+        assert!(
+            !seen.contains(&BootstrapRejection::HelloAuth),
+            "a peer that sent no token must not be recorded as token failure, got {seen:?}"
+        );
     }
 
     #[test]

@@ -22,8 +22,11 @@ pub trait AppLinkDeadlines {
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] if the OS rejects the timeout (should not on
-    /// connected `UnixStream` / `TcpStream`).
+    /// Returns [`io::Error`] if the OS rejects the timeout. This is NOT rare:
+    /// macOS returns `EINVAL` on an accepted socket whose peer has already
+    /// closed, while Linux accepts the same call. Callers on an accepted
+    /// connection must treat a failure here as a fact about that peer, never
+    /// as a listener fault -- see `bootstrap::BootstrapListener::accept_loop`.
     fn set_app_link_deadlines(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.set_app_link_read_deadline(timeout)?;
         self.set_app_link_write_deadline(timeout)
