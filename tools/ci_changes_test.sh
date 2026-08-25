@@ -248,6 +248,55 @@ if ! grep -Fq "ci router: the TypeScript lane is selected but no packages/ Bun s
 fi
 echo "ok: empty Bun suite selection fails closed"
 
+# Pins the router's suite-discovery set against bun's own, per filename shape.
+#
+# Every fixture elsewhere in this file uses `unit.test.ts`, the single shape the
+# original pattern matched — so a wrong pattern stayed invisible. Measured on
+# bun 1.4.0: of 21 planted filenames it runs 18, skipping only `plain.ts`,
+# `test.ts` and `tests.ts`. A shape bun runs that the router misses is a suite
+# silently dropped from a green lane; a shape bun skips that the router selects
+# makes `bun test` exit 1 on a package with nothing to run.
+discovery_shape_case() {
+    local label="$1" filename="$2" expectation="$3" pkg="probe$4"
+    local before after out
+    before="$(git -C "$temp_dir" rev-parse HEAD)"
+    mkdir -p "$temp_dir/packages/@shape/$pkg/src"
+    printf '{"name":"@shape/%s","type":"module"}\n' "$pkg" >"$temp_dir/packages/@shape/$pkg/package.json"
+    printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@shape/$pkg/src/$filename"
+    git -C "$temp_dir" add packages >/dev/null
+    git -C "$temp_dir" commit -qm "shape-$pkg"
+    after="$(git -C "$temp_dir" rev-parse HEAD)"
+    out="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request \
+        KELD_CI_BASE_SHA="$before" KELD_CI_HEAD_SHA="$after" "$router" github 2>&1 || true)"
+    if [[ "$expectation" == selected ]]; then
+        if ! grep -Fq "packages/@shape/$pkg" <<<"$out"; then
+            echo "FAIL: bun runs $filename but the router did not select its package ($label)" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+        fi
+    elif grep -Fq "packages/@shape/$pkg" <<<"$out"; then
+        echo "FAIL: bun skips $filename but the router selected its package ($label); bun test would exit 1 there" >&2
+        printf '%s\n' "$out" >&2
+        exit 1
+    fi
+    rm -rf "$temp_dir/packages/@shape/$pkg"
+    git -C "$temp_dir" add -A packages >/dev/null
+    git -C "$temp_dir" commit -qm "shape-$pkg-cleanup"
+}
+
+shape_index=0
+for shape in a.test.ts a.test.tsx a.test.js a.test.jsx a.test.mts a.test.cts a.test.mjs a.test.cjs \
+             a.spec.ts a.spec.tsx a.spec.js a.spec.jsx a_test.ts a_test.js a_spec.ts a_spec.js \
+             A.Test.ts A.SPEC.ts; do
+    shape_index=$((shape_index + 1))
+    discovery_shape_case "bun runs it" "$shape" selected "$shape_index"
+done
+for shape in plain.ts test.ts tests.ts; do
+    shape_index=$((shape_index + 1))
+    discovery_shape_case "bun skips it" "$shape" ignored "$shape_index"
+done
+echo "ok: router suite discovery matches bun 1.4.0 across 18 run and 3 skipped shapes"
+
 # A Bun suite the Keld workspace does not own: this fixture proves the lane is
 # derived from the checked-out packages/ tree, not from a hard-coded path.
 mkdir -p "$temp_dir/packages/@fake/pkg/src"

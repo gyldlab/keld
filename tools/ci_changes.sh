@@ -249,9 +249,21 @@ ts_package_consumer_packages() {
     done < <(grep -rlF --exclude-dir=target -- "$package_dir" "$repo_root/crates" 2>/dev/null || true)
 }
 
-# A Bun suite root is a package.json directory that owns at least one Bun test
-# file. The fixtures package owns none: it is spawned by the Rust conformance
-# test, not by `bun test`.
+# A Bun suite root is a package.json directory that owns at least one file
+# `bun test` would actually run. The fixtures package owns none: it is spawned
+# by the Rust conformance test, not by `bun test`.
+#
+# The shapes below mirror bun 1.4.0's own discovery, measured rather than read
+# off its error text (which understates the set). Of 21 planted filenames it
+# runs 18: `.test.` and `.spec.` and `_test.` and `_spec.`, across
+# `ts tsx js jsx mts cts mjs cjs`, matched CASE-INSENSITIVELY (`q.Test.ts` and
+# `r.SPEC.ts` both run). It skips `plain.ts`, `test.ts` and `tests.ts`.
+#
+# This mirrors a rule Bun owns, which makes it a second owner and a drift risk;
+# `ts_package_discovery_matches_bun` in tools/ci_changes_test.sh pins the set so
+# a Bun change fails here rather than silently dropping suites. KEL-115's
+# receipt — the lane reporting which suites it ran — removes the duplication
+# entirely and is the real fix.
 ts_test_package_dirs() {
     local repo_root
     repo_root="$(git rev-parse --show-toplevel)"
@@ -261,10 +273,22 @@ ts_test_package_dirs() {
     while IFS= read -r manifest; do
         [[ -z "$manifest" ]] && continue
         dir="${manifest%/package.json}"
-        if [[ -n "$(find "$dir" -name node_modules -prune -o -name '*.test.ts' -print -quit)" ]]; then
+        if [[ -n "$(find "$dir" -name node_modules -prune -o \
+            \( -iname '*.test.ts' -o -iname '*.test.tsx' -o -iname '*.test.js' \
+            -o -iname '*.test.jsx' -o -iname '*.test.mts' -o -iname '*.test.cts' \
+            -o -iname '*.test.mjs' -o -iname '*.test.cjs' \
+            -o -iname '*.spec.ts' -o -iname '*.spec.tsx' -o -iname '*.spec.js' \
+            -o -iname '*.spec.jsx' -o -iname '*.spec.mts' -o -iname '*.spec.cts' \
+            -o -iname '*.spec.mjs' -o -iname '*.spec.cjs' \
+            -o -iname '*_test.ts' -o -iname '*_test.tsx' -o -iname '*_test.js' \
+            -o -iname '*_test.jsx' -o -iname '*_test.mts' -o -iname '*_test.cts' \
+            -o -iname '*_test.mjs' -o -iname '*_test.cjs' \
+            -o -iname '*_spec.ts' -o -iname '*_spec.tsx' -o -iname '*_spec.js' \
+            -o -iname '*_spec.jsx' -o -iname '*_spec.mts' -o -iname '*_spec.cts' \
+            -o -iname '*_spec.mjs' -o -iname '*_spec.cjs' \) -print -quit)" ]]; then
             printf '%s\n' "${dir#"$repo_root"/}"
         fi
-    done < <(find "$repo_root/packages" -name node_modules -prune -o -name package.json -print)
+    done < <(find "$repo_root/packages" -name package.json -not -path '*/node_modules/*' -print)
 }
 
 # Runs before the Rust selection so a derived crate consumer joins the same
