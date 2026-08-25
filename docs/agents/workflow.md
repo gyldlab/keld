@@ -61,6 +61,19 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    policy/helper, copied parser/state machine, silent compatibility regression or
    performance claim based only on language choice blocks the PR until the root cause is
    fixed.
+   When CodeRabbit has not reviewed the current head commit (root `AGENTS.md` § Commits &
+   PRs), an adversarial isolated-context review is **mandatory**, not optional, and it MUST
+   have all four of these or it is theatre:
+   - **Isolated context.** Reviewers get the diff and the repo, and MUST NOT be given the
+     author's rationale. A reviewer handed the reasoning grades the explanation instead of
+     the code.
+   - **A claim is not evidence.** A comment, commit message or PR body states what the
+     author believes and is the thing under test. Reviewers verify behaviour by running it,
+     and MAY mutate a file to test a hypothesis provided they restore it and confirm.
+   - **One named lens each**, so coverage is deliberate rather than several reviewers
+     re-finding the same thing.
+   - **An independent refuter per finding**, whose default position is that the claim is
+     wrong. What survives refutation is what gets reported.
 7. **PR and handoff.** Refresh Linear once more, then rebase onto `origin/main` first
    (linear history; `--force-with-lease` the feature branch only — root `AGENTS.md`
    § Commits & PRs). After CodeRabbit fixes, resolve the addressed GitHub review
