@@ -113,18 +113,31 @@ acceptance cannot move between agents.
 - Branch: agent/kel-<n>-<slug>
 - Expected paths: <globs this work will write>
 - Single-writer files needed: none | <named shared file>
-- Claim expires: <UTC timestamp; refresh while working>
+- Claim expires: <UTC timestamp, at most 24h ahead; refresh while working>
 - OS acceptance owned: real:<OS/device + observable> | none
 ```
 
+The claim names *ownership* of an OS criterion. The availability of that system stays in
+the `## OS acceptance` block step 1 already requires, posted in the same comment directly
+after the claim — one record of availability, not two.
+
 - An agent MUST NOT begin work on an issue carrying an **unexpired** claim from another
   agent or device. It MUST record the conflict on its own issue and stop.
-- **Overlapping `Expected paths` is a conflict even across different issues.** Two
-  tickets with disjoint scope on paper routinely share a file in practice; that
-  collision is invisible until the second merge silently drops the first.
+- **Overlapping `Expected paths` is a conflict even across different issues**, and it
+  carries the same duty: the second agent MUST stop and record the conflict on its own
+  issue rather than proceeding on a different ticket. Two tickets with disjoint scope on
+  paper routinely share a file in practice, and that collision is invisible until the
+  second merge silently drops the first.
 - A claim past `Claim expires` is free. The next agent MAY take the issue and MUST say
-  in its own claim that it did, so a crashed or disconnected session cannot hold the
-  board indefinitely.
+  in its own claim that it did.
+- `Claim expires` MUST be at most 24h ahead, and an agent MUST NOT extend it except by
+  refreshing while actually working. Without a ceiling the expiry rule guarantees
+  nothing: a crashed session that wrote a far-future timestamp would hold the board for
+  as long as it named.
+- A human MAY revoke any claim at any time by saying so on the issue. Revocation takes
+  effect immediately, regardless of the expiry, and the next agent records that it took
+  a revoked claim. This is the override for a wedged or misbehaving agent that is still
+  refreshing.
 - `Single-writer files needed` MUST be empty unless that agent is the designated writer
   for the shared file (see § Parallelism rules). Claiming one does not grant it.
 - The claim MUST be refreshed at each substantial milestone, alongside the progress
