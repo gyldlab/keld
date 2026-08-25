@@ -1424,7 +1424,7 @@ mod tests {
         // when the host asked it to stop must leave the ledger empty — every
         // clean `keld dev` run ends exactly this way, and recording it would
         // make the command exit 1 on a healthy app.
-        let sup = Supervisor::start(RestartPolicy::default(), || shell_command("sleep 30"))
+        let sup = Supervisor::start(RestartPolicy::default(), long_running_command)
             .expect("first spawn must succeed");
         let (pid, _) = recv_started(&sup);
         assert_ne!(pid, std::process::id());
@@ -1449,7 +1449,10 @@ mod tests {
         // happened. Without the position the host cannot order a crash against
         // the app's ready marker, which is the whole mechanism.
         let sup = Supervisor::start(RestartPolicy::default(), || {
-            shell_command("echo alive-before-dying; exit 3")
+            // `&&`, not `;`: `cmd /C` does not treat `;` as a command
+            // separator, so a unix-only spelling here makes the child echo one
+            // literal string and exit 0 — the crash under test never happens.
+            shell_command("echo alive-before-dying && exit 3")
         })
         .expect("first spawn must succeed");
         let error = match sup.wait_for_outcome() {
@@ -1587,12 +1590,8 @@ mod tests {
         // until it exits on its own (KEL-118). That is a real supervisor
         // defect, but it is not what this test is for — asserting it here
         // would make this test fail for a reason it does not name.
-        let sup = Supervisor::start(RestartPolicy::default(), || {
-            let mut cmd = long_running_command();
-            cmd.stdout(Stdio::piped());
-            cmd
-        })
-        .expect("first spawn must succeed");
+        let sup = Supervisor::start(RestartPolicy::default(), long_running_command)
+            .expect("first spawn must succeed");
         let (pid, _) = recv_started(&sup);
         assert_ne!(pid, std::process::id());
 
