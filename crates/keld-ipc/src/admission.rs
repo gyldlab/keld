@@ -1,9 +1,11 @@
 //! Platform-neutral admission rejection taxonomy for host bootstrap listeners.
 //!
-//! A bootstrap listener admits exactly one authenticated peer. Every peer that
-//! fails before authentication is recorded, redacted, so the host can see *why*
-//! admission is not completing without ever learning the token, the endpoint, or
-//! raw parser detail.
+//! A bootstrap listener admits exactly one authenticated peer. When the caller
+//! supplies a [`BootstrapRejectionObserver`], every peer that fails before
+//! authentication is recorded, redacted, so the host can see *why* admission is
+//! not completing without ever learning the token, the endpoint, or raw parser
+//! detail. Callers that pass no observer still classify each failure and then
+//! discard the record; the guarantee is about classification, not storage.
 //!
 //! This module is deliberately transport- and platform-neutral. The Unix
 //! listener in [`crate::bootstrap`] and the Windows named-pipe listener
@@ -28,12 +30,16 @@ use crate::IpcError;
 pub enum BootstrapRejection {
     /// EOF or a non-timeout I/O failure before authentication completed.
     Io,
-    /// A malformed frame header: bad magic, or an unsupported protocol version.
+    /// A malformed frame header: bad magic, an unsupported protocol version, or
+    /// an unknown frame-kind byte ([`crate::frame::HeaderError`] in full).
     Header,
     /// A declared payload larger than `MAX_FRAME_LEN`.
     PayloadTooLarge,
     /// A well-formed frame that is not the expected `HELLO`, or one whose
     /// reserved fields are not zero.
+    ///
+    /// Also carries [`IpcError::Codec`], which this handshake cannot produce —
+    /// see [`Self::classify`] for why it is classified rather than dropped.
     Protocol,
     /// A started frame that did not complete before the app-link I/O deadline.
     ///
@@ -104,12 +110,13 @@ mod tests {
     /// record changes with it, so this table is the contract.
     #[test]
     fn every_pre_auth_failure_maps_to_its_specified_code() {
-        let cases: [(IpcError, &str); 6] = [
+        let cases: [(IpcError, &str); 7] = [
             (
                 IpcError::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
                 "KELD-IPC-001",
             ),
             (IpcError::Header(HeaderError::BadMagic(0)), "KELD-IPC-002"),
+            (IpcError::Header(HeaderError::BadKind(0xFF)), "KELD-IPC-002"),
             (IpcError::PayloadTooLarge, "KELD-IPC-004"),
             (
                 IpcError::Protocol {

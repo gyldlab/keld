@@ -16,7 +16,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::APP_LINK_IO_DEADLINE;
 use crate::IpcError;
-use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
+// Re-exported, not merely imported: these were public at
+// `keld_ipc::bootstrap::{BootstrapRejection, BootstrapRejectionObserver}`
+// before the taxonomy moved to `admission`, and a crate-root export does not
+// preserve that path. Moving the owner must not break the published one.
+pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
 use crate::link::{AppLinkDeadlines, handshake_server};
 use crate::token::{SessionToken, format_app_link};
 
@@ -403,6 +407,7 @@ fn unique_session_dir() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::io::ErrorKind;
+    use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
     use std::sync::Arc;
@@ -589,6 +594,64 @@ mod tests {
         let seen = super::lock_or_recover(&seen);
         assert_eq!(*seen, vec![BootstrapRejection::HelloAuth]);
         assert_eq!(seen[0].code(), "KELD-IPC-007");
+    }
+
+    /// The accept loop used to discard every pre-authentication failure that was
+    /// not a token failure, so a peer that never sent a parseable frame left no
+    /// trace at all. Classification alone is unit-tested in `admission`; this
+    /// asserts the *wiring* — that a non-token failure actually reaches the
+    /// observer, with its own code, and still does not consume the bootstrap.
+    ///
+    /// Restoring `Err(_) => {}` makes this fail with an empty record list.
+    #[test]
+    fn observer_reports_a_non_token_rejection_without_consuming_bootstrap() {
+        let listener = Arc::new(BootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("link");
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observer = RecordingObserver {
+            seen: Arc::clone(&seen),
+        };
+
+        let acceptor = Arc::clone(&listener);
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let result = acceptor
+                .accept_authenticated_until(Instant::now() + Duration::from_secs(2), &observer)
+                .expect("listener I/O");
+            accepted_tx.send(result).expect("notify accepted");
+        });
+
+        // A full 16-byte header whose magic is not `KI`: the server parses a
+        // header before it can look for a token, so this is `HeaderError`, not
+        // `HelloAuth`. Sending a complete header keeps this distinct from the
+        // partial-frame timeout case.
+        let mut hostile = UnixStream::connect(endpoint).expect("hostile connect");
+        hostile
+            .set_app_link_deadlines(Some(Duration::from_millis(250)))
+            .expect("deadline");
+        hostile.write_all(&[0xFF_u8; 16]).expect("write bad header");
+        hostile.flush().expect("flush");
+        drop(hostile);
+
+        let mut role = UnixStream::connect(endpoint).expect("legitimate connect");
+        handshake_client(&mut role, &token).expect("legitimate token accepted");
+        let result = accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a bad header must not consume the bootstrap opportunity");
+        assert!(matches!(result, BootstrapAdmission::Authenticated(_)));
+        drop(role);
+        server.join().expect("server join");
+
+        let seen = super::lock_or_recover(&seen);
+        assert!(
+            seen.contains(&BootstrapRejection::Header),
+            "a malformed header must be recorded as its own class, got {seen:?}"
+        );
+        assert!(
+            !seen.contains(&BootstrapRejection::HelloAuth),
+            "a header failure must not be reported as token failure, got {seen:?}"
+        );
     }
 
     #[test]
