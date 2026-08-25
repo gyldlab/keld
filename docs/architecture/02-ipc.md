@@ -102,7 +102,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   ledger and exits 1 with `KELD-CORE-033` quoting the nested `KELD-RUNTIME-*`
   cause (KEL-105 option (a), SURFACE). Minting a fresh link generation so the
   restarted child can re-handshake is option (b), RECOVER — KEL-96 AC5, and not
-  this path.
+  this path. The detection is not yet total: a generation that ends itself with
+  exit status 0 is not entered in the crash ledger at all, so that death is still
+  reported as success (KEL-116).
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
   CALL). Further CALLs on the same stream use `echo_invoke` and must not send a
