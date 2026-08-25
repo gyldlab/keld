@@ -211,9 +211,9 @@ impl BootstrapListener {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             }
-            // Both calls act on the ACCEPTED PEER's socket, not on the
-            // listener, so a failure is a fact about that one peer. `?` made
-            // them fatal to admission instead.
+            // Setting the deadline is a fact about THIS PEER, not about the
+            // listener: the call's outcome depends on the peer's state. `?`
+            // made it fatal to admission instead.
             //
             // macOS returns EINVAL from SO_RCVTIMEO/SO_SNDTIMEO on an accepted
             // socket whose peer has already closed, so a bare connect-then-
@@ -231,10 +231,12 @@ impl BootstrapListener {
                 observer.rejected(BootstrapRejection::Io);
                 continue;
             }
-            let Ok(active_stream) = stream.try_clone() else {
-                observer.rejected(BootstrapRejection::Io);
-                continue;
-            };
+            // `try_clone` is NOT per-peer: it dups a local descriptor, so it
+            // fails on host resource exhaustion (EMFILE/ENFILE), never because
+            // of anything this peer did. Recording it as a rejection and
+            // retrying would drop legitimate peers forever while the host fault
+            // that caused it stayed invisible. It propagates.
+            let active_stream = stream.try_clone()?;
             *lock_or_recover(&self.active_stream) = Some(active_stream);
             let _active = ActiveHandshake {
                 active_stream: Arc::clone(&self.active_stream),
