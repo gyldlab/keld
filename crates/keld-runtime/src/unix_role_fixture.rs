@@ -520,8 +520,14 @@ mod tests {
     /// flaked on macOS — and only when the writer happened to lose the race.
     ///
     /// The delay below is the condition under test — a writer slower than the
-    /// reader — not a sleep standing in for a wait. Reverting either half of
-    /// the fix fails this test on macOS.
+    /// reader — not a sleep standing in for a wait.
+    ///
+    /// This test binds the retry half only: it still passes with the
+    /// `set_nonblocking(false)` call removed, because a `WouldBlock` that the
+    /// loop retries is indistinguishable here from a blocking read that waits.
+    /// [`accepted_control_stream_blocks_for_its_read_deadline`] is the test
+    /// that binds the `O_NONBLOCK` half — verified by removing that call and
+    /// watching only that test fail.
     #[test]
     fn control_peer_waits_for_a_writer_slower_than_one_poll_interval() {
         let dir = unique_test_dir();
