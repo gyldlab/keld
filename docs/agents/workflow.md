@@ -16,6 +16,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    it to that agent. Otherwise it MUST NOT change the issue or begin overlapping work;
    it MUST record the ownership conflict on its own Linear issue (or the handoff if
    Linear is unavailable) and notify the human/orchestrator.
+   That first comment MUST open with an `## Agent claim` block (template below).
+   The claim is posted **before any edit**, not after the work starts: a claim that
+   only becomes visible once a branch exists cannot stop a second device from
+   starting the same issue, which is how two agents discover each other at merge
+   instead of at pickup.
    Before implementation, classify every acceptance criterion as `CI-only`, `real
    OS/device`, or `not applicable`. For a real OS/device criterion, the initial Linear
    comment MUST include `## OS acceptance` with the required OS/device, exact observable
@@ -92,6 +97,38 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    authorization and does not close the parent issue. Move the issue to Done only when
    every acceptance criterion is met; otherwise leave it In Progress or mark it Blocked
    with the exact dependency.
+
+## Agent claim (mandatory, before any edit)
+
+Agents run on more than one machine against one Linear board. Ownership is therefore
+declared in Linear before work starts, and it names the device, because `real OS/device`
+acceptance cannot move between agents.
+
+```text
+## Agent claim
+- Agent: claude-code | codex | cursor
+- Device: <host the work actually runs on>
+- Model/effort: e.g. opus-5 | gpt-5.6-sol@max
+- Worktree: ../keld-<issue>
+- Branch: agent/kel-<n>-<slug>
+- Expected paths: <globs this work will write>
+- Single-writer files needed: none | <named shared file>
+- Claim expires: <UTC timestamp; refresh while working>
+- OS acceptance owned: real:<OS/device + observable> | none
+```
+
+- An agent MUST NOT begin work on an issue carrying an **unexpired** claim from another
+  agent or device. It MUST record the conflict on its own issue and stop.
+- **Overlapping `Expected paths` is a conflict even across different issues.** Two
+  tickets with disjoint scope on paper routinely share a file in practice; that
+  collision is invisible until the second merge silently drops the first.
+- A claim past `Claim expires` is free. The next agent MAY take the issue and MUST say
+  in its own claim that it did, so a crashed or disconnected session cannot hold the
+  board indefinitely.
+- `Single-writer files needed` MUST be empty unless that agent is the designated writer
+  for the shared file (see § Parallelism rules). Claiming one does not grant it.
+- The claim MUST be refreshed at each substantial milestone, alongside the progress
+  comment step 4 already requires. An unrefreshed claim is a stale claim.
 
 ## Parallelism rules
 
