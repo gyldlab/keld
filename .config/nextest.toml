@@ -13,8 +13,10 @@
 # The profile is kept (empty, inheriting `default`) because `--profile ci` is
 # named by AGENTS.md, the `justfile`, and `.github/workflows/ci.yml`.
 #
-# `tools/ci_hygiene.rs` fails if a literal `retries` key reappears under
-# `[profile.ci]`. That is a speed bump, NOT enforcement of the rule above:
+# `tools/ci_hygiene.rs` fails if a plainly-spelled `retries` key reappears in any
+# section that binds this gate: `[profile.ci]`, `[profile.default]` (which `ci`
+# inherits, and where nextest's own docs put retries), or either profile's
+# `[[...overrides]]`. That is a speed bump, NOT enforcement of the rule above:
 # nextest resolves retries from this file UNION `--retries` UNION
 # `NEXTEST_RETRIES`, and flag and env win over the file, so a retrying gate can
 # be produced without editing this file at all. Reading the config cannot decide

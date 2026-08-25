@@ -174,7 +174,7 @@ cross-platform code, CI usually agrees.
 ## 4. Running tests
 
 ```bash
-cargo nextest run --workspace --profile ci     # the gate; ci profile sets retries = 1
+cargo nextest run --workspace --profile ci     # the gate; no retries, a flake fails here
 cargo nextest run -p keld-ipc                  # one crate
 cargo nextest run -p keld-ipc -- frame         # one crate, substring filter
 cargo test --workspace                         # fallback if nextest is unavailable

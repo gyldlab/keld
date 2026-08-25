@@ -510,24 +510,32 @@ fn is_pinned_sha(spec: &str) -> bool {
 /// must not retry: a retry reports a flaky test as green and hides the first
 /// failure from the summary a human or agent reads (KEL-112).
 ///
-/// Deliberately narrow, and its limits are the point. It catches the literal
-/// reappearance of a `retries` key under `[profile.ci]` — the regression that
-/// actually happened. It does NOT catch, and cannot:
+/// Deliberately narrow, and its limits are the point.
+///
+/// It catches a plainly-spelled `retries` key in any section that binds the
+/// gate — see [`section_binds_ci_gate`]. It does NOT catch:
 ///
 /// - `cargo nextest run --profile ci --retries 2`
 /// - `NEXTEST_RETRIES=2` in the job's environment
 /// - `--profile local` pointed at a profile that does retry
+/// - a key spelled so as to evade a line reader: `"retries"`, an escape-encoded
+///   `"\U00000072etries"`, or a header hidden inside a multi-line string
 ///
-/// All three were reproduced against this exact config with the guard green.
-/// nextest resolves retries from config UNION flag UNION env, with flag and env
-/// taking precedence, so no amount of parsing this file can decide the
-/// question — the inputs are not in it. Three rounds of hardening this parser
-/// each produced a new bypass from outside its frame. KEL-115 replaces it with
-/// a behavioural check: run the real gate command against a deliberately
-/// failing test and assert exactly one attempt.
+/// The first three were reproduced against this exact config with the guard
+/// green, and no reading of this file can catch them: nextest resolves retries
+/// from config UNION flag UNION env, flag and env winning, so the deciding
+/// inputs are not in the file at all.
 ///
-/// Do not extend this to chase a new spelling. Extending it makes it look more
-/// authoritative without making it more correct, which is the worse failure.
+/// The fourth is decidable but deliberately not chased. Three rounds of
+/// hardening a parser for it each produced a new spelling from outside the
+/// previous frame, and an evasive spelling is not the regression this guard
+/// exists to prevent — an ordinary edit re-adding `retries` is. KEL-115
+/// replaces the whole approach with a behavioural check: run the real gate
+/// command against a deliberately failing test and assert exactly one attempt.
+///
+/// Extend this only to a section that genuinely binds the gate and is verified
+/// to retry. Do not extend it to chase an evasive spelling: that makes it look
+/// more authoritative without making it more correct.
 fn check_ci_profile_does_not_retry(root: &Path) -> Result<(), String> {
     let text = read(root, NEXTEST_CONFIG)?;
     if profile_section_sets_retries(&text, "ci") {
@@ -541,15 +549,37 @@ fn check_ci_profile_does_not_retry(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// True when `[profile.<name>]` declares a `retries` key. Reads only that
-/// section: a `retries` line under any other profile is not this contract.
-fn profile_section_sets_retries(text: &str, name: &str) -> bool {
-    let header = format!("[profile.{name}]");
+/// True when a section that binds `--profile ci` declares a `retries` key.
+///
+/// Three sections bind it, all verified against cargo-nextest 0.9.140 by
+/// counting `TRY` lines from a deliberately failing test:
+///
+/// - `[profile.ci]` itself.
+/// - `[profile.default]` — `ci` inherits it, and nextest's own documentation
+///   puts `retries` here, so this is the *likeliest* accidental regression, not
+///   an exotic one.
+/// - `[[profile.ci.overrides]]` and `[[profile.default.overrides]]`, whose
+///   `retries` applies to every test the override's filter matches.
+///
+/// A `retries` under a profile that does not bind the gate — `[profile.local]`,
+/// `[profile.ci-extra]` — is correctly not this contract: measured, those run a
+/// single attempt under `--profile ci`.
+fn section_binds_ci_gate(header: &str) -> bool {
+    matches!(
+        header,
+        "[profile.ci]"
+            | "[profile.default]"
+            | "[[profile.ci.overrides]]"
+            | "[[profile.default.overrides]]"
+    )
+}
+
+fn profile_section_sets_retries(text: &str, _name: &str) -> bool {
     let mut inside = false;
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            inside = line == header;
+            inside = section_binds_ci_gate(line);
             continue;
         }
         if inside && line.split('=').next().is_some_and(|key| key.trim() == "retries") {
@@ -900,6 +930,49 @@ mod tests {
             .expect_err("the mandated verification profile must not retry (KEL-112)");
         assert!(error.contains("retries"), "{error}");
         assert!(error.contains(NEXTEST_CONFIG), "{error}");
+    }
+
+    #[test]
+    fn the_inherited_default_profile_is_the_gate_too() {
+        // `--profile ci` inherits `default`, and nextest's own documentation
+        // puts `retries` there — so this is the likeliest accidental
+        // regression, not an exotic one. Measured on cargo-nextest 0.9.140:
+        // `[profile.default] retries = 2` with an empty `[profile.ci]` runs a
+        // failing test 3 times under `--profile ci`.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.default]\nretries = 2\n\n[profile.ci]\n",
+        );
+        let error = check(temp.path())
+            .expect_err("`ci` inherits `default`, so retries there bind the mandated gate");
+        assert!(error.contains("retries"), "{error}");
+    }
+
+    #[test]
+    fn an_override_that_retries_binds_the_gate() {
+        // An override's `retries` applies to every test its filter matches.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.ci]\n\n[[profile.ci.overrides]]\nfilter = \"all()\"\nretries = 2\n",
+        );
+        let error = check(temp.path())
+            .expect_err("an override under the mandated profile still retries it");
+        assert!(error.contains("retries"), "{error}");
+    }
+
+    #[test]
+    fn a_profile_that_does_not_bind_the_gate_may_retry() {
+        // The no-false-positive side: measured, `[profile.local]` runs a single
+        // attempt under `--profile ci`, so rejecting it would block a
+        // legitimate local convenience for no gain.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.ci]\n\n[profile.local]\nretries = 3\n",
+        );
+        check(temp.path()).expect("a profile the gate does not inherit is not this contract");
     }
 
     #[test]
