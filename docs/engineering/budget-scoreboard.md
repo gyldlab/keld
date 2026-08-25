@@ -245,6 +245,66 @@ SHA-plus-path rule.
 Raw JSON for these coalition rows was `/tmp`; not in keld-benches git. Recorded
 on Keld [`4b70435`](https://github.com/gyldlab/keld/commit/4b7043505b84c488aa6213e59ae4c198c01d04e8).
 
+### Windows paired MEM-IDLE (WebView2 — not macOS WK)
+
+**Machine:** Windows 11 build 26200, AMD Ryzen 7 5800H, on AC. WebView2
+Evergreen 151.0.4129.107. Keld [`2a8e8a4`](https://github.com/gyldlab/keld/commit/2a8e8a49fc4b253594861389e42aa973da164cfb),
+Tauri 2.11.5, Bun 1.4.0, rustc 1.97.1.
+
+The first **paired** measurement in this repository's history: 30 rounds,
+round-major randomized interleaving (seed 202608252), each round running each
+arm exactly once in shuffled order, so drift over the session cannot land on
+one arm. Both arms are handed the byte-identical 225-byte canonical page
+(`26f6ad05…`), verified by extracting the embedded page from the Tauri artifact
+the document cites rather than by trusting the build. Not comparable to the
+macOS WK rows above: different engine, different counter, different machine.
+
+| Arm | Scored host working set (median) | Min | Max | Cite |
+|---|---:|---:|---:|---|
+| **Keld** `keld dev` host | **22,788 KiB (22.3 MiB)** | 22,680 | 22,888 | [result document](https://github.com/gyldlab/keld-benches/blob/b30d145e400b382240d573bf6a14a0bc3f0bd040/windows/bench/results/mem-idle/2026-08-25.kel25-windows-keld-vs-tauri-canonical-30.fresh-process.json) @ [`b30d145`](https://github.com/gyldlab/keld-benches/commit/b30d145e400b382240d573bf6a14a0bc3f0bd040) |
+| Tauri 2.11.5 host | **26,856 KiB (26.2 MiB)** | 26,732 | 27,008 | same document |
+
+Paired percentile bootstrap over rounds, 10,000 resamples, resampling whole
+rounds to preserve pairing: **median ratio 0.8484, CI95 [0.846864, 0.849548],
+verdict PASS** — the Keld host process is ~15.2% smaller, and the interval
+excludes 1.0. `publication.eligible` is **true**: zero blocking reasons.
+
+**Host-to-host only — this is not a total-footprint claim.** The Keld arm
+additionally runs application JavaScript in a supervised Bun child over
+authenticated kipc; the Tauri fixture backend is `tauri::Builder::default().run()`
+and runs no application JavaScript at all. Host + Bun child is recorded per run
+as a diagnostic at a median of **73,620 KiB (71.9 MiB)** and is deliberately
+excluded from the comparison. The six WebView2 engine processes
+(**329,138 KiB** median) are excluded from both arms, mirroring how the macOS
+rows exclude WebKit XPCs — so no row here is a "sum of keld processes" figure
+against the architecture 01 §5 ≤ 90 MB budget.
+
+**A working set is not comparable across sessions.** An earlier session on this
+machine recorded that host+Bun diagnostic at 48,688 KiB, but its
+`runtime_private_kib` was 88,918 against this session's 89,016 — flat — with one
+runtime process in both. Private bytes is the allocation-side counter and did not
+move; only residency did. Working set tracks system memory pressure as well as
+the program, which is exactly why the headline is paired **within** a round
+(both arms measured seconds apart under the same pressure) and why no working-set
+number here may be quoted against a different document.
+
+**The session was not uniformly nominal.** The fixed-work thermal gate after
+round 20 measured ratio 1.1132 against a 1.05 band, idled the machine 63.6 s,
+and re-probed at 0.9729 before continuing; rounds 21–30 ran after that recovery.
+Both boundary probes were nominal (1.0202 start, 0.9655 end) and neither was
+`reference_suspect`. Every probe ratio is citable from the raw session record
+the emitter writes alongside the document. Temperature is recorded as context
+only and is **not** the decision variable: idle sweeps on this machine ranged
+70–91 °C and the opening probe read 82 °C while running nominal.
+
+Fixtures: [`windows/keld/hello`](https://github.com/gyldlab/keld-benches/tree/b30d145e400b382240d573bf6a14a0bc3f0bd040/windows/keld/hello) and
+[`windows/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/b30d145e400b382240d573bf6a14a0bc3f0bd040/windows/tauri/hello).
+Narrative and caveats:
+[`MEASUREMENTS.md`](https://github.com/gyldlab/keld-benches/blob/b30d145e400b382240d573bf6a14a0bc3f0bd040/MEASUREMENTS.md) @ [`b30d145`](https://github.com/gyldlab/keld-benches/commit/b30d145e400b382240d573bf6a14a0bc3f0bd040).
+
+macOS and Linux MEM-IDLE remain **unmeasured**; KEL-25 is not complete on the
+strength of this row.
+
 ---
 
 ## Disk / installer (not paint)
