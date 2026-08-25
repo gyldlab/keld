@@ -274,6 +274,16 @@ pub struct CrashLedger {
     /// Diagnostic for the most recent crash, carrying its `KELD-RUNTIME-012`
     /// code and a bounded stderr tail. `None` exactly when `count` is 0.
     pub last: Option<RuntimeError>,
+    /// Length of captured stdout at the moment of the most recent crash, so a
+    /// host can order that crash against something the app printed.
+    ///
+    /// The supervisor publishes stdout and its `Exited` event *before* it
+    /// records the crash, so a host that only compares crash counts cannot
+    /// tell "crashed, then printed" from "printed, then crashed" — it sees
+    /// both at once and forgives a death that happened after the app was
+    /// live. Comparing a marker's offset against this length answers that
+    /// question without any timing assumption (KEL-105).
+    pub stdout_len_at_last_crash: usize,
 }
 
 /// Terminal outcome of [`Supervisor::wait_for_outcome`].
@@ -715,9 +725,28 @@ fn supervise<P>(
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
+            // Classify before killing, and give a child that is already dying
+            // a bounded chance to finish. Once the host has killed the child
+            // the reaped status is the host's own doing and no longer says who
+            // ended it first, and on unix a signal death carries no exit code
+            // at all — so any classifier reading the post-kill status must
+            // either miss every signalled crash or misread the host's own kill
+            // as one. A single `try_wait` is not enough either: process death
+            // is asynchronous, so an app that died microseconds before the
+            // developer closed the window is still unreaped at that instant
+            // and would be attributed to the host. An exit observed here is
+            // the child's own, whatever status it carries.
+            let self_terminated = wait_for_self_termination(&mut child);
             let _ = child.kill();
-            reap_and_record_own_exit(&mut child, crash_ledger, output, pid);
+            let _ = child.wait();
+            // Join before recording: the capture threads may still hold unread
+            // bytes, and the natural-exit path below already joins first. A
+            // crash must not produce a complete diagnostic on one path and a
+            // truncated one on the other.
             join_capture_threads(capture_threads);
+            if let Some(status) = self_terminated.filter(|status| !status.success()) {
+                record_crash(crash_ledger, output, pid, status.code());
+            }
             *lock_or_recover(current_pid) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
@@ -924,36 +953,33 @@ where
     }
 }
 
-/// Exit code the host's own [`Child::kill`] makes the OS report, when it
-/// reports one at all.
+/// How long the supervisor lets a child it is about to stop finish dying on its
+/// own before attributing the death to the host's own kill.
 ///
-/// Unix records a signal death with no exit code, so any reported code is the
-/// child's own. Windows' `TerminateProcess(1)` records exit code 1, so on
-/// Windows that single value is indistinguishable from an app that genuinely
-/// exited 1; it is left to the crash-loop breaker rather than guessed at.
-#[cfg(unix)]
-const HOST_KILL_EXIT_CODE: Option<i32> = None;
-#[cfg(windows)]
-const HOST_KILL_EXIT_CODE: Option<i32> = Some(1);
+/// This is the width of the ambiguous window, not a guess at how slow a child
+/// is: `kill` returns before the process is gone, so "already terminating" and
+/// "healthy, about to be killed" look identical for as long as the kernel takes
+/// to reap. Paid once per session teardown and only when the child has not
+/// already exited, so a healthy `keld dev` pays it once on the way out.
+const SELF_TERMINATION_GRACE: Duration = Duration::from_millis(250);
 
-/// Reaps a child the host has just asked to stop, and records a crash when the
-/// reaped status proves the child had already died on its own.
+/// Waits up to [`SELF_TERMINATION_GRACE`] for `child` to exit on its own.
 ///
-/// KEL-105: the child can exit between the last `try_wait` and the kill above.
-/// Dropping that status would report a dead app as a clean stop and let
-/// `keld dev` exit 0 over it. A reported non-zero exit code that is not
-/// [`HOST_KILL_EXIT_CODE`] cannot have come from the host's own kill, so it is
-/// the child's crash.
-fn reap_and_record_own_exit(
-    child: &mut Child,
-    crash_ledger: &Arc<Mutex<CrashLedger>>,
-    output: &Arc<Mutex<CapturedOutput>>,
-    pid: u32,
-) {
-    let Ok(status) = child.wait() else { return };
-    let code = status.code();
-    if !status.success() && code.is_some() && code != HOST_KILL_EXIT_CODE {
-        record_crash(crash_ledger, output, pid, code);
+/// `Some(status)` means the child ended itself and the host must account for it;
+/// `None` means it was still running, so the host's own kill is what ends it.
+fn wait_for_self_termination(child: &mut Child) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + SELF_TERMINATION_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                thread::sleep(POLL_INTERVAL);
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -966,9 +992,16 @@ fn record_crash(
     pid: u32,
     exit_code: Option<i32>,
 ) {
-    let stderr_tail = lock_or_recover(output).stderr_tail(2000);
+    // One snapshot under one lock: the tail and the length must describe the
+    // same stdout, or the host would order a marker against a different point
+    // in the stream than the diagnostic reports.
+    let (stderr_tail, stdout_len) = {
+        let captured = lock_or_recover(output);
+        (captured.stderr_tail(2000), captured.stdout.len())
+    };
     let mut ledger = lock_or_recover(crash_ledger);
     ledger.count = ledger.count.saturating_add(1);
+    ledger.stdout_len_at_last_crash = stdout_len;
     ledger.last = Some(RuntimeError::ChildCrashed {
         pid,
         exit_code,
@@ -1117,6 +1150,24 @@ mod tests {
                 command,
                 lease: FailingRevokeLease,
             })
+        }
+    }
+
+    /// A child that stays alive for far longer than any test needs, spawned
+    /// with no shell in between so the supervisor's direct child is the only
+    /// process holding its pipes.
+    fn long_running_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("ping");
+            cmd.args(["-n", "31", "127.0.0.1"]);
+            cmd
         }
     }
 
@@ -1367,6 +1418,71 @@ mod tests {
     }
 
     #[test]
+    fn a_host_kill_of_a_live_child_is_not_recorded_as_a_crash() {
+        // KEL-105 no-false-positive guard. The shutdown branch classifies by
+        // observing the child *before* killing it, so a child that was alive
+        // when the host asked it to stop must leave the ledger empty — every
+        // clean `keld dev` run ends exactly this way, and recording it would
+        // make the command exit 1 on a healthy app.
+        let sup = Supervisor::start(RestartPolicy::default(), long_running_command)
+            .expect("first spawn must succeed");
+        let (pid, _) = recv_started(&sup);
+        assert_ne!(pid, std::process::id());
+        sup.shutdown();
+        let outcome = sup.wait_for_outcome();
+        let ledger = sup.crash_ledger();
+        assert!(
+            matches!(outcome, SupervisorOutcome::Stopped),
+            "a host-requested stop of a live child is not a failure: {outcome:?}"
+        );
+        assert_eq!(
+            ledger.count, 0,
+            "the host's own kill must not be recorded as the child crashing: {ledger:?}"
+        );
+        assert!(ledger.last.is_none(), "{ledger:?}");
+    }
+
+    #[test]
+    fn a_child_that_exits_non_zero_is_recorded_with_its_stdout_position() {
+        // Binds the two facts KEL-105's verdict is built from: the crash is
+        // counted, and the ledger records how far stdout had got when it
+        // happened. Without the position the host cannot order a crash against
+        // the app's ready marker, which is the whole mechanism.
+        let sup = Supervisor::start(RestartPolicy::default(), || {
+            // `&&`, not `;`: `cmd /C` does not treat `;` as a command
+            // separator, so a unix-only spelling here makes the child echo one
+            // literal string and exit 0 — the crash under test never happens.
+            shell_command("echo alive-before-dying && exit 3")
+        })
+        .expect("first spawn must succeed");
+        let error = match sup.wait_for_outcome() {
+            SupervisorOutcome::CrashLoop(error) => error,
+            other => panic!("expected the breaker to trip, got {other:?}"),
+        };
+        assert!(error.to_string().contains("KELD-RUNTIME-002"), "{error}");
+        let ledger = sup.crash_ledger();
+        assert!(
+            ledger.count >= 1,
+            "a non-zero exit must be recorded: {ledger:?}"
+        );
+        let rendered = ledger
+            .last
+            .as_ref()
+            .expect("a counted crash must carry its diagnostic")
+            .to_string();
+        assert!(rendered.contains("KELD-RUNTIME-012"), "{rendered}");
+        assert!(
+            ledger.stdout_len_at_last_crash > 0,
+            "the crash must record how far stdout had got, or the host cannot \
+             order it against the app's ready marker: {ledger:?}"
+        );
+        assert!(
+            ledger.stdout_len_at_last_crash <= sup.output().stdout.len(),
+            "the recorded position must be a real offset into captured stdout: {ledger:?}"
+        );
+    }
+
+    #[test]
     fn zero_exit_stops_without_restart() {
         let sup = Supervisor::start(RestartPolicy::default(), || shell_command("exit 0"))
             .expect("first spawn must succeed");
@@ -1467,15 +1583,15 @@ mod tests {
 
     #[test]
     fn shutdown_kills_a_long_running_child_and_does_not_restart() {
-        #[cfg(unix)]
-        let long_running = "sleep 30";
-        #[cfg(windows)]
-        let long_running = "ping -n 31 127.0.0.1 >NUL";
-
-        let sup = Supervisor::start(RestartPolicy::default(), move || {
-            shell_command(long_running)
-        })
-        .expect("first spawn must succeed");
+        // Spawned directly rather than through a shell. A shell wrapper is not
+        // part of this contract, and on Windows `cmd /C "ping ... >NUL"` runs
+        // `ping` as a *grandchild*: killing the direct child leaves it holding
+        // the inherited stdout pipe, so joining the capture threads blocks
+        // until it exits on its own (KEL-118). That is a real supervisor
+        // defect, but it is not what this test is for — asserting it here
+        // would make this test fail for a reason it does not name.
+        let sup = Supervisor::start(RestartPolicy::default(), long_running_command)
+            .expect("first spawn must succeed");
         let (pid, _) = recv_started(&sup);
         assert_ne!(pid, std::process::id());
 

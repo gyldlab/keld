@@ -180,8 +180,9 @@ impl HostOwnedHelloSession {
         };
         let deadline = Instant::now() + timeout;
         loop {
-            if supervisor.output().stdout.contains(needle) {
-                self.mark_ready(supervisor);
+            let captured = supervisor.output();
+            if captured.stdout.contains(needle) {
+                self.mark_ready(supervisor, &captured.stdout, needle);
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -210,8 +211,9 @@ impl HostOwnedHelloSession {
                     )));
                 }
                 Some(SupervisorEvent::Stopped) => {
-                    if supervisor.output().stdout.contains(needle) {
-                        self.mark_ready(supervisor);
+                    let captured = supervisor.output();
+                    if captured.stdout.contains(needle) {
+                        self.mark_ready(supervisor, &captured.stdout, needle);
                         return Ok(());
                     }
                     return Err(HelloSessionError::Runtime(
@@ -291,20 +293,51 @@ impl HostOwnedHelloSession {
         )
     }
 
-    /// Records the crashes already recovered from at the moment this session
-    /// *first* reached its ready marker, so [`Self::finish`] can tell a
-    /// recovered crash (KEL-70 AC1/AC3) from one that killed a live app
-    /// (KEL-105).
+    /// Records the crashes already recovered from when this session *first*
+    /// reached its ready marker, so [`Self::finish`] can tell a recovered
+    /// crash (KEL-70 AC1/AC3) from one that killed a live app (KEL-105).
     ///
     /// First transition only. [`Self::wait_until_output_contains`] matches
     /// against cumulative stdout, so a later call for a marker the app already
     /// printed returns immediately — re-baselining there would absorb a crash
-    /// that happened *after* the app was live and report it as recovered.
-    fn mark_ready(&self, supervisor: &Supervisor) {
-        if !self.ready_recorded.swap(true, Ordering::SeqCst) {
-            self.recovered_crashes
-                .store(supervisor.crash_ledger().count, Ordering::SeqCst);
+    /// that happened after the app was live and report it as recovered.
+    ///
+    /// `stdout` is the exact buffer the marker was found in, and it is read
+    /// *before* the ledger on purpose: the ledger only grows, so a crash that
+    /// lands in between makes the comparison stricter, never looser.
+    fn mark_ready(&self, supervisor: &Supervisor, stdout: &str, needle: &str) {
+        if self.ready_recorded.swap(true, Ordering::SeqCst) {
+            return;
         }
+        let recovered = recovered_crash_baseline(stdout, needle, &supervisor.crash_ledger());
+        self.recovered_crashes.store(recovered, Ordering::SeqCst);
+    }
+}
+
+/// How many observed crashes predate the app becoming ready, and so were
+/// recovered from rather than fatal.
+///
+/// Counting crashes is not enough. `keld-runtime` publishes stdout and its
+/// `Exited` event *before* it records the crash, so a host that samples the
+/// count when it notices the marker can see a post-ready death already in the
+/// ledger and fold it into the baseline — reporting success over a dead app,
+/// which is the whole of KEL-105. Ordering the marker against
+/// [`CrashLedger::stdout_len_at_last_crash`] answers "printed, then crashed"
+/// versus "crashed, then printed" from recorded facts, with no timing
+/// assumption about when the host looked.
+///
+/// Uses the marker's *first* occurrence. If a restarted generation printed the
+/// marker again, the earlier generation still died after being ready, and the
+/// v0 one-session listener means the restart cannot serve anyway
+/// (`docs/architecture/02-ipc.md`), so the earlier death is the honest verdict.
+fn recovered_crash_baseline(stdout: &str, needle: &str, ledger: &CrashLedger) -> u32 {
+    let Some(marker_end) = stdout.find(needle).map(|start| start + needle.len()) else {
+        return 0;
+    };
+    if marker_end > ledger.stdout_len_at_last_crash {
+        ledger.count
+    } else {
+        0
     }
 }
 
@@ -353,9 +386,16 @@ mod tests {
     }
 
     fn ledger(count: u32) -> CrashLedger {
+        ledger_at(count, 0)
+    }
+
+    /// A ledger whose most recent crash happened when stdout was
+    /// `stdout_len_at_last_crash` bytes long.
+    pub(super) fn ledger_at(count: u32, stdout_len_at_last_crash: usize) -> CrashLedger {
         CrashLedger {
             count,
             last: (count > 0).then(|| crash(4242, Some(3))),
+            stdout_len_at_last_crash,
         }
     }
 
@@ -428,5 +468,94 @@ mod tests {
         )
         .expect("a generation that never provisioned is not a success");
         assert!(err.to_string().contains("KELD-RUNTIME-003"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod ready_baseline_tests {
+    use super::recovered_crash_baseline;
+    use super::tests::ledger_at;
+
+    const READY: &str = "app: main process ready (IPC echo ok)";
+
+    #[test]
+    fn no_crash_yet_forgives_nothing_and_claims_nothing() {
+        let stdout = format!("booting\n{READY}\n");
+        assert_eq!(
+            recovered_crash_baseline(&stdout, READY, &ledger_at(0, 0)),
+            0
+        );
+    }
+
+    #[test]
+    fn a_crash_before_the_marker_was_printed_is_recovered() {
+        // KEL-70 AC1/AC3: generation 1 died before reporting ready, generation
+        // 2 came up. `keld dev` must still succeed.
+        let crashed = "gen1 booting\n";
+        let stdout = format!("{crashed}{READY}\n");
+        assert_eq!(
+            recovered_crash_baseline(&stdout, READY, &ledger_at(1, crashed.len())),
+            1,
+            "a crash the supervisor recovered from before ready must be forgiven"
+        );
+    }
+
+    #[test]
+    fn a_crash_after_the_marker_was_printed_is_not_recovered() {
+        // KEL-105's reopening: the app reported ready, then died. The host may
+        // not look until after `record_crash` has run, so the count alone shows
+        // the same 1 as the recovered case above — only the position separates
+        // them.
+        let stdout = format!("{READY}\ndying now\n");
+        assert_eq!(
+            recovered_crash_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
+            0,
+            "a death after the app was live must not be reported as recovered"
+        );
+    }
+
+    #[test]
+    fn a_crash_exactly_at_the_marker_end_is_not_recovered() {
+        // The crash snapshot ends exactly where the marker ends: the marker was
+        // already written when the crash was recorded, so it is post-ready.
+        let stdout = READY.to_owned();
+        assert_eq!(
+            recovered_crash_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
+            0
+        );
+    }
+
+    #[test]
+    fn recovery_then_a_post_ready_death_forgives_only_the_first() {
+        // gen1 crashed pre-ready (recovered), gen2 reported ready then died.
+        let pre = "gen1 booting\n";
+        let stdout = format!("{pre}{READY}\nlate output\n");
+        assert_eq!(
+            recovered_crash_baseline(&stdout, READY, &ledger_at(2, stdout.len())),
+            0,
+            "the later death is post-ready, so the run must fail"
+        );
+    }
+
+    #[test]
+    fn an_absent_marker_forgives_nothing() {
+        assert_eq!(
+            recovered_crash_baseline("nothing here", READY, &ledger_at(3, 0)),
+            0
+        );
+    }
+
+    #[test]
+    fn the_first_occurrence_of_a_repeated_marker_decides() {
+        // gen1 printed ready, died; gen2 printed ready again. The v0 listener
+        // admits one session, so gen2 cannot actually serve — the earlier death
+        // is the honest verdict.
+        let first = format!("{READY}\n");
+        let stdout = format!("{first}gen2\n{READY}\n");
+        assert_eq!(
+            recovered_crash_baseline(&stdout, READY, &ledger_at(1, first.len() + 5)),
+            0,
+            "a re-printed marker must not forgive the earlier post-ready death"
+        );
     }
 }
