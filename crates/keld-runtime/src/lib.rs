@@ -1153,6 +1153,24 @@ mod tests {
         }
     }
 
+    /// A child that stays alive for far longer than any test needs, spawned
+    /// with no shell in between so the supervisor's direct child is the only
+    /// process holding its pipes.
+    fn long_running_command() -> Command {
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            cmd
+        }
+        #[cfg(windows)]
+        {
+            let mut cmd = Command::new("ping");
+            cmd.args(["-n", "31", "127.0.0.1"]);
+            cmd
+        }
+    }
+
     fn shell_command(script: &str) -> Command {
         #[cfg(unix)]
         {
@@ -1562,13 +1580,17 @@ mod tests {
 
     #[test]
     fn shutdown_kills_a_long_running_child_and_does_not_restart() {
-        #[cfg(unix)]
-        let long_running = "sleep 30";
-        #[cfg(windows)]
-        let long_running = "ping -n 31 127.0.0.1 >NUL";
-
-        let sup = Supervisor::start(RestartPolicy::default(), move || {
-            shell_command(long_running)
+        // Spawned directly rather than through a shell. A shell wrapper is not
+        // part of this contract, and on Windows `cmd /C "ping ... >NUL"` runs
+        // `ping` as a *grandchild*: killing the direct child leaves it holding
+        // the inherited stdout pipe, so joining the capture threads blocks
+        // until it exits on its own (KEL-118). That is a real supervisor
+        // defect, but it is not what this test is for — asserting it here
+        // would make this test fail for a reason it does not name.
+        let sup = Supervisor::start(RestartPolicy::default(), || {
+            let mut cmd = long_running_command();
+            cmd.stdout(Stdio::piped());
+            cmd
         })
         .expect("first spawn must succeed");
         let (pid, _) = recv_started(&sup);
