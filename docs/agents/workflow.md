@@ -16,6 +16,19 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    it to that agent. Otherwise it MUST NOT change the issue or begin overlapping work;
    it MUST record the ownership conflict on its own Linear issue (or the handoff if
    Linear is unavailable) and notify the human/orchestrator.
+   That first comment MUST open with an `## Agent claim` block (template below).
+   The claim is posted **before any edit**, not after the work starts: a claim that
+   only becomes visible once a branch exists cannot stop a second device from
+   starting the same issue, which is how two agents discover each other at merge
+   instead of at pickup.
+   Posting is not atomic, so posting alone does not win the issue. After posting,
+   the agent MUST re-fetch the issue's comments and check for a competing claim it
+   could not have seen when it read: two agents can both read an unclaimed issue and
+   both post. **The earliest claim by Linear's own `createdAt` wins** — a
+   server-assigned order both agents observe identically, rather than either agent's
+   local clock. A later claimant MUST record the conflict on its own issue and stop
+   **before its first edit**. If two claims carry the same timestamp, neither
+   proceeds: that is a human arbitration, not a coin flip.
    Before implementation, classify every acceptance criterion as `CI-only`, `real
    OS/device`, or `not applicable`. For a real OS/device criterion, the initial Linear
    comment MUST include `## OS acceptance` with the required OS/device, exact observable
@@ -92,6 +105,59 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    authorization and does not close the parent issue. Move the issue to Done only when
    every acceptance criterion is met; otherwise leave it In Progress or mark it Blocked
    with the exact dependency.
+
+## Agent claim (mandatory, before any edit)
+
+Agents run on more than one machine against one Linear board. Ownership is therefore
+declared in Linear before work starts, and it names the device, because `real OS/device`
+acceptance cannot move between agents.
+
+```text
+## Agent claim
+- Agent: claude-code | codex | cursor
+- Device: <host the work actually runs on>
+- Model/effort: e.g. opus-5 | gpt-5.6-sol@max
+- Worktree: ../keld-<issue>
+- Branch: agent/kel-<n>-<slug>
+- Expected paths: <globs this work will write>
+- Single-writer files needed: none | <named shared file>
+- Claim expires: <UTC timestamp, at most 24h ahead; refresh while working>
+- OS acceptance owned: real:<OS/device + observable> | none
+```
+
+The claim names *ownership* of an OS criterion. The availability of that system stays in
+the `## OS acceptance` block step 1 already requires, posted in the same comment directly
+after the claim — one record of availability, not two.
+
+- An agent MUST NOT begin work on an issue carrying an **unexpired** claim from another
+  agent or device. It MUST record the conflict on its own issue and stop.
+- **Overlapping `Expected paths` on a single-writer file is a conflict even across
+  different issues**, and it carries the same duty: the second agent MUST stop and record
+  the conflict on its own issue rather than proceeding because the ticket number differs.
+  Overlap on any *other* path is not a stop — § Parallelism rules already governs it, and
+  first PR to green wins while later PRs rebase. This bullet narrows nothing there; it
+  only says that the single-writer set is claimed in Linear rather than discovered at
+  merge.
+- Overlap on an ordinary file is still worth declaring, because the failure it warns about
+  is not the loud one. Git reports a textual conflict and no work is lost. The silent case
+  is two agents editing *different regions* of one file, both merging cleanly, and the
+  combined result being wrong — a rule and its exception, a check and the test that pins
+  it. Seeing the overlap in a claim is what prompts the second agent to read the first
+  agent's diff before assuming a clean rebase is a correct one.
+- A claim past `Claim expires` is free. The next agent MAY take the issue and MUST say
+  in its own claim that it did.
+- `Claim expires` MUST be at most 24h ahead, and an agent MUST NOT extend it except by
+  refreshing while actually working. Without a ceiling the expiry rule guarantees
+  nothing: a crashed session that wrote a far-future timestamp would hold the board for
+  as long as it named.
+- A human MAY revoke any claim at any time by saying so on the issue. Revocation takes
+  effect immediately, regardless of the expiry, and the next agent records that it took
+  a revoked claim. This is the override for a wedged or misbehaving agent that is still
+  refreshing.
+- `Single-writer files needed` MUST be empty unless that agent is the designated writer
+  for the shared file (see § Parallelism rules). Claiming one does not grant it.
+- The claim MUST be refreshed at each substantial milestone, alongside the progress
+  comment step 4 already requires. An unrefreshed claim is a stale claim.
 
 ## Parallelism rules
 

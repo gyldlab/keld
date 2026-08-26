@@ -256,6 +256,10 @@ Paste chrome for multi-device agents lives in Prompt Tracker
 who never see that paste MUST still follow these rules — Linear is the shared merge-intent
 record across devices.
 
+Handoff records merge intent when work *ends*. Ownership is claimed before work
+*starts*: agents MUST post an `## Agent claim` naming their device before their first
+edit — [`docs/agents/workflow.md`](docs/agents/workflow.md) § Agent claim.
+
 1. If the agent creates or uses a git branch in `gyldlab/keld`, `0monish/keld-research`
    (nested `docs/research`), or `0monish/prompt-tracker`, it MUST comment on the relevant
    Linear issue(s) **before finishing** with a `## Branch handoff` block (template below).
