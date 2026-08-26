@@ -512,8 +512,10 @@ fn is_pinned_sha(spec: &str) -> bool {
 ///
 /// Deliberately narrow, and its limits are the point.
 ///
-/// It catches a plainly-spelled `retries` key in any section that binds the
-/// gate — see [`section_binds_ci_gate`]. It does NOT catch:
+/// It catches a plainly-spelled `retries` in the section family that binds the
+/// gate — see [`classify_gate_section`]: either profile's own table, its
+/// `[[...overrides]]`, or its `.retries` sub-table, with a trailing comment on
+/// the header tolerated. It does NOT catch:
 ///
 /// - `cargo nextest run --profile ci --retries 2`
 /// - `NEXTEST_RETRIES=2` in the job's environment
@@ -525,6 +527,11 @@ fn is_pinned_sha(spec: &str) -> bool {
 /// green, and no reading of this file can catch them: nextest resolves retries
 /// from config UNION flag UNION env, flag and env winning, so the deciding
 /// inputs are not in the file at all.
+///
+/// The enumeration above is what has been *measured*, not a proof of
+/// completeness. nextest owns profile resolution, and a future version may add
+/// another binding form; this guard would not know. That asymmetry is the
+/// reason KEL-115 replaces it rather than growing it.
 ///
 /// The fourth is decidable but deliberately not chased. Three rounds of
 /// hardening a parser for it each produced a new spelling from outside the
@@ -538,55 +545,98 @@ fn is_pinned_sha(spec: &str) -> bool {
 /// more authoritative without making it more correct.
 fn check_ci_profile_does_not_retry(root: &Path) -> Result<(), String> {
     let text = read(root, NEXTEST_CONFIG)?;
-    if profile_section_sets_retries(&text, "ci") {
+    if let Some(section) = gate_section_setting_retries(&text) {
         return Err(format!(
-            "CI-HYGIENE: `{NEXTEST_CONFIG}` sets `retries` under `[profile.ci]`, the profile \
-             AGENTS.md mandates as the verification gate — a flaky test would report green and \
-             its first failure would never be shown. Remove the `retries` key and fix the \
-             non-deterministic test instead (await the condition, bind port 0, use a temp dir)."
+            "CI-HYGIENE: `{NEXTEST_CONFIG}` sets `retries` under `{section}`, which binds \
+             `--profile ci` — the profile AGENTS.md mandates as the verification gate. A flaky \
+             test would report green and its first failure would never be shown. Remove the \
+             `retries` key and fix the non-deterministic test instead (await the condition, \
+             bind port 0, use a temp dir)."
         ));
     }
     Ok(())
 }
 
-/// True when a section that binds `--profile ci` declares a `retries` key.
-///
-/// Three sections bind it, all verified against cargo-nextest 0.9.140 by
-/// counting `TRY` lines from a deliberately failing test:
-///
-/// - `[profile.ci]` itself.
-/// - `[profile.default]` — `ci` inherits it, and nextest's own documentation
-///   puts `retries` here, so this is the *likeliest* accidental regression, not
-///   an exotic one.
-/// - `[[profile.ci.overrides]]` and `[[profile.default.overrides]]`, whose
-///   `retries` applies to every test the override's filter matches.
-///
-/// A `retries` under a profile that does not bind the gate — `[profile.local]`,
-/// `[profile.ci-extra]` — is correctly not this contract: measured, those run a
-/// single attempt under `--profile ci`.
-fn section_binds_ci_gate(header: &str) -> bool {
-    matches!(
-        header,
-        "[profile.ci]"
-            | "[profile.default]"
-            | "[[profile.ci.overrides]]"
-            | "[[profile.default.overrides]]"
-    )
+/// How a section header relates to the profile `--profile ci` resolves.
+#[derive(PartialEq)]
+enum GateSection {
+    /// The section itself *is* the retries table: `[profile.ci.retries]`.
+    IsRetries,
+    /// A section whose `retries` key binds the gate.
+    MayDeclareRetries,
+    /// Not this contract.
+    Unrelated,
 }
 
-fn profile_section_sets_retries(text: &str, _name: &str) -> bool {
-    let mut inside = false;
+/// Classifies a TOML section header against the profile the mandated gate uses.
+///
+/// Structural rather than a list of literal spellings, because the shapes that
+/// bind the gate are a *family*, not a fixed set: `retries` is a key under the
+/// profile, and also a legitimate sub-table (`[profile.ci.retries]`, nextest's
+/// documented retries-with-backoff form), and both `ci` and `default` carry it
+/// because `--profile ci` inherits `default`.
+///
+/// Verified against cargo-nextest 0.9.140 by counting `TRY` lines from a
+/// deliberately failing test. Binding: `[profile.ci]`, `[profile.default]`,
+/// either profile's `[[...overrides]]`, and either profile's `.retries`
+/// sub-table. Not binding, and correctly ignored: `[profile.local]`,
+/// `[profile.ci-extra]`, `[profile.default-miri]` — measured, all run a single
+/// attempt under `--profile ci`.
+fn classify_gate_section(header: &str) -> GateSection {
+    // A trailing comment is ordinary TOML: `[profile.ci] # keep empty` is still
+    // the `ci` section, and comparing the whole line would miss it.
+    let header = header.split('#').next().unwrap_or(header).trim();
+    let inner = match header
+        .strip_prefix("[[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+    {
+        Some(inner) => inner,
+        None => match header.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+            Some(inner) => inner,
+            None => return GateSection::Unrelated,
+        },
+    };
+    let mut parts = inner.split('.').map(str::trim);
+    if parts.next() != Some("profile") {
+        return GateSection::Unrelated;
+    }
+    // `--profile ci` resolves against `ci` and the `default` it inherits.
+    if !matches!(parts.next(), Some("ci" | "default")) {
+        return GateSection::Unrelated;
+    }
+    match (parts.next(), parts.next()) {
+        (None, _) | (Some("overrides"), None) => GateSection::MayDeclareRetries,
+        (Some("retries"), None) => GateSection::IsRetries,
+        _ => GateSection::Unrelated,
+    }
+}
+
+/// The gate-binding section that declares `retries`, if any.
+///
+/// Returns the header so the error can name the section it actually found: a
+/// message hard-coding `[profile.ci]` sends a reader to the wrong line when the
+/// key is under `[profile.default]`.
+fn gate_section_setting_retries(text: &str) -> Option<String> {
+    let mut current: Option<String> = None;
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            inside = section_binds_ci_gate(line);
+            let header = line.split('#').next().unwrap_or(line).trim().to_owned();
+            match classify_gate_section(line) {
+                // The section header *is* the declaration; there is no key to find.
+                GateSection::IsRetries => return Some(header),
+                GateSection::MayDeclareRetries => current = Some(header),
+                GateSection::Unrelated => current = None,
+            }
             continue;
         }
-        if inside && line.split('=').next().is_some_and(|key| key.trim() == "retries") {
-            return true;
+        if line.split('=').next().is_some_and(|key| key.trim() == "retries") {
+            if let Some(header) = current.clone() {
+                return Some(header);
+            }
         }
     }
-    false
+    None
 }
 
 fn check_gitignore(root: &Path) -> Result<(), String> {
@@ -960,6 +1010,67 @@ mod tests {
         let error = check(temp.path())
             .expect_err("an override under the mandated profile still retries it");
         assert!(error.contains("retries"), "{error}");
+    }
+
+    #[test]
+    fn the_retries_sub_table_binds_the_gate() {
+        // nextest's documented retries-with-backoff form is a sub-table, not a
+        // key. Measured: `[profile.ci.retries]` with `count = 2` runs a failing
+        // test 3 times under `--profile ci`. A guard matching literal section
+        // names missed it entirely, because the section *is* the declaration.
+        for header in ["[profile.ci.retries]", "[profile.default.retries]"] {
+            let temp = complete_fixture();
+            temp.write(
+                NEXTEST_CONFIG,
+                &format!("[profile.ci]\n\n{header}\ncount = 2\nbackoff = \"fixed\"\n"),
+            );
+            let error = check(temp.path())
+                .expect_err("a retries sub-table retries the mandated gate");
+            assert!(error.contains(header), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_comment_does_not_hide_the_section() {
+        // `[profile.ci] # keep this empty` is ordinary TOML and still the `ci`
+        // section. Comparing the whole trimmed line against a literal header
+        // silently skipped it while nextest retried.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.ci] # keep this empty\nretries = 2\n",
+        );
+        let error =
+            check(temp.path()).expect_err("a commented header is still the mandated profile");
+        assert!(error.contains("[profile.ci]"), "{error}");
+    }
+
+    #[test]
+    fn an_inherited_override_that_retries_binds_the_gate() {
+        // The fourth binding section. Its absence from the tests was why the
+        // doc comment could claim all four were verified while one was not.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.ci]\n\n[[profile.default.overrides]]\nfilter = \"all()\"\nretries = 2\n",
+        );
+        let error = check(temp.path())
+            .expect_err("an override on the inherited profile still retries the gate");
+        assert!(error.contains("[[profile.default.overrides]]"), "{error}");
+    }
+
+    #[test]
+    fn the_error_names_the_section_it_found() {
+        // A message hard-coding `[profile.ci]` sends the reader to the wrong
+        // line when the key is under the profile `ci` inherits.
+        let temp = complete_fixture();
+        temp.write(NEXTEST_CONFIG, "[profile.default]\nretries = 2\n\n[profile.ci]\n");
+        let error = check(temp.path()).expect_err("inherited retries bind the gate");
+        assert!(error.contains("[profile.default]"), "{error}");
+        assert!(
+            !error.contains("under `[profile.ci]`"),
+            "must not name a section it did not find: {error}"
+        );
     }
 
     #[test]
