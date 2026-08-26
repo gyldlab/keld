@@ -253,8 +253,12 @@ Tauri 2.11.5, Bun 1.4.0, rustc 1.97.1.
 
 The first **paired** measurement in this repository's history: 30 rounds,
 round-major randomized interleaving (seed 202608252), each round running each
-arm exactly once in shuffled order, so drift over the session cannot land on
-one arm. Both arms are handed the byte-identical 225-byte canonical page
+arm exactly once with the order within the round shuffled. That stops a
+session-scale trend accumulating on one arm and stops either arm systematically
+taking the first slot; it does **not** eliminate drift. Within a round the
+second arm is still measured about one launch later, and shuffling randomizes
+*which* arm that is rather than removing the gap. The claim is reduced
+systematic order bias, not an absence of within-session drift. Both arms are handed the byte-identical 225-byte canonical page
 (`26f6ad05…`), verified by extracting the embedded page from the Tauri artifact
 the document cites rather than by trusting the build. Not comparable to the
 macOS WK rows above: different engine, different counter, different machine.
@@ -301,6 +305,14 @@ Fixtures: [`windows/keld/hello`](https://github.com/gyldlab/keld-benches/tree/b3
 [`windows/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/b30d145e400b382240d573bf6a14a0bc3f0bd040/windows/tauri/hello).
 Narrative and caveats:
 [`MEASUREMENTS.md`](https://github.com/gyldlab/keld-benches/blob/b30d145e400b382240d573bf6a14a0bc3f0bd040/MEASUREMENTS.md) @ [`b30d145`](https://github.com/gyldlab/keld-benches/commit/b30d145e400b382240d573bf6a14a0bc3f0bd040).
+
+That document's `session.notes` still carries the stronger wording this section
+just qualified. It is corrected at its source (the emitter) but the document is
+deliberately not re-emitted: `environment.power.ac_power` was sampled at
+emission rather than during the session, so re-emitting today would write a
+false power claim into it. The corrected sentence lands with the next
+measurement. Both are recorded in
+[`CORRECTIONS.md`](https://github.com/gyldlab/keld-benches/blob/main/windows/bench/results/CORRECTIONS.md).
 
 macOS and Linux MEM-IDLE remain **unmeasured**; KEL-25 is not complete on the
 strength of this row.
