@@ -285,17 +285,27 @@ discovery_shape_case() {
 }
 
 shape_index=0
-for shape in a.test.ts a.test.tsx a.test.js a.test.jsx a.test.mts a.test.cts a.test.mjs a.test.cjs \
-             a.spec.ts a.spec.tsx a.spec.js a.spec.jsx a_test.ts a_test.js a_spec.ts a_spec.js \
-             A.Test.ts A.SPEC.ts; do
+# Generated from the same 4 separators x 8 extensions the router encodes, not
+# hand-listed. A hand-list covered 16 of the 32 patterns, and each of the other
+# 16 could be deleted individually with this suite still green — a pin that
+# reported coverage it did not have.
+for sep in .test. _test. .spec. _spec.; do
+    for ext in ts tsx js jsx mts cts mjs cjs; do
+        shape_index=$((shape_index + 1))
+        discovery_shape_case "bun runs it" "a${sep}${ext}" selected "$shape_index"
+    done
+done
+# Case-insensitivity is a separate axis: bun runs these, and dropping `-iname`
+# for `-name` in the router would pass every shape above.
+for shape in A.Test.ts A.SPEC.ts B_Test.js B_Spec.js; do
     shape_index=$((shape_index + 1))
-    discovery_shape_case "bun runs it" "$shape" selected "$shape_index"
+    discovery_shape_case "bun runs it, mixed case" "$shape" selected "$shape_index"
 done
 for shape in plain.ts test.ts tests.ts; do
     shape_index=$((shape_index + 1))
     discovery_shape_case "bun skips it" "$shape" ignored "$shape_index"
 done
-echo "ok: router suite discovery matches bun 1.4.0 across 18 run and 3 skipped shapes"
+echo "ok: router suite discovery matches bun 1.4.0 across all 32 patterns, 4 case variants and 3 skipped shapes"
 
 # A Bun suite the Keld workspace does not own: this fixture proves the lane is
 # derived from the checked-out packages/ tree, not from a hard-coded path.

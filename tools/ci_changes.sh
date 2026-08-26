@@ -259,11 +259,13 @@ ts_package_consumer_packages() {
 # `ts tsx js jsx mts cts mjs cjs`, matched CASE-INSENSITIVELY (`q.Test.ts` and
 # `r.SPEC.ts` both run). It skips `plain.ts`, `test.ts` and `tests.ts`.
 #
-# This mirrors a rule Bun owns, which makes it a second owner and a drift risk;
-# `ts_package_discovery_matches_bun` in tools/ci_changes_test.sh pins the set so
-# a Bun change fails here rather than silently dropping suites. KEL-115's
-# receipt — the lane reporting which suites it ran — removes the duplication
-# entirely and is the real fix.
+# This mirrors a rule Bun owns, which makes it a second owner and a drift risk.
+# `discovery_shape_case` in tools/ci_changes_test.sh drives every one of the 32
+# patterns through the real router, so deleting any single clause here fails
+# that suite. It pins THIS side only: the test never invokes bun, so a change on
+# Bun's side cannot fail it — re-measure when the pinned version moves. KEL-115's
+# receipt — the lane reporting which suites it actually ran — removes the
+# duplication entirely and is the real fix.
 ts_test_package_dirs() {
     local repo_root
     repo_root="$(git rev-parse --show-toplevel)"
