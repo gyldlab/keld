@@ -28,6 +28,12 @@ const SCAN_REL: &[&str] = &[
     "crates/keld-native/src",
     "crates/keld-compat/src",
     "crates/keld-core/src",
+    // keld-host was absent from this list, so the shipping host binary's error
+    // codes sat outside the registry contract entirely. It emits KELD-CLI-044
+    // today (main.rs:17), which is registered only because keld-cli/src/flags.rs
+    // emits it too and IS scanned -- the coverage was accidental. A code added
+    // to keld-host and nowhere else would have shipped unregistered.
+    "crates/keld-host/src",
     "tools",
 ];
 
