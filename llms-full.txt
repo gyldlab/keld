@@ -4340,49 +4340,72 @@ process; the next subsection gives the actual sum. The six WebView2 engine
 processes (**329,138 KiB** median) are excluded from both arms, mirroring how
 the macOS rows exclude WebKit XPCs.
 
-**Against the ≤ 90 MB budget, the sum of keld processes is three processes, not
-two.** The Keld arm runs a third: a `conhost.exe` at a median of 10,146 KiB,
-present in **30 of 30** Keld samples and **0 of 30** Tauri samples.
+**The scored comparison replicates; the process-sum does not.** The session
+above was repeated on 2026-08-26 under a matched protocol — 30 rounds, the same
+seed, the same canonical payload, the same sha-verified `keld.exe`
+(`b7f1e703…`), the same fixture tree, AC power — plus two shorter sessions. Across
+all four:
 
-| Keld process | Working set (median) | Private bytes (median) |
+| quantity | 2026-08-25 | 2026-08-26 (30r) | cross-session |
+|---|---:|---:|---|
+| **Keld host WS** — the scored value | 22,788 KiB | 22,754 KiB | **1.00×** |
+| **Tauri host WS** — the baseline | 26,856 KiB | 26,848 KiB | **1.00×** |
+| `conhost.exe` | 10,146 KiB | 10,144 KiB | **1.00×** |
+| Bun child **private bytes** | 89,016 KiB | 88,916 KiB | **1.00×** |
+| Bun child **working set** | 50,828 KiB | 22,968 KiB | **2.22×** |
+
+**The headline replicated: median paired ratio 0.848386 then, 0.847364 now.**
+Everything the comparison depends on reproduces. One diagnostic does not.
+
+**The sum of keld processes is therefore not a stable figure.** It is
+83,772 KiB (81.8 MiB) in the published session and 55,858 KiB (54.5 MiB) in the
+matched repeat — headroom against the ≤ 90 MB budget of 8 MiB or 35 MiB
+depending only on which session you read. Two further sessions on 2026-08-26
+landed at 55,832 and 55,876 KiB, so the published session is the outlier of
+four. No single-session sum belongs in a budget verdict, and this document does
+not give one.
+
+| Keld process | Working set | Private bytes |
 |---|---:|---:|
-| host | 22,788 KiB | 3,920 KiB |
-| supervised Bun child | 50,828 KiB | 89,016 KiB |
-| `conhost.exe` | 10,146 KiB | not recorded |
-| **sum of keld processes** | **83,772 KiB (81.8 MiB)** | — |
+| host | 22,788 KiB (reproduces) | 3,920 KiB (reproduces) |
+| supervised Bun child | 50,828 KiB → 22,968 KiB (**2.22×**) | 89,016 KiB (reproduces) |
+| `conhost.exe` | 10,146 KiB (reproduces) | not recorded |
 
-Architecture 01 §5 budgets idle RSS for the sum of keld processes, and by that
-counter this session is **81.8 MiB** — under 90 MB, with roughly **8 MiB** of
-resident headroom above a hello app. The document's `framework_ws_kib`
-(73,620 KiB) is **not** that sum: the harness computes an `other` bucket, folds
-it into `tree_ws_bytes`, and then defines `framework_ws_bytes` as host + runtime
-only, under an in-code comment calling it the sum of keld processes. The bucket
-is never emitted as its own field, so the 10,146 KiB is recoverable from a
-published document only as `tree_ws - host - runtime - engine`. That is a defect
-in the harness label, not in the measurement.
+Each sum above is the median of the per-run totals, which is what the harness
+emits as `keld_processes_ws_kib`. It differs by ~10 KiB from adding the working-set
+column, because a median of sums is not a sum of medians.
 
-**Why the asymmetry is real and not noise.** No binary in `crates/` sets
+**What was ruled out.** The binary is byte-identical to the one the published
+document cites; `windows/keld/hello/` is unchanged since that commit and carries
+no `node_modules`; the canonical payload makes no difference (22,972 KiB with it,
+22,896 KiB without); and the Bun child's working set is flat within a run —
+tracked once per second for 20 s it moved 22,868 → 22,928 KiB, so this is not a
+capture-time artefact. Within each session the spread is under 0.2%. The cause
+is not established; what is established is that it is not in the measured system.
+
+**The budget names the counter that does not reproduce.** Architecture 01 §5
+budgets idle RSS, and RSS is the working set — an OS residency decision, not a
+property of the program. On this evidence private bytes is the reproducible
+counter for the Bun child and the working set is not. That is an input to the
+spec decision, not a change to it: the budget's counter, unit and process scope
+are ambiguous today and resolving them is not this document's call.
+
+**Why the asymmetry in the third process is real.** No binary in `crates/` sets
 `#![windows_subsystem = "windows"]`, so every Keld executable is console
 subsystem and Windows attaches a `conhost.exe`; the Tauri fixture sets
-`windows_subsystem = "windows"` for release builds, so it has none. Confirmed by
-direct observation of a live `keld dev` tree — one `conhost.exe` at 10,132 KiB
-against the published 10,146 median — and by reading the PE subsystem byte:
-`keld.exe` and `keld-host.exe` are both `CONSOLE (3)`, `tauri-hello.exe` is
-`GUI (2)`. **`keld-host` is the shipping host binary**, so this is a product
-question and not only a measurement one; it is tracked separately rather than
-resolved here.
+`windows_subsystem = "windows"` for release builds, so it has none — 0 KiB in
+30 of 30 Tauri samples in every session measured. Confirmed by direct
+observation of a live `keld dev` tree and by the PE subsystem byte: `keld.exe`
+and `keld-host.exe` are `CONSOLE (3)`, `tauri-hello.exe` is `GUI (2)`.
+`keld-host` is the shipping host binary, so this is a product question tracked
+separately, not resolved here.
 
-**The scored comparison is unaffected.** The headline ratio scores each arm's
-native host process (22,788 vs 26,856 KiB). `conhost.exe` is neither arm's host,
-so it never entered the comparison and 0.8484 stands.
-
-Private bytes is a different question and is recorded separately: host + Bun is
-92,936 KiB (90.8 MiB). It is **commit charge**, not residency — memory the
-processes asked the OS to back, much of which is never touched and so never
-costs physical RAM. It is not the counter the budget names and it is not a
-second verdict on it. The six WebView2 engine processes (329,138 KiB) are
-excluded from every column above, which is a scope choice architecture 01 §5
-does not currently make explicit.
+**The scored comparison is unaffected by any of it.** The headline scores each
+arm's native host process, read directly from the host PID rather than from the
+descendant walk. `conhost.exe` is neither arm's host, and both arms' host values
+reproduce at 1.00× across four sessions. The six WebView2 engine processes
+(329,138 KiB) are excluded from every column above, which is a scope choice
+architecture 01 §5 does not currently make explicit.
 
 This measures the risk the Win conditions table already named — "host + Bun may
 miss ≤ 90 MB before app JS heap" — and it is not hypothetical. It does not fail
@@ -4530,7 +4553,7 @@ Four uniques only — no fifth.
 | # | Lane | Score | Why |
 |---|---|---|---|
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
-| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. **The keld-process sum is now measured, on Windows/WebView2 only** (`b30d145`, see Memory § Windows paired MEM-IDLE): **81.8 MiB** working set across host, Bun child and a `conhost.exe` the console-subsystem binaries attach — under 90 MB with about 8 MiB of headroom on a hello app. Private commit is 90.8 MiB for host+Bun, which is commit charge and not the budgeted counter. The macOS host+Bun case this row was written about is still unmeasured. |
+| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. **host+Bun was measured on Windows/WebView2 and did not reproduce** (see Memory § Windows paired MEM-IDLE): the keld-process sum read 81.8 MiB in one session and 54.5 MiB in three others under a matched protocol and a sha-identical binary, because the Bun child's working set swings 2.22× while its private bytes does not move. This lane cannot be scored on a working-set sum until that is understood or the budget names a reproducible counter. The macOS host+Bun case this row was written about is still unmeasured. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
 | 5 | Cold start first paint (architecture target ≤300 ms) | **measurement only — no current gate** | Windows JSON @ `686d1ab`: Keld **469 ms** vs Tauri 479; Electron 275; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced** double-rAF proxy **342.911 ms** (recipe `9e7c83d`; JSON not in benches git). Traced construction **149.031 ms** vs traced beacon **352.211 ms** @ `aae2e12` is residual WebKit (`external_webkit_scheduling`), **not** a paint score and **not** a `keld-wv` rewrite. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Do not use RSS. |
