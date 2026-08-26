@@ -266,15 +266,28 @@ discovery_shape_case() {
     git -C "$temp_dir" add packages >/dev/null
     git -C "$temp_dir" commit -qm "shape-$pkg"
     after="$(git -C "$temp_dir" rev-parse HEAD)"
+    # stdout only, and the exit status is kept: `2>&1 || true` would let a
+    # router that failed outright pass a `selected` case on a package path that
+    # happened to appear in its error text.
+    local status=0
     out="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request \
-        KELD_CI_BASE_SHA="$before" KELD_CI_HEAD_SHA="$after" "$router" github 2>&1 || true)"
+        KELD_CI_BASE_SHA="$before" KELD_CI_HEAD_SHA="$after" "$router" github)" || status=$?
     if [[ "$expectation" == selected ]]; then
-        if ! grep -Fq "packages/@shape/$pkg" <<<"$out"; then
-            echo "FAIL: bun runs $filename but the router did not select its package ($label)" >&2
+        if [[ "$status" -ne 0 ]]; then
+            echo "FAIL: router exited $status for $filename ($label); a selected shape must classify cleanly" >&2
             printf '%s\n' "$out" >&2
             exit 1
         fi
-    elif grep -Fq "packages/@shape/$pkg" <<<"$out"; then
+        # The package must appear in the `ts_packages=` line, not merely
+        # somewhere in the output.
+        local selection
+        selection="$(grep -E '^ts_packages=' <<<"$out" || true)"
+        if ! grep -Fq "packages/@shape/$pkg" <<<"$selection"; then
+            echo "FAIL: bun runs $filename but the router did not select its package ($label)" >&2
+            printf 'ts_packages line: %s\nfull output:\n%s\n' "$selection" "$out" >&2
+            exit 1
+        fi
+    elif grep -E '^ts_packages=' <<<"$out" | grep -Fq "packages/@shape/$pkg"; then
         echo "FAIL: bun skips $filename but the router selected its package ($label); bun test would exit 1 there" >&2
         printf '%s\n' "$out" >&2
         exit 1
