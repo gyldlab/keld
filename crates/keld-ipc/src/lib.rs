@@ -170,6 +170,102 @@ impl From<postcard::Error> for IpcError {
     }
 }
 
+/// Windows OS-error codes whose `io::ErrorKind` this crate's behaviour depends
+/// on, pinned so a change in Rust's mapping fails here rather than in a
+/// transport that silently misreports why a peer went away.
+///
+/// KEL-101 replaces the Windows loopback-TCP app-link with a named pipe whose
+/// reads are cancellable. Cancellation surfaces as `ERROR_OPERATION_ABORTED`,
+/// and the mapping below is the reason the future listener MUST NOT try to
+/// recognise it through [`std::io::ErrorKind`].
+#[cfg(windows)]
+#[cfg(test)]
+mod windows_os_error_mapping {
+    use super::IpcError;
+    use std::io::{Error, ErrorKind};
+
+    /// `CancelIoEx` reports `ERROR_OPERATION_ABORTED` (995), and Rust maps it to
+    /// `ErrorKind::TimedOut`. This crate folds `TimedOut` into
+    /// [`IpcError::Timeout`], so a cancelled read is indistinguishable from a
+    /// slow peer at the `IpcError` level: both become `KELD-IPC-006`.
+    ///
+    /// That is not a defect in the mapping, it is a fact about it. It is pinned
+    /// here because the Windows named-pipe listener has to record cancellation
+    /// separately from a deadline (KEL-101 AC6), and the only thing that can
+    /// tell them apart is `raw_os_error()`. A listener written against `kind()`
+    /// would report every host-initiated shutdown as a peer timeout, and no
+    /// test of the happy path would notice.
+    #[test]
+    fn cancellation_is_indistinguishable_from_a_deadline_by_kind_alone() {
+        const ERROR_OPERATION_ABORTED: i32 = 995;
+        const ERROR_SEM_TIMEOUT: i32 = 121;
+
+        let cancelled = Error::from_raw_os_error(ERROR_OPERATION_ABORTED);
+        let timed_out = Error::from_raw_os_error(ERROR_SEM_TIMEOUT);
+
+        assert_eq!(
+            cancelled.kind(),
+            ErrorKind::TimedOut,
+            "ERROR_OPERATION_ABORTED no longer maps to TimedOut; re-derive the \
+             cancellation path in the Windows listener before changing this"
+        );
+        assert_eq!(timed_out.kind(), ErrorKind::TimedOut);
+
+        // Both reach IpcError::Timeout, which is exactly the collision.
+        assert!(matches!(IpcError::from(cancelled), IpcError::Timeout));
+        assert!(matches!(IpcError::from(timed_out), IpcError::Timeout));
+
+        // The raw code is what separates them, so it must survive. Rebuild the
+        // errors: converting into IpcError consumed the originals.
+        assert_ne!(
+            Error::from_raw_os_error(ERROR_OPERATION_ABORTED).raw_os_error(),
+            Error::from_raw_os_error(ERROR_SEM_TIMEOUT).raw_os_error()
+        );
+    }
+
+    /// KEL-101 AC3 asserts that a foreign user's `CreateFileW` is refused by the
+    /// DACL. The spec is explicit that `ConnectionRefused`/not-found is not DACL
+    /// proof, so the test needs a kind that cannot be produced by the pipe
+    /// merely being absent. `ERROR_ACCESS_DENIED` gives one.
+    #[test]
+    fn a_dacl_denial_is_distinguishable_from_an_absent_pipe() {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        const ERROR_FILE_NOT_FOUND: i32 = 2;
+
+        let denied = Error::from_raw_os_error(ERROR_ACCESS_DENIED);
+        let absent = Error::from_raw_os_error(ERROR_FILE_NOT_FOUND);
+
+        assert_eq!(denied.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(absent.kind(), ErrorKind::NotFound);
+        assert_ne!(denied.kind(), absent.kind());
+
+        // Neither is a timeout, so neither can be swallowed by the fold above.
+        assert!(matches!(IpcError::from(denied), IpcError::Io(_)));
+        assert!(matches!(IpcError::from(absent), IpcError::Io(_)));
+    }
+
+    /// The remaining pipe-lifecycle codes must NOT reach `IpcError::Timeout`,
+    /// or a peer that closed the pipe would be recorded as one that stalled.
+    /// `ERROR_NO_DATA` (232, pipe closing) and `ERROR_BROKEN_PIPE` (109) both
+    /// carry `BrokenPipe`; `ERROR_IO_PENDING` (997), `ERROR_PIPE_NOT_CONNECTED`
+    /// (233), `ERROR_PIPE_LISTENING` (536) and `ERROR_PIPE_BUSY` (231) are
+    /// uncategorised, which is fine as long as they stay out of the fold.
+    #[test]
+    fn no_pipe_lifecycle_code_is_folded_into_timeout() {
+        for code in [232_i32, 109, 997, 233, 536, 231] {
+            let err = Error::from_raw_os_error(code);
+            let kind = err.kind();
+            assert!(
+                !matches!(kind, ErrorKind::TimedOut | ErrorKind::WouldBlock),
+                "os error {code} now maps to {kind:?}, which this crate folds \
+                 into IpcError::Timeout; a closed pipe would be reported as a \
+                 stalled peer"
+            );
+            assert!(matches!(IpcError::from(err), IpcError::Io(_)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
