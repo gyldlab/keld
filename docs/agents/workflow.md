@@ -21,6 +21,14 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    only becomes visible once a branch exists cannot stop a second device from
    starting the same issue, which is how two agents discover each other at merge
    instead of at pickup.
+   Posting is not atomic, so posting alone does not win the issue. After posting,
+   the agent MUST re-fetch the issue's comments and check for a competing claim it
+   could not have seen when it read: two agents can both read an unclaimed issue and
+   both post. **The earliest claim by Linear's own `createdAt` wins** — a
+   server-assigned order both agents observe identically, rather than either agent's
+   local clock. A later claimant MUST record the conflict on its own issue and stop
+   **before its first edit**. If two claims carry the same timestamp, neither
+   proceeds: that is a human arbitration, not a coin flip.
    Before implementation, classify every acceptance criterion as `CI-only`, `real
    OS/device`, or `not applicable`. For a real OS/device criterion, the initial Linear
    comment MUST include `## OS acceptance` with the required OS/device, exact observable
