@@ -123,11 +123,19 @@ after the claim — one record of availability, not two.
 
 - An agent MUST NOT begin work on an issue carrying an **unexpired** claim from another
   agent or device. It MUST record the conflict on its own issue and stop.
-- **Overlapping `Expected paths` is a conflict even across different issues**, and it
-  carries the same duty: the second agent MUST stop and record the conflict on its own
-  issue rather than proceeding on a different ticket. Two tickets with disjoint scope on
-  paper routinely share a file in practice, and that collision is invisible until the
-  second merge silently drops the first.
+- **Overlapping `Expected paths` on a single-writer file is a conflict even across
+  different issues**, and it carries the same duty: the second agent MUST stop and record
+  the conflict on its own issue rather than proceeding because the ticket number differs.
+  Overlap on any *other* path is not a stop — § Parallelism rules already governs it, and
+  first PR to green wins while later PRs rebase. This bullet narrows nothing there; it
+  only says that the single-writer set is claimed in Linear rather than discovered at
+  merge.
+- Overlap on an ordinary file is still worth declaring, because the failure it warns about
+  is not the loud one. Git reports a textual conflict and no work is lost. The silent case
+  is two agents editing *different regions* of one file, both merging cleanly, and the
+  combined result being wrong — a rule and its exception, a check and the test that pins
+  it. Seeing the overlap in a claim is what prompts the second agent to read the first
+  agent's diff before assuming a clean rebase is a correct one.
 - A claim past `Claim expires` is free. The next agent MAY take the issue and MUST say
   in its own claim that it did.
 - `Claim expires` MUST be at most 24h ahead, and an agent MUST NOT extend it except by
