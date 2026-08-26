@@ -545,6 +545,15 @@ fn is_pinned_sha(spec: &str) -> bool {
 /// more authoritative without making it more correct.
 fn check_ci_profile_does_not_retry(root: &Path) -> Result<(), String> {
     let text = read(root, NEXTEST_CONFIG)?;
+    if let Some((section, parent)) = gate_section_with_unfollowable_parent(&text) {
+        return Err(format!(
+            "CI-HYGIENE: `{NEXTEST_CONFIG}` has `{section}` inheriting from `{parent}`, and \
+             this check cannot follow that chain to prove the mandated gate does not retry — \
+             nextest inheritance is transitive, so `retries` anywhere up the chain binds \
+             `--profile ci`. Inherit from `default` (the implicit parent) instead, or move \
+             the settings into `{section}` directly."
+        ));
+    }
     if let Some(section) = gate_section_setting_retries(&text) {
         return Err(format!(
             "CI-HYGIENE: `{NEXTEST_CONFIG}` sets `retries` under `{section}`, which binds \
@@ -609,6 +618,52 @@ fn classify_gate_section(header: &str) -> GateSection {
         (Some("retries"), None) => GateSection::IsRetries,
         _ => GateSection::Unrelated,
     }
+}
+
+/// A gate-binding section whose `inherits` points somewhere this check cannot
+/// follow, as `(section, parent)`.
+///
+/// nextest lets any profile name a parent (`inherits = "shared"`), and the
+/// chain is transitive: measured, `[profile.ci] inherits = "a"`, `[profile.a]
+/// inherits = "b"`, `[profile.b] retries = 2` runs a failing test 3 times under
+/// `--profile ci`. Following an arbitrary chain is more parsing than this guard
+/// is willing to own, so an unfollowable parent FAILS CLOSED: silence about a
+/// chain it cannot read must not be reported as "no retries".
+///
+/// `inherits = "default"` is allowed because it is the implicit parent anyway,
+/// and `[profile.default]` is already classified.
+fn gate_section_with_unfollowable_parent(text: &str) -> Option<(String, String)> {
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            let header = line.split('#').next().unwrap_or(line).trim().to_owned();
+            current = match classify_gate_section(line) {
+                GateSection::Unrelated => None,
+                _ => Some(header),
+            };
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "inherits" {
+            continue;
+        }
+        let parent = value
+            .split('#')
+            .next()
+            .unwrap_or(value)
+            .trim()
+            .trim_matches(['"', '\''])
+            .to_owned();
+        if parent != "default" {
+            if let Some(section) = current.clone() {
+                return Some((section, parent));
+            }
+        }
+    }
+    None
 }
 
 /// The gate-binding section that declares `retries`, if any.
@@ -1071,6 +1126,32 @@ mod tests {
             !error.contains("under `[profile.ci]`"),
             "must not name a section it did not find: {error}"
         );
+    }
+
+    #[test]
+    fn an_unfollowable_parent_fails_closed() {
+        // nextest inheritance is transitive. Measured: `[profile.ci] inherits =
+        // "a"`, `[profile.a] inherits = "b"`, `[profile.b] retries = 2` runs a
+        // failing test 3 times under `--profile ci`. This guard does not follow
+        // chains, so it must refuse rather than report silence as no-retries.
+        let temp = complete_fixture();
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.shared]\nretries = 2\n\n[profile.ci]\ninherits = \"shared\"\n",
+        );
+        let error = check(temp.path())
+            .expect_err("a parent this check cannot follow must fail closed");
+        assert!(error.contains("shared"), "{error}");
+        assert!(error.contains("cannot follow"), "{error}");
+    }
+
+    #[test]
+    fn inheriting_the_implicit_default_parent_is_allowed() {
+        // `default` is the implicit parent and is already classified, so naming
+        // it explicitly must not be a false positive.
+        let temp = complete_fixture();
+        temp.write(NEXTEST_CONFIG, "[profile.ci]\ninherits = \"default\"\n");
+        check(temp.path()).expect("inheriting the implicit parent is a no-op");
     }
 
     #[test]
