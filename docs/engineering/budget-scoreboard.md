@@ -344,8 +344,14 @@ subsystem and Windows attaches a `conhost.exe`; the Tauri fixture sets
 30 of 30 Tauri samples in every session measured. Confirmed by direct
 observation of a live `keld dev` tree and by the PE subsystem byte: `keld.exe`
 and `keld-host.exe` are `CONSOLE (3)`, `tauri-hello.exe` is `GUI (2)`.
-`keld-host` is the shipping host binary, so this is a product question tracked
-separately, not resolved here.
+
+**The conhost measured here is `keld.exe`'s, not the shipping host's.** The Keld
+arm runs `keld dev`, and `keld dev` does not spawn `keld-host` — it *is* the host
+process. A terminal tool having a console is correct, so this is not a product
+defect; it is a concrete consequence of the scope mismatch this document already
+discloses, a dev CLI flow measured against a packaged release exe. `keld-host`
+being console subsystem is a separate, forward-looking product question, and it
+is **not** what was measured here.
 
 **The scored comparison is unaffected by any of it.** The headline scores each
 arm's native host process, read directly from the host PID rather than from the
