@@ -2953,8 +2953,10 @@ cargo nextest run --workspace --profile ci
 ```
 
 Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
-profile: `.config/nextest.toml` (`retries = 1`). Workspace clippy is already
-pedantic; do not re-enable it per crate (learnings 2026-07-08).
+profile: `.config/nextest.toml`, deliberately empty — the mandated gate MUST NOT
+retry, because a retry reports a flaky test green and hides its first failure
+(KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
+(learnings 2026-07-08).
 
 **Chose — local mirror of CI (`justfile`).** `just ci` runs, in order:
 `agents-md` → `mermaid-test` → `mermaid-check` → `mermaid-render-check` → `llms-test` →

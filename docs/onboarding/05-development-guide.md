@@ -174,11 +174,15 @@ cross-platform code, CI usually agrees.
 ## 4. Running tests
 
 ```bash
-cargo nextest run --workspace --profile ci     # the gate; ci profile sets retries = 1
+cargo nextest run --workspace --profile ci     # the gate; no retries, a flake fails here
 cargo nextest run -p keld-ipc                  # one crate
 cargo nextest run -p keld-ipc -- frame         # one crate, substring filter
 cargo test --workspace                         # fallback if nextest is unavailable
 ```
+
+The `ci` profile declares no retries, so a test that fails once fails the gate. That is
+a property of the profile, not of the command: `--retries N` and `NEXTEST_RETRIES=N`
+still override it, and neither belongs in a verification run (KEL-112).
 
 `cargo nextest run -p keld-ipc -- frame` applies a substring filter. Quote its fresh
 summary when using it; the selected test/binary/skipped totals are not a documentation
