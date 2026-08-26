@@ -136,7 +136,7 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
+      - uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
         with:
           tool: nextest
       - name: test
