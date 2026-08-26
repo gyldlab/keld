@@ -123,10 +123,13 @@ export function decodeHeader(bytes: Uint8Array): FrameHeader {
 
 // --- postcard payload codec (varint LEB128 + UTF-8 strings) -----------
 
-/** Encodes a non-negative integer (up to u32 range) as an unsigned LEB128 varint. */
+/** Encodes a `u32` as an unsigned LEB128 varint. Rejects anything outside that range. */
 export function encodeVarint(n: number): Uint8Array {
-  if (!Number.isInteger(n) || n < 0) {
-    throw kipcError("KELD-IPC-003", `varint value must be a non-negative integer, got ${n}`);
+  // The upper bound belongs HERE, with the rest of the invariant, so no caller
+  // has to remember it. Without it this accepted 2**32 and encoded a 5-byte
+  // varint the Rust peer cannot represent as the u32 it declares.
+  if (!Number.isInteger(n) || n < 0 || n > 0xffff_ffff) {
+    throw kipcError("KELD-IPC-003", `varint value must be an integer in [0, 4294967295], got ${n}`);
   }
   const bytes: number[] = [];
   let v = n;
@@ -183,7 +186,12 @@ function decodeString(bytes: Uint8Array, offset: number): [string, number] {
 /** Postcard encoding of `EchoRequest`: struct-as-tuple, field order = declaration order. */
 export function encodeEchoRequest(req: EchoRequest): Uint8Array {
   const message = encodeString(req.message);
-  const count = encodeVarint(req.count >>> 0);
+  // `req.count` is passed UNCHANGED. It used to be `req.count >>> 0`, which
+  // converts modulo 2**32 before encodeVarint's guard can see the value: -1
+  // became 4294967295 and 2**32 became 0, so an out-of-range count produced a
+  // well-formed request for a DIFFERENT number instead of an error. Coercing at
+  // the call site defeats the validation the codec already owns.
+  const count = encodeVarint(req.count);
   const out = new Uint8Array(message.length + count.length);
   out.set(message, 0);
   out.set(count, message.length);

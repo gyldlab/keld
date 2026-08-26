@@ -100,6 +100,17 @@ describe("postcard varint (LEB128)", () => {
     // 0x80 alone has its continuation bit set with nothing following.
     expect(() => decodeVarint(new Uint8Array([0x80]), 0)).toThrow("KELD-IPC-003");
   });
+
+  test("rejects a value above u32::MAX", () => {
+    // The wire field is a Rust u32. encodeVarint rejected negatives and
+    // non-integers but had no upper bound, so 2**32 encoded happily as a
+    // 5-byte varint the peer cannot represent. The bound belongs here, with
+    // the rest of the invariant, not in each caller.
+    expect(() => encodeVarint(0x1_0000_0000)).toThrow("KELD-IPC-003");
+    expect(() => encodeVarint(Number.MAX_SAFE_INTEGER)).toThrow("KELD-IPC-003");
+    // The boundary itself stays valid.
+    expect(Array.from(encodeVarint(0xffff_ffff))).toEqual([0xff, 0xff, 0xff, 0xff, 0x0f]);
+  });
 });
 
 describe("EchoRequest / EchoResponse postcard framing", () => {
@@ -128,6 +139,27 @@ describe("EchoRequest / EchoResponse postcard framing", () => {
     const decoded = decodeEchoResponse(bytes);
     expect(decoded.message).toBe(message);
     expect(decoded.count).toBe(0xffff_ffff);
+  });
+
+  test("rejects an out-of-range count instead of wrapping it", () => {
+    // REGRESSION (KEL-121). encodeEchoRequest encoded `req.count >>> 0`, and
+    // `>>>` converts modulo 2**32 BEFORE encodeVarint's own guard can see the
+    // value. So -1 arrived as 4294967295 and 2**32 arrived as 0: both passed a
+    // validation that was already there, one function away, and the peer
+    // received a different request from the one that was made.
+    //
+    // A wrong-but-well-formed request is worse than a rejected one, because
+    // nothing downstream can tell it happened.
+    expect(() => encodeEchoRequest({ message: "kipc", count: -1 })).toThrow("KELD-IPC-003");
+    expect(() => encodeEchoRequest({ message: "kipc", count: 0x1_0000_0000 })).toThrow("KELD-IPC-003");
+    expect(() => encodeEchoRequest({ message: "kipc", count: 1.5 })).toThrow("KELD-IPC-003");
+  });
+
+  test("count boundary values still encode", () => {
+    expect(Array.from(encodeEchoRequest({ message: "", count: 0 }))).toEqual([0x00, 0x00]);
+    const max = encodeEchoRequest({ message: "", count: 0xffff_ffff });
+    expect(Array.from(max)).toEqual([0x00, 0xff, 0xff, 0xff, 0xff, 0x0f]);
+    expect(decodeEchoResponse(max)).toEqual({ message: "", count: 0xffff_ffff });
   });
 
   test("rejects trailing bytes after a valid EchoResponse", () => {
