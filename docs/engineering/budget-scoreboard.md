@@ -115,7 +115,7 @@ Same-recipe Keld-only and Tauri-only `--publish` disk/RSS live in the
 [Memory](#memory--idle-rss-not-paint) and [Disk](#disk--installer-not-paint)
 tables (Keld `dc5dea2` coalition **199,568 KiB**; Tauri-only double-rAF
 **378.758 / 749.492 ms** is a different session from the interleaved row
-above — not a vs-Electron paint cell).
+above — not a paint cell against Electron).
 
 **Committed untraced sample after AC4:** none. keld-benches
 [`MEASUREMENTS.md`](https://github.com/gyldlab/keld-benches/blob/aae2e12f998ff47805eed38083c624525d87b9a8/MEASUREMENTS.md)
@@ -302,9 +302,12 @@ all four:
 Everything the comparison depends on reproduces. One diagnostic does not.
 
 **The sum of keld processes is therefore not a stable figure.** It is
-83,772 KiB (81.8 MiB) in the published session and 55,858 KiB (54.5 MiB) in the
-matched repeat — headroom against the ≤ 90 MB budget of 8 MiB or 35 MiB
-depending only on which session you read. Two further sessions on 2026-08-26
+83,772 KiB in the published session and 55,858 KiB in the matched repeat.
+Headroom against the ≤ 90 MB budget therefore varies by session **and by a unit
+the budget never defines**: read as 90 MiB, the two sums are 81.8 and 54.5 MiB
+leaving 8.2 and 35.5 MiB; read as decimal 90 MB they are 85.8 and 57.2 MB
+leaving 4.2 and 32.8 MB. Both sums pass under both readings, so the verdict
+survives — no headroom figure does, and none is quoted here as settled. Two further sessions on 2026-08-26
 landed at 55,832 and 55,876 KiB, so the published session is the outlier of
 four. No single-session sum belongs in a budget verdict, and this document does
 not give one.
@@ -497,7 +500,7 @@ Four uniques only — no fifth.
 | # | Lane | Score | Why |
 |---|---|---|---|
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
-| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. **host+Bun was measured on Windows/WebView2 and did not reproduce** (see Memory § Windows paired MEM-IDLE): the keld-process sum read 81.8 MiB in one session and 54.5 MiB in three others under a matched protocol and a sha-identical binary, because the Bun child's working set swings 2.22× while its private bytes does not move. This lane cannot be scored on a working-set sum until that is understood or the budget names a reproducible counter. The macOS host+Bun case this row was written about is still unmeasured. |
+| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a claim against Electron. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. **host+Bun was measured on Windows/WebView2 and did not reproduce** (see Memory § Windows paired MEM-IDLE): the keld-process sum read 81.8 MiB in one session and 54.5 MiB in three others under a matched protocol and a sha-identical binary, because the Bun child's working set swings 2.22× while its private bytes does not move. This lane cannot be scored on a working-set sum until that is understood or the budget names a reproducible counter. The macOS host+Bun case this row was written about is still unmeasured. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
 | 5 | Cold start first paint (architecture target ≤300 ms) | **measurement only — no current gate** | Windows JSON @ `686d1ab`: Keld **469 ms** vs Tauri 479; Electron 275; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced** double-rAF proxy **342.911 ms** (recipe `9e7c83d`; JSON not in benches git). Traced construction **149.031 ms** vs traced beacon **352.211 ms** @ `aae2e12` is residual WebKit (`external_webkit_scheduling`), **not** a paint score and **not** a `keld-wv` rewrite. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Do not use RSS. |
