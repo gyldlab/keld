@@ -283,6 +283,30 @@ excluded from the comparison. The six WebView2 engine processes
 rows exclude WebKit XPCs — so no row here is a "sum of keld processes" figure
 against the architecture 01 §5 ≤ 90 MB budget.
 
+**Against the ≤ 90 MB budget, the answer depends on which counter you read.**
+Architecture 01 §5 budgets idle RSS for the sum of keld processes. RSS is the
+working set, and by that counter this session's host + Bun child is **73,616 KiB
+(71.9 MiB)** — under. The allocation-side counter is not:
+
+| Keld process | Working set (median) | Private bytes (median) |
+|---|---:|---:|
+| host | 22,788 KiB | 3,920 KiB |
+| supervised Bun child | 50,828 KiB | 89,016 KiB |
+| **host + Bun** | **73,616 KiB (71.9 MiB)** | **92,936 KiB (90.8 MiB)** |
+
+The specified counter passes at 71.9 MiB. Private bytes — what the processes
+actually asked the OS for — is 90.8 MiB, level with the budget, and the Bun
+child is nearly all of it. **This is a hello app**: the only application
+JavaScript it runs is a kipc echo, so almost none of that 89 MB is application
+heap. The six WebView2 engine processes are excluded from both columns.
+
+This measures the risk the Win conditions table already named — "host + Bun may
+miss ≤ 90 MB before app JS heap" — and it is not hypothetical. It does not fail
+the budget as written, because the budget names RSS and RSS passes. It does mean
+the headroom above a hello app is thin on this machine, and that a claim of
+winning the idle-RSS lane needs the engine-inclusive and app-heap cases measured
+before it is made.
+
 **A working set is not comparable across sessions.** An earlier session on this
 machine recorded that host+Bun diagnostic at 48,688 KiB, but its
 `runtime_private_kib` was 88,918 against this session's 89,016 — flat — with one
@@ -422,7 +446,7 @@ Four uniques only — no fifth.
 | # | Lane | Score | Why |
 |---|---|---|---|
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
-| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. Insufficient headroom vs the reported ~22 MiB Bun floor; measure host+Bun before claiming this lane can win. |
+| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a vs-Electron claim. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. **host+Bun is now measured, on Windows/WebView2 only** (`b30d145`, see Memory § Windows paired MEM-IDLE): 71.9 MiB by working set, **90.8 MiB by private bytes** — level with the budget on a hello app whose only application JavaScript is a kipc echo. The macOS host+Bun case this row was written about is still unmeasured. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
 | 5 | Cold start first paint (architecture target ≤300 ms) | **measurement only — no current gate** | Windows JSON @ `686d1ab`: Keld **469 ms** vs Tauri 479; Electron 275; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced** double-rAF proxy **342.911 ms** (recipe `9e7c83d`; JSON not in benches git). Traced construction **149.031 ms** vs traced beacon **352.211 ms** @ `aae2e12` is residual WebKit (`external_webkit_scheduling`), **not** a paint score and **not** a `keld-wv` rewrite. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Do not use RSS. |
