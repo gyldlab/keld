@@ -294,6 +294,12 @@ working set, and by that counter this session's host + Bun child is **73,616 KiB
 | supervised Bun child | 50,828 KiB | 89,016 KiB |
 | **host + Bun** | **73,616 KiB (71.9 MiB)** | **92,936 KiB (90.8 MiB)** |
 
+The total row sums the column, so it is the sum of the two component medians.
+The document's own per-run `framework_ws_kib` median is 73,620 KiB — a median
+of per-run totals, which is not the same statistic and need not equal the sum
+of separate medians. The 4 KiB between them is that difference, not a
+discrepancy; both round to 71.9 MiB and neither changes the verdict.
+
 The specified counter passes at 71.9 MiB. Private bytes — what the processes
 actually asked the OS for — is 90.8 MiB, level with the budget, and the Bun
 child is nearly all of it. **This is a hello app**: the only application
