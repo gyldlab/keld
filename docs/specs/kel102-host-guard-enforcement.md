@@ -249,7 +249,7 @@ benchmark if its context representation changes allocations or lock behavior.
    do not validate a path and reopen it. The implementation must make this
    resolution a single host-owned routine; callers must not reimplement it.
 3. Call the exact guard-owned single-read verified loader below. It reads the
-   resolved file once into one private owned byte buffer, computes SHA-256 over
+   resolved file once into one privately owned byte buffer, computes SHA-256 over
    that buffer, compares it with the decoded expected digest, validates UTF-8,
    and parses a borrow of those same bytes. It must not verify a host read and
    then call `load_manifest` on the pathname again. The buffer is dropped
@@ -666,7 +666,7 @@ is cold host-start work. A later implementation must measure only if it alters
 the existing no-allocation guard allow path, IPC dispatch allocations, or the
 architecture 01 §5 cold-start/RSS budgets.
 
-## 10. Remaining gates, not open architecture questions
+## 10. Remaining gates, not open architectural questions
 
 The delegated candidate resolves all nine architecture decisions, but remains
 `draft`. A human distinct from the writer must approve the exact candidate
