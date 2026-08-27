@@ -79,7 +79,7 @@ SHA-256 is recorded in the header.
 | `KEL-102-D2` | Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the `keld_wv::MediaPolicy`/`WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, and manifest fields remain private. |
 | `KEL-102-D3` | `KEL-102/T2` consumes the `KEL-96/T1a` acceptance row from one landed atomic T1a+T1b `host-boot-and-session` artifact. It does not accept the stale standalone `host-boot-descriptor` terminal and does not depend on KEL-96 T2-T5. |
 | `KEL-102-D4` | One host-accepted authenticated v0 app link maps to `Principal::AppProcess`. Frame data, token text, PID, environment, working directory, role name, and Electron options cannot select identity. Role generations remain KEL-75/KEL-97. |
-| `KEL-102-D5` | `keld_guard::evaluate` called through `keld_ipc::guard_dispatch::dispatch_privileged` is the sole guard-before-handler owner. Core and brokers may route/extract resources but may not add a duplicate authorization check. |
+| `KEL-102-D5` | The `keld-native` broker is the sole production caller of `keld_ipc::guard_dispatch::dispatch_privileged`, which is the sole caller of `keld_guard::evaluate` before its OS-operation closure. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates or adds a second authorization check. |
 | `KEL-102-D6` | Freeze the order `KEL-102/T2` verified load/snapshot → `T3` reachable filesystem vertical → `T4` webview media injection → `T5` role-generation binding after KEL-97. Set `kel97_predecessor_task_id=none`: KEL-97 owns role-link identity independently; KEL-102/T5 consumes KEL-97, never the reverse. |
 | `KEL-102-D7` | KEL-78 OS containment is complementary to broker authorization, neither a blocker nor a substitute. KEL-102 alone cannot support a strict-profile or release-containment claim. |
 | `KEL-102-D8` | Controlled reload is outside this specification until a separately approved revocation-before-reprovision contract exists. |
@@ -253,9 +253,9 @@ benchmark if its context representation changes allocations or lock behavior.
    that buffer, compares it with the decoded expected digest, validates UTF-8,
    and parses a borrow of those same bytes. It must not verify a host read and
    then call `load_manifest` on the pathname again. The buffer is dropped
-   before return and is never exposed to the caller. Keep the resulting
-   `PermissionsManifest` in an immutable `GuardSnapshot` held by the
-   host/core session, together with the verified digest for diagnostics.
+   before return and is never exposed to the caller. Keep the resulting opaque
+   `VerifiedManifest`—manifest and digest as one inseparable value—in an
+   immutable `GuardSnapshot` held by the host/core session.
    Neither the snapshot, raw bytes, nor manifest path is sent on kipc.
 4. Only after these steps succeed may the host create the authenticated
    app-link, bind a webview, or spawn Bun. A blank but valid `{}` manifest is
@@ -353,10 +353,9 @@ visibility should remain crate-private unless a later implementation proves a
 public API is necessary.
 
 ```rust
-// Sketch only: names are not a committed public API.
+// Crate-private representation; not a public API.
 struct GuardSnapshot {
-    manifest: keld_guard::PermissionsManifest,
-    policy_generation: PolicyGeneration,
+    verified: keld_guard::verified_manifest::VerifiedManifest,
 }
 
 enum TrustedCaller {
@@ -444,17 +443,24 @@ For every registered privileged channel, the production path is:
 authenticated host link or webview callback
   -> host resolves TrustedDispatchContext
   -> decode and validate request
-  -> channel registration supplies capability + resource extractor
-  -> dispatch_privileged(snapshot, derived principal, capability, resource, handler)
-  -> native OS handler only on Allow
+  -> core routes only to a registered keld-native handler, passing
+     snapshot.verified + derived principal + validated request
+  -> native handler derives capability/resource
+  -> dispatch_privileged(snapshot.verified.manifest(), principal,
+                         capability, resource, OS-operation closure)
+  -> dispatch_privileged calls evaluate exactly once
+  -> OS-operation closure runs only on Allow
 ```
 
-`keld-core` owns the first four steps and can route only registered native
-channels. `keld-native` owns the handler and uses the existing shared
-`dispatch_privileged` helper immediately around the operation. The KEL-71
-filesystem session must be refactored only as needed so its production host
-path and its real-session tests share that one handler path; it must not grow
-a second policy implementation.
+`keld-core` owns trusted-context resolution, request decoding/validation, and
+registered routing. It does not call `evaluate` or `dispatch_privileged`.
+`keld-native` owns the handler and is the sole production caller of the shared
+`dispatch_privileged` helper immediately around the OS operation. The private
+core context is decomposed only into the guard-owned `VerifiedManifest`
+reference, host-derived `Principal`, and validated request at that crate
+boundary; no core type becomes public. The KEL-71 filesystem session must be
+refactored only as needed so its production host path and real-session tests
+share that one handler path; it must not grow a second policy implementation.
 
 The existing echo demo and host lifecycle `Ready` / `Quit` controls are
 explicitly unprivileged session control and stay outside this dispatcher. A
@@ -538,7 +544,9 @@ manifest change.
       parsed bytes. This is `first_task_id=KEL-102/T2`.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
-      context. Prove allowed read/write and denied write/no-file side effect
+      context. Core routes and passes the verified snapshot/principal/request;
+      the native broker alone calls `dispatch_privileged`, which alone calls
+      `evaluate`. Prove allowed read/write and denied write/no-file side effect
       over a real kipc session; delete or refactor any parallel FS dispatch
       path rather than retaining both.
 - [ ] `KEL-102/T4`: Pass `MediaPolicy` and the registry-derived webview
@@ -577,7 +585,7 @@ consumes this field; it must not manufacture a T2/T3/T4 edge.
 | 3 | Real authenticated app-link fixture: correct token binds only its host-selected v0 caller; foreign/stale token is the existing `KELD-IPC-007` rejection and no FS handler marker/reply occurs. |
 | 4 | KEL-75 dependent integration: bind a generation, revoke it, then send a formerly valid privileged request. Independent oracle is typed stale/revoked rejection plus absent filesystem marker. |
 | 5 | Backend state tests plus real platform smoke: media callback receives a host registry principal; missing state returns `KELD-GUARD007`; `/app` camera grant remains denied for a webview; the production callback recorder's digest equals `GuardSnapshot` on all three backends. Retaining `PermissionsManifest::default()` or dropping `MediaPolicy` fails. Navigation-rotation assertions wait for the actual registry event once that feature exists. |
-| 6–7 | Real socket/kipc FS session on temp paths: out-of-scope write returns `KELD-GUARD002` and target does not exist; allowed write/read returns exact bytes. The production adapter recorder is zero on denied read and nonzero on allowed read. |
+| 6–7 | Real socket/kipc FS session on temp paths: core routes a verified snapshot/principal/request to the native broker; the broker's sole `dispatch_privileged` call returns `KELD-GUARD002` for out-of-scope write and the target does not exist; allowed write/read returns exact bytes. The production adapter recorder is zero on denied read and nonzero on allowed read. A contract assertion rejects any core-local `evaluate`/`dispatch_privileged` call. |
 | 8 | Start with a denying snapshot, retain its already-authenticated stream, modify the manifest, and verify the live session's decision is unchanged. Perform orderly full-session teardown and assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
 
 Anti-flake requirements: use a temporary root and port `0`; await host/child
@@ -591,6 +599,8 @@ Negative controls are mandatory for the privileged vertical slice:
 1. Temporarily bypass or invert the call to `dispatch_privileged`; the denied
    FS integration test must create/change its target or enter the adapter and
    therefore fail.
+   A separate mutation moves/adds `evaluate` or `dispatch_privileged` in core;
+   the single-owner contract assertion must fail.
 2. Temporarily map a rejected/missing caller context to `AppProcess`; the
    foreign-link or missing-webview-principal test must fail.
 3. Temporarily substitute `PermissionsManifest::default()` after a manifest
@@ -610,13 +620,15 @@ which the untouched candidate must pass again:
 1. remove the exact passed KEL-96 `host-boot-and-session` artifact identity;
 2. remove `KEL-102-D1`'s explicit permission-model approval;
 3. remove `KEL-102-D2`'s exact public-API approval;
-4. replace T4's exact `task_id=KEL-102/T3` predecessor with a generic
+4. replace `KEL-102-D5`'s native-broker sole-owner rule with a core-local or
+   duplicate check;
+5. replace T4's exact `task_id=KEL-102/T3` predecessor with a generic
    `host-guard-enforcement` pass; and
-5. replace T3's exact `task_id=KEL-102/T2` predecessor with another KEL-102
+6. replace T3's exact `task_id=KEL-102/T2` predecessor with another KEL-102
    task or a generic pass;
-6. replace T5's exact `task_id=KEL-102/T4` predecessor or either exact KEL-97
+7. replace T5's exact `task_id=KEL-102/T4` predecessor or either exact KEL-97
    acceptance row with a generic KEL-97 pass; and
-7. replace `kel97_predecessor_task_id=none` with any static KEL-102 task edge.
+8. replace `kel97_predecessor_task_id=none` with any static KEL-102 task edge.
 
 This documentation-only PR has no new behavior tests. The implementation PRs
 must run `cargo fmt --all --check`,
