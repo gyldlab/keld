@@ -1,7 +1,7 @@
 # Spec: no-flag host-as-app boot (Unique #1 lifecycle half)
 
-Status: draft
-Decision state: delegated selections recorded; current-head human review pending
+Status: approved
+Decision state: human-approved selections recorded; final-head review is PR merge evidence
 Linear: KEL-96 · Owner: GYLDLAB · Updated: 2026-08-27
 Decision digest: `sha256:053ad0c45ccdb76ae81c554e803275313dcdceca04ef8f021904bf99d64c45da`
 
@@ -44,11 +44,25 @@ ownership fact. Research is evidence, not implementation authority.
 
 The eleven selections below were delegated to the specification writer in a
 direct session and canonicalized as `keld.kel96-decisions/v1`, producing the
-digest in the header. The direct session exposes no stable external actor or
-source identifier. Therefore this document remains `Status: draft` until a
-human distinct from the writer reviews the exact PR head. `Status: approved`
-is invalid unless that review identifies the approver, source/review id, final
-commit, final spec blob, and this decision digest.
+digest in the header. A human distinct from the writer subsequently approved
+the exact candidate through an authenticated GitHub review:
+
+- `approver_identity`: `github:0monish#155816356`
+- `approval_source_id`: `github-pull-request-review:5046236033`
+- `approval_source_url`:
+  `https://github.com/gyldlab/keld/pull/104#pullrequestreview-5046236033`
+- `approved_candidate_head`: `427c986ce2b7a872445c6696e3d1b43026876440`
+- `approved_candidate_spec_blob`: `85d39bb837e738a05bb510acf1d6d62a71819f84`
+- `decision_digest`:
+  `sha256:053ad0c45ccdb76ae81c554e803275313dcdceca04ef8f021904bf99d64c45da`
+- `approved_at`: `2026-08-27T22:33:11Z`
+
+That review explicitly approved all eleven frozen decisions, authorized this
+status/T0 finalization, and excluded product implementation and the stale
+standalone `host-cli/04` node. PR #104's final-head review must identify the
+resulting commit and spec blob before merge; that immutable GitHub review is
+the finalization evidence and cannot be embedded self-referentially in this
+blob.
 
 Governing sources:
 
@@ -515,7 +529,7 @@ privileged channel. The first and only production caller in T1b is the no-flag
 
 ## 6. Tasks and dependency contract
 
-- [ ] T0: A human distinct from the writer approves the exact current PR head,
+- [x] T0: A human distinct from the writer approves the exact current PR head,
       final spec blob, and decision digest; then and only then change
       `Status: draft` to `Status: approved` and obtain current-head review again.
 - [ ] T0g: L0 replaces the stale standalone descriptor node with an atomic
@@ -672,8 +686,8 @@ fixtures; moving work into Rust is not itself a measured improvement.
 
 ## 10. Remaining gates, not open architecture questions
 
-The eleven architecture decisions are frozen in this approval candidate. Five
-execution gates remain:
+The eleven architecture decisions are frozen and the approval provenance is
+recorded in §2. Four execution gates remain:
 
 1. Rebuild the stale standalone T1a Prompt Tracker node/frontier so its first
    implementation landing includes the durable T1b consumer without merging
@@ -684,9 +698,11 @@ execution gates remain:
    artifacts; macOS still lacks a named mechanism.
 4. Human-promote and land KEL-75/T8's Windows primary generation coordinator;
    include KEL-101 only if T8 selects named-pipe transport.
-5. Obtain a stable, direct human current-head GitHub approval distinct from the
-   writer. Then update the status/T0 record and obtain review of that exact final
-   head.
+
+The approval gate passed through authenticated GitHub review `5046236033`.
+PR #104 must still record a review by that distinct human against the exact
+final status/T0 head and identify its commit and spec blob before merge; that
+review is merge evidence, not a fifth implementation gate.
 
 Neither gate authorizes product implementation, marks KEL-96 Done, or implies
 that T1a completes later KEL-96 T2–T5 work.
