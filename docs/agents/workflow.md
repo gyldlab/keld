@@ -4,6 +4,26 @@ How Keld is developed by parallel agents with human architectural review. Ration
 and sources: `docs/research/07-agent-first.md`. Rules here bind agents and humans.
 Task-specific playbooks are routed from `.agents/index.md`; load only matching entries.
 
+## Execution levels and rule ownership
+
+The levels describe write ownership, not rank or broader authority:
+
+| Level | Owner | Write authority | Observable completion |
+|---|---|---|---|
+| L0 portfolio controller | One read-only orchestrator | Execution artifact or research note only; no product/process implementation paths | A current runnable frontier with approvals, dependencies, collisions and evidence classified |
+| L1 issue owner | One agent with one winning Linear claim | Only the issue's declared paths, in its branch and worktree | The issue's falsifiable acceptance, gates, review and handoff are complete |
+| L2 evidence/review leaf | One bounded subagent, reviewer or OS operator | No canonical implementation writes; an authorized OS operator may write only its evidence artifact | The named evidence or findings schema is returned to L0/L1 for judgment |
+
+One rule has one owner. Root and nested `AGENTS.md` own durable repository and
+path-local invariants; this file owns the development lifecycle, claims and handoffs;
+`.agents/index.md` owns conditional playbook routing. Prompt Tracker owns reusable
+static node definitions, model/harness routing and paste transport, while Linear owns
+live issue state, claims and dependencies. Git, CI and named real-OS observations own
+implementation and proof. A prompt may add one-off choreography, but it MUST NOT
+override these owners or turn an L0/L2 reader into a canonical implementation writer.
+A copied paste block is a transport mirror, not another policy owner; Keld's current
+contract wins on drift.
+
 ## The loop (one issue, one agent, one concern)
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
@@ -116,11 +136,12 @@ acceptance cannot move between agents.
 ## Agent claim
 - Agent: claude-code | codex | cursor
 - Device: <host the work actually runs on>
-- Model/effort: e.g. opus-5 | gpt-5.6-sol@max
+- Model/effort: <exact model + effort>
+- Repo: <actual repository>
 - Worktree: ../keld-<issue>
 - Branch: agent/kel-<n>-<slug>
 - Expected paths: <globs this work will write>
-- Single-writer files needed: none | <named shared file>
+- Single-writer files/keys needed: none | <human-designated shared files/keys>
 - Claim expires: <UTC timestamp, at most 24h ahead; refresh while working>
 - OS acceptance owned: real:<OS/device + observable> | none
 ```
@@ -138,6 +159,12 @@ after the claim — one record of availability, not two.
   first PR to green wins while later PRs rebase. This bullet narrows nothing there; it
   only says that the single-writer set is claimed in Linear rather than discovered at
   merge.
+- A **single-writer key** is a symbolic cross-repository resource explicitly designated
+  by a human or orchestrator on the issue (for example, one shared policy or generator
+  input). Claims MUST repeat its exact name. Two unexpired claims naming the same exact
+  key conflict across issues even when their file paths differ; prefixes and similar
+  names do not imply a collision. The normal expiry, release, handoff and revocation
+  rules below free the key. Naming a key never creates or broadens write authority.
 - Overlap on an ordinary file is still worth declaring, because the failure it warns about
   is not the loud one. Git reports a textual conflict and no work is lost. The silent case
   is two agents editing *different regions* of one file, both merging cleanly, and the
@@ -154,8 +181,8 @@ after the claim — one record of availability, not two.
   effect immediately, regardless of the expiry, and the next agent records that it took
   a revoked claim. This is the override for a wedged or misbehaving agent that is still
   refreshing.
-- `Single-writer files needed` MUST be empty unless that agent is the designated writer
-  for the shared file (see § Parallelism rules). Claiming one does not grant it.
+- `Single-writer files/keys needed` MUST be empty unless that agent is the designated writer
+  for the shared file or key (see § Parallelism rules). Claiming one does not grant it.
 - The claim MUST be refreshed at each substantial milestone, alongside the progress
   comment step 4 already requires. An unrefreshed claim is a stale claim.
 
@@ -166,7 +193,9 @@ after the claim — one record of availability, not two.
 - Shared/foundational files — workspace `Cargo.toml`, `rust-toolchain.toml`, kipc wire
   protocol, manifest schema, CI workflows, root `AGENTS.md` — are single-writer:
   human-owned or one designated agent with human review. Everything else: first PR to
-  green wins; later PRs rebase.
+  green wins; later PRs rebase. A human/orchestrator MAY also designate an exact
+  single-writer key for one cross-repository shared policy or generator resource; the
+  Agent claim rules own its collision and release semantics.
 - Assign `real OS/device` work only to an agent that has the required system. Agents on
   another OS MAY complete disjoint CI-only work, but MUST hand off the named OS acceptance
   in Linear instead of duplicating or approximating it.

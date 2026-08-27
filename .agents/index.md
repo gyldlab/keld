@@ -19,6 +19,9 @@ do not silently choose the less restrictive rule.
 | Any implementation or review | Root `AGENTS.md`, [`docs/agents/workflow.md`](../docs/agents/workflow.md), relevant architecture section, nearest crate `AGENTS.md`, and [`docs/agents/learnings.md`](../docs/agents/learnings.md) |
 | Creating/using a git branch, opening a PR, or deciding merge intent across devices | Root `AGENTS.md` § Branch + Linear handoff (Prompt Tracker paste chrome: `0monish/prompt-tracker` `prompts/SHARED/branch-linear-handoff.md`) |
 | Starting work on an issue when another agent or device may also hold it | `docs/agents/workflow.md` § Agent claim |
+| Running or consuming a graph-engineered L0/L1/L2 node or execution artifact | `docs/agents/workflow.md` § Execution levels and rule ownership; Prompt Tracker `prompts/SHARED/execution-node.md` and `docs/06-graph-engineering.md` for the static node contract |
+| Delegating bounded evidence, review, refutation, or OS-observation leaves | `docs/agents/workflow.md` § Execution levels and rule ownership and § Self-review; also [`testing.md`](testing.md) when its trigger applies |
+| Creating or changing a Prompt Tracker node or shared paste chrome | Prompt Tracker `prompts/SHARED/execution-node.md`, `prompts/SHARED/branch-linear-handoff.md`, `docs/06-graph-engineering.md`, and `docs/04-model-routing.md`; Keld's workflow remains execution authority |
 | Addressing CodeRabbit PR feedback or resolving review threads | Root `AGENTS.md` § Commits & PRs (CodeRabbit review threads); [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) § Resolve review threads |
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |
 | Add or change a Mermaid diagram | [`testing.md`](testing.md); also [`research.md`](research.md) when the diagram is under `docs/research/` or synthesizes external evidence |
