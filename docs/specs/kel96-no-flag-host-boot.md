@@ -1,200 +1,692 @@
 # Spec: no-flag host-as-app boot (Unique #1 lifecycle half)
 
 Status: draft
-Linear: KEL-96 · Owner: GYLDLAB · Updated: 2026-08-21
+Decision state: delegated selections recorded; current-head human review pending
+Linear: KEL-96 · Owner: GYLDLAB · Updated: 2026-08-27
+Decision digest: `sha256:053ad0c45ccdb76ae81c554e803275313dcdceca04ef8f021904bf99d64c45da`
 
 ## 1. Goal & non-goals
 
 Make the shipping `keld-host` **process** the application lifecycle root when
-invoked with no `--hello` flag: it loads an approved compiled-config boot
-artifact, owns the UI event loop / window, owns the authenticated hello
-app-link listener, and supervises the Bun child for that window's lifetime.
-`keld dev` may launch or orchestrate that host but must not remain a second
-owner of window, listener, token, or restart loop.
+invoked with no diagnostic flag. The host consumes one strict compiled boot
+descriptor, owns the UI event loop and windows, owns the authenticated app-link,
+and supervises Bun. `keld dev` may stage and launch the host, forward logs, and
+observe its exit, but it must not retain a second window registry, listener,
+token owner, restart loop, or application principal.
 
-This is the **boot/lifecycle** half of Unique #1. The **artifact** half
-(prebuilt signed host that app developers do not compile) remains research
-`82-prebuilt-host-t1.md` / KEL-103 and is out of this spec's first
-implementation slice unless a human expands scope.
+This remains the **boot/lifecycle** half of Unique #1. The release-artifact half
+is KEL-103 or an approved successor. This specification permits an explicitly
+non-release dev/fixture boot boundary before that release trust chain exists; it
+does not turn a mutable sidecar digest into authenticity.
 
 Non-goals:
 
+- Implementing product code in this specification PR.
 - Inventing a fifth unique.
-- Wiring `RoleRegistry` / principal-before-dispatch (KEL-97 after KEL-75).
-- Implementing keld-auth / KEL-89.
-- Filling `keld-pack`, DMG/MSI/deb, update feed, or cross-compile farms.
-- Claiming Windows named-pipe/DACL as done (KEL-101); v0 may keep documented
-  interim loopback on Windows if the approved design says so.
-- OS strict-profile sandbox proofs (KEL-78 T2–T4).
-- Mass-merging unrelated open PRs.
+- Wiring `RoleRegistry`, role grants, or principal-before-privileged-dispatch
+  (KEL-97 after KEL-75).
+- Loading or evaluating `keld.permissions.jsonc` (KEL-102).
+- Implementing keld-auth / KEL-89, strict-profile sandboxing / KEL-78, packagers,
+  installers, update feeds, signing code, or cross-compile farms.
+- Claiming the Windows named-pipe/current-user-DACL transport is live (KEL-101).
+- Promoting `--hello`, `keld hello`, echo, or IPC client diagnostics into an
+  application owner.
 
-## 2. Spec refs
+## 2. Evidence and decision authority
 
-- `docs/architecture/01-overview.md` §§1, 2, 4 (destination host authority;
-  PARTIAL LIVE host-owned hello echo today)
-- `docs/architecture/02-ipc.md` §1 (v0 host-owned `EchoServer` /
-  `HostOwnedHelloSession`; destination role-bound link)
-- `docs/architecture/06-runtime-and-tooling.md` §§1–2
-- Research (private): `83-host-vs-cli-ownership.md` @ Keld evidence SHA
-  `184b308` (refresh); `121-kel30-host-owned-assess.md`;
-  `122-kel30-shipped-slice-acceptance.md`; `82-prebuilt-host-t1.md`
+The factual basis is landed research `83-host-vs-cli-ownership.md` blob
+`912ba954f2ec2d7ce2177b923555a4dc5508d809`. Its central finding remains true at
+Keld `fdef6165ba70d26e353cb5fdd27c2addfe9c36b2`: `HostOwnedHelloSession` is a
+`keld-core` library owner, but the shipping `keld dev` process is still the CLI;
+no-flag `keld-host` still prints a pre-alpha banner. KEL-75's landed generation
+primitives and KEL-105's landed failure surfacing do not change that OS-process
+ownership fact. Research is evidence, not implementation authority.
 
-Architecture already names destination ownership. This spec freezes the
-smallest executable boot contract that turns no-flag `keld-host` into that
-process without pretending KEL-30 already shipped Unique #1.
+The eleven selections below were delegated to the specification writer in a
+direct session and canonicalized as `keld.kel96-decisions/v1`, producing the
+digest in the header. The direct session exposes no stable external actor or
+source identifier. Therefore this document remains `Status: draft` until a
+human distinct from the writer reviews the exact PR head. `Status: approved`
+is invalid unless that review identifies the approver, source/review id, final
+commit, final spec blob, and this decision digest.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+Governing sources:
 
-1. Given a valid compiled-config boot fixture for the live platform, when
-   `keld-host` is launched with **no** `--hello` flag, then a real native
-   window shows the fixture title/renderer marker and the process does **not**
-   print the pre-alpha banner or early-return path that exists on `main` today.
-2. Given missing, malformed, or untrusted compiled config, when no-flag
-   `keld-host` starts, then it exits with a typed error that states the fix,
-   starts no Bun child, and opens no window.
-3. Given shipping `keld dev` against that fixture, when the session is live,
-   then the native window PID, app-link listener, and Bun supervisor are owned
-   by a `keld-host` process (process-tree / handle ownership). Falling back to
-   the current in-process CLI owner must fail the test.
-4. Given a live no-flag host session, when Bun completes HELLO + ≥1 echo
-   CALL/REPLY on the host-minted `KELD_APP_LINK`, then a second CALL remains
-   possible while the same host window owner is still in its event loop
-   (concurrent coexistence under the **host** process).
-5. Given a visible host window and a real Bun child, when the child crashes
-   once under the restart policy, then the same host window lifetime continues,
-   a replacement child starts, and the old link generation fails closed if the
-   approved design requires fresh generation (otherwise document reuse of the
-   KEL-30 single-link session explicitly as a temporary AC with a follow-up
-   ticket).
-6. Given approved host shutdown or last-window-close per the design section,
-   when teardown runs, then the listener/token become unusable before or as
-   Bun is reaped, and no orphan Bun remains after orderly exit.
-7. Given retained diagnostics, when `keld-host --hello`, `keld hello`, or
-   `keld ipc-client echo` run, then they keep diagnostic/client roles and
-   cannot select a principal or become a second application owner.
+- `docs/architecture/01-overview.md` §§1–4: destination host authority,
+  process ownership, reuse, and real-OS evidence.
+- `docs/architecture/02-ipc.md` §§1, 7: authenticated link metadata,
+  one-session v0 behavior, revocation, and lifecycle failure semantics.
+- `docs/architecture/03-security.md` §§1–4: host-minted authority,
+  default-deny, and the separation between boot integrity and permission
+  evaluation.
+- `docs/architecture/06-runtime-and-tooling.md` §§1–2: supervised Bun
+  generations, CLI/host ownership, and the KEL-105 SURFACE behavior.
+- `docs/specs/kel102-host-guard-enforcement.md`: fixed manifest descriptor,
+  same-read verification, and the `KEL-102/T2` consumer boundary.
+- Landed KEL-72 lifecycle code and conformance evidence; KEL-75 generation
+  contract; KEL-100 OS records; and KEL-101/KEL-103 decision records.
 
-## 4. Design
+## 3. Acceptance criteria
 
-### First-principles and reuse decision
+### KEL-96/T1a — compiled boot descriptor contract
 
-- **Ownership facts today (`184b308`):** `HostOwnedHelloSession` /
-  `EchoServer` live in `keld-core` (crate ownership). Shipping `keld dev`
-  still runs that session **inside the `keld` CLI process**. No-flag
-  `keld-host` prints a banner. Unique #1 requires moving the lifecycle root
-  into the `keld-host` **process**.
-- **Reuse:** Reuse `keld_core::HostOwnedHelloSession`, `EchoServer`,
-  `keld_runtime::Supervisor`, Unix `BootstrapListener`, and existing hello
-  window entry points. Do not add a second restart loop or parallel token
-  policy.
-- **Named unmet requirement:** no approved boot artifact + no-flag entry that
-  makes `keld-host` the process owner. Crate move in KEL-30 is insufficient.
-- **Rejected alternatives:** inventing Unique #1 by deleting the banner only;
-  wiring RoleRegistry into the first slice; treating research 83 as an
-  approved implement license without this spec's Status: approved.
-- **Compatibility fallback:** keep `--hello` as a diagnostic window path.
-- **Performance:** none claimed; cold-to-window / RSS measured only if a later
-  PR asserts a change.
+1. A valid `keld.boot.json` is a bounded, strict schema-v1 document. Its exact
+   closed fields are `schema`, `name`, `entry`, `renderer`, and `permissions`;
+   `permissions` contains only `file` and `content_sha256`. Duplicate or unknown
+   fields, an unknown schema, non-UTF-8 input, or input over 64 KiB is rejected.
+2. `permissions.file` is exactly `keld.permissions.jsonc`.
+   `permissions.content_sha256` is exactly `sha256:` followed by 64 lowercase
+   hexadecimal characters and denotes the SHA-256 digest of the manifest's
+   exact raw bytes. T1a/T1b validate and decode this field but do not compare it
+   at host runtime; the artifact producer's consistency test compares it during
+   staging, and KEL-102/T2 owns the first runtime compare on its one policy
+   read. It does not authenticate an unsigned sidecar.
+3. For the non-release fixture only, the `keld-cli` boot compiler creates an owner-private
+   per-launch directory at `<project>/.keld/dev/<launch-nonce>/`, stages the
+   prebuilt `keld-host[.exe]` and the compiled app files there, and returns the
+   validated staged layout without launching it. The T1b integration harness
+   invokes that host with no Keld flag; T2 is the first shipping `keld dev`
+   launcher. The host canonicalizes `current_exe()` and selects the
+   literal sibling `keld.boot.json`; the canonical executable parent is the
+   fixture app root. The host rejects a missing, unreadable, non-regular,
+   symlink-escaping, malformed, or version-mismatched sidecar. `entry` and
+   `renderer` must be non-empty project-relative paths with no root, platform
+   prefix, empty component, `.` component, or `..` component.
+4. Working directory, environment payload, Bun child, webview, decoded frame,
+   and IPC request cannot replace the selected sidecar, canonical app root,
+   entry, renderer, permissions filename, or digest. Before creating an app
+   resource, the host resolves `entry` and `renderer` under that root and proves
+   each target is readable, regular, and canonically contained. A missing,
+   directory, or symlink-escaping target is a typed boot failure.
+5. T1a produces an immutable, host-owned descriptor contract. It cannot be
+   declared complete as a standalone public struct, silent no-op success,
+   marker-only diagnostic, or "T1b pending" error. Its first landing is atomic
+   with the T1b no-flag host consumer on one KEL-96 head, while T1a and T1b keep
+   separate acceptance identities and artifacts.
+6. The fixture producer must stage the exact UTF-8 bytes `{}\n` as
+   `keld.permissions.jsonc` and set `content_sha256` to
+   `sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356`.
+   The artifact-consistency test
+   independently recomputes that value. The T1a host validates the fixed file's
+   presence/readability/regular-file containment but neither hashes nor parses
+   its policy bytes. KEL-102/T2 owns the single runtime read/hash/parse.
+7. T1a creates no window, listener, Bun child, guard snapshot, privileged
+   broker, release signature, or KEL-102 policy parse. KEL-102 consumes only the
+   T1a descriptor contract from the landed atomic head.
 
-### Boot artifact (must be named before Status: approved)
+### KEL-96/T1b — no-flag host consumer
 
-Open question until human chooses one reversible option:
+8. Given the valid compiled descriptor, launching `keld-host` with no diagnostic
+   flag opens a real native window using `name` and `renderer`, starts the Bun
+   `entry`, owns their event loop/session in the `keld-host` process, and does
+   not print or return through the pre-alpha banner path.
+9. Every T1a invalid-input class is rejected with a registered typed error that
+   states the fix before the host creates a listener, child, or window. There is
+   no default descriptor, source-config fallback, or diagnostic fallback.
+10. One private host session owns one authenticated app-link handshake, one
+    reader, serialized writes, and channel dispatch for both echo and KEL-72
+    lifecycle traffic. A second listener/link or a second `HELLO` for lifecycle
+    is forbidden. `Quit` reaches the UI thread through the live backend's
+    event-loop wake primitive and enters one idempotent host `Quitting` state.
+11. Startup follows §4.4's state machine. Lifecycle `Ready` is emitted only
+    after authenticated `HELLO` and initial-window registration/navigation
+    readiness; it is never implied by connection or handshake.
+12. T1b proves its minimum primary-session shutdown contract: correlated Quit
+    reply, admission/dispatch quiesce, endpoint/token revoke, link close, child
+    termination/reap, and host event-loop exit. Window-bound roles, grants, and
+    privileged routes are dependent hooks owned by KEL-75/KEL-97/KEL-102, not
+    claims of this slice.
 
-- **Option A (smallest):** host reads a checked-in / generated JSON (or similar)
-  next to the fixture / app bundle; schema versioned; typed parse errors.
-- **Option B:** host invokes existing source `keld.config.ts` only under
-  `keld dev` orchestration and refuses no-flag boot without a compiled
-  artifact (forces artifact half sooner).
+### Later KEL-96 lifecycle results
 
-Default for draft review: **Option A** for the first falsifiable fixture;
-Option B remains explicit non-goal for T1 unless chosen.
+13. `keld dev` launches and observes the host; process-tree and OS evidence show
+   that the window, listener, token/generation, and Bun supervisor belong to
+   `keld-host`, not the CLI.
+14. Bun completes authenticated `HELLO` plus a `CALL`/`REPLY`, and a second call
+    remains possible while the same host-owned window/event-loop lifetime is
+    live.
+15. On a recoverable Bun crash, KEL-96/T3 integrates KEL-75's existing
+    endpoint/token/generation mechanism. It revokes the old link authority
+    before provisioning the successor, keeps the host window alive, and proves
+    the replacement child completes `HELLO` plus one call. It must not duplicate
+    generation policy or claim KEL-97 role/principal/grant wiring.
+16. A primary child exit not caused by an accepted Quit/host shutdown is never
+    success, including exit status zero. Before `Ready` it is typed startup
+    failure. After `Ready` it follows the approved restart policy or, until T3
+    lands, triggers typed non-zero ordered host shutdown. KEL-116 must land
+    before T1b/T3 can reuse the shared supervisor ledger.
+17. Last-window close and explicit/default quit follow the exact ordering in
+    §4.5. The old endpoint is unusable before a forced child termination/reap,
+    and no Bun child remains after orderly host exit.
+18. Retained diagnostics stay unprivileged and cannot become an alternate
+    application owner or authority path.
+19. macOS, Windows, and Linux product evidence is recorded separately. Windows
+    may use the documented loopback interim only for no-flag process,
+    window, lifecycle, and echo proof. Linux requires a real Wayland or X11
+    desktop and a fresh no-flag-host ownership run. KEL-96 stays open until the
+    task/platform matrix in §7 is complete.
+20. T2 freezes CLI-death behavior: loss of the private dev-host lease initiates
+    ordered host/Bun shutdown without transferring application-resource
+    ownership to the CLI. Abnormal host-death descendant reaping is not claimed
+    by KEL-96; KEL-75/KEL-78 own the per-OS mechanism and are required evidence
+    before the corresponding platform lifecycle row can close.
 
-### Process topology
+## 4. Normative design decisions
 
-```text
-Today (PARTIAL LIVE):  keld (CLI) --owns--> window + HostOwnedHelloSession + bun
-Destination (this spec): keld-host --owns--> window + HostOwnedHelloSession + bun
-                         keld (CLI) --launches/logs--> keld-host (dev)
+### 4.1 Decision table
+
+<!-- KEL96_DECISIONS_V1_START -->
+| ID | Frozen decision |
+|---|---|
+| `KEL-96-D1` | Approve refreshed research-83 as factual process-ownership evidence only. |
+| `KEL-96-D2` | Keep distinct `KEL-96/T1a` descriptor and `KEL-96/T1b` no-flag consumer identities on one atomic first head. Existing `KEL-102/T1` means that landed head plus its explicit permissions fixture; `KEL-102/T2` is the first runtime hash/parse consumer. |
+| `KEL-96-D3` | Use Option A: strict compiled `keld.boot.json` schema v1. No no-flag `keld.config.ts` parsing. |
+| `KEL-96-D4` | T1a uses only the exact owner-private per-launch dev layout in §4.2 and makes no authenticity claim. No release verifier/mode exists here; release boot is blocked on KEL-103 or an approved successor that binds the host and exact sidecar bytes/location/root relationship. |
+| `KEL-96-D5` | Fix `keld.permissions.jsonc` and `permissions.content_sha256 = sha256:<64 lowercase hex>` as immutable host-owned descriptor values. |
+| `KEL-96-D6` | Reject the standalone T1a execution terminal as theater. T1a and its first durable T1b consumer land atomically while retaining separate acceptance identities. L0 must rebuild the stale standalone execution node before implementation. |
+| `KEL-96-D7` | KEL-116 precedes the no-flag window/recovery path. KEL-96/T3 owns Unix shipping integration by reusing KEL-75 generation primitives; human-promoted `KEL-75/T8` owns the Windows primary generation coordinator before KEL-96/T4 integrates it. KEL-97 retains RoleRegistry/principal/grant ownership. |
+| `KEL-96-D8` | One private multiplexed primary app session owns KEL-72 wire behavior and the new KEL-96 startup/quit/revoke/link-close/reap state machine. Window-bound roles and authority stores remain dependent owner hooks. |
+| `KEL-96-D9` | `keld-host --hello`, `keld hello`, `ipc-echo`, and `ipc-client` remain unprivileged diagnostics. |
+| `KEL-96-D10` | Windows KEL-96 lifecycle/echo proof may use interim loopback without closing KEL-101 or authorizing privileged Windows dispatch; every platform must still close its ownership, restart, shutdown, CLI-death, and applicable host-death rows in §7. |
+| `KEL-96-D11` | `keld-core` owns boot validation and returns only the opaque `ValidatedBootSelection` minted from the current executable's staged layout; `run_unprivileged` consumes it and cannot register privileged channels. `keld-host` is the thin first caller. `keld.boot.json` and the exact §4.8 Rust surface trigger public-contract, permission-model, and manifest-schema gates. |
+<!-- KEL96_DECISIONS_V1_END -->
+
+Deleting a decision row, changing its meaning only in a header/comment, or
+marking the spec approved while any row is unresolved invalidates approval.
+Normative task and test text below must carry the same decisions.
+
+`decision_digest` is SHA-256 over the exact UTF-8 bytes between the two
+`KEL96_DECISIONS_V1` marker lines, excluding both markers and normalizing the
+checked-in Git text to LF with one final LF. The digest header is outside that
+block, so an independent reviewer can recompute it without a circular hash.
+
+### 4.2 Boot format and ownership
+
+The v1 sidecar is generated from reviewed project configuration by tooling;
+the no-flag host never evaluates TypeScript source.
+
+```json
+{
+  "schema": 1,
+  "name": "Example",
+  "entry": "src/main.ts",
+  "renderer": "index.html",
+  "permissions": {
+    "file": "keld.permissions.jsonc",
+    "content_sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
 ```
 
-### Types / channels (sketch)
+The parser rejects duplicate keys rather than accepting first- or last-key
+wins behavior. It rejects unknown fields so schema evolution requires a version
+decision instead of silently dropping authority-relevant data. `name` must be a
+non-empty string. `entry` and `renderer` are relative lexical paths meeting AC3;
+the host resolves and containment-checks them under the canonical app root
+before use. The host opens the sidecar and renderer with no-follow semantics,
+validates regular-file identity/containment on the opened handles, and consumes
+their bytes from those same handles. The fixed permissions file is likewise
+opened no-follow for T1a metadata validation, but KEL-102 later owns the one
+handle-based read/hash/parse. `entry` is opened no-follow, identity/containment
+checked, and closed immediately before Bun spawn while no untrusted child yet
+exists. The owner-controlled dev user remains the fixture trust boundary; this
+does not claim release-grade resistance to same-user mutation.
 
-- Extend `keld-host` main: no-flag path loads boot config → starts
-  `HostOwnedHelloSession` → opens window via existing `run_hello_window_*`
-  while session live → shutdown on window return.
-- Optional thin `keld-core` helper: `run_host_owned_app(...)` so CLI and host
-  share one owner function (CLI only if a human keeps a temporary dual path;
-  AC3 forbids dual ownership in the shipping path).
+The non-release fixture has one exact per-launch layout:
 
-### Capabilities / manifest
+```text
+<project>/.keld/dev/<128-bit-random-launch-nonce>/
+  keld-host[.exe]            # new-inode copy/COW clone of current dev host
+  keld.boot.json
+  keld.permissions.jsonc
+  <entry and renderer paths named by the sidecar>
+```
 
-none for T1 (no new grants). Do not claim Unique #4 wiring (KEL-102).
+The reusable `keld-cli` boot compiler is the sole shipping-layout producer. T1a
+implements it; the T1b integration harness invokes it directly, and T2 later
+wires that same owner into shipping `keld dev` launch/log/lease orchestration.
+For the first macOS slice the compiler creates a `0o700` stage directory, stages
+the files, computes the permissions digest, and later T2 executes the staged
+host with no Keld argument. T1a accepts a current developer-built host path,
+hashes its bytes, copies or copy-on-write clones it into a new inode, recomputes
+the staged digest for equality, and removes write access before launch. This is
+copy-integrity evidence only; the source is not called verified or release
+authenticated. A hard link that lets same-user app code mutate a source/cache
+inode is forbidden. When a verified CLI cache later exists, it may supply the
+same compiler input without changing this contract. The host calls
+`current_exe()`, canonicalizes its parent, verifies the Unix mode is still
+exactly `0o700` after staging,
+and selects the literal sibling `keld.boot.json`. It does not consult cwd,
+environment, argv data, a child, or a request. That canonical parent is the
+fixture app root. Windows protected-current-user-only DACL creation/read-back
+and Linux exact-`0o700` staging are T4 platform work; their compiler/no-flag paths remain
+fail-closed under `KELD-CORE-034` until implemented and proved.
 
-### Wire protocol
+T1a has no release entry path or caller-selectable `Fixture`/`Release` boolean.
+This dev rule is not a universal release layout: a shared cached host can serve
+multiple apps, and a macOS bundle separates executable and resource directories.
+KEL-103 or its approved successor owns a later signed production
+container/locator and must authenticate:
 
-none — reuse existing HELLO / `KELD_APP_LINK` / echo CALL contracts.
+1. the expected host target and version;
+2. the exact raw `keld.boot.json` bytes;
+3. the sidecar's location in the signed container; and
+4. the signed relationship from that container to the canonical app root.
 
-### Platform notes
+The current KEL-103 draft proposes verification of a standalone codesigned
+Mach-O; no Keld release signer, verifier, or signed app-container binding is
+live. That proposed scope authenticates none of the app-specific sidecar facts.
+Until an approved predecessor lands there is no release boot mode to downgrade
+into the fixture verifier.
 
-- macOS: UDS bootstrap already live for host-owned echo.
-- Windows: document loopback TCP as interim unless KEL-101 lands first.
-- Linux: same concurrent product proof required (KEL-100 overlap); do not mark
-  3-OS Unique #1 Done from Darwin alone.
+### 4.3 KEL-102 handoff
+
+The fixture producer writes exact bytes `{}\n` to `keld.permissions.jsonc`, sets
+the v1 descriptor digest to
+`sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356`,
+and proves that relation in an artifact generation test. T1a's host path checks
+only that the fixed file is a readable, regular, contained file; it does not
+read, hash, or parse policy bytes.
+
+Existing `KEL-102/T1` retains its landed meaning: the atomic KEL-96/T1a+T1b head
+exists **and** its generated fixture includes that explicit permissions file.
+It is not relabeled as a T1a-only record. KEL-102/T2 then receives the immutable
+canonical app root plus fixed filename and decoded 32-byte SHA-256 digest. Its
+guard-owned loader must read `keld.permissions.jsonc` once, hash those exact
+bytes, compare the digest, and parse those same bytes. A host-side check followed
+by reopening the path is forbidden. Adding `sha2` to a shipping crate is a later
+dependency review gate; the workspace pin does not waive that review.
+
+No descriptor field grants permission. A valid `{}` permissions file remains a
+deliberate all-denied policy; missing or invalid policy is a KEL-102 startup
+failure, not a T1a default.
+
+### 4.4 Startup, session, and restart ownership
+
+```text
+Current:     keld CLI owns window + HostOwnedHelloSession + Bun
+T1a/T1b:    keld-host owns validated boot + window + app-link + Bun
+Dev tooling: keld CLI stages/launches/logs keld-host, but owns none of those resources
+```
+
+KEL-96/T3 integrates, rather than copies, KEL-75's fresh generation lifecycle.
+The old endpoint/token/generation is revoked before successor provisioning.
+KEL-97 later binds accepted generations to RoleRegistry principals and guarded
+dispatch. Until T3 is live, the temporary behavior remains KEL-105 option (a):
+surface a recorded non-zero/crash death as `KELD-CORE-033`; do not pretend the
+retired one-session link recovered. KEL-116 must first make every unrequested
+self-termination observable, including status zero. In the no-flag window path,
+an exit before `Ready` is startup failure; after `Ready` it is restartable or
+fatal according to the host policy unless an accepted Quit/host shutdown caused
+it.
+
+The landed KEL-75 coordinator is Unix-only. A Unix recovery proof does not claim
+Windows recovery. Before T4, a KEL-75-owned platform-generic/Windows primary
+generation coordinator, designated `KEL-75/T8` by this dependency decision,
+must be human-promoted/scoped, land, and prove fresh provision/bind/revoke/restart
+without duplicating the policy in `keld-core`. KEL-96 consumes that artifact and
+does not edit `keld-runtime`/`keld-ipc` under its own scope. If its approved
+transport is the named pipe, KEL-101 is also a predecessor; an explicitly
+unprivileged loopback implementation may prove KEL-96 lifecycle only and cannot
+claim KEL-101 or privileged Windows dispatch. Windows still needs its own real
+product evidence under T4.
+
+One private `keld-core` app-session router owns the accepted stream. It performs
+one HELLO, has one reader loop, serializes writes through one writer owner, and
+dispatches the existing echo and lifecycle channel ids. `LifecycleSession` and
+`EchoServer` are evidence/reuse inputs, not two concurrently installed stream
+owners. No second `KELD_APP_LINK`, lifecycle listener, or lifecycle HELLO exists.
+
+The UI main thread owns boot validation, initial window creation/registration,
+renderer navigation, and event-loop state. The app-session I/O reader sends UI
+commands through the live backend's event-loop wake primitive. A T1b platform
+implementation may add that seam only with a live backend in the same PR; a
+hollow `WebEngine` method is forbidden.
+
+Startup is an explicit host state machine:
+
+1. `ResolveBoot`: locate, read, and strictly parse the sidecar.
+2. `ResolveTargets`: validate the staged permissions file and canonicalize/open
+   `entry` and `renderer` as readable regular files contained by the app root;
+   load renderer bytes needed by the initial navigation.
+3. `LoadGuardSnapshot`: absent for the deliberately unprivileged
+   `run_unprivileged` T1b slice, which has no privileged-channel registration
+   surface. Once KEL-102/T2 lands, KEL-102 must add a separately exact,
+   public-reviewed privileged constructor carrying its immutable verified
+   snapshot into this gate. That path performs one read/hash/parse and must
+   succeed before any application resource; it cannot call `run_unprivileged`,
+   skip the gate, or install a parallel loader.
+4. `ProvisionLink`: mint one endpoint/token/generation and begin bounded
+   admission.
+5. `SpawnPrimary`: start Bun with that one canonical `KELD_APP_LINK` plus log
+   sinks; the child receives no boot-root/path/digest authority.
+6. `Authenticate`: accept one HELLO and bind the stream to this host session.
+7. `CreateInitialWindow`: create/register the window and finish its initial
+   renderer navigation on the UI thread.
+8. `Ready`: send the KEL-72 `Ready` event; only now enter `Running`.
+
+Failure in steps 1–3 leaves no application resource. Failure in step 4
+idempotently revokes the minted endpoint, token, and generation before closing
+the endpoint; stale credentials must fail while a later legitimate provision
+still succeeds. Failure in steps 5–8—including a failed `Ready` write before
+successful emission—revokes the generation, closes the link and
+endpoint, terminates/reaps the live child handle, closes any partial window, and
+returns the phase-specific typed error. Only a failure after successful `Ready`
+emission and transition to `Running` follows the runtime exit/restart/quit rules;
+it is not reclassified as startup failure.
+
+### 4.5 Last-window and quit order
+
+Landed KEL-72 is the source of truth only for the `Ready`,
+`LastWindowClosed`, and correlated `Quit` reply wire observations. The new
+primary-session coordinator owns the surrounding state/order:
+
+1. The host's primary-window count transition from one to zero sends
+   `LastWindowClosed` over the still-live app link.
+2. If the app registered a `window-all-closed` listener, it may keep the host
+   session alive. Without a listener, `@keld/electron` sends `Quit`. An explicit
+   `app.quit()` enters the same path.
+3. On `Quit`, the KEL-96 coordinator atomically enters an idempotent `Quitting`
+   state and
+   rejects new admission/dispatch work, then sends the correlated `Quit` reply
+   before closing the link.
+4. After the reply, the host revokes the primary endpoint/token/generation,
+   closes the link, terminates and reaps Bun by its live
+   process handle; finishes remaining window/event-loop teardown; and exits.
+5. Natural exit retains KEL-75's portability caveat: `try_wait` may already have
+   reaped the child. Revocation still precedes any successor provisioning.
+
+Window-generation revocation and draining window-bound roles remain KEL-75/T4.
+Role grants and guarded privileged routes remain KEL-97/KEL-102. KEL-96 exposes
+ordered coordinator hooks for those owners when they land; it neither duplicates
+nor claims their policy in T1b.
+
+The current `HostOwnedHelloSession::finish` order is not the destination oracle;
+it shuts down/reaps the supervisor before stopping its echo server. T1b/T3 must
+prove the ordering above instead of copying that sequence.
+
+### 4.6 Diagnostic boundary
+
+`keld-host --hello`, `keld hello`, `keld ipc-echo`, and `keld ipc-client` may
+own diagnostic windows or test listeners. They must not read `keld.boot.json`,
+load a policy snapshot, mint `Principal::AppProcess`, register privileged native
+channels, supervise the application, or become an alternate no-flag owner.
+
+### 4.7 Cross-OS transport and acceptance
+
+KEL-96 proves process and lifecycle ownership, not transport hardening. Windows
+may use the currently documented loopback TCP plus v2 possession token for its
+unprivileged lifecycle/echo evidence. That result is labeled interim and cannot
+close KEL-101 or authorize a privileged Windows channel. KEL-101's own approved
+scope remains the authority for the named-pipe/current-user-DACL gate.
+
+The atomic T1b head initially enables no-flag startup only on macOS. On Windows
+or Linux before its T4 slice lands, no-flag `keld-host` fails before boot-file
+read or any application resource with proposed `KELD-CORE-034`: no-flag host
+support is unavailable on this platform; complete the named KEL-96/T4 platform
+slice. It must not fall through to the pre-alpha banner, `--hello`, CLI-owned
+session, or a partially installed app-link. T4 registers the code before
+removing each platform guard.
+
+KEL-100's macOS and Windows records prove the current CLI-owned concurrent path,
+not no-flag host ownership. Their ordered witness method is reusable. Each KEL-96
+platform run must freshly prove the `keld-host` PID owns the real window/session,
+Bun is live, a second authenticated reply occurs, and orderly close reaps the
+child. Linux additionally requires an interactive real Wayland or X11 desktop;
+Xvfb, CI, WSL, cross-compilation, and another OS are not product evidence.
+
+T2 adds one private dev-host lease from the CLI launcher to the host without a
+new inherited-handle protocol. The CLI spawns the host with stdin as an owned
+pipe, retains only its writer, and sets `KELD_DEV_LEASE=stdin-v1` to classify
+that existing stream as liveness-only. The host owns only the reader and marks
+it non-inheritable before spawning Bun; Bun receives null stdin. Standalone
+no-flag T1b has no `KELD_DEV_LEASE` and does not monitor terminal stdin.
+
+CLI exit/crash closes the only writer and yields EOF. `CliLeaseLost` is a
+distinct shutdown cause: it quiesces new work and joins the common
+revoke/link-close/terminate/reap/event-loop-exit tail, but sends no impossible
+Quit reply because no lifecycle Call exists. A forged environment value can at
+most make the caller's own host monitor stdin and shut down; it carries no app
+root, path, digest, principal, permission, or application-resource ownership.
+Tests inspect both process handle tables: the host never owns a writer copy and
+Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
+
+Abnormal host-death descendant reaping remains the explicit KEL-75/KEL-78
+platform dependency. Windows and Linux may close their KEL-96 lifecycle rows
+only with the named reaper evidence from those specifications. macOS remains
+awaiting a primary-sourced reaper mechanism; process-group or `launchd` claims
+are not substitutes. KEL-96 records and consumes those artifacts but does not
+invent a parallel reaper or claim strict-profile containment. Artifact presence
+alone is insufficient: each platform row kills the real no-flag `keld-host` and
+independently observes that its enrolled Bun descendant is gone and a subsequent
+launch succeeds.
+
+### 4.8 API boundary
+
+`keld-core` owns sidecar selection/parsing, no-follow target opens, renderer-byte
+loading, owned paths, decoded digest, and the single app-session coordinator.
+T1a/T1b expose no raw parser, descriptor fields, or caller-supplied target paths.
+They add this exact reviewed API in `keld_core::app_session`:
+
+```rust
+pub struct ValidatedBootSelection { /* private fields */ }
+
+impl ValidatedBootSelection {
+    pub fn from_current_exe_unprivileged() -> Result<Self, HostAppError>;
+}
+
+pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError>;
+
+pub struct HostAppError { /* private fields */ }
+
+impl HostAppError {
+    pub fn code(&self) -> &'static str;
+}
+```
+
+`from_current_exe_unprivileged` performs the exact T1a validation state: it
+derives the staged root from `current_exe`, reads/parses the sidecar from its
+validated handle, rejects an empty `name`, validates/owns `entry`, loads renderer
+bytes from its validated handle, and retains the fixed permissions descriptor.
+All fields stay private. `run_unprivileged` consumes that opaque value,
+owns the one multiplexed app session and UI event-loop lifetime, blocks until
+ordered host exit, and returns the registered typed failure. `HostAppError`
+implements `Display`/`Error`; its display text includes the fix. No boot bytes,
+permissions path/digest, listener, stream, token, generation, window handle, or
+child handle is caller-constructible or crosses this API. It cannot register a
+privileged channel. The first and only production caller in T1b is the no-flag
+`keld-host` main path. Internal parser/session/router types stay private.
 
 ## 5. Boundaries
 
-- Implement in: `crates/keld-host`, `crates/keld-core` (session/boot helper),
-  `crates/keld-cli` (`keld dev` launch/orchestration only), tests, architecture
-  LIVE/TARGET labels in the same PR that ships ownership.
-- Must not touch: `RoleRegistry` product wiring; `keld-pack` installers;
-  `keld-auth`; CI router workarounds; unrelated open PRs; inventing signed
-  release machinery (KEL-103).
+- Implement after approval in: `crates/keld-host` (thin no-flag caller),
+  `crates/keld-core` (boot validator, the exact §4.8 API, and private
+  multiplexed session), `crates/keld-cli` (T1a boot compiler; T2
+  launch/log/lease orchestration), and `crates/keld-wv` only for a live
+  backend event-loop wake/navigation seam implemented and proved in the same
+  platform slice. Generated fixture files, tests, and current-state
+  architecture labels follow the behavior they prove.
+- Must not touch without separate approval: any public boot API beyond §4.8;
+  KEL-102 guard
+  loading/evaluation; `RoleRegistry`/role grants; KEL-78 sandbox admission;
+  `keld-runtime`/`keld-ipc` generation or transport changes not owned by a
+  landed KEL-75/KEL-101 predecessor; `keld-pack`; release signing; updater;
+  manifest generator; CI routing; kipc frame/HELLO bytes.
 
-## 6. Tasks (each ≈ one PR; ordered)
+## 6. Tasks and dependency contract
 
-- [ ] T0: Human approves this draft (Status → approved) citing refreshed
-      research-83.
-- [ ] T1: No-flag `keld-host` boots fixture window from compiled config;
-      banner gone on success path; typed failure on bad config. Darwin first.
-- [ ] T2: `keld dev` launches host process owner; AC3 process-tree proof;
-      concurrent HELLO/CALL under host.
-- [ ] T3: Window-survives-Bun-crash (or explicit deferred ticket if T1 reuses
-      single-link session).
-- [ ] T4: Windows + Linux product proofs (coordinate with KEL-100).
-- [ ] T5: Arch 01/06 LIVE labels match shipped process ownership.
+- [ ] T0: A human distinct from the writer approves the exact current PR head,
+      final spec blob, and decision digest; then and only then change
+      `Status: draft` to `Status: approved` and obtain current-head review again.
+- [ ] T0g: L0 replaces the stale standalone descriptor node with an atomic
+      T1a/T1b execution node and reissues the frontier before implementation.
+- [ ] T1a: Implement and test the private schema-v1 descriptor/trust boundary.
+      The producer stages the explicit permissions fixture/digest. The host
+      validates its fixed file metadata but creates no application resource and
+      exposes no public Rust API.
+- [ ] T1b: After KEL-116 lands, on the same first KEL-96 implementation head
+      as T1a, make no-flag
+      `keld-host` the durable consumer; add the single-link echo/lifecycle router,
+      startup state machine, live-backend UI wake, minimum primary-session Quit
+      shutdown, and first real macOS window/session proof. T1a and T1b have
+      separate tests and artifacts even though their first landing is atomic.
+- [ ] T2: Wire shipping `keld dev` to the T1a boot compiler, launch the staged
+      host, forward logs, and prove process/handle ownership, concurrent
+      second-call behavior, and dev-host-lease shutdown when the CLI dies.
+- [ ] T3: After KEL-116 records all self-termination, integrate fresh KEL-75
+      link generation and prove same-window macOS recovery; retain the qualified
+      KEL-105 SURFACE behavior until this passes.
+- [ ] T4: Implement the remaining Windows generation/recovery and per-backend
+      host lifecycle integration after the KEL-75-owned Windows generation
+      coordinator lands, run the real Windows and Linux product rows, and
+      consume the applicable KEL-75/KEL-78 host-death reaper artifacts. This is
+      implementation plus evidence, not an evidence-only task; it must not
+      implement a second generation loop in `keld-core`.
+- [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
+      actually proved by landed T1a–T4 work.
 
-## 7. Test plan
+KEL-102 dependency mapping:
 
-| AC | Test |
+- Existing `KEL-102/T1` is satisfied only by the landed atomic KEL-96/T1a+T1b
+  head **and** its explicit generated `keld.permissions.jsonc` fixture/digest.
+- `KEL-102/T2` is the first KEL-102 implementation consumer and may depend on
+  the T1a artifact from the atomic T1a/T1b head; it does not depend on KEL-96
+  T2–T5.
+- `KEL-96/T1a` cannot claim KEL-102's guard snapshot, verified manifest parse,
+  privileged listener, broker, or permission-model completion.
+
+The landed Prompt Tracker `host-cli/04` node assumes a standalone T1a terminal
+and is stale under D6. L0 must rebuild that node and its frontier before any
+implementation claim. This specification PR does not edit Prompt Tracker.
+
+Before the replacement node can be ready, L0 also requires a landed
+`keld.execution-artifact/v1` with `node_id=app-self-termination`,
+`issue_id=KEL-116`, `status=passed`, a passed
+`acceptance.id=KEL-116/self-termination`, and `head_sha` proven to be an ancestor
+of current Keld `origin/main`. KEL-116 must first be promoted and scoped by its
+owner; this specification does not self-authorize its implementation.
+
+Windows T4 also requires a landed artifact with
+`node_id=windows-primary-generation`, `issue_id=KEL-75`, `status=passed`, a
+passed `acceptance.id=KEL-75/T8`, and an ancestor-of-`origin/main` `head_sha`.
+If T8 selects named-pipe transport, its approved dependency set must additionally
+include the matching passed KEL-101 transport artifact. Removing the T8 hard
+edge must make the replacement graph readiness test fail.
+
+The replacement node emits one schema-valid `keld.execution-artifact/v1`:
+
+- `node_id=host-boot-and-session`, `issue_id=KEL-96`, `status=passed`, one
+  landed `head_sha`, and acceptance rows
+  `{"id":"KEL-96/T1a","class":"ci-only","status":"passed"}` and
+  `{"id":"KEL-96/T1b","class":"real-os","status":"passed"}` with their
+  schema/fixture/negative-control and initial-platform product evidence.
+
+L0 exposes that node to KEL-102/T2 only when both acceptance rows pass on the
+one landed head; KEL-102 consumes the T1a evidence. It must replace the old
+node, frontier edge, and graph tests. Removing the KEL-116 hard edge or allowing
+the old standalone `host-boot-descriptor` artifact must make the graph test
+fail.
+
+## 7. Test and approval plan
+
+| Contract | Required oracle |
 |---|---|
-| 1–2 | Host binary integration: no-args success + malformed config |
-| 3 | Process-tree / window PID ownership under `keld dev` |
-| 4 | Extend concurrent coexistence under host process (no sleep-sync) |
-| 5 | Crash + restart with window continuity (or deferred ticket id) |
-| 6 | Shutdown/reap + endpoint cleanup |
-| 7 | Diagnostic regression (`--hello`, ipc-client) |
+| Decision completeness | Exactly one `KEL-96-D1` through `KEL-96-D11`; `Status: approved` is rejected without every row plus approver/source/head/blob metadata. |
+| T1a/T1b distinction | Removing either task identity fails the dependency-contract check; no test may let T1a claim a window or let T1b bypass the descriptor. |
+| Strict boot bytes | Valid bounded schema returns exact owned values; duplicate/unknown/version/UTF-8/size/path and malformed digest-encoding cases return typed errors with fixes. The artifact test compares the staged digest; KEL-102 owns runtime mismatch rejection. |
+| Host-selected locator | cwd, environment, child, frame, and IPC substitution attempts do not change root/path/digest. Replacing a sidecar or renderer after locator calculation either leaves the already-open consumed bytes unchanged or produces a typed identity failure; KEL-102 applies the equivalent same-read test to policy bytes. |
+| Trust boundary | Mutating unsigned sidecar bytes cannot be described as release-authenticated; no release mode/acceptance exists until the KEL-103/successor verifier succeeds on those exact bytes. |
+| Pre-resource failure | Every invalid boot case records no listener endpoint or child PID and directly proves the host window registry plus the platform-native window-handle census are empty before the typed error returns; absence of a window-ready marker alone is insufficient. |
+| Real consumer | Product integration invokes the no-flag binary; private-return-value inspection alone is insufficient. |
+| Restart | Reverting revoke-before-successor or reusing the retired link fails the same-window recovery test. |
+| Shutdown | Reordering link revocation after forced reap fails endpoint/reap observations; `Quit` reply still arrives before link close. |
+| Diagnostics | Diagnostic paths cannot load boot/policy, mint app identity, or register privileged handlers. |
+| OS evidence | T1a parser/state is CI-only; T1b/T2/T3/T4 window/process/restart/transport observations are real OS/device; T5 document checks are CI-only but consume those real artifacts. |
 
-Anti-flake: await output markers / conditions; bind port 0; temp dirs; no
-sleep-sync.
+Task/platform completion matrix:
 
-## 8. Review gates triggered
+| Result | CI-only oracle | macOS real desktop | Windows real desktop | Linux real desktop |
+|---|---|---|---|---|
+| T1a descriptor/fixture | strict schema, artifact digest, substitution and mutation negatives | not applicable | not applicable | not applicable |
+| T1b no-flag owner/session/shutdown | state model, same-stream echo+lifecycle, cleanup negatives | required on atomic first head | implemented/proved by T4 | implemented/proved by T4 |
+| T2 CLI delegation/second call/CLI death | lease state model and process fixtures | required before T2 passes | required by T4 | required by T4 |
+| T3 fresh generation/window continuity | generation ordering and stale-link negatives | required before T3 passes | Windows equivalent implemented/proved by T4 | real proof required by T4 |
+| Orderly shutdown/reap | state/child-process negatives | required by T1b/T3 | required by T4 | required by T4 |
+| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | named reaper plus real kill-host/child-gone/relaunch run | named reaper plus real kill-host/child-gone/relaunch run |
 
-- unsafe: none expected
-- Public API: yes if new shared boot helper is public
-- Permission model: none in T1 (no RoleRegistry / guard wiring)
-- Dependency addition: none expected
-- Wire protocol: none
+KEL-96 remains open while any required cell is awaiting. A platform's T4 row
+cannot pass on ownership/echo evidence while its restart or teardown cell is
+missing.
 
-## 9. Perf impact
+Documentary negative controls for this specification candidate:
 
-none claimed. If cold-to-window or RSS changes are asserted, use architecture
-01 §5 fixtures with attribution.
+1. Remove the T1a/T1b row or task mapping; the decision/dependency check must
+   fail.
+2. Delete the release trust owner or the fixed KEL-102 permissions descriptor;
+   the approval check must fail.
+3. Change only `Status: draft` to `Status: approved`; the approval check must
+   fail until stable approver/source id, final commit, final spec blob, and
+   current-head review are present.
 
-## 10. Open questions
+Implementation tests use temp directories, port 0, real child processes, and
+observable readiness/exit/cleanup. They must not sleep-sync, retry a deterministic
+failure, inflate timeouts, substitute mocks for OS behavior, or weaken a failing
+test. Critical boot/restart/shutdown tests require temporary negative-control
+mutations and named failing tests.
 
-1. Boot artifact format and trust (Option A vs B above).
-2. Does T1 require fresh link generation on Bun restart, or is KEL-30
-   single-link reuse explicitly deferred to KEL-97/KEL-75?
-3. Exact last-window-close vs quit policy for the no-flag host (align with
-   KEL-72 lifecycle events once host-owned).
-4. Whether `keld hello` remains a CLI in-process diagnostic forever or becomes
-   a thin host launcher.
+## 8. Review gates
+
+For this specification-only PR:
+
+- unsafe: none.
+- public API: **yes** — `keld.boot.json` is a new external producer-consumer
+  contract even though its Rust implementation types remain private.
+- permission model: **yes** — the fixed permissions filename/digest and trusted
+  handoff to KEL-102 determine which policy bytes a future host may evaluate.
+- dependency addition: none in this documentation PR.
+- wire protocol / manifest schema: **yes** — schema v1 is a new versioned boot
+  manifest contract. Existing kipc frame and HELLO bytes remain unchanged.
+
+Future implementation gates:
+
+- Public Rust API: **mandatory for T1b** — review the exact §4.8
+  `keld_core::app_session::{ValidatedBootSelection, run_unprivileged, HostAppError}`
+  surface and any
+  public `keld-wv` wake/navigation seam. T1a's parser/descriptor remain private;
+  later KEL-102 API evolution requires another gate. The artifact API gate above
+  also applies.
+- Dependency addition: adding workspace-pinned `sha2` to a shipping crate still
+  requires human review.
+- Permission model: KEL-102 additionally owns manifest loading/evaluation and
+  its separate human gate.
+- Wire protocol: existing HELLO/lifecycle/echo bytes remain unchanged; any kipc
+  change is another wire review beyond the boot-manifest gate above.
+- Unsafe: none expected in KEL-96; Windows named-pipe FFI remains KEL-101.
+
+## 9. Performance impact
+
+No performance claim is made by this documentation PR. The boot descriptor is
+bounded at 64 KiB and parsed once on the cold startup path. A later implementation
+must attribute any cold-to-window or RSS claim using the architecture 01 §5
+fixtures; moving work into Rust is not itself a measured improvement.
+
+## 10. Remaining gates, not open architecture questions
+
+The eleven architecture decisions are frozen in this approval candidate. Five
+execution gates remain:
+
+1. Rebuild the stale standalone T1a Prompt Tracker node/frontier so its first
+   implementation landing includes the durable T1b consumer without merging
+   their acceptance identities.
+2. Promote and land KEL-116's all-self-termination ledger fact before T1b/T3
+   reuse the supervisor for a no-flag window lifetime.
+3. Obtain/consume the applicable KEL-75/KEL-78 per-OS abnormal-host-death reaper
+   artifacts; macOS still lacks a named mechanism.
+4. Human-promote and land KEL-75/T8's Windows primary generation coordinator;
+   include KEL-101 only if T8 selects named-pipe transport.
+5. Obtain a stable, direct human current-head GitHub approval distinct from the
+   writer. Then update the status/T0 record and obtain review of that exact final
+   head.
+
+Neither gate authorizes product implementation, marks KEL-96 Done, or implies
+that T1a completes later KEL-96 T2–T5 work.
