@@ -524,6 +524,50 @@ fn action_uses_unpinned(workflow: &str) -> Vec<(usize, String)> {
     bad
 }
 
+/// One action pinned to two different SHAs in the same workflow is a silent
+/// version split, and [`action_uses_unpinned`] cannot see it: that check asks
+/// only *whether* a `uses:` carries a SHA, never *which*. A branch cut before
+/// an action bump keeps the old SHA, merges clean (branch protection here does
+/// not require a branch to be current), and leaves the workflow running two
+/// versions of the same action — which is how `actions/checkout` v4.4.0
+/// returned to the `bun-test` job one day after every other step moved to
+/// v7.0.0.
+///
+/// Deliberately scoped to one workflow file and to exact action paths: it
+/// reports a divergence it can prove from the text, and makes no claim about
+/// which SHA is the correct one.
+fn action_uses_divergent_pins(workflow: &str) -> Vec<(String, Vec<(usize, String)>)> {
+    let mut seen: Vec<(String, Vec<(usize, String)>)> = Vec::new();
+    for (idx, line) in workflow.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = uses_spec(trimmed) else {
+            continue;
+        };
+        if rest.starts_with("./") || rest.starts_with("docker://") {
+            continue;
+        }
+        let Some((action, sha)) = uses_action_ref(rest).rsplit_once('@') else {
+            continue;
+        };
+        let pin = (idx + 1, sha.to_owned());
+        if let Some((_, pins)) = seen.iter_mut().find(|(name, _)| name == action) {
+            pins.push(pin);
+        } else {
+            seen.push((action.to_owned(), vec![pin]));
+        }
+    }
+    seen.retain(|(_, pins)| {
+        let Some((_, first)) = pins.first() else {
+            return false;
+        };
+        pins.iter().any(|(_, sha)| sha != first)
+    });
+    seen
+}
+
 fn uses_spec(trimmed: &str) -> Option<&str> {
     let rest = trimmed
         .strip_prefix("- uses:")
@@ -848,6 +892,26 @@ fn check_workflow(root: &Path) -> Result<(), String> {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` has unpinned `uses:` entries (need a 40-char commit SHA). \
              Pin each action and leave the tag in a trailing comment. Offenders: {}",
+            details.join("; ")
+        ));
+    }
+    let divergent = action_uses_divergent_pins(&text);
+    if !divergent.is_empty() {
+        let details: Vec<String> = divergent
+            .iter()
+            .map(|(action, pins)| {
+                let sites: Vec<String> = pins
+                    .iter()
+                    .map(|(line, sha)| format!("line {line}: {sha}"))
+                    .collect();
+                format!("{action} ({})", sites.join(", "))
+            })
+            .collect();
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` pins the same action to different SHAs, so its jobs run \
+             two versions of it. Repin every site to the intended SHA — a branch cut before an \
+             action bump reintroduces the old pin and still passes the pinned-SHA check. \
+             Offenders: {}",
             details.join("; ")
         ));
     }
@@ -1707,6 +1771,35 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("compile-only hygiene step must fail");
         assert!(error.contains("--test tools/ci_hygiene.rs"), "{error}");
+    }
+
+    #[test]
+    fn one_action_pinned_to_two_shas_fails() {
+        let temp = complete_fixture();
+        // The real regression: a branch cut before the v7 bump reintroduces the
+        // v4.4.0 SHA in one job while every other job is already on v7.
+        let workflow = valid_workflow().replacen(
+            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
+            1,
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("two SHAs for one action must fail");
+        assert!(error.contains("different SHAs"), "{error}");
+        assert!(error.contains("actions/checkout"), "{error}");
+    }
+
+    #[test]
+    fn uniform_pins_and_distinct_actions_do_not_false_report() {
+        // The fixture pins one action many times at one SHA, and several
+        // different actions at different SHAs. Neither is a divergence.
+        assert!(
+            action_uses_divergent_pins(&valid_workflow()).is_empty(),
+            "{:?}",
+            action_uses_divergent_pins(&valid_workflow())
+        );
+        let temp = complete_fixture();
+        check(temp.path()).expect("the unmodified fixture must pass");
     }
 
     #[test]
