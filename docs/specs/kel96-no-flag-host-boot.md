@@ -60,9 +60,13 @@ the exact candidate through an authenticated GitHub review:
 That review explicitly approved all eleven frozen decisions, authorized this
 status/T0 finalization, and excluded product implementation and the stale
 standalone `host-cli/04` node. PR #104's final-head review must identify the
-resulting commit and spec blob before merge; that immutable GitHub review is
-the finalization evidence and cannot be embedded self-referentially in this
-blob.
+resulting commit and spec blob before merge; that current GitHub review is the
+external finalization evidence and cannot be embedded self-referentially in
+this blob. GitHub review IDs are stable references, not immutable receipts.
+Immediately before merge, the merger must re-fetch both the candidate and
+final-head reviews and require `APPROVED` state, the expected reviewer identity,
+exact `commit_id`, `submitted_at`, and body bindings to the final commit, spec
+blob, and decision digest. A missing, edited, or dismissed binding fails closed.
 
 Governing sources:
 
