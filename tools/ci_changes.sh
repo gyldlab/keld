@@ -15,14 +15,17 @@ hygiene="$FALSE"
 gui="$FALSE"
 msrv="$FALSE"
 deny="$FALSE"
+ts="$FALSE"
 webkitgtk="$FALSE"
 packages=""
 nongtk_packages=""
 ubuntu_packages=""
+ts_packages=""
 all_workspace_packages="$FALSE"
 workspace_metadata_cache=""
 host_dependency_dirs_cache=""
 declare -a changed_package_roots=()
+declare -a changed_ts_package_dirs=()
 
 usage() {
     echo "usage: $0 {classify|github|host-dirs}" >&2
@@ -39,6 +42,7 @@ mark_all() {
     gui="$TRUE"
     msrv="$TRUE"
     deny="$TRUE"
+    ts="$TRUE"
     all_workspace_packages="$TRUE"
 }
 
@@ -58,10 +62,12 @@ emit() {
     printf 'gui=%s\n' "$gui"
     printf 'msrv=%s\n' "$msrv"
     printf 'deny=%s\n' "$deny"
+    printf 'ts=%s\n' "$ts"
     printf 'webkitgtk=%s\n' "$webkitgtk"
     printf 'packages=%s\n' "$packages"
     printf 'nongtk_packages=%s\n' "$nongtk_packages"
     printf 'ubuntu_packages=%s\n' "$ubuntu_packages"
+    printf 'ts_packages=%s\n' "$ts_packages"
 }
 
 load_workspace_metadata() {
@@ -185,6 +191,129 @@ add_changed_package_root() {
     changed_package_roots+=("$package_name")
 }
 
+add_changed_ts_package_dir() {
+    local package_dir="$1"
+    local existing
+    if [[ ${#changed_ts_package_dirs[@]} -gt 0 ]]; then
+        for existing in "${changed_ts_package_dirs[@]}"; do
+            if [[ "$existing" == "$package_dir" ]]; then
+                return
+            fi
+        done
+    fi
+    changed_ts_package_dirs+=("$package_dir")
+}
+
+# TypeScript packages are not cargo members, so their owner comes from the
+# checked-out package.json files instead of cargo metadata. The outermost
+# manifest below packages/ owns the path: a nested fixture manifest
+# (packages/@keld/electron/fixtures) is part of its parent package's contract,
+# not a separate owner, and using the parent keeps the broadest consumer needle.
+ts_package_dir_for_path() {
+    local changed_file="$1"
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel)"
+    local prefix="packages"
+    local rest="${changed_file#packages/}"
+    while [[ "$rest" == */* ]]; do
+        prefix="$prefix/${rest%%/*}"
+        rest="${rest#*/}"
+        if [[ -f "$repo_root/$prefix/package.json" ]]; then
+            printf '%s\n' "$prefix"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# A crate that reads a package directory must re-run its tests when that
+# directory changes: crates/keld-compat spawns the `@keld/electron` fixtures
+# over a real kipc session, so a shim edit can break a Rust conformance test.
+# cargo metadata cannot express a crate -> npm package edge, so derive the
+# consumers from the crate sources that name the directory rather than from a
+# hand-maintained list. A hit that no workspace package owns is not proof of
+# "no consumer"; report failure so the caller fails safe.
+ts_package_consumer_packages() {
+    local package_dir="$1"
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel)"
+    [[ -d "$repo_root/crates" ]] || return 0
+    local hit
+    local consumer
+    while IFS= read -r hit; do
+        [[ -z "$hit" ]] && continue
+        if ! consumer="$(package_for_path "${hit#"$repo_root"/}")"; then
+            return 1
+        fi
+        printf '%s\n' "$consumer"
+    done < <(grep -rlF --exclude-dir=target -- "$package_dir" "$repo_root/crates" 2>/dev/null || true)
+}
+
+# A Bun suite root is a package.json directory that owns at least one file
+# `bun test` would actually run. The fixtures package owns none: it is spawned
+# by the Rust conformance test, not by `bun test`.
+#
+# The shapes below mirror bun 1.4.0's own discovery, measured rather than read
+# off its error text (which understates the set). Of 21 planted filenames it
+# runs 18: `.test.` and `.spec.` and `_test.` and `_spec.`, across
+# `ts tsx js jsx mts cts mjs cjs`, matched CASE-INSENSITIVELY (`q.Test.ts` and
+# `r.SPEC.ts` both run). It skips `plain.ts`, `test.ts` and `tests.ts`.
+#
+# This mirrors a rule Bun owns, which makes it a second owner and a drift risk.
+# `discovery_shape_case` in tools/ci_changes_test.sh drives every one of the 32
+# patterns through the real router, so deleting any single clause here fails
+# that suite. It pins THIS side only: the test never invokes bun, so a change on
+# Bun's side cannot fail it — re-measure when the pinned version moves. KEL-115's
+# receipt — the lane reporting which suites it actually ran — removes the
+# duplication entirely and is the real fix.
+ts_test_package_dirs() {
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel)"
+    [[ -d "$repo_root/packages" ]] || return 0
+    local manifest
+    local dir
+    while IFS= read -r manifest; do
+        [[ -z "$manifest" ]] && continue
+        dir="${manifest%/package.json}"
+        if [[ -n "$(find "$dir" -name node_modules -prune -o \
+            \( -iname '*.test.ts' -o -iname '*.test.tsx' -o -iname '*.test.js' \
+            -o -iname '*.test.jsx' -o -iname '*.test.mts' -o -iname '*.test.cts' \
+            -o -iname '*.test.mjs' -o -iname '*.test.cjs' \
+            -o -iname '*.spec.ts' -o -iname '*.spec.tsx' -o -iname '*.spec.js' \
+            -o -iname '*.spec.jsx' -o -iname '*.spec.mts' -o -iname '*.spec.cts' \
+            -o -iname '*.spec.mjs' -o -iname '*.spec.cjs' \
+            -o -iname '*_test.ts' -o -iname '*_test.tsx' -o -iname '*_test.js' \
+            -o -iname '*_test.jsx' -o -iname '*_test.mts' -o -iname '*_test.cts' \
+            -o -iname '*_test.mjs' -o -iname '*_test.cjs' \
+            -o -iname '*_spec.ts' -o -iname '*_spec.tsx' -o -iname '*_spec.js' \
+            -o -iname '*_spec.jsx' -o -iname '*_spec.mts' -o -iname '*_spec.cts' \
+            -o -iname '*_spec.mjs' -o -iname '*_spec.cjs' \) -print -quit)" ]]; then
+            printf '%s\n' "${dir#"$repo_root"/}"
+        fi
+    done < <(find "$repo_root/packages" -name package.json -not -path '*/node_modules/*' -print)
+}
+
+# Runs before the Rust selection so a derived crate consumer joins the same
+# reverse-dependency expansion an edit inside that crate would get.
+resolve_ts_package_consumers() {
+    if [[ ${#changed_ts_package_dirs[@]} -eq 0 ]]; then
+        return
+    fi
+    local package_dir
+    local consumers
+    local consumer
+    for package_dir in "${changed_ts_package_dirs[@]}"; do
+        if ! consumers="$(ts_package_consumer_packages "$package_dir")"; then
+            mark_unknown
+            return
+        fi
+        for consumer in $consumers; do
+            rust="$TRUE"
+            add_changed_package_root "$consumer"
+        done
+    done
+}
+
 finalize_rust_packages() {
     if [[ "$rust" != "$TRUE" ]]; then
         return
@@ -235,6 +364,25 @@ finalize_rust_packages() {
         echo "ci router: Rust checks selected no Ubuntu packages; refusing to emit a skipped-green success" >&2
         exit 1
     fi
+}
+
+finalize_ts_packages() {
+    if [[ "$ts" != "$TRUE" ]]; then
+        return
+    fi
+    ts_packages="$(ts_test_package_dirs | sort -u | paste -sd ' ' -)"
+    if [[ -z "$ts_packages" ]]; then
+        echo "ci router: the TypeScript lane is selected but no packages/ Bun suite was found; refusing to emit a skipped-green success" >&2
+        exit 1
+    fi
+}
+
+# The Rust selection stays first: its empty-Ubuntu guard owns the error a
+# broken workspace metadata read must report.
+finalize_selection() {
+    resolve_ts_package_consumers
+    finalize_rust_packages
+    finalize_ts_packages
 }
 
 host_path_is_affected() {
@@ -320,6 +468,23 @@ classify_path() {
             esac
             ;;
 
+        # A TypeScript/JavaScript package owns the Bun test lane. Its Rust
+        # ownership is derived, never assumed: crates/keld-compat spawns the
+        # `@keld/electron` fixtures, so a shim change must still re-run that
+        # crate's conformance tests (see resolve_ts_package_consumers).
+        # Markdown under packages/ already matched the documentation arm above.
+        packages/*)
+            ts="$TRUE"
+            local ts_package_dir
+            if ! ts_package_dir="$(ts_package_dir_for_path "$changed_file")"; then
+                # No package.json owns this path, so no npm package declares
+                # it. An unowned input fails closed like any other unknown.
+                mark_unknown
+                return
+            fi
+            add_changed_ts_package_dir "$ts_package_dir"
+            ;;
+
         # These tools own the generated-doc and Mermaid contracts.
         docs/* | AGENTS.md | .agents/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
         tools/llms_docs.rs | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
@@ -353,7 +518,7 @@ classify_stream() {
     while IFS= read -r -d '' changed_file; do
         classify_path "$changed_file"
     done
-    finalize_rust_packages
+    finalize_selection
     emit
 }
 
@@ -381,7 +546,7 @@ classify_github_event() {
             ;;
         *)
             mark_unknown
-            finalize_rust_packages
+            finalize_selection
             publish "$(emit)"
             return
             ;;
@@ -393,7 +558,7 @@ classify_github_event() {
         ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null || \
         ! git cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
         mark_unknown
-        finalize_rust_packages
+        finalize_selection
         publish "$(emit)"
         return
     fi

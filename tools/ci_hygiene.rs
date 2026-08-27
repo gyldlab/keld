@@ -423,6 +423,50 @@ fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Asserts the `bun-test` lane's decidable properties only: that it exists, is
+/// gated on the router's own output, pins its Bun version, and does not open a
+/// second live apt lane. Each of those is a fact about the workflow text.
+///
+/// What this deliberately does not assert — that the lane really runs the
+/// suites the router selected — is tracked in KEL-115, because it is a
+/// behavioural property and no reading of the text settles it.
+fn check_bun_test_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "bun-test") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `bun-test` job. The `packages/` TypeScript suites need a lane of their own: the Bun install inside `check` exists so Rust tests can spawn Bun children and never runs `bun test`."
+        ));
+    };
+    if !uncommented_line_contains(&block, "if: needs.changes.outputs.ts == 'true'") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
+        ));
+    }
+    if !uncommented_line_contains(&block, "bun-version: \"1.4.0\"") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must pin `bun-version: \"1.4.0\"` (KEL-77). A floating `latest` silently changes the runtime under the suite."
+        ));
+    }
+    // Deliberately NOT checked here: that the lane actually executes the suite
+    // over the router's selection. Whether a shell script runs a command is not
+    // decidable from its text, and every attempt to assert it by pattern was
+    // broken from outside the pattern's frame — a piped `echo`, `if: false`,
+    // `continue-on-error`, `|| true`, a `for` loop whose body ignores the loop
+    // variable, the selection variable reassigned inside the script being
+    // parsed, and `continue` / `exit 0` making the suite unreachable. Each of
+    // those passed a check written specifically to catch the previous one.
+    //
+    // A guard that looks authoritative while being bypassable is worse than an
+    // absent one, because it is read as proof. KEL-115 replaces this with a
+    // receipt: the lane reports which suites it ran, and that is compared
+    // against the router's `ts_packages` output. Behaviour, not text.
+    if uncommented_line_contains(&block, "apt-get") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must not call `apt-get`. Bun ships from `oven-sh/setup-bun`; a second live Ubuntu apt lane contends with Linux GUI smoke on the Azure mirrors."
+        ));
+    }
+    Ok(())
+}
+
 fn executable_run_fragment_contains(fragment: &str, needle: &str) -> bool {
     if !fragment.contains(needle) {
         return false;
@@ -787,6 +831,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
     check_msrv_avoids_apt(&text)?;
+    check_bun_test_job(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -951,6 +996,17 @@ mod tests {
             "      - name: test",
             "        shell: bash",
             "        run: cargo nextest run -p fixture --profile ci --no-tests=pass",
+            "  bun-test:",
+            "    if: needs.changes.outputs.ts == 'true'",
+            "    steps:",
+            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
+            "        with:",
+            "          bun-version: \"1.4.0\"",
+            "      - name: bun test",
+            "        shell: bash",
+            "        env:",
+            "          KELD_CI_TS_PACKAGES: ${{ needs.changes.outputs.ts_packages }}",
+            "        run: cd fixture && bun test",
             "  msrv:",
             "    runs-on: macos-latest",
             "    steps:",
@@ -1338,6 +1394,65 @@ mod tests {
             error.contains("macos-latest") || error.contains("apt-get"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn deleting_the_bun_lane_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow();
+        let start = workflow
+            .find("  bun-test:")
+            .expect("fixture has the Bun lane");
+        let end = workflow.find("  msrv:").expect("fixture has the MSRV lane");
+        let mut without_lane = workflow.clone();
+        without_lane.replace_range(start..end, "");
+        temp.write(WORKFLOW, &without_lane);
+        let error = check(temp.path()).expect_err("removing the only bun test lane must fail");
+        assert!(error.contains("bun-test"), "{error}");
+    }
+
+    #[test]
+    fn floating_bun_version_in_bun_lane_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen("bun-version: \"1.4.0\"", "bun-version: latest", 1),
+        );
+        let error = check(temp.path()).expect_err("an unpinned Bun runtime must fail");
+        assert!(error.contains("bun-test"), "{error}");
+        assert!(error.contains("1.4.0"), "{error}");
+    }
+
+    #[test]
+    fn bun_lane_gated_on_another_router_output_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "    if: needs.changes.outputs.ts == 'true'\n",
+                "    if: needs.changes.outputs.rust == 'true'\n",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("the Bun lane must follow its own router output");
+        assert!(error.contains("bun-test"), "{error}");
+        assert!(error.contains("outputs.ts"), "{error}");
+    }
+
+    #[test]
+    fn bun_lane_must_not_apt_get() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "      - name: bun test\n",
+                "      - run: sudo apt-get update\n      - name: bun test\n",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("a second live apt lane must fail");
+        assert!(error.contains("bun-test"), "{error}");
+        assert!(error.contains("apt-get"), "{error}");
     }
 
     #[test]

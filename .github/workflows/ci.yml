@@ -43,10 +43,12 @@ jobs:
       gui: ${{ steps.classify.outputs.gui }}
       msrv: ${{ steps.classify.outputs.msrv }}
       deny: ${{ steps.classify.outputs.deny }}
+      ts: ${{ steps.classify.outputs.ts }}
       webkitgtk: ${{ steps.classify.outputs.webkitgtk }}
       packages: ${{ steps.classify.outputs.packages }}
       nongtk_packages: ${{ steps.classify.outputs.nongtk_packages }}
       ubuntu_packages: ${{ steps.classify.outputs.ubuntu_packages }}
+      ts_packages: ${{ steps.classify.outputs.ts_packages }}
     steps:
       # Full history gives the router both PR and push comparison commits. The
       # router falls back to all lanes when either commit is unavailable.
@@ -160,6 +162,43 @@ jobs:
         run: |
           for package in $KELD_CI_UBUNTU_PACKAGES; do
             cargo doc -p "$package" --no-deps
+          done
+
+  bun-test:
+    name: bun test (TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    # This lane owns one contract: the Bun suites under `packages/` pass. Its
+    # only inputs are those package trees, so a Rust-only diff skips it and a
+    # TypeScript diff runs it (tools/ci_changes.sh, `ts` output). Job-level
+    # `if` may reference needs/github/vars/inputs only — GitHub evaluates it
+    # before matrix expansion, so `matrix` here would invalidate the workflow.
+    if: needs.changes.outputs.ts == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Exact pin (KEL-77): Bun 1.4.0 fixed kill-after-exit. Do not float `latest`.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.0"
+      # No `bun install` step: every `packages/` manifest declares zero
+      # dependencies today, so there is nothing to resolve. A package that adds
+      # one must land a committed lockfile and `bun install --frozen-lockfile`
+      # here, not an unpinned resolve at job time.
+      - name: bun test
+        shell: bash
+        env:
+          KELD_CI_TS_PACKAGES: ${{ needs.changes.outputs.ts_packages }}
+        run: |
+          # An empty list would make this loop a silent success — the
+          # skipped-green outcome the router already refuses to emit. The
+          # router owns which suites run; this only rejects an empty handoff.
+          if [ -z "$KELD_CI_TS_PACKAGES" ]; then
+            echo "::error::TypeScript lane ran with no Bun suite; check the router's ts_packages output"
+            exit 1
+          fi
+          for package in $KELD_CI_TS_PACKAGES; do
+            (cd "$package" && bun test)
           done
 
   linux-gui-smoke:
