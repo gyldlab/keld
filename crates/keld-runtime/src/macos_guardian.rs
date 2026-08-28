@@ -10,8 +10,8 @@
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::time::Instant;
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
@@ -25,17 +25,162 @@ use keld_ipc::{
     parse_app_link,
 };
 
-use crate::RuntimeError;
+use crate::{
+    CapturedOutput, ChildPreparer, CrashLedger, GenerationLease, PreparedChild, RestartPolicy,
+    RevocationCause, RuntimeError, Supervisor, SupervisorOutcome,
+};
 
 const REGISTRATION_ENV: &str = "KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION";
 const REGISTRATION_MAGIC: [u8; 4] = *b"KGR1";
 const REGISTRATION_LEN: usize = 8;
+const SUPERVISED_QUIT_ACCEPTED: u8 = b'Q';
+const SUPERVISED_QUIT_ACK: [u8; 3] = *b"KQA";
+const SUPERVISED_QUIT_ACK_DEADLINE: Duration = Duration::from_secs(5);
+const GUARDIAN_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Private argv discriminator for the KEL-96 supervised guardian re-exec.
+///
+/// It carries no authority: authenticated registration and the inherited
+/// liveness descriptor must still validate before Bun can spawn.
+pub const SUPERVISED_GUARDIAN_ARG: &str = "--keld-internal-macos-guardian-v1";
 
 /// Observable completion of one guardian-owned Bun process group.
 #[derive(Debug)]
 pub struct GuardianReport {
     leader_pid: u32,
     leader_status: ExitStatus,
+}
+
+struct SupervisedGuardianPreparer<C, W, S, F: FnOnce() -> io::Result<()>> {
+    command_factory: Option<C>,
+    registration: Option<W>,
+    child_spawned: Option<S>,
+    revoke_registered_resources: Option<F>,
+    pid_tx: std::sync::mpsc::SyncSender<u32>,
+}
+
+impl<C, W, S, F> Drop for SupervisedGuardianPreparer<C, W, S, F>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    fn drop(&mut self) {
+        if let Some(revoke) = self.revoke_registered_resources.take() {
+            let _ = revoke();
+        }
+    }
+}
+
+struct SupervisedGuardianLease<W, S, F> {
+    registration: W,
+    child_spawned: Option<S>,
+    revoke_registered_resources: Option<F>,
+    pid_tx: std::sync::mpsc::SyncSender<u32>,
+    group_pid: Option<u32>,
+}
+
+impl<C, W, S, F> ChildPreparer for SupervisedGuardianPreparer<C, W, S, F>
+where
+    C: FnOnce() -> Result<Command, RuntimeError> + Send + 'static,
+    W: Write + Send + 'static,
+    S: FnOnce(u32) -> io::Result<()> + Send + 'static,
+    F: FnOnce() -> io::Result<()> + Send + 'static,
+{
+    type Lease = SupervisedGuardianLease<W, S, F>;
+
+    fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+        if attempt != 1 {
+            return Err(lifecycle_error(
+                "macOS guardian supervisor policy",
+                io::Error::other("KEL-96/T1b forbids a successor before KEL-96/T3"),
+            ));
+        }
+        let factory = self.command_factory.take().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian supervisor preparation",
+                io::Error::other("Bun command factory was already consumed"),
+            )
+        })?;
+        let mut command = match factory() {
+            Ok(command) => command,
+            Err(error) => {
+                let mut failures = vec![error];
+                if let Some(revoke) = self.revoke_registered_resources.take()
+                    && let Err(source) = revoke()
+                {
+                    failures.push(lifecycle_error(
+                        "macOS guardian pre-child registered-resource revocation",
+                        source,
+                    ));
+                }
+                return Err(collapse_failures(failures));
+            }
+        };
+        command
+            .env_remove(REGISTRATION_ENV)
+            .process_group(0)
+            .stdin(Stdio::null());
+        Ok(PreparedChild {
+            command,
+            lease: SupervisedGuardianLease {
+                registration: self.registration.take().ok_or_else(|| {
+                    lifecycle_error(
+                        "macOS guardian supervisor preparation",
+                        io::Error::other("authenticated registration writer is missing"),
+                    )
+                })?,
+                child_spawned: self.child_spawned.take(),
+                revoke_registered_resources: self.revoke_registered_resources.take(),
+                pid_tx: self.pid_tx.clone(),
+                group_pid: None,
+            },
+        })
+    }
+}
+
+impl<W, S, F> GenerationLease for SupervisedGuardianLease<W, S, F>
+where
+    W: Write + Send + 'static,
+    S: FnOnce(u32) -> io::Result<()> + Send + 'static,
+    F: FnOnce() -> io::Result<()> + Send + 'static,
+{
+    fn child_spawned(&mut self, pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
+        validate_group_leader(pid)?;
+        self.group_pid = Some(pid);
+        write_group_registration(&mut self.registration, pid)?;
+        if let Some(observer) = self.child_spawned.take() {
+            observer(pid).map_err(|source| {
+                lifecycle_error("macOS guardian supervised-child observer", source)
+            })?;
+        }
+        self.pid_tx.send(pid).map_err(|_| {
+            lifecycle_error(
+                "macOS guardian supervised-child registration",
+                io::Error::other("guardian owner stopped before child registration"),
+            )
+        })
+    }
+
+    fn revoke(mut self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+        let mut failures = Vec::new();
+        if let Some(revoke) = self.revoke_registered_resources.take()
+            && let Err(source) = revoke()
+        {
+            failures.push(lifecycle_error(
+                "macOS guardian registered-resource revocation",
+                source,
+            ));
+        }
+        if let Some(group_pid) = self.group_pid.take()
+            && let Err(error) = terminate_registered_group(group_pid)
+        {
+            failures.push(error);
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(collapse_failures(failures))
+        }
+    }
 }
 
 /// Host-side authenticated bootstrap for one private guardian process.
@@ -48,6 +193,7 @@ pub struct GuardianReport {
 pub struct GuardianBootstrap {
     child: Option<Child>,
     liveness_writer: Option<ChildStdin>,
+    quit_ack_reader: Option<ChildStdout>,
     registration: BootstrapListener,
 }
 
@@ -61,6 +207,21 @@ impl GuardianBootstrap {
     /// registration link cannot be provisioned, the guardian cannot spawn, or
     /// its piped stdin cannot be retained.
     pub fn spawn(mut command: Command) -> Result<Self, RuntimeError> {
+        Self::spawn_inner(&mut command, false)
+    }
+
+    /// Spawns the private guardian with stdout reserved for the fixed
+    /// accepted-Quit acknowledgment used by [`run_supervised`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed bootstrap failures as [`Self::spawn`], plus a
+    /// missing acknowledgment-pipe failure.
+    pub fn spawn_supervised(mut command: Command) -> Result<Self, RuntimeError> {
+        Self::spawn_inner(&mut command, true)
+    }
+
+    fn spawn_inner(command: &mut Command, supervised: bool) -> Result<Self, RuntimeError> {
         if command.get_program().is_empty() {
             return Err(lifecycle_error(
                 "macOS guardian private bootstrap",
@@ -73,6 +234,9 @@ impl GuardianBootstrap {
         command
             .env(REGISTRATION_ENV, registration.app_link())
             .stdin(Stdio::piped());
+        if supervised {
+            command.stdout(Stdio::piped());
+        }
         let mut child = command.spawn().map_err(RuntimeError::Spawn)?;
         let Some(liveness_writer) = child.stdin.take() else {
             let mut failures = vec![lifecycle_error(
@@ -95,6 +259,24 @@ impl GuardianBootstrap {
             }
             return Err(collapse_failures(failures));
         };
+        let quit_ack_reader = if supervised {
+            match child.stdout.take() {
+                Some(reader) => Some(reader),
+                None => {
+                    return Err(reject_host_registration(
+                        child,
+                        liveness_writer,
+                        None,
+                        lifecycle_error(
+                            "macOS guardian supervised-Quit acknowledgment",
+                            io::Error::other("spawned guardian has no acknowledgment reader"),
+                        ),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
         if let Err(error) = require_close_on_exec(&liveness_writer) {
             return Err(reject_host_registration(
                 child,
@@ -106,6 +288,7 @@ impl GuardianBootstrap {
         Ok(Self {
             child: Some(child),
             liveness_writer: Some(liveness_writer),
+            quit_ack_reader,
             registration,
         })
     }
@@ -178,7 +361,12 @@ impl GuardianBootstrap {
                 io::Error::new(io::ErrorKind::NotConnected, "liveness writer is missing"),
             )
         })?;
-        HostGuardian::from_registered_parts(child, liveness_writer, group_pid)
+        HostGuardian::from_registered_parts(
+            child,
+            liveness_writer,
+            self.quit_ack_reader.take(),
+            group_pid,
+        )
     }
 
     fn reject_registration(&mut self, error: RuntimeError) -> RuntimeError {
@@ -219,6 +407,7 @@ impl BootstrapRejectionObserver for NoopRegistrationObserver {
 pub struct HostGuardian {
     child: Child,
     liveness_writer: Option<ChildStdin>,
+    quit_ack_reader: Option<ChildStdout>,
     group_pid: Option<u32>,
 }
 
@@ -226,6 +415,7 @@ impl HostGuardian {
     fn from_registered_parts(
         mut child: Child,
         liveness_writer: ChildStdin,
+        quit_ack_reader: Option<ChildStdout>,
         group_pid: u32,
     ) -> Result<Self, RuntimeError> {
         if let Err(error) = validate_group_leader(group_pid) {
@@ -260,6 +450,7 @@ impl HostGuardian {
         Ok(Self {
             child,
             liveness_writer: Some(liveness_writer),
+            quit_ack_reader,
             group_pid: Some(group_pid),
         })
     }
@@ -324,6 +515,44 @@ impl HostGuardian {
         Err(unexpected_guardian_exit(group_pid, status))
     }
 
+    /// Records an accepted KEL-96 Quit before its correlated reply can let
+    /// Bun exit cooperatively. This writes one non-authority control byte to
+    /// the host-exclusive liveness pipe; only [`run_supervised`] accepts it.
+    /// Group termination still begins only when [`Self::shutdown`] closes the
+    /// writer, so the Quit reply can be published first.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed lifecycle error if the guardian is already terminal or
+    /// the private control byte cannot be written and flushed.
+    pub fn accept_supervised_quit(&mut self) -> Result<(), RuntimeError> {
+        self.require_active()?;
+        let ack_reader = self.quit_ack_reader.as_mut().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian supervised-Quit acknowledgment",
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "guardian was not spawned through the supervised bootstrap",
+                ),
+            )
+        })?;
+        let writer = self.liveness_writer.as_mut().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian supervised-Quit control",
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "guardian liveness writer is unavailable",
+                ),
+            )
+        })?;
+        set_liveness_nonblocking(writer)?;
+        writer
+            .write_all(&[SUPERVISED_QUIT_ACCEPTED])
+            .and_then(|()| writer.flush())
+            .map_err(|source| lifecycle_error("macOS guardian supervised-Quit control", source))?;
+        read_supervised_quit_ack(ack_reader)
+    }
+
     /// Performs orderly shutdown through the same EOF cleanup owner.
     ///
     /// # Errors
@@ -332,12 +561,50 @@ impl HostGuardian {
     /// non-success guardian exit invokes the group fail-safe and returns
     /// [`RuntimeError::GuardianExited`].
     pub fn shutdown(&mut self) -> Result<ExitStatus, RuntimeError> {
+        self.shutdown_until(Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE)
+    }
+
+    fn shutdown_until(&mut self, deadline: Instant) -> Result<ExitStatus, RuntimeError> {
         self.require_active()?;
         self.liveness_writer.take();
-        let status = match self.child.wait() {
-            Ok(status) => status,
-            Err(source) => {
-                return Err(self.fail_observation("macOS guardian orderly-shutdown wait", source));
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => std::thread::yield_now(),
+                Ok(None) => {
+                    let mut failures = vec![lifecycle_error(
+                        "macOS guardian orderly-shutdown deadline",
+                        io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "guardian did not exit before the shutdown deadline",
+                        ),
+                    )];
+                    if let Some(group_pid) = self.group_pid.take()
+                        && let Err(error) = terminate_registered_group(group_pid)
+                    {
+                        failures.push(error);
+                    }
+                    if let Err(source) = self.child.kill()
+                        && source.kind() != io::ErrorKind::InvalidInput
+                    {
+                        failures.push(lifecycle_error(
+                            "macOS guardian shutdown-timeout process kill",
+                            source,
+                        ));
+                    }
+                    if let Err(source) = self.child.wait() {
+                        failures.push(lifecycle_error(
+                            "macOS guardian shutdown-timeout process wait",
+                            source,
+                        ));
+                    }
+                    return Err(collapse_failures(failures));
+                }
+                Err(source) => {
+                    return Err(
+                        self.fail_observation("macOS guardian orderly-shutdown wait", source)
+                    );
+                }
             }
         };
         let group_pid = self.take_registered_group()?;
@@ -470,6 +737,160 @@ where
         |_| Ok(()),
         revoke_registered_resources,
     )
+}
+
+/// Runs one non-restarting guardian-owned [`Supervisor`] until host EOF.
+///
+/// The guardian authenticates its private group-registration link and validates
+/// the live host-liveness pipe before starting the supervisor. The supervisor
+/// remains the sole Bun spawn/capture/KEL-116-ledger/wait owner. Its prepared
+/// generation lease registers the exact Bun group and revokes resources plus
+/// signals that group before supervisor kill/wait. A first unrequested child
+/// termination is fatal; fresh-generation recovery remains KEL-96/T3.
+/// `quit_ack` is a private dedicated writer: after the guardian reads the
+/// accepted-Quit control and updates Supervisor attribution, it writes fixed
+/// `KQA`. The host must observe that ack before publishing the Quit reply.
+///
+/// # Errors
+///
+/// Returns [`RuntimeError`] for invalid private bootstrap, initial spawn or
+/// registration failure, host-liveness failure, revocation/group cleanup
+/// failure, or any unrequested Bun self-termination.
+pub fn run_supervised<R, C, A, F>(
+    liveness: R,
+    command_factory: C,
+    quit_ack: A,
+    revoke_registered_resources: F,
+) -> Result<CapturedOutput, RuntimeError>
+where
+    R: Read + AsFd,
+    C: FnOnce() -> Result<Command, RuntimeError> + Send + 'static,
+    A: Write,
+    F: FnOnce() -> io::Result<()> + Send + 'static,
+{
+    let registration = match connect_guardian_registration() {
+        Ok(registration) => registration,
+        Err(error) => return Err(fail_before_child(error, revoke_registered_resources)),
+    };
+    run_supervised_with_registration(
+        liveness,
+        registration,
+        quit_ack,
+        command_factory,
+        |_| Ok(()),
+        revoke_registered_resources,
+    )
+    .map(|(_, _, output)| output)
+}
+
+fn run_supervised_with_registration<R, W, C, A, S, F>(
+    mut liveness: R,
+    registration: W,
+    mut quit_ack: A,
+    command_factory: C,
+    child_spawned: S,
+    revoke_registered_resources: F,
+) -> Result<(u32, CrashLedger, CapturedOutput), RuntimeError>
+where
+    R: Read + AsFd,
+    W: Write + Send + 'static,
+    C: FnOnce() -> Result<Command, RuntimeError> + Send + 'static,
+    A: Write,
+    S: FnOnce(u32) -> io::Result<()> + Send + 'static,
+    F: FnOnce() -> io::Result<()> + Send + 'static,
+{
+    if let Err(error) = validate_liveness_bootstrap(&mut liveness) {
+        return Err(fail_before_child(error, revoke_registered_resources));
+    }
+    let (pid_tx, pid_rx) = std::sync::mpsc::sync_channel(1);
+    let preparer = SupervisedGuardianPreparer {
+        command_factory: Some(command_factory),
+        registration: Some(registration),
+        child_spawned: Some(child_spawned),
+        revoke_registered_resources: Some(revoke_registered_resources),
+        pid_tx,
+    };
+    let supervisor = Supervisor::start_prepared(
+        RestartPolicy {
+            max_crashes: 1,
+            window_secs: 30,
+        },
+        preparer,
+    )?;
+    let leader_pid = pid_rx.recv().map_err(|_| {
+        lifecycle_error(
+            "macOS guardian supervised-child registration",
+            io::Error::other("supervisor ended before registering its initial child"),
+        )
+    })?;
+
+    set_liveness_nonblocking(&liveness)?;
+    let mut liveness_result = Ok(());
+    let mut quit_accepted = false;
+    loop {
+        match observe_supervised_liveness(
+            &mut liveness,
+            &supervisor,
+            &mut quit_accepted,
+            &mut quit_ack,
+        ) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(error) => {
+                liveness_result = Err(error);
+                supervisor.shutdown();
+                break;
+            }
+        }
+        if let Some(event) = supervisor.recv_event(Duration::from_millis(20))
+            && matches!(
+                event,
+                crate::SupervisorEvent::Exited { .. }
+                    | crate::SupervisorEvent::RespawnFailed
+                    | crate::SupervisorEvent::Failed { .. }
+                    | crate::SupervisorEvent::CrashLoopTripped
+                    | crate::SupervisorEvent::Stopped
+            )
+        {
+            if let Err(error) = observe_supervised_liveness(
+                &mut liveness,
+                &supervisor,
+                &mut quit_accepted,
+                &mut quit_ack,
+            ) {
+                liveness_result = Err(error);
+                supervisor.shutdown();
+            }
+            break;
+        }
+    }
+    let outcome = supervisor.wait_for_outcome();
+    let crash_ledger = supervisor.crash_ledger();
+    let output = supervisor.output();
+    drop(supervisor);
+
+    let mut failures = Vec::new();
+    if let Err(error) = liveness_result {
+        failures.push(error);
+    }
+    match outcome {
+        SupervisorOutcome::CrashLoop(error) | SupervisorOutcome::Failed(error) => {
+            failures.push(error);
+        }
+        SupervisorOutcome::Stopped => {
+            if let Some(termination) = crash_ledger.last_self_termination {
+                failures.push(RuntimeError::ChildCrashed {
+                    pid: termination.pid,
+                    exit_code: termination.exit_code,
+                    stderr_tail: output.stderr_tail(2_000),
+                });
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(collapse_failures(failures));
+    }
+    Ok((leader_pid, crash_ledger, output))
 }
 
 fn run_with_registration<R, W, S, F>(
@@ -738,6 +1159,89 @@ fn await_host_death(reader: &mut impl Read) -> Result<(), RuntimeError> {
     }
 }
 
+enum HostLiveness {
+    Live,
+    Dead,
+    QuitAccepted,
+}
+
+fn set_liveness_nonblocking(reader: &impl AsFd) -> Result<(), RuntimeError> {
+    let raw_flags = fcntl(reader.as_fd(), FcntlArg::F_GETFL).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian liveness descriptor flags",
+            nix_io_error(source),
+        )
+    })?;
+    fcntl(
+        reader.as_fd(),
+        FcntlArg::F_SETFL(OFlag::from_bits_truncate(raw_flags) | OFlag::O_NONBLOCK),
+    )
+    .map_err(|source| {
+        lifecycle_error(
+            "macOS guardian liveness descriptor polling",
+            nix_io_error(source),
+        )
+    })?;
+    Ok(())
+}
+
+fn poll_host_liveness(reader: &mut impl Read) -> Result<HostLiveness, RuntimeError> {
+    let mut byte = [0_u8; 1];
+    match reader.read(&mut byte) {
+        Ok(0) => Ok(HostLiveness::Dead),
+        Err(source)
+            if matches!(
+                source.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(HostLiveness::Live)
+        }
+        Ok(1) if byte[0] == SUPERVISED_QUIT_ACCEPTED => Ok(HostLiveness::QuitAccepted),
+        Ok(_) => Err(lifecycle_error(
+            "macOS guardian host-liveness read",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "host-liveness pipe carried an unknown supervised control byte",
+            ),
+        )),
+        Err(source) => Err(lifecycle_error("macOS guardian host-liveness read", source)),
+    }
+}
+
+fn observe_supervised_liveness(
+    reader: &mut impl Read,
+    supervisor: &Supervisor,
+    quit_accepted: &mut bool,
+    quit_ack: &mut impl Write,
+) -> Result<bool, RuntimeError> {
+    match poll_host_liveness(reader)? {
+        HostLiveness::Live => Ok(false),
+        HostLiveness::Dead => {
+            supervisor.shutdown();
+            Ok(true)
+        }
+        HostLiveness::QuitAccepted if *quit_accepted => Err(lifecycle_error(
+            "macOS guardian supervised-Quit control",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate accepted-Quit control byte",
+            ),
+        )),
+        HostLiveness::QuitAccepted => {
+            *quit_accepted = true;
+            supervisor.accept_shutdown();
+            quit_ack
+                .write_all(&SUPERVISED_QUIT_ACK)
+                .and_then(|()| quit_ack.flush())
+                .map_err(|source| {
+                    lifecycle_error("macOS guardian supervised-Quit acknowledgment", source)
+                })?;
+            Ok(false)
+        }
+    }
+}
+
 fn validate_group_pid(group: u32) -> Result<i32, RuntimeError> {
     if group == 0 {
         return Err(lifecycle_error(
@@ -839,6 +1343,72 @@ fn require_close_on_exec(writer: &impl AsFd) -> Result<(), RuntimeError> {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "host-liveness writer is inheritable; require FD_CLOEXEC",
+            ),
+        ))
+    }
+}
+
+fn read_supervised_quit_ack(reader: &mut ChildStdout) -> Result<(), RuntimeError> {
+    let raw_flags = fcntl(reader.as_fd(), FcntlArg::F_GETFL).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian supervised-Quit acknowledgment flags",
+            nix_io_error(source),
+        )
+    })?;
+    fcntl(
+        reader.as_fd(),
+        FcntlArg::F_SETFL(OFlag::from_bits_truncate(raw_flags) | OFlag::O_NONBLOCK),
+    )
+    .map_err(|source| {
+        lifecycle_error(
+            "macOS guardian supervised-Quit acknowledgment polling",
+            nix_io_error(source),
+        )
+    })?;
+    let deadline = Instant::now() + SUPERVISED_QUIT_ACK_DEADLINE;
+    let mut ack = [0_u8; SUPERVISED_QUIT_ACK.len()];
+    let mut filled = 0;
+    while filled < ack.len() {
+        match reader.read(&mut ack[filled..]) {
+            Ok(0) => {
+                return Err(lifecycle_error(
+                    "macOS guardian supervised-Quit acknowledgment",
+                    io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "guardian exited before acknowledging accepted Quit",
+                    ),
+                ));
+            }
+            Ok(read) => filled += read,
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(lifecycle_error(
+                        "macOS guardian supervised-Quit acknowledgment",
+                        io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "guardian did not acknowledge accepted Quit before the deadline",
+                        ),
+                    ));
+                }
+                std::thread::yield_now();
+            }
+            Err(source) => {
+                return Err(lifecycle_error(
+                    "macOS guardian supervised-Quit acknowledgment",
+                    source,
+                ));
+            }
+        }
+    }
+    if ack == SUPERVISED_QUIT_ACK {
+        Ok(())
+    } else {
+        Err(lifecycle_error(
+            "macOS guardian supervised-Quit acknowledgment",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "guardian returned an invalid accepted-Quit acknowledgment",
             ),
         ))
     }
@@ -973,6 +1543,242 @@ mod tests {
             Some(9),
             "a child that inherited the private registration value exits 77"
         );
+    }
+
+    #[test]
+    fn supervised_guardian_uses_one_supervisor_child_and_clean_host_shutdown() {
+        let (reader, writer) = liveness_pipe();
+        let registered = Arc::new(Mutex::new(None));
+        let registered_in_callback = Arc::clone(&registered);
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let report = run_supervised_with_registration(
+            reader,
+            io::sink(),
+            io::sink(),
+            || Ok(long_running_command()),
+            move |pid| {
+                *registered_in_callback.lock().expect("pid lock") = Some(pid);
+                drop(writer);
+                Ok(())
+            },
+            move || {
+                revoked_in_callback.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect("host-driven supervised guardian cleanup");
+        assert_eq!(report.0, registered.lock().expect("pid lock").expect("pid"));
+        assert_eq!(report.1.self_termination_count, 0);
+        assert!(revoked.load(Ordering::SeqCst));
+        assert_gone(*registered.lock().expect("pid lock"));
+    }
+
+    #[test]
+    fn supervised_status_zero_is_retained_as_typed_self_termination() {
+        let (reader, writer) = liveness_pipe();
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let error = run_supervised_with_registration(
+            reader,
+            io::sink(),
+            io::sink(),
+            || {
+                let mut command = Command::new("/bin/sh");
+                command
+                    .args(["-c", "exit 0"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                Ok(command)
+            },
+            move |_| {
+                drop(writer);
+                Ok(())
+            },
+            move || {
+                revoked_in_callback.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect_err("status-zero self-termination must not become host success");
+        assert!(error.to_string().contains("KELD-RUNTIME-012"), "{error}");
+        assert!(revoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn supervised_command_preparation_failure_revokes_before_child() {
+        let (reader, _writer) = liveness_pipe();
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let error = run_supervised_with_registration(
+            reader,
+            io::sink(),
+            io::sink(),
+            || {
+                Err(lifecycle_error(
+                    "test supervised command preparation",
+                    io::Error::other("intentional preparation failure"),
+                ))
+            },
+            |_| panic!("preparation failure must not spawn a child"),
+            move || {
+                revoked_in_callback.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect_err("command preparation failure must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("intentional preparation failure")
+        );
+        assert!(revoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn dropping_unhanded_supervised_preparer_revokes_once() {
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let (pid_tx, _pid_rx) = mpsc::sync_channel(1);
+        let preparer = SupervisedGuardianPreparer {
+            command_factory: Some(|| Ok::<Command, RuntimeError>(Command::new("/usr/bin/true"))),
+            registration: Some(io::sink()),
+            child_spawned: Some(|_: u32| Ok::<(), io::Error>(())),
+            revoke_registered_resources: Some(move || {
+                assert!(
+                    !revoked_in_callback.swap(true, Ordering::SeqCst),
+                    "unhanded resources revoked more than once"
+                );
+                Ok(())
+            }),
+            pid_tx,
+        };
+
+        drop(preparer);
+        assert!(revoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn supervised_self_termination_returns_while_host_writer_is_still_live() {
+        let (reader, writer) = liveness_pipe();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = run_supervised_with_registration(
+                reader,
+                io::sink(),
+                io::sink(),
+                || {
+                    let mut command = Command::new("/bin/sh");
+                    command.args(["-c", "exit 0"]);
+                    Ok(command)
+                },
+                |_| Ok(()),
+                || Ok(()),
+            );
+            done_tx.send(result).expect("report guardian result");
+        });
+
+        let error = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("self-termination must wake the guardian while host is live")
+            .expect_err("unrequested status-zero exit is fatal");
+        assert!(error.to_string().contains("KELD-RUNTIME-012"), "{error}");
+        drop(writer);
+        worker.join().expect("guardian worker joins");
+    }
+
+    #[test]
+    fn supervised_accepted_quit_does_not_record_status_zero_as_unrequested() {
+        let (reader, mut writer) = liveness_pipe();
+        let (pid_tx, pid_rx) = mpsc::channel();
+        let (ack_tx, ack_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = run_supervised_with_registration(
+                reader,
+                io::sink(),
+                AckSender(ack_tx),
+                || {
+                    let mut command = Command::new("/bin/sh");
+                    command.args(["-c", "kill -STOP $$; exit 0"]);
+                    Ok(command)
+                },
+                move |pid| pid_tx.send(pid).map_err(io::Error::other),
+                || Ok(()),
+            );
+            done_tx.send(result).expect("report guardian result");
+        });
+        let pid = pid_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stopped child registered");
+
+        let stopped_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = Command::new("/bin/ps")
+                .args(["-o", "state=", "-p", &pid.to_string()])
+                .output()
+                .expect("inspect accepted-Quit child state");
+            if String::from_utf8(output.stdout)
+                .expect("process state is UTF-8")
+                .trim()
+                .starts_with('T')
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < stopped_deadline,
+                "accepted-Quit child never stopped"
+            );
+            std::thread::yield_now();
+        }
+
+        writer.write_all(b"Q").expect("accept Quit before reply");
+        assert_eq!(
+            ack_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("guardian applied accepted-Quit attribution"),
+            SUPERVISED_QUIT_ACK
+        );
+        kill(
+            Pid::from_raw(i32::try_from(pid).expect("pid fits i32")),
+            Signal::SIGCONT,
+        )
+        .expect("let accepted-Quit child exit zero");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while kill(
+            Pid::from_raw(i32::try_from(pid).expect("pid fits i32")),
+            None,
+        )
+        .is_ok()
+        {
+            assert!(Instant::now() < deadline, "accepted-Quit child stayed live");
+            std::thread::yield_now();
+        }
+        drop(writer);
+
+        let report = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("guardian finishes after host EOF")
+            .expect("accepted Quit is a clean supervised shutdown");
+        assert_eq!(report.1.self_termination_count, 0);
+        worker.join().expect("guardian worker joins");
+    }
+
+    struct AckSender(mpsc::Sender<[u8; SUPERVISED_QUIT_ACK.len()]>);
+
+    impl io::Write for AckSender {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let ack: [u8; SUPERVISED_QUIT_ACK.len()] = bytes.try_into().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "unexpected acknowledgment size")
+            })?;
+            self.0.send(ack).map_err(io::Error::other)?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -1191,7 +1997,7 @@ mod tests {
             .stderr(Stdio::null());
         let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
         let writer = guardian.stdin.take().expect("guardian liveness writer");
-        let mut owner = HostGuardian::from_registered_parts(guardian, writer, group_pid)
+        let mut owner = HostGuardian::from_registered_parts(guardian, writer, None, group_pid)
             .expect("register host guardian owner");
         kill(
             Pid::from_raw(i32::try_from(owner.guardian_pid()).expect("guardian pid fits i32")),
@@ -1229,7 +2035,7 @@ mod tests {
             .stderr(Stdio::null());
         let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
         let writer = guardian.stdin.take().expect("guardian liveness writer");
-        let mut owner = HostGuardian::from_registered_parts(guardian, writer, group_pid)
+        let mut owner = HostGuardian::from_registered_parts(guardian, writer, None, group_pid)
             .expect("register host guardian owner");
         let status = owner.shutdown().expect("orderly EOF shutdown");
         assert!(status.success());
@@ -1244,6 +2050,36 @@ mod tests {
     }
 
     #[test]
+    fn orderly_shutdown_deadline_kills_guardian_and_registered_group() {
+        let mut group_command = long_running_command();
+        group_command.process_group(0);
+        let mut group = group_command.spawn().expect("spawn timeout group");
+        let group_pid = group.id();
+        let mut guardian_command = long_running_command();
+        guardian_command.stdin(Stdio::piped());
+        let mut guardian = guardian_command.spawn().expect("spawn wedged guardian");
+        let guardian_pid = guardian.id();
+        let writer = guardian.stdin.take().expect("guardian liveness writer");
+        let mut owner = HostGuardian::from_registered_parts(guardian, writer, None, group_pid)
+            .expect("register timeout owner");
+
+        let error = owner
+            .shutdown_until(Instant::now())
+            .expect_err("wedged guardian must hit the shutdown deadline");
+        assert!(error.to_string().contains("shutdown deadline"), "{error}");
+        assert_eq!(owner.group_pid(), None);
+        assert_eq!(
+            kill(
+                Pid::from_raw(i32::try_from(guardian_pid).expect("guardian pid fits i32")),
+                None,
+            ),
+            Err(Errno::ESRCH)
+        );
+        let group_status = group.wait().expect("wait timeout-killed group");
+        assert_eq!(group_status.signal(), Some(9));
+    }
+
+    #[test]
     fn rejected_host_registration_waits_the_guardian() {
         let mut guardian_command = Command::new("/bin/sh");
         guardian_command
@@ -1254,7 +2090,7 @@ mod tests {
         let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
         let guardian_pid = guardian.id();
         let writer = guardian.stdin.take().expect("guardian liveness writer");
-        let error = HostGuardian::from_registered_parts(guardian, writer, 0)
+        let error = HostGuardian::from_registered_parts(guardian, writer, None, 0)
             .expect_err("zero group must reject registration");
         assert!(
             error.to_string().contains("process group is zero"),
@@ -1275,7 +2111,7 @@ mod tests {
         let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
         let guardian_pid = guardian.id();
         let writer = guardian.stdin.take().expect("guardian liveness writer");
-        let error = HostGuardian::from_registered_parts(guardian, writer, u32::MAX)
+        let error = HostGuardian::from_registered_parts(guardian, writer, None, u32::MAX)
             .expect_err("unrepresentable group must reject registration");
         assert!(error.to_string().contains("exceeds c_int"), "{error}");
         let guardian_pid = i32::try_from(guardian_pid).expect("guardian pid fits i32");
@@ -1298,7 +2134,7 @@ mod tests {
         let guardian_pid = guardian.id();
         let writer = guardian.stdin.take().expect("guardian liveness writer");
         fcntl(&writer, FcntlArg::F_SETFD(FdFlag::empty())).expect("make test writer inheritable");
-        let error = HostGuardian::from_registered_parts(guardian, writer, group_pid)
+        let error = HostGuardian::from_registered_parts(guardian, writer, None, group_pid)
             .expect_err("inheritable writer must reject registration");
         assert!(error.to_string().contains("require FD_CLOEXEC"), "{error}");
         let guardian_pid = i32::try_from(guardian_pid).expect("guardian pid fits i32");

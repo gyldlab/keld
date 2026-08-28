@@ -13,6 +13,14 @@ keld-ipc = { workspace = true }
 keld-guard = { workspace = true }
 keld-runtime = { workspace = true }
 keld-wv = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

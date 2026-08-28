@@ -44,6 +44,18 @@ window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export th
 same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
 current-user DACL.
 
+**macOS no-flag primary (KEL-96 T1a/T1b):** the staged `keld-host` process now
+mints and authenticates one one-use Unix bootstrap, then gives the accepted
+stream to one private reader with serialized writes. That single stream routes
+both echo channel 1 and KEL-72 lifecycle channel 3; there is no lifecycle-side
+listener or second HELLO. Initial `Ready` follows native renderer navigation.
+Quit atomically quiesces dispatch and records accepted-shutdown attribution,
+writes its correlated reply, closes the link, signals the guardian-owned Bun
+process group, waits/reaps the guardian's direct Bun child, and only then wakes
+the macOS UI loop to exit. The
+locator is unlinked at successful authentication. `keld dev` still uses the
+older CLI-owned hello session until KEL-96/T2 delegates to the staged host.
+
 ## 2. Wire protocol (control plane)
 
 Little-endian framed binary, versioned at handshake:

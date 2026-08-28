@@ -35,6 +35,16 @@ keld-compat = { path = "crates/keld-compat" }
 keld-host = { path = "crates/keld-host" }
 keld-cli = { path = "crates/keld-cli" }
 
+# --- Dependency review (KEL-96/T1a / AGENTS.md gate) ---
+# Names: serde 1 + serde_json 1 (existing workspace pins; new direct keld-core use)
+# Purpose: strict, bounded, deny-unknown-fields decoding of the private
+#   schema-v1 `keld.boot.json`; duplicate keys must fail instead of taking a
+#   first/last winner. Parsing is cold and occurs once before app resources.
+# Alternatives rejected: (a) a handwritten JSON parser duplicates schema and
+#   Unicode/number/string policy; (b) evaluating `keld.config.ts` violates the
+#   frozen compiled-descriptor boundary; (c) permissive Value traversal does
+#   not make duplicate-field rejection structural. No new versions enter the
+#   lockfile; serde is MIT OR Apache-2.0 and serde_json is MIT OR Apache-2.0.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 postcard = { version = "1", features = ["alloc"] }
@@ -80,9 +90,11 @@ tempfile = "3"
 getrandom = "0.4"
 # --- Dependency review (KEL-78/T2b / AGENTS.md gate) ---
 # Name: nix =0.31.3 (nix-rust/nix)
-# Purpose: safe macOS `killpg(2)` wrapper for the host-death guardian. The
-#   workspace denies unsafe in keld-runtime, while std exposes process-group
-#   creation but no group-signal API.
+# Purpose: safe macOS `killpg(2)` for the host-death guardian and safe
+#   `openat(2)`/`O_NOFOLLOW` traversal for KEL-96's staged boot targets. The
+#   workspace denies unsafe in keld-runtime/keld-core, while std exposes
+#   process-group creation but no group-signal API and no component-wise
+#   no-follow relative open.
 # Alternatives rejected: (a) direct libc/FFI — violates `unsafe_code`; (b)
 #   `/bin/kill` subprocess — external executable and a second failure domain on
 #   the cleanup path; (c) PID-by-PID kill — races reuse and misses descendants;
@@ -94,17 +106,18 @@ getrandom = "0.4"
 nix = { version = "=0.31.3", default-features = false, features = ["fs", "signal"] }
 # --- Dependency review (KEL-77 T2 / AGENTS.md gate) ---
 # Name: sha2 0.10 (RustCrypto)
-# Purpose: SHA-256 for the KEL-77 child-process fixture-corpus digest
-#   (`artifact.sha256`) and the run's raw-observation `evidence_uri`, both
-#   required as `sha256:` + 64 lowercase hex by `keld.compat.evidence/v1`.
-#   Used only as a `keld-runtime` dev-dependency (test harness); no shipped
-#   path hashes.
+# Purpose: SHA-256 for KEL-77 test artifacts and KEL-96's cold `keld-cli`
+#   boot compiler: it proves the new-inode host copy and emits the exact
+#   permissions-fixture digest. The no-flag host deliberately does not hash or
+#   parse policy bytes before KEL-102/T2.
 # Alternatives rejected: (a) hand-rolled SHA-256 — forbidden duplicate of a
 #   primitive (KEL-77 spec §4.1); (b) `node -e` / `bun` — digest would depend
 #   on the runtime under test; (c) `git hash-object` — SHA-1 blob id, wrong
 #   algorithm; (d) reuse wry's *transitive* sha2 without a direct dep — Cargo
-#   forbids using an undeclared crate; (e) no first-party hasher exists in
-#   this workspace (`keld-update` is empty). Already in Cargo.lock at 0.10.9
+#   forbids using an undeclared crate; (e) shelling out to `shasum` would add a
+#   platform process and TOCTOU reopen to the staging transaction. No
+#   first-party hasher exists in this workspace (`keld-update` is empty).
+#   Already in Cargo.lock at 0.10.9
 #   via wry. License: MIT OR Apache-2.0 (deny.toml allow-list).
 sha2 = "0.10"
 

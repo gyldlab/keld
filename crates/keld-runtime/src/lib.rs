@@ -264,7 +264,7 @@ impl CapturedOutput {
         s.chars().skip(skip).collect()
     }
 
-    fn stderr_tail(&self, max_chars: usize) -> String {
+    pub(crate) fn stderr_tail(&self, max_chars: usize) -> String {
         Self::tail(&self.stderr, max_chars)
     }
 }
@@ -454,6 +454,16 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn shutdown_was_accepted(state: &AtomicBool) -> bool {
+    state.load(Ordering::Acquire)
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn shutdown_was_accepted() -> bool {
+    false
+}
+
 /// Supervises one Bun (or other) child process: spawns it, captures its
 /// stdout/stderr, and restarts it on crash (non-zero exit) up to a
 /// [`RestartPolicy`] before giving up with a typed [`RuntimeError::CrashLoop`].
@@ -472,6 +482,8 @@ pub struct Supervisor {
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
     crashes: Arc<Mutex<CrashLedger>>,
     terminal_error: Arc<Mutex<Option<RuntimeError>>>,
+    #[cfg(target_os = "macos")]
+    accepted_shutdown: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -521,6 +533,8 @@ impl Supervisor {
         let crash_loop_error = Arc::new(Mutex::new(None));
         let crashes = Arc::new(Mutex::new(CrashLedger::default()));
         let terminal_error = Arc::new(Mutex::new(None));
+        #[cfg(target_os = "macos")]
+        let accepted_shutdown = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let thread = {
@@ -529,6 +543,8 @@ impl Supervisor {
             let crash_loop_error = Arc::clone(&crash_loop_error);
             let crashes = Arc::clone(&crashes);
             let terminal_error = Arc::clone(&terminal_error);
+            #[cfg(target_os = "macos")]
+            let accepted_shutdown = Arc::clone(&accepted_shutdown);
             let shutdown = Arc::clone(&shutdown);
             thread::Builder::new()
                 .name("keld-runtime-supervisor".to_owned())
@@ -561,6 +577,8 @@ impl Supervisor {
                         &crash_loop_error,
                         &crashes,
                         &terminal_error,
+                        #[cfg(target_os = "macos")]
+                        &accepted_shutdown,
                         &shutdown,
                     );
                 })
@@ -595,6 +613,8 @@ impl Supervisor {
             crash_loop_error,
             crashes,
             terminal_error,
+            #[cfg(target_os = "macos")]
+            accepted_shutdown,
             shutdown,
             thread: Some(thread),
         })
@@ -670,6 +690,14 @@ impl Supervisor {
         *lock_or_recover(&self.current_pid)
     }
 
+    /// Marks a caller-accepted shutdown before its reply can make the child
+    /// terminate cooperatively. This changes attribution only; [`Self::shutdown`]
+    /// remains the sole signal that initiates kill/reap.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn accept_shutdown(&self) {
+        self.accepted_shutdown.store(true, Ordering::Release);
+    }
+
     /// Stops supervision and kills the current child, if any. Idempotent.
     /// Does not block for the background thread to finish — call `Drop`
     /// (or drop the `Supervisor`) to join it.
@@ -715,6 +743,7 @@ fn supervise<P>(
     crash_loop_error: &Arc<Mutex<Option<RuntimeError>>>,
     crash_ledger: &Arc<Mutex<CrashLedger>>,
     terminal_error: &Arc<Mutex<Option<RuntimeError>>>,
+    #[cfg(target_os = "macos")] accepted_shutdown: &Arc<AtomicBool>,
     shutdown: &Arc<AtomicBool>,
 ) where
     P: ChildPreparer,
@@ -803,7 +832,13 @@ fn supervise<P>(
                 let _ = child.kill();
                 let _ = child.wait();
                 join_capture_threads(capture_threads);
-                if let Some(status) = self_terminated {
+                #[cfg(target_os = "macos")]
+                let accepted = shutdown_was_accepted(accepted_shutdown);
+                #[cfg(not(target_os = "macos"))]
+                let accepted = shutdown_was_accepted();
+                if let Some(status) = self_terminated
+                    && !accepted
+                {
                     record_self_termination(crash_ledger, output, pid, status.code());
                 }
                 *lock_or_recover(current_pid) = None;
@@ -817,7 +852,13 @@ fn supervise<P>(
             // crash must not produce a complete diagnostic on one path and a
             // truncated one on the other.
             join_capture_threads(capture_threads);
-            if let Some(status) = self_terminated {
+            #[cfg(target_os = "macos")]
+            let accepted = shutdown_was_accepted(accepted_shutdown);
+            #[cfg(not(target_os = "macos"))]
+            let accepted = shutdown_was_accepted();
+            if let Some(status) = self_terminated
+                && !accepted
+            {
                 record_self_termination(crash_ledger, output, pid, status.code());
             }
             *lock_or_recover(current_pid) = None;
@@ -837,11 +878,22 @@ fn supervise<P>(
         // revocation so a lifecycle failure cannot erase the durable ledger
         // record (KEL-116); the terminal lifecycle error still wins the
         // supervisor outcome below.
-        record_self_termination(crash_ledger, output, pid, code);
+        #[cfg(target_os = "macos")]
+        let accepted = shutdown_was_accepted(accepted_shutdown);
+        #[cfg(not(target_os = "macos"))]
+        let accepted = shutdown_was_accepted();
+        if !accepted {
+            record_self_termination(crash_ledger, output, pid, code);
+        }
 
         if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
             *lock_or_recover(terminal_error) = Some(error);
             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+            return;
+        }
+
+        if accepted {
+            let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
         }
 

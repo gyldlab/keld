@@ -331,16 +331,19 @@ flowchart TD
 
     cli["CURRENT keld-cli · bin"] --> core
     cli --> ipc
+    cli --> runtime
     cli --> pack["TARGET keld-pack"]
     cli --> update["TARGET keld-update"]
-    host["CURRENT PARTIAL keld-host · hello bin"] --> core
+    host["CURRENT PARTIAL keld-host · hello + macOS no-flag app owner"] --> core
+    host --> runtime
     compat["CURRENT keld-compat · lifecycle slice"] --> core
-    core["CURRENT keld-core · thin host slice"] --> ipc["CURRENT keld-ipc"]
+    core["CURRENT keld-core · host boot/session owner"] --> ipc["CURRENT keld-ipc"]
     core --> guard["CURRENT keld-guard"]
+    core --> runtime
     core --> wv["CURRENT keld-wv"]
     native["CURRENT keld-native · scoped fs"] --> guard
     native --> ipc
-    runtime["CURRENT keld-runtime · generic supervisor"] --> ipc
+    runtime["CURRENT keld-runtime · supervisor + macOS guardian"] --> ipc
     wv --> guard
     wv -.->|macOS current backend| ext["EXTERNAL tao 0.35.3<br/>wry 0.56.1"]
     ipc -.-> pc["EXTERNAL postcard · serde"]
@@ -356,11 +359,14 @@ flowchart TD
     class ext,pc external
 ```
 
-Green = substantially implemented. Grey = skeleton. Two specified edges are missing today:
-`keld-core → keld-native` and `keld-core → keld-runtime` — the host does not yet *reach*
-the native API layer or the supervisor. Both crates have real behavior now (`keld-native`'s
-`fs.read`/`fs.write`, KEL-71; `keld-runtime`'s `Supervisor`, KEL-70) — `keld-core` itself is
-just still too thin (`run_hello_window()` delegation only) to be the one calling either.
+Green = current implementation, including explicitly partial nodes. Blue = target or
+skeleton scope; grey = external dependency. One specified edge is missing today:
+`keld-core → keld-native`; the host does not yet reach the guarded native API layer.
+`keld-core::app_session` now owns the strict macOS boot/session ordering and reaches
+`keld-runtime` for the guardian-composed Bun supervisor (KEL-96 T1a/T1b), while
+`keld-wv::wkwebview` owns the concrete AppKit event loop, native handles, navigation
+callback, and `EventLoopProxy` wake. The broader
+named-role registry, guarded native dispatch, and Windows/Linux no-flag owners remain later work.
 
 ### The two crates that carry real weight
 
@@ -403,14 +409,14 @@ but written down next to the code with the reason and the milestone that closes 
 
 | Crate | Lines | Status | Role | Spec | What's actually in it |
 |---|---|---|---|---|---|
-| `keld-core` | 24 | Skeleton | Host runtime: event loop, window registry, lifecycle, dispatch | [`01`](../architecture/01-overview.md) | A `VERSION` const and a one-line delegation to `keld_wv::run_hello_window`. The event loop currently lives in `keld-wv`'s macOS backend, which its own doc flags as temporary |
+| `keld-core` | ~3,700 | Partial | Host boot/session ordering, lifecycle and dispatch; TARGET complete window registry | [`01`](../architecture/01-overview.md) | `app_session` owns strict macOS no-flag boot, the single echo/lifecycle router, guardian coordination and ordered cleanup; hello/diagnostic sessions remain. `keld-wv::wkwebview` owns the concrete current AppKit event loop and handles |
 | `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. Proven wiring, no real capability uses it yet (host `fs.read`/`fs.write` is KEL-71). `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | ~345 | Partial | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules. `fs` is live (KEL-71): `fs_read`/`fs_write` (capability ids `fs.read`/`fs.write`), a real `serve_fs_session` kipc channel, every call routed through `keld_ipc::guard_dispatch::dispatch_privileged` before touching disk. The other 14 modules are still names only |
-| `keld-runtime` | ~685 | Partial | Bun child supervisor | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s). `keld-cli/src/dev.rs` `run_dev_echo` spawns through it. Bun discovery/pinning, `--inspect`, and Bun watch hot-restart are not built |
+| `keld-runtime` | ~7,300 | Partial | Bun supervisor, Unix role-generation library, and macOS host-death guardian | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor` owns spawn/capture/restart ledger; the macOS guardian composes it for KEL-96 no-flag Bun group ownership and host-death cleanup. Unix `RoleRegistry`/virtual ports remain library/test surfaces; Bun discovery/pinning, `--inspect`, watch restart and shipping named roles are not built |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
 | `keld-pack` | 25 | Skeleton | Packaging, signing, cross-compilation | [`06` §3](../architecture/06-runtime-and-tooling.md) | A `Format` enum (`App`, `Dmg`, `Nsis`, `Msi`, `Deb`, `Rpm`, `AppImage`) |
 | `keld-compat` | 18 | Skeleton | Host-side Electron emulation (what JS can't fake) | [`04` §3](../architecture/04-electron-compat.md) | A `Tier` enum (`One`/`Two`/`Three`) |
-| `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` handles `--hello` and otherwise prints a pre-alpha message. Does not parse config or start an event loop |
+| `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` keeps `--hello` diagnostic-only; on macOS, no arguments consume the strict owner-private KEL-96 boot stage and own the native window, authenticated primary session, supervised Bun lifetime, and ordered Quit cleanup. Windows/Linux no-flag remain fail-closed pending T4 |
 | `keld-cli` | — | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`. Absent: `build`, `migrate`, `gen`, `ext`, and `--json` on every verb |
 
 Each skeleton crate's `lib.rs` opens with a module doc naming its spec section. Those docs are

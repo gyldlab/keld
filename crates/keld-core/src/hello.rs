@@ -15,6 +15,9 @@ pub const DEFAULT_HELLO_TITLE: &str = "Keld";
 /// Renderer path when `keld.config.ts` has no `renderer` field.
 pub const DEFAULT_RENDERER: &str = "index.html";
 
+/// Bun entry path used by the hello template and boot compiler.
+pub const DEFAULT_ENTRY: &str = "src/main.ts";
+
 /// Opens the default Keld hello window until the user closes it.
 ///
 /// # Errors
@@ -101,6 +104,12 @@ pub fn renderer_from_config_ts(source: &str) -> Option<String> {
     quoted_config_field(source, "renderer:")
 }
 
+/// Reads `entry: "..."` from a hello-template `keld.config.ts`.
+#[must_use]
+pub fn entry_from_config_ts(source: &str) -> Option<String> {
+    quoted_config_field(source, "entry:")
+}
+
 /// `name` from `project_root/keld.config.ts`, if the file exists and parses.
 #[must_use]
 pub fn read_config_title(project_root: &Path) -> Option<String> {
@@ -113,6 +122,13 @@ pub fn read_config_title(project_root: &Path) -> Option<String> {
 pub fn read_config_renderer(project_root: &Path) -> Option<String> {
     let source = fs::read_to_string(project_root.join("keld.config.ts")).ok()?;
     renderer_from_config_ts(&source)
+}
+
+/// `entry` from `project_root/keld.config.ts`, if the file exists and parses.
+#[must_use]
+pub fn read_config_entry(project_root: &Path) -> Option<String> {
+    let source = fs::read_to_string(project_root.join("keld.config.ts")).ok()?;
+    entry_from_config_ts(&source)
 }
 
 /// `--title` wins; else config `name`; else [`DEFAULT_HELLO_TITLE`].
@@ -160,13 +176,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, hello_title_from_args, host_hello_unknown_arg,
-        renderer_from_config_ts, resolve_hello_title, title_from_config_ts,
+        DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, entry_from_config_ts,
+        hello_title_from_args, host_hello_unknown_arg, read_config_entry, renderer_from_config_ts,
+        resolve_hello_title, title_from_config_ts,
     };
 
     #[test]
     fn default_title_is_keld() {
         assert_eq!(DEFAULT_HELLO_TITLE, "Keld");
+    }
+
+    #[test]
+    fn config_file_entry_reads_value_and_missing_is_none() {
+        let temp = tempfile::tempdir().expect("config entry root");
+        assert_eq!(read_config_entry(temp.path()), None);
+        std::fs::write(
+            temp.path().join("keld.config.ts"),
+            "export default {\n  entry: \"src/primary.ts\",\n};\n",
+        )
+        .expect("write config entry");
+        assert_eq!(
+            read_config_entry(temp.path()),
+            Some(String::from("src/primary.ts"))
+        );
     }
 
     #[test]
@@ -239,6 +271,7 @@ mod tests {
             renderer_from_config_ts(source).as_deref(),
             Some("index.html")
         );
+        assert_eq!(entry_from_config_ts(source).as_deref(), Some("src/main.ts"));
     }
 
     #[test]
@@ -247,11 +280,13 @@ mod tests {
         assert_eq!(title_from_config_ts("name: \"\""), None);
         assert_eq!(renderer_from_config_ts("export default {}"), None);
         assert_eq!(renderer_from_config_ts("renderer: \"\""), None);
+        assert_eq!(entry_from_config_ts("entry: \"\""), None);
     }
 
     #[test]
     fn default_renderer_is_index_html() {
         assert_eq!(DEFAULT_RENDERER, "index.html");
+        assert_eq!(DEFAULT_ENTRY, "src/main.ts");
     }
 
     #[test]
