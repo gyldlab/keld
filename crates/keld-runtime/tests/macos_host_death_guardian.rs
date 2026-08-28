@@ -87,8 +87,9 @@ fn run_host_death_cycle(listener: &UnixListener, control: &Path) {
         "guardian and group leader must identify the same process group"
     );
     let descendant_pid = descendant_pid.expect("descendant ready");
+    let guardian_pid = guardian_pid.expect("guardian ready");
     assert!(
-        guardian_pid.is_some_and(|pid| pid != host_pid && pid != leader_pid),
+        guardian_pid != host_pid && guardian_pid != leader_pid,
         "guardian, host, and Bun group leader must be different processes"
     );
     assert_eq!(
@@ -115,6 +116,7 @@ fn run_host_death_cycle(listener: &UnixListener, control: &Path) {
     assert_eq!(reaped, format!("REAPED {leader_pid}"));
     await_process_gone(leader_pid);
     await_process_gone(descendant_pid);
+    await_process_gone(guardian_pid);
     cleanup.group_gone = true;
 }
 
