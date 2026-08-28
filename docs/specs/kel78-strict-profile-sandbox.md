@@ -104,14 +104,18 @@ default-deny.
 8. Given renderer sandbox status and Bun-role containment, when either is
    reported, then they are separate fields. A contained webview does not imply
    a contained Bun role.
-9. Given host death, crash, abort, or hang of a strict child or addon worker
-   on an OS whose §4 names a host-death reaper, when cleanup finishes, then
-   descendants are reaped by that named mechanism, leftover grants/links are
-   revoked, and the next legitimate spawn still works. Today §4 names Windows
-   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ledger W5) and Linux `CLONE_NEWPID`
-   (ledger L1). macOS §4 names no reaper; this criterion does **not** apply
-   to macOS until T2 records a primary-sourced mechanism. Process-group and
-   `launchd` `SIGKILL` are not that mechanism (see §10 Q4).
+9. Given abnormal host death on an OS whose §4 names a host-death reaper, when
+   cleanup finishes, then enrolled descendants are reaped by that named
+   mechanism, leftover grants/links are revoked, and the next legitimate spawn
+   still works. Child abort/hang while the host remains alive is a separate
+   Supervisor/T5 fixture and is not proved by a host-liveness-pipe EOF. §4
+   names Windows
+   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ledger W5), Linux `CLONE_NEWPID`
+   (ledger L1), and the macOS host-death guardian contract (ledger M9–M11).
+   The macOS T2a probe proves the design contract only; T2b must land the one
+   shared runtime owner. A strict-profile or KEL-96 consumer must then prove
+   that its real child and descendants were enrolled; artifact presence is not
+   product or containment evidence.
 10. Given the update staging directory, signing keys, and relaunch helper, when
     a strict child or addon worker tries to read or write them, then the OS
     denies the attempt. The updater stays a host-owned TCB path (KEL-53).
@@ -292,9 +296,57 @@ present; or XPC/Powerbox grants cannot be enumerated.
 Packaging: signed `.app` with the reviewed entitlements embedded in the
 signature. Unsigned or ad-hoc signed children are `unverified`, never `strict`.
 
-Host-death descendant reap is **not** specified here. T2 MUST name the
-mechanism from a primary source before AC9 applies on macOS. Process-group
-and `launchd` `SIGKILL` are not claimed (see §10 Q4).
+#### macOS host-death guardian contract
+
+The selected raw-stage mechanism is `keld.macos-host-death-guardian/v1`, built
+from the Apple pipe, process-group, signal, and wait contracts in ledger
+M9–M11. It is supervisor cleanup, not App Sandbox containment:
+
+| Resource | Owner | Invariant |
+|---|---|---|
+| Guardian process handle | host | The host supervises one private re-exec guardian and treats guardian death as fatal. |
+| Host-liveness pipe writer | host only | It is non-inheritable and carries no authority bytes; no guardian/Bun/descendant owns a writer copy. |
+| Host-liveness pipe reader | guardian only | EOF means the host's descriptors closed; no timeout or heartbeat substitutes for EOF. |
+| Bun direct-child handle | guardian | The guardian, not a host-side PID lookup, spawns and waits the Bun group leader. |
+| Bun process group | guardian | The leader starts in a new group; enrolled descendants remain in it and may not break away. |
+
+The guardian is the same prebuilt executable in a private internal role, not a
+new framework or public CLI mode. Its private inherited control record is
+host-minted and bounded; invoking the executable with a forged environment but
+without those inherited handles fails before child creation. The product API
+shape, unsafe/FFI or dependency choice, and exact private control framing remain
+an implementation review gate; this contract does not create them.
+
+Startup does not reach `Ready` until the guardian has reported the Bun leader's
+group and the host has independently observed the expected process ownership.
+On abnormal host death, descriptor closure produces EOF at the guardian. The
+guardian immediately signals the enrolled group, waits its direct Bun child,
+and exits. The observer must see the leader and a real descendant gone, then a
+fresh launch succeed. The leader handle remains unreaped until after group
+signal; a later implementation must prove its PID/process-group reuse safety
+rather than reintroduce a host-side numeric-PID cleanup path.
+
+Process-group membership is enrollment, not a sandbox boundary. T2b verifies
+the leader and every known fixture descendant are in the recorded group before
+claiming the generic mechanism pass. T2c's strict hostile archive must include
+descendants that attempt `setpgid` and `setsid`, then repeat host death. If an
+attempt succeeds or any escaped process survives outside the enrolled group,
+the descendant row fails, `admit(Strict)` remains unavailable, and the test
+controller removes the escaped fixture process. No documentation claim,
+post-hoc PID kill, or successful cleanup of the still-enrolled group can turn
+that result into a strict pass.
+
+A process group by itself, a cooperative Bun exit handler, and a host cleanup
+callback are rejected: none runs an independent reaper after host `SIGKILL`.
+`proc_setpcontrol(PROC_SETPC_TERMINATE)` is also rejected because Apple defines
+that API as resource-starvation control (M12), not parent-death control. A
+bundle-private XPC/launchd design is a later packaging candidate (M13), not a
+substitute for the approved KEL-96 raw staged layout.
+
+T2a's checked-in macOS fixture is contract evidence only. It must not make
+`admit(Strict)` succeed and does not claim the shipped supervisor is wired.
+T2b implements the single shared guardian owner after approval. T2c retains
+the separately signed App Sandbox/hostile-archive work.
 
 `sandbox_init(3)` is deprecated (ledger M1) and is not the candidate.
 
@@ -506,6 +558,9 @@ Renderer sandbox is a different column.
   PR #21 scoreboard/llms files, PR #30 updater architecture files,
   workspace `Cargo.toml`, kipc frame layout.
 - Must not add a permissive default to make Bun start.
+- This T2a amendment may add only the real-macOS test-only guardian fixture in
+  `crates/keld-runtime/tests/macos_host_death_guardian.rs`; it must not wire
+  the product `Supervisor`, add a public role, or claim strict admission.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
@@ -515,12 +570,25 @@ Renderer sandbox is a different column.
       Fail closed when `strict` is requested (`ProofMissing` /
       `ProofIncomplete` / `ProofLayerMismatch` / `ProofMismatch` including
       profile digest). No OS containment claim.
-- [ ] T2: macOS App Sandbox admission + hostile archive for the synthetic
+- [ ] T2a: macOS host-death guardian contract + real mechanism probe. Complete
+      only after a human-reviewed Keld merge contains ledger M9–M13, the
+      ownership contract above, and a passed real-macOS contract artifact with
+      `node_id=macos-host-death-reaper-contract`, `issue_id=KEL-78`,
+      `acceptance.id=KEL-78/T2a`, and an ancestor-of-main `head_sha`. This
+      artifact approves the design and test oracle, not a shipped guardian,
+      KEL-96 integration, or strict containment.
+- [ ] T2b: Implement the one shared `keld-runtime` guardian owner from the
+      approved T2a contract. The passed artifact has
+      `node_id=macos-host-death-reaper-mechanism`, `issue_id=KEL-78`,
+      `acceptance.id=KEL-78/T2b`, an ancestor-of-main `head_sha`, real macOS
+      host-only-kill/group-gone/relaunch evidence through the production API,
+      and attributed spawn/RSS measurements. No KEL-96 window or boot code.
+- [ ] T2c: macOS App Sandbox admission + hostile archive for the synthetic
       fixture on a **separately signed** helper (no `inherit` from the
       host). JIT entitlements only if a recorded Bun-start failure
       requires them. Enumerate `temporary-exception.*` as unexpected.
-      Name the host-death reaper from a primary source before AC9 applies
-      on macOS; do not invent process-group / `launchd`.
+      Integrate the approved T2b guardian without duplicating lifecycle policy,
+      and prove the strict child/descendant enrollment separately.
 - [ ] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
 - [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
@@ -551,7 +619,8 @@ OS. Mocks may test the admission state machine only.
 | 6 | synthetic addon matrix | one of the four outcomes; in-process load fails closed under `strict` |
 | 7 | plugin vs worker | plugin has no OS sandbox; worker does (once T7 exists) |
 | 8 | doctor JSON | two distinct fields |
-| 9 | kill host / abort child / hang on an OS whose §4 names a reaper (Windows job; Linux PID NS). macOS: not claimed until T2 | no leftover descendants; next spawn works. macOS stays unverified for this AC |
+| 9 host death | macOS T2a validates the controller/host/guardian/group oracle and T2b reruns it through the production guardian API | controller sends `SIGKILL` only to the host; guardian observes EOF, enrolled group is gone, direct leader is waited, and a second launch succeeds. Every later consumer separately proves its own enrollment |
+| 9 child failure | T5 independently aborts and hangs a child while the host remains alive | shared Supervisor contract terminates/reaps the failed child, revokes its generation, preserves the host, and permits the next legitimate spawn; no liveness-pipe EOF is claimed |
 | 10 | open update staging / key path from child | OS deny |
 
 Hostile catalog (each is a real syscall/API from the child or addon worker).
@@ -577,7 +646,11 @@ Anti-flake: bind port 0; use temp dirs; await supervisor events (no sleep-sync);
 run crash cases out of process. Platform-only tests report other OSes as
 `unverified` rather than skip-and-claim.
 
-Negative control: temporarily remove the LPAC opt-out, the App Sandbox
+Negative control: temporarily remove the macOS guardian's group signal and
+confirm the host-death fixture fails while its controller cleanup removes the
+test group. In T2c, permit a descendant `setpgid`/`setsid` escape and confirm
+the strict descendant row fails even when the enrolled group is reaped. Also
+temporarily remove the LPAC opt-out, the App Sandbox
 entitlement, `CLONE_NEWUSER`, or the host-path deny (leaving `CLONE_NEWNS`
 as a copied host mount table) and confirm the `strict` tests fail.
 Also remove descendant-namespace denies (`clone3` / `setns` / descendant
@@ -615,10 +688,8 @@ end-to-end measurement exists.
 3. After approval, who updates architecture 03 §4.2 to replace the
    `sandbox_init` / restricted-token / landlock+seccomp sketch with this
    contract? (This PR does not.)
-4. KEL-75 still asks this spec to name the per-OS host-death reaping
-   mechanism. §4 already names Windows `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-   (W5) and Linux `CLONE_NEWPID` (L1); AC9 applies there. macOS §4 names
-   none. Tentative macOS leads (process group / XPC `SIGKILL` by `launchd`)
-   and Linux `PR_SET_PDEATHSIG` are **not** claimed. T2 MUST pick the macOS
-   reaper from a primary source before AC9 applies on macOS. Do not invent
-   one here.
+4. T2a selects the macOS host-death guardian in §4 from ledger M9–M13; T2b
+   owns the reviewed product FFI/dependency surface and attributed helper-process
+   startup/RSS cost. KEL-96 and T2c must consume the single guardian owner and
+   prove their own enrollment; they must not add a parallel host-side PID or
+   process-group cleanup policy.

@@ -5,6 +5,11 @@ Status: draft ledger (not a containment proof)
 Access date for every fetch in this file: 2026-08-19
 Base SHA this ledger was written against: `67f39cdc898254f1e0c9cd50800f242ae7a4c493` (`origin/main`)
 
+The macOS host-death amendment rows M9–M13 were checked on 2026-08-28
+against Keld `bd45ea2da4e50a467ecd1e6fab76435883c73704` and the macOS 26.5
+SDK/man pages. They select a generic supervisor-cleanup mechanism only; they
+do not claim App Sandbox containment or product integration.
+
 This file is the citable authority list for
 [`kel78-strict-profile-sandbox.md`](kel78-strict-profile-sandbox.md). A URL or
 man page here is evidence of an OS contract. It is **not** evidence that Keld
@@ -106,6 +111,62 @@ of a sandbox, not containment.
 - **Dated:** current Apple documentation; accessed 2026-08-19; re-fetched the same day and still a JavaScript shell
 - **Quote:** not captured. This fetch returned a JavaScript shell ("This page requires JavaScript"), not the rendered documentation body. Forum posts, search-engine summaries, and entitlement-catalog siblings are **not** this page's Quote.
 - **Use:** Fail closed: Hardened Runtime alone does **not** admit the strict state, including while Quote is empty. App Sandbox remains the required macOS authority boundary (M2–M5). JIT-related entitlements (`com.apple.security.cs.allow-jit` and siblings) remain experimental minima only; each must be forced by a recorded Bun-start failure. A later ledger pass MAY fill Quote from the rendered Apple page; filling Quote is not a containment proof.
+
+### M9. A host-owned pipe becomes an OS-delivered death lease
+
+- **Source:** local `pipe(2)` man page (`PIPE(2)`, macOS 26.5, February 17, 2011)
+- **Publisher:** Apple (Darwin man pages shipped in the macOS 26.5 SDK)
+- **Dated:** February 17, 2011; verified on macOS 26.5 on 2026-08-28
+- **Quote:** "Widowing a pipe is the only way to deliver end-of-file to a reader."
+- **Use:** The host retains the only write end and the guardian receives only
+  the read end. Host termination closes its descriptors, so the guardian
+  observes EOF without requiring host cleanup code. The pipe carries no
+  principal, app path, token, permission, or application data.
+
+### M10. A guardian can enroll and signal one process group
+
+- **Source:** local `setpgid(2)` and `killpg(2)` man pages (`SETPGID(2)`, BSD 4;
+  `KILLPG(2)`, macOS 26.5, October 10, 2006)
+- **Publisher:** Apple (Darwin man pages shipped in the macOS 26.5 SDK)
+- **Dated:** verified on macOS 26.5 on 2026-08-28
+- **Quote:** "The killpg() function sends the signal sig to the process group pgrp."
+- **Use:** The guardian creates a new Bun-leader process group before exec and
+  signals that group after host-liveness EOF. A process group **alone** is not
+  a reaper; the independent guardian, host-exclusive liveness writer, group
+  enrollment, signal, and wait are one mechanism.
+
+### M11. The guardian retains and waits the direct Bun child
+
+- **Source:** local `wait(2)` man page (`WAIT(2)`, macOS 26.5)
+- **Publisher:** Apple (Darwin man pages shipped in the macOS 26.5 SDK)
+- **Dated:** verified on macOS 26.5 on 2026-08-28
+- **Quote:** "The wait() function suspends execution ... until ... information is available for a terminated child process."
+- **Use:** The guardian is Bun's direct OS parent and retains the `Child`
+  handle until after group termination, then waits it. A host-side PID-only
+  cleanup path is not equivalent and is not selected.
+
+### M12. `proc_setpcontrol(PROC_SETPC_TERMINATE)` is not parent-death control
+
+- **Source:** local macOS 26.5 SDK `usr/include/libproc.h`, declarations for
+  `proc_setpcontrol` and `PROC_SETPC_TERMINATE`
+- **Publisher:** Apple SDK headers
+- **Dated:** macOS 26.5 SDK; inspected 2026-08-28
+- **Quote:** "set its own process control state on resource starvation"
+- **Use:** Reject this tempting alternative. `PROC_SETPC_TERMINATE` describes
+  resource-starvation policy, not a public parent-death signal.
+
+### M13. XPC/launchd lifecycle is a packaging-bound later alternative
+
+- **Source:** <https://developer.apple.com/documentation/xpc> and local
+  `launchd.plist(5)` (`AbandonProcessGroup`)
+- **Publisher:** Apple Developer Documentation and Apple Darwin man pages
+- **Dated:** accessed and verified on macOS 26.5 on 2026-08-28
+- **Quote:** "When the client process exits, so does the XPC service."
+- **Use:** A bundle-private XPC service plus launchd process-group cleanup is a
+  valid later packaged-app candidate. It is rejected for the KEL-96 T1b
+  predecessor because the approved non-release fixture is an executable-adjacent
+  raw stage, not an app/XPC-service bundle. Do not silently add a bundle or
+  launchd registration to that slice.
 
 ---
 
