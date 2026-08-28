@@ -463,6 +463,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: A supervised app-process generation self-terminated without tripping the crash-loop breaker, including status zero
 - fix: For status zero, keep the app alive while its host-owned session is active; for non-zero or signal termination, fix the captured stderr and re-run `keld dev`.
 
+## KELD-RUNTIME-013
+
+- crate: keld-runtime
+- message: The private macOS host-death guardian exited while the host session was still live
+- fix: The host invokes the registered-group fail-safe; restart the host session, and diagnose the guardian exit before relaunching the app.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

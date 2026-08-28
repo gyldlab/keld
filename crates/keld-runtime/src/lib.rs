@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+pub mod macos_guardian;
 #[cfg(unix)]
 pub mod primary;
 #[cfg(unix)]
@@ -102,6 +104,16 @@ pub enum RuntimeError {
         /// Last captured stderr, truncated to a bounded tail.
         stderr_tail: String,
     },
+    /// The private macOS guardian exited while its host still owned the
+    /// liveness writer, so the host fail-safe terminated the registered group.
+    GuardianExited {
+        /// Registered Bun process-group leader.
+        group_pid: u32,
+        /// Guardian exit code, when macOS reported one.
+        exit_code: Option<i32>,
+        /// Cleanup error when the fail-safe group signal itself failed.
+        cleanup_error: Option<std::io::Error>,
+    },
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -168,6 +180,23 @@ impl std::fmt::Display for RuntimeError {
                 }
                 Ok(())
             }
+            Self::GuardianExited {
+                group_pid,
+                exit_code,
+                cleanup_error,
+            } => {
+                write!(
+                    f,
+                    "KELD-RUNTIME-013: the macOS host-death guardian for process group \
+                     {group_pid} exited unexpectedly with code {exit_code:?}; the host \
+                     treated the session as fatal and invoked the registered-group \
+                     fail-safe. Restart the host session."
+                )?;
+                if let Some(error) = cleanup_error {
+                    write!(f, " fail-safe error: {error}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -203,6 +232,17 @@ impl Clone for RuntimeError {
                 pid: *pid,
                 exit_code: *exit_code,
                 stderr_tail: stderr_tail.clone(),
+            },
+            Self::GuardianExited {
+                group_pid,
+                exit_code,
+                cleanup_error,
+            } => Self::GuardianExited {
+                group_pid: *group_pid,
+                exit_code: *exit_code,
+                cleanup_error: cleanup_error
+                    .as_ref()
+                    .map(|source| std::io::Error::new(source.kind(), source.to_string())),
             },
         }
     }
