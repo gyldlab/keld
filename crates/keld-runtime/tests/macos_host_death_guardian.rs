@@ -1,7 +1,7 @@
+//! Real-macOS proof for the proposed host-death guardian contract.
 #![cfg(target_os = "macos")]
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 #![allow(clippy::zombie_processes)] // the leader is killed with its descendant group; the controller proves both PIDs gone
-//! Real-macOS proof for the proposed host-death guardian contract.
 
 use std::env;
 use std::fs;
