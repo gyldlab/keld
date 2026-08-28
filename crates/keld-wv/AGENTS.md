@@ -1,6 +1,6 @@
 # keld-wv — adds root AGENTS.md
 
-Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/research/06-webview-reality.md`. v0 trait: `src/engine.rs` (not the full spec 05 sketch).
+Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/research/library/host-platforms/06-webview-reality.md`. v0 trait: `src/engine.rs` (not the full spec 05 sketch).
 
 - `unsafe` MAY appear in platform backends only. Those modules MUST `deny(unsafe_op_in_unsafe_fn)` and MUST cite a platform contract in `// SAFETY:`.
 - All engine/window mutations MUST run on the UI thread (today: tao's main-thread event loop; later: keld-core command queue). Agents MUST NOT touch platform handles from I/O or pool threads.

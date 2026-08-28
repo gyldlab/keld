@@ -305,7 +305,7 @@ the 12+ a fixed-width or self-describing encoding would need.
 
 ### Why postcard and not JSON
 
-The evaluation is in [`10-ipc-state-of-the-art.md`](../research/10-ipc-state-of-the-art.md) and the
+The evaluation is in [`10-ipc-state-of-the-art.md`](../research/library/ipc-runtime/10-ipc-state-of-the-art.md) and the
 decision is normative in [`02` §2](../architecture/02-ipc.md):
 
 | Candidate | Verdict |

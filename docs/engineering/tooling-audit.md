@@ -1,8 +1,8 @@
 # Keld Tooling Audit — Senior Engineer Review
 
 > Audit date: July 2026. Baseline: pre-alpha 11-crate workspace, no `packages/` yet.
-> Competitor comparison: `docs/research/08-competitor-source-audit.md`.
-> Context7 refresh: `docs/research/09-tooling-context7-audit.md`.
+> Competitor comparison: `docs/research/library/compatibility-competitors/08-competitor-source-audit.md`.
+> Context7 refresh: `docs/research/library/agents-tooling/09-tooling-context7-audit.md`.
 
 ## Executive summary
 
@@ -73,7 +73,7 @@ automation (nothing to ship); cargo-vet (deny.toml covers advisories/licenses fo
 
 ### Phase B (coordinator run — P0 from Context7 audit)
 
-- `deny.toml`: `[graph].targets` for linux-gnu, macOS, windows-msvc; `unmaintained = "warn"`
+- `deny.toml`: `[graph].targets` for linux-gnu, macOS, windows-msvc; `unmaintained = "workspace"`
 - `.github/workflows/ci.yml`: `rust-cache` on fmt + deny jobs; `cache-on-failure: true` on matrix
 - `justfile`: `ci` recipe includes `deny`
 

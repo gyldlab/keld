@@ -10,7 +10,7 @@ This file is **not** a new RFC 2119 layer. Binding agent rules stay in
 [`docs/agents/learnings.md`](../agents/learnings.md). This document is the onboarding
 pointer for *why* the current engineering looks like this.
 
-Numbered `docs/research/` notes are exploratory evidence. They are not required
+Canonical categorized `docs/research/library/` notes are exploratory evidence. They are not required
 reading and must not be treated as a second spec. Cite architecture, `AGENTS.md`,
 and `docs/engineering/` instead.
 
@@ -347,7 +347,7 @@ hooks reliably. A laptop hook cannot replace GitHub Actions. Putting clippy,
 nextest, or gitleaks in pre-commit is the wrong gate (slow; gitleaks is
 GitHub-only). Optional later: an Oxc-style **untracked** format-only hook, not
 a committed Husky tree. Evidence (exploratory, not required reading):
-`docs/research/42-git-hooks-and-precommit.md`.
+`docs/research/library/agents-tooling/42-git-hooks-and-precommit.md`.
 
 **Why.** Fmt/clippy/nextest are the contract testers can paste. `just ci` catches
 docs corpus drift, crate-`AGENTS.md` for `unsafe`, CODEOWNERS/template/SHA hygiene,

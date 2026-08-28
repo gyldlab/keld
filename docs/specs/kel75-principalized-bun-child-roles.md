@@ -283,7 +283,7 @@ the failing test.
 T1 adds a cold bootstrap listener and is not a hot-path optimization. T1–T5 measure only after semantic correctness:
 role spawn/restart latency, p99 bounded routed-port latency, queued-byte maxima, CPU and
 RSS. Shared memory is not a baseline or an acceptance condition; see the committed
-P13 new-run evidence and `docs/research/48-p13-new-run-audit.md`.
+P13 new-run evidence and `docs/research/campaigns/vscode/reports/48-p13-new-run-audit.md`.
 
 ## 10. Open questions
 

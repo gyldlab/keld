@@ -1,7 +1,8 @@
 # Electron Compatibility — Keld's Go-To-Market Spec
 
 The falsifiable promise: **a median Electron app runs on Keld by changing configuration,
-not code.** This is the Rspack/Rolldown lesson applied to desktop (see research/05).
+not code.** This is the Rspack/Rolldown lesson applied to desktop (see
+`docs/research/library/agents-tooling/05-rust-wave.md`).
 "Median" is defined and measured, not vibed: we maintain a corpus of open-source
 Electron apps and publish per-app compat scores.
 

@@ -19,8 +19,8 @@ landings, duplicate AX/tooling issues, and the verification gate still documente
 |-----------|-------|-------|
 | 1. Vision ↔ Architecture | **Aligned** | README, ROADMAP, arch/01–07 agree on host/child, kipc, permissions, webview policy, compat path, config files (`keld.config.ts`, `keld.permissions.jsonc`, etc.). |
 | 2. Architecture ↔ Crate skeleton | **Aligned** | All 11 `keld-*` crates in `AGENTS.md` repo map exist; no orphan crates. `packages/` empty as documented ("upcoming"). |
-| 3. Research ↔ Decisions | **Aligned** | research/00–08 conclusions (compat-first, supervised Bun child not in-process, kipc as product, per-platform engine policy) are normative in architecture. |
-| 4. Agent-first ↔ Artifacts | **Partial** | AGENTS.md, docs/agents/, arch/07, research/07, llms.txt, per-crate AGENTS.md align. Gaps: llms.txt hand-maintained (arch/07 §3 says CI-generated); `DenyReason` lacks fix text (arch/07 §2); KEL-20 awaiting sign-off; duplicate Linear AX issues. |
+| 3. Research ↔ Decisions | **Aligned** | The categorized Phase-0 corpus routed by `docs/research/INDEX.md` supports the compat-first, supervised-Bun, kipc, and per-platform-engine decisions now normative in architecture. |
+| 4. Agent-first ↔ Artifacts | **Partial** | AGENTS.md, docs/agents/, arch/07, `docs/research/library/agents-tooling/07-agent-first.md`, llms.txt, and per-crate AGENTS.md align. Gaps: llms.txt hand-maintained (arch/07 §3 says CI-generated); `DenyReason` lacks fix text (arch/07 §2); KEL-20 awaiting sign-off; duplicate Linear AX issues. |
 | 5. Tooling ↔ AGENTS.md gate | **Partial** | CI + justfile: fmt, clippy `-D warnings`, nextest, deny, 3-OS matrix, MSRV — strong. AGENTS.md verification gate still says `cargo test`; tooling-audit.md still lists nextest as deferred; KEL-34/KEL-41 open despite landings. |
 | 6. Linear ↔ ROADMAP | **Partial** | Issue coverage is good; **phase numbering diverges** (see below). Several landings (workspace, CI, docs) not reflected in issue status. Duplicate issues for MCP, eval, guard fixtures. |
 | 7. Naming conventions | **Partial** | Repo uses `keld-ipc`, `keld-native` consistently. Linear KEL-12/13/22 still reference `keld-bridge`, `keld-native-apis`. License: `Cargo.toml`/`deny.toml` = MIT OR Apache-2.0; ROADMAP/README = TBD. |
@@ -53,7 +53,7 @@ landings, duplicate AX/tooling issues, and the verification gate still documente
 - CI hard gates: CODEOWNERS, secret scan, no-placeholder CI check — ROADMAP Phase 0, KEL-39.
 - Guard manifest parsing / enforcement — v0 scope note in `keld-guard` crate docs.
 - kipc beyond framing (`frame.rs`) — Phase 1/2 per ROADMAP.
-- Formal KEL-11 synthesis document — research corpus (`docs/research/00-landscape.md`) partially substitutes.
+- Formal KEL-11 synthesis document — research corpus (`docs/research/library/compatibility-competitors/00-landscape.md`) partially substitutes.
 
 ### Accidental (should fix)
 
@@ -98,7 +98,7 @@ work — add a "Program" standing track or Meta section in ROADMAP.
 
 | Issue | vs artifacts | Drift |
 |-------|--------------|-------|
-| KEL-11 synthesis | Todo; `docs/research/00-landscape.md` is de facto synthesis | Formal deliverable + Phase 1 RFC links missing |
+| KEL-11 synthesis | Todo; `docs/research/library/compatibility-competitors/00-landscape.md` is de facto synthesis | Formal deliverable + Phase 1 RFC links missing |
 | KEL-20 agentic | In Progress; artifacts landed | Needs human sign-off → Done |
 | KEL-25 hello-world | Backlog; no webview backends yet | Correct dependency state |
 | KEL-34 tooling | P0 nextest/llms unchecked | nextest + llms.txt partially done |
@@ -135,4 +135,4 @@ Not run locally: 3-OS CI matrix, `cargo deny check` (requires cargo-deny install
 
 - `/competitors/` is in `.gitignore` ✓
 - Local clones present: electron, tauri, electrobun, deno, wry, tao ✓
-- Used by research/08; not part of the shipping repo ✓
+- Used by `docs/research/library/compatibility-competitors/08-competitor-source-audit.md`; not part of the shipping repo ✓

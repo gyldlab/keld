@@ -1,7 +1,7 @@
 # Agent development workflow
 
 How Keld is developed by parallel agents with human architectural review. Rationale
-and sources: `docs/research/07-agent-first.md`. Rules here bind agents and humans.
+and sources: `docs/research/library/agents-tooling/07-agent-first.md`. Rules here bind agents and humans.
 Task-specific playbooks are routed from `.agents/index.md`; load only matching entries.
 
 ## The loop (one issue, one agent, one concern)
