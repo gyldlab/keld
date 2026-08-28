@@ -91,11 +91,11 @@ pub enum RuntimeError {
         /// Last captured stderr, truncated to a bounded tail.
         stderr_tail: String,
     },
-    /// A supervised generation exited non-zero without the crash-loop breaker
-    /// tripping. Recorded so a host that never drains events still observes a
-    /// dead app process (KEL-105).
+    /// A supervised generation terminated itself without the crash-loop
+    /// breaker tripping. Recorded independently of exit status so a host that
+    /// never drains events still observes a dead app process (KEL-105/KEL-116).
     ChildCrashed {
-        /// OS process id of the generation that crashed.
+        /// OS process id of the generation that self-terminated.
         pid: u32,
         /// Exit code, when the OS reported one (`None` for a signal death).
         exit_code: Option<i32>,
@@ -140,6 +140,12 @@ impl std::fmt::Display for RuntimeError {
                 stderr_tail,
             } => {
                 match exit_code {
+                    Some(0) => write!(
+                        f,
+                        "KELD-RUNTIME-012: the supervised app process (pid {pid}) exited 0 \
+                         without a host shutdown request; the crash-loop breaker did not apply. \
+                         Keep the app process alive while its host-owned session is active."
+                    ),
                     Some(code) => write!(
                         f,
                         "KELD-RUNTIME-012: the supervised app process (pid {pid}) exited \
@@ -151,10 +157,12 @@ impl std::fmt::Display for RuntimeError {
                          terminated by a signal; the crash-loop breaker did not trip."
                     ),
                 }?;
-                write!(
-                    f,
-                    " Fix the crash shown in the captured stderr, then re-run `keld dev`."
-                )?;
+                if *exit_code != Some(0) {
+                    write!(
+                        f,
+                        " Fix the crash shown in the captured stderr, then re-run `keld dev`."
+                    )?;
+                }
                 if !stderr_tail.is_empty() {
                     write!(f, " stderr tail:\n{stderr_tail}")?;
                 }
@@ -255,43 +263,67 @@ pub enum SupervisorEvent {
     Stopped,
 }
 
-/// Crashes a [`Supervisor`] has observed so far, as durable state rather than
-/// a consumed event.
+/// One unrequested child termination, independent of exit status.
+///
+/// Fixed-size and allocation-free so the supervisor can retain ordering for
+/// status-zero exits without adding a hot-path queue. Non-zero diagnostics,
+/// including their stderr tail, remain owned by [`CrashLedger::last`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelfTerminationRecord {
+    /// OS process id of the generation that self-terminated.
+    pub pid: u32,
+    /// Exit code when the OS reported one (`None` for signal termination).
+    pub exit_code: Option<i32>,
+    /// Length of captured stdout when this termination was recorded.
+    pub stdout_len: usize,
+}
+
+/// Crashes and all unrequested child terminations a [`Supervisor`] has
+/// observed so far, as durable state rather than consumed events.
 ///
 /// A host that blocks — `keld dev` sits in the window event loop and drains no
 /// events for the whole window phase — can snapshot this before and after that
 /// interval and learn whether the app process died inside it. Comparing two
 /// snapshots is what separates a crash the supervisor *recovered* from
-/// (KEL-70 AC1/AC3: still a success) from one that happened after the session
-/// was already live (KEL-105: not a success).
+/// (KEL-70 AC1/AC3: still a success) from any self-termination after the
+/// session was already live (KEL-105/KEL-116: not a window-path success).
 #[derive(Debug, Clone, Default)]
 pub struct CrashLedger {
-    /// Non-zero exits observed across every generation, never reset. Restarts
-    /// do not decrement it and the crash-loop window does not evict from it:
-    /// this counts events, while the breaker's own sliding window decides
-    /// policy.
+    /// Crash-class terminations (non-zero exit statuses or signals) observed
+    /// across every generation, never reset. Restarts do not decrement it and
+    /// the crash-loop window does not evict from it: this preserves the
+    /// KEL-105 crash view while the breaker's own sliding window decides
+    /// restart policy.
     pub count: u32,
-    /// Diagnostic for the most recent crash, carrying its `KELD-RUNTIME-012`
-    /// code and a bounded stderr tail. `None` exactly when `count` is 0.
+    /// Diagnostic for the most recent crash-class termination, carrying its
+    /// `KELD-RUNTIME-012` code and a bounded stderr tail. `None` exactly when
+    /// `count` is 0.
     pub last: Option<RuntimeError>,
-    /// Length of captured stdout at the moment of the most recent crash, so a
-    /// host can order that crash against something the app printed.
+    /// Length of captured stdout at the moment of the most recent crash-class
+    /// termination, so a host can order that crash against something the app
+    /// printed.
     ///
     /// The supervisor publishes stdout and its `Exited` event *before* it
-    /// records the crash, so a host that only compares crash counts cannot
-    /// tell "crashed, then printed" from "printed, then crashed" — it sees
-    /// both at once and forgives a death that happened after the app was
-    /// live. Comparing a marker's offset against this length answers that
-    /// question without any timing assumption (KEL-105).
+    /// records the ledger fact, so a host that only compares crash counts
+    /// cannot tell "crashed, then printed" from "printed, then crashed".
+    /// Comparing a marker's offset against this length answers that question
+    /// without any timing assumption (KEL-105).
     pub stdout_len_at_last_crash: usize,
+    /// All unrequested self-terminations across every generation, including
+    /// status zero. Never reset or evicted by restart policy.
+    pub self_termination_count: u32,
+    /// Most recent unrequested self-termination and its stdout ordering point.
+    /// `None` exactly when `self_termination_count` is 0.
+    pub last_self_termination: Option<SelfTerminationRecord>,
 }
 
 /// Terminal outcome of [`Supervisor::wait_for_outcome`].
 #[derive(Debug)]
 pub enum SupervisorOutcome {
-    /// The child exited zero; supervision ended without error. A generation
-    /// may still have crashed and been recovered — read
-    /// [`Supervisor::crash_ledger`] for that fact (KEL-105).
+    /// The child exited zero or the host requested shutdown; supervision ended
+    /// without a restart-policy error. A generation may still have terminated
+    /// itself — read [`Supervisor::crash_ledger`] for that fact
+    /// (KEL-105/KEL-116).
     Stopped,
     /// The crash-loop breaker tripped.
     CrashLoop(RuntimeError),
@@ -385,8 +417,8 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Supervises one Bun (or other) child process: spawns it, captures its
 /// stdout/stderr, and restarts it on crash (non-zero exit) up to a
 /// [`RestartPolicy`] before giving up with a typed [`RuntimeError::CrashLoop`].
-/// A zero exit is treated as graceful completion — the child is not
-/// restarted.
+/// A zero exit is treated as graceful by restart policy — the child is not
+/// restarted — while [`CrashLedger`] still records that it ended itself.
 ///
 /// The child runs on a dedicated background thread; killing or restarting it
 /// never touches the caller's thread or any window the caller owns (KEL-70
@@ -572,11 +604,14 @@ impl Supervisor {
         }
     }
 
-    /// Snapshot of the crashes observed so far, across every spawn attempt.
+    /// Snapshot of unrequested self-terminations observed so far, across every
+    /// spawn attempt.
     ///
     /// Readable at any time and never consumed, so a host that drains no
-    /// events still sees them. Two snapshots bound an interval: if `count`
-    /// grew across it, a supervised generation died inside it (KEL-105).
+    /// events still sees them. Two snapshots bound an interval:
+    /// `self_termination_count` grows for every unrequested exit, while
+    /// `count` grows only for non-zero statuses or signals
+    /// (KEL-105/KEL-116).
     #[must_use]
     pub fn crash_ledger(&self) -> CrashLedger {
         lock_or_recover(&self.crashes).clone()
@@ -716,27 +751,25 @@ fn supervise<P>(
             return;
         }
         if matches!(wait, WaitResult::ShutdownRequested) {
+            // Observe the bounded ambiguity window before the host changes
+            // child authority. Revoking a live generation can itself close
+            // the app link and make a cooperative child exit; anything first
+            // observed after that host action is host-induced, not an
+            // unrequested self-termination (KEL-116). Revocation still
+            // precedes close/kill as architecture 06 requires.
+            let self_terminated = wait_for_self_termination(&mut child);
             if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
                 *lock_or_recover(terminal_error) = Some(error);
                 let _ = child.kill();
                 let _ = child.wait();
                 join_capture_threads(capture_threads);
+                if let Some(status) = self_terminated {
+                    record_self_termination(crash_ledger, output, pid, status.code());
+                }
                 *lock_or_recover(current_pid) = None;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
-            // Classify before killing, and give a child that is already dying
-            // a bounded chance to finish. Once the host has killed the child
-            // the reaped status is the host's own doing and no longer says who
-            // ended it first, and on unix a signal death carries no exit code
-            // at all — so any classifier reading the post-kill status must
-            // either miss every signalled crash or misread the host's own kill
-            // as one. A single `try_wait` is not enough either: process death
-            // is asynchronous, so an app that died microseconds before the
-            // developer closed the window is still unreaped at that instant
-            // and would be attributed to the host. An exit observed here is
-            // the child's own, whatever status it carries.
-            let self_terminated = wait_for_self_termination(&mut child);
             let _ = child.kill();
             let _ = child.wait();
             // Join before recording: the capture threads may still hold unread
@@ -744,8 +777,8 @@ fn supervise<P>(
             // crash must not produce a complete diagnostic on one path and a
             // truncated one on the other.
             join_capture_threads(capture_threads);
-            if let Some(status) = self_terminated.filter(|status| !status.success()) {
-                record_crash(crash_ledger, output, pid, status.code());
+            if let Some(status) = self_terminated {
+                record_self_termination(crash_ledger, output, pid, status.code());
             }
             *lock_or_recover(current_pid) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
@@ -759,6 +792,12 @@ fn supervise<P>(
             WaitResult::ShutdownRequested | WaitResult::LeaseFailed(_) => return,
         };
         let _ = events_tx.send(SupervisorEvent::Exited { pid, code });
+
+        // The OS exit is already an observed fact. Publish it before
+        // revocation so a lifecycle failure cannot erase the durable ledger
+        // record (KEL-116); the terminal lifecycle error still wins the
+        // supervisor outcome below.
+        record_self_termination(crash_ledger, output, pid, code);
 
         if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
             *lock_or_recover(terminal_error) = Some(error);
@@ -776,13 +815,6 @@ fn supervise<P>(
         let window = Duration::from_secs(u64::from(policy.window_secs));
         crash_times.retain(|t| now.duration_since(*t) <= window);
         crash_times.push(now);
-
-        // KEL-105: publish the crash as durable state at the one site that
-        // knows a generation died. The host blocks in the window event loop
-        // across this whole interval and drains no events, so the
-        // `Exited` event above is unobservable to it. Count and diagnostic
-        // move together under one lock so they cannot disagree.
-        record_crash(crash_ledger, output, pid, code);
 
         let crash_count = u8::try_from(crash_times.len()).unwrap_or(u8::MAX);
         if crash_count >= policy.max_crashes {
@@ -928,15 +960,16 @@ where
         match child.try_wait() {
             Ok(None) => {
                 if shutdown.load(Ordering::SeqCst) {
-                    // KEL-105: the child can die between the `try_wait` above
-                    // and this load, which would report its crash as a clean
-                    // stop and let `keld dev` exit 0 over a dead app. Look
+                    // KEL-105/KEL-116: the child can die between the
+                    // `try_wait` above and this load, which would report its
+                    // self-termination as a host stop and let `keld dev` exit
+                    // 0 over a dead app. Look
                     // once more before conceding: an exit observed now is the
                     // child's own, whereas after the caller's kill the status
                     // is ours (a signal on unix, exit code 1 on Windows) and
                     // no longer says who died first. Routing it back to
-                    // `Exited` reuses the one crash-accounting path rather
-                    // than adding a second.
+                    // `Exited` reuses the one self-termination accounting path
+                    // rather than adding a second.
                     return match child.try_wait() {
                         Ok(Some(status)) => Ok(WaitResult::Exited(status)),
                         _ => Ok(WaitResult::ShutdownRequested),
@@ -983,30 +1016,42 @@ fn wait_for_self_termination(child: &mut Child) -> Option<std::process::ExitStat
     }
 }
 
-/// Records one observed crash in the shared ledger. The single owner of that
-/// write: both the natural-exit path and the shutdown-race check below go
-/// through here so the count and the diagnostic cannot disagree.
-fn record_crash(
+/// Records one observed self-termination in the shared ledger. The single
+/// owner of that write: both the natural-exit path and the shutdown-race check
+/// go through here so the count, ordering position, and diagnostic cannot
+/// disagree.
+fn record_self_termination(
     crash_ledger: &Arc<Mutex<CrashLedger>>,
     output: &Arc<Mutex<CapturedOutput>>,
     pid: u32,
     exit_code: Option<i32>,
 ) {
-    // One snapshot under one lock: the tail and the length must describe the
-    // same stdout, or the host would order a marker against a different point
-    // in the stream than the diagnostic reports.
-    let (stderr_tail, stdout_len) = {
+    // One output snapshot: the crash tail and both ordering views must
+    // describe the same point in the stream. Status zero retains no tail, so
+    // its fixed-size record adds no hot-path allocation.
+    let (stdout_len, stderr_tail) = {
         let captured = lock_or_recover(output);
-        (captured.stderr_tail(2000), captured.stdout.len())
+        (
+            captured.stdout.len(),
+            (exit_code != Some(0)).then(|| captured.stderr_tail(2000)),
+        )
     };
     let mut ledger = lock_or_recover(crash_ledger);
-    ledger.count = ledger.count.saturating_add(1);
-    ledger.stdout_len_at_last_crash = stdout_len;
-    ledger.last = Some(RuntimeError::ChildCrashed {
+    ledger.self_termination_count = ledger.self_termination_count.saturating_add(1);
+    ledger.last_self_termination = Some(SelfTerminationRecord {
         pid,
         exit_code,
-        stderr_tail,
+        stdout_len,
     });
+    if let Some(stderr_tail) = stderr_tail {
+        ledger.count = ledger.count.saturating_add(1);
+        ledger.stdout_len_at_last_crash = stdout_len;
+        ledger.last = Some(RuntimeError::ChildCrashed {
+            pid,
+            exit_code,
+            stderr_tail,
+        });
+    }
 }
 
 fn spawn_capture_thread(
@@ -1056,6 +1101,7 @@ fn wait_backoff_or_shutdown(delay: Duration, shutdown: &AtomicBool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicU32;
 
     #[derive(Clone)]
@@ -1136,6 +1182,59 @@ mod tests {
 
     struct FailingRevokePreparer {
         command: Option<Command>,
+    }
+
+    struct ShutdownExitPreparer {
+        command: Option<Command>,
+        exit_on_revoke: Option<(PathBuf, PathBuf)>,
+    }
+
+    struct ShutdownExitLease {
+        exit_on_revoke: Option<(PathBuf, PathBuf)>,
+        pid: Option<u32>,
+    }
+
+    impl GenerationLease for ShutdownExitLease {
+        fn child_spawned(&mut self, pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
+            self.pid = Some(pid);
+            Ok(())
+        }
+
+        fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError> {
+            if cause == RevocationCause::Shutdown
+                && let Some((marker, acknowledged)) = self.exit_on_revoke
+            {
+                std::fs::write(marker, b"exit").map_err(|source| RuntimeError::Lifecycle {
+                    phase: "test shutdown exit signal",
+                    source,
+                })?;
+                wait_for_marker(&acknowledged)?;
+                let pid = self.pid.ok_or_else(|| RuntimeError::Lifecycle {
+                    phase: "test shutdown exit observation",
+                    source: std::io::Error::other("missing helper pid"),
+                })?;
+                wait_for_process_exit(pid)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl ChildPreparer for ShutdownExitPreparer {
+        type Lease = ShutdownExitLease;
+
+        fn prepare(&mut self, _attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+            let command = self.command.take().ok_or_else(|| RuntimeError::Lifecycle {
+                phase: "test prepare",
+                source: std::io::Error::other("missing shutdown-exit command"),
+            })?;
+            Ok(PreparedChild {
+                command,
+                lease: ShutdownExitLease {
+                    exit_on_revoke: self.exit_on_revoke.clone(),
+                    pid: None,
+                },
+            })
+        }
     }
 
     impl ChildPreparer for FailingRevokePreparer {
@@ -1287,6 +1386,17 @@ mod tests {
             ),
             "event observation must not erase the terminal lifecycle failure"
         );
+        let ledger = supervisor.crash_ledger();
+        assert_eq!(
+            ledger.self_termination_count, 1,
+            "revocation failure must not erase the already-observed child exit: {ledger:?}"
+        );
+        assert!(
+            ledger
+                .last_self_termination
+                .is_some_and(|record| record.exit_code == Some(0)),
+            "{ledger:?}"
+        );
     }
 
     #[test]
@@ -1410,6 +1520,89 @@ mod tests {
         }
     }
 
+    fn self_termination_helper_command(ready: &Path, exit: &Path, acknowledged: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .args([
+                "--exact",
+                "tests::self_termination_helper_process",
+                "--nocapture",
+            ])
+            .env("KELD_RUNTIME_HELPER_READY", ready)
+            .env("KELD_RUNTIME_EXIT_AFTER", exit)
+            .env("KELD_RUNTIME_EXIT_ACKNOWLEDGED", acknowledged);
+        command
+    }
+
+    fn await_marker(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "helper did not create {}",
+                path.display()
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn wait_for_marker(path: &Path) -> Result<(), RuntimeError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.exists() {
+            if Instant::now() >= deadline {
+                return Err(RuntimeError::Lifecycle {
+                    phase: "test shutdown exit acknowledgment",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("helper did not create {}", path.display()),
+                    ),
+                });
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    fn wait_for_process_exit(pid: u32) -> Result<(), RuntimeError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while process_has_not_exited(pid).map_err(|source| RuntimeError::Lifecycle {
+            phase: "test shutdown exit observation",
+            source,
+        })? {
+            if Instant::now() >= deadline {
+                return Err(RuntimeError::Lifecycle {
+                    phase: "test shutdown exit observation",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("helper process {pid} did not exit after acknowledging revocation"),
+                    ),
+                });
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn process_has_not_exited(pid: u32) -> std::io::Result<bool> {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()?;
+        let state = String::from_utf8_lossy(&output.stdout);
+        let state = state.trim();
+        Ok(!state.is_empty() && !state.starts_with('Z'))
+    }
+
+    #[cfg(windows)]
+    fn process_has_not_exited(pid: u32) -> std::io::Result<bool> {
+        use std::os::windows::process::CommandExt;
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .creation_flags(0x0800_0000)
+            .output()?;
+        Ok(String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+    }
+
     #[test]
     fn backoff_delay_is_monotonically_increasing() {
         assert!(backoff_delay(1) < backoff_delay(2));
@@ -1440,6 +1633,103 @@ mod tests {
             "the host's own kill must not be recorded as the child crashing: {ledger:?}"
         );
         assert!(ledger.last.is_none(), "{ledger:?}");
+        assert_eq!(ledger.self_termination_count, 0, "{ledger:?}");
+        assert!(ledger.last_self_termination.is_none(), "{ledger:?}");
+    }
+
+    #[test]
+    fn status_zero_self_termination_during_shutdown_grace_is_recorded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("ready");
+        let exit = dir.path().join("exit-now");
+        let acknowledged = dir.path().join("exit-acknowledged");
+        let sup = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            ShutdownExitPreparer {
+                command: Some(self_termination_helper_command(
+                    &ready,
+                    &exit,
+                    &acknowledged,
+                )),
+                exit_on_revoke: None,
+            },
+        )
+        .expect("helper child must spawn");
+        let _ = recv_started(&sup);
+        await_marker(&ready);
+
+        std::fs::write(&exit, b"exit").expect("release helper independently of shutdown");
+        sup.shutdown();
+        let outcome = sup.wait_for_outcome();
+        let ledger = sup.crash_ledger();
+        assert!(matches!(outcome, SupervisorOutcome::Stopped), "{outcome:?}");
+        assert_eq!(
+            ledger.self_termination_count, 1,
+            "an exit observed before the host kill must be recorded whatever its status: {ledger:?}"
+        );
+        assert_eq!(ledger.count, 0, "status zero is not a crash: {ledger:?}");
+        assert!(
+            ledger
+                .last_self_termination
+                .is_some_and(|record| record.exit_code == Some(0)),
+            "{ledger:?}"
+        );
+    }
+
+    #[test]
+    fn shutdown_revocation_induced_zero_exit_is_not_self_termination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("ready");
+        let exit = dir.path().join("exit-on-revoke");
+        let acknowledged = dir.path().join("exit-acknowledged");
+        let sup = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            ShutdownExitPreparer {
+                command: Some(self_termination_helper_command(
+                    &ready,
+                    &exit,
+                    &acknowledged,
+                )),
+                exit_on_revoke: Some((exit, acknowledged.clone())),
+            },
+        )
+        .expect("helper child must spawn");
+        let _ = recv_started(&sup);
+        await_marker(&ready);
+
+        sup.shutdown();
+        let outcome = sup.wait_for_outcome();
+        let ledger = sup.crash_ledger();
+        assert!(matches!(outcome, SupervisorOutcome::Stopped), "{outcome:?}");
+        assert_eq!(
+            ledger.self_termination_count, 0,
+            "the host's own revocation caused this exit and must not become an unrequested fact: {ledger:?}"
+        );
+        assert!(ledger.last_self_termination.is_none(), "{ledger:?}");
+        assert!(
+            acknowledged.exists(),
+            "the child must acknowledge the revoke-triggered exit before the host kill"
+        );
+    }
+
+    #[test]
+    fn self_termination_helper_process() {
+        let (Some(ready), Some(exit), Some(acknowledged)) = (
+            std::env::var_os("KELD_RUNTIME_HELPER_READY"),
+            std::env::var_os("KELD_RUNTIME_EXIT_AFTER"),
+            std::env::var_os("KELD_RUNTIME_EXIT_ACKNOWLEDGED"),
+        ) else {
+            return;
+        };
+        let ready = PathBuf::from(ready);
+        let exit = PathBuf::from(exit);
+        let acknowledged = PathBuf::from(acknowledged);
+        std::fs::write(ready, b"ready").expect("publish helper readiness");
+        while !exit.exists() {
+            std::thread::yield_now();
+        }
+        std::fs::write(acknowledged, b"acknowledged").expect("acknowledge helper exit signal");
+        std::process::exit(0);
     }
 
     #[test]
@@ -1463,7 +1753,7 @@ mod tests {
         let ledger = sup.crash_ledger();
         assert!(
             ledger.count >= 1,
-            "a non-zero exit must be recorded: {ledger:?}"
+            "a non-zero self-termination must be recorded: {ledger:?}"
         );
         let rendered = ledger
             .last
@@ -1480,6 +1770,15 @@ mod tests {
             ledger.stdout_len_at_last_crash <= sup.output().stdout.len(),
             "the recorded position must be a real offset into captured stdout: {ledger:?}"
         );
+        assert!(
+            ledger.self_termination_count >= ledger.count,
+            "the all-termination view must include every non-zero crash: {ledger:?}"
+        );
+        let termination = ledger
+            .last_self_termination
+            .expect("the all-termination view must retain the latest crash");
+        assert_eq!(termination.exit_code, Some(3));
+        assert_eq!(termination.stdout_len, ledger.stdout_len_at_last_crash);
     }
 
     #[test]
@@ -1499,6 +1798,18 @@ mod tests {
             SupervisorOutcome::CrashLoop(e) => panic!("must not crash-loop on a clean exit: {e}"),
             SupervisorOutcome::Failed(e) => panic!("prepared lifecycle must not fail: {e}"),
         }
+
+        let ledger = sup.crash_ledger();
+        assert_eq!(
+            ledger.self_termination_count, 1,
+            "a child that exits itself must be recorded even when its status is zero: {ledger:?}"
+        );
+        assert_eq!(ledger.count, 0, "status zero is not a crash: {ledger:?}");
+        let termination = ledger
+            .last_self_termination
+            .expect("a recorded self-termination must carry its status");
+        assert_eq!(termination.exit_code, Some(0));
+        assert_eq!(termination.pid, pid);
     }
 
     #[test]

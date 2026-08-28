@@ -98,13 +98,14 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   cannot re-enter the session: its `connect` fails at the OS
   (`ErrorKind::NotFound`, asserted by `authenticated_bind_unlinks_stale_locator`),
   not at the handshake. `keld dev` does not paper over that. It reports the death
-  rather than pretending the app is alive: teardown reads the supervisor's crash
-  ledger and exits 1 with `KELD-CORE-033` quoting the nested `KELD-RUNTIME-*`
-  cause (KEL-105 option (a), SURFACE). Minting a fresh link generation so the
-  restarted child can re-handshake is option (b), RECOVER — KEL-96 AC5, and not
-  this path. The detection is not yet total: a generation that ends itself with
-  exit status 0 is not entered in the crash ledger at all, so that death is still
-  reported as success (KEL-116).
+  rather than pretending the app is alive: teardown reads the supervisor's
+  `CrashLedger`, which records unrequested self-termination independently of exit
+  status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
+  `KELD-RUNTIME-*` cause (KEL-105/KEL-116 option (a), SURFACE). A completed
+  windowless echo explicitly accepts status-zero self-termination after its reply;
+  it does not change the ledger fact or weaken the window policy. Minting a fresh
+  link generation so the restarted child can re-handshake is option (b), RECOVER —
+  KEL-96 AC5, and not this path.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
   CALL). Further CALLs on the same stream use `echo_invoke` and must not send a

@@ -62,7 +62,7 @@ use std::process::Command;
 
 use keld_cli::create::create_project;
 use keld_cli::dev::{run_dev_with_window, start_dev_session};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Stderr the fixture emits before it is killed, so the assertion that the
 /// captured tail reaches the developer has something real to find.
@@ -175,6 +175,63 @@ fn healthy_window_phase_still_exits_zero() {
         !process_is_alive(pid),
         "teardown must reap the app process; pid {pid} still live"
     );
+}
+
+/// Regression: status zero is still self-termination when the window path
+/// requires the app to remain alive.
+///
+/// This is the shipping template with only its parking line changed. The real
+/// Bun child completes HELLO + echo, prints the real ready marker, then exits
+/// zero before the injected window phase returns. The process-status oracle
+/// proves the host did not cause the exit.
+#[test]
+fn ready_then_exit_zero_fails_the_window_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("z{}", std::process::id());
+    let (root, pid_path) = project_with_main_rewrite(dir.path(), &name, |scaffolded| {
+        let parked = "  await new Promise(() => {});";
+        assert!(
+            scaffolded.contains(parked),
+            "template shape changed; this fixture edits its parking line"
+        );
+        scaffolded.replace(parked, "  process.exit(0);")
+    });
+
+    let msg = window_error_after_child_exits(&root, &pid_path);
+    assert!(msg.contains("KELD-CORE-033"), "{msg}");
+    assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+    assert!(msg.contains("exited 0"), "{msg}");
+}
+
+/// Regression for the shipping template's existing `finally` shape.
+///
+/// `process.exit()` defaults to status zero and runs before the thrown error
+/// can surface as an unhandled rejection. The ledger must record the child's
+/// self-termination rather than treating the status as proof of host success.
+#[test]
+fn finally_process_exit_zero_fails_the_window_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("f{}", std::process::id());
+    let (root, pid_path) = project_with_main_rewrite(dir.path(), &name, |scaffolded| {
+        let parked = "  await new Promise(() => {});";
+        let finally_close = "  session.close();";
+        assert!(
+            scaffolded.contains(parked),
+            "template parking shape changed"
+        );
+        assert!(
+            scaffolded.contains(finally_close),
+            "template finally shape changed"
+        );
+        scaffolded
+            .replace(parked, "  throw new Error(\"kel116-finally-boom\");")
+            .replace(finally_close, "  session.close();\n  process.exit();")
+    });
+
+    let msg = window_error_after_child_exits(&root, &pid_path);
+    assert!(msg.contains("KELD-CORE-033"), "{msg}");
+    assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+    assert!(msg.contains("exited 0"), "{msg}");
 }
 
 /// Guard: a crash the supervisor *recovers* from before the app is ready stays
@@ -356,6 +413,51 @@ fn await_stdout(session: &keld_core::HostOwnedHelloSession, needle: &str, timeou
         );
         std::thread::yield_now();
     }
+}
+
+fn project_with_main_rewrite(
+    dir: &std::path::Path,
+    name: &str,
+    rewrite: impl FnOnce(String) -> String,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = create_project(dir, name).expect("create");
+    let pid_path = root.join("kel116-app.pid");
+    let main = root.join("src/main.ts");
+    let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
+    let pid_lit = pid_path.display().to_string();
+    let rewritten = rewrite(scaffolded);
+    fs::write(
+        &main,
+        format!(
+            "import {{ writeFileSync as kel116WritePid }} from \"node:fs\";\n\
+             kel116WritePid({pid_lit:?}, String(process.pid));\n{rewritten}"
+        ),
+    )
+    .expect("write self-terminating fixture");
+    (root, pid_path)
+}
+
+fn window_error_after_child_exits(root: &std::path::Path, pid_path: &std::path::Path) -> String {
+    let result = run_dev_with_window(root, |_title, _html| {
+        let pid: u32 = fs::read_to_string(pid_path)
+            .expect("the app must record its pid before it reports ready")
+            .trim()
+            .parse()
+            .expect("pid breadcrumb must be a number");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while process_is_alive(pid) {
+            assert!(
+                Instant::now() < deadline,
+                "self-terminating Bun child {pid} remained alive"
+            );
+            std::thread::yield_now();
+        }
+        Ok(())
+    });
+
+    result
+        .expect_err("an app that self-terminated after ready must not report window success")
+        .to_string()
 }
 
 #[cfg(unix)]

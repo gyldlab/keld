@@ -1143,13 +1143,14 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   cannot re-enter the session: its `connect` fails at the OS
   (`ErrorKind::NotFound`, asserted by `authenticated_bind_unlinks_stale_locator`),
   not at the handshake. `keld dev` does not paper over that. It reports the death
-  rather than pretending the app is alive: teardown reads the supervisor's crash
-  ledger and exits 1 with `KELD-CORE-033` quoting the nested `KELD-RUNTIME-*`
-  cause (KEL-105 option (a), SURFACE). Minting a fresh link generation so the
-  restarted child can re-handshake is option (b), RECOVER — KEL-96 AC5, and not
-  this path. The detection is not yet total: a generation that ends itself with
-  exit status 0 is not entered in the crash ledger at all, so that death is still
-  reported as success (KEL-116).
+  rather than pretending the app is alive: teardown reads the supervisor's
+  `CrashLedger`, which records unrequested self-termination independently of exit
+  status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
+  `KELD-RUNTIME-*` cause (KEL-105/KEL-116 option (a), SURFACE). A completed
+  windowless echo explicitly accepts status-zero self-termination after its reply;
+  it does not change the ledger fact or weaken the window policy. Minting a fresh
+  link generation so the restarted child can re-handshake is option (b), RECOVER —
+  KEL-96 AC5, and not this path.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
   CALL). Further CALLs on the same stream use `echo_invoke` and must not send a
@@ -2027,18 +2028,36 @@ dropping it (KEL-105): if the app process dies while the host owns the window,
 and the captured stderr, instead of exiting 0 with no diagnostic.
 
 The breaker alone cannot carry that verdict, which is why the supervisor also
-publishes a crash ledger. `KELD-RUNTIME-002` requires three crashes inside a 30s
-sliding window (`RestartPolicy::default()`, `crash_times.retain`), so an app that
-dies once — or dies repeatedly but slower than that window — never trips it while
-still leaving the developer with no running app. That case produces
-`KELD-RUNTIME-012` under a clean `Stopped` outcome, read from durable ledger state
-the host never has to drain.
+publishes `CrashLedger`. Its original KEL-105 fields retain the crash-class count,
+diagnostic and stdout position for non-zero statuses and signal terminations; KEL-116
+adds a fixed-size, allocation-free total self-termination count plus the most recent
+pid/status/stdout position. The two views let a completed-work caller accept a final
+status zero without hiding an earlier post-ready crash.
+`KELD-RUNTIME-002` requires three crash-class terminations (non-zero statuses or
+signals) inside a 30s sliding window
+(`RestartPolicy::default()`, `crash_times.retain`). Status zero does not consume
+crash-loop budget or restart. Non-zero and signal terminations still follow
+`RestartPolicy`, so one crash or crashes spaced beyond the window do not by themselves
+mean no app is running. Every unrequested termination remains durable even when the
+breaker does not trip. Under a strict post-ready liveness policy, an unrecovered
+termination under a clean `Stopped` outcome surfaces `KELD-RUNTIME-012`; completed
+windowless work accepts status-zero termination after its reply is captured. The host
+reads both decisions from ledger state it never has to drain.
 
 The two codes are not alternatives. `KELD-CORE-033` is always the outer session
 diagnostic `keld dev` exits with; the `KELD-RUNTIME-*` code it quotes is the nested
-cause — `012` for a crash that did not trip the breaker, `002` for one that did,
-`003` for a generation that failed to provision. Assert on the outer code for the
-command's contract and on the nested one for the cause.
+cause — `012` for unrequested self-termination that did not trip the breaker
+(including status zero), `002` for a crash loop, `003` for a generation that failed
+to provision. Assert on the outer code for the command's contract and on the nested
+one for the cause.
+
+The fact and policy have separate owners. `keld-runtime` counts every observed
+self-termination and retains the latest all-termination record plus the latest
+crash-class diagnostic/record. The window path uses strict
+`HostOwnedHelloSession::shutdown` and treats every post-ready self-termination as
+fatal. The windowless echo path has completed its observable work after its reply is
+captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
+self-termination; non-zero and terminal lifecycle failures still fail.
 
 Whether the breaker also trips depends on how the restarted generation fails, which
 is not something the host should have to predict. In a live macOS run the restarted
@@ -2049,13 +2068,14 @@ the verdict independent of that timing.
 
 A crash the supervisor *recovered* from before the app reported ready stays a
 success (KEL-70 AC1/AC3). Separating the two cases cannot be done by counting
-crashes, because the supervisor publishes stdout and its `Exited` event *before* it
-records the crash: a host that samples the count when it notices the ready marker
-can already see a death that happened after the app was live, and would forgive it.
-The ledger therefore also records how long stdout was at the moment of each crash,
-and the session compares the ready marker's offset against it — answering "printed,
-then crashed" versus "crashed, then printed" from recorded facts rather than from
-when the host happened to look.
+terminations, because the supervisor publishes stdout and its `Exited` event
+*before* it records the ledger fact: a host that samples the count when it notices
+the ready marker can already see a death that happened after the app was live, and
+would forgive it. The session therefore compares the ready marker's stdout offset
+against the relevant latest retained all-termination and crash-class positions —
+answering "printed, then terminated" versus "terminated, then printed" for the
+records that decide the caller policy, rather than from when the host happened to
+look.
 
 Two limits are current behaviour, not destination: the app process's death does not
 close the window — the developer still closes it, and the exit code appears only
@@ -3982,8 +4002,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-RUNTIME-012
 
 - crate: keld-runtime
-- message: A supervised app-process generation crashed without tripping the crash-loop breaker
-- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+- message: A supervised app-process generation self-terminated without tripping the crash-loop breaker, including status zero
+- fix: For status zero, keep the app alive while its host-owned session is active; for non-zero or signal termination, fix the captured stderr and re-run `keld dev`.
 
 ## KELD-NATIVE-001
 
