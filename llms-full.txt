@@ -377,7 +377,7 @@ the 12+ a fixed-width or self-describing encoding would need.
 
 ### Why postcard and not JSON
 
-The evaluation is in [`10-ipc-state-of-the-art.md`](../research/10-ipc-state-of-the-art.md) and the
+The evaluation is in [`10-ipc-state-of-the-art.md`](../research/library/ipc-runtime/10-ipc-state-of-the-art.md) and the
 decision is normative in [`02` §2](../architecture/02-ipc.md):
 
 | Candidate | Verdict |
@@ -893,7 +893,7 @@ Three principal classes, with host-minted instances inside each class:
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 
-Why this shape (each competitor fails differently — see `docs/research/00-landscape.md`):
+Why this shape (each competitor fails differently — see `docs/research/library/compatibility-competitors/00-landscape.md`):
 - Electron: privileged JS **in-process** with window ownership → bloat + checklist security.
 - Tauri: native ownership correct, but no JS main process → adoption cliff.
 - Electrobun / Deno Desktop: JS main process, but it *owns* the native layer / shares the
@@ -1211,7 +1211,7 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   request/response with streaming bodies (WKURLSchemeHandler / WebView2
   WebResourceRequested / WebKitGTK 2.40+ streams), which engines serve off the UI
   thread and can hand to us as counted buffers. postMessage stays control-only
-  (string-typed on WebView2 — see research/06).
+  (string-typed on WebView2 — see `docs/research/library/host-platforms/06-webview-reality.md`).
 - Renderer→app-role file-ish transfers (the Electron `send(bigBuffer)` pattern) are
   routed through the host with bounded credit. A platform adapter MAY forward into that
   role's ring, but the actual engine path reports its copies; choosing a binary codec
@@ -1475,7 +1475,8 @@ binary); rollback keeps N-1 with the same verification; channel pinning
 # Electron Compatibility — Keld's Go-To-Market Spec
 
 The falsifiable promise: **a median Electron app runs on Keld by changing configuration,
-not code.** This is the Rspack/Rolldown lesson applied to desktop (see research/05).
+not code.** This is the Rspack/Rolldown lesson applied to desktop (see
+`docs/research/library/agents-tooling/05-rust-wave.md`).
 "Median" is defined and measured, not vibed: we maintain a corpus of open-source
 Electron apps and publish per-app compat scores.
 
@@ -1713,13 +1714,14 @@ If it lands, binaries are fetched at build time and the selected app/vendor owns
 security updates. Verso/Servo remain later conformance candidates only when embedding
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
-Linux resilience (research/06): GPU-driver probe at startup → auto-apply
+Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
 safe-mode. **Implemented (KEL-28):** `webkitgtk::probe_gpu_stack` detects
 NVIDIA + Wayland and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` programmatically
 before any GTK/WebKit call — never by asking users to export env vars — and
 returns a `GpuSafeMode` apps can read (`is_degraded()` / `reason()`) as the
 structured degraded-rendering fact. **Not yet built:** a `keld doctor` line
-surfacing that result, and the fuller version-matrix probe research/06
+surfacing that result, and the fuller version-matrix probe in
+`docs/research/library/host-platforms/06-webview-reality.md`
 describes (today's probe is driver + session type only).
 
 ## 2. Renderer bridge contract (`window.keld`)
@@ -2461,7 +2463,7 @@ release missing `full` is part of AC1):
 
 # Agent Experience (AX) — Keld as an Agent-First Framework
 
-> Normative for v0.x. Research basis: `docs/research/07-agent-first.md` (AX shipped by
+> Normative for v0.x. Research basis: `docs/research/library/agents-tooling/07-agent-first.md` (AX shipped by
 > frameworks, MCP tool-design guidance, error/docs design evidence, vibe-coding failure
 > modes). Position: **agents are a primary user persona** alongside humans. Most Keld
 > apps will be written at least partly by coding agents; the framework is designed so
@@ -2577,7 +2579,8 @@ pinned models/harnesses, run nightly and per docs/API-touching PR:
 
 ## 6. Guardrails for vibe-coded apps (Keld-enforced APIs)
 
-Threat model: the app author's agent wrote code nobody carefully read (research/07 §6:
+Threat model: the app author's agent wrote code nobody carefully read
+(`docs/research/library/agents-tooling/07-agent-first.md` §6:
 secrets leak ~2× human rate, ~55% of unguided AI code fails security checks, missing
 authz is endemic). Keld's stance — **Keld-enforced APIs** hold even when review
 doesn't. That is the host-checked capability manifest, network allowlist, webview
@@ -2655,7 +2658,7 @@ This file is **not** a new RFC 2119 layer. Binding agent rules stay in
 [`docs/agents/learnings.md`](../agents/learnings.md). This document is the onboarding
 pointer for *why* the current engineering looks like this.
 
-Numbered `docs/research/` notes are exploratory evidence. They are not required
+Canonical categorized `docs/research/library/` notes are exploratory evidence. They are not required
 reading and must not be treated as a second spec. Cite architecture, `AGENTS.md`,
 and `docs/engineering/` instead.
 
@@ -2992,7 +2995,7 @@ hooks reliably. A laptop hook cannot replace GitHub Actions. Putting clippy,
 nextest, or gitleaks in pre-commit is the wrong gate (slow; gitleaks is
 GitHub-only). Optional later: an Oxc-style **untracked** format-only hook, not
 a committed Husky tree. Evidence (exploratory, not required reading):
-`docs/research/42-git-hooks-and-precommit.md`.
+`docs/research/library/agents-tooling/42-git-hooks-and-precommit.md`.
 
 **Why.** Fmt/clippy/nextest are the contract testers can paste. `just ci` catches
 docs corpus drift, crate-`AGENTS.md` for `unsafe`, CODEOWNERS/template/SHA hygiene,

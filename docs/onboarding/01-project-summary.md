@@ -37,7 +37,7 @@ is the single most important thing to understand about this repo.
 ## The problem Keld exists to solve
 
 Every current Electron alternative asks you to rewrite. That is the whole thesis in one
-sentence, and [`docs/research/00-landscape.md`](../research/00-landscape.md) breaks it
+sentence, and [`docs/research/library/compatibility-competitors/00-landscape.md`](../research/library/compatibility-competitors/00-landscape.md) breaks it
 into five structural problems that no shipping framework has solved *together*:
 
 1. **The migration cliff.** Ten years of Electron apps; Tauri, Electrobun, and Deno
@@ -53,7 +53,7 @@ into five structural problems that no shipping framework has solved *together*:
    (Tauri) or ship Chromium everywhere (Electron). Reality is uneven: WebView2 is
    evergreen Chromium and basically fine, WKWebView is acceptable on recent macOS, and
    WebKitGTK on Linux is the problem child. See
-   [`docs/research/06-webview-reality.md`](../research/06-webview-reality.md).
+   [`docs/research/library/host-platforms/06-webview-reality.md`](../research/library/host-platforms/06-webview-reality.md).
 4. **IPC as an afterthought.** Chatty structured-clone JSON (Electron), serde-JSON
    `invoke` (Tauri), a localhost WebSocket on port 50000+ (Electrobun).
 5. **Security either optional or hostile.** Electron: remember five code patterns or ship
@@ -66,7 +66,7 @@ manifest (03).
 ## Competitive positioning — each competitor fails differently
 
 From [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §1 and the
-head-to-head matrix in [`docs/research/00-landscape.md`](../research/00-landscape.md):
+head-to-head matrix in [`docs/research/library/compatibility-competitors/00-landscape.md`](../research/library/compatibility-competitors/00-landscape.md):
 
 | Framework | Architecture | The specific failure Keld targets |
 |---|---|---|
@@ -81,7 +81,7 @@ nice-to-have: architecture principle #1 says the Electron surface is "a protocol
 implement," and every design must answer "how does this behave under `@keld/electron`?"
 Second, Keld's differentiation against Tauri is explicitly *not* "lighter than Tauri" —
 it's Tauri-class footprint without giving up the JS main process, without a Rust
-toolchain, and with an Electron on-ramp ([`docs/research/02-tauri.md`](../research/02-tauri.md)).
+toolchain, and with an Electron on-ramp ([`docs/research/library/compatibility-competitors/02-tauri.md`](../research/library/compatibility-competitors/02-tauri.md)).
 
 ## The shape of the system
 
@@ -137,7 +137,7 @@ flowchart TB
 Everything else in the architecture follows from that ownership split. Hot paths (kipc,
 event loop, guard) are callback/state-machine code with no async runtime and no
 steady-state allocation — the lesson taken from Bun's Rust rewrite
-([`docs/research/05-rust-wave.md`](../research/05-rust-wave.md), enforced by
+([`docs/research/library/agents-tooling/05-rust-wave.md`](../research/library/agents-tooling/05-rust-wave.md), enforced by
 [`AGENTS.md`](../../AGENTS.md) § Rust).
 
 ## Who it's for
@@ -309,10 +309,9 @@ error-message, or API bug*.
   [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md)
   to translate; getting this wrong is a known source of confusion (it was flagged in the
   2026-07-08 alignment audit).
-- **[`task.md`](../../task.md)** at the repo root is a **ledger of a Linear harness run**
-  dated 2026-07-10 — an inventory of issues, per-ticket blueprints, execution order, and
-  the gate output at the time (`12/12` tests then; the tree is at 17/17 now). Read it as a
-  point-in-time record of what was closed and why, not as a live to-do list.
+- Historical execution evidence lives in Linear issue comments and dated engineering
+  audits such as [`alignment-audit-2026-07-08.md`](../engineering/alignment-audit-2026-07-08.md).
+  Read those as point-in-time records, never as a live to-do list.
 - **Features need an approved spec** before implementation
   ([`docs/agents/spec-template.md`](../agents/spec-template.md)), and the development loop
   — worktree isolation, verification gate, review gates, PR shape — is in
@@ -338,11 +337,11 @@ error-message, or API bug*.
 
 ## Sources used in this document
 
-`README.md` · `AGENTS.md` · `ROADMAP.md` · `task.md` · `Cargo.toml` · `rust-toolchain.toml` ·
+`README.md` · `AGENTS.md` · `ROADMAP.md` · `docs/engineering/alignment-audit-2026-07-08.md` · `Cargo.toml` · `rust-toolchain.toml` ·
 `justfile` · `.gitignore` · `.github/workflows/ci.yml` ·
 `docs/architecture/01-overview.md` (§1, §2, §5, §6) · `docs/architecture/03-security.md` §6 ·
 `docs/architecture/04-electron-compat.md` §2 · `docs/architecture/06-runtime-and-tooling.md` §2 ·
-`docs/architecture/07-agent-experience.md` §2 · `docs/research/00-landscape.md` ·
-`docs/research/14-phase0-synthesis.md` · `docs/engineering/linear-roadmap-mapping.md` ·
+`docs/architecture/07-agent-experience.md` §2 · `docs/research/library/compatibility-competitors/00-landscape.md` ·
+`docs/research/library/execution-governance/14-phase0-synthesis.md` (from the separately tracked nested research checkout after `just research-sync`) · `docs/engineering/linear-roadmap-mapping.md` ·
 `crates/*/src/**` · `crates/*/AGENTS.md` · `git log`, `git ls-files`,
 `cargo nextest run --workspace --profile ci` (all run 2026-08-10).

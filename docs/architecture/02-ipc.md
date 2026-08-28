@@ -166,7 +166,7 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   request/response with streaming bodies (WKURLSchemeHandler / WebView2
   WebResourceRequested / WebKitGTK 2.40+ streams), which engines serve off the UI
   thread and can hand to us as counted buffers. postMessage stays control-only
-  (string-typed on WebView2 — see research/06).
+  (string-typed on WebView2 — see `docs/research/library/host-platforms/06-webview-reality.md`).
 - Renderer→app-role file-ish transfers (the Electron `send(bigBuffer)` pattern) are
   routed through the host with bounded credit. A platform adapter MAY forward into that
   role's ring, but the actual engine path reports its copies; choosing a binary codec

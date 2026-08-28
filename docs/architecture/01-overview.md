@@ -84,7 +84,7 @@ Three principal classes, with host-minted instances inside each class:
 3. **Webviews** (system or pinned engine): untrusted UI documents. Talk to the host over
    the native bridge; talk to the app process only through host-mediated routed channels.
 
-Why this shape (each competitor fails differently — see `docs/research/00-landscape.md`):
+Why this shape (each competitor fails differently — see `docs/research/library/compatibility-competitors/00-landscape.md`):
 - Electron: privileged JS **in-process** with window ownership → bloat + checklist security.
 - Tauri: native ownership correct, but no JS main process → adoption cliff.
 - Electrobun / Deno Desktop: JS main process, but it *owns* the native layer / shares the

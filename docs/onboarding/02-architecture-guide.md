@@ -522,7 +522,7 @@ no DRM or anti-tamper claims.
 ### 8a. Engine policy: system by default, pinned where the system fails
 
 Normative source: [`05` §1](../architecture/05-webview-and-native.md); the evidence behind it is
-[`06-webview-reality.md`](../research/06-webview-reality.md), which grades the three system
+[`06-webview-reality.md`](../research/library/host-platforms/06-webview-reality.md), which grades the three system
 engines honestly:
 
 | Platform | Engine | Grade | Consequence for Keld |

@@ -15,13 +15,13 @@
 | **Architecture specs** | The agreed design for v0.x. Changing one requires a design PR. Code that disagrees with a spec is a bug in one of the two — fix both in the same PR or state why. | [`docs/architecture/01..07-*.md`](../architecture/) |
 | **Feature specs** | A scoped implementation contract created from the approved template and tied to Linear. `approved`, `implementing`, and `done` specs may govern work at their stated phase; `draft` specs do not authorize implementation. | [`docs/specs/`](../specs/) |
 | **Engineering narrative** | What we chose, why, what we rejected, and what is not next. **Not** RFC 2119 — [`AGENTS.md`](../../AGENTS.md) still binds. Onboarding pointer for “why.” | [`docs/engineering/decisions.md`](../engineering/decisions.md) |
-| **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), other [`docs/engineering/`](../engineering/) audits, [`task.md`](../../task.md) |
+| **Exploratory / historical** | Informs decisions, does not bind them. Dated. Cite it as evidence, never as a requirement. | [`docs/research/`](../research/), other [`docs/engineering/`](../engineering/) audits, and historical Linear comments |
 
 Two rules that follow directly from that table, both from
 [`docs/agents/learnings.md`](../agents/learnings.md) and [`AGENTS.md`](../../AGENTS.md):
 
-- **Never cite `docs/research/from-outside/` in your work.** Those are raw external
-  research exports. Numbered `docs/research/` notes are exploratory evidence, not
+- **Never cite `docs/research/inputs/external/` in your work.** Those are raw external
+  research exports. Canonical `docs/research/library/` notes are exploratory evidence, not
   required onboarding — the why-pointer is
   [`docs/engineering/decisions.md`](../engineering/decisions.md).
 - **Numbered docs are paths.** If you renumber a doc, you must update every reference to
@@ -29,10 +29,11 @@ Two rules that follow directly from that table, both from
 
 ### A note on what is actually in the git repo
 
-Documentation under `/docs/` is tracked, including status-bearing feature contracts in
-`docs/specs/`, along with generated `llms.txt` and `llms-full.txt`.
-[`.gitignore`](../../.gitignore) keeps `/competitors/`, `/ROADMAP.md`,
-`/docs/research/`, and `/.claude/` local-only. `.github/` is tracked (KEL-39). The
+Keld tracks its architecture, agent, engineering, onboarding, and feature-contract
+documentation plus generated `llms.txt` and `llms-full.txt`. `docs/research/` is a
+separate nested checkout tracked by `0monish/keld-research` and ignored by the Keld
+monorepo. [`.gitignore`](../../.gitignore) also keeps `/competitors/`, `/ROADMAP.md`,
+and `/.claude/` local-only. `.github/` is tracked (KEL-39). The
 generated corpus is narrower than the tracked docs tree: its ordered allowlist excludes
 research and all unlisted documents. The engineering decision log is on that allowlist;
 numbered research is not.
@@ -45,7 +46,6 @@ numbered research is not.
 | [`README.md`](../../README.md) | The 30-second pitch, the intended `migrate → dev → build` flow, the workspace layout, and the two commands that work today. | First five minutes. |
 | [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Tracked phase map between Linear project numbers and the local `ROADMAP.md` (gitignored). Use this, not an untracked file, as required reading for “what is in scope now.” | When you want to know whether the thing you're about to build is in scope *now*. |
 | [`llms.txt`](../../llms.txt) · [`llms-full.txt`](../../llms-full.txt) | Generated agent-readable documentation: a compact curated index and the corresponding concatenated corpus. `tools/llms_docs.rs` fixes source order and excludes research/local-only paths; `just llms-check` rejects drift. | When wiring up agent tooling, bulk-ingesting the authoritative docs corpus, or checking what the official MCP docs search embeds. |
-| [`task.md`](../../task.md) | A **ledger** of a Linear harness run dated 2026-07-10: issue inventory by status, per-ticket blueprints and acceptance criteria, execution order, gate commands, and the results at the time (12/12 tests then). Historical, not a live to-do list. | When you need to know why a Linear issue was closed, or what "COMPLETE" meant for a given ticket. |
 | [`justfile`](../../justfile) · [`Cargo.toml`](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml) · [`deny.toml`](../../deny.toml) · [`rustfmt.toml`](../../rustfmt.toml) · [`rust-toolchain.toml`](../../rust-toolchain.toml) · [`.config/nextest.toml`](../../.config/nextest.toml) | Not prose, but they are the enforcement layer behind `AGENTS.md`. `just ci` runs every gate CI would run. Workspace lints (pedantic clippy, `missing_docs`, `unsafe_code = "deny"`) live in `Cargo.toml`, with comments explaining each choice. | When a lint fails and you want to know whether it's negotiable (it usually isn't). |
 
 ## `docs/architecture/` — normative for v0.x
@@ -88,37 +88,37 @@ This directory is **not** required onboarding; the why-pointer is
 
 | Doc | Subject |
 |---|---|
-| [`00-landscape.md`](../research/00-landscape.md) | **Entry point.** Executive summary: the field one line each, the head-to-head matrix, the five structural problems nobody has solved together, a "steal list" of what each competitor genuinely got right, and Keld's five falsifiable theses. |
-| [`01-electron.md`](../research/01-electron.md) | The incumbent Keld must replace *and* stay compatible with — architecture recap and issue catalog. Two postures: attack the architecture, adopt the API surface. |
-| [`02-tauri.md`](../research/02-tauri.md) | The strongest technical competitor and closest philosophical cousin. Explains why the differentiation is not "lighter than Tauri." |
-| [`03-electrobun.md`](../research/03-electrobun.md) | Closest existing implementation of the Bun-main-process thesis; updated 2026-08-08 for its 2.0 multi-runtime architecture. |
-| [`04-deno-desktop.md`](../research/04-deno-desktop.md) | The newest and strategically most dangerous entrant — a subcommand of a runtime people already have. Steal its distribution insights, attack its architectural shortcuts. |
-| [`15-wails.md`](../research/15-wails.md) | Wails (Go + system webviews): same single-native-process shape as Tauri with a mandatory Go backend; v3 beta August 2026. |
+| [`00-landscape.md`](../research/library/compatibility-competitors/00-landscape.md) | **Entry point.** Executive summary: the field one line each, the head-to-head matrix, the five structural problems nobody has solved together, a "steal list" of what each competitor genuinely got right, and Keld's five falsifiable theses. |
+| [`01-electron.md`](../research/library/compatibility-competitors/01-electron.md) | The incumbent Keld must replace *and* stay compatible with — architecture recap and issue catalog. Two postures: attack the architecture, adopt the API surface. |
+| [`02-tauri.md`](../research/library/compatibility-competitors/02-tauri.md) | The strongest technical competitor and closest philosophical cousin. Explains why the differentiation is not "lighter than Tauri." |
+| [`03-electrobun.md`](../research/library/compatibility-competitors/03-electrobun.md) | Closest existing implementation of the Bun-main-process thesis; updated 2026-08-08 for its 2.0 multi-runtime architecture. |
+| [`04-deno-desktop.md`](../research/library/compatibility-competitors/04-deno-desktop.md) | The newest and strategically most dangerous entrant — a subcommand of a runtime people already have. Steal its distribution insights, attack its architectural shortcuts. |
+| [`15-wails.md`](../research/library/compatibility-competitors/15-wails.md) | Wails (Go + system webviews): same single-native-process shape as Tauri with a mandatory Go backend; v3 beta August 2026. |
 
 ### Ecosystem and domain surveys
 
 | Doc | Subject |
 |---|---|
-| [`05-rust-wave.md`](../research/05-rust-wave.md) | What the 2024–2026 Rust rewrites of the JS toolchain teach Keld, each lesson mapped to a Keld decision. The source of the "compatibility-first wins an incumbent's users" (Rspack/Rolldown) and "state machines, no async runtime in hot paths" (Bun) principles. |
-| [`06-webview-reality.md`](../research/06-webview-reality.md) | The honest per-platform accounting of system webviews. **The platform truth table** — this is the doc that shapes the per-platform engine policy. |
-| [`07-agent-first.md`](../research/07-agent-first.md) | Research basis for the agentic system, with two consumers: how Keld is built (agents write, humans architect and review) and how Keld serves agents as users. Feeds `AGENTS.md`, `docs/agents/`, and architecture 07. |
-| [`10-ipc-state-of-the-art.md`](../research/10-ipc-state-of-the-art.md) | Schema-first bridge survey: comparison table, serialization candidates, codegen approaches, transport per leg, hot-path design, prior-art pain to avoid. Feeds architecture 02. |
-| [`11-security-model.md`](../research/11-security-model.md) | Competitor security models, OS primitives available, the recommended Keld model, ranked risks and mitigations. Feeds architecture 03. |
-| [`12-distribution.md`](../research/12-distribution.md) | Signing and notarization reality in 2026, framework update stacks, packaging formats users and IT actually want, and the pain points to preserve as design constraints. Feeds `keld-pack` / `keld-update` and Phase 3. |
-| [`13-electron-api-usage.md`](../research/13-electron-api-usage.md) | Which Electron modules real apps use, expressed as frequency tiers; hardest migration surfaces; native-module risk. Feeds the compat tiers in architecture 04. |
-| [`17-native-frameworks.md`](../research/17-native-frameworks.md) | AppKit/SwiftUI, WinUI 3/WPF, Qt/QML, GTK4, Flutter Desktop, Compose Multiplatform — and from them "the native-parity bar": what native gives for free, where it chronically fails, and what Keld must match, can beat, or must refuse to copy. |
+| [`05-rust-wave.md`](../research/library/agents-tooling/05-rust-wave.md) | What the 2024–2026 Rust rewrites of the JS toolchain teach Keld, each lesson mapped to a Keld decision. The source of the "compatibility-first wins an incumbent's users" (Rspack/Rolldown) and "state machines, no async runtime in hot paths" (Bun) principles. |
+| [`06-webview-reality.md`](../research/library/host-platforms/06-webview-reality.md) | The honest per-platform accounting of system webviews. **The platform truth table** — this is the doc that shapes the per-platform engine policy. |
+| [`07-agent-first.md`](../research/library/agents-tooling/07-agent-first.md) | Research basis for the agentic system, with two consumers: how Keld is built (agents write, humans architect and review) and how Keld serves agents as users. Feeds `AGENTS.md`, `docs/agents/`, and architecture 07. |
+| [`10-ipc-state-of-the-art.md`](../research/library/ipc-runtime/10-ipc-state-of-the-art.md) | Schema-first bridge survey: comparison table, serialization candidates, codegen approaches, transport per leg, hot-path design, prior-art pain to avoid. Feeds architecture 02. |
+| [`11-security-model.md`](../research/library/security-permissions/11-security-model.md) | Competitor security models, OS primitives available, the recommended Keld model, ranked risks and mitigations. Feeds architecture 03. |
+| [`12-distribution.md`](../research/library/auth-distribution/12-distribution.md) | Signing and notarization reality in 2026, framework update stacks, packaging formats users and IT actually want, and the pain points to preserve as design constraints. Feeds `keld-pack` / `keld-update` and Phase 3. |
+| [`13-electron-api-usage.md`](../research/library/compatibility-competitors/13-electron-api-usage.md) | Which Electron modules real apps use, expressed as frequency tiers; hardest migration surfaces; native-module risk. Feeds the compat tiers in architecture 04. |
+| [`17-native-frameworks.md`](../research/library/host-platforms/17-native-frameworks.md) | AppKit/SwiftUI, WinUI 3/WPF, Qt/QML, GTK4, Flutter Desktop, Compose Multiplatform — and from them "the native-parity bar": what native gives for free, where it chronically fails, and what Keld must match, can beat, or must refuse to copy. |
 
 ### Audits and synthesis
 
 | Doc | Subject |
 |---|---|
-| [`08-competitor-source-audit.md`](../research/08-competitor-source-audit.md) | Ground-truth survey of the vendored clones in `competitors/`: pinned commit inventory, per-repo layout/CI/core-machinery/steal-or-avoid notes, a consolidated adopt/adapt/avoid list, an **implementer reading order** into competitor source, stated limitations, and a 2026-08-08 refresh log of what changed upstream. Read before you go looking in `competitors/`. |
-| [`09-tooling-context7-audit.md`](../research/09-tooling-context7-audit.md) | Per-tool best-practice analysis for Keld's stack, recommended toolchain versions, CI pipeline recommendation, tools to adopt and to skip. |
-| [`14-phase0-synthesis.md`](../research/14-phase0-synthesis.md) | **The capstone.** Market gap statement, ranked ~10× opportunities, ranked risks with mitigations, one-paragraph guidance per Phase 1 RFC, the frozen benchmark baseline table, and the Phase 0 exit checklist. If you read only two research docs, read `00` and this. |
-| [`20-vscode-on-keld.md`](../research/20-vscode-on-keld.md) | VS Code north-star feasibility and local Bun/native probes. It is a demanding showcase, not Keld's product denominator. |
-| [`46-vscode-north-star-framework-synthesis.md`](../research/46-vscode-north-star-framework-synthesis.md) | Audited P01–P20 synthesis: separates reusable framework contracts from VS Code-only work, records evidence gaps and maps the findings into roadmap/Linear. Read this instead of treating raw P files as decisions. |
+| [`08-competitor-source-audit.md`](../research/library/compatibility-competitors/08-competitor-source-audit.md) | Ground-truth survey of the vendored clones in `competitors/`: pinned commit inventory, per-repo layout/CI/core-machinery/steal-or-avoid notes, a consolidated adopt/adapt/avoid list, an **implementer reading order** into competitor source, stated limitations, and a 2026-08-08 refresh log of what changed upstream. Read before you go looking in `competitors/`. |
+| [`09-tooling-context7-audit.md`](../research/library/agents-tooling/09-tooling-context7-audit.md) | Per-tool best-practice analysis for Keld's stack, recommended toolchain versions, CI pipeline recommendation, tools to adopt and to skip. |
+| [`14-phase0-synthesis.md`](../research/library/execution-governance/14-phase0-synthesis.md) | **The capstone.** Market gap statement, ranked ~10× opportunities, ranked risks with mitigations, one-paragraph guidance per Phase 1 RFC, the frozen benchmark baseline table, and the Phase 0 exit checklist. If you read only two research docs, read `00` and this. |
+| [`20-vscode-on-keld.md`](../research/campaigns/vscode/reports/20-vscode-on-keld.md) | VS Code north-star feasibility and local Bun/native probes. It is a demanding showcase, not Keld's product denominator. |
+| [`46-vscode-north-star-framework-synthesis.md`](../research/campaigns/vscode/synthesis/46-vscode-north-star-framework-synthesis.md) | Audited P01–P20 synthesis: separates reusable framework contracts from VS Code-only work, records evidence gaps and maps the findings into roadmap/Linear. Read this instead of treating raw P files as decisions. |
 
-### Drafts — `docs/research/drafts/`
+### Drafts — `docs/research/incubator/drafts/`
 
 Four deep risk audits dated 2026-08-08, explicitly marked **draft** and explicitly
 scoped to go deeper and newer than `06-webview-reality.md` without duplicating it. Every
@@ -126,33 +126,35 @@ number is either cited or marked as an estimate.
 
 | Draft | Subject |
 |---|---|
-| [`16a-bun-runtime-risks.md`](../research/drafts/16a-bun-runtime-risks.md) | Bun as the supervised app-process runtime — primary sources only; phase-1 input to revisiting the Bun integration RFC. |
-| [`16b-wkwebview-risks.md`](../research/drafts/16b-wkwebview-risks.md) | WKWebView/WebKit on macOS: what it allows today, hard limits against specs 02/03/05, what changed in the last year, and a source-level costing of bundling our own WebKit. |
-| [`16c-webview2-risks.md`](../research/drafts/16c-webview2-risks.md) | WebView2 on Windows as the `keld-wv` Windows backend. |
-| [`16d-webkitgtk-risks.md`](../research/drafts/16d-webkitgtk-risks.md) | WebKitGTK/WPE on Linux, focused on the question `06` doesn't answer: since this is the one fully open-source system engine Keld targets, is upstream patching or vendoring a real lever, and what does it cost? |
+| [`16a-bun-runtime-risks.md`](../research/incubator/drafts/16a-bun-runtime-risks.md) | Bun as the supervised app-process runtime — primary sources only; phase-1 input to revisiting the Bun integration RFC. |
+| [`16b-wkwebview-risks.md`](../research/incubator/drafts/16b-wkwebview-risks.md) | WKWebView/WebKit on macOS: what it allows today, hard limits against specs 02/03/05, what changed in the last year, and a source-level costing of bundling our own WebKit. |
+| [`16c-webview2-risks.md`](../research/incubator/drafts/16c-webview2-risks.md) | WebView2 on Windows as the `keld-wv` Windows backend. |
+| [`16d-webkitgtk-risks.md`](../research/incubator/drafts/16d-webkitgtk-risks.md) | WebKitGTK/WPE on Linux, focused on the question `06` doesn't answer: since this is the one fully open-source system engine Keld targets, is upstream patching or vendoring a real lever, and what does it cost? |
 
-There is no consolidated `16-*.md`; the drafts are the artifact. Numbering jumps from
-`15` to `17` in the parent directory.
+[`16-engine-runtime-risk-matrix.md`](../research/library/host-platforms/16-engine-runtime-risk-matrix.md)
+is the executive synthesis of 16a–16d. Read the individual incubator drafts for
+source-level detail and the canonical matrix for cross-engine routing.
 
-### Raw external research — `docs/research/from-outside/`
+### Raw external research — `docs/research/inputs/external/legacy-2026-08/`
 
-24 files. Fifteen are Perplexity-style deep-research exports whose filenames are the
+25 files. Fifteen are Perplexity-style deep-research exports whose filenames are the
 truncated prompt (Electron criticisms, Tauri v2 complaints, webview differences, IPC/bridge
 architectures, security models, distribution and auto-update, Electrobun, Deno Desktop,
 Electron API usage, MCP servers, AX, AGENTS.md state of the art, agent-orchestration,
-API/error/docs design for agents, vibe-coding failure modes). Nine are `twiter*.md`
+API/error/docs design for agents, vibe-coding failure modes). `latest.md` is an additional
+captured input, and nine `twiter*.md` files are
 digests of practitioner discourse (the Rust tooling wave, Bun's Rust rewrite, the desktop
 framework conversation, agentic-engineering practitioners, AX leaders).
 
 **These are inputs, not sources.** The rule is explicit in
-[`docs/agents/learnings.md`](../agents/learnings.md): never cite `from-outside/` directly —
+[`docs/agents/learnings.md`](../agents/learnings.md): never cite raw external inputs directly —
 cite the polished numbered doc that consumed it.
 
-`45-P1.md` through `45-P20.md` are another raw external-input set retained at the
-research root because they arrived under those user-owned paths. Their copied `turn…`
-citations are nonportable and P13's ephemeral benchmark artifacts are missing. Each
-file carries a raw-input banner; use `46` for decisions and require a direct source
-ledger before promoting any unresolved claim.
+`45-P1.md` through `45-P20.md` are another source packet, now grouped under
+`docs/research/campaigns/vscode/reports/`. Their copied `turn…` citations are
+nonportable and P13's ephemeral benchmark artifacts are missing. Use canonical
+`46-vscode-north-star-framework-synthesis.md` for decisions and require a direct
+source ledger before promoting any unresolved claim.
 
 ## `docs/agents/` — how work gets done here
 
@@ -212,7 +214,7 @@ reading pinned real implementations instead of guessing. Their count and disk fo
 depend on the current lock/sync state and are not a documentation contract.
 
 Reviewed entries have written teardowns in
-[`08-competitor-source-audit.md`](../research/08-competitor-source-audit.md), with pinned
+[`08-competitor-source-audit.md`](../research/library/compatibility-competitors/08-competitor-source-audit.md), with pinned
 commits and per-repo notes:
 
 | Clone | Why it's here |
@@ -230,7 +232,7 @@ present because they are the primary source for a topic the specs depend on:
 
 | Clone | Topic it backs |
 |---|---|
-| `bun/` | The runtime Keld supervises (and the Rust-rewrite discipline research/05 draws on) |
+| `bun/` | The runtime Keld supervises (and the Rust-rewrite discipline in `docs/research/library/agents-tooling/05-rust-wave.md` draws on) |
 | `chromium-embedded/` | The opt-in pinned-engine path (CEF) in the engine policy |
 | `webkit/` | WebKit upstream — the "patch or vendor?" question in draft 16d, and WKWebView behavior in 16b |
 | `gtk/` | The GTK4 side of the Linux backend and the GTK4 section of `17-native-frameworks.md` |
@@ -327,9 +329,9 @@ the optional external KEL-67 memory pilot should also read
 9. [`docs/agents/workflow.md`](../agents/workflow.md) and
    [`docs/agents/spec-template.md`](../agents/spec-template.md) — how a change gets from
    issue to merge here.
-10. Numbered [`docs/research/`](../research/) (starting with
-    [`00-landscape.md`](../research/00-landscape.md) and
-    [`14-phase0-synthesis.md`](../research/14-phase0-synthesis.md) if they are in your
+10. Canonical categorized [`docs/research/`](../research/) notes (starting with
+    [`00-landscape.md`](../research/library/compatibility-competitors/00-landscape.md) and
+    [`14-phase0-synthesis.md`](../research/library/execution-governance/14-phase0-synthesis.md) if they are in your
     tree) — exploratory evidence behind the architecture, not required reading and not
     a substitute for [`decisions.md`](../engineering/decisions.md).
 11. The two architecture docs closest to your first task — most likely
@@ -342,7 +344,7 @@ the optional external KEL-67 memory pilot should also read
 13. [`docs/architecture/04-electron-compat.md`](../architecture/04-electron-compat.md) —
     because principle #1 says every design must answer how it behaves under
     `@keld/electron`, and you cannot answer that without reading this.
-14. [`docs/research/06-webview-reality.md`](../research/06-webview-reality.md) — the
+14. [`docs/research/library/host-platforms/06-webview-reality.md`](../research/library/host-platforms/06-webview-reality.md) — the
     platform truth table, before you form any opinion about "the webview."
 15. [`docs/engineering/tooling-audit.md`](../engineering/tooling-audit.md) and the
     [`alignment-audit`](../engineering/alignment-audit-2026-07-08.md) — why the toolchain
@@ -350,10 +352,10 @@ the optional external KEL-67 memory pilot should also read
 
 ### As needed, not up front
 
-`docs/research/01–04`, `15`, `17` (open the one whose competitor you're reasoning about);
-`10–13` (open the one matching your domain); `drafts/16a–16d` (before platform-backend
-work); `08-competitor-source-audit.md` (before reading competitor source);
-`docs/research/from-outside/` (rarely — and never as a citation);
+Use the generated research topic catalogs to open the canonical competitor or domain
+note; use `docs/research/incubator/drafts/16a–16d` before platform-backend
+work; `08-competitor-source-audit.md` (before reading competitor source);
+`docs/research/inputs/external/` (rarely — and never as a citation);
 [`07-mcp-server.md`](07-mcp-server.md) (when registering the official Keld MCP);
 [`08-optional-agent-memory.md`](08-optional-agent-memory.md) (only for the approved
-external pilot); [`task.md`](../../task.md) (when you need the history of a Linear issue).
+external pilot). Use Linear itself when you need the history of an issue.

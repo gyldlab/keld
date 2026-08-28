@@ -308,7 +308,7 @@ Repeat this block for each remaining OS/device criterion:
 - Ticket status: In Progress | Blocked
 ```
 
-First-principles + YAGNI (MUST; `docs/research/27-first-principles-yagni.md`):
+First-principles + YAGNI (MUST; `docs/research/library/agents-tooling/27-first-principles-yagni.md`):
 1. Apply the Engineering principles above across host / Bun child / webview; Keld-specific architecture additionally changes who owns a handle, who can crash whom, or who can mint a principal. If it changes none of those facts, it is not architecture.
 2. Agents MUST treat wry layout, Tauri ACL, Electron docs, and platform event loops as evidence of facts — not templates. Copying crate graphs, tokio-in-core, ACL wildcards, or in-process Node is cargo-cult.
 3. Agents MUST protect four uniques only: prebuilt host, supervised Bun process family with zero ambient OS authority per strict-profile principal, kipc, default-deny (generated, host-enforced). MUST NOT invent a fifth.
@@ -348,7 +348,7 @@ Forbidden when a test, gate, or check fails:
 
 When the real fix is genuinely out of scope, agents MUST stop and say so — name the cause, propose the fix, and let a human choose. A disclosed limitation is acceptable; a silent workaround is not. A required failing check MUST be fixed before merge. If its contract is wrong, the rule/test change requires explicit human approval and lands before or with the dependent implementation; approval alone MUST NOT waive the check.
 
-Nested `crates/<crate>/AGENTS.md` (`docs/research/26-agents-md-cloudflare-rfc.md`):
+Nested `crates/<crate>/AGENTS.md` (`docs/research/library/agents-tooling/26-agents-md-cloudflare-rfc.md`):
 - A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
 - Agents MUST NOT add hollow stubs; MUST NOT add files for crates whose invariants are all stated here (`keld-core`, `keld-native`, `keld-runtime`, `keld-host`) or for the skeletons (`keld-update`, `keld-pack`); MUST NOT add one for `keld-cli` — the root § Rust rules already govern it (`expect` only at its binary top-level, never in libs); MUST NOT add one under `packages/` until a TS package carries invariants not stated in § TypeScript (`@keld/electron` exists and is governed there). Point at the spec in the repo-map table instead.
 - Enforcement: `just agents-md` — fails if a crate with `unsafe` / `allow(unsafe_code)` has no `AGENTS.md`. Not a Codex.

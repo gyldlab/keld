@@ -23,12 +23,13 @@ list three tools with declared output schemas, run doctor checks, search the Kel
 corpus, and get a deny explanation with the exact manifest patch — all offline, all
 read-only.
 
-Non-goals (explicit, per `docs/research/21-mcp-standard.md`):
+Non-goals (explicit, per `docs/research/library/agents-tooling/21-mcp-standard.md`):
 
 - **No HTTP transport** (no Streamable HTTP listener, no OAuth resource-server
   surface, no SEP-2243 routing headers). stdio only.
 - **No elicitation / MRTR `input_required`** — every v1 tool is read-only and returns
-  `resultType: "complete"`; the elicitation client-fork risk (research/21 § risks) is
+  `resultType: "complete"`; the elicitation client-fork risk
+  (`docs/research/library/agents-tooling/21-mcp-standard.md` § risks) is
   sidestepped entirely.
 - **No tasks extension** (`io.modelcontextprotocol/tasks`) — all three tools are
   interactive-latency.
@@ -36,7 +37,7 @@ Non-goals (explicit, per `docs/research/21-mcp-standard.md`):
 - **No telemetry** (arch/07 §9: no data leaves the developer's machine).
 - **No write operations**: `keld_permissions_explain` reads manifests and *returns* a
   patch; it never edits a file. A future patch-applying tool is out of scope and would
-  require MRTR consent gating (research/21 §4).
+  require MRTR consent gating (`docs/research/library/agents-tooling/21-mcp-standard.md` §4).
 - **Not in scope**: the remaining six arch/07 §4 tools (`keld_scaffold_app`,
   `keld_migrate_analyze`, `keld_dev_inspect`, `keld_ipc_trace`, `keld_logs_search`,
   `keld_build_errors`). They land in follow-up specs once their substrates exist
@@ -51,7 +52,7 @@ Non-goals (explicit, per `docs/research/21-mcp-standard.md`):
   output), **§7** (CLI contract: `--json`, stable exit codes 0/1/2/3, non-interactive).
 - `docs/architecture/03-security.md` **§2–3** (manifest schema and generated-patch
   philosophy that `keld_permissions_explain` renders).
-- `docs/research/21-mcp-standard.md` (spec revision 2026-07-28, rmcp 3.1.2 readiness,
+- `docs/research/library/agents-tooling/21-mcp-standard.md` (spec revision 2026-07-28, rmcp 3.1.2 readiness,
   v1 transport/primitive decisions — this spec adopts its recommendations verbatim).
 - **Deviation: none.** Arch/07 §4 lists nine v1 tools and §8 Phase 2 bundles
   dev-inspect/trace; this spec *sequences within* Phase 2 — the three tools whose
@@ -153,7 +154,7 @@ pub struct DoctorFinding {
     pub error: Option<KeldErrorObject>, // present iff !ok
 }
 // output: Vec<DoctorFinding> — top-level array, no wrapper (SEP-2106 any-type
-// output; research/21 §3). Wraps keld_cli::doctor::run_checks().
+// output; docs/research/library/agents-tooling/21-mcp-standard.md §3). Wraps keld_cli::doctor::run_checks().
 
 // crates/keld-cli/src/mcp/docs_tool.rs
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -228,7 +229,7 @@ Per root `AGENTS.md` (name, purpose, alternatives):
   (c) community crates (`mcpr` etc.) — not the official SDK, no 2026-07-28 support
   confirmed; rejected.
 - **Risk & mitigation**: rmcp trails Tier 1; wire fixes were still landing in Aug 2026
-  (research/21 § risks). Exact-pin; every version bump re-runs the conformance suite
+  (`docs/research/library/agents-tooling/21-mcp-standard.md` § risks). Exact-pin; every version bump re-runs the conformance suite
   (§7) before merge. Workspace `Cargo.toml` is single-writer (workflow.md) — the dep
   PR carries human review by construction.
 
@@ -322,7 +323,7 @@ stdio framing), so tests await conditions, never timers; **no ports** — stdio 
 nothing to collide; **temp dirs** via `tempfile` for every project/manifest fixture;
 platform-variant doctor findings are shape-checked only (§4 platform notes) so the
 suite is green on all three OSes; rmcp version bumps re-run this whole table
-(research/21: pin + re-verify).
+(`docs/research/library/agents-tooling/21-mcp-standard.md`: pin + re-verify).
 
 ## 8. Review gates triggered
 

@@ -1,6 +1,6 @@
 # Agent Experience (AX) — Keld as an Agent-First Framework
 
-> Normative for v0.x. Research basis: `docs/research/07-agent-first.md` (AX shipped by
+> Normative for v0.x. Research basis: `docs/research/library/agents-tooling/07-agent-first.md` (AX shipped by
 > frameworks, MCP tool-design guidance, error/docs design evidence, vibe-coding failure
 > modes). Position: **agents are a primary user persona** alongside humans. Most Keld
 > apps will be written at least partly by coding agents; the framework is designed so
@@ -116,7 +116,8 @@ pinned models/harnesses, run nightly and per docs/API-touching PR:
 
 ## 6. Guardrails for vibe-coded apps (Keld-enforced APIs)
 
-Threat model: the app author's agent wrote code nobody carefully read (research/07 §6:
+Threat model: the app author's agent wrote code nobody carefully read
+(`docs/research/library/agents-tooling/07-agent-first.md` §6:
 secrets leak ~2× human rate, ~55% of unguided AI code fails security checks, missing
 authz is endemic). Keld's stance — **Keld-enforced APIs** hold even when review
 doesn't. That is the host-checked capability manifest, network allowlist, webview

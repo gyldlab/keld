@@ -52,13 +52,14 @@ If it lands, binaries are fetched at build time and the selected app/vendor owns
 security updates. Verso/Servo remain later conformance candidates only when embedding
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
-Linux resilience (research/06): GPU-driver probe at startup → auto-apply
+Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
 safe-mode. **Implemented (KEL-28):** `webkitgtk::probe_gpu_stack` detects
 NVIDIA + Wayland and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` programmatically
 before any GTK/WebKit call — never by asking users to export env vars — and
 returns a `GpuSafeMode` apps can read (`is_degraded()` / `reason()`) as the
 structured degraded-rendering fact. **Not yet built:** a `keld doctor` line
-surfacing that result, and the fuller version-matrix probe research/06
+surfacing that result, and the fuller version-matrix probe in
+`docs/research/library/host-platforms/06-webview-reality.md`
 describes (today's probe is driver + session type only).
 
 ## 2. Renderer bridge contract (`window.keld`)
