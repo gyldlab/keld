@@ -115,7 +115,10 @@ default-deny.
    The macOS T2a probe proves the design contract only; T2b must land the one
    shared runtime owner. A strict-profile or KEL-96 consumer must then prove
    that its real child and descendants were enrolled; artifact presence is not
-   product or containment evidence.
+   product or containment evidence. T2a creates no generation, grant store, or
+   app-link and therefore cannot claim the revocation limb of this criterion.
+   T2b and every real consumer must record actual grant/link revocation before
+   reporting cleanup complete or attempting relaunch.
 10. Given the update staging directory, signing keys, and relaunch helper, when
     a strict child or addon worker tries to read or write them, then the OS
     denies the attempt. The updater stays a host-owned TCB path (KEL-53).
@@ -345,6 +348,9 @@ substitute for the approved KEL-96 raw staged layout.
 
 T2a's checked-in macOS fixture is contract evidence only. It must not make
 `admit(Strict)` succeed and does not claim the shipped supervisor is wired.
+It is deliberately resource-free: it creates no generation, grant store, or
+app-link, so an empty revocation assertion cannot substitute for a consumer
+that owns those resources.
 T2b implements the single shared guardian owner after approval. T2c retains
 the separately signed App Sandbox/hostile-archive work.
 
@@ -582,7 +588,9 @@ Renderer sandbox is a different column.
       `node_id=macos-host-death-reaper-mechanism`, `issue_id=KEL-78`,
       `acceptance.id=KEL-78/T2b`, an ancestor-of-main `head_sha`, real macOS
       host-only-kill/group-gone/relaunch evidence through the production API,
-      and attributed spawn/RSS measurements. No KEL-96 window or boot code.
+      actual registered grant/link revocation observed before cleanup completion
+      and relaunch, and attributed spawn/RSS measurements. No KEL-96 window or
+      boot code. The T2a zero-resource fixture is not this proof.
 - [ ] T2c: macOS App Sandbox admission + hostile archive for the synthetic
       fixture on a **separately signed** helper (no `inherit` from the
       host). JIT entitlements only if a recorded Bun-start failure
@@ -619,7 +627,7 @@ OS. Mocks may test the admission state machine only.
 | 6 | synthetic addon matrix | one of the four outcomes; in-process load fails closed under `strict` |
 | 7 | plugin vs worker | plugin has no OS sandbox; worker does (once T7 exists) |
 | 8 | doctor JSON | two distinct fields |
-| 9 host death | macOS T2a validates the controller/host/guardian/group oracle and T2b reruns it through the production guardian API | controller sends `SIGKILL` only to the host; guardian observes EOF, enrolled group is gone, direct leader is waited, and a second launch succeeds. Every later consumer separately proves its own enrollment |
+| 9 host death | macOS T2a validates the resource-free controller/host/guardian/group oracle and T2b reruns it through the production guardian API with registered grant/link state | T2a asserts that it creates no generation, grant store, or app-link. For T2b and every later consumer, the controller sends `SIGKILL` only to the host; guardian observes EOF; enrolled group is gone; direct leader is waited; actual grants/links are recorded `Revoked`; only then may cleanup complete and a second launch begin. Every consumer separately proves its own enrollment |
 | 9 child failure | T5 independently aborts and hangs a child while the host remains alive | shared Supervisor contract terminates/reaps the failed child, revokes its generation, preserves the host, and permits the next legitimate spawn; no liveness-pipe EOF is claimed |
 | 10 | open update staging / key path from child | OS deny |
 
