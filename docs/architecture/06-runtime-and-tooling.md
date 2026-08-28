@@ -21,6 +21,21 @@
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.
+- **macOS host-death guardian (KEL-78/T2b):**
+  `keld_runtime::macos_guardian` is the live shared cleanup owner.
+  `GuardianBootstrap` mints an authenticated private registration link, owns
+  the exact guardian child and sole non-inheritable liveness writer, and accepts
+  only that guardian's fixed `KGR1` group record; callers cannot inject a
+  numeric process-group id. The guardian validates both inherited bootstraps
+  before child creation, prevents the liveness reader from reaching Bun, runs a
+  fresh command in an isolated process group, revokes registered resources on
+  every post-start failure, signals the group once, and waits its direct child.
+  `HostGuardian` consumes the group identity on every terminal path, so an API
+  retry cannot signal a reused PGID. Unexpected guardian exit produces
+  `KELD-RUNTIME-013` only after the host fail-safe; orderly shutdown closes the
+  same writer. This API has real macOS process/link/relaunch and
+  guardian-failure evidence but no shipping caller yet; it does not implement
+  App Sandbox, Strict admission, or KEL-96 no-flag host integration.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
