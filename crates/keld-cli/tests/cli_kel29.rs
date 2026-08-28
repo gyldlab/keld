@@ -319,6 +319,45 @@ console.log("recovered-after-crash");
 }
 
 #[test]
+fn run_dev_echo_does_not_hide_post_ready_crash_behind_final_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("t{}mixed", std::process::id());
+    let root = create_project(dir.path(), &name).expect("create");
+    fs::write(
+        root.join("src/main.ts"),
+        r#"
+import { echoRoundtrip } from "./kipc";
+import { existsSync, writeFileSync } from "node:fs";
+
+const marker = "./.post-ready-crash";
+if (existsSync(marker)) {
+  process.exit(0);
+}
+writeFileSync(marker, "1");
+
+const link = process.env.KELD_APP_LINK;
+if (!link) {
+  console.error("KELD-CLI-010: KELD_APP_LINK is unset");
+  process.exit(1);
+}
+const response = await echoRoundtrip(link, { message: "keld", count: 1 });
+console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+console.error("post-ready-crash-seven");
+process.exit(7);
+"#,
+    )
+    .expect("overwrite main with mixed-exit script");
+
+    let err = run_dev_echo(&root)
+        .expect_err("a final zero exit must not hide the generation that crashed after echo");
+    let msg = err.to_string();
+    assert!(msg.contains("KELD-CORE-033"), "{msg}");
+    assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+    assert!(msg.contains("exited 7"), "{msg}");
+    assert!(msg.contains("post-ready-crash-seven"), "{msg}");
+}
+
+#[test]
 fn run_dev_echo_bun_nonzero_without_connect_does_not_hang() {
     // A deterministic non-zero exit now goes through the keld-runtime
     // supervisor (KEL-70): it is retried per the default RestartPolicy

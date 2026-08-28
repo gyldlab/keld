@@ -86,13 +86,29 @@ pub struct HostOwnedHelloSession {
     /// Whether a ready marker has been observed at all. Separate from the
     /// count below so the baseline is written exactly once.
     ready_recorded: AtomicBool,
-    /// Crashes the supervisor had already recovered from when this session
-    /// *first* reached its ready marker. Crashes at or below this count are the
-    /// supervisor doing its job (KEL-70 AC1/AC3); crashes above it happened
-    /// after the app was live, which is what `keld dev` must not call success
-    /// (KEL-105). Stays 0 until a ready marker is observed, so a session that
-    /// never came up treats any crash as fatal.
+    /// Self-terminations the supervisor had already recovered from when this
+    /// session *first* reached its ready marker. Events at or below this count
+    /// predate readiness; events above it happened after the app was live,
+    /// which the window path must not call success (KEL-105/KEL-116). Stays 0
+    /// until a ready marker is observed, so a session that never came up
+    /// treats any self-termination as fatal.
+    recovered_self_terminations: AtomicU32,
+    /// Non-zero exits that predate the first ready marker. Kept separately so
+    /// a later status-zero exit cannot hide an earlier post-ready crash from a
+    /// completed-work caller.
     recovered_crashes: AtomicU32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfTerminationPolicy {
+    Fatal,
+    AllowSuccessful,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RecoveredTerminations {
+    crashes: u32,
+    all: u32,
 }
 
 impl HostOwnedHelloSession {
@@ -135,6 +151,7 @@ impl HostOwnedHelloSession {
             supervisor: Some(supervisor),
             link,
             ready_recorded: AtomicBool::new(false),
+            recovered_self_terminations: AtomicU32::new(0),
             recovered_crashes: AtomicU32::new(0),
         })
     }
@@ -231,7 +248,8 @@ impl HostOwnedHelloSession {
     /// # Errors
     ///
     /// Returns [`HelloSessionError::WindowPhase`] (`KELD-CORE-033`) when the
-    /// supervised app process died after this session was live:
+    /// supervised app process ended itself after this session was live,
+    /// including status zero:
     ///
     /// - a crash the supervisor did not recover from before teardown — the
     ///   dominant `keld dev` case, and the one that never trips the breaker:
@@ -241,13 +259,35 @@ impl HostOwnedHelloSession {
     /// - a generation that failed to provision.
     ///
     /// A crash the supervisor recovered from *before* the ready marker is not
-    /// a failure (KEL-70 AC1/AC3) and is not reported here.
+    /// a failure (KEL-70 AC1/AC3) and is not reported here. Callers whose work
+    /// is already complete may instead use
+    /// [`Self::shutdown_after_completed_work`] to accept status zero.
     ///
     /// `keld dev` blocks in the window event loop across exactly this interval
     /// and observes nothing until here, so discarding this verdict is what
     /// made a dead app process exit 0 (KEL-105).
     pub fn shutdown(mut self) -> Result<(), HelloSessionError> {
-        match self.finish() {
+        match self.finish(SelfTerminationPolicy::Fatal) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Stops the listener and reaps Bun after a caller's work has completed.
+    ///
+    /// Unlike [`Self::shutdown`], a status-zero child self-termination is not
+    /// an error: a windowless caller such as `run_dev_echo` has already
+    /// completed its observable work. Non-zero self-termination and terminal
+    /// supervisor failures remain errors. The caller deliberately chooses
+    /// this policy; the supervisor ledger still records the underlying fact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HelloSessionError::WindowPhase`] for a non-zero
+    /// self-termination after readiness, a crash-loop, or a generation
+    /// lifecycle failure.
+    pub fn shutdown_after_completed_work(mut self) -> Result<(), HelloSessionError> {
+        match self.finish(SelfTerminationPolicy::AllowSuccessful) {
             Some(error) => Err(error),
             None => Ok(()),
         }
@@ -260,8 +300,8 @@ impl HostOwnedHelloSession {
     /// `keld-runtime` stores the terminal [`keld_runtime::RuntimeError`]
     /// *before* it sends the matching event, and
     /// [`Supervisor::wait_for_outcome`] falls back to that record when the
-    /// event channel is empty or already disconnected; the crash ledger is
-    /// durable state that is never consumed. A caller that drained events
+    /// event channel is empty or already disconnected; the self-termination
+    /// ledger is durable state that is never consumed. A caller that drained events
     /// earlier — [`Self::wait_until_output_contains`], which `run_dev` runs
     /// before the window — therefore cannot erase the failure.
     ///
@@ -271,12 +311,13 @@ impl HostOwnedHelloSession {
     /// just before the supervisor thread ends, so the join in `Supervisor`'s
     /// own `Drop` — which this path already performed — stays the only
     /// blocking step.
-    fn finish(&mut self) -> Option<HelloSessionError> {
+    fn finish(&mut self, policy: SelfTerminationPolicy) -> Option<HelloSessionError> {
         let verdict = self.supervisor.take().map(|supervisor| {
             supervisor.shutdown();
             let outcome = supervisor.wait_for_outcome();
-            // Read after the wait: the worker records the crash before it
-            // reports the exit, so this snapshot cannot miss one it caused.
+            // Read after the wait: the worker records self-termination before
+            // it reports the terminal stop, so this snapshot cannot miss one
+            // it caused.
             let ledger = supervisor.crash_ledger();
             drop(supervisor);
             (outcome, ledger)
@@ -289,75 +330,116 @@ impl HostOwnedHelloSession {
         window_phase_error(
             outcome,
             ledger,
-            self.recovered_crashes.load(Ordering::SeqCst),
+            RecoveredTerminations {
+                crashes: self.recovered_crashes.load(Ordering::SeqCst),
+                all: self.recovered_self_terminations.load(Ordering::SeqCst),
+            },
+            policy,
         )
     }
 
-    /// Records the crashes already recovered from when this session *first*
-    /// reached its ready marker, so [`Self::finish`] can tell a recovered
-    /// crash (KEL-70 AC1/AC3) from one that killed a live app (KEL-105).
+    /// Records the self-terminations already recovered from when this session
+    /// *first* reached its ready marker, so [`Self::finish`] can tell a
+    /// recovered crash (KEL-70 AC1/AC3) from an app that ended after becoming
+    /// live (KEL-105/KEL-116).
     ///
     /// First transition only. [`Self::wait_until_output_contains`] matches
     /// against cumulative stdout, so a later call for a marker the app already
-    /// printed returns immediately — re-baselining there would absorb a crash
-    /// that happened after the app was live and report it as recovered.
+    /// printed returns immediately — re-baselining there would absorb a
+    /// self-termination that happened after the app was live and report it as
+    /// recovered.
     ///
     /// `stdout` is the exact buffer the marker was found in, and it is read
-    /// *before* the ledger on purpose: the ledger only grows, so a crash that
-    /// lands in between makes the comparison stricter, never looser.
+    /// *before* the ledger on purpose: the ledger only grows, so a termination
+    /// that lands in between makes the comparison stricter, never looser.
     fn mark_ready(&self, supervisor: &Supervisor, stdout: &str, needle: &str) {
         if self.ready_recorded.swap(true, Ordering::SeqCst) {
             return;
         }
-        let recovered = recovered_crash_baseline(stdout, needle, &supervisor.crash_ledger());
-        self.recovered_crashes.store(recovered, Ordering::SeqCst);
+        let recovered = recovered_termination_baseline(stdout, needle, &supervisor.crash_ledger());
+        self.recovered_crashes
+            .store(recovered.crashes, Ordering::SeqCst);
+        self.recovered_self_terminations
+            .store(recovered.all, Ordering::SeqCst);
     }
 }
 
-/// How many observed crashes predate the app becoming ready, and so were
-/// recovered from rather than fatal.
+/// How many observed self-terminations predate the app becoming ready, and so
+/// were recovered from rather than fatal.
 ///
-/// Counting crashes is not enough. `keld-runtime` publishes stdout and its
-/// `Exited` event *before* it records the crash, so a host that samples the
-/// count when it notices the marker can see a post-ready death already in the
-/// ledger and fold it into the baseline — reporting success over a dead app,
-/// which is the whole of KEL-105. Ordering the marker against
-/// [`CrashLedger::stdout_len_at_last_crash`] answers "printed, then crashed"
-/// versus "crashed, then printed" from recorded facts, with no timing
+/// Counting terminations is not enough. `keld-runtime` publishes stdout and
+/// its `Exited` event *before* it records the ledger fact, so a host that
+/// samples the count when it notices the marker can see a post-ready death
+/// already in the ledger and fold it into the baseline — reporting success
+/// over a dead app, which is the whole of KEL-105/KEL-116. Ordering the marker against
+/// [`CrashLedger::stdout_len_at_last_crash`] answers "printed, then
+/// terminated" versus "terminated, then printed" from recorded facts, with no timing
 /// assumption about when the host looked.
 ///
 /// Uses the marker's *first* occurrence. If a restarted generation printed the
 /// marker again, the earlier generation still died after being ready, and the
 /// v0 one-session listener means the restart cannot serve anyway
 /// (`docs/architecture/02-ipc.md`), so the earlier death is the honest verdict.
-fn recovered_crash_baseline(stdout: &str, needle: &str, ledger: &CrashLedger) -> u32 {
+fn recovered_termination_baseline(
+    stdout: &str,
+    needle: &str,
+    ledger: &CrashLedger,
+) -> RecoveredTerminations {
     let Some(marker_end) = stdout.find(needle).map(|start| start + needle.len()) else {
-        return 0;
+        return RecoveredTerminations::default();
     };
-    if marker_end > ledger.stdout_len_at_last_crash {
-        ledger.count
-    } else {
-        0
+    RecoveredTerminations {
+        crashes: if marker_end > ledger.stdout_len_at_last_crash {
+            ledger.count
+        } else {
+            0
+        },
+        all: ledger
+            .last_self_termination
+            .filter(|termination| marker_end > termination.stdout_len)
+            .map_or(0, |_| ledger.self_termination_count),
     }
 }
 
 /// Decides whether a finished session died on the host's watch.
 ///
 /// Pure over the two facts `keld-runtime` publishes — how supervision ended,
-/// and how many crashes it observed — so every arm is falsifiable without a
-/// process fixture. `recovered` is the crash count at the last ready marker.
+/// and how many self-terminations it observed — so every arm is falsifiable
+/// without a process fixture. `recovered` is the termination count at the
+/// first ready marker.
 ///
 /// A terminal supervision failure is always fatal. `Stopped` is not decided by
 /// the outcome at all: supervision stops cleanly whether or not the app
-/// survived, so the ledger is what separates the two (KEL-105).
+/// survived, so the ledger is what separates the two. The caller-selected
+/// policy only permits status zero after completed windowless work
+/// (KEL-105/KEL-116).
 fn window_phase_error(
     outcome: SupervisorOutcome,
     ledger: CrashLedger,
-    recovered: u32,
+    recovered: RecoveredTerminations,
+    policy: SelfTerminationPolicy,
 ) -> Option<HelloSessionError> {
     let cause = match outcome {
         SupervisorOutcome::CrashLoop(cause) | SupervisorOutcome::Failed(cause) => cause,
-        SupervisorOutcome::Stopped => ledger.last.filter(|_| ledger.count > recovered)?,
+        SupervisorOutcome::Stopped => {
+            if ledger.count > recovered.crashes {
+                ledger.last?
+            } else {
+                let termination = ledger
+                    .last_self_termination
+                    .filter(|_| ledger.self_termination_count > recovered.all)?;
+                if policy == SelfTerminationPolicy::AllowSuccessful
+                    && termination.exit_code == Some(0)
+                {
+                    return None;
+                }
+                keld_runtime::RuntimeError::ChildCrashed {
+                    pid: termination.pid,
+                    exit_code: termination.exit_code,
+                    stderr_tail: String::new(),
+                }
+            }
+        }
     };
     Some(HelloSessionError::WindowPhase {
         cause: cause.to_string(),
@@ -368,14 +450,14 @@ impl Drop for HostOwnedHelloSession {
     fn drop(&mut self) {
         // Drop has no channel to report on; `shutdown()` is the surfacing
         // path. Teardown itself is identical either way (KEL-105).
-        let _ = self.finish();
+        let _ = self.finish(SelfTerminationPolicy::Fatal);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::window_phase_error;
-    use keld_runtime::{CrashLedger, RuntimeError, SupervisorOutcome};
+    use super::{RecoveredTerminations, SelfTerminationPolicy, window_phase_error};
+    use keld_runtime::{CrashLedger, RuntimeError, SelfTerminationRecord, SupervisorOutcome};
 
     fn crash(pid: u32, exit_code: Option<i32>) -> RuntimeError {
         RuntimeError::ChildCrashed {
@@ -389,20 +471,52 @@ mod tests {
         ledger_at(count, 0)
     }
 
+    fn recovered(count: u32) -> RecoveredTerminations {
+        RecoveredTerminations {
+            crashes: count,
+            all: count,
+        }
+    }
+
     /// A ledger whose most recent crash happened when stdout was
     /// `stdout_len_at_last_crash` bytes long.
     pub(super) fn ledger_at(count: u32, stdout_len_at_last_crash: usize) -> CrashLedger {
+        ledger_with_exit(count, stdout_len_at_last_crash, Some(3))
+    }
+
+    fn ledger_with_exit(
+        self_termination_count: u32,
+        stdout_len: usize,
+        exit_code: Option<i32>,
+    ) -> CrashLedger {
+        let crash_count = if exit_code == Some(0) {
+            0
+        } else {
+            self_termination_count
+        };
         CrashLedger {
-            count,
-            last: (count > 0).then(|| crash(4242, Some(3))),
-            stdout_len_at_last_crash,
+            count: crash_count,
+            last: (crash_count > 0).then(|| crash(4242, exit_code)),
+            stdout_len_at_last_crash: if crash_count > 0 { stdout_len } else { 0 },
+            self_termination_count,
+            last_self_termination: (self_termination_count > 0).then_some(SelfTerminationRecord {
+                pid: 4242,
+                exit_code,
+                stdout_len,
+            }),
         }
     }
 
     #[test]
     fn clean_stop_with_no_crash_is_success() {
         assert!(
-            window_phase_error(SupervisorOutcome::Stopped, ledger(0), 0).is_none(),
+            window_phase_error(
+                SupervisorOutcome::Stopped,
+                ledger(0),
+                RecoveredTerminations::default(),
+                SelfTerminationPolicy::Fatal,
+            )
+            .is_none(),
             "the shipping success path must stay exit 0"
         );
     }
@@ -411,8 +525,13 @@ mod tests {
     fn crash_after_the_ready_marker_fails_the_session() {
         // KEL-105's dominant path: one crash, breaker never tripped, so the
         // outcome is a clean `Stopped` and only the ledger dissents.
-        let err = window_phase_error(SupervisorOutcome::Stopped, ledger(1), 0)
-            .expect("a crash after the app was live must not report success");
+        let err = window_phase_error(
+            SupervisorOutcome::Stopped,
+            ledger(1),
+            RecoveredTerminations::default(),
+            SelfTerminationPolicy::Fatal,
+        )
+        .expect("a crash after the app was live must not report success");
         let msg = err.to_string();
         assert!(msg.contains("KELD-CORE-033"), "{msg}");
         assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
@@ -427,7 +546,13 @@ mod tests {
         // KEL-70 AC1/AC3: a crash before the ready marker was recovered from,
         // and `run_dev_echo` must still succeed.
         assert!(
-            window_phase_error(SupervisorOutcome::Stopped, ledger(1), 1).is_none(),
+            window_phase_error(
+                SupervisorOutcome::Stopped,
+                ledger(1),
+                recovered(1),
+                SelfTerminationPolicy::Fatal,
+            )
+            .is_none(),
             "a recovered crash is the supervisor working, not a failure"
         );
     }
@@ -435,9 +560,77 @@ mod tests {
     #[test]
     fn a_further_crash_after_recovery_still_fails() {
         assert!(
-            window_phase_error(SupervisorOutcome::Stopped, ledger(2), 1).is_some(),
+            window_phase_error(
+                SupervisorOutcome::Stopped,
+                ledger(2),
+                recovered(1),
+                SelfTerminationPolicy::Fatal,
+            )
+            .is_some(),
             "only crashes up to the ready marker are forgiven"
         );
+    }
+
+    #[test]
+    fn status_zero_after_ready_is_fatal_for_the_window_policy() {
+        let err = window_phase_error(
+            SupervisorOutcome::Stopped,
+            ledger_with_exit(1, 10, Some(0)),
+            RecoveredTerminations::default(),
+            SelfTerminationPolicy::Fatal,
+        )
+        .expect("the window requires the app to remain alive regardless of exit status");
+        let msg = err.to_string();
+        assert!(msg.contains("KELD-CORE-033"), "{msg}");
+        assert!(msg.contains("KELD-RUNTIME-012"), "{msg}");
+        assert!(msg.contains("exited 0"), "{msg}");
+    }
+
+    #[test]
+    fn completed_work_policy_accepts_only_status_zero_self_termination() {
+        assert!(
+            window_phase_error(
+                SupervisorOutcome::Stopped,
+                ledger_with_exit(1, 10, Some(0)),
+                RecoveredTerminations::default(),
+                SelfTerminationPolicy::AllowSuccessful,
+            )
+            .is_none(),
+            "completed windowless work may end with status zero"
+        );
+        assert!(
+            window_phase_error(
+                SupervisorOutcome::Stopped,
+                ledger_with_exit(1, 10, Some(7)),
+                RecoveredTerminations::default(),
+                SelfTerminationPolicy::AllowSuccessful,
+            )
+            .is_some(),
+            "completed work must not swallow a non-zero self-termination"
+        );
+    }
+
+    #[test]
+    fn completed_work_policy_does_not_hide_an_earlier_post_ready_crash() {
+        let ledger = CrashLedger {
+            count: 1,
+            last: Some(crash(4242, Some(7))),
+            stdout_len_at_last_crash: 20,
+            self_termination_count: 2,
+            last_self_termination: Some(SelfTerminationRecord {
+                pid: 4243,
+                exit_code: Some(0),
+                stdout_len: 30,
+            }),
+        };
+        let err = window_phase_error(
+            SupervisorOutcome::Stopped,
+            ledger,
+            RecoveredTerminations::default(),
+            SelfTerminationPolicy::AllowSuccessful,
+        )
+        .expect("a final zero exit must not hide an earlier post-ready non-zero exit");
+        assert!(err.to_string().contains("exited 7"), "{err}");
     }
 
     #[test]
@@ -450,7 +643,8 @@ mod tests {
                 stderr_tail: String::new(),
             }),
             ledger(3),
-            3,
+            recovered(3),
+            SelfTerminationPolicy::Fatal,
         )
         .expect("a tripped breaker is fatal even if every crash predates ready");
         assert!(err.to_string().contains("KELD-RUNTIME-002"), "{err}");
@@ -464,7 +658,8 @@ mod tests {
                 source: std::io::Error::other("no bootstrap"),
             }),
             ledger(0),
-            0,
+            RecoveredTerminations::default(),
+            SelfTerminationPolicy::Fatal,
         )
         .expect("a generation that never provisioned is not a success");
         assert!(err.to_string().contains("KELD-RUNTIME-003"), "{err}");
@@ -473,8 +668,9 @@ mod tests {
 
 #[cfg(test)]
 mod ready_baseline_tests {
-    use super::recovered_crash_baseline;
     use super::tests::ledger_at;
+    use super::{RecoveredTerminations, recovered_termination_baseline};
+    use keld_runtime::{CrashLedger, RuntimeError, SelfTerminationRecord};
 
     const READY: &str = "app: main process ready (IPC echo ok)";
 
@@ -482,8 +678,8 @@ mod ready_baseline_tests {
     fn no_crash_yet_forgives_nothing_and_claims_nothing() {
         let stdout = format!("booting\n{READY}\n");
         assert_eq!(
-            recovered_crash_baseline(&stdout, READY, &ledger_at(0, 0)),
-            0
+            recovered_termination_baseline(&stdout, READY, &ledger_at(0, 0)),
+            RecoveredTerminations::default()
         );
     }
 
@@ -494,8 +690,8 @@ mod ready_baseline_tests {
         let crashed = "gen1 booting\n";
         let stdout = format!("{crashed}{READY}\n");
         assert_eq!(
-            recovered_crash_baseline(&stdout, READY, &ledger_at(1, crashed.len())),
-            1,
+            recovered_termination_baseline(&stdout, READY, &ledger_at(1, crashed.len())),
+            RecoveredTerminations { crashes: 1, all: 1 },
             "a crash the supervisor recovered from before ready must be forgiven"
         );
     }
@@ -508,8 +704,8 @@ mod ready_baseline_tests {
         // them.
         let stdout = format!("{READY}\ndying now\n");
         assert_eq!(
-            recovered_crash_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
-            0,
+            recovered_termination_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
+            RecoveredTerminations::default(),
             "a death after the app was live must not be reported as recovered"
         );
     }
@@ -520,8 +716,8 @@ mod ready_baseline_tests {
         // already written when the crash was recorded, so it is post-ready.
         let stdout = READY.to_owned();
         assert_eq!(
-            recovered_crash_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
-            0
+            recovered_termination_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
+            RecoveredTerminations::default()
         );
     }
 
@@ -531,17 +727,43 @@ mod ready_baseline_tests {
         let pre = "gen1 booting\n";
         let stdout = format!("{pre}{READY}\nlate output\n");
         assert_eq!(
-            recovered_crash_baseline(&stdout, READY, &ledger_at(2, stdout.len())),
-            0,
+            recovered_termination_baseline(&stdout, READY, &ledger_at(2, stdout.len())),
+            RecoveredTerminations::default(),
             "the later death is post-ready, so the run must fail"
+        );
+    }
+
+    #[test]
+    fn recovered_crash_and_post_ready_zero_keep_separate_baselines() {
+        let pre = "gen1 booting\n";
+        let stdout = format!("{pre}{READY}\n");
+        let ledger = CrashLedger {
+            count: 1,
+            last: Some(RuntimeError::ChildCrashed {
+                pid: 4242,
+                exit_code: Some(7),
+                stderr_tail: "boom".to_owned(),
+            }),
+            stdout_len_at_last_crash: pre.len(),
+            self_termination_count: 2,
+            last_self_termination: Some(SelfTerminationRecord {
+                pid: 4243,
+                exit_code: Some(0),
+                stdout_len: stdout.len(),
+            }),
+        };
+        assert_eq!(
+            recovered_termination_baseline(&stdout, READY, &ledger),
+            RecoveredTerminations { crashes: 1, all: 0 },
+            "the recovered non-zero exit must remain distinguishable from the later zero exit"
         );
     }
 
     #[test]
     fn an_absent_marker_forgives_nothing() {
         assert_eq!(
-            recovered_crash_baseline("nothing here", READY, &ledger_at(3, 0)),
-            0
+            recovered_termination_baseline("nothing here", READY, &ledger_at(3, 0)),
+            RecoveredTerminations::default()
         );
     }
 
@@ -553,8 +775,8 @@ mod ready_baseline_tests {
         let first = format!("{READY}\n");
         let stdout = format!("{first}gen2\n{READY}\n");
         assert_eq!(
-            recovered_crash_baseline(&stdout, READY, &ledger_at(1, first.len() + 5)),
-            0,
+            recovered_termination_baseline(&stdout, READY, &ledger_at(1, first.len() + 5)),
+            RecoveredTerminations::default(),
             "a re-printed marker must not forgive the earlier post-ready death"
         );
     }

@@ -460,8 +460,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-RUNTIME-012
 
 - crate: keld-runtime
-- message: A supervised app-process generation crashed without tripping the crash-loop breaker
-- fix: Fix the crash shown in the captured stderr, then re-run `keld dev`.
+- message: A supervised app-process generation self-terminated without tripping the crash-loop breaker, including status zero
+- fix: For status zero, keep the app alive while its host-owned session is active; for non-zero or signal termination, fix the captured stderr and re-run `keld dev`.
 
 ## KELD-NATIVE-001
 

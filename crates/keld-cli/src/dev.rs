@@ -186,7 +186,10 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     io::stdout().write_all(stdout.as_bytes())?;
     io::stderr().write_all(stderr.as_bytes())?;
     let link = session.link().to_owned();
-    session.shutdown()?;
+    // The windowless echo contract is complete once the observable reply was
+    // captured. A child that then ends itself with status zero is still
+    // recorded by the supervisor, but it is not a failed echo run (KEL-116).
+    session.shutdown_after_completed_work()?;
     Ok(DevEchoResult { stdout, link })
 }
 
