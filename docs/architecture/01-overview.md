@@ -13,18 +13,19 @@ flowchart LR
       The trusted Rust host owns privileged resources and mediates webview and Bun-role
       requests. The live v0 slice has three webview backends, a guard evaluator, a
       host-owned token-authenticated echo link co-lived with the hello window (KEL-30),
-      KEL-70's generic supervised Bun child restart loop, and guard-checked scoped
-      filesystem access (KEL-71). Full role-bound app-link identity, guarded role
+      the macOS no-flag validated host/window/primary-session slice (KEL-96 T1a/T1b),
+      KEL-70/KEL-116 supervision, and guard-checked scoped filesystem access (KEL-71).
+      Full role-bound app-link identity, guarded role
       dispatch, the remaining native services, and an optional sandboxed native-addon
       worker remain destination behavior.
     }
 
     subgraph Host["Trusted authority process: keld-host / keld-core"]
-        Core["PARTIAL LIVE<br/>hello window + lifecycle session<br/>TARGET window registry"]
-        Link["PARTIAL LIVE<br/>host-owned hello echo app-link<br/>TARGET role-bound"]
+        Core["PARTIAL LIVE<br/>hello + macOS no-flag app window/session<br/>TARGET window registry"]
+        Link["PARTIAL LIVE<br/>hello echo + macOS primary app-link<br/>TARGET role-bound"]
         Guard["PARTIAL LIVE<br/>guard evaluator exists<br/>TARGET guard-before-handler"]
         Native["PARTIAL LIVE<br/>fs scoped + guard-checked<br/>TARGET remaining native services"]
-        Runtime["PARTIAL LIVE<br/>generic Bun supervisor<br/>TARGET role identity"]
+        Runtime["PARTIAL LIVE<br/>Bun supervisor + macOS guardian<br/>TARGET role identity"]
     end
 
     subgraph Prototype["Current diagnostic process: keld-cli"]
@@ -36,7 +37,7 @@ flowchart LR
     end
 
     subgraph JS["Semi-trusted and untrusted code processes"]
-        App["PARTIAL LIVE<br/>supervised Bun echo child<br/>co-lived with hello window<br/>TARGET primary and named roles"]
+        App["PARTIAL LIVE<br/>supervised Bun primary<br/>macOS no-flag + hello slices<br/>TARGET named roles"]
         Addon["FUTURE OPTIONAL<br/>sandboxed native-addon worker"]
     end
 
@@ -76,7 +77,9 @@ Three principal classes, with host-minted instances inside each class:
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
    host-owned supervised primary-child echo slice with restart/backoff/output capture
-   co-lived with the hello window (KEL-30),
+   co-lived with the hello window (KEL-30), plus KEL-96's first macOS no-flag
+   `keld-host` owner with a strict staged boot descriptor, one multiplexed
+   echo/lifecycle link, native window, and ordered Quit cleanup,
    plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
    accepted link to a principal and mints a fresh role generation on restart. It
    does not yet preserve a live renderer through restart, implement window-bound
@@ -125,16 +128,16 @@ implemented. The per-crate status legend is the §1 diagram above.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `keld-core` | host runtime: lifecycle session, hello window; TARGET event loop integration, window registry, plugin host | wv, ipc, guard, runtime (TARGET: native) |
+| `keld-core` | host runtime: lifecycle session, hello window, and macOS no-flag boot/primary app session; TARGET complete cross-platform event-loop integration, window registry, plugin host | wv, ipc, guard, runtime (TARGET: native) |
 | `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | guard |
 | `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing, scope matching, per-window/per-principal grants, audit log | — |
-| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash-loop breaker (live on the shipping path); RoleRegistry + bounded virtual ports live as a Unix library/test surface only (KEL-75 T3, not wired into `keld dev`); TARGET Bun discovery/pinning, named role spawn on the shipping path, per-role grants/lifecycle | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor for KEL-96's no-flag primary; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into `keld dev`); TARGET Bun discovery/pinning, named role spawn on the shipping path, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
-| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
+| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; owner-private macOS boot-stage compiler live for KEL-96 fixtures (not yet wired into `keld dev`); `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):
@@ -174,7 +177,9 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   `--inspect` passthrough in dev. Every destination spawn is a fresh principal/link
   generation—not a PID, token or socket name—and old authority is revoked before a
   successor is provisioned.   Current implementation has KEL-70's generic one-child
-  supervision, the host-owned concurrent echo app-link (KEL-30), KEL-75 T1b's
+  supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
+  macOS no-flag validated boot plus one-link echo/lifecycle session and live
+  event-loop wake, KEL-75 T1b's
   Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports

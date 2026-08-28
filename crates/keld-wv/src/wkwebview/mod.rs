@@ -19,10 +19,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
 
@@ -34,11 +38,31 @@ use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
 use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
+const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
+
 /// One live webview and the host window it fills (v0: one per window).
 #[repr(C)]
 struct View {
     webview: wry::WebView,
     window: Window,
+}
+
+/// Command delivered from the primary app-link reader to the macOS UI loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppWindowCommand {
+    /// Correlated Quit reply has been written; close windows and exit.
+    Quit,
+    /// The primary app session failed; close windows and exit with an error.
+    Fatal,
+}
+
+/// Observable UI-owned milestone delivered to the host session coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppWindowEvent {
+    /// Initial renderer navigation reached `PageLoadEvent::Finished`.
+    NavigationReady,
+    /// The primary-window count transitioned from one to zero.
+    LastWindowClosed,
 }
 
 /// The macOS [`WebEngine`] backend.
@@ -48,7 +72,7 @@ struct View {
 /// after the last window closes (KEL-30 concurrent hello app-link).
 pub struct WkWebViewEngine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
-    event_loop: Option<EventLoop<()>>,
+    event_loop: Option<EventLoop<AppWindowCommand>>,
     views: BTreeMap<u32, View>,
     next_id: u32,
     /// KEL-62: navigation completion (`PageLoadEvent::Finished`), not window create.
@@ -73,7 +97,7 @@ impl WkWebViewEngine {
     #[must_use]
     pub fn new() -> Self {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
-        let event_loop = EventLoop::new();
+        let event_loop = EventLoopBuilder::with_user_event().build();
         mark_startup(&startup, StartupPhase::EventLoop);
         Self {
             event_loop: Some(event_loop),
@@ -126,6 +150,161 @@ impl WkWebViewEngine {
         }
     }
 
+    /// Creates the initial app window and emits navigation readiness from the
+    /// live `WKWebView` page-load callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError`] when the window or webview cannot be created.
+    pub fn create_app(
+        &mut self,
+        spec: &WebviewSpec,
+        events: Sender<AppWindowEvent>,
+    ) -> Result<WebviewId, WvError> {
+        self.create_internal(spec, Some(events))
+    }
+
+    /// Runs the live macOS event loop until a Quit or fatal app-session command.
+    ///
+    /// `commands` is bridged through tao's [`tao::event_loop::EventLoopProxy`],
+    /// so I/O threads never touch a window handle and the UI thread does not
+    /// poll. Closing the last window emits [`AppWindowEvent::LastWindowClosed`]
+    /// but keeps the event loop alive until the app sends Quit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError::EventLoop`] if the loop already ran, the bridge/UI
+    /// reports a fatal session command, or tao exits non-zero.
+    pub fn run_app_until_quit(
+        mut self,
+        commands: Receiver<AppWindowCommand>,
+        events: Sender<AppWindowEvent>,
+    ) -> Result<(), WvError> {
+        let Some(mut event_loop) = self.event_loop.take() else {
+            return Err(WvError::EventLoop(String::from(
+                "run loop already started; call run_app_until_quit once",
+            )));
+        };
+        let proxy = event_loop.create_proxy();
+        let stop_bridge = Arc::new(AtomicBool::new(false));
+        let stop_for_bridge = Arc::clone(&stop_bridge);
+        let terminal_intent = Arc::new(AtomicBool::new(false));
+        let terminal_intent_for_bridge = Arc::clone(&terminal_intent);
+        let bridge =
+            spawn_app_wake_bridge(commands, proxy, stop_for_bridge, terminal_intent_for_bridge)?;
+        let fatal = Arc::new(AtomicBool::new(false));
+        let fatal_in_loop = Arc::clone(&fatal);
+        let navigation_timed_out = Arc::new(AtomicBool::new(false));
+        let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
+        let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
+        let startup_in_loop = Arc::clone(&self.startup);
+        let terminal_intent_in_loop = Arc::clone(&terminal_intent);
+        let mut views = std::mem::take(&mut self.views);
+        let code = event_loop.run_return(move |event, _, control_flow| {
+            let terminal =
+                is_terminal_app_event(&event) || terminal_intent_in_loop.load(Ordering::Acquire);
+            if navigation_finished(&startup_in_loop) {
+                *control_flow = ControlFlow::Wait;
+            } else if navigation_deadline_expired(&startup_in_loop, navigation_deadline, terminal) {
+                navigation_timed_out_in_loop.store(true, Ordering::Release);
+                views.clear();
+                *control_flow = ControlFlow::Exit;
+                return;
+            } else {
+                *control_flow = ControlFlow::WaitUntil(navigation_deadline);
+            }
+            match event {
+                Event::UserEvent(AppWindowCommand::Quit) => {
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::UserEvent(AppWindowCommand::Fatal) => {
+                    fatal_in_loop.store(true, Ordering::Release);
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    views.retain(|_, view| view.window.id() != window_id);
+                    if views.is_empty() {
+                        let _ = events.send(AppWindowEvent::LastWindowClosed);
+                    }
+                }
+                _ => {}
+            }
+        });
+        stop_bridge.store(true, Ordering::Release);
+        let _ = bridge.join();
+        if navigation_timed_out.load(Ordering::Acquire) {
+            return Err(WvError::Navigate(String::from(
+                "initial renderer navigation did not finish before the startup deadline",
+            )));
+        }
+        if fatal.load(Ordering::Acquire) {
+            return Err(WvError::EventLoop(String::from(
+                "primary app session failed while the macOS event loop was live",
+            )));
+        }
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(WvError::EventLoop(format!(
+                "event loop exited with status {code}"
+            )))
+        }
+    }
+
+    fn create_internal(
+        &mut self,
+        spec: &WebviewSpec,
+        app_events: Option<Sender<AppWindowEvent>>,
+    ) -> Result<WebviewId, WvError> {
+        let Some(event_loop) = self.event_loop.as_ref() else {
+            return Err(WvError::EventLoop(String::from(
+                "run loop already started; create webviews before running it",
+            )));
+        };
+        let window = WindowBuilder::new()
+            .with_title(&spec.title)
+            .with_inner_size(tao::dpi::LogicalSize::new(
+                spec.size.width,
+                spec.size.height,
+            ))
+            .with_resizable(true)
+            .with_minimizable(true)
+            .with_closable(true)
+            .build(event_loop)
+            .map_err(|error| WvError::Window(error.to_string()))?;
+        mark_startup(&self.startup, StartupPhase::WindowCreated);
+        let builder = wry::WebViewBuilder::new();
+        #[cfg(debug_assertions)]
+        let builder = builder.with_devtools(true);
+        let id = self.next_id;
+        let builder = with_guarded_media_permissions(
+            builder,
+            PermissionsManifest::default(),
+            webview_media_principal(WebviewId(id)),
+        );
+        let builder = builder.with_on_page_load_handler(page_load_trace_handler(
+            Arc::clone(&self.startup),
+            app_events,
+        ));
+        let builder = match &spec.initial {
+            NavTarget::Html(html) => builder.with_html(html),
+            NavTarget::Url(url) => builder.with_url(url),
+        };
+        let webview = builder
+            .build(&window)
+            .map_err(|error| WvError::Webview(error.to_string()))?;
+        mark_startup(&self.startup, StartupPhase::WebviewAttached);
+        self.next_id += 1;
+        self.views.insert(id, View { webview, window });
+        Ok(WebviewId(id))
+    }
+
     fn view(&self, id: WebviewId) -> Result<&View, WvError> {
         self.views
             .get(&id.0)
@@ -141,59 +320,7 @@ impl Default for WkWebViewEngine {
 
 impl WebEngine for WkWebViewEngine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
-        let Some(event_loop) = self.event_loop.as_ref() else {
-            return Err(WvError::EventLoop(String::from(
-                "run loop already started; create webviews before run_until_closed",
-            )));
-        };
-        let window = WindowBuilder::new()
-            .with_title(&spec.title)
-            // Logical points (not device pixels). tao maps through
-            // NSWindow.backingScaleFactor so Retina 2× gets 2× the pixel size.
-            // macOS 10.7+; Apple:
-            // https://developer.apple.com/documentation/appkit/nswindow/backingscalefactor
-            .with_inner_size(tao::dpi::LogicalSize::new(
-                spec.size.width,
-                spec.size.height,
-            ))
-            // KEL-25/KEL-26: traffic-light chrome — resize, minimize, close.
-            // tao 0.35 defaults NSApplicationActivationPolicy to Regular
-            // (https://docs.rs/tao/0.35.3/tao/platform/macos/trait.EventLoopExtMacOS.html).
-            .with_resizable(true)
-            .with_minimizable(true)
-            .with_closable(true)
-            .build(event_loop)
-            .map_err(|e| WvError::Window(e.to_string()))?;
-        mark_startup(&self.startup, StartupPhase::WindowCreated);
-
-        // Developer extras are debug-only until keld-guard owns `web.devtools`.
-        let builder = wry::WebViewBuilder::new();
-        #[cfg(debug_assertions)]
-        let builder = builder.with_devtools(true);
-        // KEL-59: wry 0.56 still auto-grants camera/mic when this handler is
-        // omitted (`WKPermissionDecision::Grant`). Empty manifest → default-deny.
-        // KEL-73: mint the webview id first so capture cannot inherit AppProcess grants.
-        let id = self.next_id;
-        let builder = with_guarded_media_permissions(
-            builder,
-            PermissionsManifest::default(),
-            webview_media_principal(WebviewId(id)),
-        );
-        // KEL-62: navigation completion trace — Finished, not titled HWND.
-        let builder =
-            builder.with_on_page_load_handler(page_load_trace_handler(Arc::clone(&self.startup)));
-        let builder = match &spec.initial {
-            NavTarget::Html(html) => builder.with_html(html),
-            NavTarget::Url(url) => builder.with_url(url),
-        };
-        let webview = builder
-            .build(&window)
-            .map_err(|e| WvError::Webview(e.to_string()))?;
-        mark_startup(&self.startup, StartupPhase::WebviewAttached);
-
-        self.next_id += 1;
-        self.views.insert(id, View { webview, window });
-        Ok(WebviewId(id))
+        self.create_internal(spec, None)
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
@@ -250,9 +377,74 @@ fn mark_startup(startup: &Mutex<StartupTrace>, phase: StartupPhase) {
     guard.mark(phase);
 }
 
+fn navigation_finished(startup: &Mutex<StartupTrace>) -> bool {
+    match startup.lock() {
+        Ok(guard) => guard.offset(StartupPhase::NavFinished).is_some(),
+        Err(poisoned) => poisoned
+            .into_inner()
+            .offset(StartupPhase::NavFinished)
+            .is_some(),
+    }
+}
+
+fn spawn_app_wake_bridge(
+    commands: Receiver<AppWindowCommand>,
+    proxy: EventLoopProxy<AppWindowCommand>,
+    stop: Arc<AtomicBool>,
+    terminal_intent: Arc<AtomicBool>,
+) -> Result<thread::JoinHandle<()>, WvError> {
+    thread::Builder::new()
+        .name("keld-wv-macos-app-wake".to_owned())
+        .spawn(move || {
+            loop {
+                match commands.recv_timeout(Duration::from_millis(100)) {
+                    Ok(command) => {
+                        let terminal = mark_terminal_intent(&terminal_intent, command);
+                        let _ = proxy.send_event(command);
+                        if terminal {
+                            return;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => {
+                        mark_terminal_intent(&terminal_intent, AppWindowCommand::Fatal);
+                        let _ = proxy.send_event(AppWindowCommand::Fatal);
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
+}
+
+fn is_terminal_app_event(event: &Event<'_, AppWindowCommand>) -> bool {
+    matches!(
+        event,
+        Event::UserEvent(AppWindowCommand::Quit | AppWindowCommand::Fatal)
+    )
+}
+
+fn mark_terminal_intent(intent: &AtomicBool, command: AppWindowCommand) -> bool {
+    let terminal = matches!(command, AppWindowCommand::Quit | AppWindowCommand::Fatal);
+    if terminal {
+        intent.store(true, Ordering::Release);
+    }
+    terminal
+}
+
+fn navigation_deadline_expired(
+    startup: &Mutex<StartupTrace>,
+    deadline: Instant,
+    terminal_command: bool,
+) -> bool {
+    !terminal_command && !navigation_finished(startup) && Instant::now() >= deadline
+}
+
 /// wry `PageLoadEvent::Finished` → navigation completion (`nav_finished`).
 fn page_load_trace_handler(
     startup: Arc<Mutex<StartupTrace>>,
+    app_events: Option<Sender<AppWindowEvent>>,
 ) -> impl Fn(wry::PageLoadEvent, String) + 'static {
     move |event, _url| {
         let mut guard = match startup.lock() {
@@ -261,8 +453,13 @@ fn page_load_trace_handler(
         };
         let had_nav = guard.offset(StartupPhase::NavFinished).is_some();
         guard.on_page_load(wry_page_load(&event));
-        if !had_nav && guard.offset(StartupPhase::NavFinished).is_some() && trace_enabled() {
-            eprintln!("{}", guard.report());
+        if !had_nav && guard.offset(StartupPhase::NavFinished).is_some() {
+            if let Some(events) = app_events.as_ref() {
+                let _ = events.send(AppWindowEvent::NavigationReady);
+            }
+            if trace_enabled() {
+                eprintln!("{}", guard.report());
+            }
         }
     }
 }
@@ -278,6 +475,7 @@ fn wry_page_load(event: &wry::PageLoadEvent) -> PageLoad {
 #[cfg(test)]
 mod startup_tests {
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use super::{page_load_trace_handler, wry_page_load};
     use crate::startup::{PageLoad, StartupPhase, StartupTrace, phase_for_page_load};
@@ -298,7 +496,7 @@ mod startup_tests {
     #[test]
     fn page_load_handler_marks_nav_finished_on_finished() -> Result<(), String> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
-        let handler = page_load_trace_handler(Arc::clone(&startup));
+        let handler = page_load_trace_handler(Arc::clone(&startup), None);
         handler(wry::PageLoadEvent::Finished, String::new());
         let guard = startup
             .lock()
@@ -314,7 +512,7 @@ mod startup_tests {
     #[test]
     fn page_load_handler_ignores_started_for_nav_finished() -> Result<(), String> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
-        let handler = page_load_trace_handler(Arc::clone(&startup));
+        let handler = page_load_trace_handler(Arc::clone(&startup), None);
         handler(wry::PageLoadEvent::Started, String::new());
         let guard = startup
             .lock()
@@ -323,6 +521,25 @@ mod startup_tests {
             return Err(String::from("Started must not mark nav_finished"));
         }
         Ok(())
+    }
+
+    #[test]
+    fn app_page_load_handler_emits_navigation_ready_once() {
+        let startup = Arc::new(Mutex::new(StartupTrace::new()));
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let handler = page_load_trace_handler(Arc::clone(&startup), Some(events_tx));
+        handler(wry::PageLoadEvent::Started, String::new());
+        assert!(events_rx.try_recv().is_err());
+        handler(wry::PageLoadEvent::Finished, String::new());
+        assert_eq!(
+            events_rx.recv().expect("navigation-ready event"),
+            super::AppWindowEvent::NavigationReady
+        );
+        handler(wry::PageLoadEvent::Finished, String::new());
+        assert!(
+            events_rx.try_recv().is_err(),
+            "Ready must be first-transition only"
+        );
     }
 
     #[test]
@@ -340,6 +557,35 @@ mod startup_tests {
             trace.offset(StartupPhase::NavFinished).is_some(),
             "Finished must set nav_finished for terminal-path guard"
         );
+    }
+
+    #[test]
+    fn initial_navigation_deadline_expires_only_while_pending() {
+        let startup = Mutex::new(StartupTrace::new());
+        let expired = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("one millisecond before now");
+        assert!(super::navigation_deadline_expired(&startup, expired, false));
+        let terminal_intent = std::sync::atomic::AtomicBool::new(false);
+        assert!(super::mark_terminal_intent(
+            &terminal_intent,
+            super::AppWindowCommand::Quit
+        ));
+        assert!(
+            !super::navigation_deadline_expired(
+                &startup,
+                expired,
+                terminal_intent.load(std::sync::atomic::Ordering::Acquire)
+            ),
+            "a queued terminal UI command must win at the navigation deadline"
+        );
+        startup
+            .lock()
+            .expect("startup lock")
+            .on_page_load(PageLoad::Finished);
+        assert!(!super::navigation_deadline_expired(
+            &startup, expired, false
+        ));
     }
 }
 

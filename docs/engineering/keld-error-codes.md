@@ -217,6 +217,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Unknown CLI command
 - fix: Use a live verb: create, dev, doctor, mcp, hello, ipc-echo, ipc-client.
 
+## KELD-CLI-047
+
+- crate: keld-cli
+- message: Owner-private no-flag boot staging failed
+- fix: Fix the named project input or host-copy integrity failure, then generate a fresh dev stage.
+
 ## KELD-MCP001
 
 - crate: keld-cli
@@ -461,7 +467,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-runtime
 - message: A supervised app-process generation self-terminated without tripping the crash-loop breaker, including status zero
-- fix: For status zero, keep the app alive while its host-owned session is active; for non-zero or signal termination, fix the captured stderr and re-run `keld dev`.
+- fix: Apply the owning session policy. The no-flag host tears down on an unrequested status-zero exit; an accepted correlated Quit or completed windowless work may accept status zero. For non-zero or signal termination, fix the captured stderr and relaunch the owning session.
 
 ## KELD-RUNTIME-013
 
@@ -551,4 +557,28 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-core
 - message: The supervised app process stopped while the host owned the window
-- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then re-run `keld dev`.
+- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then relaunch the no-flag host or re-run `keld dev` for the current CLI-owned path.
+
+## KELD-CORE-034
+
+- crate: keld-core
+- message: No-flag application boot is unavailable on this platform
+- fix: Complete and prove the named KEL-96/T4 platform slice before launching the no-flag host.
+
+## KELD-CORE-035
+
+- crate: keld-core
+- message: The private schema-v1 boot descriptor is invalid
+- fix: Remove duplicate or unknown fields and regenerate a bounded strict schema-v1 `keld.boot.json`.
+
+## KELD-CORE-036
+
+- crate: keld-core
+- message: The staged app root or a fixed boot target failed validation
+- fix: Regenerate the owner-private stage with exact mode, readable regular files, and no symlink or path escape.
+
+## KELD-CORE-037
+
+- crate: keld-core
+- message: The no-flag authenticated app session failed
+- fix: Fix the named guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.

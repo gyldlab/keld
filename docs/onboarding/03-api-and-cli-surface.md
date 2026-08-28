@@ -568,7 +568,7 @@ subsystems:
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
 | `keld_pack` | `Format::{App, Dmg, Nsis, Msi, Deb, Rpm, AppImage}` |
 | `keld_compat` | `Tier::{One, Two, Three}` |
-| `keld_host` | Binary crate. Prints a pre-alpha banner; `--hello` opens the window |
+| `keld_host` | Binary crate. On macOS, no arguments consume the owner-private KEL-96 stage and own the app window/session; `--hello` remains an unprivileged diagnostic |
 
 `keld-guard`'s `DenyReason` text is nonetheless treated as API: its crate `AGENTS.md`
 says "Deny text is API — test it", and it is tested.

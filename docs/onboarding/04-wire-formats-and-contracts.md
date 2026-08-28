@@ -662,6 +662,7 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-CLI-044` | Unknown `create` / `dev` / `doctor` / `hello` flag (exit 2) | `keld-cli/src/flags.rs` |
 | `KELD-CLI-045` | Reserved verb `build` / `migrate` / `gen` / `ext` (exit 2) | `keld-cli/src/verb.rs` |
 | `KELD-CLI-046` | Unknown command (exit 2) | `keld-cli/src/verb.rs` |
+| `KELD-CLI-047` | Owner-private no-flag boot staging failed | `keld-cli/src/boot.rs` |
 
 ### The "errors state the fix" rule, demonstrated
 

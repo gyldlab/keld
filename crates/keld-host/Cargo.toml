@@ -1,6 +1,6 @@
 [package]
 name = "keld-host"
-description = "The Keld host executable (pre-alpha: hello window; destination: prebuilt, signed, data-driven)"
+description = "The Keld host executable (macOS no-flag app owner plus unprivileged hello diagnostic)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,14 @@ path = "src/main.rs"
 
 [dependencies]
 keld-core = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keld-runtime = { workspace = true }
+
+[dev-dependencies]
+keld-cli = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

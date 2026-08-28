@@ -59,8 +59,9 @@ impl std::fmt::Display for HelloSessionError {
             Self::WindowPhase { cause } => write!(
                 f,
                 "KELD-CORE-033: the supervised app process stopped while the host owned \
-                 the window. Fix the cause named by the supervisor outcome below, then \
-                 re-run `keld dev`. Supervisor outcome: {cause}"
+                 the window. Fix the cause named by the nested KELD-RUNTIME diagnostic, \
+                 then relaunch the no-flag host or re-run `keld dev` for the current \
+                 CLI-owned path. Supervisor outcome: {cause}"
             ),
         }
     }

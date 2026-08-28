@@ -21,6 +21,14 @@
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.
+- **macOS no-flag primary (KEL-96 T1a/T1b):** the no-flag `keld-host`
+  validates its owner-private schema-v1 stage before any application resource,
+  then uses the guardian-composed `Supervisor` for Bun's process group and
+  KEL-116 self-termination ledger. T1b deliberately permits no successor: an
+  unrequested exit, including status zero, tears down the live session with
+  `KELD-CORE-033`; a status-zero exit after an accepted correlated Quit is
+  host-authorized and is not added to that ledger. Fresh link generation and
+  same-window recovery remain T3.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -33,9 +41,16 @@
   `HostGuardian` consumes the group identity on every terminal path, so an API
   retry cannot signal a reused PGID. Unexpected guardian exit produces
   `KELD-RUNTIME-013` only after the host fail-safe; orderly shutdown closes the
-  same writer. This API has real macOS process/link/relaunch and
-  guardian-failure evidence but no shipping caller yet; it does not implement
-  App Sandbox, Strict admission, or KEL-96 no-flag host integration.
+  same writer. The KEL-96 supervised variant may first write one fixed
+  non-authority accepted-Quit byte through that host-exclusive pipe; the
+  guardian records attribution without terminating Bun, then returns fixed
+  `KQA` over a dedicated acknowledgment pipe. The host requires that ack before
+  publishing the correlated reply. EOF still remains the only signal that
+  initiates host-death/orderly group cleanup. The generic
+  KEL-78 `run` path continues to reject all pipe data. KEL-96 now provides its first shipping caller by composing the
+  existing `Supervisor` inside the guardian and consuming the result from the
+  no-flag host owner. The guardian still does not implement App Sandbox or
+  Strict admission.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 

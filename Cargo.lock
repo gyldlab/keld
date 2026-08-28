@@ -1276,6 +1276,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]
@@ -1298,6 +1299,10 @@ dependencies = [
  "keld-ipc",
  "keld-runtime",
  "keld-wv",
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1312,7 +1317,11 @@ dependencies = [
 name = "keld-host"
 version = "0.0.1"
 dependencies = [
+ "keld-cli",
  "keld-core",
+ "keld-runtime",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
