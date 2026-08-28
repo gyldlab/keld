@@ -6,7 +6,7 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -22,8 +22,7 @@ use keld_runtime::macos_guardian;
 const ROLE_ENV: &str = "KELD_TEST_MACOS_REAPER_ROLE";
 const CONTROL_ENV: &str = "KELD_TEST_MACOS_REAPER_CONTROL";
 const APP_LINK_ENV: &str = "KELD_TEST_MACOS_REAPER_APP_LINK";
-const REVOKE_DIR_ENV: &str = "KELD_TEST_MACOS_REAPER_REVOKE_DIR";
-const HOST_REGISTRATION_ENV: &str = "KELD_TEST_MACOS_REAPER_HOST_REGISTRATION";
+const REGISTERED_LINK_ENV: &str = "KELD_TEST_MACOS_REAPER_REGISTERED_LINK";
 const TEST_EXE_ENV: &str = "KELD_TEST_MACOS_REAPER_EXE";
 const ROLE_TEST: &str = "macos_host_death_guardian_role";
 const EVENT_DEADLINE: Duration = Duration::from_secs(10);
@@ -111,6 +110,10 @@ fn guardian_death_is_fatal_to_the_live_host_and_leaves_no_group() {
         !ready.session_dir.exists(),
         "fatal guardian exit must leave no stale app-link locator"
     );
+    assert!(
+        !ready.registered_link.exists(),
+        "fatal guardian exit must revoke the registered socket"
+    );
     await_process_gone(ready.leader_pid);
     await_process_gone(ready.descendant_pid);
     await_process_gone(ready.guardian_pid);
@@ -146,6 +149,7 @@ struct ReadyState {
     descendant_pid: u32,
     endpoint: PathBuf,
     session_dir: PathBuf,
+    registered_link: PathBuf,
 }
 
 fn await_ready(
@@ -160,6 +164,7 @@ fn await_ready(
     let mut leader_event_pid = None;
     let mut descendant_pid = None;
     let mut app_link = None;
+    let mut registered_link = None;
     let mut link_bound = false;
     let mut peer_bound = false;
     let mut guardian_ready_after = None;
@@ -170,6 +175,7 @@ fn await_ready(
         || leader_event_pid.is_none()
         || descendant_pid.is_none()
         || app_link.is_none()
+        || registered_link.is_none()
         || !link_bound
         || !peer_bound
     {
@@ -193,6 +199,12 @@ fn await_ready(
                 cleanup.peer = Some(spawn_link_peer(control, &app_link_value));
                 app_link = Some(app_link_value);
             }
+            Some("REGISTERED_LINK") => {
+                registered_link =
+                    Some(PathBuf::from(fields.next().unwrap_or_else(|| {
+                        panic!("REGISTERED_LINK event omitted path: {line}")
+                    })));
+            }
             Some("LINK_BOUND") => link_bound = true,
             Some("PEER_BOUND") => peer_bound = true,
             event => panic!("unexpected readiness event {event:?}: {line}"),
@@ -208,24 +220,49 @@ fn await_ready(
     let descendant_pid = descendant_pid.expect("descendant ready");
     let guardian_pid = guardian_pid.expect("guardian ready");
     let app_link = app_link.expect("app link ready");
+    let registered_link = registered_link.expect("registered link ready");
     let (endpoint, _) = parse_app_link(&app_link).expect("parse controller app link");
     let endpoint = PathBuf::from(endpoint);
     let session_dir = endpoint
         .parent()
         .expect("app-link endpoint has session directory")
         .to_path_buf();
+    let ready = ReadyState {
+        guardian_pid,
+        leader_pid,
+        descendant_pid,
+        endpoint,
+        session_dir,
+        registered_link,
+    };
+    verify_ready_ownership(host_pid, &ready, guardian_ready_after);
+    ready
+}
+
+fn verify_ready_ownership(
+    host_pid: u32,
+    ready: &ReadyState,
+    guardian_ready_after: Option<Duration>,
+) {
     assert!(
-        guardian_pid != host_pid && guardian_pid != leader_pid,
+        fs::metadata(&ready.registered_link)
+            .expect("registered link metadata")
+            .file_type()
+            .is_socket(),
+        "registered link must be a real Unix socket before host death"
+    );
+    assert!(
+        ready.guardian_pid != host_pid && ready.guardian_pid != ready.leader_pid,
         "guardian, host, and Bun group leader must be different processes"
     );
     assert_eq!(
-        process_group(leader_pid),
-        leader_pid,
+        process_group(ready.leader_pid),
+        ready.leader_pid,
         "Bun leader must own its isolated process group"
     );
     assert_eq!(
-        process_group(descendant_pid),
-        leader_pid,
+        process_group(ready.descendant_pid),
+        ready.leader_pid,
         "Bun descendants must remain enrolled in the leader's process group"
     );
     eprintln!(
@@ -233,16 +270,9 @@ fn await_ready(
         guardian_ready_after
             .expect("guardian registration timing")
             .as_micros(),
-        process_rss_kib(guardian_pid),
-        process_rss_kib(leader_pid)
+        process_rss_kib(ready.guardian_pid),
+        process_rss_kib(ready.leader_pid)
     );
-    ReadyState {
-        guardian_pid,
-        leader_pid,
-        descendant_pid,
-        endpoint,
-        session_dir,
-    }
 }
 
 fn await_cleanup(listener: &UnixListener, ready: &ReadyState, cleanup: &mut CycleCleanup) {
@@ -255,8 +285,16 @@ fn await_cleanup(listener: &UnixListener, ready: &ReadyState, cleanup: &mut Cycl
         match line.as_str() {
             "GUARDIAN_REVOKED" => {
                 assert!(
-                    !ready.session_dir.exists(),
-                    "guardian revocation must remove the stale session directory"
+                    !ready.registered_link.exists(),
+                    "guardian revocation must unlink the registered socket"
+                );
+                assert!(
+                    !ready
+                        .registered_link
+                        .parent()
+                        .expect("registered socket has owner directory")
+                        .exists(),
+                    "guardian revocation must remove the registered owner directory"
                 );
                 guardian_revoked = true;
             }
@@ -283,6 +321,13 @@ fn await_cleanup(listener: &UnixListener, ready: &ReadyState, cleanup: &mut Cycl
         ),
         "unexpected stale locator error: {stale}"
     );
+    let registered_stale = UnixStream::connect(&ready.registered_link)
+        .expect_err("revoked registered socket must stay closed");
+    assert_eq!(
+        registered_stale.kind(),
+        std::io::ErrorKind::NotFound,
+        "registered locator must be unlinked, not merely unlistened"
+    );
     let mut peer = cleanup.peer.take().expect("live app-link peer");
     let peer_status = peer.wait().expect("wait revoked app-link peer");
     assert!(
@@ -294,39 +339,40 @@ fn await_cleanup(listener: &UnixListener, ready: &ReadyState, cleanup: &mut Cycl
 fn run_host(control: &Path) {
     let bootstrap = BootstrapListener::bind().expect("bind real app-link bootstrap");
     let app_link = bootstrap.app_link();
-    let session_dir = bootstrap
-        .path()
-        .parent()
-        .expect("bootstrap path has session directory")
-        .to_path_buf();
     send_event(control, &format!("APP_LINK {app_link}"));
 
-    let registration_path = control.with_extension(format!("host-{}", std::process::id()));
-    let registration_listener = UnixListener::bind(&registration_path)
-        .expect("bind private guardian registration endpoint");
+    let registered_dir = control.with_extension(format!("registered-{}", std::process::id()));
+    fs::create_dir(&registered_dir).expect("create registered link directory");
+    let mut registered_permissions = fs::metadata(&registered_dir)
+        .expect("registered directory metadata")
+        .permissions();
+    registered_permissions.set_mode(0o700);
+    fs::set_permissions(&registered_dir, registered_permissions)
+        .expect("set registered directory permissions");
+    let registered_link = registered_dir.join("grant.sock");
+    let registered_listener =
+        UnixListener::bind(&registered_link).expect("bind actual registered link");
+    send_event(
+        control,
+        &format!("REGISTERED_LINK {}", registered_link.display()),
+    );
 
-    let mut guardian = Command::new(env::current_exe().expect("current test binary"))
+    let mut guardian_command = Command::new(env::current_exe().expect("current test binary"));
+    guardian_command
         .args(["--exact", ROLE_TEST, "--nocapture"])
         .env(ROLE_ENV, "guardian")
         .env(CONTROL_ENV, control)
-        .env(REVOKE_DIR_ENV, &session_dir)
-        .env(HOST_REGISTRATION_ENV, &registration_path)
-        .stdin(Stdio::piped())
+        .env(REGISTERED_LINK_ENV, &registered_link)
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn guardian");
-
-    let host_liveness_writer = guardian.stdin.take().expect("guardian liveness writer");
-    let registration = accept_line_before(&registration_listener, Instant::now() + EVENT_DEADLINE);
-    fs::remove_file(&registration_path).expect("remove private registration endpoint");
-    let group_pid = registration
-        .trim()
-        .parse()
-        .expect("guardian registration is a group pid");
-    let mut guardian =
-        macos_guardian::HostGuardian::register(guardian, host_liveness_writer, group_pid)
-            .expect("register production host guardian owner");
+        .stderr(Stdio::inherit());
+    let pending = macos_guardian::GuardianBootstrap::spawn(guardian_command)
+        .expect("spawn production guardian bootstrap");
+    let guardian_pid = pending.guardian_pid().expect("pending guardian pid");
+    let mut guardian = pending
+        .register_until(Instant::now() + EVENT_DEADLINE)
+        .expect("authenticate production guardian registration");
+    let group_pid = guardian.group_pid().expect("registered Bun group");
+    send_event(control, &format!("GUARDIAN {guardian_pid} {group_pid}"));
     let authenticated_stream = bootstrap
         .accept_authenticated()
         .expect("accept real app-link peer")
@@ -335,6 +381,8 @@ fn run_host(control: &Path) {
     match guardian.wait_fatal() {
         Err(error @ keld_runtime::RuntimeError::GuardianExited { .. }) => {
             drop(authenticated_stream);
+            drop(registered_listener);
+            revoke_registered_link(&registered_link).expect("host fatal-path link revocation");
             send_event(control, &format!("FATAL {group_pid} {error}"));
         }
         Err(error) => panic!("guardian watcher failed: {error}"),
@@ -343,31 +391,14 @@ fn run_host(control: &Path) {
 }
 
 fn run_guardian(control: &Path) {
-    let control_for_spawn = control.to_path_buf();
     let control_for_revoke = control.to_path_buf();
-    let host_registration =
-        PathBuf::from(env::var_os(HOST_REGISTRATION_ENV).expect("host registration endpoint"));
-    let revoke_dir = PathBuf::from(env::var_os(REVOKE_DIR_ENV).expect("revocation directory"));
+    let registered_link =
+        PathBuf::from(env::var_os(REGISTERED_LINK_ENV).expect("registered link path"));
     let command = bun_leader_command(control);
-    let report = macos_guardian::run(
-        command,
-        std::io::stdin().lock(),
-        move |leader_pid| {
-            try_send_event(&host_registration, &leader_pid.to_string())?;
-            try_send_event(
-                &control_for_spawn,
-                &format!("GUARDIAN {} {leader_pid}", std::process::id()),
-            )
-        },
-        move || {
-            if let Err(error) = fs::remove_dir(&revoke_dir)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(error);
-            }
-            try_send_event(&control_for_revoke, "GUARDIAN_REVOKED")
-        },
-    )
+    let report = macos_guardian::run(command, std::io::stdin().lock(), move || {
+        revoke_registered_link(&registered_link)?;
+        try_send_event(&control_for_revoke, "GUARDIAN_REVOKED")
+    })
     .expect("run production guardian API");
     let leader_pid = report.leader_pid();
     let leader_status = report.leader_status();
@@ -432,6 +463,7 @@ process.exit(child.exitCode ?? 1);
     command
         .args(["-e", SCRIPT])
         .env(CONTROL_ENV, control)
+        .env_remove(REGISTERED_LINK_ENV)
         .env(
             TEST_EXE_ENV,
             env::current_exe().expect("current test binary"),
@@ -460,6 +492,17 @@ fn try_send_event(control: &Path, event: &str) -> std::io::Result<()> {
     let mut stream = UnixStream::connect(control)?;
     stream.write_all(event.as_bytes())?;
     stream.write_all(b"\n")
+}
+
+fn revoke_registered_link(path: &Path) -> std::io::Result<()> {
+    fs::remove_file(path)?;
+    let owner_dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "registered link has no owner directory",
+        )
+    })?;
+    fs::remove_dir(owner_dir)
 }
 
 fn accept_line_before(listener: &UnixListener, deadline: Instant) -> String {

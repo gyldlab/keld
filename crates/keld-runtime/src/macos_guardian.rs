@@ -7,24 +7,207 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::time::Instant;
 
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::sys::signal::{Signal, killpg};
 use nix::sys::stat::{SFlag, fstat};
-use nix::unistd::Pid;
+use nix::unistd::{Pid, getpgid};
+
+use keld_ipc::link::handshake_client;
+use keld_ipc::{
+    BootstrapAdmission, BootstrapListener, BootstrapRejection, BootstrapRejectionObserver,
+    parse_app_link,
+};
 
 use crate::RuntimeError;
+
+const REGISTRATION_ENV: &str = "KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION";
+const REGISTRATION_MAGIC: [u8; 4] = *b"KGR1";
+const REGISTRATION_LEN: usize = 8;
 
 /// Observable completion of one guardian-owned Bun process group.
 #[derive(Debug)]
 pub struct GuardianReport {
     leader_pid: u32,
     leader_status: ExitStatus,
+}
+
+/// Host-side authenticated bootstrap for one private guardian process.
+///
+/// The bootstrap mints a one-use owner-only registration link, overrides the
+/// private environment value, and owns the guardian child plus sole liveness
+/// writer until [`Self::register_until`] consumes the guardian-emitted group
+/// record. Callers never supply a numeric process-group id.
+#[derive(Debug)]
+pub struct GuardianBootstrap {
+    child: Option<Child>,
+    liveness_writer: Option<ChildStdin>,
+    registration: BootstrapListener,
+}
+
+impl GuardianBootstrap {
+    /// Spawns one private guardian command with authenticated registration and
+    /// a non-inheritable host-liveness writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`RuntimeError`] if the private command is empty, the
+    /// registration link cannot be provisioned, the guardian cannot spawn, or
+    /// its piped stdin cannot be retained.
+    pub fn spawn(mut command: Command) -> Result<Self, RuntimeError> {
+        if command.get_program().is_empty() {
+            return Err(lifecycle_error(
+                "macOS guardian private bootstrap",
+                io::Error::new(io::ErrorKind::InvalidInput, "guardian program is empty"),
+            ));
+        }
+        let registration = BootstrapListener::bind().map_err(|source| {
+            lifecycle_error("macOS guardian registration-link provisioning", source)
+        })?;
+        command
+            .env(REGISTRATION_ENV, registration.app_link())
+            .stdin(Stdio::piped());
+        let mut child = command.spawn().map_err(RuntimeError::Spawn)?;
+        let Some(liveness_writer) = child.stdin.take() else {
+            let mut failures = vec![lifecycle_error(
+                "macOS guardian host-liveness writer provisioning",
+                io::Error::other("spawned guardian has no piped stdin"),
+            )];
+            if let Err(source) = child.kill()
+                && source.kind() != io::ErrorKind::InvalidInput
+            {
+                failures.push(lifecycle_error(
+                    "macOS guardian bootstrap process kill",
+                    source,
+                ));
+            }
+            if let Err(source) = child.wait() {
+                failures.push(lifecycle_error(
+                    "macOS guardian bootstrap process wait",
+                    source,
+                ));
+            }
+            return Err(collapse_failures(failures));
+        };
+        if let Err(error) = require_close_on_exec(&liveness_writer) {
+            return Err(reject_host_registration(
+                child,
+                liveness_writer,
+                None,
+                error,
+            ));
+        }
+        Ok(Self {
+            child: Some(child),
+            liveness_writer: Some(liveness_writer),
+            registration,
+        })
+    }
+
+    /// OS process id of the private guardian while registration is pending.
+    #[must_use]
+    pub fn guardian_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
+    /// Authenticates and consumes the guardian-owned process-group record.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`RuntimeError`] when the deadline elapses, registration
+    /// is cancelled or malformed, the group is not representable by macOS, or
+    /// the guardian exits before registration completes. Every rejected path
+    /// closes the liveness writer and waits the guardian before returning.
+    pub fn register_until(mut self, deadline: Instant) -> Result<HostGuardian, RuntimeError> {
+        let admission = self
+            .registration
+            .accept_authenticated_until(deadline, &NoopRegistrationObserver)
+            .map_err(|source| lifecycle_error("macOS guardian registration admission", source));
+        let mut stream = match admission {
+            Ok(BootstrapAdmission::Authenticated(stream)) => stream,
+            Ok(BootstrapAdmission::Cancelled) => {
+                return Err(self.reject_registration(lifecycle_error(
+                    "macOS guardian registration admission",
+                    io::Error::new(io::ErrorKind::Interrupted, "registration was cancelled"),
+                )));
+            }
+            Ok(BootstrapAdmission::DeadlineElapsed) => {
+                return Err(self.reject_registration(lifecycle_error(
+                    "macOS guardian registration admission",
+                    io::Error::new(io::ErrorKind::TimedOut, "registration deadline elapsed"),
+                )));
+            }
+            Err(error) => return Err(self.reject_registration(error)),
+        };
+        let mut record = [0_u8; REGISTRATION_LEN];
+        if let Err(source) = stream.read_exact(&mut record) {
+            return Err(self.reject_registration(lifecycle_error(
+                "macOS guardian registration record",
+                source,
+            )));
+        }
+        if record[..4] != REGISTRATION_MAGIC {
+            return Err(self.reject_registration(lifecycle_error(
+                "macOS guardian registration record",
+                io::Error::new(io::ErrorKind::InvalidData, "registration magic is not KGR1"),
+            )));
+        }
+        let group_pid = u32::from_be_bytes(record[4..].try_into().map_err(|_| {
+            lifecycle_error(
+                "macOS guardian registration record",
+                io::Error::new(io::ErrorKind::InvalidData, "registration pid is truncated"),
+            )
+        })?);
+        validate_group_leader(group_pid).map_err(|error| self.reject_registration(error))?;
+
+        let child = self.child.take().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian registration owner",
+                io::Error::new(io::ErrorKind::NotConnected, "guardian child is missing"),
+            )
+        })?;
+        let liveness_writer = self.liveness_writer.take().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian registration owner",
+                io::Error::new(io::ErrorKind::NotConnected, "liveness writer is missing"),
+            )
+        })?;
+        HostGuardian::from_registered_parts(child, liveness_writer, group_pid)
+    }
+
+    fn reject_registration(&mut self, error: RuntimeError) -> RuntimeError {
+        let Some(child) = self.child.take() else {
+            return error;
+        };
+        let Some(liveness_writer) = self.liveness_writer.take() else {
+            return error;
+        };
+        reject_host_registration(child, liveness_writer, None, error)
+    }
+}
+
+impl Drop for GuardianBootstrap {
+    fn drop(&mut self) {
+        let (Some(mut child), Some(liveness_writer)) =
+            (self.child.take(), self.liveness_writer.take())
+        else {
+            return;
+        };
+        drop(liveness_writer);
+        let _ = child.wait();
+    }
+}
+
+struct NoopRegistrationObserver;
+
+impl BootstrapRejectionObserver for NoopRegistrationObserver {
+    fn rejected(&self, _rejection: BootstrapRejection) {}
 }
 
 /// Host-owned handle for one registered private guardian.
@@ -36,44 +219,48 @@ pub struct GuardianReport {
 pub struct HostGuardian {
     child: Child,
     liveness_writer: Option<ChildStdin>,
-    group_pid: u32,
+    group_pid: Option<u32>,
 }
 
 impl HostGuardian {
-    /// Registers a spawned private guardian after it reports its Bun group.
-    ///
-    /// The writer must be the guardian child's piped stdin and must carry
-    /// `FD_CLOEXEC`; this keeps the sole writer in the host. The caller must
-    /// independently authenticate the reported group before registration.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed lifecycle error when the group is zero, the writer is
-    /// inheritable, or the guardian cannot be inspected. If the guardian has
-    /// already exited, its registered group is terminated and
-    /// [`RuntimeError::GuardianExited`] is returned.
-    pub fn register(
+    fn from_registered_parts(
         mut child: Child,
         liveness_writer: ChildStdin,
         group_pid: u32,
     ) -> Result<Self, RuntimeError> {
-        if group_pid == 0 {
-            return Err(lifecycle_error(
-                "macOS guardian host registration",
-                io::Error::new(io::ErrorKind::InvalidInput, "process group is zero"),
+        if let Err(error) = validate_group_leader(group_pid) {
+            return Err(reject_host_registration(
+                child,
+                liveness_writer,
+                (group_pid != 0).then_some(group_pid),
+                error,
             ));
         }
-        require_close_on_exec(&liveness_writer)?;
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|source| lifecycle_error("macOS guardian process-handle inspection", source))?
-        {
-            return Err(unexpected_guardian_exit(group_pid, status));
+        if let Err(error) = require_close_on_exec(&liveness_writer) {
+            return Err(reject_host_registration(
+                child,
+                liveness_writer,
+                Some(group_pid),
+                error,
+            ));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Err(unexpected_guardian_exit(group_pid, status)),
+            Ok(None) => {}
+            Err(source) => {
+                let error = lifecycle_error("macOS guardian process-handle inspection", source);
+                return Err(reject_host_registration(
+                    child,
+                    liveness_writer,
+                    Some(group_pid),
+                    error,
+                ));
+            }
         }
         Ok(Self {
             child,
             liveness_writer: Some(liveness_writer),
-            group_pid,
+            group_pid: Some(group_pid),
         })
     }
 
@@ -85,7 +272,7 @@ impl HostGuardian {
 
     /// Registered Bun process-group leader.
     #[must_use]
-    pub const fn group_pid(&self) -> u32 {
+    pub const fn group_pid(&self) -> Option<u32> {
         self.group_pid
     }
 
@@ -97,12 +284,19 @@ impl HostGuardian {
     /// guardian exit invokes the group fail-safe and returns
     /// [`RuntimeError::GuardianExited`].
     pub fn poll_fatal(&mut self) -> Result<(), RuntimeError> {
-        let status = self.child.try_wait().map_err(|source| {
-            lifecycle_error("macOS guardian process-handle inspection", source)
-        })?;
+        self.require_active()?;
+        let status = match self.child.try_wait() {
+            Ok(status) => status,
+            Err(source) => {
+                return Err(
+                    self.fail_observation("macOS guardian process-handle inspection", source)
+                );
+            }
+        };
         if let Some(status) = status {
             self.liveness_writer.take();
-            return Err(unexpected_guardian_exit(self.group_pid, status));
+            let group_pid = self.take_registered_group()?;
+            return Err(unexpected_guardian_exit(group_pid, status));
         }
         Ok(())
     }
@@ -118,12 +312,16 @@ impl HostGuardian {
     /// Always returns [`RuntimeError::GuardianExited`] after the process wait,
     /// or a typed lifecycle error if the wait itself fails.
     pub fn wait_fatal(&mut self) -> Result<(), RuntimeError> {
-        let status = self
-            .child
-            .wait()
-            .map_err(|source| lifecycle_error("macOS guardian process-handle wait", source))?;
+        self.require_active()?;
+        let status = match self.child.wait() {
+            Ok(status) => status,
+            Err(source) => {
+                return Err(self.fail_observation("macOS guardian process-handle wait", source));
+            }
+        };
         self.liveness_writer.take();
-        Err(unexpected_guardian_exit(self.group_pid, status))
+        let group_pid = self.take_registered_group()?;
+        Err(unexpected_guardian_exit(group_pid, status))
     }
 
     /// Performs orderly shutdown through the same EOF cleanup owner.
@@ -134,25 +332,69 @@ impl HostGuardian {
     /// non-success guardian exit invokes the group fail-safe and returns
     /// [`RuntimeError::GuardianExited`].
     pub fn shutdown(&mut self) -> Result<ExitStatus, RuntimeError> {
+        self.require_active()?;
         self.liveness_writer.take();
         let status = match self.child.wait() {
             Ok(status) => status,
             Err(source) => {
-                let mut failures = vec![lifecycle_error(
-                    "macOS guardian orderly-shutdown wait",
-                    source,
-                )];
-                if let Err(error) = terminate_registered_group(self.group_pid) {
-                    failures.push(error);
-                }
-                return Err(collapse_failures(failures));
+                return Err(self.fail_observation("macOS guardian orderly-shutdown wait", source));
             }
         };
+        let group_pid = self.take_registered_group()?;
         if status.success() {
             Ok(status)
         } else {
-            Err(unexpected_guardian_exit(self.group_pid, status))
+            Err(unexpected_guardian_exit(group_pid, status))
         }
+    }
+
+    fn require_active(&self) -> Result<u32, RuntimeError> {
+        self.group_pid.ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian terminal owner reuse",
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "guardian owner is already terminal; start a fresh session",
+                ),
+            )
+        })
+    }
+
+    fn take_registered_group(&mut self) -> Result<u32, RuntimeError> {
+        self.group_pid.take().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian terminal owner reuse",
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "guardian owner is already terminal; start a fresh session",
+                ),
+            )
+        })
+    }
+
+    fn fail_observation(&mut self, phase: &'static str, source: io::Error) -> RuntimeError {
+        self.liveness_writer.take();
+        let mut failures = vec![lifecycle_error(phase, source)];
+        if let Some(group_pid) = self.group_pid.take()
+            && let Err(error) = terminate_registered_group(group_pid)
+        {
+            failures.push(error);
+        }
+        if let Err(source) = self.child.kill()
+            && source.kind() != io::ErrorKind::InvalidInput
+        {
+            failures.push(lifecycle_error(
+                "macOS guardian fail-safe process kill",
+                source,
+            ));
+        }
+        if let Err(source) = self.child.wait() {
+            failures.push(lifecycle_error(
+                "macOS guardian fail-safe process wait",
+                source,
+            ));
+        }
+        collapse_failures(failures)
     }
 }
 
@@ -162,9 +404,13 @@ impl Drop for HostGuardian {
             return;
         }
         match self.child.wait() {
-            Ok(status) if status.success() => {}
+            Ok(status) if status.success() => {
+                self.group_pid.take();
+            }
             Ok(_) | Err(_) => {
-                let _ = terminate_registered_group(self.group_pid);
+                if let Some(group_pid) = self.group_pid.take() {
+                    let _ = terminate_registered_group(group_pid);
+                }
             }
         }
     }
@@ -195,40 +441,102 @@ impl GuardianReport {
 /// The revocation callback runs before group termination, and an error from it
 /// blocks successful cleanup even though the group is still terminated and
 /// waited.
-/// `child_spawned` runs immediately after spawn and before the liveness wait so
-/// the host can retain the registered group id for fatal guardian-exit cleanup.
+/// The module authenticates to the host-minted private registration link before
+/// child creation and emits the fixed `KGR1` group record after spawn. Callers
+/// cannot substitute a numeric group id.
 ///
 /// # Errors
 ///
 /// Returns a typed [`RuntimeError`] when the command is empty, spawning fails,
 /// the liveness reader carries bytes or errors, revocation fails, the group
 /// cannot be signaled, or the direct child cannot be waited.
-pub fn run<R, S, F>(
+pub fn run<R, F>(
+    command: Command,
+    liveness: R,
+    revoke_registered_resources: F,
+) -> Result<GuardianReport, RuntimeError>
+where
+    R: Read + AsFd,
+    F: FnOnce() -> io::Result<()>,
+{
+    let registration = match connect_guardian_registration() {
+        Ok(registration) => registration,
+        Err(error) => return Err(fail_before_child(error, revoke_registered_resources)),
+    };
+    run_with_registration(
+        command,
+        liveness,
+        registration,
+        |_| Ok(()),
+        revoke_registered_resources,
+    )
+}
+
+fn run_with_registration<R, W, S, F>(
     mut command: Command,
     mut liveness: R,
+    mut registration: W,
     child_spawned: S,
     revoke_registered_resources: F,
 ) -> Result<GuardianReport, RuntimeError>
 where
     R: Read + AsFd,
+    W: Write,
     S: FnOnce(u32) -> io::Result<()>,
     F: FnOnce() -> io::Result<()>,
 {
     if command.get_program().is_empty() {
-        return Err(lifecycle_error(
+        let error = lifecycle_error(
             "macOS guardian bootstrap",
             io::Error::new(io::ErrorKind::InvalidInput, "child program is empty"),
-        ));
+        );
+        return Err(fail_before_child(error, revoke_registered_resources));
     }
 
-    validate_liveness_bootstrap(&mut liveness)?;
+    if let Err(error) = validate_liveness_bootstrap(&mut liveness) {
+        return Err(fail_before_child(error, revoke_registered_resources));
+    }
 
-    command.process_group(0).stdin(Stdio::null());
-    let mut child = command.spawn().map_err(RuntimeError::Spawn)?;
+    command
+        .env_remove(REGISTRATION_ENV)
+        .process_group(0)
+        .stdin(Stdio::null());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(source) => {
+            return Err(fail_before_child(
+                RuntimeError::Spawn(source),
+                revoke_registered_resources,
+            ));
+        }
+    };
     let leader_pid = child.id();
 
+    let registration_result = validate_group_pid(leader_pid)
+        .map(|_| ())
+        .and_then(|()| write_group_registration(&mut registration, leader_pid));
+    if let Err(error) = registration_result {
+        let mut failures = vec![error];
+        if let Err(source) = revoke_registered_resources() {
+            failures.push(lifecycle_error(
+                "macOS guardian registered-resource revocation",
+                source,
+            ));
+        }
+        if let Err(error) = terminate_registered_group(leader_pid) {
+            failures.push(error);
+        }
+        if let Err(source) = child.wait() {
+            failures.push(lifecycle_error("macOS guardian direct-child wait", source));
+        }
+        return Err(collapse_failures(failures));
+    }
+
     if let Err(source) = child_spawned(leader_pid) {
-        let mut failures = vec![lifecycle_error("macOS guardian child registration", source)];
+        let mut failures = vec![lifecycle_error(
+            "macOS guardian local registration observer",
+            source,
+        )];
         if let Err(source) = revoke_registered_resources() {
             failures.push(lifecycle_error(
                 "macOS guardian registered-resource revocation",
@@ -245,13 +553,8 @@ where
     }
 
     let liveness_result = await_host_death(&mut liveness);
-    let revocation_result = if liveness_result.is_ok() {
-        revoke_registered_resources().map_err(|source| {
-            lifecycle_error("macOS guardian registered-resource revocation", source)
-        })
-    } else {
-        Ok(())
-    };
+    let revocation_result = revoke_registered_resources()
+        .map_err(|source| lifecycle_error("macOS guardian registered-resource revocation", source));
     let signal_result = terminate_registered_group(leader_pid);
     let wait_result = child.wait();
     let mut failures = Vec::new();
@@ -278,6 +581,62 @@ where
         leader_pid,
         leader_status,
     })
+}
+
+fn connect_guardian_registration() -> Result<std::os::unix::net::UnixStream, RuntimeError> {
+    let link = std::env::var(REGISTRATION_ENV).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian private registration bootstrap",
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{REGISTRATION_ENV} is unavailable: {source}"),
+            ),
+        )
+    })?;
+    let (endpoint, token) = parse_app_link(&link).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian private registration bootstrap",
+            io::Error::new(io::ErrorKind::InvalidInput, source.to_string()),
+        )
+    })?;
+    let mut stream = std::os::unix::net::UnixStream::connect(endpoint)
+        .map_err(|source| lifecycle_error("macOS guardian private registration connect", source))?;
+    handshake_client(&mut stream, &token).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian private registration authentication",
+            io::Error::other(source.to_string()),
+        )
+    })?;
+    Ok(stream)
+}
+
+fn write_group_registration(writer: &mut impl Write, group_pid: u32) -> Result<(), RuntimeError> {
+    let mut record = [0_u8; REGISTRATION_LEN];
+    record[..4].copy_from_slice(&REGISTRATION_MAGIC);
+    record[4..].copy_from_slice(&group_pid.to_be_bytes());
+    writer.write_all(&record).map_err(|source| {
+        lifecycle_error("macOS guardian authenticated group registration", source)
+    })?;
+    writer.flush().map_err(|source| {
+        lifecycle_error(
+            "macOS guardian authenticated group registration flush",
+            source,
+        )
+    })
+}
+
+fn fail_before_child(
+    error: RuntimeError,
+    revoke_registered_resources: impl FnOnce() -> io::Result<()>,
+) -> RuntimeError {
+    let mut failures = vec![error];
+    if let Err(source) = revoke_registered_resources() {
+        failures.push(lifecycle_error(
+            "macOS guardian pre-child registered-resource revocation",
+            source,
+        ));
+    }
+    collapse_failures(failures)
 }
 
 fn validate_liveness_bootstrap(reader: &mut (impl Read + AsFd)) -> Result<(), RuntimeError> {
@@ -379,13 +738,44 @@ fn await_host_death(reader: &mut impl Read) -> Result<(), RuntimeError> {
     }
 }
 
-fn terminate_registered_group(group: u32) -> Result<(), RuntimeError> {
-    let group = i32::try_from(group).map_err(|_| {
+fn validate_group_pid(group: u32) -> Result<i32, RuntimeError> {
+    if group == 0 {
+        return Err(lifecycle_error(
+            "macOS guardian host registration",
+            io::Error::new(io::ErrorKind::InvalidInput, "process group is zero"),
+        ));
+    }
+    i32::try_from(group).map_err(|_| {
         lifecycle_error(
-            "macOS guardian process-group signal",
-            io::Error::new(io::ErrorKind::InvalidInput, "process id exceeds c_int"),
+            "macOS guardian host registration",
+            io::Error::new(io::ErrorKind::InvalidInput, "process group exceeds c_int"),
+        )
+    })
+}
+
+fn validate_group_leader(group: u32) -> Result<i32, RuntimeError> {
+    let raw = validate_group_pid(group)?;
+    let observed = getpgid(Some(Pid::from_raw(raw))).map_err(|source| {
+        lifecycle_error(
+            "macOS guardian group-leader validation",
+            nix_io_error(source),
         )
     })?;
+    if observed.as_raw() == raw {
+        Ok(raw)
+    } else {
+        Err(lifecycle_error(
+            "macOS guardian group-leader validation",
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("reported pid {group} belongs to process group {observed}"),
+            ),
+        ))
+    }
+}
+
+fn terminate_registered_group(group: u32) -> Result<(), RuntimeError> {
+    let group = validate_group_pid(group)?;
     match killpg(Pid::from_raw(group), Signal::SIGKILL) {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(error) => Err(lifecycle_error(
@@ -393,6 +783,44 @@ fn terminate_registered_group(group: u32) -> Result<(), RuntimeError> {
             io::Error::from_raw_os_error(error as i32),
         )),
     }
+}
+
+fn reject_host_registration(
+    mut child: Child,
+    liveness_writer: ChildStdin,
+    group_pid: Option<u32>,
+    error: RuntimeError,
+) -> RuntimeError {
+    drop(liveness_writer);
+    let mut failures = vec![error];
+    match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            failures.push(lifecycle_error(
+                "macOS guardian rejected-registration wait",
+                io::Error::other(format!(
+                    "guardian exited unsuccessfully during registration cleanup: {status}"
+                )),
+            ));
+            if let Some(group_pid) = group_pid
+                && let Err(error) = terminate_registered_group(group_pid)
+            {
+                failures.push(error);
+            }
+        }
+        Err(source) => {
+            failures.push(lifecycle_error(
+                "macOS guardian rejected-registration wait",
+                source,
+            ));
+            if let Some(group_pid) = group_pid
+                && let Err(error) = terminate_registered_group(group_pid)
+            {
+                failures.push(error);
+            }
+        }
+    }
+    collapse_failures(failures)
 }
 
 fn require_close_on_exec(writer: &impl AsFd) -> Result<(), RuntimeError> {
@@ -465,13 +893,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn missing_private_registration_bootstrap_creates_no_child() {
+        let temp = tempfile::tempdir().expect("temporary marker directory");
+        let marker = temp.path().join("spawned");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "printf spawned > \"$1\"", "keld-guardian-test"])
+            .arg(&marker);
+        let (reader, _writer) = liveness_pipe();
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let error = run(command, reader, move || {
+            revoked_in_callback.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect_err("missing authenticated registration must fail before child spawn");
+        assert!(error.to_string().contains(REGISTRATION_ENV), "{error}");
+        assert!(!marker.exists(), "invalid bootstrap must create no child");
+        assert!(revoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn empty_program_is_rejected_before_spawn() {
         let (reader, _writer) = liveness_pipe();
-        let error = run(Command::new(""), reader, |_| Ok(()), || Ok(()))
-            .expect_err("empty guardian command must fail");
+        let error =
+            run_with_registration(Command::new(""), reader, io::sink(), |_| Ok(()), || Ok(()))
+                .expect_err("empty guardian command must fail");
         let rendered = error.to_string();
         assert!(rendered.contains("KELD-RUNTIME-003"), "{rendered}");
         assert!(rendered.contains("child program is empty"), "{rendered}");
+    }
+
+    #[test]
+    fn spawn_failure_revokes_prepared_resources() {
+        let (reader, _writer) = liveness_pipe();
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let error = run_with_registration(
+            Command::new("/definitely/missing/keld-bun"),
+            reader,
+            io::sink(),
+            |_| Ok(()),
+            move || {
+                revoked_in_callback.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect_err("spawn failure must fail closed");
+        assert!(matches!(error, RuntimeError::Spawn(_)), "{error}");
+        assert!(
+            revoked.load(Ordering::SeqCst),
+            "spawn failure must revoke every prepared resource"
+        );
+    }
+
+    #[test]
+    fn private_registration_authority_is_not_inherited_by_the_child() {
+        let (reader, writer) = liveness_pipe();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "if [ -z \"${KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION+x}\" ]; then exec /usr/bin/tail -f /dev/null; else exit 77; fi",
+            ])
+            .env(REGISTRATION_ENV, "must-not-reach-child");
+        let report = run_with_registration(
+            command,
+            reader,
+            io::sink(),
+            move |_| {
+                drop(writer);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect("guardian cleanup with stripped private authority");
+        assert_eq!(
+            report.leader_status().signal(),
+            Some(9),
+            "a child that inherited the private registration value exits 77"
+        );
     }
 
     #[test]
@@ -479,9 +980,10 @@ mod tests {
         let (reader, writer) = liveness_pipe();
         let pid = Arc::new(Mutex::new(None));
         let pid_for_registration = Arc::clone(&pid);
-        let error = run(
+        let error = run_with_registration(
             long_running_command(),
             reader,
+            io::sink(),
             move |child_pid| {
                 drop(writer);
                 *pid_for_registration.lock().expect("pid lock") = Some(child_pid);
@@ -498,16 +1000,17 @@ mod tests {
     }
 
     #[test]
-    fn liveness_bytes_fail_and_do_not_run_revocation() {
+    fn pre_child_liveness_bytes_fail_and_revoke_prepared_resources() {
         let (reader, mut writer) = liveness_pipe();
         std::io::Write::write_all(&mut writer, &[1_u8]).expect("write invalid liveness byte");
         let spawned = Arc::new(AtomicBool::new(false));
         let spawned_in_callback = Arc::clone(&spawned);
         let revoked = Arc::new(AtomicBool::new(false));
         let revoked_in_callback = Arc::clone(&revoked);
-        let error = run(
+        let error = run_with_registration(
             long_running_command(),
             reader,
+            io::sink(),
             move |_| {
                 spawned_in_callback.store(true, Ordering::SeqCst);
                 Ok(())
@@ -523,7 +1026,40 @@ mod tests {
             "{error}"
         );
         assert!(!spawned.load(Ordering::SeqCst));
-        assert!(!revoked.load(Ordering::SeqCst));
+        assert!(revoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn post_registration_liveness_bytes_still_revoke_and_reap() {
+        let (reader, mut writer) = liveness_pipe();
+        let pid = Arc::new(Mutex::new(None));
+        let pid_for_registration = Arc::clone(&pid);
+        let revoked = Arc::new(AtomicBool::new(false));
+        let revoked_in_callback = Arc::clone(&revoked);
+        let error = run_with_registration(
+            long_running_command(),
+            reader,
+            io::sink(),
+            move |child_pid| {
+                *pid_for_registration.lock().expect("pid lock") = Some(child_pid);
+                std::io::Write::write_all(&mut writer, &[1_u8])?;
+                Ok(())
+            },
+            move || {
+                revoked_in_callback.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect_err("post-registration liveness bytes must fail closed");
+        assert!(
+            error.to_string().contains("carried data instead of EOF"),
+            "{error}"
+        );
+        assert!(
+            revoked.load(Ordering::SeqCst),
+            "registered resources must be revoked on every fatal liveness result"
+        );
+        assert_gone(*pid.lock().expect("pid lock"));
     }
 
     #[test]
@@ -532,9 +1068,10 @@ mod tests {
         drop(writer);
         let spawned = Arc::new(AtomicBool::new(false));
         let spawned_in_callback = Arc::clone(&spawned);
-        let error = run(
+        let error = run_with_registration(
             long_running_command(),
             reader,
+            io::sink(),
             move |_| {
                 spawned_in_callback.store(true, Ordering::SeqCst);
                 Ok(())
@@ -551,9 +1088,10 @@ mod tests {
         let file = tempfile::tempfile().expect("temporary regular file");
         let spawned = Arc::new(AtomicBool::new(false));
         let spawned_in_callback = Arc::clone(&spawned);
-        let error = run(
+        let error = run_with_registration(
             long_running_command(),
             file,
+            io::sink(),
             move |_| {
                 spawned_in_callback.store(true, Ordering::SeqCst);
                 Ok(())
@@ -577,9 +1115,10 @@ mod tests {
         let (spawned_tx, spawned_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = run(
+            let result = run_with_registration(
                 long_running_command(),
                 reader,
+                io::sink(),
                 move |_| {
                     spawned_tx.send(()).map_err(io::Error::other)?;
                     Ok(())
@@ -610,9 +1149,10 @@ mod tests {
         let (reader, writer) = liveness_pipe();
         let pid = Arc::new(Mutex::new(None));
         let pid_for_registration = Arc::clone(&pid);
-        let error = run(
+        let error = run_with_registration(
             long_running_command(),
             reader,
+            io::sink(),
             move |child_pid| {
                 *pid_for_registration.lock().expect("pid lock") = Some(child_pid);
                 drop(writer);
@@ -651,7 +1191,7 @@ mod tests {
             .stderr(Stdio::null());
         let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
         let writer = guardian.stdin.take().expect("guardian liveness writer");
-        let mut owner = HostGuardian::register(guardian, writer, group_pid)
+        let mut owner = HostGuardian::from_registered_parts(guardian, writer, group_pid)
             .expect("register host guardian owner");
         kill(
             Pid::from_raw(i32::try_from(owner.guardian_pid()).expect("guardian pid fits i32")),
@@ -672,10 +1212,15 @@ mod tests {
         ));
         let status = group.wait().expect("wait fail-safe-killed group");
         assert_eq!(status.signal(), Some(9));
+        assert_eq!(owner.group_pid(), None);
     }
 
     #[test]
     fn orderly_shutdown_closes_the_same_liveness_writer() {
+        let mut group_command = long_running_command();
+        group_command.process_group(0);
+        let mut group = group_command.spawn().expect("spawn registered group");
+        let group_pid = group.id();
         let mut guardian_command = Command::new("/bin/sh");
         guardian_command
             .args(["-c", "read ignored || exit 0"])
@@ -684,10 +1229,83 @@ mod tests {
             .stderr(Stdio::null());
         let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
         let writer = guardian.stdin.take().expect("guardian liveness writer");
-        let mut owner = HostGuardian::register(guardian, writer, u32::MAX)
+        let mut owner = HostGuardian::from_registered_parts(guardian, writer, group_pid)
             .expect("register host guardian owner");
         let status = owner.shutdown().expect("orderly EOF shutdown");
         assert!(status.success());
+        assert_eq!(owner.group_pid(), None);
+        let error = owner
+            .shutdown()
+            .expect_err("terminal owner must not reuse its numeric group id");
+        assert!(error.to_string().contains("already terminal"), "{error}");
+        terminate_registered_group(group_pid).expect("remove orderly-shutdown test group");
+        let group_status = group.wait().expect("wait orderly-shutdown test group");
+        assert_eq!(group_status.signal(), Some(9));
+    }
+
+    #[test]
+    fn rejected_host_registration_waits_the_guardian() {
+        let mut guardian_command = Command::new("/bin/sh");
+        guardian_command
+            .args(["-c", "read ignored || exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
+        let guardian_pid = guardian.id();
+        let writer = guardian.stdin.take().expect("guardian liveness writer");
+        let error = HostGuardian::from_registered_parts(guardian, writer, 0)
+            .expect_err("zero group must reject registration");
+        assert!(
+            error.to_string().contains("process group is zero"),
+            "{error}"
+        );
+        let guardian_pid = i32::try_from(guardian_pid).expect("guardian pid fits i32");
+        assert_eq!(kill(Pid::from_raw(guardian_pid), None), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn unrepresentable_group_is_rejected_and_guardian_is_waited() {
+        let mut guardian_command = Command::new("/bin/sh");
+        guardian_command
+            .args(["-c", "read ignored || exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
+        let guardian_pid = guardian.id();
+        let writer = guardian.stdin.take().expect("guardian liveness writer");
+        let error = HostGuardian::from_registered_parts(guardian, writer, u32::MAX)
+            .expect_err("unrepresentable group must reject registration");
+        assert!(error.to_string().contains("exceeds c_int"), "{error}");
+        let guardian_pid = i32::try_from(guardian_pid).expect("guardian pid fits i32");
+        assert_eq!(kill(Pid::from_raw(guardian_pid), None), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn inheritable_writer_rejection_waits_the_guardian() {
+        let mut group_command = long_running_command();
+        group_command.process_group(0);
+        let mut group = group_command.spawn().expect("spawn registered group");
+        let group_pid = group.id();
+        let mut guardian_command = Command::new("/bin/sh");
+        guardian_command
+            .args(["-c", "read ignored || exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut guardian = guardian_command.spawn().expect("spawn guardian stand-in");
+        let guardian_pid = guardian.id();
+        let writer = guardian.stdin.take().expect("guardian liveness writer");
+        fcntl(&writer, FcntlArg::F_SETFD(FdFlag::empty())).expect("make test writer inheritable");
+        let error = HostGuardian::from_registered_parts(guardian, writer, group_pid)
+            .expect_err("inheritable writer must reject registration");
+        assert!(error.to_string().contains("require FD_CLOEXEC"), "{error}");
+        let guardian_pid = i32::try_from(guardian_pid).expect("guardian pid fits i32");
+        assert_eq!(kill(Pid::from_raw(guardian_pid), None), Err(Errno::ESRCH));
+        terminate_registered_group(group_pid).expect("remove writer-rejection test group");
+        let group_status = group.wait().expect("wait writer-rejection test group");
+        assert_eq!(group_status.signal(), Some(9));
     }
 
     fn long_running_command() -> Command {

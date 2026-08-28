@@ -467,7 +467,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-runtime
 - message: The private macOS host-death guardian exited while the host session was still live
-- fix: The host invokes the registered-group fail-safe; restart the host session, and diagnose the guardian exit before relaunching the app.
+- fix: Confirm the registered-group fail-safe completed; restart the host session, diagnose the guardian exit, then relaunch the app.
 
 ## KELD-NATIVE-001
 

@@ -565,8 +565,9 @@ Renderer sandbox is a different column.
   workspace `Cargo.toml`, kipc frame layout.
 - T2b's sole workspace-manifest exception is exact `nix` with default features
   disabled: `signal` supplies the safe `killpg` wrapper and `fs` supplies safe
-  pipe-kind/CLOEXEC validation. It adds no wire, async runtime, sandbox
-  entitlement, or general Unix helper surface.
+  pipe-kind/CLOEXEC validation. Its authenticated fixed `KGR1` private control
+  record adds no public kipc frame, async runtime, sandbox entitlement, or
+  general Unix helper surface.
 - Must not add a permissive default to make Bun start.
 - This T2a amendment may add only the real-macOS test-only guardian fixture in
   `crates/keld-runtime/tests/macos_host_death_guardian.rs`; it must not wire
@@ -675,15 +676,17 @@ for the host-path deny.
 - unsafe: none in T2b; direct Darwin FFI was rejected because `keld-runtime`
   denies unsafe.
 - public API: **yes** — T2b adds the macOS-only
-  `macos_guardian::{run, GuardianReport, HostGuardian}` owner and the typed
-  `RuntimeError::GuardianExited` fatal result.
+  `macos_guardian::{run, GuardianBootstrap, GuardianReport, HostGuardian}`
+  owner and the typed `RuntimeError::GuardianExited` fatal result.
 - permission model: **yes** — this spec is the strict-profile supervisor-cleanup
   contract. Human delegation/sign-off is recorded on KEL-78.
 - dependency: **yes** — exact `nix` 0.31.3, default features off, `signal` and
   `fs` only, wraps `killpg`, `fstat`, and `fcntl` safely on the macOS target.
   MSRV 1.69 is below Keld 1.97.
-- wire protocol: none; the guardian callbacks are process-local Rust APIs and
-  no kipc bytes change.
+- wire protocol: **yes, private only** — the existing authenticated bootstrap
+  carries one fixed eight-byte `KGR1` + big-endian group-PID record. No public
+  kipc frame, channel, or application wire bytes change. Human delegation is
+  recorded on KEL-78.
 
 Removal / rollback: delete the admission gate and keep KEL-70 unsandboxed
 supervision; every surface returns to `unverified`. Do not keep a half-applied
@@ -692,8 +695,8 @@ profile.
 ## 9. Perf impact
 
 T2b adds one guardian process on the cold macOS role path. The optimized
-process-fixture diagnostic measured guardian registration at 12.928 ms cold
-and 5.024 ms warm, with guardian RSS 2,064–2,112 KiB versus the matched real
+process-fixture diagnostic measured guardian registration at 19.381 ms cold
+and 18.734 ms warm, with guardian RSS 2,080–2,096 KiB versus the matched real
 Bun leader at 12,240 KiB. These are fixture-process attribution values, not a
 Keld product score or improvement claim. KEL-96 must repeat the end-to-end product
 measurement before retaining the integration; the measured incremental process
@@ -710,9 +713,10 @@ waiver for a different product result.
    `sandbox_init` / restricted-token / landlock+seccomp sketch with this
    contract? (This PR does not.)
 4. Resolved by T2a/T2b: ledger M9–M13 selects the guardian; the public owners
-   are `keld-runtime::macos_guardian::{run, HostGuardian}`; exact `nix`
-   supplies safe descriptor validation and group signaling; the real
-   process/link/relaunch/guardian-failure fixture and attributed cost are
-   recorded.
+   are `keld-runtime::macos_guardian::{run, GuardianBootstrap, HostGuardian}`;
+   the bootstrap binds the group to the exact authenticated guardian instead of
+   accepting a caller-supplied PID; exact `nix` supplies safe descriptor
+   validation and group signaling; the real registered-socket/app-link/process/
+   relaunch/guardian-failure fixture and attributed cost are recorded.
    KEL-96 and T2c must consume this owner and prove their own enrollment; they
    must not add a parallel host-side PID or process-group cleanup policy.
