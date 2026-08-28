@@ -2035,12 +2035,14 @@ pid/status/stdout position. The two views let a completed-work caller accept a f
 status zero without hiding an earlier post-ready crash.
 `KELD-RUNTIME-002` requires three crash-class terminations (non-zero statuses or
 signals) inside a 30s sliding window
-(`RestartPolicy::default()`, `crash_times.retain`), so an app that ends itself with
-status zero, dies once, or dies repeatedly but slower than that window never trips
-it while still leaving the developer with no running app. Those cases produce
-`KELD-RUNTIME-012` under a clean `Stopped` outcome, read from durable ledger state
-the host never has to drain. Status zero still does not consume crash-loop budget or
-restart; it is a liveness fact for the owning caller.
+(`RestartPolicy::default()`, `crash_times.retain`). Status zero does not consume
+crash-loop budget or restart. Non-zero and signal terminations still follow
+`RestartPolicy`, so one crash or crashes spaced beyond the window do not by themselves
+mean no app is running. Every unrequested termination remains durable even when the
+breaker does not trip. Under a strict post-ready liveness policy, an unrecovered
+termination under a clean `Stopped` outcome surfaces `KELD-RUNTIME-012`; completed
+windowless work accepts status-zero termination after its reply is captured. The host
+reads both decisions from ledger state it never has to drain.
 
 The two codes are not alternatives. `KELD-CORE-033` is always the outer session
 diagnostic `keld dev` exits with; the `KELD-RUNTIME-*` code it quotes is the nested
