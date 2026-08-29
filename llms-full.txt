@@ -590,14 +590,15 @@ Compare that with the sketch in [`04` §2](../architecture/04-electron-compat.md
 `defineConfig` from `@keld/cli` and carries `app`, `runtime`, `windows`, `web`, `compat`, and `dev`
 sections. Three honest observations about the gap:
 
-1. **Parsing is name + renderer for the hello slice.** `keld-core`
-   (`title_from_config_ts` / `renderer_from_config_ts`) and `keld dev`
-   (`hello_title_for_project` / `load_dev_window_html`) read those two fields.
-   `find_project_root` still walks up looking for the file; `keld doctor` confirms it is
-   present. Other keys are not a config schema yet.
-2. **`entry` is still ignored.** `dev.rs` hardcodes `project_root.join("src/main.ts")`.
-   `renderer` is consulted: the window loads that file as inline HTML (default
-   `index.html`). `keld hello` still uses `HELLO_HTML`.
+1. **The macOS dev compiler reads name + entry + renderer.** `keld dev`
+   uses the small reviewed project readers to compile those values into a
+   strict `keld.boot.json`; the no-flag host never evaluates TypeScript.
+   `find_project_root` still walks up looking for the source file and `keld
+   doctor` confirms the required inputs. Other keys are not a config schema yet.
+2. **`entry` and `renderer` are staged inputs.** The compiler copies both
+   contained project-relative files into a fresh owner-private root. The host
+   starts Bun from the descriptor's validated `entry` and loads the validated
+   renderer bytes as inline HTML. `keld hello` still uses `HELLO_HTML`.
 3. **`defineConfig` cannot exist yet**, because `@keld/cli` has no code.
    `@keld/electron` is live under `packages/` (KEL-72); the other `@keld/*`
    packages are still absent.
@@ -633,25 +634,26 @@ because Bun has no stable embedding C API.
 
 ### What the code actually passes
 
-Since KEL-70, `keld dev` spawns Bun through `keld_runtime::Supervisor`, not a direct
-`Command::spawn()` call — the supervisor owns `Stdio::piped()` and restart-on-crash; the
-command factory below only sets argv/cwd/env, once per spawn attempt (including restarts):
+On macOS since KEL-96/T2, `keld dev` first spawns the staged no-flag host.
+The host's authenticated guardian composes `keld_runtime::Supervisor`, which
+owns Bun's `Stdio::piped()` and termination ledger. The command factory sets
+argv/cwd/env for the staged entry:
 
 ```rust
-// crates/keld-cli/src/dev.rs (run_dev_echo)
-let supervisor = Supervisor::start(RestartPolicy::default(), move || {
-    let mut cmd = Command::new("bun");
-    cmd.arg("run")
-        .arg(&bun_main)
-        .current_dir(&project_root)
-        .env("KELD_APP_LINK", &link_for_child);
-    cmd
-})?;
+// crates/keld-host/src/main.rs (private authenticated guardian role)
+let mut command = Command::new("bun");
+command
+    .arg("run")
+    .arg(root.join(&entry))
+    .current_dir(&root)
+    .env("KELD_APP_LINK", &app_link)
+    .stdin(Stdio::null());
 ```
 
 | Variable | Value | Consumed by |
 |---|---|---|
 | `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (`echo_link.rs`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS host only. It validates a read-only pipe, marks the reader non-inheritable, removes the variable at guardian spawn, ignores bytes, and treats EOF as CLI loss. Bun receives neither the value nor an end of the pipe. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
 Bun child could shell out to `keld ipc-client` — it was removed in KEL-30 once `main.ts` started
@@ -674,27 +676,14 @@ if (!link) {
 That is the error standard (§13) applied to an environment contract: it names the missing variable
 and gives the exact command to use instead.
 
-### Three different specified namings, none of which match the code
+### Canonical names and absent future lanes
 
-This is a real inconsistency in the repository, not a summarizing artifact, and it will need
-resolving the first time anyone implements the real spawn path:
-
-| Source | Names |
-|---|---|
-| [`01` §4](../architecture/01-overview.md) | `KELD_IPC_FD` / pipe name, plus a `keld.app.json` contract file |
-| [`06` §1](../architecture/06-runtime-and-tooling.md) | `KELD_LINK={fd\|pipe}`, `KELD_SHM={handle}`, `KELD_CONTRACT=keld.app.json` |
-| Code (`dev.rs::run_dev_echo`) | `KELD_APP_LINK` only, since KEL-30 |
-
-Grepping the workspace for `KELD_IPC_FD`, `KELD_LINK`, `KELD_SHM`, `KELD_CONTRACT`, or
-`keld.app.json` returns nothing outside those two spec files. **`keld.app.json` does not exist in
-any form** — no schema, no writer, no reader. Per root `AGENTS.md`, the two specs disagreeing with
-each other is itself a bug to be fixed in the same PR as whichever one gets implemented, and picking
-a winner is a wire-protocol decision subject to the review gate.
-
-`KELD_BIN` predicted this exact resolution and can be crossed off: the paragraph used to live here
-noting it "should disappear when the JS client lands" — `src/kipc.ts` (KEL-30) is that JS client,
-and `KELD_BIN` is gone from `run_dev_echo`. One fewer name in play, though the three-way
-`KELD_APP_LINK` vs. `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT` disagreement above is unchanged.
+`KELD_APP_LINK` is the sole Bun bootstrap contract. `KELD_DEV_LEASE` is a
+separate CLI-to-host liveness classification and is deliberately absent from
+Bun. `KELD_BIN` disappeared when `src/kipc.ts` landed. `KELD_LINK`,
+`KELD_SHM`, `KELD_CONTRACT`, `KELD_IPC_FD`, and `keld.app.json` are not live
+contracts; optional measured bulk handles and generated channel metadata remain
+future reviewed work rather than parallel environment aliases.
 
 ---
 
@@ -735,6 +724,7 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-CLI-045` | Reserved verb `build` / `migrate` / `gen` / `ext` (exit 2) | `keld-cli/src/verb.rs` |
 | `KELD-CLI-046` | Unknown command (exit 2) | `keld-cli/src/verb.rs` |
 | `KELD-CLI-047` | Owner-private no-flag boot staging failed | `keld-cli/src/boot.rs` |
+| `KELD-CLI-048` | Delegated staged host exited unsuccessfully | `keld-cli/src/dev.rs` |
 
 ### The "errors state the fix" rule, demonstrated
 
@@ -889,7 +879,9 @@ Three principal classes, with host-minted instances inside each class:
    host-owned supervised primary-child echo slice with restart/backoff/output capture
    co-lived with the hello window (KEL-30), plus KEL-96's first macOS no-flag
    `keld-host` owner with a strict staged boot descriptor, one multiplexed
-   echo/lifecycle link, native window, and ordered Quit cleanup,
+   echo/lifecycle link, native window, ordered Quit cleanup, and a shipping
+   `keld dev` launcher that owns only staging, logs, the host process handle,
+   and a private stdin-v1 liveness writer,
    plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
    accepted link to a principal and mints a fresh role generation on restart. It
    does not yet preserve a live renderer through restart, implement window-bound
@@ -947,7 +939,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
-| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; owner-private macOS boot-stage compiler live for KEL-96 fixtures (not yet wired into `keld dev`); `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
+| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; on macOS `dev` compiles an owner-private stage, launches its no-flag host, forwards stdio and retains only the host handle plus liveness writer; Windows/Linux retain the older CLI-owned slice until KEL-96/T4; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):
@@ -989,7 +981,8 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   successor is provisioned.   Current implementation has KEL-70's generic one-child
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
   macOS no-flag validated boot plus one-link echo/lifecycle session and live
-  event-loop wake, KEL-75 T1b's
+  event-loop wake, and KEL-96/T2's macOS CLI-to-host delegation with
+  lease-loss ordered teardown, KEL-75 T1b's
   Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
@@ -1103,9 +1096,13 @@ listener or second HELLO. Initial `Ready` follows native renderer navigation.
 Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, signals the guardian-owned Bun
 process group, waits/reaps the guardian's direct Bun child, and only then wakes
-the macOS UI loop to exit. The
-locator is unlinked at successful authentication. `keld dev` still uses the
-older CLI-owned hello session until KEL-96/T2 delegates to the staged host.
+the macOS UI loop to exit. The locator is unlinked at successful
+authentication. `keld dev` now uses the
+staged no-flag host on macOS: the CLI owns no app-link endpoint, token, stream,
+reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
+a host-liveness lease; it never carries a frame, principal, path, digest, or
+permission. Windows/Linux retain the older CLI-owned hello session until
+KEL-96/T4.
 
 ## 2. Wire protocol (control plane)
 
@@ -1907,14 +1904,24 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.
-- **macOS no-flag primary (KEL-96 T1a/T1b):** the no-flag `keld-host`
+- **macOS no-flag primary (KEL-96 T1a/T1b/T2):** the no-flag `keld-host`
   validates its owner-private schema-v1 stage before any application resource,
   then uses the guardian-composed `Supervisor` for Bun's process group and
   KEL-116 self-termination ledger. T1b deliberately permits no successor: an
   unrequested exit, including status zero, tears down the live session with
   `KELD-CORE-033`; a status-zero exit after an accepted correlated Quit is
   host-authorized and is not added to that ledger. Fresh link generation and
-  same-window recovery remain T3.
+  same-window recovery remain T3. Shipping `keld dev` now compiles the same
+  owner-private stage, launches that host with no Keld argument, directly
+  forwards its stdout/stderr, places it in a process group separate from the
+  terminal-facing CLI, and retains only the host process handle plus the write
+  end of a private stdin-v1 liveness pipe. The host makes its reader
+  non-inheritable before guardian/Bun spawn. CLI death yields EOF and enters
+  the host's existing accepted-shutdown attribution, quiesce, link-close,
+  guardian-reap and UI-exit tail without a fabricated lifecycle reply. The
+  dev-leased host removes its own validated `.keld/dev/<nonce>` root on every
+  ordered return, including CLI loss; an uncatchable host `SIGKILL` can retain
+  that owner-private stage for a future bounded GC policy.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -2036,7 +2043,7 @@ authenticated roles). Window-bound roles follow only after those slices.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | **Today:** runs the hello session + window in the CLI process (no host spawn, no recorder). **Destination:** starts app's own dev server (delegation, Deno lesson D4), spawns host with dev profile (permission recorder, hot-restart of app process on change via Bun watch, devtools open policy) |
+| `keld dev` | **Today:** on macOS compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Windows/Linux retain the older CLI-owned hello slice until KEL-96/T4. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
@@ -2060,20 +2067,26 @@ flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
 the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
 command". Garbage verbs are `KELD-CLI-046` (exit 2).
 
-**v0 env var is `KELD_APP_LINK`, not `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.**
+**The Bun bootstrap env var is `KELD_APP_LINK`, not
+`KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.** The separate
+`KELD_DEV_LEASE=stdin-v1` value is private CLI-to-host liveness classification:
+it is removed at guardian spawn and never reaches Bun or selects authority.
 §1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
 the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
 `keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
 on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
-before giving up with a typed `KELD-RUNTIME-002`. `keld dev` (`crates/keld-cli/src/dev.rs`
-`run_dev_echo`) spawns through that supervisor, not a bare `Command::new("bun")` wait;
+before giving up with a typed `KELD-RUNTIME-002`. On macOS shipping `keld dev`
+delegates to the staged host, which composes that supervisor through the shared
+guardian. The retained `run_dev_echo` diagnostic/test seam also spawns through
+the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
-Teardown of the host-owned hello session reads that supervision verdict rather than
-dropping it (KEL-105): if the app process dies while the host owns the window,
-`keld dev` exits 1 with `KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error
-and the captured stderr, instead of exiting 0 with no diagnostic.
+Teardown reads the supervision verdict rather than dropping it (KEL-105): if
+the app process dies while the host owns the window, the macOS no-flag host (or
+the retained legacy hello session on other platforms) exits non-zero with
+`KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error and captured stderr,
+instead of exiting 0 with no diagnostic.
 
 The breaker alone cannot carry that verdict, which is why the supervisor also
 publishes `CrashLedger`. Its original KEL-105 fields retain the crash-class count,
@@ -2125,10 +2138,10 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-Two limits are current behaviour, not destination: the app process's death does not
-close the window — the developer still closes it, and the exit code appears only
-then — and recovering the link across a restart is KEL-96 AC5 (no-flag host boot),
-not this path.
+Two limits remain. The legacy CLI-owned window path does not close its window
+until the developer does; only then does its exit code appear. The macOS
+host-owned path closes on a fatal app termination, but recovering the link while
+preserving that window remains KEL-96/T3 rather than a T2 claim.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
@@ -3813,6 +3826,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Owner-private no-flag boot staging failed
 - fix: Fix the named project input or host-copy integrity failure, then generate a fresh dev stage.
 
+## KELD-CLI-048
+
+- crate: keld-cli
+- message: The delegated staged host exited unsuccessfully
+- fix: Fix the preceding host diagnostic, then re-run `keld dev`.
+
 ## KELD-MCP001
 
 - crate: keld-cli
@@ -4147,7 +4166,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-core
 - message: The supervised app process stopped while the host owned the window
-- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then relaunch the no-flag host or re-run `keld dev` for the current CLI-owned path.
+- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then relaunch the no-flag host or re-run `keld dev`.
 
 ## KELD-CORE-034
 
@@ -4171,7 +4190,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-core
 - message: The no-flag authenticated app session failed
-- fix: Fix the named guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+- fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
 
 ---
 

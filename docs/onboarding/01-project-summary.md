@@ -224,20 +224,22 @@ concluding anything about the state of the tree.
 
 ### What actually runs today
 
-Verified on macOS, 2026-08-10:
+Verified on macOS, 2026-08-29:
 
 | Command | What it really does |
 |---|---|
 | `just hello` / `cargo run -p keld-host -- --hello` | Opens a `WKWebView`/`WebView2`/`WebKitGTK` window with static HTML (macOS/Windows/Linux, KEL-28) |
 | `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
 | `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS, Windows, and Linux |
-| `keld dev` | Runs doctor, starts an in-process echo server on a UDS (loopback TCP on Windows), spawns `bun run src/main.ts` through `keld_runtime::Supervisor` (KEL-70) with `KELD_APP_LINK` (Bun speaks kipc itself via `src/kipc.ts`, no `KELD_BIN`), then opens the hello window on macOS/Windows/Linux; extra tokens including `--watch` are `KELD-CLI-044` |
+| `keld dev` | Runs doctor. On macOS it compiles an owner-private stage, launches the staged `keld-host` with no Keld argument, forwards stdio, and retains only the host handle plus a private stdin-v1 liveness writer; the host owns the window, app link and guardian-composed Bun supervisor. Windows/Linux retain the older CLI-owned echo/window slice until KEL-96/T4. Extra tokens including `--watch` are `KELD-CLI-044`. |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
-| `cargo nextest run --workspace --profile ci` | 17 tests, all green |
+| `cargo nextest run --workspace --profile ci` | Runs the current workspace CI suite |
 
-`keld dev` is still a slice, not the destination architecture: the CLI process owns
-the echo server and the hello window (there is no separate `keld-host` in this loop),
-and there is no `@keld/api`. Bun *is* supervised — `keld_runtime::Supervisor` spawns
+`keld dev` is still a slice, not the destination architecture. On macOS the
+CLI now delegates application ownership to a staged no-flag `keld-host`; on
+Windows/Linux the older CLI-owned loop remains until KEL-96/T4. There is still
+no `@keld/api`, dev permission recorder, Bun-watch recovery, or guarded app
+dispatch. Bun *is* supervised — `keld_runtime::Supervisor` spawns
 `bun run src/main.ts` (KEL-70) instead of a bare `Command::new("bun")` wait. The
 template's `src/main.ts` proves the link by speaking kipc itself, through
 `src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30); schema-driven codegen
@@ -252,10 +254,10 @@ is a slice, not the system.
 |---|---|---|---|
 | `keld-ipc` | [02-ipc](../architecture/02-ipc.md) | 16-byte little-endian frame header, 11 `FrameKind`s, `HELLO` handshake, postcard codec, blocking framed read/write, one hardcoded `echo` channel | shm bulk lane, credit-window backpressure, streams/cancel, schema-driven channel registry, codegen, fuzzing |
 | `keld-wv` | [05-webview-and-native](../architecture/05-webview-and-native.md) | `WebEngine` trait + per-platform extension traits; all three backends implemented — macOS + Linux on tao + wry as **interim scaffolding** (macOS to be replaced by direct objc2 bindings, Linux by webkit6/gtk4), Windows on direct `webview2-com` since KEL-65; Linux GPU-stack probe (NVIDIA+Wayland safe-mode) built in, `detect`/`apply` split for side-effect-free reads. Linux: build+225-test-green on real Ubuntu, `Xvfb`+`xdotool` finds a real titled window; macOS/Windows watched on a real desktop, Linux not yet | `keld://` scheme, `window.keld` bridge, CEF, `keld doctor` line for GPU safe-mode, watching the Linux window render on real hardware/VM |
-| `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `LifecycleSession` (KEL-72); `keld-host --hello` diagnostic; macOS no-flag strict `keld.boot.json` consumer with real window, one echo/lifecycle session, guardian-composed Bun supervision, and ordered Quit | Windows/Linux no-flag integration, full window registry, release-signed boot container, guarded policy load |
+| `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `LifecycleSession` (KEL-72); `keld-host --hello` diagnostic; macOS no-flag strict `keld.boot.json` consumer with real window, one echo/lifecycle session, guardian-composed Bun supervision, ordered Quit, and CLI-lease-loss teardown | Windows/Linux no-flag integration, fresh-link same-window restart, full window registry, release-signed boot container, guarded policy load |
 | `keld-guard` | [03-security](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for `app.<group>.<action>` path scopes; `Principal`, `Decision`, `DenyReason`; `dispatch_privileged` (KEL-69); `keld_native::fs` uses it (KEL-71) | `$VARS`/symlink canonicalization, channel grants, recorder, audit log |
-| `keld-runtime` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §1 | `Supervisor`: spawn, stdout/stderr capture, restart-on-crash with exponential backoff, crash-loop breaker (`RestartPolicy`, default 3 crashes / 30 s → typed `KELD-RUNTIME-002`); `keld dev` spawns through it, not a bare `Command::new("bun")` wait (KEL-70) | Bun discovery/pinning/download, health checks beyond exit code, `--inspect` passthrough, Bun watch hot-restart, destination `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT` env |
-| `keld-cli` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §2 | `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client` | `build`, `migrate`, `gen`, `ext`; `--json` on every verb; stable exit codes 0/1/2/3; delegated dev server |
+| `keld-runtime` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §1 | `Supervisor`: spawn, stdout/stderr capture, restart/backoff and crash ledger; the macOS no-flag host composes it inside the host-death guardian, while retained diagnostics use it directly | Bun discovery/pinning/download, `--inspect` passthrough, Bun-watch hot-restart, strict-profile admission and complete named-role wiring |
+| `keld-cli` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §2 | `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`; macOS `dev` owns staging/logs/host-handle/lease only | `build`, `migrate`, `gen`, `ext`; `--json` on every verb; stable exit codes 0/1/2/3; delegated app dev server and recorder |
 | `keld-native` | [05-webview-and-native](../architecture/05-webview-and-native.md) §3 | A `MODULES` constant naming the 15 planned modules; `fs` is live (KEL-71) — `fs_read`/`fs_write` and a real `serve_fs_session` kipc channel, both gated through `keld_ipc::guard_dispatch::dispatch_privileged` before any OS call; cross-platform by construction (`std::fs`), no per-platform code needed | every other module; `fs.watch`, drag-out, recent docs (`fs+`'s remaining destination scope) |
 | `keld-compat` | [04-electron-compat](../architecture/04-electron-compat.md) | `Tier` enum; KEL-72 conformance tests for `@keld/electron` lifecycle | `protocol` / `session` / `webContents` host emulation; remaining Tier 1 APIs |
 | `keld-pack` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §3 | A `Format` enum (app/dmg/nsis/msi/deb/rpm/AppImage) | all packaging and signing |

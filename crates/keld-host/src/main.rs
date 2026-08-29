@@ -9,11 +9,11 @@
 
 use std::env;
 #[cfg(target_os = "macos")]
-use std::fs::File;
+use std::fs::{self, File};
 #[cfg(target_os = "macos")]
 use std::io::{self, Write};
 #[cfg(target_os = "macos")]
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::process;
@@ -59,12 +59,63 @@ fn main() {
         process::exit(2);
     }
 
+    #[cfg(target_os = "macos")]
+    let dev_stage_cleanup = dev_stage_cleanup_root();
     let result = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
         .and_then(keld_core::app_session::run_unprivileged);
+    let mut failed = false;
     if let Err(error) = result {
         eprintln!("{error}");
+        failed = true;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(root) = dev_stage_cleanup
+        && let Err(source) = fs::remove_dir_all(&root)
+    {
+        eprintln!(
+            "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
+            root.display()
+        );
+        failed = true;
+    }
+    if failed {
         process::exit(1);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn dev_stage_cleanup_root() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    let lease = env::var_os("KELD_DEV_LEASE");
+    dev_stage_cleanup_root_for(&executable, lease.as_deref())
+}
+
+#[cfg(target_os = "macos")]
+fn dev_stage_cleanup_root_for(
+    executable: &std::path::Path,
+    lease: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if lease != Some(std::ffi::OsStr::new("stdin-v1")) {
+        return None;
+    }
+    let executable = executable.canonicalize().ok()?;
+    let root = executable.parent()?;
+    let nonce = root.file_name()?.to_str()?;
+    if nonce.len() != 32
+        || !nonce
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        || root.parent()?.file_name()? != "dev"
+        || root.parent()?.parent()?.file_name()? != ".keld"
+    {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(root).ok()?;
+    if !metadata.is_dir() || metadata.permissions().mode() & 0o7777 != 0o700 {
+        return None;
+    }
+    Some(root.to_path_buf())
 }
 
 #[cfg(target_os = "macos")]
@@ -156,10 +207,39 @@ fn reopen_validated_entry(
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::ffi::OsStr;
     use std::fs;
-    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    use super::reopen_validated_entry;
+    use super::{dev_stage_cleanup_root_for, reopen_validated_entry};
+
+    #[test]
+    fn dev_stage_cleanup_accepts_only_the_exact_private_nonce_layout() {
+        let temp = tempfile::tempdir().expect("cleanup fixture");
+        let root = temp
+            .path()
+            .join("project/.keld/dev/0123456789abcdef0123456789abcdef");
+        fs::create_dir_all(&root).expect("private nonce root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private mode");
+        let executable = root.join("keld-host");
+        fs::write(&executable, b"host").expect("host fixture");
+        let canonical_root = root.canonicalize().expect("canonical nonce root");
+
+        assert_eq!(
+            dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1"))).as_deref(),
+            Some(canonical_root.as_path())
+        );
+        assert!(dev_stage_cleanup_root_for(&executable, None).is_none());
+        assert!(dev_stage_cleanup_root_for(&executable, Some(OsStr::new("wrong"))).is_none());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("public mode");
+        assert!(dev_stage_cleanup_root_for(&executable, Some(OsStr::new("stdin-v1"))).is_none());
+
+        let unrelated = temp.path().join("bin/keld-host");
+        fs::create_dir_all(unrelated.parent().expect("unrelated parent"))
+            .expect("unrelated directory");
+        fs::write(&unrelated, b"host").expect("unrelated host");
+        assert!(dev_stage_cleanup_root_for(&unrelated, Some(OsStr::new("stdin-v1"))).is_none());
+    }
 
     #[test]
     fn guardian_rejects_entry_path_replacement_after_parent_validation() {

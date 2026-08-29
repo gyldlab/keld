@@ -1,5 +1,7 @@
 //! Validated no-flag application boot and host-owned primary session (KEL-96).
 
+#[cfg(target_os = "macos")]
+use std::ffi::OsStr;
 use std::fmt;
 #[cfg(target_os = "macos")]
 use std::fs::File;
@@ -12,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command, ExitStatus, Stdio};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 #[cfg(target_os = "macos")]
@@ -24,6 +26,11 @@ use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "macos", test))]
 use serde::Deserialize;
+
+#[cfg(target_os = "macos")]
+use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
+#[cfg(target_os = "macos")]
+use nix::sys::stat::{SFlag, fstat};
 
 #[cfg(target_os = "macos")]
 use keld_ipc::codec::{decode, encode};
@@ -55,6 +62,18 @@ const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
 const DIGEST_PREFIX: &str = "sha256:";
 #[cfg(target_os = "macos")]
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
+#[cfg(target_os = "macos")]
+const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
+#[cfg(target_os = "macos")]
+const DEV_LEASE_STDIN_V1: &str = "stdin-v1";
+#[cfg(target_os = "macos")]
+const DEV_LEASE_DRAIN_READS: usize = 64;
+#[cfg(target_os = "macos")]
+const SESSION_RUNNING: u8 = 0;
+#[cfg(target_os = "macos")]
+const SESSION_LIFECYCLE_QUIT: u8 = 1;
+#[cfg(target_os = "macos")]
+const SESSION_CLI_LEASE_LOST: u8 = 2;
 
 #[cfg(target_os = "macos")]
 static LISTENER_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
@@ -62,6 +81,20 @@ static LISTENER_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 static CHILD_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "macos")]
 static WINDOW_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_os = "macos")]
+struct DevHostLease {
+    input: io::Stdin,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct SessionShutdownState {
+    cause: Arc<AtomicU8>,
+    transition: Arc<Mutex<()>>,
+    reader_stop: Arc<AtomicBool>,
+    tail_started: Arc<AtomicBool>,
+}
 /// Opaque host-owned selection minted only from the staged executable layout.
 pub struct ValidatedBootSelection {
     #[cfg(target_os = "macos")]
@@ -548,8 +581,139 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
 }
 
 #[cfg(target_os = "macos")]
+impl DevHostLease {
+    fn from_environment() -> Result<Option<Self>, HostAppError> {
+        let Some(value) = std::env::var_os(DEV_LEASE_ENV) else {
+            return Ok(None);
+        };
+        if value != OsStr::new(DEV_LEASE_STDIN_V1) {
+            return Err(app_detail(
+                "dev-host lease",
+                format!(
+                    "unsupported {DEV_LEASE_ENV} value `{}`",
+                    value.to_string_lossy()
+                ),
+            ));
+        }
+
+        let input = io::stdin();
+        configure_dev_lease_fd(&input)?;
+        Ok(Some(Self { input }))
+    }
+
+    fn poll_lost(&mut self) -> Result<bool, HostAppError> {
+        let mut input = self.input.lock();
+        poll_dev_lease_reader(&mut input)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn poll_dev_lease_reader(reader: &mut impl Read) -> Result<bool, HostAppError> {
+    let mut bytes = [0_u8; 8 * 1024];
+    for _ in 0..DEV_LEASE_DRAIN_READS {
+        match reader.read(&mut bytes) {
+            Ok(0) => return Ok(true),
+            Ok(_) => {}
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+            Err(source) if source.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(source) => return Err(app_io("dev-host lease read", &source)),
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn configure_dev_lease_fd(fd: &impl std::os::fd::AsFd) -> Result<(), HostAppError> {
+    let status =
+        fstat(fd).map_err(|source| app_detail("dev-host lease metadata", source.to_string()))?;
+    let kind = SFlag::from_bits_truncate(status.st_mode);
+    if !kind.contains(SFlag::S_IFIFO) {
+        return Err(app_detail(
+            "dev-host lease",
+            "stdin-v1 requires the CLI-owned pipe reader on standard input",
+        ));
+    }
+    let status_flags = OFlag::from_bits_truncate(
+        fcntl(fd, FcntlArg::F_GETFL)
+            .map_err(|source| app_detail("dev-host lease flags", source.to_string()))?,
+    );
+    if !(status_flags & OFlag::O_ACCMODE).is_empty() {
+        return Err(app_detail(
+            "dev-host lease",
+            "stdin-v1 standard input is not the read-only end of its pipe",
+        ));
+    }
+    let descriptor_flags = FdFlag::from_bits_truncate(
+        fcntl(fd, FcntlArg::F_GETFD)
+            .map_err(|source| app_detail("dev-host lease flags", source.to_string()))?,
+    );
+    fcntl(fd, FcntlArg::F_SETFD(descriptor_flags | FdFlag::FD_CLOEXEC))
+        .map_err(|source| app_detail("dev-host lease isolation", source.to_string()))?;
+    fcntl(fd, FcntlArg::F_SETFL(status_flags | OFlag::O_NONBLOCK))
+        .map_err(|source| app_detail("dev-host lease monitoring", source.to_string()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+impl SessionShutdownState {
+    fn new() -> Self {
+        Self {
+            cause: Arc::new(AtomicU8::new(SESSION_RUNNING)),
+            transition: Arc::new(Mutex::new(())),
+            reader_stop: Arc::new(AtomicBool::new(false)),
+            tail_started: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn cause(&self) -> u8 {
+        self.cause.load(Ordering::Acquire)
+    }
+
+    fn is_running(&self) -> bool {
+        self.cause() == SESSION_RUNNING
+    }
+
+    fn claim_lifecycle_quit(&self) -> bool {
+        self.claim(SESSION_LIFECYCLE_QUIT)
+    }
+
+    fn claim_cli_lease_lost(&self) -> bool {
+        self.claim(SESSION_CLI_LEASE_LOST)
+    }
+
+    fn claim(&self, cause: u8) -> bool {
+        let _transition = self.transition_guard();
+        let claimed = self
+            .cause
+            .compare_exchange(SESSION_RUNNING, cause, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        if claimed {
+            self.stop_reader();
+        }
+        claimed
+    }
+
+    fn transition_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        match self.transition.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn stop_reader(&self) {
+        self.reader_stop.store(true, Ordering::Release);
+    }
+
+    fn begin_tail(&self) -> bool {
+        !self.tail_started.swap(true, Ordering::AcqRel)
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned handle transition contiguous
 fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
+    let dev_lease = DevHostLease::from_environment()?;
+    let shutdown = SessionShutdownState::new();
     let AppBootSelection {
         root,
         name,
@@ -589,6 +753,7 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
         .arg(entry_metadata.dev().to_string())
         .arg(entry_metadata.ino().to_string())
         .env("KELD_APP_LINK", &app_link)
+        .env_remove(DEV_LEASE_ENV)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
@@ -622,8 +787,18 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
     };
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let guardian_owner = GuardianOwner::start(guardian, window_commands_tx.clone())?;
-    let router = PrimaryRouter::start(stream, window_commands_tx.clone(), guardian_owner.handle())?;
+    let guardian_owner = GuardianOwner::start(
+        guardian,
+        window_commands_tx.clone(),
+        dev_lease,
+        shutdown.clone(),
+    )?;
+    let router = PrimaryRouter::start(
+        stream,
+        window_commands_tx.clone(),
+        guardian_owner.handle(),
+        shutdown,
+    )?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
@@ -660,7 +835,8 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
     drop(window_commands_tx);
     let event_result = event_coordinator
         .join()
-        .map_err(|_| app_detail("window event coordinator", "thread panicked"))?;
+        .map_err(|_| app_detail("window event coordinator", "thread panicked"))
+        .and_then(std::convert::identity);
     let router_result = router.shutdown();
     drop(bootstrap);
     let guardian_result = guardian_owner.shutdown();
@@ -673,12 +849,12 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
                 [guardian_result, router_result, event_result],
             ))
         }
-        result => {
-            guardian_result?;
-            router_result?;
-            event_result?;
-            result.map_err(|source| app_detail("macOS app window", source.to_string()))
-        }
+        result => collapse_app_results([
+            result.map_err(|source| app_detail("macOS app window", source.to_string())),
+            event_result,
+            router_result,
+            guardian_result,
+        ]),
     }
 }
 
@@ -709,7 +885,7 @@ struct GuardianOwner {
 
 #[cfg(target_os = "macos")]
 enum GuardianOwnerCommand {
-    PrepareQuit(std::sync::mpsc::SyncSender<Result<(), String>>),
+    PrepareAcceptedShutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
     Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
 }
 
@@ -724,6 +900,8 @@ impl GuardianOwner {
     fn start(
         mut guardian: HostGuardian,
         window_commands: Sender<AppWindowCommand>,
+        mut dev_lease: Option<DevHostLease>,
+        shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
         let (command_tx, command_rx) = mpsc::channel();
         let handle = thread::Builder::new()
@@ -731,9 +909,9 @@ impl GuardianOwner {
             .spawn(move || {
                 loop {
                     match command_rx.recv_timeout(Duration::from_millis(50)) {
-                        Ok(GuardianOwnerCommand::PrepareQuit(reply)) => {
+                        Ok(GuardianOwnerCommand::PrepareAcceptedShutdown(reply)) => {
                             let result = guardian.accept_supervised_quit().map_err(|source| {
-                                app_runtime("guardian Quit preparation", &source)
+                                app_runtime("guardian accepted-shutdown preparation", &source)
                             });
                             let observed = match &result {
                                 Ok(()) => Ok(()),
@@ -754,6 +932,21 @@ impl GuardianOwner {
                             return result;
                         }
                         Err(RecvTimeoutError::Timeout) => {
+                            if let Some(lease) = dev_lease.as_mut() {
+                                match lease.poll_lost() {
+                                    Ok(true) => {
+                                        let _ = shutdown.claim_cli_lease_lost();
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => {
+                                        let _ = window_commands.send(AppWindowCommand::Fatal);
+                                        return Err(error);
+                                    }
+                                }
+                            }
+                            if shutdown.cause() == SESSION_CLI_LEASE_LOST {
+                                continue;
+                            }
                             if let Err(source) = guardian.poll_fatal() {
                                 let _ = window_commands.send(AppWindowCommand::Fatal);
                                 return Err(app_guardian_fatal("guardian watcher", &source));
@@ -810,20 +1003,25 @@ impl Drop for GuardianOwner {
 
 #[cfg(target_os = "macos")]
 impl GuardianOwnerHandle {
-    fn prepare_quit(&self) -> Result<(), HostAppError> {
+    fn prepare_accepted_shutdown(&self) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
-            .send(GuardianOwnerCommand::PrepareQuit(reply_tx))
-            .map_err(|_| app_detail("guardian Quit preparation", "guardian owner stopped"))?;
+            .send(GuardianOwnerCommand::PrepareAcceptedShutdown(reply_tx))
+            .map_err(|_| {
+                app_detail(
+                    "guardian accepted-shutdown preparation",
+                    "guardian owner stopped",
+                )
+            })?;
         match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(detail)) => Err(app_detail("guardian Quit preparation", detail)),
+            Ok(Err(detail)) => Err(app_detail("guardian accepted-shutdown preparation", detail)),
             Err(RecvTimeoutError::Timeout) => Err(app_detail(
-                "guardian Quit preparation",
+                "guardian accepted-shutdown preparation",
                 "guardian did not acknowledge Quit before the owner deadline",
             )),
             Err(RecvTimeoutError::Disconnected) => Err(app_detail(
-                "guardian Quit preparation",
+                "guardian accepted-shutdown preparation",
                 "guardian owner ended before acknowledging Quit",
             )),
         }
@@ -853,7 +1051,9 @@ impl GuardianOwnerHandle {
 #[derive(Clone)]
 struct PrimaryRouterHandle {
     writer: Arc<Mutex<std::os::unix::net::UnixStream>>,
-    quitting: Arc<AtomicBool>,
+    shutdown: SessionShutdownState,
+    guardian: GuardianOwnerHandle,
+    window_commands: Sender<AppWindowCommand>,
 }
 
 #[cfg(target_os = "macos")]
@@ -872,7 +1072,8 @@ impl PrimaryRouterHandle {
             .writer
             .lock()
             .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
-        if self.quitting.load(Ordering::Acquire) {
+        let _transition = self.shutdown.transition_guard();
+        if !self.shutdown.is_running() {
             return Ok(());
         }
         write_frame(
@@ -885,12 +1086,79 @@ impl PrimaryRouterHandle {
         )
         .map_err(|source| app_ipc("lifecycle event", &source))
     }
+
+    fn lifecycle_quit(&self, correlation: CorrelationId, reply: &[u8]) -> Result<(), HostAppError> {
+        let writer_guard = self
+            .writer
+            .lock()
+            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+        if !self.shutdown.claim_lifecycle_quit() {
+            drop(writer_guard);
+            return if self.shutdown.cause() == SESSION_CLI_LEASE_LOST {
+                self.cli_lease_lost()
+            } else {
+                Ok(())
+            };
+        }
+        if !self.shutdown.begin_tail() {
+            return Ok(());
+        }
+        drop(writer_guard);
+        self.guardian.prepare_accepted_shutdown()?;
+        let mut writer_guard = self
+            .writer
+            .lock()
+            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+        write_frame(
+            &mut *writer_guard,
+            FrameKind::Reply,
+            0,
+            LIFECYCLE_CHANNEL,
+            correlation,
+            reply,
+        )
+        .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
+        finish_link_shutdown(
+            writer_guard.shutdown_app_link(),
+            "lifecycle Quit link close",
+        )?;
+        drop(writer_guard);
+        self.finish_tail("lifecycle Quit")
+    }
+
+    fn cli_lease_lost(&self) -> Result<(), HostAppError> {
+        let writer_guard = self
+            .writer
+            .lock()
+            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+        if self.shutdown.cause() != SESSION_CLI_LEASE_LOST || !self.shutdown.begin_tail() {
+            return Ok(());
+        }
+        drop(writer_guard);
+        self.guardian.prepare_accepted_shutdown()?;
+        let writer_guard = self
+            .writer
+            .lock()
+            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+        finish_link_shutdown(
+            writer_guard.shutdown_app_link(),
+            "CLI lease-loss link close",
+        )?;
+        drop(writer_guard);
+        self.finish_tail("CLI lease loss")
+    }
+
+    fn finish_tail(&self, phase: &'static str) -> Result<(), HostAppError> {
+        self.guardian.shutdown_and_wait()?;
+        self.window_commands
+            .send(AppWindowCommand::Quit)
+            .map_err(|_| app_detail(phase, "UI event loop is unavailable"))
+    }
 }
 
 #[cfg(target_os = "macos")]
 struct PrimaryRouter {
     handle: PrimaryRouterHandle,
-    stop: Arc<AtomicBool>,
     reader: Option<JoinHandle<Result<(), HostAppError>>>,
 }
 
@@ -900,6 +1168,7 @@ impl PrimaryRouter {
         mut stream: std::os::unix::net::UnixStream,
         window_commands: Sender<AppWindowCommand>,
         guardian: GuardianOwnerHandle,
+        shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
         stream
             .set_app_link_read_deadline(Some(APP_LINK_READER_POLL))
@@ -911,31 +1180,27 @@ impl PrimaryRouter {
             .set_app_link_write_deadline(Some(APP_LINK_IO_DEADLINE))
             .map_err(|source| app_io("primary session writer deadline", &source))?;
         let writer = Arc::new(Mutex::new(writer_stream));
-        let quitting = Arc::new(AtomicBool::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
-        let writer_for_reader = Arc::clone(&writer);
-        let quitting_for_reader = Arc::clone(&quitting);
-        let stop_for_reader = Arc::clone(&stop);
+        let handle = PrimaryRouterHandle {
+            writer,
+            shutdown,
+            guardian,
+            window_commands,
+        };
+        let handle_for_reader = handle.clone();
         let reader = thread::Builder::new()
             .name("keld-core-primary-router".to_owned())
             .spawn(move || {
-                let result = read_primary_frames(
-                    &mut stream,
-                    writer_for_reader.as_ref(),
-                    quitting_for_reader.as_ref(),
-                    stop_for_reader.as_ref(),
-                    &window_commands,
-                    &guardian,
-                );
-                if result.is_err() && !stop_for_reader.load(Ordering::Acquire) {
-                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                let result = read_primary_frames(&mut stream, &handle_for_reader);
+                if result.is_err() {
+                    let _ = handle_for_reader
+                        .window_commands
+                        .send(AppWindowCommand::Fatal);
                 }
                 result
             })
             .map_err(|source| app_io("primary session reader", &source))?;
         Ok(Self {
-            handle: PrimaryRouterHandle { writer, quitting },
-            stop,
+            handle,
             reader: Some(reader),
         })
     }
@@ -949,8 +1214,7 @@ impl PrimaryRouter {
     }
 
     fn stop_and_join(&mut self) -> Result<(), HostAppError> {
-        self.handle.quitting.store(true, Ordering::Release);
-        self.stop.store(true, Ordering::Release);
+        self.handle.shutdown.stop_reader();
         {
             let writer = match self.handle.writer.lock() {
                 Ok(writer) => writer,
@@ -977,16 +1241,22 @@ impl Drop for PrimaryRouter {
 #[cfg(target_os = "macos")]
 fn read_primary_frames(
     reader: &mut std::os::unix::net::UnixStream,
-    writer: &Mutex<std::os::unix::net::UnixStream>,
-    quitting: &AtomicBool,
-    stop: &AtomicBool,
-    window_commands: &Sender<AppWindowCommand>,
-    guardian: &GuardianOwnerHandle,
+    handle: &PrimaryRouterHandle,
 ) -> Result<(), HostAppError> {
     loop {
-        let (header, payload) = match read_frame_interruptible(reader, stop) {
+        if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
+            handle.cli_lease_lost()?;
+            return Ok(());
+        }
+        let (header, payload) = match read_frame_interruptible(reader, &handle.shutdown.reader_stop)
+        {
             Ok(Some(frame)) => frame,
-            Ok(None) => return Ok(()),
+            Ok(None) => {
+                if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
+                    handle.cli_lease_lost()?;
+                }
+                return Ok(());
+            }
             Err(IpcError::Io(source)) if source.kind() == io::ErrorKind::UnexpectedEof => {
                 return Err(app_detail(
                     "primary session reader",
@@ -995,11 +1265,21 @@ fn read_primary_frames(
             }
             Err(source) => return Err(app_ipc("primary session reader", &source)),
         };
+        if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
+            handle.cli_lease_lost()?;
+            return Ok(());
+        }
         match (header.kind, header.channel) {
-            (FrameKind::Call, ECHO_CHANNEL) if !quitting.load(Ordering::Acquire) => {
+            (FrameKind::Call, ECHO_CHANNEL) if handle.shutdown.is_running() => {
                 let reply = keld_ipc::echo::handle_echo(&payload)
                     .map_err(|source| app_ipc("echo dispatch", &source))?;
-                write_primary_reply(writer, ECHO_CHANNEL, header.corr, &reply)?;
+                write_primary_reply(
+                    &handle.writer,
+                    &handle.shutdown,
+                    ECHO_CHANNEL,
+                    header.corr,
+                    &reply,
+                )?;
             }
             (FrameKind::Call, LIFECYCLE_CHANNEL) => {
                 let request: LifecycleRequest =
@@ -1008,45 +1288,20 @@ fn read_primary_frames(
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-                        let writer_guard = writer.lock().map_err(|_| {
-                            app_detail("primary session writer", "writer lock poisoned")
-                        })?;
-                        if quitting.swap(true, Ordering::AcqRel) {
-                            return Err(app_detail(
-                                "lifecycle Quit",
-                                "session is already quitting",
-                            ));
-                        }
-                        drop(writer_guard);
-                        guardian.prepare_quit()?;
-                        let mut writer_guard = writer.lock().map_err(|_| {
-                            app_detail("primary session writer", "writer lock poisoned")
-                        })?;
-                        write_frame(
-                            &mut *writer_guard,
-                            FrameKind::Reply,
-                            0,
-                            LIFECYCLE_CHANNEL,
-                            header.corr,
-                            &reply,
-                        )
-                        .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-                        writer_guard
-                            .shutdown_app_link()
-                            .map_err(|source| app_io("lifecycle Quit link close", &source))?;
-                        drop(writer_guard);
-                        guardian.shutdown_and_wait()?;
-                        window_commands.send(AppWindowCommand::Quit).map_err(|_| {
-                            app_detail("lifecycle Quit", "UI event loop is unavailable")
-                        })?;
+                        handle.lifecycle_quit(header.corr, &reply)?;
                         return Ok(());
                     }
                 }
             }
             (FrameKind::Ping, _) => {
-                let mut writer = writer
+                let mut writer = handle
+                    .writer
                     .lock()
                     .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+                let _transition = handle.shutdown.transition_guard();
+                if !handle.shutdown.is_running() {
+                    return Ok(());
+                }
                 write_frame(
                     &mut *writer,
                     FrameKind::Ping,
@@ -1057,7 +1312,7 @@ fn read_primary_frames(
                 )
                 .map_err(|source| app_ipc("primary session Ping", &source))?;
             }
-            (FrameKind::Call, _) if quitting.load(Ordering::Acquire) => {
+            (FrameKind::Call, _) if !handle.shutdown.is_running() => {
                 return Err(app_detail(
                     "primary session dispatch",
                     "new Call arrived after quiesce",
@@ -1082,6 +1337,7 @@ fn read_primary_frames(
 #[cfg(target_os = "macos")]
 fn write_primary_reply(
     writer: &Mutex<std::os::unix::net::UnixStream>,
+    shutdown: &SessionShutdownState,
     channel: keld_ipc::ChannelId,
     correlation: CorrelationId,
     payload: &[u8],
@@ -1089,6 +1345,10 @@ fn write_primary_reply(
     let mut writer = writer
         .lock()
         .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+    let _transition = shutdown.transition_guard();
+    if !shutdown.is_running() {
+        return Ok(());
+    }
     write_frame(
         &mut *writer,
         FrameKind::Reply,
@@ -1098,6 +1358,15 @@ fn write_primary_reply(
         payload,
     )
     .map_err(|source| app_ipc("primary session reply", &source))
+}
+
+#[cfg(target_os = "macos")]
+fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(), HostAppError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotConnected => Ok(()),
+        Err(source) => Err(app_io(phase, &source)),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1129,6 +1398,27 @@ fn collapse_app_failures<const N: usize>(
         detail.push_str(&error.to_string());
     }
     app_detail("startup cleanup", detail)
+}
+
+#[cfg(target_os = "macos")]
+fn collapse_app_results<const N: usize>(
+    results: [Result<(), HostAppError>; N],
+) -> Result<(), HostAppError> {
+    let mut errors = results.into_iter().filter_map(Result::err);
+    let Some(first) = errors.next() else {
+        return Ok(());
+    };
+    let Some(second) = errors.next() else {
+        return Err(first);
+    };
+    let mut detail = first.to_string();
+    detail.push_str("; cleanup: ");
+    detail.push_str(&second.to_string());
+    for error in errors {
+        detail.push_str("; cleanup: ");
+        detail.push_str(&error.to_string());
+    }
+    Err(app_detail("session cleanup", detail))
 }
 
 #[cfg(target_os = "macos")]
@@ -1346,6 +1636,45 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn dev_lease_reader_is_nonblocking_cloexec_and_read_only() {
+        let (reader, writer) = nix::unistd::pipe().expect("lease pipe");
+        configure_dev_lease_fd(&reader).expect("configure lease reader");
+        let descriptor = FdFlag::from_bits_truncate(
+            fcntl(&reader, FcntlArg::F_GETFD).expect("lease descriptor flags"),
+        );
+        let status = OFlag::from_bits_truncate(
+            fcntl(&reader, FcntlArg::F_GETFL).expect("lease status flags"),
+        );
+        assert!(descriptor.contains(FdFlag::FD_CLOEXEC));
+        assert!(status.contains(OFlag::O_NONBLOCK));
+        assert!((status & OFlag::O_ACCMODE).is_empty());
+
+        let error = configure_dev_lease_fd(&writer).expect_err("writer is not a lease reader");
+        assert!(error.to_string().contains("read-only end"), "{error}");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn dev_lease_data_drain_yields_after_a_fixed_work_budget() {
+        struct EndlessReader {
+            reads: usize,
+        }
+
+        impl std::io::Read for EndlessReader {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                bytes.fill(b'x');
+                Ok(bytes.len())
+            }
+        }
+
+        let mut reader = EndlessReader { reads: 0 };
+        assert!(!poll_dev_lease_reader(&mut reader).expect("bounded data drain"));
+        assert_eq!(reader.reads, DEV_LEASE_DRAIN_READS);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn stage_directory_mode_is_mandatory() {
         let temp = tempfile::tempdir().expect("temp root");
         let root = temp.path().join("stage");
@@ -1383,7 +1712,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("guardian Quit preparation")
             {
-                GuardianOwnerCommand::PrepareQuit(reply) => reply,
+                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
                 GuardianOwnerCommand::Shutdown(_) => panic!("Quit reply lacked preparation"),
             };
             guardian_prepared_in_thread.store(true, Ordering::Release);
@@ -1395,7 +1724,7 @@ mod tests {
                 .expect("guardian shutdown request")
             {
                 GuardianOwnerCommand::Shutdown(reply) => reply,
-                GuardianOwnerCommand::PrepareQuit(_) => panic!("duplicate Quit preparation"),
+                GuardianOwnerCommand::PrepareAcceptedShutdown(_) => panic!("duplicate preparation"),
             };
             eof_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -1411,6 +1740,7 @@ mod tests {
             GuardianOwnerHandle {
                 command_tx: guardian_tx,
             },
+            SessionShutdownState::new(),
         )
         .expect("primary router");
 
@@ -1464,6 +1794,202 @@ mod tests {
 
         router.shutdown().expect("router shutdown");
         guardian_thread.join().expect("guardian thread joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn cli_lease_loss_closes_link_before_reap_and_sends_no_quit_reply() {
+        use std::io::Read as _;
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use keld_ipc::link::AppLinkDeadlines as _;
+
+        let (server, mut client) = UnixStream::pair().expect("lease-loss session pair");
+        client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("client deadlines");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let (eof_tx, eof_rx) = mpsc::channel();
+        let (writer_tx, writer_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let prepare_reply = match guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("guardian lease-loss attribution")
+            {
+                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
+                GuardianOwnerCommand::Shutdown(_) => {
+                    panic!("lease loss skipped accepted-shutdown attribution")
+                }
+            };
+            let writer: Arc<Mutex<UnixStream>> = writer_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("router writer identity");
+            assert!(
+                writer.try_lock().is_ok(),
+                "guardian RPC ran while the app-link writer was locked"
+            );
+            prepare_reply
+                .send(Ok(()))
+                .expect("guardian lease-loss attribution reply");
+            let shutdown_reply = match guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("guardian lease-loss shutdown")
+            {
+                GuardianOwnerCommand::Shutdown(reply) => reply,
+                GuardianOwnerCommand::PrepareAcceptedShutdown(_) => {
+                    panic!("duplicate lease-loss attribution")
+                }
+            };
+            eof_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("link EOF before guardian lease-loss reap");
+            shutdown_reply
+                .send(Ok(()))
+                .expect("guardian lease-loss reply");
+        });
+        let shutdown = SessionShutdownState::new();
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            shutdown.clone(),
+        )
+        .expect("primary router");
+        writer_tx
+            .send(Arc::clone(&router.handle.writer))
+            .expect("share router writer identity");
+
+        assert!(shutdown.claim_cli_lease_lost());
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            client.read(&mut byte).expect("lease-loss link EOF"),
+            0,
+            "lease loss must not write a fabricated lifecycle reply"
+        );
+        eof_tx.send(()).expect("record lease-loss EOF");
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("lease-loss UI Quit wake"),
+            AppWindowCommand::Quit
+        );
+
+        router.shutdown().expect("router shutdown");
+        guardian_thread.join().expect("guardian thread joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn terminal_tail_failure_wakes_the_ui_fatal_path() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (server, _client) = UnixStream::pair().expect("tail-failure session pair");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let prepare_reply = match guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("guardian tail-failure attribution")
+            {
+                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
+                GuardianOwnerCommand::Shutdown(_) => panic!("tail skipped attribution"),
+            };
+            prepare_reply
+                .send(Err(String::from("forced attribution failure")))
+                .expect("guardian tail-failure reply");
+        });
+        let shutdown = SessionShutdownState::new();
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            shutdown.clone(),
+        )
+        .expect("primary router");
+
+        assert!(shutdown.claim_cli_lease_lost());
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("terminal tail Fatal wake"),
+            AppWindowCommand::Fatal
+        );
+        let error = router
+            .shutdown()
+            .expect_err("terminal attribution failure must remain visible");
+        assert!(error.to_string().contains("forced attribution failure"));
+        guardian_thread.join().expect("guardian thread joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn session_shutdown_accepts_exactly_one_first_cause() {
+        let shutdown = SessionShutdownState::new();
+        assert!(shutdown.claim_cli_lease_lost());
+        assert!(!shutdown.claim_lifecycle_quit());
+        assert_eq!(shutdown.cause(), SESSION_CLI_LEASE_LOST);
+
+        let lifecycle = SessionShutdownState::new();
+        assert!(lifecycle.claim_lifecycle_quit());
+        assert!(!lifecycle.claim_cli_lease_lost());
+        assert_eq!(lifecycle.cause(), SESSION_LIFECYCLE_QUIT);
+
+        let gated = SessionShutdownState::new();
+        let transition = gated.transition_guard();
+        let claimant = gated.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let claim = std::thread::spawn(move || {
+            started_tx.send(()).expect("claim started");
+            claimant.claim_cli_lease_lost()
+        });
+        started_rx.recv().expect("claim thread started");
+        assert_eq!(
+            gated.cause(),
+            SESSION_RUNNING,
+            "a terminal cause changed while a write transition was active"
+        );
+        drop(transition);
+        assert!(claim.join().expect("claim thread joins"));
+        assert!(!gated.claim_lifecycle_quit());
+        assert_eq!(gated.cause(), SESSION_CLI_LEASE_LOST);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn terminal_cleanup_reports_independent_router_and_guardian_failures() {
+        let error = collapse_app_results([
+            Err(app_detail("router tail", "link close failed")),
+            Err(app_detail("guardian tail", "group reap failed")),
+        ])
+        .expect_err("two terminal failures must be aggregated");
+        let rendered = error.to_string();
+        assert!(rendered.contains("link close failed"), "{rendered}");
+        assert!(rendered.contains("group reap failed"), "{rendered}");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn link_shutdown_accepts_already_closed_but_propagates_other_io_errors() {
+        finish_link_shutdown(
+            Err(std::io::Error::from(std::io::ErrorKind::NotConnected)),
+            "test link close",
+        )
+        .expect("already-closed link is idempotent success");
+        let error = finish_link_shutdown(
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            "test link close",
+        )
+        .expect_err("unrelated link error must remain fatal");
+        assert!(error.to_string().contains("permission denied"), "{error}");
     }
 
     #[cfg(target_os = "macos")]

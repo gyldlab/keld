@@ -518,14 +518,15 @@ Compare that with the sketch in [`04` §2](../architecture/04-electron-compat.md
 `defineConfig` from `@keld/cli` and carries `app`, `runtime`, `windows`, `web`, `compat`, and `dev`
 sections. Three honest observations about the gap:
 
-1. **Parsing is name + renderer for the hello slice.** `keld-core`
-   (`title_from_config_ts` / `renderer_from_config_ts`) and `keld dev`
-   (`hello_title_for_project` / `load_dev_window_html`) read those two fields.
-   `find_project_root` still walks up looking for the file; `keld doctor` confirms it is
-   present. Other keys are not a config schema yet.
-2. **`entry` is still ignored.** `dev.rs` hardcodes `project_root.join("src/main.ts")`.
-   `renderer` is consulted: the window loads that file as inline HTML (default
-   `index.html`). `keld hello` still uses `HELLO_HTML`.
+1. **The macOS dev compiler reads name + entry + renderer.** `keld dev`
+   uses the small reviewed project readers to compile those values into a
+   strict `keld.boot.json`; the no-flag host never evaluates TypeScript.
+   `find_project_root` still walks up looking for the source file and `keld
+   doctor` confirms the required inputs. Other keys are not a config schema yet.
+2. **`entry` and `renderer` are staged inputs.** The compiler copies both
+   contained project-relative files into a fresh owner-private root. The host
+   starts Bun from the descriptor's validated `entry` and loads the validated
+   renderer bytes as inline HTML. `keld hello` still uses `HELLO_HTML`.
 3. **`defineConfig` cannot exist yet**, because `@keld/cli` has no code.
    `@keld/electron` is live under `packages/` (KEL-72); the other `@keld/*`
    packages are still absent.
@@ -561,25 +562,26 @@ because Bun has no stable embedding C API.
 
 ### What the code actually passes
 
-Since KEL-70, `keld dev` spawns Bun through `keld_runtime::Supervisor`, not a direct
-`Command::spawn()` call — the supervisor owns `Stdio::piped()` and restart-on-crash; the
-command factory below only sets argv/cwd/env, once per spawn attempt (including restarts):
+On macOS since KEL-96/T2, `keld dev` first spawns the staged no-flag host.
+The host's authenticated guardian composes `keld_runtime::Supervisor`, which
+owns Bun's `Stdio::piped()` and termination ledger. The command factory sets
+argv/cwd/env for the staged entry:
 
 ```rust
-// crates/keld-cli/src/dev.rs (run_dev_echo)
-let supervisor = Supervisor::start(RestartPolicy::default(), move || {
-    let mut cmd = Command::new("bun");
-    cmd.arg("run")
-        .arg(&bun_main)
-        .current_dir(&project_root)
-        .env("KELD_APP_LINK", &link_for_child);
-    cmd
-})?;
+// crates/keld-host/src/main.rs (private authenticated guardian role)
+let mut command = Command::new("bun");
+command
+    .arg("run")
+    .arg(root.join(&entry))
+    .current_dir(&root)
+    .env("KELD_APP_LINK", &app_link)
+    .stdin(Stdio::null());
 ```
 
 | Variable | Value | Consumed by |
 |---|---|---|
 | `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (`echo_link.rs`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS host only. It validates a read-only pipe, marks the reader non-inheritable, removes the variable at guardian spawn, ignores bytes, and treats EOF as CLI loss. Bun receives neither the value nor an end of the pipe. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
 Bun child could shell out to `keld ipc-client` — it was removed in KEL-30 once `main.ts` started
@@ -602,27 +604,14 @@ if (!link) {
 That is the error standard (§13) applied to an environment contract: it names the missing variable
 and gives the exact command to use instead.
 
-### Three different specified namings, none of which match the code
+### Canonical names and absent future lanes
 
-This is a real inconsistency in the repository, not a summarizing artifact, and it will need
-resolving the first time anyone implements the real spawn path:
-
-| Source | Names |
-|---|---|
-| [`01` §4](../architecture/01-overview.md) | `KELD_IPC_FD` / pipe name, plus a `keld.app.json` contract file |
-| [`06` §1](../architecture/06-runtime-and-tooling.md) | `KELD_LINK={fd\|pipe}`, `KELD_SHM={handle}`, `KELD_CONTRACT=keld.app.json` |
-| Code (`dev.rs::run_dev_echo`) | `KELD_APP_LINK` only, since KEL-30 |
-
-Grepping the workspace for `KELD_IPC_FD`, `KELD_LINK`, `KELD_SHM`, `KELD_CONTRACT`, or
-`keld.app.json` returns nothing outside those two spec files. **`keld.app.json` does not exist in
-any form** — no schema, no writer, no reader. Per root `AGENTS.md`, the two specs disagreeing with
-each other is itself a bug to be fixed in the same PR as whichever one gets implemented, and picking
-a winner is a wire-protocol decision subject to the review gate.
-
-`KELD_BIN` predicted this exact resolution and can be crossed off: the paragraph used to live here
-noting it "should disappear when the JS client lands" — `src/kipc.ts` (KEL-30) is that JS client,
-and `KELD_BIN` is gone from `run_dev_echo`. One fewer name in play, though the three-way
-`KELD_APP_LINK` vs. `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT` disagreement above is unchanged.
+`KELD_APP_LINK` is the sole Bun bootstrap contract. `KELD_DEV_LEASE` is a
+separate CLI-to-host liveness classification and is deliberately absent from
+Bun. `KELD_BIN` disappeared when `src/kipc.ts` landed. `KELD_LINK`,
+`KELD_SHM`, `KELD_CONTRACT`, `KELD_IPC_FD`, and `keld.app.json` are not live
+contracts; optional measured bulk handles and generated channel metadata remain
+future reviewed work rather than parallel environment aliases.
 
 ---
 
@@ -663,6 +652,7 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-CLI-045` | Reserved verb `build` / `migrate` / `gen` / `ext` (exit 2) | `keld-cli/src/verb.rs` |
 | `KELD-CLI-046` | Unknown command (exit 2) | `keld-cli/src/verb.rs` |
 | `KELD-CLI-047` | Owner-private no-flag boot staging failed | `keld-cli/src/boot.rs` |
+| `KELD-CLI-048` | Delegated staged host exited unsuccessfully | `keld-cli/src/dev.rs` |
 
 ### The "errors state the fix" rule, demonstrated
 

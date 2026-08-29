@@ -223,6 +223,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Owner-private no-flag boot staging failed
 - fix: Fix the named project input or host-copy integrity failure, then generate a fresh dev stage.
 
+## KELD-CLI-048
+
+- crate: keld-cli
+- message: The delegated staged host exited unsuccessfully
+- fix: Fix the preceding host diagnostic, then re-run `keld dev`.
+
 ## KELD-MCP001
 
 - crate: keld-cli
@@ -557,7 +563,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-core
 - message: The supervised app process stopped while the host owned the window
-- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then relaunch the no-flag host or re-run `keld dev` for the current CLI-owned path.
+- fix: Fix the cause named by the nested `KELD-RUNTIME-*` diagnostic, then relaunch the no-flag host or re-run `keld dev`.
 
 ## KELD-CORE-034
 
@@ -581,4 +587,4 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-core
 - message: The no-flag authenticated app session failed
-- fix: Fix the named guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+- fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.

@@ -52,9 +52,13 @@ listener or second HELLO. Initial `Ready` follows native renderer navigation.
 Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, signals the guardian-owned Bun
 process group, waits/reaps the guardian's direct Bun child, and only then wakes
-the macOS UI loop to exit. The
-locator is unlinked at successful authentication. `keld dev` still uses the
-older CLI-owned hello session until KEL-96/T2 delegates to the staged host.
+the macOS UI loop to exit. The locator is unlinked at successful
+authentication. `keld dev` now uses the
+staged no-flag host on macOS: the CLI owns no app-link endpoint, token, stream,
+reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
+a host-liveness lease; it never carries a frame, principal, path, digest, or
+permission. Windows/Linux retain the older CLI-owned hello session until
+KEL-96/T4.
 
 ## 2. Wire protocol (control plane)
 

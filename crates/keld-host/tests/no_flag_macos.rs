@@ -8,17 +8,65 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const TITLE: &str = "KEL96 T1b Fixture";
 const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
+const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
 const EVENT_DEADLINE: Duration = Duration::from_secs(15);
 const PROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
+#[test]
+fn keld_dev_helper_process() {
+    let Some(project) = std::env::var_os("KELD_T2_HELPER_PROJECT") else {
+        return;
+    };
+    keld_cli::dev::run_dev(Path::new(&project)).expect("shipping keld dev helper");
+}
+
+#[test]
+fn shipping_keld_dev_delegates_to_host_and_cli_death_reaps_the_session() {
+    let fixture = ProductFixture::new("t2-cli-delegation");
+    let _prepared_project = fixture.stage();
+    let helper = prepare_keld_dev_helper(&fixture);
+    let baseline_stages = dev_stage_count(&fixture.project);
+
+    let mut killed = ShippingDevCycle::launch(&fixture, &helper, "t2-cli");
+    let killed_evidence = killed.evidence();
+    killed.kill_cli_and_expect_lease_shutdown();
+    assert_eq!(dev_stage_count(&fixture.project), baseline_stages);
+
+    let mut signaled = ShippingDevCycle::launch(&fixture, &helper, "t2-cli-sigint");
+    let signaled_evidence = signaled.evidence();
+    signaled.signal_cli_group_and_expect_lease_shutdown("INT", 2);
+    assert_eq!(dev_stage_count(&fixture.project), baseline_stages);
+
+    let mut hung_up = ShippingDevCycle::launch(&fixture, &helper, "t2-cli-sighup");
+    let hung_up_evidence = hung_up.evidence();
+    hung_up.signal_cli_group_and_expect_lease_shutdown("HUP", 1);
+    assert_eq!(dev_stage_count(&fixture.project), baseline_stages);
+
+    let mut failed = ShippingDevCycle::launch(&fixture, &helper, "t2-cli-host-failure");
+    let failed_evidence = failed.evidence();
+    failed.self_terminate_and_expect_verbatim_error();
+    assert_eq!(dev_stage_count(&fixture.project), baseline_stages);
+
+    let stages_before_orderly = dev_stage_count(&fixture.project);
+    let mut orderly = ShippingDevCycle::launch(&fixture, &helper, "t2-cli-relaunch");
+    assert_eq!(dev_stage_count(&fixture.project), stages_before_orderly + 1);
+    let orderly_evidence = orderly.evidence();
+    orderly.quit_and_expect_success();
+    assert_eq!(dev_stage_count(&fixture.project), stages_before_orderly);
+
+    eprintln!(
+        "KEL96_T2_EVIDENCE killed={killed_evidence} sigint={signaled_evidence} sighup={hung_up_evidence} failed={failed_evidence} relaunch={orderly_evidence} marker={MARKER}"
+    );
+}
 
 #[test]
 fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing() {
@@ -55,6 +103,35 @@ fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing()
     let stderr = String::from_utf8(output.stderr).expect("private-role stderr UTF-8");
     assert!(stderr.contains("KELD-RUNTIME-003"), "{stderr}");
     assert!(stderr.contains("registration bootstrap"), "{stderr}");
+}
+
+#[test]
+fn invalid_dev_lease_contract_fails_before_app_resources() {
+    let fixture = ProductFixture::new("invalid-dev-lease");
+    for (value, expected) in [
+        ("unsupported", "unsupported KELD_DEV_LEASE"),
+        ("stdin-v1", "requires the CLI-owned pipe reader"),
+    ] {
+        let stage = fixture.stage();
+        let child = Command::new(stage.host())
+            .env("KELD_DEV_LEASE", value)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch invalid dev lease host");
+        let pid = child.id();
+        let output = wait_child_output(child, EVENT_DEADLINE);
+        assert!(!output.status.success(), "invalid lease became success");
+        let stderr = String::from_utf8(output.stderr).expect("invalid lease stderr UTF-8");
+        assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(native_windows(pid, TITLE).is_empty());
+        assert!(
+            session_dirs_for(pid).is_empty(),
+            "invalid lease created an app-link session"
+        );
+    }
 }
 
 #[test]
@@ -248,6 +325,300 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
     orderly.group_gone = true;
 }
 
+#[test]
+fn dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host() {
+    let fixture = ProductFixture::new("dev-lease-data");
+    let (mut cycle, mut lease_writer) = fixture.launch_leased_cycle("lease-data");
+    cycle.assert_live_product();
+    let (written_tx, written_rx) = mpsc::channel();
+    let writer_thread = thread::spawn(move || {
+        let result = lease_writer.write_all(&vec![b'x'; 1024 * 1024]);
+        written_tx
+            .send((lease_writer, result))
+            .expect("return lease writer");
+    });
+    let (lease_writer, write_result) = match written_rx.recv_timeout(PROCESS_DEADLINE) {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(host) = cycle.host.as_mut() {
+                let _ = host.kill();
+                let _ = host.wait();
+            }
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &format!("-{}", cycle.bun_pid)])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            cycle.group_gone = true;
+            writer_thread.join().expect("lease writer joins after kill");
+            panic!("host did not drain liveness-only bytes: {error}");
+        }
+    };
+    writer_thread.join().expect("lease writer joins");
+    write_result.expect("write liveness-only lease bytes");
+    cycle
+        .control_writer
+        .write_all(b"ECHO3\n")
+        .expect("request post-data echo");
+    cycle.expect_line("ECHO3");
+
+    drop(lease_writer);
+    cycle.expect_line("LINK_EOF");
+    let output = cycle.wait_host();
+    assert!(output.status.success(), "lease-loss shutdown: {output:?}");
+    await_process_gone(cycle.bun_pid);
+    await_process_gone(cycle.descendant_pid);
+    await_process_gone(cycle.guardian_pid);
+    assert!(native_windows(cycle.host_pid, TITLE).is_empty());
+    cycle.group_gone = true;
+}
+
+fn prepare_keld_dev_helper(fixture: &ProductFixture) -> PathBuf {
+    let helper_dir = fixture.root.path().join("t2-cli-bin");
+    fs::create_dir(&helper_dir).expect("T2 helper directory");
+    let helper = helper_dir.join("keld-dev-helper");
+    fs::copy(
+        std::env::current_exe().expect("current test executable"),
+        &helper,
+    )
+    .expect("copy T2 helper executable");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+        .expect("make T2 helper executable");
+    let developer_host = helper_dir.join("keld-host");
+    fs::copy(env!("CARGO_BIN_EXE_keld-host"), &developer_host)
+        .expect("copy developer host beside CLI helper");
+    fs::set_permissions(&developer_host, fs::Permissions::from_mode(0o500))
+        .expect("make developer host executable");
+    helper
+}
+
+fn dev_stage_count(project: &Path) -> usize {
+    fs::read_dir(project.join(".keld/dev"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .count()
+}
+
+struct ShippingDevCycle {
+    cli: Option<Child>,
+    cli_pid: u32,
+    host_pid: u32,
+    guardian_pid: u32,
+    bun_pid: u32,
+    descendant_pid: u32,
+    session_dir: PathBuf,
+    control_reader: BufReader<UnixStream>,
+    control_writer: UnixStream,
+    group_gone: bool,
+}
+
+impl ShippingDevCycle {
+    fn launch(fixture: &ProductFixture, helper: &Path, name: &str) -> Self {
+        let beacon = Beacon::bind(MARKER);
+        fs::write(
+            fixture.project.join("index.html"),
+            format!(
+                "<!doctype html><title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
+                beacon.port()
+            ),
+        )
+        .expect("T2 renderer with exact beacon");
+        let control_path = fixture.root.path().join(format!("{name}.sock"));
+        let listener = UnixListener::bind(&control_path).expect("bind T2 fixture control");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking T2 fixture control");
+        let mut cli = Command::new(helper)
+            .args(["--exact", "keld_dev_helper_process", "--nocapture"])
+            .process_group(0)
+            .current_dir(&fixture.project)
+            .env("KELD_T2_HELPER_PROJECT", &fixture.project)
+            .env("KELD_T1B_CONTROL", &control_path)
+            .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
+            .env(
+                "KELD_T2_HIGH_VOLUME_LOG",
+                if name == "t2-cli-relaunch" { "1" } else { "0" },
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch shipping keld dev helper");
+        let cli_pid = cli.id();
+        let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
+        control
+            .set_read_timeout(Some(EVENT_DEADLINE))
+            .expect("T2 control read deadline");
+        let mut control_reader = BufReader::new(control.try_clone().expect("T2 control reader"));
+        let hello = read_control_line(&mut control_reader);
+        let mut hello_fields = hello.split_whitespace();
+        assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
+        let bun_pid = parse_pid(hello_fields.next(), &hello);
+        let app_link = hello_fields.next().expect("T2 app link");
+        let session_dir = PathBuf::from(app_link.rsplit_once('#').expect("T2 app link token").0)
+            .parent()
+            .expect("T2 session directory")
+            .to_path_buf();
+        let descendant = read_control_line(&mut control_reader);
+        let descendant_pid = parse_pid(descendant.split_whitespace().nth(1), &descendant);
+        let guardian_pid = parent_process(bun_pid);
+        let host_pid = parent_process(guardian_pid);
+        let owns_expected_tree =
+            parent_process(host_pid) == cli_pid && guardian_pid != cli_pid && host_pid != cli_pid;
+        if !owns_expected_tree {
+            let _ = cli.kill();
+            let _ = cli.wait();
+            kill_pid(bun_pid);
+            kill_pid(descendant_pid);
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &format!("-{bun_pid}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        assert!(
+            owns_expected_tree,
+            "shipping keld dev did not delegate CLI {cli_pid} -> host {host_pid} -> guardian {guardian_pid} -> Bun {bun_pid}"
+        );
+        assert_eq!(process_group(bun_pid), bun_pid);
+        assert_eq!(process_group(descendant_pid), bun_pid);
+        assert_eq!(process_group(cli_pid), cli_pid);
+        assert_eq!(process_group(host_pid), host_pid);
+        assert_eq!(process_group(guardian_pid), host_pid);
+        assert_eq!(read_control_line(&mut control_reader), "READY");
+        assert_eq!(read_control_line(&mut control_reader), "ECHO1");
+        assert_eq!(read_control_line(&mut control_reader), "ECHO2");
+        beacon.assert_exact();
+        assert_eq!(native_windows(host_pid, TITLE).len(), 1);
+        assert!(native_windows(cli_pid, TITLE).is_empty());
+        assert!(host_unix_sockets(host_pid) > 0);
+        assert_eq!(host_unix_sockets(cli_pid), 0);
+        if name == "t2-cli" {
+            assert_lease_descriptor_ownership(cli_pid, host_pid, guardian_pid, bun_pid);
+        }
+        Self {
+            cli: Some(cli),
+            cli_pid,
+            host_pid,
+            guardian_pid,
+            bun_pid,
+            descendant_pid,
+            session_dir,
+            control_reader,
+            control_writer: control,
+            group_gone: false,
+        }
+    }
+
+    fn evidence(&self) -> String {
+        format!(
+            "{}/{}/{}/{}/{}",
+            self.cli_pid, self.host_pid, self.guardian_pid, self.bun_pid, self.descendant_pid
+        )
+    }
+
+    fn kill_cli_and_expect_lease_shutdown(&mut self) {
+        let cli = self.cli.as_mut().expect("live shipping CLI");
+        cli.kill().expect("SIGKILL only the shipping CLI");
+        let status = cli.wait().expect("wait killed shipping CLI");
+        assert_eq!(status.signal(), Some(9));
+        assert_eq!(read_control_line(&mut self.control_reader), "LINK_EOF");
+        self.assert_group_gone();
+        assert!(
+            !self.session_dir.exists(),
+            "CLI death left app-link locator"
+        );
+    }
+
+    fn signal_cli_group_and_expect_lease_shutdown(&mut self, signal_name: &str, number: i32) {
+        let signal = Command::new("/bin/kill")
+            .args([&format!("-{signal_name}"), &format!("-{}", self.cli_pid)])
+            .status()
+            .expect("signal the CLI process group");
+        assert!(signal.success(), "group {signal_name} failed: {signal}");
+        let status = self
+            .cli
+            .as_mut()
+            .expect("live shipping CLI")
+            .wait()
+            .expect("wait signaled shipping CLI");
+        assert_eq!(status.signal(), Some(number));
+        assert!(
+            process_exists(self.host_pid),
+            "{signal_name} killed the staged host"
+        );
+        assert_eq!(read_control_line(&mut self.control_reader), "LINK_EOF");
+        self.assert_group_gone();
+        assert!(
+            !self.session_dir.exists(),
+            "group {signal_name} left app-link locator"
+        );
+    }
+
+    fn self_terminate_and_expect_verbatim_error(&mut self) {
+        self.control_writer
+            .write_all(b"EXIT0\n")
+            .expect("request unrequested status-zero exit");
+        let output = wait_child_output(self.cli.take().expect("live shipping CLI"), EVENT_DEADLINE);
+        assert!(!output.status.success(), "dead app became CLI success");
+        let stderr = String::from_utf8(output.stderr).expect("CLI failure stderr UTF-8");
+        assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
+        assert!(stderr.contains("KELD-RUNTIME-012"), "{stderr}");
+        assert!(stderr.contains("KELD-CLI-048"), "{stderr}");
+        assert!(!stderr.contains("KELD-CLI-031"), "{stderr}");
+        assert!(!stderr.contains("keld doctor"), "{stderr}");
+        self.assert_group_gone();
+    }
+
+    fn quit_and_expect_success(&mut self) {
+        self.control_writer
+            .write_all(b"QUIT\n")
+            .expect("request T2 relaunch Quit");
+        assert_eq!(read_control_line(&mut self.control_reader), "QUIT_REPLY");
+        assert_eq!(read_control_line(&mut self.control_reader), "LINK_EOF");
+        let output = wait_child_output(self.cli.take().expect("live shipping CLI"), EVENT_DEADLINE);
+        assert!(
+            output.status.success(),
+            "shipping keld dev orderly exit failed: {output:?}"
+        );
+        let mut forwarded = String::from_utf8(output.stdout).expect("CLI stdout UTF-8");
+        forwarded.push_str(&String::from_utf8(output.stderr).expect("CLI stderr UTF-8"));
+        assert!(
+            forwarded.contains(FORWARDED_LOG),
+            "shipping CLI did not forward host/Bun output: {forwarded}"
+        );
+        self.assert_group_gone();
+    }
+
+    fn assert_group_gone(&mut self) {
+        await_process_gone(self.host_pid);
+        await_process_gone(self.guardian_pid);
+        await_process_gone(self.bun_pid);
+        await_process_gone(self.descendant_pid);
+        assert!(native_windows(self.host_pid, TITLE).is_empty());
+        self.group_gone = true;
+    }
+}
+
+impl Drop for ShippingDevCycle {
+    fn drop(&mut self) {
+        if let Some(cli) = self.cli.as_mut()
+            && cli.try_wait().ok().flatten().is_none()
+        {
+            let _ = cli.kill();
+            let _ = cli.wait();
+        }
+        if !self.group_gone && self.bun_pid != 0 {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &format!("-{}", self.bun_pid)])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
 struct ProductFixture {
     root: tempfile::TempDir,
     project: PathBuf,
@@ -297,6 +668,19 @@ impl ProductFixture {
     }
 
     fn launch_cycle(&self, cycle: &str) -> LiveCycle {
+        self.launch_cycle_inner(cycle, false).0
+    }
+
+    fn launch_leased_cycle(&self, cycle: &str) -> (LiveCycle, ChildStdin) {
+        let (cycle, lease) = self.launch_cycle_inner(cycle, true);
+        (cycle, lease.expect("leased cycle writer"))
+    }
+
+    fn launch_cycle_inner(
+        &self,
+        cycle: &str,
+        with_dev_lease: bool,
+    ) -> (LiveCycle, Option<ChildStdin>) {
         let beacon = Beacon::bind(MARKER);
         fs::write(
             self.project.join("index.html"),
@@ -319,14 +703,21 @@ impl ProductFixture {
             b"environment and cwd must not select this descriptor",
         )
         .expect("substitution descriptor");
-        let child = Command::new(stage.host())
+        let mut command = Command::new(stage.host());
+        command
             .current_dir(&substitution_cwd)
             .env("KELD_T1B_CONTROL", &control_path)
             .env("KELD_BOOT_PATH", substitution_cwd.join("keld.boot.json"))
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("launch staged no-flag host");
+            .stderr(Stdio::piped());
+        if with_dev_lease {
+            command
+                .env("KELD_DEV_LEASE", "stdin-v1")
+                .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
+                .stdin(Stdio::piped());
+        }
+        let mut child = command.spawn().expect("launch staged no-flag host");
+        let lease_writer = child.stdin.take();
         let host_pid = child.id();
         let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
         control
@@ -368,7 +759,7 @@ impl ProductFixture {
         cycle.expect_line("ECHO1");
         cycle.expect_line("ECHO2");
         cycle.beacon.take().expect("beacon owner").assert_exact();
-        cycle
+        (cycle, lease_writer)
     }
 }
 
@@ -952,18 +1343,37 @@ fn read_control_line(reader: &mut BufReader<UnixStream>) -> String {
 }
 
 fn wait_child_output(mut child: Child, timeout: Duration) -> Output {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = thread::spawn(move || read_child_pipe(stdout));
+    let stderr_reader = thread::spawn(move || read_child_pipe(stderr));
     let deadline = Instant::now() + timeout;
-    loop {
-        if child.try_wait().expect("inspect child exit").is_some() {
-            return child.wait_with_output().expect("collect child output");
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().expect("inspect child exit") {
+            break (status, false);
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
-            let output = child.wait_with_output().expect("collect timed-out child");
-            panic!("child exceeded exit deadline: {output:?}");
+            break (child.wait().expect("wait timed-out child"), true);
         }
         thread::yield_now();
-    }
+    };
+    let output = Output {
+        status,
+        stdout: stdout_reader.join().expect("stdout reader joins"),
+        stderr: stderr_reader.join().expect("stderr reader joins"),
+    };
+    assert!(!timed_out, "child exceeded exit deadline: {output:?}");
+    output
+}
+
+fn read_child_pipe(pipe: Option<impl Read>) -> Vec<u8> {
+    let Some(mut pipe) = pipe else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes).expect("drain child pipe");
+    bytes
 }
 
 fn parse_pid(field: Option<&str>, line: &str) -> u32 {
@@ -1025,6 +1435,129 @@ fn host_unix_sockets(pid: u32) -> usize {
         .lines()
         .filter(|line| line.starts_with('n'))
         .count()
+}
+
+fn lsof_stdin(pid: u32) -> String {
+    let output = Command::new("/usr/sbin/lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "0", "-FDifnat"])
+        .output()
+        .expect("inspect stdin with lsof");
+    assert!(output.status.success(), "lsof stdin failed: {output:?}");
+    String::from_utf8(output.stdout).expect("lsof stdin UTF-8")
+}
+
+fn lsof_all(pid: u32) -> String {
+    let output = Command::new("/usr/sbin/lsof")
+        .args(["-a", "-p", &pid.to_string(), "-FDifnat"])
+        .output()
+        .expect("inspect process descriptors with lsof");
+    assert!(output.status.success(), "lsof process failed: {output:?}");
+    String::from_utf8(output.stdout).expect("lsof process UTF-8")
+}
+
+fn assert_lease_descriptor_ownership(cli_pid: u32, host_pid: u32, guardian_pid: u32, bun_pid: u32) {
+    let cli_fds = lsof_all(cli_pid);
+    let host_lease = pipe_identity(host_pid, "0");
+    let lease_writers: Vec<&str> = pipe_descriptors(&cli_fds)
+        .into_iter()
+        .filter(|fd| {
+            let candidate = pipe_identity(cli_pid, fd);
+            candidate.0 == host_lease.1 && candidate.1 == host_lease.0
+        })
+        .collect();
+    assert_eq!(
+        lease_writers.len(),
+        1,
+        "CLI must own exactly one writer reciprocal to host fd 0: {cli_fds}"
+    );
+    let host_stdin = lsof_stdin(host_pid);
+    assert!(host_stdin.contains("tPIPE"), "host stdin: {host_stdin}");
+    let lease_peer = host_stdin
+        .lines()
+        .find(|line| line.starts_with("n->"))
+        .expect("host lease pipe peer");
+    let guardian_fds = lsof_all(guardian_pid);
+    let bun_fds = lsof_all(bun_pid);
+    for (pid, snapshot) in [(guardian_pid, &guardian_fds), (bun_pid, &bun_fds)] {
+        for fd in pipe_descriptors(snapshot) {
+            let candidate = pipe_identity(pid, fd);
+            assert!(
+                candidate != host_lease
+                    && (candidate.0, candidate.1) != (host_lease.1, host_lease.0),
+                "process {pid} inherited a dev-lease endpoint on fd {fd}: {snapshot}"
+            );
+        }
+    }
+    assert!(
+        !guardian_fds.lines().any(|line| line == lease_peer),
+        "guardian inherited the host lease reader: {guardian_fds}"
+    );
+    assert!(
+        !bun_fds.lines().any(|line| line == lease_peer),
+        "Bun inherited the host lease reader: {bun_fds}"
+    );
+    let guardian_stdin = lsof_stdin(guardian_pid);
+    assert!(
+        guardian_stdin.contains("tPIPE") && !guardian_stdin.contains(lease_peer),
+        "guardian stdin must be its distinct authenticated bootstrap pipe: {guardian_stdin}"
+    );
+    let bun_stdin = lsof_stdin(bun_pid);
+    assert!(
+        bun_stdin.contains("tCHR") && bun_stdin.contains("n/dev/null"),
+        "Bun stdin is not null: {bun_stdin}"
+    );
+}
+
+fn pipe_descriptors(snapshot: &str) -> Vec<&str> {
+    let mut current = None;
+    let mut pipes = Vec::new();
+    for line in snapshot.lines() {
+        if let Some(fd) = line.strip_prefix('f') {
+            current = Some(fd);
+        } else if line == "tPIPE"
+            && let Some(fd) = current
+        {
+            pipes.push(fd);
+        }
+    }
+    pipes
+}
+
+fn pipe_identity(pid: u32, fd: &str) -> (u64, u64) {
+    // macOS `proc_pidfdinfo(PROC_PIDFDPIPEINFO)` exposes the kernel pipe
+    // handle/peer-handle pair, so the oracle can match opposite endpoints
+    // without inferring identity from descriptor numbers or `lsof` names.
+    const SCRIPT: &str = r#"
+import Darwin
+let pid = Int32(CommandLine.arguments[1])!
+let fd = Int32(CommandLine.arguments[2])!
+var info = pipe_fdinfo()
+let size = proc_pidfdinfo(pid, fd, PROC_PIDFDPIPEINFO, &info, Int32(MemoryLayout<pipe_fdinfo>.size))
+guard size == MemoryLayout<pipe_fdinfo>.size else { exit(2) }
+print("\(info.pipeinfo.pipe_handle) \(info.pipeinfo.pipe_peerhandle)")
+"#;
+    let output = Command::new("/usr/bin/xcrun")
+        .args(["swift", "-e", SCRIPT, &pid.to_string(), fd])
+        .output()
+        .expect("inspect macOS pipe identity");
+    assert!(output.status.success(), "pipe identity failed: {output:?}");
+    let rendered = String::from_utf8(output.stdout).expect("pipe identity UTF-8");
+    let mut fields = rendered.split_whitespace();
+    let handle = fields
+        .next()
+        .expect("pipe handle")
+        .parse()
+        .expect("numeric pipe handle");
+    let peer = fields
+        .next()
+        .expect("pipe peer handle")
+        .parse()
+        .expect("numeric pipe peer handle");
+    assert!(
+        fields.next().is_none(),
+        "unexpected pipe identity: {rendered}"
+    );
+    (handle, peer)
 }
 
 fn native_windows(pid: u32, title: &str) -> Vec<u32> {

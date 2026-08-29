@@ -79,7 +79,9 @@ Three principal classes, with host-minted instances inside each class:
    host-owned supervised primary-child echo slice with restart/backoff/output capture
    co-lived with the hello window (KEL-30), plus KEL-96's first macOS no-flag
    `keld-host` owner with a strict staged boot descriptor, one multiplexed
-   echo/lifecycle link, native window, and ordered Quit cleanup,
+   echo/lifecycle link, native window, ordered Quit cleanup, and a shipping
+   `keld dev` launcher that owns only staging, logs, the host process handle,
+   and a private stdin-v1 liveness writer,
    plus KEL-75 T1b/T2 Unix authenticated role generations: the host binds an
    accepted link to a principal and mints a fresh role generation on restart. It
    does not yet preserve a live renderer through restart, implement window-bound
@@ -137,7 +139,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
-| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; owner-private macOS boot-stage compiler live for KEL-96 fixtures (not yet wired into `keld dev`); `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
+| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; on macOS `dev` compiles an owner-private stage, launches its no-flag host, forwards stdio and retains only the host handle plus liveness writer; Windows/Linux retain the older CLI-owned slice until KEL-96/T4; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):
@@ -179,7 +181,8 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   successor is provisioned.   Current implementation has KEL-70's generic one-child
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
   macOS no-flag validated boot plus one-link echo/lifecycle session and live
-  event-loop wake, KEL-75 T1b's
+  event-loop wake, and KEL-96/T2's macOS CLI-to-host delegation with
+  lease-loss ordered teardown, KEL-75 T1b's
   Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
