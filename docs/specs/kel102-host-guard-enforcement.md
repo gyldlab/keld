@@ -1,9 +1,13 @@
 # Spec: host-enforced guard sessions
 
-Status: draft
-Linear: KEL-102 · Owner: GYLDLAB · Updated: 2026-08-28
-Decision state: delegated candidate selections recorded; authenticated human approval pending
+Status: approved
+Linear: KEL-102 · Owner: GYLDLAB · Updated: 2026-08-30
+Decision state: approved under explicit delegated repository-owner authority; independent-human review is not claimed
 Decision digest: `sha256:868aaef5991a03ce4e394943d96f6ead62e725444ad66280a906a60830f862f3`
+`approver_identity`: `linear-user:d7f711ff-c049-4ddd-a1f3-9f41b461b5c1` (`GYLDLAB`)
+`approval_source_id`: `linear-comment:b330c2ec-2193-4aa6-b324-67187cdda4d5`
+`approval_mode`: `explicit-user-delegation-recorded-by-executing-codex`
+`approval_authoring_base_sha`: `60842b1679c56138339edb2f518d3ed77a582beb`
 
 ## 1. Goal & non-goals
 
@@ -60,20 +64,21 @@ executable; it does not change the architecture contract. Architecture LIVE /
 TARGET labels move only in the implementation PR that proves the relevant
 acceptance criteria.
 
-### 2.1 Approval-candidate decision record
+### 2.1 Approved decision record
 
-The user delegated selection and preparation of the nine decisions to the
-specification writer. That delegation authorizes this review candidate; it is
-not the distinct-human approval required to change `Status: draft`, complete
-T0, or emit a passed contract artifact. The canonical decision payload is the
-single minified UTF-8 JSON line below, without its trailing newline. Its
-SHA-256 is recorded in the header.
+The repository owner explicitly delegated approval and execution of the nine
+decisions to the specification writer, then directed the writer to proceed on
+their behalf. The stable Linear record above preserves that authorization and
+also states that the executing agent—not an independent reviewer—created the
+record. This spec does not misrepresent that provenance. The canonical
+decision payload is the single minified UTF-8 JSON line below, without its
+trailing newline. Its SHA-256 is recorded in the header.
 
 ```json
 {"schema":"keld.kel102-decisions/v1","permission_model":"approved:immutable-host-session-snapshot;fail-before-listener-child-window;no-load-error-fallback","public_api":"approved:verified-loader+run_guarded+media-policy;guard-owns-read-hash-parse;private-guard-context","kel96_dependency":"KEL-102/T2-consumes-KEL-96/T1a-acceptance-from-atomic-T1a+T1b-head","identity":"approved:accepted-v0-app-link-to-AppProcess;reject-caller-selected-identity","dispatch":"approved:evaluate+dispatch_privileged-only","task_order":"KEL-102/T2->KEL-102/T3->KEL-102/T4->KEL-102/T5","kel97_predecessor_task_id":"none","containment":"KEL-78-complementary-not-blocker-or-substitute;no-strict-release-claim","reload":"excluded-until-revocation-before-reprovision-spec","review_gates":"permission+public-api-required;unsafe+dependency+kipc-wire-absent-unless-separately-approved"}
 ```
 
-| ID | Delegated candidate selection |
+| ID | Approved selection |
 |---|---|
 | `KEL-102-D1` | Approve one immutable host-owned policy snapshot per application session. Invalid boot or policy input fails before listener, child, or window creation. A load failure never becomes an empty/default policy; valid `{}` remains a deliberate all-deny policy. |
 | `KEL-102-D2` | Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the `keld_wv::MediaPolicy`/`WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, and manifest fields remain private. |
@@ -83,7 +88,7 @@ SHA-256 is recorded in the header.
 | `KEL-102-D6` | Freeze the order `KEL-102/T2` verified load/snapshot → `T3` reachable filesystem vertical → `T4` webview media injection → `T5` role-generation binding after KEL-97. Set `kel97_predecessor_task_id=none`: KEL-97 owns role-link identity independently; KEL-102/T5 consumes KEL-97, never the reverse. |
 | `KEL-102-D7` | KEL-78 OS containment is complementary to broker authorization, neither a blocker nor a substitute. KEL-102 alone cannot support a strict-profile or release-containment claim. |
 | `KEL-102-D8` | Controlled reload is outside this specification until a separately approved revocation-before-reprovision contract exists. |
-| `KEL-102-D9` | Permission-model and the exact public APIs above require authenticated human approval. This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change. A T2 `sha2` dependency request and any later unsafe/wire/schema delta require their own explicit review gate. |
+| `KEL-102-D9` | The delegated source explicitly approves the permission model and exact public APIs above for this contract. This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change. A T2 `sha2` dependency request and any later unsafe/wire/schema delta require their own explicit review gate. |
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -153,13 +158,14 @@ SHA-256 is recorded in the header.
 
 ### First-principles and reuse decision
 
-**Current facts at `origin/main` `1609dbd`:**
+**Current facts at approved authoring base `60842b1`:**
 
 - `keld_guard::load_manifest` already supplies JSONC parsing and typed
-  missing/read/parse failures. Nothing outside guard tests calls it. It does
-  not yet let a caller verify the exact bytes it parses, so a production
-  content-digest check needs a single-read extension in `keld-guard`, not a
-  host-side read followed by a second parse/read.
+  missing/read/parse failures. Guard tests and unprivileged `keld-cli` MCP
+  diagnostics call it; the shipping app session does not. It does not yet let
+  a caller verify the exact bytes it parses, so a production content-digest
+  check needs a single-read extension in `keld-guard`, not a host-side read
+  followed by a second parse/read.
 - `keld_guard::evaluate` already default-denies ungranted/out-of-scope app
   operations and rejects non-app principals before grant lookup. It is a pure
   evaluator, not a process-global policy owner.
@@ -167,21 +173,28 @@ SHA-256 is recorded in the header.
   invokes its closure only for `Decision::Allow`; its unit and real-session
   tests prove the existing side-effect boundary.
 - `keld_native::fs` already calls that helper immediately around
-  `std::fs::read` / `std::fs::write`, but no shipping crate depends on
-  `keld-native`. Its session is therefore not reachable from the app host.
-- `keld-core` declares a `keld-guard` dependency but does not reference it.
-  `HostOwnedHelloSession` currently mints one authenticated echo link and
-  starts Bun; its `EchoServer` dispatches an intentionally unprivileged echo
-  session.
-- `keld-host` has no no-flag boot path yet. It only opens the diagnostic
-  `--hello` window or prints its pre-alpha banner.
+  `std::fs::read` / `std::fs::write`, but the shipping host/core app path still
+  does not route a privileged request to that broker.
+- KEL-96 T1a/T1b/T2/T3 are landed. The no-flag host owns validated boot,
+  native window/session, app link, guardian and Bun lifetime. Its private
+  `ValidatedBootSelection` retains the opened permissions handle and decoded
+  digest produced by the staged artifact.
+- The shipping no-flag caller at `crates/keld-host/src/main.rs` still invokes
+  `ValidatedBootSelection::from_current_exe_unprivileged().and_then(run_unprivileged)`.
+  `run_unprivileged` deliberately drops the retained permissions handle and
+  digest unread. Therefore guarded policy preflight is not live merely because
+  KEL-96 boot is live.
+- `keld-core` has no production `GuardSnapshot` or privileged-channel router.
+  The current app session remains explicitly unprivileged and cannot register
+  a native broker.
 - Current webview backends mint a host-assigned media `WebviewId`, but pass
   `PermissionsManifest::default()` to the permission callbacks. Media is
   safely deny-only today; it is not policy loaded for an app session.
-- KEL-75 has host-owned role generations and authenticated Unix bootstrap
-  links, but `keld_runtime::RolePrincipal` is not wired to
-  `keld_guard::Principal` or a privileged dispatcher. KEL-78 admission is
-  likewise independent of call authorization.
+- KEL-75 T4a freezes a window-bound lifecycle contract, but explicitly does
+  not choose the KEL-102 guard-principal/grant representation or satisfy
+  KEL-97/KEL-102 entry. `keld_runtime::RolePrincipal` is still not wired to
+  `keld_guard::Principal` or a privileged dispatcher. KEL-78 admission remains
+  independent of call authorization.
 
 **Ownership, trust, lifecycle, I/O, and failure facts:**
 
@@ -237,17 +250,18 @@ benchmark if its context representation changes allocations or lock behavior.
 
 1. Validate its boot input before starting a listener, window, or Bun. KEL-96
    owns the boot-artifact format and returns an opaque `ValidatedBootSelection`
-   containing a canonical `app_root` plus the fixed manifest descriptor/digest.
+   minted from the canonical parent of the staged executable. The private
+   selection already retains the fixed no-follow permissions-file handle and
+   decoded digest alongside the canonical fixture root.
    The owner-controlled dev stage may enable guarded brokers without claiming
    release authenticity. A release session cannot enable them until KEL-103 or
    an approved successor authenticates the exact sidecar, location, and root
    relationship; there is no caller-selectable trust-mode downgrade.
-2. Resolve `app_root / "keld.permissions.jsonc"` under the canonical root.
-   Reject an absolute/escaping descriptor, symlink escape, non-regular file,
-   or unreadable file. Open it once with KEL-96's no-follow contract, validate
-   identity/containment on that handle, and transfer the handle to the loader;
-   do not validate a path and reopen it. The implementation must make this
-   resolution a single host-owned routine; callers must not reimplement it.
+2. Consume the permissions handle and digest already retained inside
+   `ValidatedBootSelection`; do not reconstruct the canonical root from cwd,
+   accept a caller path, or reopen `app_root / "keld.permissions.jsonc"`.
+   KEL-96 has already rejected an absolute/escaping descriptor, symlink
+   escape, non-regular file, or unreadable file on that exact handle.
 3. Call the exact guard-owned single-read verified loader below. It reads the
    resolved file once into one privately owned byte buffer, computes SHA-256 over
    that buffer, compares it with the decoded expected digest, validates UTF-8,
@@ -263,10 +277,11 @@ benchmark if its context representation changes allocations or lock behavior.
    blank policy.
 
 For v0 development, `keld create` / the project fixture must provide the
-explicit `{}` file. `keld dev` passes a canonical project root to the host,
-not a manifest pathname, so a developer can alter their own declared
-authority but an app child cannot. The destination signed release path applies
-the boot-artifact content-digest check to the same fixed file.
+explicit `{}` file. The KEL-96 boot compiler stages the app into its private
+per-launch directory; the no-flag host selects that executable's canonical
+parent and never receives a manifest pathname from the CLI or child. The
+destination signed release path applies the boot-artifact content-digest check
+to the same fixed file.
 
 ### Verified-loader and host-session public API
 
@@ -291,9 +306,10 @@ pub fn load_verified_manifest(
 ```
 
 The module and function are `pub` because `keld-core` is the single production
-caller. `keld-core` opens the fixed permissions file once with the KEL-96
-no-follow/regular-file/containment contract and transfers that validated handle
-by value. `display_path` is diagnostics-only and is never opened. The loader
+caller. KEL-96's private `ValidatedBootSelection` already owns the fixed file
+opened under the no-follow/regular-file/containment contract; `run_guarded`
+transfers that validated handle by value. `display_path` is diagnostics-only
+and is never opened. The loader
 owns the handle read, byte buffer, SHA-256 calculation, comparison, UTF-8
 validation, and parse. The caller owns only the validated handle, display path,
 and expected digest from `ValidatedBootSelection`; it cannot provide a verifier
@@ -337,14 +353,16 @@ pub fn run_guarded(
 ) -> Result<(), keld_core::app_session::HostAppError>;
 ```
 
-`run_guarded` consumes the opaque boot selection, derives the fixed policy path
-and digest from its private fields, opens and validates the fixed file once,
-transfers that handle to `load_verified_manifest`, stores the returned opaque
+`run_guarded` consumes the opaque boot selection, transfers its already-open
+fixed permissions handle and decoded digest to `load_verified_manifest`, stores the returned opaque
 `VerifiedManifest` inside the private `GuardSnapshot`, and completes all policy
 preflight before any app resource. `HostAppError` preserves the nested
 `ManifestError::code()` and fix.
-The KEL-96 `run_unprivileged` function remains incapable of registering a
-privileged channel and is not a fallback after `run_guarded` fails.
+T2 must change the shipping no-flag caller in `crates/keld-host/src/main.rs`
+from `and_then(run_unprivileged)` to `and_then(run_guarded)`. The KEL-96
+`run_unprivileged` function remains incapable of registering a privileged
+channel, may serve only explicit unprivileged diagnostics/tests, and is not a
+fallback after `run_guarded` fails.
 
 ### Trusted principal and dispatch context
 
@@ -485,12 +503,16 @@ app-link.
 
 The guard snapshot's lifetime equals the host app session. A policy change is
 not an event delivered to a running role. To adopt one, the host must first
-stop admitting new privileged calls, revoke app-link/role dispatch contexts,
-stop affected Bun roles, close privileged endpoints, and then construct a new
-host session from a newly verified boot input. KEL-96 owns the broader
-window/listener shutdown order; KEL-75 owns generation revocation. This rule
-prevents an old connection from retaining or gaining authority across a
-manifest change.
+atomically mark the session quiescing and reject every new privileged
+admission. It then revokes app-link/role dispatch contexts and crosses an
+explicit drain-or-cancel barrier for requests admitted before quiescence. No
+handler closure may newly enter after the quiescing transition; a closure
+already inside an OS operation must reach its recorded terminal outcome before
+the snapshot is destroyed. Only then may the host stop affected Bun roles,
+close privileged endpoints, and construct a new session from newly verified
+boot input. KEL-96 owns the broader window/listener shutdown order; KEL-75 owns
+generation revocation. This rule prevents an old connection or in-flight
+request from retaining or gaining authority across a manifest change.
 
 ## 5. Boundaries
 
@@ -508,7 +530,7 @@ manifest change.
   Electron facade options; or any direct-Bun permission shim.
 - T2 may add the already workspace-pinned `sha2` entry to
   `crates/keld-guard/Cargo.toml` only when that implementation PR receives the
-  explicit dependency review gate. This candidate spec records the design but
+  explicit dependency review gate. This approved spec records the design but
   does not grant that approval or edit a Cargo manifest.
 - T3 may add the existing workspace member `keld-native` to
   `crates/keld-core/Cargo.toml` only when that implementation PR receives its
@@ -519,29 +541,36 @@ manifest change.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T0: A human distinct from the writer approves the exact candidate PR
-      head, spec blob, decision digest, permission model, and public APIs; the
-      writer then records that provenance, changes `Status: draft` to
-      `Status: approved`, checks T0, and obtains human review of the exact
-      final status/T0 head. Do not implement from the delegated candidate.
-- [ ] T0g: L0 replaces Prompt Tracker's stale standalone
-      `host-boot-descriptor` node with the approved atomic
-      `host-boot-and-session` artifact predicate, updates `guard/34` to require
-      that artifact plus this contract artifact, and consumes
-      `kel97_predecessor_task_id=none` by removing `runtime/04`'s stale semantic
-      KEL-102-artifact requirement while leaving its static `AFTER` set empty.
-      Then reissue the frontier. This spec PR does not edit Prompt Tracker or
-      dormant `runtime/04`.
-- [ ] T1: KEL-96 lands one atomic T1a+T1b `host-boot-and-session` head with
+- [x] T0: The repository owner explicitly delegated approval of D1-D9,
+      permission model, and the selected public APIs through stable Linear
+      source `b330c2ec-2193-4aa6-b324-67187cdda4d5`. The record binds the
+      decision digest and current authoring base and honestly states that Codex
+      created it under delegation; no independent-human review is claimed.
+- [ ] T0g: L0 verifies that Prompt Tracker `guard/34` retains the atomic
+      `host-boot-and-session` plus exact KEL-102 contract predicates, consumes
+      `kel97_predecessor_task_id=none` by removing `runtime/04`'s now-invalid
+      semantic KEL-102-artifact requirement while leaving its static `AFTER`
+      set empty, and publishes a successor frontier that supersedes blocked
+      snapshot 222. This spec PR does not edit Prompt Tracker, research, or
+      dormant `runtime/04`; no implementation node is ready before T0g lands.
+- [x] T1: KEL-96 landed one atomic T1a+T1b `host-boot-and-session` head at
+      `7cec425fcd14eac00c5fb34534f3a74d43b4b35e` with
       both acceptance rows passed. The T1a row provides the verified canonical
-      app root, fixed `keld.permissions.jsonc`, and decoded digest consumed by
-      `KEL-102/T2`; T1b proves the first durable no-flag host consumer.
+      fixture root, fixed opened `keld.permissions.jsonc` handle, and decoded
+      digest consumed by `KEL-102/T2`; T1b proves the durable no-flag host
+      consumer. Later KEL-96 T2/T3 are landed but are not KEL-102 predecessors.
 - [ ] `KEL-102/T2`: Add the exact guard-owned loader and `run_guarded` API,
       host-owned manifest resolution, private immutable `GuardSnapshot`, and
-      typed fail-closed startup errors. Prove no listener handle, child
+      typed fail-closed startup errors. Replace the shipping no-flag
+      `keld-host` call to `run_unprivileged` with `run_guarded`; a guarded-load
+      failure must never retry through `run_unprivileged` or a default
+      manifest. Add the session quiescence/drain barrier defined in §4. Prove
+      no listener handle, child
       process, host-registry window, or platform-native window handle exists
       for every manifest failure class and that the digest covers the exact
-      parsed bytes. This is `first_task_id=KEL-102/T2`.
+      parsed bytes. A binary-level negative control that leaves the shipping
+      caller on `run_unprivileged` must fail. This is
+      `first_task_id=KEL-102/T2`.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
       context. Core routes and passes the verified snapshot/principal/request;
@@ -566,7 +595,7 @@ Task-specific predecessor artifacts:
 
 | Task | Required passed artifacts |
 |---|---|
-| `KEL-102/T2` | `keld.execution-artifact/v1` with `node_id=kel102-contract-freeze`, `issue_id=KEL-102`, `first_task_id=KEL-102/T2`, the approved spec blob/digest/provenance, and `status=passed`; plus `node_id=host-boot-and-session`, `issue_id=KEL-96`, one landed `head_sha`, passed acceptance rows `KEL-96/T1a` and `KEL-96/T1b`, and `status=passed`. T2 semantically consumes T1a. The old `node_id=host-boot-descriptor` is invalid. |
+| `KEL-102/T2` | `keld.execution-artifact/v1` with `node_id=kel102-contract-freeze`, `issue_id=KEL-102`, `first_task_id=KEL-102/T2`, the approved spec blob/digest/delegated provenance, and `status=passed`; plus `node_id=host-boot-and-session`, `issue_id=KEL-96`, landed `head_sha=7cec425fcd14eac00c5fb34534f3a74d43b4b35e`, passed acceptance rows `KEL-96/T1a` and `KEL-96/T1b`, and `status=passed`. T2 semantically consumes T1a's retained permissions handle/digest; it does not consume KEL-96 T2/T3. The old `node_id=host-boot-descriptor` is invalid. |
 | `KEL-102/T3` | `node_id=host-guard-enforcement`, `issue_id=KEL-102`, `task_id=KEL-102/T2`, landed `head_sha`, `status=passed`. |
 | `KEL-102/T4` | Same schema with exact `task_id=KEL-102/T3`; a generic earlier KEL-102 pass is insufficient. |
 | `KEL-102/T5` | Same schema with exact `task_id=KEL-102/T4`, plus `node_id=principal-shipping-link`, `issue_id=KEL-97`, landed `head_sha`, `status=passed`, and passed acceptance rows `KEL-97/role-guard-principal` and `KEL-97/stale-generation-dispatch`. A generic KEL-97 RoleRegistry/link pass is insufficient. KEL-97 or its approved predecessor must first adopt and prove those exact acceptances because current KEL-75 T1-T3 do not ship role grants. |
@@ -581,12 +610,12 @@ consumes this field; it must not manufacture a T2/T3/T4 edge.
 
 | AC | Test and independent oracle |
 |---|---|
-| 1–2 | Host binary integration using a temp app root: valid manifest starts the fixture; missing/malformed/outside/digest-mismatched manifests produce the typed error, no child PID, no app-link endpoint/listener handle, an empty host window registry, and no platform-native application window handle. A file written outside the root is never accepted as the manifest; marker absence alone is insufficient. |
+| 1–2 | Shipping no-flag host binary integration using a KEL-96 private staged root: `keld-host` calls `run_guarded`; valid manifest starts the fixture; missing/malformed/outside/digest-mismatched manifests produce the typed error, no child PID, no app-link endpoint/listener handle, an empty host window registry, and no platform-native application window handle. A file written outside the root is never accepted as the manifest; marker absence alone is insufficient. A mutation retaining `run_unprivileged` or retrying it after guarded failure must fail. |
 | 3 | Real authenticated app-link fixture: correct token binds only its host-selected v0 caller; foreign/stale token is the existing `KELD-IPC-007` rejection and no FS handler marker/reply occurs. |
 | 4 | KEL-75 dependent integration: bind a generation, revoke it, then send a formerly valid privileged request. Independent oracle is typed stale/revoked rejection plus absent filesystem marker. |
 | 5 | Backend state tests plus real platform smoke: media callback receives a host registry principal; missing state returns `KELD-GUARD007`; `/app` camera grant remains denied for a webview; the production callback recorder's digest equals `GuardSnapshot` on all three backends. Retaining `PermissionsManifest::default()` or dropping `MediaPolicy` fails. Navigation-rotation assertions wait for the actual registry event once that feature exists. |
 | 6–7 | Real socket/kipc FS session on temp paths: core routes a verified snapshot/principal/request to the native broker; the broker's sole `dispatch_privileged` call returns `KELD-GUARD002` for out-of-scope write and the target does not exist; allowed write/read returns exact bytes. The production adapter recorder is zero on denied read and nonzero on allowed read. A contract assertion rejects any core-local `evaluate`/`dispatch_privileged` call. |
-| 8 | Start with a denying snapshot, retain its already-authenticated stream, modify the manifest, and verify the live session's decision is unchanged. Perform orderly full-session teardown and assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
+| 8 | Start with a denying snapshot, retain its already-authenticated stream, modify the manifest, and verify the live session's decision is unchanged. Mark the session quiescing, race a new request against teardown, and prove no handler closure enters after that transition. Drain or cancel requests admitted before quiescence and record their terminal outcomes before destroying the snapshot. Assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
 
 Anti-flake requirements: use a temporary root and port `0`; await host/child
 markers and process termination rather than sleeping; run crash/reload cases
@@ -605,6 +634,9 @@ Negative controls are mandatory for the privileged vertical slice:
    foreign-link or missing-webview-principal test must fail.
 3. Temporarily substitute `PermissionsManifest::default()` after a manifest
    load error; the startup-failure/no-child test must fail.
+   A separate mutation leaves the shipping no-flag `keld-host` caller on
+   `run_unprivileged`; the valid-policy startup and guarded-caller assertions
+   must fail.
 4. Temporarily remove the `MediaPolicy` argument at any backend and restore the
    current `PermissionsManifest::default()` construction; the callback digest
    and recorder-entry assertions must fail even though `/app` media remains
@@ -612,10 +644,12 @@ Negative controls are mandatory for the privileged vertical slice:
    default manifest outside `MediaPolicy`; the missing recorder entry must fail.
 5. Temporarily leave an already accepted old link dispatchable after session
    teardown; the retained-stream revocation assertion must fail.
+   A second mutation lets a new handler enter after the quiescing transition;
+   the drain/cancel barrier assertion must fail.
 
 The contract-freeze PR also runs a documentary contract check against this
 file. Each temporary mutation below must make that check exit non-zero, after
-which the untouched candidate must pass again:
+which the untouched approved document must pass again:
 
 1. remove the exact passed KEL-96 `host-boot-and-session` artifact identity;
 2. remove `KEL-102-D1`'s explicit permission-model approval;
@@ -628,7 +662,10 @@ which the untouched candidate must pass again:
    task or a generic pass;
 7. replace T5's exact `task_id=KEL-102/T4` predecessor or either exact KEL-97
    acceptance row with a generic KEL-97 pass; and
-8. replace `kel97_predecessor_task_id=none` with any static KEL-102 task edge.
+8. replace `kel97_predecessor_task_id=none` with any static KEL-102 task edge;
+9. remove the shipping `keld-host -> run_guarded` assignment or permit
+   `run_unprivileged` fallback after guarded failure; and
+10. remove the quiescence/drain barrier while leaving snapshot restart prose.
 
 This documentation-only PR has no new behavior tests. The implementation PRs
 must run `cargo fmt --all --check`,
@@ -640,16 +677,18 @@ and `just llms-check` after authoritative-document changes.
 
 - unsafe: **none authorized**. T2-T5 must not add or change `unsafe`; a platform
   backend FFI/lifetime delta stops for its own explicit unsafe review.
-- public API: **yes**. Human approval must cover the exact
+- public API: **yes; approved for this contract by the delegated decision
+  source**. Implementation review must verify the exact
   `keld_guard::verified_manifest::load_verified_manifest`,
   `ManifestError` variants/`code()`,
   `keld_core::app_session::run_guarded`, and
   `keld_wv::MediaPolicy`/`WebEngine::create` contracts in §4.
   `GuardSnapshot` and `TrustedDispatchContext` remain crate-private. A
   role-principal API is not approved here and remains KEL-75/KEL-97-owned.
-- permission model: **yes**. This spec defines the fail-closed policy-loading,
-  caller-identity, enforcement, and lifecycle contract; human sign-off is
-  required before implementation.
+- permission model: **yes; approved for this contract by the delegated
+  decision source**. This spec defines the fail-closed policy-loading,
+  caller-identity, enforcement, and lifecycle contract. Each implementation PR
+  must prove its exact task slice and may not widen the approved model.
 - dependency addition: **none approved by this spec**. T2's selected reuse of
   workspace-pinned `sha2` in `keld-guard` must receive a separate explicit
   dependency gate in its implementation PR. T3's `keld-core` → `keld-native`
@@ -668,16 +707,16 @@ architecture 01 §5 cold-start/RSS budgets.
 
 ## 10. Remaining gates, not open architectural questions
 
-The delegated candidate resolves all nine architecture decisions, but remains
-`draft`. A human distinct from the writer must approve the exact candidate
-head/spec blob and decision digest, explicitly including permission model and
-the selected public APIs. After the status/T0 finalization commit, that human
-must review the exact final head again. The resulting approval artifact records
-stable `approver_identity`, `approval_source_id`, `decision_digest`, and
-`approved_spec_blob_sha`.
+The delegated decision resolves all nine architecture choices and authorizes
+this approved contract. Provenance intentionally records that the executing
+agent created the Linear decision record under explicit repository-owner
+delegation; no independent-human review is claimed. The resulting contract
+artifact records the delegated approver identity, stable Linear source id,
+decision digest, and landed approved spec blob.
 
-Implementation remains blocked after approval until L0 completes T0g and the
-atomic KEL-96 `host-boot-and-session` artifact exists. T2 additionally requests
-its dependency review; T4's real macOS/Windows/Linux backend observations and
-T5's KEL-97 join remain task-owned evidence. None of those gates authorizes
-product code in this PR or changes KEL-102 to Done.
+Implementation remains blocked until L0 completes T0g and reissues the current
+frontier. The atomic KEL-96 `host-boot-and-session` artifact already exists and
+passes both T1a/T1b rows. T2 additionally requests its dependency review; T4's
+real macOS/Windows/Linux backend observations and T5's KEL-97 join remain
+task-owned evidence. None of those gates authorizes product code in this PR or
+changes KEL-102 to Done.
