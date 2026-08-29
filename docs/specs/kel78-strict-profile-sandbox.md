@@ -685,8 +685,15 @@ for the host-path deny.
   MSRV 1.69 is below Keld 1.97.
 - wire protocol: **yes, private only** — the existing authenticated bootstrap
   carries one fixed eight-byte `KGR1` + big-endian group-PID record. No public
-  kipc frame, channel, or application wire bytes change. Human delegation is
-  recorded on KEL-78.
+  kipc frame, channel, or application wire bytes change. KEL-96/T3's persistent
+  consumer keeps that authenticated stream open as fixed 404-byte `KGC1`
+  generation-control records and updates the exact current group before Ready;
+  revoke acknowledgment and group clear precede successor preparation. This is
+  the same private-wire review class. Its liveness pipe adds one acknowledged
+  non-authority live-host cleanup discriminator beside the existing
+  accepted-Quit byte; unmarked EOF remains host death. This is not a
+  Strict-containment claim. Human
+  delegation is recorded on KEL-78/KEL-96.
 
 Removal / rollback: delete the admission gate and keep KEL-70 unsandboxed
 supervision; every surface returns to `unverified`. Do not keep a half-applied

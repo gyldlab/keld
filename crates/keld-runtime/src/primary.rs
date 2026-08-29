@@ -5,6 +5,7 @@
 //! wrapping a second restart loop around [`crate::Supervisor`].
 
 pub use crate::unix_role::{
-    RoleConfig as PrimaryRoleConfig, RoleEvent as PrimaryRoleEvent, RoleGeneration, RoleOwner,
+    BoundRoleGeneration as BoundPrimaryGeneration, RoleConfig as PrimaryRoleConfig,
+    RoleEvent as PrimaryRoleEvent, RoleGeneration, RoleOwner,
     RoleRevocationCause as PrimaryRoleRevocationCause, RoleSupervisor as PrimaryRoleSupervisor,
 };

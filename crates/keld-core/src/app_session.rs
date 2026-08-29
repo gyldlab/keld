@@ -1,6 +1,8 @@
 //! Validated no-flag application boot and host-owned primary session (KEL-96).
 
 #[cfg(target_os = "macos")]
+use std::collections::HashMap;
+#[cfg(target_os = "macos")]
 use std::ffi::OsStr;
 use std::fmt;
 #[cfg(target_os = "macos")]
@@ -40,12 +42,13 @@ use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::link::{AppLinkDeadlines, read_frame_interruptible, write_frame};
 #[cfg(target_os = "macos")]
 use keld_ipc::{
-    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapAdmission, BootstrapListener,
-    BootstrapRejection, BootstrapRejectionObserver, ECHO_CHANNEL, IpcError, LIFECYCLE_CHANNEL,
+    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, ECHO_CHANNEL, IpcError, LIFECYCLE_CHANNEL,
     LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
 #[cfg(target_os = "macos")]
-use keld_runtime::macos_guardian::{GuardianBootstrap, HostGuardian};
+use keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate, GuardianBootstrap};
+#[cfg(target_os = "macos")]
+use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent};
 #[cfg(target_os = "macos")]
 use keld_wv::wkwebview::{AppWindowCommand, AppWindowEvent, WkWebViewEngine};
 #[cfg(target_os = "macos")]
@@ -673,6 +676,7 @@ impl SessionShutdownState {
         self.cause() == SESSION_RUNNING
     }
 
+    #[cfg(test)]
     fn claim_lifecycle_quit(&self) -> bool {
         self.claim(SESSION_LIFECYCLE_QUIT)
     }
@@ -683,6 +687,10 @@ impl SessionShutdownState {
 
     fn claim(&self, cause: u8) -> bool {
         let _transition = self.transition_guard();
+        self.claim_guarded(cause)
+    }
+
+    fn claim_guarded(&self, cause: u8) -> bool {
         let claimed = self
             .cause
             .compare_exchange(SESSION_RUNNING, cause, Ordering::AcqRel, Ordering::Acquire)
@@ -736,10 +744,6 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
         )
     })?;
 
-    LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let bootstrap =
-        BootstrapListener::bind().map_err(|source| app_io("app-link provision", &source))?;
-    let app_link = bootstrap.app_link();
     let entry_metadata = entry_file
         .metadata()
         .map_err(|source| app_io("validated entry identity", &source))?;
@@ -752,7 +756,6 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
         .arg(&entry_path)
         .arg(entry_metadata.dev().to_string())
         .arg(entry_metadata.ino().to_string())
-        .env("KELD_APP_LINK", &app_link)
         .env_remove(DEV_LEASE_ENV)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -760,31 +763,15 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
     let pending = GuardianBootstrap::spawn_supervised(guardian_command)
         .map_err(|source| app_runtime("guardian bootstrap", &source))?;
     drop(entry_file);
-    let guardian = pending
-        .register_until(Instant::now() + APP_LINK_IO_DEADLINE)
+    let mut guardian = pending
+        .register_guarded_primary_until(Instant::now() + APP_LINK_IO_DEADLINE)
         .map_err(|source| app_runtime("guardian registration", &source))?;
-
-    let stream = match bootstrap
-        .accept_authenticated_until(
-            Instant::now() + APP_LINK_IO_DEADLINE,
-            &NoopBootstrapObserver,
-        )
-        .map_err(|source| app_io("app-link authentication", &source))?
-    {
-        BootstrapAdmission::Authenticated(stream) => stream,
-        BootstrapAdmission::Cancelled => {
-            return Err(app_detail(
-                "app-link authentication",
-                "bootstrap was cancelled before HELLO",
-            ));
-        }
-        BootstrapAdmission::DeadlineElapsed => {
-            return Err(app_detail(
-                "app-link authentication",
-                "Bun did not authenticate before the startup deadline",
-            ));
-        }
-    };
+    LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    let initial = await_bound_generation(
+        &mut guardian,
+        Instant::now() + APP_LINK_IO_DEADLINE,
+        "initial app-link authentication",
+    )?;
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
     let guardian_owner = GuardianOwner::start(
@@ -793,12 +780,13 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
         dev_lease,
         shutdown.clone(),
     )?;
-    let router = PrimaryRouter::start(
-        stream,
+    let router = PrimaryRouter::start_bound(
+        initial,
         window_commands_tx.clone(),
         guardian_owner.handle(),
         shutdown,
     )?;
+    guardian_owner.attach_router(router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
@@ -824,7 +812,6 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
             .map_err(|_| app_detail("window event coordinator", "thread panicked"))
             .and_then(std::convert::identity);
         let router_result = router.shutdown();
-        drop(bootstrap);
         let guardian_result = guardian_owner.shutdown();
         return Err(collapse_app_failures(
             &primary,
@@ -838,7 +825,6 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
         .map_err(|_| app_detail("window event coordinator", "thread panicked"))
         .and_then(std::convert::identity);
     let router_result = router.shutdown();
-    drop(bootstrap);
     let guardian_result = guardian_owner.shutdown();
 
     match window_result {
@@ -855,6 +841,41 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
             router_result,
             guardian_result,
         ]),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn await_bound_generation(
+    guardian: &mut GuardedPrimary,
+    deadline: Instant,
+    phase: &'static str,
+) -> Result<BoundPrimaryGeneration, HostAppError> {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            guardian.deny_recovery();
+            return Err(app_detail(
+                phase,
+                "Bun did not authenticate before the generation deadline",
+            ));
+        }
+        if let Some(update) = guardian.recv_update(deadline.saturating_duration_since(now)) {
+            match update {
+                GuardedPrimaryUpdate::Bound(bound) => return Ok(bound),
+                GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { .. }) => {
+                    guardian.deny_recovery();
+                    return Err(app_detail(
+                        phase,
+                        "Bun terminated before its initial authenticated generation bound",
+                    ));
+                }
+                GuardedPrimaryUpdate::Role(_) => {}
+            }
+        } else {
+            guardian
+                .poll_fatal()
+                .map_err(|source| app_guardian_fatal(phase, &source))?;
+        }
     }
 }
 
@@ -881,10 +902,18 @@ fn coordinate_window_events(
 struct GuardianOwner {
     command_tx: Sender<GuardianOwnerCommand>,
     handle: Option<JoinHandle<Result<ExitStatus, HostAppError>>>,
+    lease_shutdown: Option<JoinHandle<()>>,
 }
 
 #[cfg(target_os = "macos")]
 enum GuardianOwnerCommand {
+    AttachRouter(
+        PrimaryRouterHandle,
+        std::sync::mpsc::SyncSender<Result<(), String>>,
+    ),
+    ArmRecovery(std::sync::mpsc::SyncSender<Result<(), String>>),
+    DenyRecovery,
+    FailGeneration(u32, std::sync::mpsc::SyncSender<Result<(), String>>),
     PrepareAcceptedShutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
     Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
 }
@@ -897,20 +926,43 @@ struct GuardianOwnerHandle {
 
 #[cfg(target_os = "macos")]
 impl GuardianOwner {
+    #[allow(clippy::too_many_lines)] // one thread serializes guardian commands, updates, lease loss and fatal observation
     fn start(
-        mut guardian: HostGuardian,
+        mut guardian: GuardedPrimary,
         window_commands: Sender<AppWindowCommand>,
         mut dev_lease: Option<DevHostLease>,
         shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
         let (command_tx, command_rx) = mpsc::channel();
+        let (lease_tx, lease_rx) = mpsc::channel::<PrimaryRouterHandle>();
+        let fatal_commands = window_commands.clone();
+        let lease_shutdown = thread::Builder::new()
+            .name("keld-core-cli-lease-shutdown".to_owned())
+            .spawn(move || {
+                if let Ok(router) = lease_rx.recv()
+                    && router.cli_lease_lost().is_err()
+                {
+                    let _ = fatal_commands.send(AppWindowCommand::Fatal);
+                }
+            })
+            .map_err(|source| app_io("CLI lease-loss shutdown owner", &source))?;
         let handle = thread::Builder::new()
             .name("keld-core-guardian-owner".to_owned())
             .spawn(move || {
+                let mut router = None;
                 loop {
                     match command_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(GuardianOwnerCommand::AttachRouter(attached, reply)) => {
+                            let observed = if router.is_some() {
+                                Err(String::from("router is already attached"))
+                            } else {
+                                router = Some(attached);
+                                Ok(())
+                            };
+                            let _ = reply.send(observed);
+                        }
                         Ok(GuardianOwnerCommand::PrepareAcceptedShutdown(reply)) => {
-                            let result = guardian.accept_supervised_quit().map_err(|source| {
+                            let result = guardian.accept_shutdown().map_err(|source| {
                                 app_runtime("guardian accepted-shutdown preparation", &source)
                             });
                             let observed = match &result {
@@ -919,6 +971,27 @@ impl GuardianOwner {
                             };
                             let _ = reply.send(observed);
                             result?;
+                        }
+                        Ok(GuardianOwnerCommand::ArmRecovery(reply)) => {
+                            guardian.arm_recovery();
+                            let _ = reply.send(Ok(()));
+                        }
+                        Ok(GuardianOwnerCommand::DenyRecovery) => {
+                            guardian.deny_recovery();
+                        }
+                        Ok(GuardianOwnerCommand::FailGeneration(attempt, reply)) => {
+                            let result = guardian
+                                .fail_current_generation(attempt)
+                                .map_err(|source| app_runtime("primary app-link failure", &source));
+                            let observed = result
+                                .as_ref()
+                                .copied()
+                                .map_err(std::string::ToString::to_string);
+                            let _ = reply.send(observed);
+                            if let Err(error) = result {
+                                let _ = window_commands.send(AppWindowCommand::Fatal);
+                                return Err(error);
+                            }
                         }
                         Ok(GuardianOwnerCommand::Shutdown(reply)) => {
                             let result = guardian
@@ -932,10 +1005,51 @@ impl GuardianOwner {
                             return result;
                         }
                         Err(RecvTimeoutError::Timeout) => {
+                            while let Some(update) = guardian.recv_update(Duration::ZERO) {
+                                let Some(router) = &router else {
+                                    if matches!(&update, GuardedPrimaryUpdate::Role(_))
+                                        && !matches!(
+                                            &update,
+                                            GuardedPrimaryUpdate::Role(
+                                                PrimaryRoleEvent::Revoked { .. }
+                                            )
+                                        )
+                                    {
+                                        continue;
+                                    }
+                                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                                    return Err(app_detail(
+                                        "guardian generation update",
+                                        "generation changed before the primary router attached",
+                                    ));
+                                };
+                                if let Err(error) = router.apply_generation_update(update) {
+                                    guardian.deny_recovery();
+                                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                                    return Err(error);
+                                }
+                            }
                             if let Some(lease) = dev_lease.as_mut() {
                                 match lease.poll_lost() {
                                     Ok(true) => {
-                                        let _ = shutdown.claim_cli_lease_lost();
+                                        if shutdown.claim_cli_lease_lost() {
+                                            let Some(router) = &router else {
+                                                let _ =
+                                                    window_commands.send(AppWindowCommand::Fatal);
+                                                return Err(app_detail(
+                                                    "CLI lease loss",
+                                                    "primary router is not attached",
+                                                ));
+                                            };
+                                            lease_tx.send(router.clone()).map_err(|_| {
+                                                let _ =
+                                                    window_commands.send(AppWindowCommand::Fatal);
+                                                app_detail(
+                                                    "CLI lease-loss shutdown owner",
+                                                    "shutdown executor stopped",
+                                                )
+                                            })?;
+                                        }
                                     }
                                     Ok(false) => {}
                                     Err(error) => {
@@ -964,6 +1078,7 @@ impl GuardianOwner {
         Ok(Self {
             command_tx,
             handle: Some(handle),
+            lease_shutdown: Some(lease_shutdown),
         })
     }
 
@@ -979,14 +1094,38 @@ impl GuardianOwner {
         joined.and(request)
     }
 
+    fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(GuardianOwnerCommand::AttachRouter(router, reply_tx))
+            .map_err(|_| app_detail("guardian router attachment", "guardian owner stopped"))?;
+        match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(detail)) => Err(app_detail("guardian router attachment", detail)),
+            Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "guardian router attachment",
+                "guardian owner did not acknowledge the router",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(app_detail(
+                "guardian router attachment",
+                "guardian owner ended before attaching the router",
+            )),
+        }
+    }
+
     fn join(&mut self) -> Result<(), HostAppError> {
-        let Some(handle) = self.handle.take() else {
-            return Ok(());
-        };
-        handle
-            .join()
-            .map_err(|_| app_detail("guardian owner", "thread panicked"))?
-            .map(|_| ())
+        let owner = self.handle.take().map_or(Ok(()), |handle| {
+            handle
+                .join()
+                .map_err(|_| app_detail("guardian owner", "thread panicked"))?
+                .map(|_| ())
+        });
+        let lease = self.lease_shutdown.take().map_or(Ok(()), |handle| {
+            handle
+                .join()
+                .map_err(|_| app_detail("CLI lease-loss shutdown owner", "thread panicked"))
+        });
+        owner.and(lease)
     }
 }
 
@@ -1003,6 +1142,48 @@ impl Drop for GuardianOwner {
 
 #[cfg(target_os = "macos")]
 impl GuardianOwnerHandle {
+    fn deny_recovery(&self) {
+        let _ = self.command_tx.send(GuardianOwnerCommand::DenyRecovery);
+    }
+
+    fn arm_recovery(&self) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(GuardianOwnerCommand::ArmRecovery(reply_tx))
+            .map_err(|_| app_detail("primary recovery arm", "guardian owner stopped"))?;
+        match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(detail)) => Err(app_detail("primary recovery arm", detail)),
+            Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "primary recovery arm",
+                "guardian owner did not acknowledge recovery activation",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(app_detail(
+                "primary recovery arm",
+                "guardian owner ended before recovery activation",
+            )),
+        }
+    }
+
+    fn fail_generation(&self, attempt: u32) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(GuardianOwnerCommand::FailGeneration(attempt, reply_tx))
+            .map_err(|_| app_detail("primary app-link failure", "guardian owner stopped"))?;
+        match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(detail)) => Err(app_detail("primary app-link failure", detail)),
+            Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "primary app-link failure",
+                "guardian owner did not acknowledge link failure",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(app_detail(
+                "primary app-link failure",
+                "guardian owner ended before acknowledging link failure",
+            )),
+        }
+    }
+
     fn prepare_accepted_shutdown(&self) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
@@ -1050,34 +1231,69 @@ impl GuardianOwnerHandle {
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct PrimaryRouterHandle {
-    writer: Arc<Mutex<std::os::unix::net::UnixStream>>,
+    current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
+    readers: Arc<Mutex<HashMap<u32, PrimaryReader>>>,
+    window_ready: Arc<AtomicBool>,
+    last_window_closed: Arc<AtomicBool>,
+    recovery_armed: Arc<AtomicBool>,
     shutdown: SessionShutdownState,
     guardian: GuardianOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
 }
 
 #[cfg(target_os = "macos")]
+type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
+
+#[cfg(target_os = "macos")]
+struct ActivePrimaryGeneration {
+    attempt: u32,
+    writer: std::os::unix::net::UnixStream,
+}
+
+#[cfg(target_os = "macos")]
 impl PrimaryRouterHandle {
     fn signal_ready(&self) -> Result<(), HostAppError> {
-        self.write_event(LifecycleEvent::Ready)
+        if self.recovery_armed.load(Ordering::Acquire) {
+            self.write_event(LifecycleEvent::Ready)?;
+            self.window_ready.store(true, Ordering::Release);
+            return Ok(());
+        }
+        if let Err(error) = self.write_event(LifecycleEvent::Ready) {
+            self.guardian.deny_recovery();
+            return Err(error);
+        }
+        // Ready is now externally observable. Mark that fact before waiting
+        // for the guardian-owner acknowledgment; runtime's Pending decision
+        // blocks successor preparation during this interval.
+        self.window_ready.store(true, Ordering::Release);
+        if let Err(error) = self.guardian.arm_recovery() {
+            self.guardian.deny_recovery();
+            return Err(error);
+        }
+        self.recovery_armed.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn signal_last_window_closed(&self) -> Result<(), HostAppError> {
+        self.last_window_closed.store(true, Ordering::Release);
         self.write_event(LifecycleEvent::LastWindowClosed)
     }
 
     fn write_event(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
         let payload = encode(&event).map_err(|source| app_ipc("lifecycle event", &source))?;
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
         let _transition = self.shutdown.transition_guard();
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
         if !self.shutdown.is_running() {
             return Ok(());
         }
+        let Some(active) = current.as_mut() else {
+            return Ok(());
+        };
         write_frame(
-            &mut *writer,
+            &mut active.writer,
             FrameKind::Event,
             0,
             LIFECYCLE_CHANNEL,
@@ -1087,13 +1303,26 @@ impl PrimaryRouterHandle {
         .map_err(|source| app_ipc("lifecycle event", &source))
     }
 
-    fn lifecycle_quit(&self, correlation: CorrelationId, reply: &[u8]) -> Result<(), HostAppError> {
-        let writer_guard = self
-            .writer
+    fn lifecycle_quit(
+        &self,
+        attempt: u32,
+        correlation: CorrelationId,
+        reply: &[u8],
+    ) -> Result<(), HostAppError> {
+        let transition = self.shutdown.transition_guard();
+        let current_guard = self
+            .current
             .lock()
-            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
-        if !self.shutdown.claim_lifecycle_quit() {
-            drop(writer_guard);
+            .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
+        if current_guard
+            .as_ref()
+            .is_none_or(|active| active.attempt != attempt)
+        {
+            return Ok(());
+        }
+        if !self.shutdown.claim_guarded(SESSION_LIFECYCLE_QUIT) {
+            drop(current_guard);
+            drop(transition);
             return if self.shutdown.cause() == SESSION_CLI_LEASE_LOST {
                 self.cli_lease_lost()
             } else {
@@ -1103,14 +1332,21 @@ impl PrimaryRouterHandle {
         if !self.shutdown.begin_tail() {
             return Ok(());
         }
-        drop(writer_guard);
+        drop(current_guard);
+        drop(transition);
         self.guardian.prepare_accepted_shutdown()?;
-        let mut writer_guard = self
-            .writer
+        let mut current_guard = self
+            .current
             .lock()
-            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
+            .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
+        let active = current_guard.as_mut().ok_or_else(|| {
+            app_detail(
+                "lifecycle Quit reply",
+                "current primary generation disappeared before the reply",
+            )
+        })?;
         write_frame(
-            &mut *writer_guard,
+            &mut active.writer,
             FrameKind::Reply,
             0,
             LIFECYCLE_CHANNEL,
@@ -1119,33 +1355,151 @@ impl PrimaryRouterHandle {
         )
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
         finish_link_shutdown(
-            writer_guard.shutdown_app_link(),
+            active.writer.shutdown_app_link(),
             "lifecycle Quit link close",
         )?;
-        drop(writer_guard);
+        current_guard.take();
+        drop(current_guard);
         self.finish_tail("lifecycle Quit")
     }
 
     fn cli_lease_lost(&self) -> Result<(), HostAppError> {
-        let writer_guard = self
-            .writer
-            .lock()
-            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
         if self.shutdown.cause() != SESSION_CLI_LEASE_LOST || !self.shutdown.begin_tail() {
             return Ok(());
         }
-        drop(writer_guard);
         self.guardian.prepare_accepted_shutdown()?;
-        let writer_guard = self
-            .writer
+        let mut current_guard = self
+            .current
             .lock()
-            .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
-        finish_link_shutdown(
-            writer_guard.shutdown_app_link(),
-            "CLI lease-loss link close",
-        )?;
-        drop(writer_guard);
+            .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
+        if let Some(active) = current_guard.as_mut() {
+            finish_link_shutdown(
+                active.writer.shutdown_app_link(),
+                "CLI lease-loss link close",
+            )?;
+        }
+        current_guard.take();
+        drop(current_guard);
         self.finish_tail("CLI lease loss")
+    }
+
+    fn apply_generation_update(&self, update: GuardedPrimaryUpdate) -> Result<(), HostAppError> {
+        match update {
+            GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { attempt, .. }) => {
+                if !self.window_ready.load(Ordering::Acquire) {
+                    return Err(app_detail(
+                        "primary generation before Ready",
+                        "Bun terminated before the initial window became ready",
+                    ));
+                }
+                self.retire_generation(attempt)
+            }
+            GuardedPrimaryUpdate::Role(_) => Ok(()),
+            GuardedPrimaryUpdate::Bound(bound) => {
+                self.install_generation(bound.attempt(), bound.into_stream())
+            }
+        }
+    }
+
+    fn install_generation(
+        &self,
+        attempt: u32,
+        mut stream: std::os::unix::net::UnixStream,
+    ) -> Result<(), HostAppError> {
+        stream
+            .set_app_link_read_deadline(Some(APP_LINK_READER_POLL))
+            .map_err(|source| app_io("primary session reader deadline", &source))?;
+        let writer_stream = stream
+            .try_clone()
+            .map_err(|source| app_io("primary session writer clone", &source))?;
+        writer_stream
+            .set_app_link_write_deadline(Some(APP_LINK_IO_DEADLINE))
+            .map_err(|source| app_io("primary session writer deadline", &source))?;
+        {
+            let _transition = self.shutdown.transition_guard();
+            if !self.shutdown.is_running() {
+                let _ = writer_stream.shutdown_app_link();
+                return Ok(());
+            }
+            let mut current = self.current.lock().map_err(|_| {
+                app_detail("primary session generation", "generation lock poisoned")
+            })?;
+            if current.is_some() {
+                return Err(app_detail(
+                    "primary session generation",
+                    "successor bound before the retired generation was revoked",
+                ));
+            }
+            *current = Some(ActivePrimaryGeneration {
+                attempt,
+                writer: writer_stream,
+            });
+        }
+        let handle = self.clone();
+        let reader = thread::Builder::new()
+            .name(format!("keld-core-primary-router-{attempt}"))
+            .spawn(move || {
+                let mut result = read_primary_frames(&mut stream, &handle, attempt);
+                if result.is_err() && !handle.is_current(attempt) {
+                    result = Ok(());
+                }
+                if result.is_err() && handle.is_current(attempt) {
+                    let _ = handle.window_commands.send(AppWindowCommand::Fatal);
+                }
+                result
+            })
+            .map_err(|source| app_io("primary session reader", &source))?;
+        self.readers
+            .lock()
+            .map_err(|_| app_detail("primary session readers", "reader list lock poisoned"))?
+            .insert(attempt, reader);
+        if self.window_ready.load(Ordering::Acquire) {
+            self.write_event(LifecycleEvent::Ready)?;
+        }
+        if self.last_window_closed.load(Ordering::Acquire) {
+            self.write_event(LifecycleEvent::LastWindowClosed)?;
+        }
+        Ok(())
+    }
+
+    fn retire_generation(&self, attempt: u32) -> Result<(), HostAppError> {
+        {
+            let _transition = self.shutdown.transition_guard();
+            if !self.shutdown.is_running() {
+                return Ok(());
+            }
+            let mut current = self.current.lock().map_err(|_| {
+                app_detail("primary session generation", "generation lock poisoned")
+            })?;
+            if current
+                .as_ref()
+                .is_some_and(|active| active.attempt == attempt)
+                && let Some(active) = current.take()
+            {
+                finish_link_shutdown(
+                    active.writer.shutdown_app_link(),
+                    "retired primary generation link close",
+                )?;
+            }
+        }
+        // The reader may be waiting for GuardianOwner to acknowledge the
+        // link-failure request that caused this revocation. Removing and
+        // joining it on that same owner thread deadlocks. Current-attempt
+        // checks make it inert after retirement; the terminal router owner
+        // retains and joins every reader handle.
+        Ok(())
+    }
+
+    fn link_failed(&self, attempt: u32) -> Result<(), HostAppError> {
+        self.guardian.fail_generation(attempt)
+    }
+
+    fn is_current(&self, attempt: u32) -> bool {
+        self.current.lock().map_or(true, |current| {
+            current
+                .as_ref()
+                .is_some_and(|active| active.attempt == attempt)
+        })
     }
 
     fn finish_tail(&self, phase: &'static str) -> Result<(), HostAppError> {
@@ -1159,50 +1513,51 @@ impl PrimaryRouterHandle {
 #[cfg(target_os = "macos")]
 struct PrimaryRouter {
     handle: PrimaryRouterHandle,
-    reader: Option<JoinHandle<Result<(), HostAppError>>>,
 }
 
 #[cfg(target_os = "macos")]
 impl PrimaryRouter {
+    #[cfg(test)]
     fn start(
-        mut stream: std::os::unix::net::UnixStream,
+        stream: std::os::unix::net::UnixStream,
         window_commands: Sender<AppWindowCommand>,
         guardian: GuardianOwnerHandle,
         shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
-        stream
-            .set_app_link_read_deadline(Some(APP_LINK_READER_POLL))
-            .map_err(|source| app_io("primary session reader deadline", &source))?;
-        let writer_stream = stream
-            .try_clone()
-            .map_err(|source| app_io("primary session writer clone", &source))?;
-        writer_stream
-            .set_app_link_write_deadline(Some(APP_LINK_IO_DEADLINE))
-            .map_err(|source| app_io("primary session writer deadline", &source))?;
-        let writer = Arc::new(Mutex::new(writer_stream));
         let handle = PrimaryRouterHandle {
-            writer,
+            current: Arc::new(Mutex::new(None)),
+            readers: Arc::new(Mutex::new(HashMap::new())),
+            window_ready: Arc::new(AtomicBool::new(false)),
+            last_window_closed: Arc::new(AtomicBool::new(false)),
+            recovery_armed: Arc::new(AtomicBool::new(true)),
             shutdown,
             guardian,
             window_commands,
         };
-        let handle_for_reader = handle.clone();
-        let reader = thread::Builder::new()
-            .name("keld-core-primary-router".to_owned())
-            .spawn(move || {
-                let result = read_primary_frames(&mut stream, &handle_for_reader);
-                if result.is_err() {
-                    let _ = handle_for_reader
-                        .window_commands
-                        .send(AppWindowCommand::Fatal);
-                }
-                result
-            })
-            .map_err(|source| app_io("primary session reader", &source))?;
-        Ok(Self {
-            handle,
-            reader: Some(reader),
-        })
+        handle.install_generation(1, stream)?;
+        Ok(Self { handle })
+    }
+
+    fn start_bound(
+        bound: BoundPrimaryGeneration,
+        window_commands: Sender<AppWindowCommand>,
+        guardian: GuardianOwnerHandle,
+        shutdown: SessionShutdownState,
+    ) -> Result<Self, HostAppError> {
+        let attempt = bound.attempt();
+        let stream = bound.into_stream();
+        let handle = PrimaryRouterHandle {
+            current: Arc::new(Mutex::new(None)),
+            readers: Arc::new(Mutex::new(HashMap::new())),
+            window_ready: Arc::new(AtomicBool::new(false)),
+            last_window_closed: Arc::new(AtomicBool::new(false)),
+            recovery_armed: Arc::new(AtomicBool::new(false)),
+            shutdown,
+            guardian,
+            window_commands,
+        };
+        handle.install_generation(attempt, stream)?;
+        Ok(Self { handle })
     }
 
     fn handle(&self) -> PrimaryRouterHandle {
@@ -1216,18 +1571,27 @@ impl PrimaryRouter {
     fn stop_and_join(&mut self) -> Result<(), HostAppError> {
         self.handle.shutdown.stop_reader();
         {
-            let writer = match self.handle.writer.lock() {
-                Ok(writer) => writer,
+            let mut current = match self.handle.current.lock() {
+                Ok(current) => current,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            let _ = writer.shutdown_app_link();
+            if let Some(active) = current.take() {
+                let _ = active.writer.shutdown_app_link();
+            }
         }
-        let Some(reader) = self.reader.take() else {
-            return Ok(());
+        let readers = match self.handle.readers.lock() {
+            Ok(mut readers) => std::mem::take(&mut *readers),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
         };
-        reader
-            .join()
-            .map_err(|_| app_detail("primary session reader", "thread panicked"))?
+        let mut results = Vec::new();
+        for (_, reader) in readers {
+            results.push(
+                reader
+                    .join()
+                    .map_err(|_| app_detail("primary session reader", "thread panicked"))?,
+            );
+        }
+        collapse_app_results(results)
     }
 }
 
@@ -1239,9 +1603,11 @@ impl Drop for PrimaryRouter {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_lines)] // one reader owns the complete echo/lifecycle frame dispatch
 fn read_primary_frames(
     reader: &mut std::os::unix::net::UnixStream,
     handle: &PrimaryRouterHandle,
+    attempt: u32,
 ) -> Result<(), HostAppError> {
     loop {
         if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -1258,6 +1624,17 @@ fn read_primary_frames(
                 return Ok(());
             }
             Err(IpcError::Io(source)) if source.kind() == io::ErrorKind::UnexpectedEof => {
+                if !handle.is_current(attempt) {
+                    return Ok(());
+                }
+                if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
+                    // The KEL-75/KEL-78 owner decides whether this generation
+                    // is recoverable. Its Revoked update retires this writer
+                    // before a successor is installed; only its terminal
+                    // outcome may close the already-ready window.
+                    handle.link_failed(attempt)?;
+                    return Ok(());
+                }
                 return Err(app_detail(
                     "primary session reader",
                     "Bun closed the app link",
@@ -1274,8 +1651,9 @@ fn read_primary_frames(
                 let reply = keld_ipc::echo::handle_echo(&payload)
                     .map_err(|source| app_ipc("echo dispatch", &source))?;
                 write_primary_reply(
-                    &handle.writer,
+                    &handle.current,
                     &handle.shutdown,
+                    attempt,
                     ECHO_CHANNEL,
                     header.corr,
                     &reply,
@@ -1288,22 +1666,27 @@ fn read_primary_frames(
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-                        handle.lifecycle_quit(header.corr, &reply)?;
+                        handle.lifecycle_quit(attempt, header.corr, &reply)?;
                         return Ok(());
                     }
                 }
             }
             (FrameKind::Ping, _) => {
-                let mut writer = handle
-                    .writer
-                    .lock()
-                    .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
                 let _transition = handle.shutdown.transition_guard();
+                let mut writer = handle.current.lock().map_err(|_| {
+                    app_detail("primary session generation", "generation lock poisoned")
+                })?;
                 if !handle.shutdown.is_running() {
                     return Ok(());
                 }
+                let Some(active) = writer.as_mut() else {
+                    return Ok(());
+                };
+                if active.attempt != attempt {
+                    return Ok(());
+                }
                 write_frame(
-                    &mut *writer,
+                    &mut active.writer,
                     FrameKind::Ping,
                     0,
                     header.channel,
@@ -1336,21 +1719,28 @@ fn read_primary_frames(
 
 #[cfg(target_os = "macos")]
 fn write_primary_reply(
-    writer: &Mutex<std::os::unix::net::UnixStream>,
+    current: &Mutex<Option<ActivePrimaryGeneration>>,
     shutdown: &SessionShutdownState,
+    attempt: u32,
     channel: keld_ipc::ChannelId,
     correlation: CorrelationId,
     payload: &[u8],
 ) -> Result<(), HostAppError> {
-    let mut writer = writer
-        .lock()
-        .map_err(|_| app_detail("primary session writer", "writer lock poisoned"))?;
     let _transition = shutdown.transition_guard();
+    let mut current = current
+        .lock()
+        .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
     if !shutdown.is_running() {
         return Ok(());
     }
+    let Some(active) = current.as_mut() else {
+        return Ok(());
+    };
+    if active.attempt != attempt {
+        return Ok(());
+    }
     write_frame(
-        &mut *writer,
+        &mut active.writer,
         FrameKind::Reply,
         0,
         channel,
@@ -1367,14 +1757,6 @@ fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(
         Err(source) if source.kind() == io::ErrorKind::NotConnected => Ok(()),
         Err(source) => Err(app_io(phase, &source)),
     }
-}
-
-#[cfg(target_os = "macos")]
-struct NoopBootstrapObserver;
-
-#[cfg(target_os = "macos")]
-impl BootstrapRejectionObserver for NoopBootstrapObserver {
-    fn rejected(&self, _rejection: BootstrapRejection) {}
 }
 
 #[cfg(target_os = "macos")]
@@ -1401,8 +1783,8 @@ fn collapse_app_failures<const N: usize>(
 }
 
 #[cfg(target_os = "macos")]
-fn collapse_app_results<const N: usize>(
-    results: [Result<(), HostAppError>; N],
+fn collapse_app_results(
+    results: impl IntoIterator<Item = Result<(), HostAppError>>,
 ) -> Result<(), HostAppError> {
     let mut errors = results.into_iter().filter_map(Result::err);
     let Some(first) = errors.next() else {
@@ -1686,6 +2068,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    #[allow(clippy::too_many_lines)] // one test preserves the full Ready/calls/Quit ordering oracle
     fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
         use std::io::Read as _;
         use std::os::unix::net::UnixStream;
@@ -1714,6 +2097,10 @@ mod tests {
             {
                 GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
                 GuardianOwnerCommand::Shutdown(_) => panic!("Quit reply lacked preparation"),
+                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
             guardian_prepared_in_thread.store(true, Ordering::Release);
             prepare_reply
@@ -1725,6 +2112,10 @@ mod tests {
             {
                 GuardianOwnerCommand::Shutdown(reply) => reply,
                 GuardianOwnerCommand::PrepareAcceptedShutdown(_) => panic!("duplicate preparation"),
+                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
             eof_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -1798,6 +2189,278 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn retired_generation_eof_cannot_fail_or_replace_the_successor() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use keld_ipc::link::AppLinkDeadlines as _;
+
+        let (g1_server, mut g1_client) = UnixStream::pair().expect("g1 session pair");
+        g1_client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("g1 deadlines");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, _guardian_rx) = mpsc::channel();
+        let router = PrimaryRouter::start(
+            g1_server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+        )
+        .expect("generation router");
+        let handle = router.handle();
+        handle.signal_ready().expect("g1 Ready");
+        assert_lifecycle_event(&mut g1_client, LifecycleEvent::Ready);
+
+        handle.retire_generation(1).expect("retire g1");
+        handle
+            .signal_last_window_closed()
+            .expect("record last-window close during gap");
+        let (g2_server, mut g2_client) = UnixStream::pair().expect("g2 session pair");
+        g2_client
+            .set_app_link_deadlines(Some(Duration::from_secs(5)))
+            .expect("g2 deadlines");
+        handle.install_generation(2, g2_server).expect("install g2");
+        assert_lifecycle_event(&mut g2_client, LifecycleEvent::Ready);
+        assert_lifecycle_event(&mut g2_client, LifecycleEvent::LastWindowClosed);
+        handle
+            .lifecycle_quit(1, CorrelationId(72), &[0])
+            .expect("stale g1 Quit is ignored");
+        assert!(
+            handle.shutdown.is_running(),
+            "stale g1 Quit claimed g2 shutdown"
+        );
+        drop(g1_client);
+        assert!(
+            window_rx.try_recv().is_err(),
+            "retired g1 EOF woke the UI fatal path"
+        );
+        assert_echo_call(&mut g2_client, 73, "successor");
+        drop(g2_client);
+        router.shutdown().expect("generation router shutdown");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn revoke_racing_accepted_quit_does_not_join_on_the_guardian_owner() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (server, mut client) = UnixStream::pair().expect("Quit race pair");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let prepare = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("accepted Quit preparation");
+            let GuardianOwnerCommand::PrepareAcceptedShutdown(reply) = prepare else {
+                panic!("Quit race skipped attribution");
+            };
+            observed_tx.send(()).expect("report blocked attribution");
+            release_rx.recv().expect("release attribution");
+            reply.send(Ok(())).expect("accepted Quit attribution reply");
+            let shutdown = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("accepted Quit shutdown");
+            let GuardianOwnerCommand::Shutdown(reply) = shutdown else {
+                panic!("Quit race skipped shutdown");
+            };
+            reply.send(Ok(())).expect("accepted Quit shutdown reply");
+        });
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+        )
+        .expect("Quit race router");
+        let handle = router.handle();
+        let quit_handle = handle.clone();
+        let quit_thread =
+            std::thread::spawn(move || quit_handle.lifecycle_quit(1, CorrelationId(81), &[0]));
+        observed_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("Quit reached guardian owner");
+        handle
+            .retire_generation(1)
+            .expect("terminal revoke must not join blocked reader");
+        assert!(
+            handle.is_current(1),
+            "accepted Quit lost its current writer"
+        );
+        release_tx.send(()).expect("release Quit attribution");
+        quit_thread
+            .join()
+            .expect("Quit thread joins")
+            .expect("Quit race tail");
+        let (header, _) = keld_ipc::link::read_frame(&mut client).expect("Quit race reply");
+        assert_eq!(header.corr, CorrelationId(81));
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Quit race UI exit"),
+            AppWindowCommand::Quit
+        );
+        router.shutdown().expect("Quit race router shutdown");
+        guardian_thread.join().expect("Quit race guardian joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn failed_initial_ready_write_denies_recovery_before_successor() {
+        use std::collections::HashMap;
+        use std::os::unix::net::UnixStream;
+        use std::sync::atomic::Ordering;
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+
+        let (server, client) = UnixStream::pair().expect("failed Ready pair");
+        drop(client);
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let (window_tx, _window_rx) = mpsc::channel();
+        let handle = PrimaryRouterHandle {
+            current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+                attempt: 1,
+                writer: server,
+            }))),
+            readers: Arc::new(Mutex::new(HashMap::new())),
+            window_ready: Arc::new(AtomicBool::new(false)),
+            last_window_closed: Arc::new(AtomicBool::new(false)),
+            recovery_armed: Arc::new(AtomicBool::new(false)),
+            shutdown: SessionShutdownState::new(),
+            guardian: GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            window_commands: window_tx,
+        };
+        let error = handle
+            .signal_ready()
+            .expect_err("closed g1 must fail Ready");
+        assert!(error.to_string().contains("lifecycle event"), "{error}");
+        assert!(matches!(
+            guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Ready failure recovery denial"),
+            GuardianOwnerCommand::DenyRecovery
+        ));
+        assert!(!handle.recovery_armed.load(Ordering::Acquire));
+        assert!(!handle.window_ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn failed_link_recovery_signal_wakes_ui_fatal() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (server, client) = UnixStream::pair().expect("link failure pair");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let command = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("link failure command");
+            let GuardianOwnerCommand::FailGeneration(1, reply) = command else {
+                panic!("reader sent the wrong guardian command");
+            };
+            reply
+                .send(Err(String::from("forced group-signal failure")))
+                .expect("link failure reply");
+        });
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+        )
+        .expect("link failure router");
+        router.handle().signal_ready().expect("link failure Ready");
+        drop(client);
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("link failure UI wake"),
+            AppWindowCommand::Fatal
+        );
+        assert!(
+            router.shutdown().is_err(),
+            "link failure vanished at shutdown"
+        );
+        guardian_thread.join().expect("link failure guardian joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn retire_does_not_join_reader_waiting_for_link_failure_ack() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (server, client) = UnixStream::pair().expect("link retirement pair");
+        let (window_tx, _window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let (blocked_tx, blocked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let command = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("link retirement command");
+            let GuardianOwnerCommand::FailGeneration(1, reply) = command else {
+                panic!("reader sent the wrong retirement command");
+            };
+            blocked_tx.send(()).expect("report blocked link failure");
+            release_rx.recv().expect("release link failure");
+            reply.send(Ok(())).expect("link failure reply");
+        });
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+        )
+        .expect("link retirement router");
+        router
+            .handle()
+            .signal_ready()
+            .expect("link retirement Ready");
+        drop(client);
+        blocked_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reader waits for link failure acknowledgment");
+        let retire_handle = router.handle();
+        let (retired_tx, retired_rx) = mpsc::channel();
+        let retire_thread = std::thread::spawn(move || {
+            retired_tx
+                .send(retire_handle.retire_generation(1))
+                .expect("return retirement result");
+        });
+        retired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("guardian-owner retirement must not join the blocked reader")
+            .expect("retire blocked generation");
+        release_tx
+            .send(())
+            .expect("release link failure acknowledgment");
+        retire_thread.join().expect("retire thread joins");
+        guardian_thread.join().expect("guardian thread joins");
+        router.shutdown().expect("link retirement router shutdown");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn cli_lease_loss_closes_link_before_reap_and_sends_no_quit_reply() {
         use std::io::Read as _;
         use std::os::unix::net::UnixStream;
@@ -1823,8 +2486,12 @@ mod tests {
                 GuardianOwnerCommand::Shutdown(_) => {
                     panic!("lease loss skipped accepted-shutdown attribution")
                 }
+                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
-            let writer: Arc<Mutex<UnixStream>> = writer_rx
+            let writer: Arc<Mutex<Option<ActivePrimaryGeneration>>> = writer_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("router writer identity");
             assert!(
@@ -1842,6 +2509,10 @@ mod tests {
                 GuardianOwnerCommand::PrepareAcceptedShutdown(_) => {
                     panic!("duplicate lease-loss attribution")
                 }
+                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
             eof_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -1861,7 +2532,7 @@ mod tests {
         )
         .expect("primary router");
         writer_tx
-            .send(Arc::clone(&router.handle.writer))
+            .send(Arc::clone(&router.handle.current))
             .expect("share router writer identity");
 
         assert!(shutdown.claim_cli_lease_lost());
@@ -1885,6 +2556,64 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    fn cli_lease_loss_during_generation_gap_runs_the_shutdown_tail() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (server, client) = UnixStream::pair().expect("gap session pair");
+        let (window_tx, window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let prepare = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("gap accepted-shutdown attribution");
+            match prepare {
+                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => {
+                    reply.send(Ok(())).expect("gap attribution reply");
+                }
+                _ => panic!("gap skipped accepted-shutdown attribution"),
+            }
+            let shutdown = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("gap guardian shutdown");
+            match shutdown {
+                GuardianOwnerCommand::Shutdown(reply) => {
+                    reply.send(Ok(())).expect("gap shutdown reply");
+                }
+                _ => panic!("gap skipped guardian shutdown"),
+            }
+        });
+        let shutdown = SessionShutdownState::new();
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            shutdown.clone(),
+        )
+        .expect("gap router");
+        router.handle().signal_ready().expect("gap Ready");
+        router.handle().retire_generation(1).expect("retire g1");
+        drop(client);
+        assert!(shutdown.claim_cli_lease_lost());
+        router
+            .handle()
+            .cli_lease_lost()
+            .expect("generation-gap lease-loss tail");
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("gap UI Quit"),
+            AppWindowCommand::Quit
+        );
+        router.shutdown().expect("gap router shutdown");
+        guardian_thread.join().expect("gap guardian thread joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn terminal_tail_failure_wakes_the_ui_fatal_path() {
         use std::os::unix::net::UnixStream;
         use std::sync::mpsc;
@@ -1900,6 +2629,10 @@ mod tests {
             {
                 GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
                 GuardianOwnerCommand::Shutdown(_) => panic!("tail skipped attribution"),
+                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
             prepare_reply
                 .send(Err(String::from("forced attribution failure")))

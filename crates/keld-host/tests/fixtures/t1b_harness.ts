@@ -2,8 +2,16 @@
 const KEL96_ECHO_CHANNEL = 1;
 const KEL96_CONTROL = process.env.KELD_T1B_CONTROL;
 const KEL96_LINK = process.env.KELD_APP_LINK;
+if (process.env.KELD_T3_CRASH_BEFORE_HELLO === "1") {
+  const marker = process.env.KELD_T3_PRE_READY_MARKER;
+  if (marker) await Bun.write(`${marker}.${process.pid}`, "attempt\n");
+  process.exit(17);
+}
 if (process.env.KELD_DEV_LEASE !== undefined) {
   throw new Error("KEL96 fixture inherited the host-only dev lease classification");
+}
+if (process.env.KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION !== undefined) {
+  throw new Error("KEL96 fixture inherited the guardian registration authority");
 }
 if (!KEL96_CONTROL || !KEL96_LINK) {
   throw new Error("KEL96 fixture requires KELD_T1B_CONTROL and KELD_APP_LINK");
@@ -265,6 +273,13 @@ if (requested === "ECHO3") {
 }
 if (requested === "EXIT0") {
   process.exit(0);
+}
+if (requested === "CLOSE_LINK") {
+  appSocket.end();
+  await new Promise(() => {});
+}
+if (requested === "CRASH") {
+  process.exit(17);
 }
 if (requested !== "QUIT") {
   throw new Error(`KEL96 unknown controller command: ${requested}`);

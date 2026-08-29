@@ -2,7 +2,7 @@
 
 Status: approved
 Decision state: human-approved selections recorded; final-head review is PR merge evidence
-Linear: KEL-96 · Owner: GYLDLAB · Updated: 2026-08-27
+Linear: KEL-96 · Owner: GYLDLAB · Updated: 2026-08-29
 Decision digest: `sha256:053ad0c45ccdb76ae81c554e803275313dcdceca04ef8f021904bf99d64c45da`
 
 ## 1. Goal & non-goals
@@ -322,38 +322,58 @@ failure, not a T1a default.
 ### 4.4 Startup, session, and restart ownership
 
 ```text
-Current:     keld CLI owns window + HostOwnedHelloSession + Bun
-T1a/T1b:    keld-host owns validated boot + window + app-link + Bun
+Legacy OSes: keld CLI owns window + HostOwnedHelloSession + Bun
+macOS T1–T3: keld-host owns validated boot + window + generated app-link + Bun
 Dev tooling: keld CLI stages/launches/logs keld-host, but owns none of those resources
 ```
 
 KEL-96/T3 integrates, rather than copies, KEL-75's fresh generation lifecycle.
 The old endpoint/token/generation is revoked before successor provisioning.
 KEL-97 later binds accepted generations to RoleRegistry principals and guarded
-dispatch. Until T3 is live, the temporary behavior remains KEL-105 option (a):
-surface a recorded non-zero/crash death as `KELD-CORE-033`; do not pretend the
-retired one-session link recovered. KEL-116 must first make every unrequested
-self-termination observable, including status zero. In the no-flag window path,
-an exit before `Ready` is startup failure; after `Ready` it is restartable or
-fatal according to the host policy unless an accepted Quit/host shutdown caused
-it.
+dispatch. KEL-116 makes every unrequested self-termination observable,
+including status zero. In the no-flag window path, an exit before `Ready` is
+startup failure; after `Ready`, a nonzero crash follows the shared restart
+policy while status zero or a tripped crash loop is fatal unless an accepted
+Quit/host shutdown caused it.
+
+The T3 integration keeps one persistent macOS guardian and one guardian-side
+`Supervisor`. A crate-private KEL-75 owner remains the sole generation counter,
+listener, HELLO admission and revoke implementation. The host receives only an
+opaque authenticated `BoundPrimaryGeneration`; core owns no child, PID, token,
+listener or restart policy. The authenticated guardian-registration stream is
+retained for fixed 404-byte `KGC1` records: `Prepare/Prepared`,
+`Spawned/Registered`, `Revoke/Revoked`, and `Clear/Cleared`. Records are bounded,
+big-endian, attempt-correlated and reject unsupported versions, nonzero reserved
+bytes/padding and out-of-order transitions. `Revoked(g)` and retired-group clear
+must both complete before `Prepare(g+1)`. These are private guardian-control
+bytes, not public kipc frames. The separate liveness pipe retains EOF plus the
+already-approved accepted-Quit attribution byte and one acknowledged
+live-host orderly-cleanup byte. Raw EOF without either acknowledgment is host
+death and never waits for an impossible host-side revoke reply.
+Recovery is armed only after the initial `Ready` write succeeds. A concurrent
+successor request waits for that decision; a failed write or earlier crash
+rejects successor preparation and remains startup failure.
 
 The landed KEL-75 coordinator is Unix-only. A Unix recovery proof does not claim
 Windows recovery. Before T4, a KEL-75-owned platform-generic/Windows primary
 generation coordinator, designated `KEL-75/T8` by this dependency decision,
 must be human-promoted/scoped, land, and prove fresh provision/bind/revoke/restart
-without duplicating the policy in `keld-core`. KEL-96 consumes that artifact and
-does not edit `keld-runtime`/`keld-ipc` under its own scope. If its approved
+without duplicating the policy in `keld-core`. KEL-96/T4 consumes that artifact
+and does not implement Windows generation/transport changes under its own
+scope. If its approved
 transport is the named pipe, KEL-101 is also a predecessor; an explicitly
 unprivileged loopback implementation may prove KEL-96 lifecycle only and cannot
 claim KEL-101 or privileged Windows dispatch. Windows still needs its own real
 product evidence under T4.
 
-One private `keld-core` app-session router owns the accepted stream. It performs
-one HELLO, has one reader loop, serializes writes through one writer owner, and
-dispatches the existing echo and lifecycle channel ids. `LifecycleSession` and
-`EchoServer` are evidence/reuse inputs, not two concurrently installed stream
-owners. No second `KELD_APP_LINK`, lifecycle listener, or lifecycle HELLO exists.
+One private `keld-core` logical app-session router owns at most one accepted
+generation stream. Each generation performs one HELLO and has one reader plus
+one serialized writer; revocation detaches and attempt-qualifies that reader
+before a bound successor becomes current, and the terminal router owner joins
+all retained reader handles. The router dispatches the existing echo and
+lifecycle channel ids across generations without recreating the window.
+`LifecycleSession` and `EchoServer` are evidence/reuse inputs, not concurrent
+stream owners. No lifecycle-side listener or lifecycle HELLO exists.
 
 The UI main thread owns boot validation, initial window creation/registration,
 renderer navigation, and event-loop state. The app-session I/O reader sends UI
@@ -536,22 +556,22 @@ privileged channel. The first and only production caller in T1b is the no-flag
 - [x] T0: A human distinct from the writer approves the exact current PR head,
       final spec blob, and decision digest; then and only then change
       `Status: draft` to `Status: approved` and obtain current-head review again.
-- [ ] T0g: L0 replaces the stale standalone descriptor node with an atomic
+- [x] T0g: L0 replaces the stale standalone descriptor node with an atomic
       T1a/T1b execution node and reissues the frontier before implementation.
-- [ ] T1a: Implement and test the private schema-v1 descriptor/trust boundary.
+- [x] T1a: Implement and test the private schema-v1 descriptor/trust boundary.
       The producer stages the explicit permissions fixture/digest. The host
       validates its fixed file metadata but creates no application resource and
       exposes no public Rust API.
-- [ ] T1b: After KEL-116 lands, on the same first KEL-96 implementation head
+- [x] T1b: After KEL-116 lands, on the same first KEL-96 implementation head
       as T1a, make no-flag
       `keld-host` the durable consumer; add the single-link echo/lifecycle router,
       startup state machine, live-backend UI wake, minimum primary-session Quit
       shutdown, and first real macOS window/session proof. T1a and T1b have
       separate tests and artifacts even though their first landing is atomic.
-- [ ] T2: Wire shipping `keld dev` to the T1a boot compiler, launch the staged
+- [x] T2: Wire shipping `keld dev` to the T1a boot compiler, launch the staged
       host, forward logs, and prove process/handle ownership, concurrent
       second-call behavior, and dev-host-lease shutdown when the CLI dies.
-- [ ] T3: After KEL-116 records all self-termination, integrate fresh KEL-75
+- [x] T3: After KEL-116 records all self-termination, integrate fresh KEL-75
       link generation and prove same-window macOS recovery; retain the qualified
       KEL-105 SURFACE behavior until this passes.
 - [ ] T4: Implement the remaining Windows generation/recovery and per-backend
@@ -667,18 +687,23 @@ For this specification-only PR:
 
 Future implementation gates:
 
-- Public Rust API: **mandatory for T1b** — review the exact §4.8
+- Public Rust API: **mandatory for T1b/T3** — review the exact §4.8
   `keld_core::app_session::{ValidatedBootSelection, run_unprivileged, HostAppError}`
-  surface and any
-  public `keld-wv` wake/navigation seam. T1a's parser/descriptor remain private;
-  later KEL-102 API evolution requires another gate. The artifact API gate above
-  also applies.
+  surface, any public `keld-wv` wake/navigation seam, T3's
+  `keld_runtime::primary::BoundPrimaryGeneration`, and
+  `keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate}`. T3
+  exposes authenticated streams and terminal operations, never raw generation
+  mutation, tokens, child handles or control records. T1a's parser/descriptor
+  remain private; later KEL-102 API evolution requires another gate. The
+  artifact API gate above also applies.
 - Dependency addition: adding workspace-pinned `sha2` to a shipping crate still
   requires human review.
 - Permission model: KEL-102 additionally owns manifest loading/evaluation and
   its separate human gate.
 - Wire protocol: existing HELLO/lifecycle/echo bytes remain unchanged; any kipc
-  change is another wire review beyond the boot-manifest gate above.
+  change is another wire review beyond the boot-manifest gate above. T3's
+  fixed bounded `KGC1` guardian record is a reviewed private wire extension on
+  the already authenticated registration stream; it is not a kipc channel.
 - Unsafe: none expected in KEL-96; Windows named-pipe FFI remains KEL-101.
 
 ## 9. Performance impact

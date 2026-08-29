@@ -44,11 +44,15 @@ window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export th
 same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
 current-user DACL.
 
-**macOS no-flag primary (KEL-96 T1a/T1b):** the staged `keld-host` process now
-mints and authenticates one one-use Unix bootstrap, then gives the accepted
-stream to one private reader with serialized writes. That single stream routes
+**macOS no-flag primary (KEL-96 T1a/T1b/T3):** the staged `keld-host` process
+mints and authenticates one one-use Unix bootstrap per Bun generation, then
+gives the accepted stream to one logical private router with serialized writes.
+Each active stream routes
 both echo channel 1 and KEL-72 lifecycle channel 3; there is no lifecycle-side
-listener or second HELLO. Initial `Ready` follows native renderer navigation.
+listener or second HELLO within a generation. Initial `Ready` follows native
+renderer navigation; a replacement generation receives `Ready` after its fresh
+HELLO while the same native window remains live. The old endpoint/token/stream
+is revoked before the guardian requests its successor.
 Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, signals the guardian-owned Bun
 process group, waits/reaps the guardian's direct Bun child, and only then wakes
@@ -107,7 +111,7 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain
   destination work.
   Channel-table exchange remains later work.
-- **v0 app link is one session, not one endpoint.** On successful authentication
+- **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the socket path immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
   locator is gone. A supervised app child that dies and is restarted therefore
@@ -119,9 +123,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
   `KELD-RUNTIME-*` cause (KEL-105/KEL-116 option (a), SURFACE). A completed
   windowless echo explicitly accepts status-zero self-termination after its reply;
-  it does not change the ledger fact or weaken the window policy. Minting a fresh
-  link generation so the restarted child can re-handshake is option (b), RECOVER —
-  KEL-96 AC5, and not this path.
+  it does not change the ledger fact or weaken the window policy. The
+  fresh-generation macOS product path is the KEL-96/T3 owner described above;
+  it does not change this retained diagnostic/legacy contract.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until
   stream EOF. `echo_call` is the one-shot helper (deadline + handshake + one
   CALL). Further CALLs on the same stream use `echo_invoke` and must not send a
