@@ -1507,7 +1507,9 @@ fn hostile_shutdown_contract_child() {
                 .expect("observe stdin EOF");
             println!("IGNORED_EOF opaque_handle={}", H1.0);
             std::io::stdout().flush().expect("flush EOF marker");
-            thread::park();
+            loop {
+                thread::park();
+            }
         }
         "next" => println!("NEXT_READY opaque_handle={}", H2.0),
         other => panic!("unknown contract child role: {other}"),
