@@ -69,6 +69,18 @@ fn shipping_keld_dev_delegates_to_host_and_cli_death_reaps_the_session() {
 }
 
 #[test]
+fn shipping_keld_dev_lease_loss_reaps_the_recovered_generation() {
+    let fixture = ProductFixture::new("t3-cli-lease-after-recovery");
+    let _prepared_project = fixture.stage();
+    let helper = prepare_keld_dev_helper(&fixture);
+    let baseline_stages = dev_stage_count(&fixture.project);
+    let mut cycle = ShippingDevCycle::launch(&fixture, &helper, "t3-cli-recovery");
+    cycle.crash_and_recover();
+    cycle.kill_cli_and_expect_recovered_lease_shutdown();
+    assert_eq!(dev_stage_count(&fixture.project), baseline_stages);
+}
+
+#[test]
 fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing() {
     let temp = tempfile::tempdir().expect("private-role fixture");
     let marker = temp.path().join("spawned");
@@ -222,6 +234,46 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
 }
 
 #[test]
+fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
+    let fixture = ProductFixture::new("t3-pre-ready-crash");
+    let stage = fixture.stage();
+    let attempt_marker = fixture.root.path().join("pre-ready-attempt");
+    let child = Command::new(stage.host())
+        .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
+        .env("KELD_T3_PRE_READY_MARKER", &attempt_marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch pre-Ready crash host");
+    let host_pid = child.id();
+    let output = wait_child_output(child, EVENT_DEADLINE);
+    assert!(!output.status.success(), "pre-Ready crash became success");
+    let stderr = String::from_utf8(output.stderr).expect("pre-Ready stderr UTF-8");
+    assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
+    assert!(
+        stderr.contains("before its initial authenticated generation bound"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("KELD-RUNTIME-002"),
+        "pre-Ready crash restarted to breaker: {stderr}"
+    );
+    assert!(native_windows(host_pid, TITLE).is_empty());
+    assert!(session_dirs_for(host_pid).is_empty());
+    let attempts = fs::read_dir(fixture.root.path())
+        .expect("list pre-Ready attempts")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("pre-ready-attempt.")
+        })
+        .count();
+    assert_eq!(attempts, 1, "pre-Ready failure provisioned a successor");
+}
+
+#[test]
 fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
     let fixture = ProductFixture::new("product");
 
@@ -326,6 +378,374 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
 }
 
 #[test]
+fn no_flag_host_recovers_a_fresh_generation_in_the_same_native_window() {
+    let fixture = ProductFixture::new("t3-generation-recovery");
+    let mut recovery = RecoveryCycle::launch(&fixture, "recovery-quit");
+    let first = recovery.crash_and_recover();
+    let second = recovery.current_evidence();
+    recovery.quit_and_expect_success();
+
+    eprintln!(
+        "KEL96_T3_EVIDENCE host={} window={} guardian={} first_bun={} second_bun={} old_link={} new_link={} marker={MARKER}",
+        recovery.host_pid,
+        recovery.window[0],
+        first.guardian_pid,
+        first.bun_pid,
+        second.bun_pid,
+        first.app_link,
+        second.app_link,
+    );
+}
+
+#[test]
+fn recovered_generation_is_the_target_of_host_and_guardian_death_cleanup() {
+    let fixture = ProductFixture::new("t3-death-after-recovery");
+
+    let mut host_death = RecoveryCycle::launch(&fixture, "host-death-g2");
+    host_death.crash_and_recover();
+    host_death.kill_host_and_expect_current_group_reaped();
+
+    let mut guardian_death = RecoveryCycle::launch(&fixture, "guardian-death-g2");
+    guardian_death.crash_and_recover();
+    guardian_death.kill_guardian_and_expect_current_group_reaped();
+}
+
+#[test]
+fn live_child_link_loss_restarts_through_the_generation_owner() {
+    let fixture = ProductFixture::new("t3-link-loss");
+    let mut cycle = RecoveryCycle::launch(&fixture, "link-loss");
+    cycle.close_link_and_recover();
+    cycle.quit_and_expect_success();
+}
+
+#[test]
+fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
+    let fixture = ProductFixture::new("t3-crash-loop");
+    let mut cycle = RecoveryCycle::launch(&fixture, "crash-loop");
+    cycle.crash_and_recover();
+    cycle.crash_and_recover();
+    cycle
+        .current
+        .as_mut()
+        .expect("third generation")
+        .writer
+        .write_all(b"CRASH\n")
+        .expect("crash threshold generation");
+    let output = cycle.wait_host();
+    assert!(!output.status.success(), "crash loop became success");
+    let stderr = String::from_utf8(output.stderr).expect("crash-loop stderr UTF-8");
+    assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
+    assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    assert!(
+        matches!(cycle.listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "crash-loop threshold provisioned a fourth generation"
+    );
+    cycle.assert_current_group_gone();
+}
+
+struct RecoveryCycle {
+    host: Option<Child>,
+    host_pid: u32,
+    listener: UnixListener,
+    window: Vec<u32>,
+    current: Option<RecoveryGeneration>,
+    process_groups: Vec<u32>,
+}
+
+#[derive(Clone)]
+struct RecoveryEvidence {
+    guardian_pid: u32,
+    bun_pid: u32,
+    descendant_pid: u32,
+    app_link: String,
+    endpoint: PathBuf,
+    token: String,
+}
+
+impl RecoveryCycle {
+    fn launch(fixture: &ProductFixture, name: &str) -> Self {
+        let beacon = Beacon::bind(MARKER);
+        fs::write(
+            fixture.project.join("index.html"),
+            format!(
+                "<!doctype html><title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
+                beacon.port()
+            ),
+        )
+        .expect("T3 renderer with exact beacon");
+        let stage = fixture.stage();
+        let control_path = fixture.root.path().join(format!("{name}.sock"));
+        let listener = UnixListener::bind(&control_path).expect("bind T3 fixture control");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking T3 fixture control");
+        let child = Command::new(stage.host())
+            .env("KELD_T1B_CONTROL", &control_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch T3 no-flag host");
+        let host_pid = child.id();
+        let mut current = RecoveryGeneration::accept(&listener, "initial");
+        current.expect_ready_and_echoes();
+        beacon.assert_exact();
+        let window = await_native_windows(host_pid, TITLE, 1);
+        assert_eq!(window.len(), 1, "initial T3 native window: {window:?}");
+        let first_group = current.bun_pid;
+        Self {
+            host: Some(child),
+            host_pid,
+            listener,
+            window,
+            current: Some(current),
+            process_groups: vec![first_group],
+        }
+    }
+
+    fn crash_and_recover(&mut self) -> RecoveryEvidence {
+        self.trigger_and_recover(b"CRASH\n")
+    }
+
+    fn close_link_and_recover(&mut self) -> RecoveryEvidence {
+        self.trigger_and_recover(b"CLOSE_LINK\n")
+    }
+
+    fn trigger_and_recover(&mut self, command: &[u8]) -> RecoveryEvidence {
+        let mut retired = self.current.take().expect("live generation");
+        let evidence = retired.evidence();
+        retired
+            .writer
+            .write_all(command)
+            .expect("terminate current T3 generation");
+        let mut successor = match RecoveryGeneration::try_accept(&self.listener, "replacement") {
+            Ok(successor) => successor,
+            Err(error) => {
+                let output = self.wait_host();
+                panic!("{error}; host output: {output:?}");
+            }
+        };
+        successor.expect_ready_and_echoes();
+        assert_eq!(
+            evidence.guardian_pid, successor.guardian_pid,
+            "recovery replaced the persistent guardian"
+        );
+        assert_ne!(
+            evidence.bun_pid, successor.bun_pid,
+            "Bun generation was reused"
+        );
+        assert_ne!(
+            evidence.app_link, successor.app_link,
+            "successor reused the retired endpoint/token"
+        );
+        assert_ne!(
+            evidence.endpoint, successor.endpoint,
+            "successor reused endpoint"
+        );
+        assert_ne!(evidence.token, successor.token(), "successor reused token");
+        assert_eq!(
+            native_windows(self.host_pid, TITLE),
+            self.window,
+            "Bun recovery replaced or closed the host-owned native window"
+        );
+        assert!(
+            UnixStream::connect(&evidence.endpoint).is_err(),
+            "retired generation endpoint accepted a stale reconnect"
+        );
+        await_process_gone(evidence.bun_pid);
+        await_process_gone(evidence.descendant_pid);
+        assert!(
+            process_exists(self.host_pid) && process_exists(evidence.guardian_pid),
+            "recoverable Bun crash terminated the host or guardian"
+        );
+        self.process_groups.push(successor.bun_pid);
+        self.current = Some(successor);
+        evidence
+    }
+
+    fn current_evidence(&self) -> RecoveryEvidence {
+        self.current
+            .as_ref()
+            .expect("current generation")
+            .evidence()
+    }
+
+    fn quit_and_expect_success(&mut self) {
+        let current = self.current.as_mut().expect("current generation");
+        current
+            .writer
+            .write_all(b"QUIT\n")
+            .expect("Quit T3 generation");
+        current.expect_line("QUIT_REPLY");
+        current.expect_line("LINK_EOF");
+        let output = self.wait_host();
+        assert!(
+            output.status.success(),
+            "T3 orderly exit failed: {output:?}"
+        );
+        assert!(
+            matches!(self.listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "accepted Quit provisioned a successor generation"
+        );
+        self.assert_current_group_gone();
+    }
+
+    fn kill_host_and_expect_current_group_reaped(&mut self) {
+        let status = self
+            .host
+            .as_mut()
+            .expect("live T3 host")
+            .kill()
+            .and_then(|()| self.host.as_mut().expect("live T3 host").wait())
+            .expect("SIGKILL only recovered host");
+        assert_eq!(status.signal(), Some(9));
+        self.host.take();
+        self.current
+            .as_mut()
+            .expect("current generation")
+            .expect_line("LINK_EOF");
+        self.assert_current_group_gone();
+    }
+
+    fn kill_guardian_and_expect_current_group_reaped(&mut self) {
+        let current = self.current_evidence();
+        kill_pid(current.guardian_pid);
+        let output = self.wait_host();
+        assert!(!output.status.success(), "guardian death became success");
+        let stderr = String::from_utf8(output.stderr).expect("guardian-death stderr UTF-8");
+        assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
+        assert!(stderr.contains("KELD-RUNTIME-013"), "{stderr}");
+        self.assert_current_group_gone();
+    }
+
+    fn wait_host(&mut self) -> Output {
+        wait_child_output(self.host.take().expect("live T3 host"), EVENT_DEADLINE)
+    }
+
+    fn assert_current_group_gone(&mut self) {
+        if let Some(current) = &self.current {
+            await_process_gone(current.bun_pid);
+            await_process_gone(current.descendant_pid);
+            await_process_gone(current.guardian_pid);
+        }
+        assert!(native_windows(self.host_pid, TITLE).is_empty());
+        self.process_groups.clear();
+    }
+}
+
+impl Drop for RecoveryCycle {
+    fn drop(&mut self) {
+        if let Some(host) = self.host.as_mut() {
+            let _ = host.kill();
+            let _ = host.wait();
+        }
+        for group in &self.process_groups {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &format!("-{group}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
+struct RecoveryGeneration {
+    guardian_pid: u32,
+    bun_pid: u32,
+    descendant_pid: u32,
+    app_link: String,
+    endpoint: PathBuf,
+    reader: BufReader<UnixStream>,
+    writer: UnixStream,
+}
+
+impl RecoveryGeneration {
+    fn accept(listener: &UnixListener, label: &str) -> Self {
+        Self::try_accept(listener, label).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn try_accept(listener: &UnixListener, label: &str) -> Result<Self, String> {
+        let deadline = Instant::now() + EVENT_DEADLINE;
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(format!("{label}: Bun did not connect the fixture control"));
+                    }
+                    thread::yield_now();
+                }
+                Err(error) => return Err(format!("{label}: accept fixture control: {error}")),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("{label}: normalize T3 control stream: {error}"))?;
+        stream
+            .set_read_timeout(Some(EVENT_DEADLINE))
+            .map_err(|error| format!("{label}: T3 control deadline: {error}"))?;
+        let mut reader = BufReader::new(
+            stream
+                .try_clone()
+                .map_err(|error| format!("{label}: T3 control reader: {error}"))?,
+        );
+        let hello = read_control_line(&mut reader);
+        let mut hello_fields = hello.split_whitespace();
+        assert_eq!(hello_fields.next(), Some("HELLO"), "{label}: {hello}");
+        let bun_pid = parse_pid(hello_fields.next(), &hello);
+        let app_link = hello_fields
+            .next()
+            .unwrap_or_else(|| panic!("{label}: missing app link: {hello}"))
+            .to_owned();
+        let endpoint = PathBuf::from(
+            app_link
+                .rsplit_once('#')
+                .unwrap_or_else(|| panic!("{label}: invalid app link: {app_link}"))
+                .0,
+        );
+        let descendant = read_control_line(&mut reader);
+        let descendant_pid = parse_pid(descendant.split_whitespace().nth(1), &descendant);
+        let guardian_pid = parent_process(bun_pid);
+        Ok(Self {
+            guardian_pid,
+            bun_pid,
+            descendant_pid,
+            app_link,
+            endpoint,
+            reader,
+            writer: stream,
+        })
+    }
+
+    fn expect_ready_and_echoes(&mut self) {
+        self.expect_line("READY");
+        self.expect_line("ECHO1");
+        self.expect_line("ECHO2");
+    }
+
+    fn expect_line(&mut self, expected: &str) {
+        assert_eq!(read_control_line(&mut self.reader), expected);
+    }
+
+    fn evidence(&self) -> RecoveryEvidence {
+        RecoveryEvidence {
+            guardian_pid: self.guardian_pid,
+            bun_pid: self.bun_pid,
+            descendant_pid: self.descendant_pid,
+            app_link: self.app_link.clone(),
+            endpoint: self.endpoint.clone(),
+            token: self.token().to_owned(),
+        }
+    }
+
+    fn token(&self) -> &str {
+        self.app_link
+            .rsplit_once('#')
+            .expect("recovery app link token")
+            .1
+    }
+}
+
+#[test]
 fn dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host() {
     let fixture = ProductFixture::new("dev-lease-data");
     let (mut cycle, mut lease_writer) = fixture.launch_leased_cycle("lease-data");
@@ -409,6 +829,7 @@ struct ShippingDevCycle {
     bun_pid: u32,
     descendant_pid: u32,
     session_dir: PathBuf,
+    listener: UnixListener,
     control_reader: BufReader<UnixStream>,
     control_writer: UnixStream,
     group_gone: bool,
@@ -490,7 +911,7 @@ impl ShippingDevCycle {
         assert_eq!(read_control_line(&mut control_reader), "ECHO1");
         assert_eq!(read_control_line(&mut control_reader), "ECHO2");
         beacon.assert_exact();
-        assert_eq!(native_windows(host_pid, TITLE).len(), 1);
+        assert_eq!(await_native_windows(host_pid, TITLE, 1).len(), 1);
         assert!(native_windows(cli_pid, TITLE).is_empty());
         assert!(host_unix_sockets(host_pid) > 0);
         assert_eq!(host_unix_sockets(cli_pid), 0);
@@ -505,6 +926,7 @@ impl ShippingDevCycle {
             bun_pid,
             descendant_pid,
             session_dir,
+            listener,
             control_reader,
             control_writer: control,
             group_gone: false,
@@ -518,6 +940,38 @@ impl ShippingDevCycle {
         )
     }
 
+    fn crash_and_recover(&mut self) {
+        let old_guardian = self.guardian_pid;
+        let old_bun = self.bun_pid;
+        let old_descendant = self.descendant_pid;
+        let old_link = self.session_dir.clone();
+        let window = native_windows(self.host_pid, TITLE);
+        self.control_writer
+            .write_all(b"CRASH\n")
+            .expect("crash shipping generation");
+        let mut successor = RecoveryGeneration::accept(&self.listener, "shipping replacement");
+        successor.expect_ready_and_echoes();
+        assert_eq!(successor.guardian_pid, old_guardian);
+        assert_ne!(successor.bun_pid, old_bun);
+        assert_eq!(native_windows(self.host_pid, TITLE), window);
+        assert!(
+            !old_link.exists(),
+            "retired shipping link directory remains"
+        );
+        await_process_gone(old_bun);
+        await_process_gone(old_descendant);
+        self.guardian_pid = successor.guardian_pid;
+        self.bun_pid = successor.bun_pid;
+        self.descendant_pid = successor.descendant_pid;
+        self.session_dir = successor
+            .endpoint
+            .parent()
+            .expect("successor session directory")
+            .to_path_buf();
+        self.control_reader = successor.reader;
+        self.control_writer = successor.writer;
+    }
+
     fn kill_cli_and_expect_lease_shutdown(&mut self) {
         let cli = self.cli.as_mut().expect("live shipping CLI");
         cli.kill().expect("SIGKILL only the shipping CLI");
@@ -528,6 +982,30 @@ impl ShippingDevCycle {
         assert!(
             !self.session_dir.exists(),
             "CLI death left app-link locator"
+        );
+    }
+
+    fn kill_cli_and_expect_recovered_lease_shutdown(&mut self) {
+        let cli = self.cli.as_mut().expect("live recovered shipping CLI");
+        cli.kill().expect("SIGKILL only the recovered shipping CLI");
+        let status = cli.wait().expect("wait recovered shipping CLI");
+        assert_eq!(status.signal(), Some(9));
+        let mut line = String::new();
+        let read = self
+            .control_reader
+            .read_line(&mut line)
+            .expect("read recovered lease-loss control");
+        if read != 0 {
+            assert_eq!(
+                line.trim_end(),
+                "LINK_EOF",
+                "lease loss fabricated another event"
+            );
+        }
+        self.assert_group_gone();
+        assert!(
+            !self.session_dir.exists(),
+            "recovered CLI death left app-link locator"
         );
     }
 
@@ -1129,7 +1607,7 @@ impl LiveCycle {
         assert_eq!(parent_process(self.bun_pid), self.guardian_pid);
         assert_eq!(process_group(self.bun_pid), self.bun_pid);
         assert_eq!(process_group(self.descendant_pid), self.bun_pid);
-        let windows = native_windows(self.host_pid, TITLE);
+        let windows = await_native_windows(self.host_pid, TITLE, 1);
         assert_eq!(
             windows.len(),
             1,
@@ -1575,6 +2053,7 @@ for row in rows {
     print((row[kCGWindowNumber as String] as! NSNumber).uint32Value)
   }
 }
+
 ";
     let output = Command::new("/usr/bin/xcrun")
         .args(["swift", "-e", SCRIPT, &pid.to_string(), title])
@@ -1586,6 +2065,21 @@ for row in rows {
         .lines()
         .map(|line| line.parse().expect("CGWindowID is numeric"))
         .collect()
+}
+
+fn await_native_windows(pid: u32, title: &str, expected: usize) -> Vec<u32> {
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    loop {
+        let windows = native_windows(pid, title);
+        if windows.len() == expected {
+            return windows;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host {pid} never reached {expected} `{title}` windows: {windows:?}"
+        );
+        thread::yield_now();
+    }
 }
 
 fn session_dirs_for(pid: u32) -> Vec<PathBuf> {

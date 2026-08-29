@@ -26,7 +26,7 @@ fn main() {
     if args.get(1).map(String::as_str)
         == Some(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
     {
-        // The argv value is only a role discriminator. `run_supervised` must
+        // The argv value is only a role discriminator. `run_guarded_primary` must
         // authenticate GuardianBootstrap's one-use registration and validate
         // the inherited host-liveness pipe before it evaluates this process's
         // root/entry command factory or can spawn Bun.
@@ -133,19 +133,9 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     let expected_ino = args[5]
         .parse::<u64>()
         .map_err(|source| format!("KELD-CORE-037: invalid private entry inode — {source}. Relaunch the validated no-flag host."))?;
-    let app_link = env::var("KELD_APP_LINK").map_err(|source| {
-        format!(
-            "KELD-CORE-037: private guardian app link is unavailable — {source}. Launch it only through the validated no-flag host."
-        )
-    })?;
-    if app_link.is_empty() {
-        return Err(String::from(
-            "KELD-CORE-037: private guardian app link is empty. Launch it only through the validated no-flag host.",
-        ));
-    }
-    let report = keld_runtime::macos_guardian::run_supervised(
+    let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
-        move || {
+        move |app_link| {
             let reopened = reopen_validated_entry(&root, &entry, expected_dev, expected_ino)?;
             // Advisory same-user dev-boundary check: retain the exact reopened
             // identity until immediately before Supervisor invokes spawn, then
@@ -158,12 +148,11 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
                 .arg("run")
                 .arg(root.join(&entry))
                 .current_dir(&root)
-                .env("KELD_APP_LINK", &app_link)
+                .env("KELD_APP_LINK", app_link)
                 .stdin(Stdio::null());
             Ok(command)
         },
         std::io::stdout(),
-        || Ok(()),
     )
     .map_err(|error| {
         format!(

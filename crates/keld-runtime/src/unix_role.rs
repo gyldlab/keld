@@ -24,7 +24,7 @@ use crate::{
     RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
 };
 
-const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Host-owned lifecycle category for one authenticated Bun role.
 ///
@@ -112,6 +112,46 @@ impl RoleGeneration {
 impl std::fmt::Debug for RoleGeneration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RoleGeneration(..)")
+    }
+}
+
+/// One authenticated role generation handed to its host-side stream owner.
+///
+/// The generation and attempt are host metadata. The stream has already
+/// completed the possession-token `HELLO`; consumers must not run a second
+/// handshake or derive identity from peer payload bytes.
+pub struct BoundRoleGeneration {
+    generation: RoleGeneration,
+    attempt: u32,
+    stream: UnixStream,
+}
+
+impl BoundRoleGeneration {
+    /// Host-minted generation bound to this stream.
+    #[must_use]
+    pub const fn generation(&self) -> RoleGeneration {
+        self.generation
+    }
+
+    /// One-indexed supervisor attempt that produced this stream.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    /// Transfers the authenticated stream to the host router.
+    #[must_use]
+    pub fn into_stream(self) -> UnixStream {
+        self.stream
+    }
+}
+
+impl std::fmt::Debug for BoundRoleGeneration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundRoleGeneration")
+            .field("generation", &self.generation)
+            .field("attempt", &self.attempt)
+            .finish_non_exhaustive()
     }
 }
 
@@ -309,10 +349,17 @@ impl RoleSupervisor {
     pub fn start(config: RoleConfig) -> Result<Self, RuntimeError> {
         let (events_tx, events_rx) = mpsc::channel();
         let policy = config.restart_policy;
+        let generation_owner = RoleGenerationOwner::new(
+            config.owner,
+            config.admission_timeout,
+            events_tx,
+            None,
+            #[cfg(test)]
+            config.probe_tx.clone(),
+        );
         let preparer = RolePreparer {
             config,
-            next_generation: 1,
-            events_tx,
+            generation_owner,
         };
         let supervisor = Supervisor::start_prepared(policy, preparer)?;
         Ok(Self {
@@ -353,46 +400,84 @@ impl RoleSupervisor {
 
 struct RolePreparer {
     config: RoleConfig,
-    next_generation: u64,
-    events_tx: Sender<RoleEvent>,
+    generation_owner: RoleGenerationOwner,
 }
 
 impl ChildPreparer for RolePreparer {
     type Lease = RoleGenerationLease;
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
-        let owner = self.config.owner;
-        let generation = RoleGeneration(self.next_generation);
-        self.next_generation =
-            self.next_generation
-                .checked_add(1)
-                .ok_or_else(|| RuntimeError::Lifecycle {
-                    phase: owner.generation_phase(),
-                    source: std::io::Error::other(format!(
-                        "{} role generation counter exhausted",
-                        owner.as_str()
-                    )),
-                })?;
-        let listener = BootstrapListener::bind().map_err(|source| RuntimeError::Lifecycle {
-            phase: owner.bootstrap_bind_phase(),
-            source,
-        })?;
-        let cancellation = listener.cancellation();
-        let app_link = listener.app_link();
+        let provisioned = self.generation_owner.provision(attempt)?;
         let mut command = Command::new(&self.config.program);
         command.args(&self.config.args);
         if let Some(current_dir) = &self.config.current_dir {
             command.current_dir(current_dir);
         }
-        command.env("KELD_APP_LINK", &app_link);
+        command.env("KELD_APP_LINK", &provisioned.app_link);
+        Ok(PreparedChild {
+            command,
+            lease: provisioned.lease,
+        })
+    }
+}
+
+pub(crate) struct RoleGenerationOwner {
+    owner: RoleOwner,
+    next_generation: u64,
+    admission_timeout: Duration,
+    events_tx: Sender<RoleEvent>,
+    bound_tx: Option<Sender<BoundRoleGeneration>>,
+    #[cfg(test)]
+    probe_tx: Option<Sender<ProvisionedProbe>>,
+}
+
+impl RoleGenerationOwner {
+    pub(crate) fn new(
+        owner: RoleOwner,
+        admission_timeout: Duration,
+        events_tx: Sender<RoleEvent>,
+        bound_tx: Option<Sender<BoundRoleGeneration>>,
+        #[cfg(test)] probe_tx: Option<Sender<ProvisionedProbe>>,
+    ) -> Self {
+        Self {
+            owner,
+            next_generation: 1,
+            admission_timeout,
+            events_tx,
+            bound_tx,
+            #[cfg(test)]
+            probe_tx,
+        }
+    }
+
+    pub(crate) fn provision(
+        &mut self,
+        attempt: u32,
+    ) -> Result<ProvisionedRoleGeneration, RuntimeError> {
+        let generation = RoleGeneration(self.next_generation);
+        self.next_generation =
+            self.next_generation
+                .checked_add(1)
+                .ok_or_else(|| RuntimeError::Lifecycle {
+                    phase: self.owner.generation_phase(),
+                    source: std::io::Error::other(format!(
+                        "{} role generation counter exhausted",
+                        self.owner.as_str()
+                    )),
+                })?;
+        let listener = BootstrapListener::bind().map_err(|source| RuntimeError::Lifecycle {
+            phase: self.owner.bootstrap_bind_phase(),
+            source,
+        })?;
+        let cancellation = listener.cancellation();
+        let app_link = listener.app_link();
         let (admission_tx, admission_rx) = mpsc::channel();
-        let link = Arc::new(Mutex::new(None));
         let _ = self.events_tx.send(RoleEvent::Provisioned {
             generation,
             attempt,
         });
         #[cfg(test)]
-        let probe = self.config.probe_tx.as_ref().map(|probe_tx| {
+        let probe = self.probe_tx.as_ref().map(|probe_tx| {
             (
                 probe_tx.clone(),
                 ProvisionedProbe {
@@ -401,21 +486,22 @@ impl ChildPreparer for RolePreparer {
                 },
             )
         });
-        Ok(PreparedChild {
-            command,
+        Ok(ProvisionedRoleGeneration {
+            app_link,
             lease: RoleGenerationLease {
-                owner,
+                owner: self.owner,
                 generation,
                 attempt,
-                admission_timeout: self.config.admission_timeout,
+                admission_timeout: self.admission_timeout,
                 listener: Some(listener),
                 cancellation,
                 admission_tx: Some(admission_tx),
                 admission_rx,
                 admission_thread: None,
                 admission_done: false,
-                link,
+                link: Arc::new(Mutex::new(None)),
                 events_tx: self.events_tx.clone(),
+                bound_tx: self.bound_tx.clone(),
                 #[cfg(test)]
                 probe,
             },
@@ -423,7 +509,12 @@ impl ChildPreparer for RolePreparer {
     }
 }
 
-struct RoleGenerationLease {
+pub(crate) struct ProvisionedRoleGeneration {
+    pub(crate) app_link: String,
+    pub(crate) lease: RoleGenerationLease,
+}
+
+pub(crate) struct RoleGenerationLease {
     owner: RoleOwner,
     generation: RoleGeneration,
     attempt: u32,
@@ -436,6 +527,7 @@ struct RoleGenerationLease {
     admission_done: bool,
     link: Arc<Mutex<Option<UnixStream>>>,
     events_tx: Sender<RoleEvent>,
+    bound_tx: Option<Sender<BoundRoleGeneration>>,
     #[cfg(test)]
     probe: Option<(Sender<ProvisionedProbe>, ProvisionedProbe)>,
 }
@@ -537,8 +629,34 @@ impl RoleGenerationLease {
         }
         match self.admission_rx.try_recv() {
             Ok(AdmissionResult::Bound(stream)) => {
+                let bound = if self.bound_tx.is_some() {
+                    Some(
+                        stream
+                            .try_clone()
+                            .map_err(|source| RuntimeError::Lifecycle {
+                                phase: self.owner.bootstrap_admission_phase(),
+                                source,
+                            })?,
+                    )
+                } else {
+                    None
+                };
                 *lock_or_recover(&self.link) = Some(stream);
                 self.admission_done = true;
+                if let (Some(bound_tx), Some(stream)) = (&self.bound_tx, bound) {
+                    bound_tx
+                        .send(BoundRoleGeneration {
+                            generation: self.generation,
+                            attempt: self.attempt,
+                            stream,
+                        })
+                        .map_err(|_| RuntimeError::Lifecycle {
+                            phase: self.owner.bootstrap_admission_phase(),
+                            source: std::io::Error::other(
+                                "host stream owner ended before generation bind",
+                            ),
+                        })?;
+                }
                 let _ = self.events_tx.send(RoleEvent::LinkBound {
                     generation: self.generation,
                     attempt: self.attempt,

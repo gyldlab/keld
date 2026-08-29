@@ -21,14 +21,17 @@
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.
-- **macOS no-flag primary (KEL-96 T1a/T1b/T2):** the no-flag `keld-host`
+- **macOS no-flag primary (KEL-96 T1a/T1b/T2/T3):** the no-flag `keld-host`
   validates its owner-private schema-v1 stage before any application resource,
   then uses the guardian-composed `Supervisor` for Bun's process group and
-  KEL-116 self-termination ledger. T1b deliberately permits no successor: an
-  unrequested exit, including status zero, tears down the live session with
-  `KELD-CORE-033`; a status-zero exit after an accepted correlated Quit is
-  host-authorized and is not added to that ledger. Fresh link generation and
-  same-window recovery remain T3. Shipping `keld dev` now compiles the same
+  KEL-116 self-termination ledger. T3 reuses KEL-75's generation owner: a
+  recoverable nonzero Bun crash revokes its endpoint/token/stream before the
+  persistent guardian's one Supervisor requests a fresh generation. The same
+  host, native window and logical router install that authenticated successor,
+  send `Ready` again and continue echo/lifecycle dispatch. Status-zero
+  self-termination remains terminal; a status-zero exit after an accepted
+  correlated Quit is host-authorized and is not added to that ledger. Shipping
+  `keld dev` now compiles the same
   owner-private stage, launches that host with no Keld argument, directly
   forwards its stdout/stderr, places it in a process group separate from the
   terminal-facing CLI, and retains only the host process handle plus the write
@@ -43,8 +46,12 @@
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
   the exact guardian child and sole non-inheritable liveness writer, and accepts
-  only that guardian's fixed `KGR1` group record; callers cannot inject a
-  numeric process-group id. The guardian validates both inherited bootstraps
+  only that guardian's fixed `KGR1` group record on the generic one-child API;
+  callers cannot inject a numeric process-group id. KEL-96/T3 keeps the same
+  authenticated stream open for fixed, bounded `KGC1` generation-control
+  records. Each generation registers its exact Bun group, waits for host link
+  revocation, clears the retired group, and only then prepares its successor.
+  The guardian validates both inherited bootstraps
   before child creation, prevents the liveness reader from reaching Bun, runs a
   fresh command in an isolated process group, revokes registered resources on
   every post-start failure, signals the group once, and waits its direct child.
@@ -55,8 +62,11 @@
   non-authority accepted-Quit byte through that host-exclusive pipe; the
   guardian records attribution without terminating Bun, then returns fixed
   `KQA` over a dedicated acknowledgment pipe. The host requires that ack before
-  publishing the correlated reply. EOF still remains the only signal that
-  initiates host-death/orderly group cleanup. The generic
+  publishing the correlated reply. The persistent T3 owner similarly
+  acknowledges one `S`/`KSA` live-host cleanup discriminator before startup or
+  window-failure rollback, so link revocation can complete before reap. An
+  unmarked EOF remains abnormal host death and bypasses impossible host RPC.
+  The generic
   KEL-78 `run` path continues to reject all pipe data. KEL-96 now provides its first shipping caller by composing the
   existing `Supervisor` inside the guardian and consuming the result from the
   no-flag host owner. The guardian still does not implement App Sandbox or
@@ -200,7 +210,7 @@ the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
 Teardown reads the supervision verdict rather than dropping it (KEL-105): if
-the app process dies while the host owns the window, the macOS no-flag host (or
+the app process dies without a successful recovery, the macOS no-flag host (or
 the retained legacy hello session on other platforms) exits non-zero with
 `KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error and captured stderr,
 instead of exiting 0 with no diagnostic.
@@ -231,15 +241,17 @@ one for the cause.
 
 The fact and policy have separate owners. `keld-runtime` counts every observed
 self-termination and retains the latest all-termination record plus the latest
-crash-class diagnostic/record. The window path uses strict
+crash-class diagnostic/record. The legacy window path uses strict
 `HostOwnedHelloSession::shutdown` and treats every post-ready self-termination as
-fatal. The windowless echo path has completed its observable work after its reply is
+fatal. The macOS no-flag path recovers nonzero crashes below the breaker with a
+fresh generation while keeping status zero, admission failure and a tripped
+breaker terminal. The windowless echo path has completed its observable work after its reply is
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
 self-termination; non-zero and terminal lifecycle failures still fail.
 
 Whether the breaker also trips depends on how the restarted generation fails, which
-is not something the host should have to predict. In a live macOS run the restarted
-children could not re-enter the session at all — the v0 echo listener admits exactly
+is not something the host should have to predict. In the retained legacy diagnostic
+run, restarted children cannot re-enter the session at all — the v0 echo listener admits exactly
 one authenticated session (`crates/keld-core/src/echo_link.rs`) and their `connect`
 failed outright — so they crashed fast enough to trip the breaker. The ledger makes
 the verdict independent of that timing.
@@ -255,10 +267,9 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-Two limits remain. The legacy CLI-owned window path does not close its window
-until the developer does; only then does its exit code appear. The macOS
-host-owned path closes on a fatal app termination, but recovering the link while
-preserving that window remains KEL-96/T3 rather than a T2 claim.
+Two limits remain. The legacy Windows/Linux CLI-owned window path does not close
+its window until the developer does; only then does its exit code appear. macOS
+recovery does not prove their T4 transport, window, restart or cleanup rows.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
