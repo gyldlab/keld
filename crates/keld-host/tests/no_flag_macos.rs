@@ -2039,24 +2039,53 @@ print("\(info.pipeinfo.pipe_handle) \(info.pipeinfo.pipe_peerhandle)")
 }
 
 fn native_windows(pid: u32, title: &str) -> Vec<u32> {
+    query_native_windows(pid, title, None)
+}
+
+fn await_native_windows(pid: u32, title: &str, expected: usize) -> Vec<u32> {
+    query_native_windows(pid, title, Some(expected))
+}
+
+fn query_native_windows(pid: u32, title: &str, expected: Option<usize>) -> Vec<u32> {
     const SCRIPT: &str = r"
 import CoreGraphics
+import Darwin
 import Foundation
 let wantedPID = Int(CommandLine.arguments[1])!
 let wantedTitle = CommandLine.arguments[2]
-let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
-for row in rows {
-  let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.intValue
-  let name = row[kCGWindowName as String] as? String
-  let layer = (row[kCGWindowLayer as String] as? NSNumber)?.intValue
-  if owner == wantedPID && name == wantedTitle && layer == 0 {
-    print((row[kCGWindowNumber as String] as! NSNumber).uint32Value)
+let expected = Int(CommandLine.arguments[3])!
+let deadline = Date().addingTimeInterval(Double(CommandLine.arguments[4])!)
+while true {
+  let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
+  var found: [UInt32] = []
+  for row in rows {
+    let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.intValue
+    let name = row[kCGWindowName as String] as? String
+    let layer = (row[kCGWindowLayer as String] as? NSNumber)?.intValue
+    if owner == wantedPID && name == wantedTitle && layer == 0 {
+      found.append((row[kCGWindowNumber as String] as! NSNumber).uint32Value)
+    }
   }
+  if expected < 0 || found.count == expected {
+    for window in found { print(window) }
+    exit(0)
+  }
+  if Date() >= deadline { exit(3) }
+  sched_yield()
 }
-
 ";
+    let expected_arg = expected.map_or_else(|| String::from("-1"), |value| value.to_string());
+    let timeout_arg = EVENT_DEADLINE.as_secs().to_string();
     let output = Command::new("/usr/bin/xcrun")
-        .args(["swift", "-e", SCRIPT, &pid.to_string(), title])
+        .args([
+            "swift",
+            "-e",
+            SCRIPT,
+            &pid.to_string(),
+            title,
+            &expected_arg,
+            &timeout_arg,
+        ])
         .output()
         .expect("run native CoreGraphics census");
     assert!(output.status.success(), "CoreGraphics census: {output:?}");
@@ -2065,21 +2094,6 @@ for row in rows {
         .lines()
         .map(|line| line.parse().expect("CGWindowID is numeric"))
         .collect()
-}
-
-fn await_native_windows(pid: u32, title: &str, expected: usize) -> Vec<u32> {
-    let deadline = Instant::now() + EVENT_DEADLINE;
-    loop {
-        let windows = native_windows(pid, title);
-        if windows.len() == expected {
-            return windows;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "host {pid} never reached {expected} `{title}` windows: {windows:?}"
-        );
-        thread::yield_now();
-    }
 }
 
 fn session_dirs_for(pid: u32) -> Vec<PathBuf> {
