@@ -665,12 +665,12 @@ The summary table. "Live" means it works and a test proves it.
 | Linux webview backend | **Implemented + build-tested (KEL-28); window unverified on a real desktop** | `keld-wv/src/webkitgtk/`, wry interim (GTK3 + WebKit2GTK 4.1, `build_gtk` for Wayland) mirroring how macOS/Windows started; GPU-stack probe (NVIDIA+Wayland safe-mode) built in. Compiles/clippy/225-test-green on real Ubuntu; `Xvfb`+`xdotool` finds a real correctly-titled window; nobody has watched pixels render yet |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
 | `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; macOS `dev` stages and launches the no-flag host with a CLI-death lease; Windows/Linux remain CLI-owned until T4 |
-| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_native::fs` (KEL-71, via `dispatch_privileged`, KEL-69) call them; echo dispatch deliberately does not |
-| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic and `fs.read`/`fs.write` are live default-deny; echo dispatch deliberately stays ungated. `$VARS` matched literally in v0 |
+| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain`, all three webview media-capture handlers, and the isolated/test `keld_native::fs` broker (KEL-71, via `dispatch_privileged`, KEL-69) call them. The shipping host has no `keld-core → keld-native` route; echo dispatch deliberately does not call the guard. |
+| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is host-reachable and default-deny, while `fs.read`/`fs.write` enforcement is live only through the isolated/test broker session. Shipping app-process filesystem dispatch and the recorder are absent. `$VARS` matched literally in v0. |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
 | Bun supervision (restart, backoff, crash ledger) | **Implemented (KEL-70/KEL-116)** | `keld_runtime::Supervisor`; macOS `keld dev` reaches it through the host-owned guardian, retained diagnostics call it directly |
-| `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | `fs` is implemented (KEL-71: `fs.read`/`fs.write`, guard-checked); the other 14 are still names only |
+| `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | The guard-checked `fs.read`/`fs.write` broker and real isolated kipc session are implemented (KEL-71), but no shipping host depends on or routes to `keld-native`; the other 14 modules are still names only. |
 | Electron compat (`@keld/electron`, tiers, conformance suite) | **Partial (KEL-72)** | `packages/@keld/electron`: `app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`. Other Tier 1 APIs and `keld migrate` are later. Bun 1.3.14 remaps `electron` via `tsconfig.json` paths, not bunfig `[alias]`. |
 | `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | Only `@keld/electron` exists under `packages/` |
 | `keld build` / `migrate` / `gen` / `ext` | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |
@@ -680,8 +680,9 @@ The summary table. "Live" means it works and a test proves it.
 | CI: fmt + clippy + nextest on 3 OSes, cargo-deny, MSRV | **Live** | `.github/workflows/ci.yml`; mirrored locally by `just ci` |
 | `llms.txt` + `llms-full.txt` | **Live** | Deterministically generated from an ordered allowlist by `tools/llms_docs.rs`; `just llms-check` rejects stale output |
 
-Roughly: **the wire format, the macOS window, host-brokered `fs.read`/`fs.write`, and a
-partial `@keld/electron` lifecycle shim are real; remaining native modules, bulk lanes,
+Roughly: **the wire format, the macOS window, an isolated/test guard-checked
+`fs.read`/`fs.write` broker, and a partial `@keld/electron` lifecycle shim are
+real. The shipping host-to-native route, remaining native modules, bulk lanes,
 and the other `@keld/*` TypeScript packages are not.**
 
 ---
