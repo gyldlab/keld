@@ -46,7 +46,7 @@ from `std::env::args()`.
 | `keld --version` / `keld -V` | `main.rs` | prints `keld <CARGO_PKG_VERSION>` |
 | `keld` (no args) | `main.rs::print_usage` | usage on **stderr**, exit 0 |
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
-| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env, starts echo server, spawns Bun main, opens the window (macOS) |
+| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS stages and launches the no-flag host with a private liveness lease; Windows/Linux retain the CLI-owned echo/window path until KEL-96/T4 |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
 | `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
@@ -149,24 +149,28 @@ The one verb that ties everything together. Sequence, from
    error message, not the search.
 2. **Run the doctor checks.** Any failure aborts with `KELD-CLI-032` and the full check
    list, before any process is spawned.
-3. **Start the echo server** on a fresh loopback endpoint, and block until it signals
-   ready (an `mpsc` channel, not a sleep). On Unix that endpoint is an owner-only
-   session dir under the OS temp dir (`ke-<pid>-<nanos>/e.sock`); on Windows it is an
-   ephemeral `127.0.0.1` TCP port
-   ([`echo_link.rs::EchoServer::start`](../../crates/keld-core/src/echo_link.rs)).
-   The server accepts exactly **one** connection.
-4. **Spawn Bun**: `bun run <root>/src/main.ts`, cwd set to the project root, stdout and
-   stderr inherited, with one environment variable set:
-   - `KELD_APP_LINK` — `<endpoint>#<64 hex chars>` (Unix path or Windows port, plus the v2 HELLO token).
-   Bun speaks kipc itself from here (`src/kipc.ts`, KEL-30) — no second `keld` process
-   is spawned, so `KELD_BIN` is not set.
-5. **Open the window** on macOS, Windows, and Linux (KEL-28) via
-   `keld_core::run_hello_window_html`, rendering the project's `renderer` file
-   (default `index.html`) as inline HTML. Echo has already finished; tao
-   `EventLoop::run` never returns.
+3. **On macOS, compile one fresh stage.** `stage_dev_boot` reads the reviewed
+   project fields, copies the sibling developer `keld-host` to a new inode,
+   writes the strict boot descriptor and explicit permissions fixture, and
+   returns the owner-private launch root.
+4. **Launch the staged host with no Keld argument.** The CLI inherits its
+   stdout/stderr and retains the child handle plus the write end of a private
+   stdin-v1 lease. The host runs in a process group separate from the
+   terminal-facing CLI, validates its sibling descriptor, makes the lease
+   reader non-inheritable, and owns the app link, guardian/Supervisor, Bun, and
+   native window. Bun receives only `KELD_APP_LINK`; it receives null stdin and
+   no lease variable or descriptor.
+5. **Wait for the host.** Lifecycle Ready follows initial navigation, and the
+   same authenticated session remains live for multiple calls and Quit. If the
+   CLI exits, EOF on the sole lease writer makes the host quiesce, close the
+   link, reap Bun through the guardian, close the window, and exit. On
+   Windows/Linux, the older CLI-owned echo/window sequence remains until
+   KEL-96/T4. The dev-leased host removes its validated nonce stage on normal
+   Quit and CLI loss; an uncatchable host kill can leave one for future bounded
+   GC.
 
-Real output from a session in a freshly scaffolded `my-app` (the native window opens
-*after* these lines; echo is not live while the window is up):
+Representative Bun output from a session in a freshly scaffolded `my-app`
+(forwarded through the host/CLI stdio chain):
 
 ```bash
 $ keld dev
@@ -199,12 +203,10 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **Closing the window ends the process.** All three live backends hand the thread to
-  tao's `EventLoop::run`, which never returns and exits the process itself
-  ([`wkwebview/mod.rs::run_until_closed`](../../crates/keld-wv/src/wkwebview/mod.rs),
-  [`webview2/mod.rs::run_until_closed`](../../crates/keld-wv/src/webview2/mod.rs),
-  [`webkitgtk/mod.rs::run_until_closed`](../../crates/keld-wv/src/webkitgtk/mod.rs)).
-  That is why echo runs to completion *before* the window opens.
+- **On macOS the host, not the CLI, owns close and Quit.** The live WKWebView
+  path uses an event-loop wake command; `LastWindowClosed` stays on the same
+  link, and the correlated Quit reply precedes link close and guardian reap.
+  The older cross-platform hello backends remain the Windows/Linux T4 input.
 - **Linux has a live backend too, as of KEL-28.** `run_hello_window_html` is the
   same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
   `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
@@ -528,25 +530,30 @@ whole repo (the other is `keld-ipc` shm).
 ```rust
 pub fn run_hello_window() -> Result<(), keld_wv::WvError>  // "Keld" + HELLO_HTML
 pub fn run_hello_window_titled(title: &str) -> Result<(), keld_wv::WvError>  // title + HELLO_HTML
-pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // keld dev
+pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // legacy hello path
+pub struct ValidatedBootSelection { /* private */ }  // keld_core::app_session
+pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // app_session
 pub const VERSION: &str                                    // = CARGO_PKG_VERSION
 ```
 
 Hello-window and config-title helpers live in
-[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The event loop,
-window registry, lifecycle, and kipc↔native dispatch described in spec 01 do not exist
-yet.
+[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The private
+macOS `app_session` owns strict boot validation, the one echo/lifecycle router,
+guardian supervision, CLI-lease loss and ordered UI exit. A complete
+cross-platform window registry and privileged kipc↔native dispatch remain target
+work.
 
 ### 3.4 `keld_cli` — a library, not just a binary
 
 `keld-cli` builds both the `keld` binary and a `keld_cli` lib
 ([`lib.rs`](../../crates/keld-cli/src/lib.rs)) so integration tests and future
-subcommands can call in. Five modules:
+subcommands can call in. Selected modules:
 
 | Module | Public items |
 |---|---|
 | `create` | `CreateError::{InvalidName, Exists, Io}`, `validate_name(&str)`, `create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>` |
-| `dev` | `DevError::{Doctor, Io, Runtime}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>` |
+| `boot` | `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole owner-private stage producer |
+| `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
 | `echo_link` | `EchoEndpoint` (`Unix(PathBuf)` on unix, `Tcp(u16)` on windows), `EchoServer::{start -> io::Result, link, join}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
@@ -711,28 +718,38 @@ not part of the flow yet.
 
 ```mermaid
 sequenceDiagram
-    accTitle: Current generated app echo and window lifecycle
-    accDescr: A developer runs keld dev. The CLI starts an echo server, Bun performs the authenticated HELLO and ECHO exchange, and the CLI then opens the renderer window. The integration test excludes the window.
+    accTitle: Current generated app lifecycle on macOS
+    accDescr: A developer runs keld dev. The CLI validates and stages the project, then launches a no-flag host. The host owns the guardian-supervised Bun child, authenticated echo and lifecycle session, and renderer window until Quit or CLI lease loss.
     participant Dev as You
     participant CLI as keld dev (parent)
-    participant Echo as EchoServer thread
+    participant Host as staged no-flag keld-host
+    participant Guard as guardian + Supervisor
     participant Bun as Bun (src/main.ts + kipc.ts)
-    participant Win as Platform system-webview window
+    participant Win as WKWebView window
 
     Dev->>CLI: keld dev
     CLI->>CLI: run_checks() — bun, project layout, renderer HTML
-    CLI->>Echo: EchoServer::start() — UDS path or 127.0.0.1 port
-    Echo-->>CLI: ready (mpsc signal)
-    CLI->>Bun: bun run src/main.ts + KELD_APP_LINK
-    Bun->>Echo: HELLO (Bun.connect, ./kipc.ts), then CALL on ECHO_CHANNEL (postcard EchoRequest)
-    Echo-->>Bun: HELLO, then REPLY (EchoResponse)
-    Bun-->>Dev: ipc-echo ok: message=keld count=1, then my-app: main process ready (IPC echo ok)
-    CLI->>Win: run_hello_window_html(title, project renderer HTML) and blocks
+    CLI->>CLI: stage_dev_boot() — strict private layout
+    CLI->>Host: no args, separate process group + stdin-v1 lease, forward stdio
+    Host->>Guard: authenticated guardian bootstrap
+    Guard->>Bun: bun run staged entry + KELD_APP_LINK
+    Bun->>Host: HELLO (Bun.connect, ./kipc.ts)
+    Host-->>Bun: HELLO
+    Host->>Win: create window + initial navigation
+    Host-->>Bun: Ready
+    Bun->>Host: two echo CALLs
+    Host-->>Bun: two REPLY frames
+    Bun->>Host: Quit CALL after close or app.quit()
+    Host-->>Bun: correlated Quit REPLY, then link EOF
+    Host-->>CLI: exit after guardian/Bun reap and UI teardown
 ```
 
-The integration test [`crates/keld-cli/tests/bun_echo.rs`](../../crates/keld-cli/tests/bun_echo.rs)
-exercises everything in that diagram except the window, against the real `kipc.ts` client (not a
-mock), and is the fastest way to see the contract asserted in code.
+The real-macOS integration test
+[`crates/keld-host/tests/no_flag_macos.rs`](../../crates/keld-host/tests/no_flag_macos.rs)
+exercises the shipping CLI-to-host chain, exact renderer, two calls, descriptor
+ownership, CLI-only death cleanup, and a fresh orderly relaunch against the real
+TypeScript client. `crates/keld-cli/tests/bun_echo.rs` remains the faster
+windowless diagnostic contract.
 
 ---
 

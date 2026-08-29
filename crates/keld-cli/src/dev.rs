@@ -1,14 +1,20 @@
-//! `keld dev` — run the hello template with IPC echo + window (KEL-29/KEL-30).
+//! `keld dev` — macOS staged-host delegation plus retained hello diagnostics.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, ErrorKind, Write};
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
+#[cfg(not(target_os = "macos"))]
+use keld_core::run_hello_window_html;
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, HostOwnedHelloSession, read_config_renderer,
-    read_config_title, run_hello_window_html,
+    read_config_title,
 };
 use keld_runtime::RestartPolicy;
 
@@ -19,7 +25,8 @@ pub use crate::doctor::RENDERER_LOAD_CODE;
 /// Errors starting a dev session.
 #[derive(Debug)]
 pub enum DevError {
-    /// Environment or project checks failed.
+    /// Environment, project, or delegated-host failure already rendered with
+    /// its own registered code and fix.
     Doctor(String),
     /// Child process or thread failure.
     Io(io::Error),
@@ -193,22 +200,87 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     Ok(DevEchoResult { stdout, link })
 }
 
-/// Runs `keld dev` in `project_root`: host-owned echo + Bun live across the
-/// hello window (KEL-30 concurrent slice).
+/// Runs `keld dev` in `project_root`.
+///
+/// On macOS this compiles one owner-private stage and launches its no-flag
+/// host with a private stdin liveness lease. The host owns the window,
+/// authenticated app link, and Bun. Windows/Linux retain the CLI-owned hello
+/// session until KEL-96/T4.
 ///
 /// # Errors
 ///
-/// Returns [`DevError`] when checks fail, Bun cannot be spawned, or the window fails.
+/// Returns [`DevError`] when checks, staging, host launch, Bun, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    run_dev_with_window(project_root, |title, html| {
-        run_hello_window_html(title, html).map_err(|e| DevError::Runtime(e.to_string()))
-    })
+    #[cfg(target_os = "macos")]
+    {
+        run_dev_host(project_root)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        run_dev_with_window(project_root, |title, html| {
+            run_hello_window_html(title, html).map_err(|e| DevError::Runtime(e.to_string()))
+        })
+    }
 }
 
-/// `run_dev` with the window phase injected, so the exit-status seam after it
-/// is reachable without a GUI.
+#[cfg(target_os = "macos")]
+fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
+    doctor_or_err(project_root)?;
+    let cli_executable = std::env::current_exe()?;
+    let developer_host = cli_executable
+        .parent()
+        .ok_or_else(|| {
+            DevError::Runtime(String::from(
+                "the keld executable has no parent directory; install keld and keld-host together",
+            ))
+        })?
+        .join("keld-host");
+    let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
+        .map_err(|error| DevError::Doctor(error.to_string()))?;
+    let host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn();
+    let mut host = match host {
+        Ok(host) => host,
+        Err(source) => {
+            if let Err(cleanup) = fs::remove_dir_all(stage.root()) {
+                return Err(DevError::Doctor(format!(
+                    "KELD-CLI-047: boot staging failed during host launch cleanup — \
+                     spawn failed: {source}; cleanup failed: {cleanup}. \
+                     Remove that owner-private nonce directory and retry."
+                )));
+            }
+            return Err(DevError::Io(source));
+        }
+    };
+    let lease_writer = host.stdin.take().ok_or_else(|| {
+        DevError::Runtime(String::from(
+            "the staged host did not receive its private stdin lease",
+        ))
+    })?;
+    let status = host.wait()?;
+    drop(lease_writer);
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DevError::Doctor(format!(
+            "KELD-CLI-048: staged no-flag host exited with {status}. \
+             Fix the preceding host diagnostic, then re-run `keld dev`."
+        )))
+    }
+}
+
+/// The retained CLI-owned hello path with its window phase injected.
 ///
-/// `window` stands exactly where `tao`'s `run_return` does: it borrows the
+/// On Windows/Linux this remains the shipping path until KEL-96/T4. On macOS
+/// it remains a diagnostic/test seam for the KEL-105 supervision verdict;
+/// [`run_dev`] delegates to the staged host instead. `window` stands where the
+/// legacy `tao` `run_return` phase does: it borrows the
 /// thread for the whole window phase, during which the host observes nothing
 /// about the app process. Everything after it — reaping Bun, reading the
 /// supervision verdict, choosing the returned status — is the KEL-105 seam,

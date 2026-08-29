@@ -21,14 +21,24 @@
   sandboxing, `--inspect` passthrough, graceful kipc draining, or renderer-continuity
   proof. Host ownership makes renderer survival architecturally plausible, not yet an
   exercised v0 claim.
-- **macOS no-flag primary (KEL-96 T1a/T1b):** the no-flag `keld-host`
+- **macOS no-flag primary (KEL-96 T1a/T1b/T2):** the no-flag `keld-host`
   validates its owner-private schema-v1 stage before any application resource,
   then uses the guardian-composed `Supervisor` for Bun's process group and
   KEL-116 self-termination ledger. T1b deliberately permits no successor: an
   unrequested exit, including status zero, tears down the live session with
   `KELD-CORE-033`; a status-zero exit after an accepted correlated Quit is
   host-authorized and is not added to that ledger. Fresh link generation and
-  same-window recovery remain T3.
+  same-window recovery remain T3. Shipping `keld dev` now compiles the same
+  owner-private stage, launches that host with no Keld argument, directly
+  forwards its stdout/stderr, places it in a process group separate from the
+  terminal-facing CLI, and retains only the host process handle plus the write
+  end of a private stdin-v1 liveness pipe. The host makes its reader
+  non-inheritable before guardian/Bun spawn. CLI death yields EOF and enters
+  the host's existing accepted-shutdown attribution, quiesce, link-close,
+  guardian-reap and UI-exit tail without a fabricated lifecycle reply. The
+  dev-leased host removes its own validated `.keld/dev/<nonce>` root on every
+  ordered return, including CLI loss; an uncatchable host `SIGKILL` can retain
+  that owner-private stage for a future bounded GC policy.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -150,7 +160,7 @@ authenticated roles). Window-bound roles follow only after those slices.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | **Today:** runs the hello session + window in the CLI process (no host spawn, no recorder). **Destination:** starts app's own dev server (delegation, Deno lesson D4), spawns host with dev profile (permission recorder, hot-restart of app process on change via Bun watch, devtools open policy) |
+| `keld dev` | **Today:** on macOS compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Windows/Linux retain the older CLI-owned hello slice until KEL-96/T4. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
@@ -174,20 +184,26 @@ flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
 the Phase 2 workaround (`keld create` then `keld dev`) — not a bare "unknown
 command". Garbage verbs are `KELD-CLI-046` (exit 2).
 
-**v0 env var is `KELD_APP_LINK`, not `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.**
+**The Bun bootstrap env var is `KELD_APP_LINK`, not
+`KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.** The separate
+`KELD_DEV_LEASE=stdin-v1` value is private CLI-to-host liveness classification:
+it is removed at guardian spawn and never reaches Bun or selects authority.
 §1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
 the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
 `keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
 on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
-before giving up with a typed `KELD-RUNTIME-002`. `keld dev` (`crates/keld-cli/src/dev.rs`
-`run_dev_echo`) spawns through that supervisor, not a bare `Command::new("bun")` wait;
+before giving up with a typed `KELD-RUNTIME-002`. On macOS shipping `keld dev`
+delegates to the staged host, which composes that supervisor through the shared
+guardian. The retained `run_dev_echo` diagnostic/test seam also spawns through
+the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
-Teardown of the host-owned hello session reads that supervision verdict rather than
-dropping it (KEL-105): if the app process dies while the host owns the window,
-`keld dev` exits 1 with `KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error
-and the captured stderr, instead of exiting 0 with no diagnostic.
+Teardown reads the supervision verdict rather than dropping it (KEL-105): if
+the app process dies while the host owns the window, the macOS no-flag host (or
+the retained legacy hello session on other platforms) exits non-zero with
+`KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error and captured stderr,
+instead of exiting 0 with no diagnostic.
 
 The breaker alone cannot carry that verdict, which is why the supervisor also
 publishes `CrashLedger`. Its original KEL-105 fields retain the crash-class count,
@@ -239,10 +255,10 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-Two limits are current behaviour, not destination: the app process's death does not
-close the window — the developer still closes it, and the exit code appears only
-then — and recovering the link across a restart is KEL-96 AC5 (no-flag host boot),
-not this path.
+Two limits remain. The legacy CLI-owned window path does not close its window
+until the developer does; only then does its exit code appear. The macOS
+host-owned path closes on a fatal app termination, but recovering the link while
+preserving that window remains KEL-96/T3 rather than a T2 claim.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /

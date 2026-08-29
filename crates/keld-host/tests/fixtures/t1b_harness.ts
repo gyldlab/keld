@@ -2,6 +2,9 @@
 const KEL96_ECHO_CHANNEL = 1;
 const KEL96_CONTROL = process.env.KELD_T1B_CONTROL;
 const KEL96_LINK = process.env.KELD_APP_LINK;
+if (process.env.KELD_DEV_LEASE !== undefined) {
+  throw new Error("KEL96 fixture inherited the host-only dev lease classification");
+}
 if (!KEL96_CONTROL || !KEL96_LINK) {
   throw new Error("KEL96 fixture requires KELD_T1B_CONTROL and KELD_APP_LINK");
 }
@@ -105,6 +108,7 @@ const appSocket = await Bun.connect({
       const notify = async (): Promise<void> => {
         if (orderlyQuit) await quitReplySent;
         await sendControl("LINK_EOF");
+        if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
       };
       void notify()
         .catch(() => undefined)
@@ -233,6 +237,10 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 await ready;
+console.log("KEL96_T2_FORWARDED_LOG");
+if (process.env.KELD_T2_HIGH_VOLUME_LOG === "1") {
+  process.stdout.write("x".repeat(1024 * 1024));
+}
 await sendControl("READY");
 for (const [index, message] of ["first", "second"].entries()) {
   const request = echoPayload(`KEL96-${message}`, index + 1);
@@ -241,13 +249,20 @@ for (const [index, message] of ["first", "second"].entries()) {
   await sendControl(`ECHO${index + 1}`);
 }
 
-const requested = await Promise.race([
+let requested = await Promise.race([
   receiveCommand(),
   lastWindowClosed.then(async () => {
     await sendControl("LAST_WINDOW_CLOSED");
     return "QUIT";
   }),
 ]);
+if (requested === "ECHO3") {
+  const third = echoPayload("KEL96-third", 3);
+  const thirdResponse = await invoke(KEL96_ECHO_CHANNEL, third);
+  if (!sameBytes(third, thirdResponse)) throw new Error("KEL96 third echo mismatch");
+  await sendControl("ECHO3");
+  requested = await receiveCommand();
+}
 if (requested === "EXIT0") {
   process.exit(0);
 }
