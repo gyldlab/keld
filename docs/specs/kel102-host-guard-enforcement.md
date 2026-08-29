@@ -81,14 +81,14 @@ trailing newline. Its SHA-256 is recorded in the header.
 | ID | Approved selection |
 |---|---|
 | `KEL-102-D1` | Approve one immutable host-owned policy snapshot per application session. Invalid boot or policy input fails before listener, child, or window creation. A load failure never becomes an empty/default policy; valid `{}` remains a deliberate all-deny policy. |
-| `KEL-102-D2` | Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the `keld_wv::MediaPolicy`/`WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, and manifest fields remain private. |
+| `KEL-102-D2` | Approve the exact public APIs in §4: `keld_guard::verified_manifest::load_verified_manifest`, `keld_core::app_session::run_guarded`, and the non-cloneable `keld_wv::MediaPolicy`/borrowed `WebEngine::create` injection seam. `GuardSnapshot`, `TrustedDispatchContext`, raw policy bytes, manifest fields, and callback leases remain private. |
 | `KEL-102-D3` | `KEL-102/T2` consumes the `KEL-96/T1a` acceptance row from one landed atomic T1a+T1b `host-boot-and-session` artifact. It does not accept the stale standalone `host-boot-descriptor` terminal and does not depend on KEL-96 T2-T5. |
 | `KEL-102-D4` | One host-accepted authenticated v0 app link maps to `Principal::AppProcess`. Frame data, token text, PID, environment, working directory, role name, and Electron options cannot select identity. Role generations remain KEL-75/KEL-97. |
-| `KEL-102-D5` | The `keld-native` broker is the sole production caller of `keld_ipc::guard_dispatch::dispatch_privileged`, which is the sole caller of `keld_guard::evaluate` before its OS-operation closure. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates or adds a second authorization check. |
+| `KEL-102-D5` | `keld_ipc::guard_dispatch::dispatch_privileged` is the sole production guard-before-handler boundary and sole production caller of `keld_guard::evaluate`. `keld-native` owns that call for registered native channels; `MediaPolicy` owns it for webview media callbacks. `keld-core` resolves trusted context, decodes, validates, and routes; it never evaluates or adds a second authorization check. |
 | `KEL-102-D6` | Freeze the order `KEL-102/T2` verified load/snapshot → `T3` reachable filesystem vertical → `T4` webview media injection → `T5` role-generation binding after KEL-97. Set `kel97_predecessor_task_id=none`: KEL-97 owns role-link identity independently; KEL-102/T5 consumes KEL-97, never the reverse. |
 | `KEL-102-D7` | KEL-78 OS containment is complementary to broker authorization, neither a blocker nor a substitute. KEL-102 alone cannot support a strict-profile or release-containment claim. |
 | `KEL-102-D8` | Controlled reload is outside this specification until a separately approved revocation-before-reprovision contract exists. |
-| `KEL-102-D9` | The delegated source explicitly approves the permission model and exact public APIs above for this contract. This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change. A T2 `sha2` dependency request and any later unsafe/wire/schema delta require their own explicit review gate. |
+| `KEL-102-D9` | The delegated source explicitly approves the permission model and exact public APIs above for this contract. This spec authorizes no unsafe, dependency, kipc-wire, or manifest-schema change. T2's `sha2`, T3/T4 sibling dependency requests, and any later unsafe/wire/schema delta require their own explicit review gate. |
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -102,16 +102,23 @@ trailing newline. Its SHA-256 is recorded in the header.
    KEL-103/successor container-to-root trust chain.
    The Bun child, a webview, a kipc frame, and a working-directory change
    cannot select the root, path, or manifest bytes.
-2. Given a missing, unreadable, malformed, traversing, outside-root, or
-   integrity-mismatched manifest, when a privileged app session is requested,
-   then the host returns a typed error with the corrective action, creates no
+2. Given a missing, unreadable, non-regular, symlink-escaping, or outside-root
+   fixed permissions target, KEL-96 selection fails as `KELD-CORE-036` before
+   `run_guarded` receives a `ValidatedBootSelection`. Empty, non-portable,
+   absolute, or traversing descriptor target paths and any staged-target
+   open/read/regularity/containment failure also remain `KELD-CORE-036`.
+   Oversized, malformed, non-UTF-8, or schema-invalid descriptor bytes, an
+   empty app name, a non-canonical permissions filename, or invalid digest
+   encoding remain `KELD-CORE-035`. Given a successfully minted
+   selection whose retained handle later fails to read, contains malformed or
+   non-UTF-8 policy, or hashes differently from its decoded digest,
+   `run_guarded` preserves `KELD-GUARD004`, `KELD-GUARD005`, or
+   `KELD-GUARD016` respectively. Every class returns corrective action, creates no
    privileged listener, starts no Bun child, leaves the host window registry
    empty, and creates no platform-native application window handle. Absence of
    a window-ready marker alone is not evidence that no window was created.
-   `KELD-GUARD004` / `KELD-GUARD005` retain their existing actionable text;
-   an integrity failure is `KELD-GUARD016` and tells the developer to rebuild
-   or re-sign the boot artifact. The host MUST
-   NOT substitute `PermissionsManifest::default()`.
+   An integrity failure tells the developer to rebuild or re-sign the boot
+   artifact. The host MUST NOT substitute `PermissionsManifest::default()`.
 3. Given a valid v0 authenticated app link, when its `HELLO` is accepted by
    the host, then the host binds that accepted link to the sole
    `Principal::AppProcess` dispatch identity. Decoded frame/payload values,
@@ -176,9 +183,10 @@ trailing newline. Its SHA-256 is recorded in the header.
   `std::fs::read` / `std::fs::write`, but the shipping host/core app path still
   does not route a privileged request to that broker.
 - KEL-96 T1a/T1b/T2/T3 are landed. The no-flag host owns validated boot,
-  native window/session, app link, guardian and Bun lifetime. Its private
-  `ValidatedBootSelection` retains the opened permissions handle and decoded
-  digest produced by the staged artifact.
+  native window/session, app link, guardian and Bun lifetime. Its public opaque
+  `ValidatedBootSelection`, whose fields and platform-specific construction
+  remain private, retains the opened permissions handle and decoded digest
+  produced by the staged artifact.
 - The shipping no-flag caller at `crates/keld-host/src/main.rs` still invokes
   `ValidatedBootSelection::from_current_exe_unprivileged().and_then(run_unprivileged)`.
   `run_unprivileged` deliberately drops the retained permissions handle and
@@ -203,8 +211,8 @@ trailing newline. Its SHA-256 is recorded in the header.
 | Policy-file authority | The `keld-host` process owns selection and the immutable policy snapshot. A single `keld-guard` verified-load operation owns reading, byte verification, and parsing. `keld-core` receives the snapshot as trusted session state; Bun and webviews receive neither a path nor a mutable manifest. |
 | Manifest path and trust | The exact filename is `keld.permissions.jsonc` beneath the canonical app root. KEL-96's dev stage is owner-controlled and its digest proves byte consistency, not release authenticity. A future production boot artifact must authenticate its relative location, content digest, and container-to-root relationship through KEL-103 or an approved successor. In both cases the host selects the exact relative filename and rejects a missing, escaping, or non-regular file; a child payload never selects it. |
 | Caller identity | The host creates the dispatch context after link authentication or from its webview/navigation registry. v0 maps its only accepted app link to `AppProcess`; destination role bindings come from KEL-75. No wire field, endpoint string, token, PID, environment variable, or Electron option is identity. |
-| Permission decision | `keld_guard` remains the one evaluator and `keld_ipc::guard_dispatch::dispatch_privileged` remains the one guard-before-handler helper. `keld-core` owns routing and supplies trusted context; `keld-native` owns the OS operation and calls the shared helper immediately before it. |
-| Side effect | Request decoding and resource extraction are not OS side effects. Normalization required by a future scope matcher happens before evaluation but must not open/create the target. The native OS operation is entirely inside the helper's `Allow` closure. |
+| Permission decision | `keld_guard` remains the one evaluator and `keld_ipc::guard_dispatch::dispatch_privileged` remains the one production guard-before-handler helper. `keld-core` owns routing and supplies trusted context; `keld-native` calls the helper immediately before a native OS operation, while `MediaPolicy` calls it when constructing the webview platform `Allow` response. |
+| Side effect | Request decoding and resource extraction are not OS side effects. Normalization required by a future scope matcher happens before evaluation but must not open/create the target. A native OS operation is entirely inside the helper's `Allow` closure. A platform media callback invokes `MediaPolicy`; only creation of its platform `Allow` response is inside the closure, while denial maps to the platform's deny response and never grants capture. |
 | Lifecycle | The snapshot is constructed before app resources exist and lives for one host session. Changes require explicit full-session teardown and fresh links/principals; there is no reload API in v0. |
 | Failure | Bad policy prevents a privileged app session from starting. Bad link identity prevents dispatch. Guard denial returns the existing typed reason and leaves the handler unentered. OS failures after an allow retain the native typed error. |
 
@@ -250,9 +258,10 @@ benchmark if its context representation changes allocations or lock behavior.
 
 1. Validate its boot input before starting a listener, window, or Bun. KEL-96
    owns the boot-artifact format and returns an opaque `ValidatedBootSelection`
-   minted from the canonical parent of the staged executable. The private
-   selection already retains the fixed no-follow permissions-file handle and
-   decoded digest alongside the canonical fixture root.
+   minted from the canonical parent of the staged executable. This public
+   opaque selection has private fields and platform-specific construction; it
+   already retains the fixed no-follow permissions-file handle and decoded
+   digest alongside the canonical fixture root.
    The owner-controlled dev stage may enable guarded brokers without claiming
    release authenticity. A release session cannot enable them until KEL-103 or
    an approved successor authenticates the exact sidecar, location, and root
@@ -306,8 +315,9 @@ pub fn load_verified_manifest(
 ```
 
 The module and function are `pub` because `keld-core` is the single production
-caller. KEL-96's private `ValidatedBootSelection` already owns the fixed file
-opened under the no-follow/regular-file/containment contract; `run_guarded`
+caller. KEL-96's public opaque `ValidatedBootSelection` already owns the fixed
+file opened under the no-follow/regular-file/containment contract; its fields
+and platform-specific construction remain private, and `run_guarded`
 transfers that validated handle by value. `display_path` is diagnostics-only
 and is never opened. The loader
 owns the handle read, byte buffer, SHA-256 calculation, comparison, UTF-8
@@ -349,8 +359,8 @@ one sibling entry point and no public snapshot/context type:
 ```rust
 // keld_core::app_session
 pub fn run_guarded(
-    boot: keld_core::app_session::ValidatedBootSelection,
-) -> Result<(), keld_core::app_session::HostAppError>;
+    boot: ValidatedBootSelection,
+) -> Result<(), HostAppError>;
 ```
 
 `run_guarded` consumes the opaque boot selection, transfers its already-open
@@ -412,8 +422,9 @@ T4 must remove all three production backend constructions of
 one opaque policy value and one exact `WebEngine` signature change:
 
 ```rust
-#[derive(Clone)]
-pub struct MediaPolicy { /* private VerifiedManifest */ }
+pub struct MediaPolicy {
+    /* private Arc<MediaPolicyState>; deliberately not Clone */
+}
 
 impl MediaPolicy {
     pub fn from_verified_manifest(
@@ -427,7 +438,7 @@ pub trait WebEngine {
     fn create(
         &mut self,
         spec: &WebviewSpec,
-        media_policy: Option<MediaPolicy>,
+        media_policy: Option<&MediaPolicy>,
     ) -> Result<WebviewId, WvError>;
     // Existing remaining methods are unchanged.
 }
@@ -436,29 +447,72 @@ pub trait WebEngine {
 `MediaPolicy` lives at `keld_wv::MediaPolicy`; its fields and manifest accessor
 remain private to `keld-wv`. `keld-core` is the named production constructor:
 it clones the opaque `VerifiedManifest` from its private `GuardSnapshot`, so
-the manifest and digest cannot be substituted independently. `None` is allowed
+the manifest and digest cannot be substituted independently. `MediaPolicy` is
+a unique, non-cloneable owner. Its private state contains the verified pair,
+an active/quiescing transition lock, and the authoritative media-webview
+generation registry. `keld-core` retains that owner for the host session and
+passes only `&MediaPolicy` to `WebEngine::create`. This private registry is the
+sole media-authorization projection of host webview identity; core's broader
+window registry does not copy its principal/generation mapping or mint callback
+leases.
+
+Each Keld backend mints the `WebviewId`, binds it in that private registry
+before the platform callback becomes reachable, and receives two crate-private
+values: a `MediaBindingOwner` stored with the backend view and a
+`MediaPolicyLease` captured by the platform callback. Both contain only
+`Weak<MediaPolicyState>` plus the bound id. Dropping the binding owner during
+view teardown removes the registration even if platform code retains the
+callback/lease. Neither private type, the binding function, registry mutation,
+nor authorization method is public, so a dependent crate cannot inject an
+admission function, mint a callback lease, or invoke authorization through `MediaPolicy`.
+Third-party `WebEngine` implementations can receive the opaque borrow but
+cannot access the private authorization path and therefore cannot grant media.
+Child/frame data can neither construct nor call any of these Rust values.
+
+On each media request the private lease upgrades its weak pointer, acquires the
+same transition lock used by owner drop and webview removal, verifies the
+policy is active and the exact id remains registered, derives the current
+generation, and performs the shared-dispatch operation while still holding
+that lock. Dropping the unique `MediaPolicy` owner marks the state quiescing
+under the lock before releasing its only durable `Arc`; retained callbacks
+then fail to upgrade or observe inactive state. Dropping a webview's private
+binding owner removes its registration under the same lock without depending
+on callback destruction. An operation admitted
+before either transition completes under the lock and records its terminal
+result before the transition can win. `None` is allowed
 only for explicitly unprivileged diagnostic windows and means deny all.
 `run_guarded` MUST pass `Some`; it cannot treat `None` as recovery from a
 load/integrity error.
 
-All media evaluation is a private `MediaPolicy` method. Its production method
-reads the manifest and digest from the same opaque pair and invokes a test-only
-recorder immediately before `evaluate`, recording `(WebviewId, generation,
-verified_sha256)`. Each backend callback must call that method; it may not call
-`evaluate` on a separately supplied/default manifest. T4 tests compare the
-recorder digest with the host snapshot and assert an entry exists. A negative
-control that preserves the correct digest but evaluates
-`PermissionsManifest::default()` bypasses the method and therefore fails for a
-missing recorder entry. Dropping `MediaPolicy` or mapping missing state to
-`AppProcess` also fails. This is the public-API contract approved by this spec;
-no public `GuardSnapshot` or `TrustedDispatchContext` is needed.
+All media authorization is a private `MediaPolicy` method. Its production
+method reads the manifest and digest from the same opaque pair, derives the
+registry-owned webview principal from the generation supplied by its private
+lease, derives the media capability/resource, invokes a
+test-only recorder recording `(WebviewId, generation, verified_sha256)`, and
+calls `keld_ipc::guard_dispatch::dispatch_privileged` with a closure that
+constructs the platform `Allow` response. A failed weak upgrade or missing,
+inactive, or unregistered state becomes `KELD-GUARD007`/platform deny and
+never reaches the shared dispatcher. A guard
+denial also maps to the platform deny response. The platform callback itself
+is the caller of this method and is not recursively enclosed by it. The shared helper remains the only production caller of
+`evaluate`; neither `MediaPolicy` nor a backend calls `evaluate` directly.
+Each backend callback must call the `MediaPolicy` method; it may not evaluate
+a separately supplied/default manifest. T4 tests compare the recorder digest
+with the host snapshot and assert an entry exists. A negative control that
+preserves the correct digest but evaluates `PermissionsManifest::default()`
+directly or through a second helper bypasses the method and therefore fails
+the sole-caller assertion and recorder check. Dropping `MediaPolicy` or mapping
+missing state to `AppProcess` also fails. This is the public-API contract
+approved by this spec; no public `GuardSnapshot` or `TrustedDispatchContext`
+is needed. The resulting `keld-wv` -> `keld-ipc` sibling dependency is selected
+but not approved here and requires T4's separate dependency review gate.
 
 ### Guard-before-handler boundary
 
-For every registered privileged channel, the production path is:
+For a registered native channel, the production path is:
 
 ```text
-authenticated host link or webview callback
+authenticated host link
   -> host resolves TrustedDispatchContext
   -> decode and validate request
   -> core routes only to a registered keld-native handler, passing
@@ -470,10 +524,20 @@ authenticated host link or webview callback
   -> OS-operation closure runs only on Allow
 ```
 
+The parallel webview path is platform callback -> host registry ->
+`MediaPolicy` -> `dispatch_privileged` -> platform `Allow` response. `MediaPolicy` derives
+the web capability/resource and host-registry principal before invoking the
+shared helper; only the allow response is produced inside its closure, and a
+denial returns the platform deny response.
+
 `keld-core` owns trusted-context resolution, request decoding/validation, and
 registered routing. It does not call `evaluate` or `dispatch_privileged`.
-`keld-native` owns the handler and is the sole production caller of the shared
-`dispatch_privileged` helper immediately around the OS operation. The private
+`keld-native` owns the native handler and calls the shared
+`dispatch_privileged` helper immediately around the OS operation. For webview
+media, the host registry supplies the trusted principal and `MediaPolicy`
+calls that same helper when constructing the platform `Allow` response. Across both
+paths, `dispatch_privileged` is the sole production guard-before-handler
+boundary and the sole production caller of `evaluate`. The private
 core context is decomposed only into the guard-owned `VerifiedManifest`
 reference, host-derived `Principal`, and validated request at that crate
 boundary; no core type becomes public. The KEL-71 filesystem session must be
@@ -502,17 +566,23 @@ app-link.
 ### Lifecycle and reload
 
 The guard snapshot's lifetime equals the host app session. A policy change is
-not an event delivered to a running role. To adopt one, the host must first
-atomically mark the session quiescing and reject every new privileged
-admission. It then revokes app-link/role dispatch contexts and crosses an
-explicit drain-or-cancel barrier for requests admitted before quiescence. No
-handler closure may newly enter after the quiescing transition; a closure
-already inside an OS operation must reach its recorded terminal outcome before
-the snapshot is destroyed. Only then may the host stop affected Bun roles,
-close privileged endpoints, and construct a new session from newly verified
-boot input. KEL-96 owns the broader window/listener shutdown order; KEL-75 owns
-generation revocation. This rule prevents an old connection or in-flight
-request from retaining or gaining authority across a manifest change.
+not an event delivered to a running role. To adopt one, core first acquires its
+session admission coordinator, blocking every new native admission. While
+holding it, core drops the unique `MediaPolicy` owner; owner drop acquires the
+private media transition lock, waits for any admitted media operation to
+record its terminal result, marks media inactive, and releases the only durable
+state `Arc`. Only after both admission boundaries are closed does core
+atomically publish `Quiescing`; that publication is the session's linearization
+point. It then revokes app-link/role dispatch contexts and crosses an explicit
+drain-or-cancel barrier for native requests admitted before the coordinator
+was acquired. No handler closure may newly enter after the `Quiescing`
+publication; a closure already inside an OS operation must reach its recorded
+terminal outcome before the snapshot is destroyed. Only then may the host stop
+affected Bun roles, close privileged endpoints, and construct a new session
+from newly verified boot input. KEL-96 owns the broader window/listener
+shutdown order; KEL-75 owns generation revocation. This rule prevents an old
+connection or in-flight request from retaining or gaining authority across a
+manifest change.
 
 ## 5. Boundaries
 
@@ -538,6 +608,11 @@ request from retaining or gaining authority across a manifest change.
   destination dependency. Routing from the thin host, copying the FS handler,
   or introducing a callback abstraction solely to hide the dependency are
   rejected alternatives.
+- T4 may add the existing workspace member `keld-ipc` to
+  `crates/keld-wv/Cargo.toml` only when that implementation PR receives its
+  own dependency review gate. The approved D5 single-owner boundary requires
+  the existing shared helper; a second media-specific dispatcher or direct
+  `evaluate` call is rejected.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
@@ -574,15 +649,23 @@ request from retaining or gaining authority across a manifest change.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
       context. Core routes and passes the verified snapshot/principal/request;
-      the native broker alone calls `dispatch_privileged`, which alone calls
-      `evaluate`. Prove allowed read/write and denied write/no-file side effect
-      over a real kipc session; delete or refactor any parallel FS dispatch
-      path rather than retaining both.
+      within the registered native-channel path, the native broker alone calls
+      `dispatch_privileged`, which alone calls `evaluate`. Prove allowed
+      read/write and denied write/no-file side effect over a real kipc session;
+      delete or refactor any parallel FS dispatch path rather than retaining
+      both. T3 does not claim repository-wide D5 completion while the existing
+      media path still evaluates directly; T4 must remove that last direct
+      caller and enforce the global sole-evaluator invariant.
 - [ ] `KEL-102/T4`: Pass `MediaPolicy` and the registry-derived webview
       principal to all three live media backends. Preserve default denial
       until a separately approved window-grant slice exists; prove a loaded
       `/app` grant cannot authorize a webview and the callback records the
-      session's verified digest rather than a default policy.
+      session's verified digest rather than a default policy. Prove each live
+      callback reaches `dispatch_privileged` and no `MediaPolicy` or backend
+      calls `evaluate` directly. Retain a platform callback/private weak lease
+      across webview teardown and session quiescence and prove it cannot
+      upgrade/authorize or produce an `Allow` response. `MediaPolicy` itself
+      is not cloneable.
 - [ ] `KEL-102/T5`: After KEL-75/KEL-97 define and ship role-link identity,
       bind that role-aware guard principal at accepted-link dispatch and prove
       stale role generations cannot invoke the FS handler. This is a dependent
@@ -610,12 +693,12 @@ consumes this field; it must not manufacture a T2/T3/T4 edge.
 
 | AC | Test and independent oracle |
 |---|---|
-| 1–2 | Shipping no-flag host binary integration using a KEL-96 private staged root: `keld-host` calls `run_guarded`; valid manifest starts the fixture; missing/malformed/outside/digest-mismatched manifests produce the typed error, no child PID, no app-link endpoint/listener handle, an empty host window registry, and no platform-native application window handle. A file written outside the root is never accepted as the manifest; marker absence alone is insufficient. A mutation retaining `run_unprivileged` or retrying it after guarded failure must fail. |
+| 1–2 | Shipping no-flag host binary integration using a KEL-96 private staged root: `keld-host` calls `run_guarded`; a valid manifest starts the fixture. Missing, unreadable, non-regular, symlink-escaping, outside-root, or invalid descriptor target-path cases fail in KEL-96 selection as `KELD-CORE-036`. Oversized/malformed/non-UTF-8/schema-invalid descriptor bytes, empty app name, wrong fixed permissions filename, and digest encoding fail as `KELD-CORE-035`. Once selection succeeds, retained-handle read failure, malformed/non-UTF-8 policy, and digest mismatch remain `KELD-GUARD004`, `KELD-GUARD005`, and `KELD-GUARD016`. Every failure oracle requires no child PID, no app-link endpoint/listener handle, an empty host window registry, and no platform-native application window handle. A file written outside the root is never accepted as the manifest; marker absence alone is insufficient. A mutation retaining `run_unprivileged` or retrying it after guarded failure must fail. |
 | 3 | Real authenticated app-link fixture: correct token binds only its host-selected v0 caller; foreign/stale token is the existing `KELD-IPC-007` rejection and no FS handler marker/reply occurs. |
 | 4 | KEL-75 dependent integration: bind a generation, revoke it, then send a formerly valid privileged request. Independent oracle is typed stale/revoked rejection plus absent filesystem marker. |
-| 5 | Backend state tests plus real platform smoke: media callback receives a host registry principal; missing state returns `KELD-GUARD007`; `/app` camera grant remains denied for a webview; the production callback recorder's digest equals `GuardSnapshot` on all three backends. Retaining `PermissionsManifest::default()` or dropping `MediaPolicy` fails. Navigation-rotation assertions wait for the actual registry event once that feature exists. |
-| 6–7 | Real socket/kipc FS session on temp paths: core routes a verified snapshot/principal/request to the native broker; the broker's sole `dispatch_privileged` call returns `KELD-GUARD002` for out-of-scope write and the target does not exist; allowed write/read returns exact bytes. The production adapter recorder is zero on denied read and nonzero on allowed read. A contract assertion rejects any core-local `evaluate`/`dispatch_privileged` call. |
-| 8 | Start with a denying snapshot, retain its already-authenticated stream, modify the manifest, and verify the live session's decision is unchanged. Mark the session quiescing, race a new request against teardown, and prove no handler closure enters after that transition. Drain or cancel requests admitted before quiescence and record their terminal outcomes before destroying the snapshot. Assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
+| 5 | Backend state tests plus real platform smoke: media callback receives a host registry principal; missing state returns `KELD-GUARD007`; `/app` camera grant remains denied for a webview; the production callback recorder's digest equals `GuardSnapshot` on all three backends. A contract assertion proves `MediaPolicy` reaches `dispatch_privileged` and neither it nor a backend calls `evaluate` directly. Retain a platform callback/private weak lease, drop the distinct private `MediaBindingOwner` during webview teardown under the shared transition lock, and prove the retained lease no longer finds a registration, returns `KELD-GUARD007`/platform deny, and produces no `Allow` response. Assert `MediaPolicy` is not `Clone`, its public API has no bind/authorize/gate-injection method, and neither private value adds a durable `Arc` strong count. Retaining `PermissionsManifest::default()` or dropping `MediaPolicy` fails. Navigation-rotation assertions wait for the actual registry event once that feature exists. |
+| 6–7 | Real socket/kipc FS session on temp paths: core routes a verified snapshot/principal/request to the native broker; within that native path the broker's sole `dispatch_privileged` call returns `KELD-GUARD002` for out-of-scope write and the target does not exist; allowed write/read returns exact bytes. The production adapter recorder is zero on denied read and nonzero on allowed read. A contract assertion rejects any core-local `evaluate`/`dispatch_privileged` call. This T3 oracle is native-path-specific; AC5/T4 later removes the existing media direct caller and proves repository-wide D5. |
+| 8 | Start with a denying snapshot, retain its already-authenticated stream and one media platform callback/private weak lease, modify the manifest, and verify the live session's decision is unchanged. Acquire the core admission coordinator, race a new request against teardown, drop the unique `MediaPolicy` owner and wait for any admitted media operation, then publish `Quiescing` as the linearization point. Prove no handler closure enters after that publication. Invoke the retained callback and prove its weak upgrade fails or observes inactive state without invoking the operation or producing a platform `Allow` response. Assert the state owner is actually dropped/has no durable strong reference after an admitted operation drains. A separately synchronized race must prove an operation admitted under the media lock records its terminal result before owner drop completes. Drain or cancel native requests admitted before the coordinator was acquired and record their terminal outcomes before destroying the remaining snapshot. Assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
 
 Anti-flake requirements: use a temporary root and port `0`; await host/child
 markers and process termination rather than sleeping; run crash/reload cases
@@ -646,6 +729,12 @@ Negative controls are mandatory for the privileged vertical slice:
    teardown; the retained-stream revocation assertion must fail.
    A second mutation lets a new handler enter after the quiescing transition;
    the drain/cancel barrier assertion must fail.
+   A third mutation makes `MediaPolicy` cloneable, exposes/injects a public
+   bind/authorize gate, lets a callback lease retain a strong state `Arc`,
+   publishes `Quiescing` before media owner drop completes, invokes the media
+   operation outside the shared transition lock, or keeps a registration after
+   webview teardown. The API-shape, strong-count/drop,
+   retained-callback denial, or synchronized-race assertion must fail.
 
 The contract-freeze PR also runs a documentary contract check against this
 file. Each temporary mutation below must make that check exit non-zero, after
@@ -654,8 +743,8 @@ which the untouched approved document must pass again:
 1. remove the exact passed KEL-96 `host-boot-and-session` artifact identity;
 2. remove `KEL-102-D1`'s explicit permission-model approval;
 3. remove `KEL-102-D2`'s exact public-API approval;
-4. replace `KEL-102-D5`'s native-broker sole-owner rule with a core-local or
-   duplicate check;
+4. replace `KEL-102-D5`'s shared-helper sole-owner rule with a direct
+   `MediaPolicy`/backend `evaluate`, a core-local check, or another duplicate;
 5. replace T4's exact `task_id=KEL-102/T3` predecessor with a generic
    `host-guard-enforcement` pass; and
 6. replace T3's exact `task_id=KEL-102/T2` predecessor with another KEL-102
@@ -682,7 +771,8 @@ and `just llms-check` after authoritative-document changes.
   `keld_guard::verified_manifest::load_verified_manifest`,
   `ManifestError` variants/`code()`,
   `keld_core::app_session::run_guarded`, and
-  `keld_wv::MediaPolicy`/`WebEngine::create` contracts in §4.
+  non-cloneable `keld_wv::MediaPolicy`/borrowed `WebEngine::create`
+  contracts in §4.
   `GuardSnapshot` and `TrustedDispatchContext` remain crate-private. A
   role-principal API is not approved here and remains KEL-75/KEL-97-owned.
 - permission model: **yes; approved for this contract by the delegated
@@ -692,8 +782,9 @@ and `just llms-check` after authoritative-document changes.
 - dependency addition: **none approved by this spec**. T2's selected reuse of
   workspace-pinned `sha2` in `keld-guard` must receive a separate explicit
   dependency gate in its implementation PR. T3's `keld-core` → `keld-native`
-  sibling-crate edge requires its own explicit dependency gate; neither is
-  waived by an existing workspace declaration.
+  sibling-crate edge and T4's `keld-wv` → `keld-ipc` sibling-crate edge each
+  require their own explicit dependency gate; none is waived by an existing
+  workspace declaration.
 - wire protocol: **none authorized**. kipc frames and `KELD_APP_LINK` are unchanged; the
   existing manifest schema is read, not extended. A later role/window-grant
   schema change is its own manifest-schema review gate.
