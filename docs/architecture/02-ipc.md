@@ -123,7 +123,7 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
   `KELD-RUNTIME-*` cause (KEL-105/KEL-116 option (a), SURFACE). A completed
   windowless echo explicitly accepts status-zero self-termination after its reply;
-  it does not change the ledger fact or weaken the window policy. Minting a fresh
+  it does not change the ledger fact or weaken the window policy. The
   fresh-generation macOS product path is the KEL-96/T3 owner described above;
   it does not change this retained diagnostic/legacy contract.
 - **v0 session:** one `HELLO` per connection, then N `CALL`/`REPLY` pairs until

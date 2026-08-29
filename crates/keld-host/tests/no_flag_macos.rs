@@ -2068,7 +2068,7 @@ for row in rows {
 }
 
 fn await_native_windows(pid: u32, title: &str, expected: usize) -> Vec<u32> {
-    let deadline = Instant::now() + PROCESS_DEADLINE;
+    let deadline = Instant::now() + EVENT_DEADLINE;
     loop {
         let windows = native_windows(pid, title);
         if windows.len() == expected {

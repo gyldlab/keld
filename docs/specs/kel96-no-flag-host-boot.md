@@ -368,8 +368,9 @@ product evidence under T4.
 
 One private `keld-core` logical app-session router owns at most one accepted
 generation stream. Each generation performs one HELLO and has one reader plus
-one serialized writer; revocation retires and joins that reader before a bound
-successor becomes current. The router dispatches the existing echo and
+one serialized writer; revocation detaches and attempt-qualifies that reader
+before a bound successor becomes current, and the terminal router owner joins
+all retained reader handles. The router dispatches the existing echo and
 lifecycle channel ids across generations without recreating the window.
 `LifecycleSession` and `EchoServer` are evidence/reuse inputs, not concurrent
 stream owners. No lifecycle-side listener or lifecycle HELLO exists.

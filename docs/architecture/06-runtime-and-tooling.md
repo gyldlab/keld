@@ -269,7 +269,8 @@ look.
 
 Two limits remain. The legacy Windows/Linux CLI-owned window path does not close
 its window until the developer does; only then does its exit code appear. macOS
-recovery does not prove their T4 transport, window, restart or cleanup rows.
+recovery does not prove the Windows/Linux T4 transport, window, restart or
+cleanup rows.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /

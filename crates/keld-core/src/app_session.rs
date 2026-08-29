@@ -1482,16 +1482,11 @@ impl PrimaryRouterHandle {
                 )?;
             }
         }
-        let reader = self
-            .readers
-            .lock()
-            .map_err(|_| app_detail("primary session readers", "reader list lock poisoned"))?
-            .remove(&attempt);
-        if let Some(reader) = reader {
-            let _ = reader
-                .join()
-                .map_err(|_| app_detail("retired primary reader", "thread panicked"))?;
-        }
+        // The reader may be waiting for GuardianOwner to acknowledge the
+        // link-failure request that caused this revocation. Removing and
+        // joining it on that same owner thread deadlocks. Current-attempt
+        // checks make it inert after retirement; the terminal router owner
+        // retains and joins every reader handle.
         Ok(())
     }
 
@@ -2403,6 +2398,65 @@ mod tests {
             "link failure vanished at shutdown"
         );
         guardian_thread.join().expect("link failure guardian joins");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn retire_does_not_join_reader_waiting_for_link_failure_ack() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (server, client) = UnixStream::pair().expect("link retirement pair");
+        let (window_tx, _window_rx) = mpsc::channel();
+        let (guardian_tx, guardian_rx) = mpsc::channel();
+        let (blocked_tx, blocked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let guardian_thread = std::thread::spawn(move || {
+            let command = guardian_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("link retirement command");
+            let GuardianOwnerCommand::FailGeneration(1, reply) = command else {
+                panic!("reader sent the wrong retirement command");
+            };
+            blocked_tx.send(()).expect("report blocked link failure");
+            release_rx.recv().expect("release link failure");
+            reply.send(Ok(())).expect("link failure reply");
+        });
+        let router = PrimaryRouter::start(
+            server,
+            window_tx,
+            GuardianOwnerHandle {
+                command_tx: guardian_tx,
+            },
+            SessionShutdownState::new(),
+        )
+        .expect("link retirement router");
+        router
+            .handle()
+            .signal_ready()
+            .expect("link retirement Ready");
+        drop(client);
+        blocked_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("reader waits for link failure acknowledgment");
+        let retire_handle = router.handle();
+        let (retired_tx, retired_rx) = mpsc::channel();
+        let retire_thread = std::thread::spawn(move || {
+            retired_tx
+                .send(retire_handle.retire_generation(1))
+                .expect("return retirement result");
+        });
+        retired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("guardian-owner retirement must not join the blocked reader")
+            .expect("retire blocked generation");
+        release_tx
+            .send(())
+            .expect("release link failure acknowledgment");
+        retire_thread.join().expect("retire thread joins");
+        guardian_thread.join().expect("guardian thread joins");
+        router.shutdown().expect("link retirement router shutdown");
     }
 
     #[test]
