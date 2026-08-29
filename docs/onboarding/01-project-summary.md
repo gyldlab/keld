@@ -238,8 +238,10 @@ Verified on macOS, 2026-08-29:
 `keld dev` is still a slice, not the destination architecture. On macOS the
 CLI now delegates application ownership to a staged no-flag `keld-host`; on
 Windows/Linux the older CLI-owned loop remains until KEL-96/T4. There is still
-no `@keld/api`, dev permission recorder, Bun-watch recovery, or guarded app
-dispatch. Bun *is* supervised — `keld_runtime::Supervisor` spawns
+no `@keld/api`, dev permission recorder, Bun-watch recovery, or complete
+host-wired guarded app API. The guard-checked `keld_native::fs` broker exists,
+but the shipping host does not yet route app calls to that broader native
+dispatch surface. Bun *is* supervised — `keld_runtime::Supervisor` spawns
 `bun run src/main.ts` (KEL-70) instead of a bare `Command::new("bun")` wait. The
 template's `src/main.ts` proves the link by speaking kipc itself, through
 `src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30); schema-driven codegen
