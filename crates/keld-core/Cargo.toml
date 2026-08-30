@@ -1,6 +1,6 @@
 [package]
 name = "keld-core"
-description = "Keld host runtime: hello/lifecycle plus macOS no-flag boot, app session, and CLI-lease teardown"
+description = "Keld host runtime: hello/lifecycle plus verified macOS no-flag boot, app session, and CLI-lease teardown"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

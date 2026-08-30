@@ -62,7 +62,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     let dev_stage_cleanup = dev_stage_cleanup_root();
     let result = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
-        .and_then(keld_core::app_session::run_unprivileged);
+        .and_then(keld_core::app_session::run_guarded);
     let mut failed = false;
     if let Err(error) = result {
         eprintln!("{error}");
