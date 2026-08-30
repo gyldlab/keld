@@ -483,11 +483,13 @@ running outside a scaffolded project, or in a directory that has `keld.config.ts
 You ran `bun run src/main.ts` (or `bun start`) directly. The template main process
 requires the link that `keld dev` injects; start it through the CLI.
 
-**A stale `keld-echo-*.sock` in `$TMPDIR`.**
-Not a problem: `EchoServer` removes the file on `join()` and on `Drop`, and the server
-unlinks any existing file before binding
-([`crates/keld-core/src/echo_link.rs`](../../crates/keld-core/src/echo_link.rs)). No manual
-cleanup needed.
+**A stale `kb-*/app.sock` in the temporary directory.**
+Successful authentication consumes and removes the locator before `EchoServer::join()`
+returns. `shutdown()` and `Drop` close an outstanding listener and remove its owner-only
+session directory. An abrupt process death can leave that unique directory behind; a new
+server binds a different directory and never reuses or unlinks the stale path. Confirm the
+owning process is gone before removing stale files manually
+([`crates/keld-core/src/echo_link.rs`](../../crates/keld-core/src/echo_link.rs)).
 
 **Clippy fails on code you did not touch.**
 Much of this tree is uncommitted work in progress (§3.2). Confirm against a clean

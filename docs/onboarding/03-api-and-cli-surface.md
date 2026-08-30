@@ -562,15 +562,17 @@ subcommands can call in. Selected modules:
 | `boot` | `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole owner-private stage producer |
 | `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
-| `echo_link` | Windows-only compatibility `EchoEndpoint::Tcp(u16)`, `EchoServer::{start -> io::Result, link, join}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
+| `echo_link` | Windows-only compatibility `EchoEndpoint::Tcp(u16)`, `EchoServer::{start -> io::Result, link, join, shutdown}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
 
 `EchoServer` serves one authenticated session by design: it binds the shared platform
 `keld_ipc::BootstrapListener`, signals ready over an `mpsc::Sender<()>`, rejects and
 continues after invalid pre-authentication peers, consumes the locator after valid
-`HELLO`, and on `join()` or `Drop` closes the listener, joins the worker, then removes
-the Unix socket when applicable. `start` returns `io::Result` (bind failure is not a
-process invariant).
+`HELLO`, and on `shutdown()` or `Drop` closes the listener, interrupts an outstanding
+accept, joins the worker, then removes the Unix socket when applicable. `join()` only
+waits for a session that is already completing; it does not close the listener or
+interrupt `accept`. `start` returns `io::Result` (bind failure is not a process
+invariant).
 
 ### 3.5 Foundational and partial crates — current exposed behavior
 
