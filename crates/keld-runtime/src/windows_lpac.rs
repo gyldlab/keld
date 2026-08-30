@@ -15,7 +15,7 @@ use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _,
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, LocalFree, WAIT_OBJECT_0,
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, LocalFree, WAIT_OBJECT_0,
     WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
@@ -35,11 +35,12 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-    OpenProcessToken, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess,
+    InitializeProcThreadAttributeList, OpenProcessToken,
+    PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject,
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
 
@@ -297,9 +298,10 @@ impl WindowsLpacProfile {
                 .map(|handle| handle.as_raw_handle().cast()),
         );
         deduplicate_handles(&mut raw_handles)?;
-        let _inheritance = HandleInheritance::enable(&raw_handles)?;
+        let inherited = InheritedHandleCopies::duplicate(&raw_handles)?;
+        let inherited_handles = inherited.raw_handles();
 
-        let attribute_count = if raw_handles.is_empty() { 2 } else { 3 };
+        let attribute_count = if inherited_handles.is_empty() { 2 } else { 3 };
         let mut attributes = AttributeList::new(attribute_count)?;
         let capabilities = SECURITY_CAPABILITIES {
             AppContainerSid: self.sid,
@@ -320,11 +322,11 @@ impl WindowsLpacProfile {
             std::mem::size_of_val(&all_packages_policy),
             "All Application Packages opt-out",
         )?;
-        if !raw_handles.is_empty() {
+        if !inherited_handles.is_empty() {
             attributes.update(
                 PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                raw_handles.as_ptr().cast(),
-                std::mem::size_of_val(raw_handles.as_slice()),
+                inherited_handles.as_ptr().cast(),
+                std::mem::size_of_val(inherited_handles.as_slice()),
                 "explicit inherited-handle list",
             )?;
         }
@@ -337,9 +339,12 @@ impl WindowsLpacProfile {
         startup.lpAttributeList = attributes.pointer;
         if let Some(stdio) = standard_handles {
             startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-            startup.StartupInfo.hStdInput = stdio.stdin.as_raw_handle().cast();
-            startup.StartupInfo.hStdOutput = stdio.stdout.as_raw_handle().cast();
-            startup.StartupInfo.hStdError = stdio.stderr.as_raw_handle().cast();
+            startup.StartupInfo.hStdInput =
+                inherited.copy_of(stdio.stdin.as_raw_handle().cast())?;
+            startup.StartupInfo.hStdOutput =
+                inherited.copy_of(stdio.stdout.as_raw_handle().cast())?;
+            startup.StartupInfo.hStdError =
+                inherited.copy_of(stdio.stderr.as_raw_handle().cast())?;
         }
 
         create_suspended_process(
@@ -348,7 +353,7 @@ impl WindowsLpacProfile {
             &environment,
             current_dir.as_deref(),
             &startup,
-            !raw_handles.is_empty(),
+            !inherited_handles.is_empty(),
         )
     }
 }
@@ -633,13 +638,14 @@ impl Drop for AttributeList {
     }
 }
 
-struct HandleInheritance {
-    original: Vec<(HANDLE, u32)>,
+struct InheritedHandleCopies {
+    originals: Vec<HANDLE>,
+    copies: Vec<OwnedHandle>,
 }
 
-impl HandleInheritance {
-    fn enable(handles: &[HANDLE]) -> Result<Self, WindowsLpacError> {
-        let mut original = Vec::with_capacity(handles.len());
+impl InheritedHandleCopies {
+    fn duplicate(handles: &[HANDLE]) -> Result<Self, WindowsLpacError> {
+        let mut copies = Vec::with_capacity(handles.len());
         for &handle in handles {
             if handle.is_null() || handle == (-1_isize as HANDLE) {
                 return Err(WindowsLpacError::contract(
@@ -647,43 +653,60 @@ impl HandleInheritance {
                     "null or invalid handle in allowlist",
                 ));
             }
-            let mut flags = 0_u32;
-            // SAFETY: caller supplied a live borrowed handle; flags is writable.
-            if unsafe { GetHandleInformation(handle, &raw mut flags) } == 0 {
-                return Err(WindowsLpacError::last_os("inherited-handle validation"));
-            }
-            original.push((handle, flags));
-            // SAFETY: live handle; only the inherit bit is changed.
+            let mut duplicate = std::ptr::null_mut();
+            // SAFETY: the source handle and current-process pseudo-handles are
+            // live. `duplicate` receives one owning, inheritable copy with the
+            // same access. No caller-owned handle flag is changed.
             if unsafe {
-                windows_sys::Win32::Foundation::SetHandleInformation(
+                DuplicateHandle(
+                    GetCurrentProcess(),
                     handle,
-                    HANDLE_FLAG_INHERIT,
-                    HANDLE_FLAG_INHERIT,
+                    GetCurrentProcess(),
+                    &raw mut duplicate,
+                    0,
+                    1,
+                    DUPLICATE_SAME_ACCESS,
                 )
             } == 0
             {
-                let guard = Self { original };
-                drop(guard);
-                return Err(WindowsLpacError::last_os("inherited-handle preparation"));
+                return Err(WindowsLpacError::last_os(
+                    "inherited-handle private duplication",
+                ));
             }
+            if duplicate.is_null() {
+                return Err(WindowsLpacError::contract(
+                    "inherited-handle private duplication",
+                    "success returned a null duplicate",
+                ));
+            }
+            // SAFETY: duplicate is one fresh non-null owning handle.
+            copies.push(unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) });
         }
-        Ok(Self { original })
+        Ok(Self {
+            originals: handles.to_vec(),
+            copies,
+        })
     }
-}
 
-impl Drop for HandleInheritance {
-    fn drop(&mut self) {
-        for &(handle, flags) in self.original.iter().rev() {
-            // SAFETY: the caller's borrowed handle outlives this guard; restore
-            // only the inherit bit to its original value.
-            let _ = unsafe {
-                windows_sys::Win32::Foundation::SetHandleInformation(
-                    handle,
-                    HANDLE_FLAG_INHERIT,
-                    flags & HANDLE_FLAG_INHERIT,
+    fn raw_handles(&self) -> Vec<HANDLE> {
+        self.copies
+            .iter()
+            .map(|handle| handle.as_raw_handle().cast())
+            .collect()
+    }
+
+    fn copy_of(&self, original: HANDLE) -> Result<HANDLE, WindowsLpacError> {
+        let index = self
+            .originals
+            .iter()
+            .position(|candidate| *candidate == original)
+            .ok_or_else(|| {
+                WindowsLpacError::contract(
+                    "standard-handle private duplication",
+                    "standard handle missing from admitted list",
                 )
-            };
-        }
+            })?;
+        Ok(self.copies[index].as_raw_handle().cast())
     }
 }
 
@@ -867,4 +890,39 @@ fn wide_nul(value: &OsStr, phase: &'static str) -> Result<Vec<u16>, WindowsLpacE
     }
     encoded.push(0);
     Ok(encoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::os::windows::io::AsRawHandle as _;
+
+    use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+
+    use super::InheritedHandleCopies;
+
+    #[test]
+    fn admitted_handle_uses_private_inheritable_copy_without_mutating_caller() {
+        let original = File::open("NUL").expect("open test handle");
+        let original_raw = original.as_raw_handle().cast();
+        assert!(!is_inheritable(original_raw));
+
+        let copies = InheritedHandleCopies::duplicate(&[original_raw])
+            .expect("duplicate admitted handle privately");
+        assert!(!is_inheritable(original_raw));
+        assert!(is_inheritable(copies.raw_handles()[0]));
+        assert_eq!(copies.copies.len(), 1);
+    }
+
+    fn is_inheritable(handle: HANDLE) -> bool {
+        let mut flags = 0_u32;
+        // SAFETY: the test supplies a live borrowed handle and writable flags.
+        assert_ne!(
+            unsafe { GetHandleInformation(handle, &raw mut flags) },
+            0,
+            "query handle flags: {}",
+            std::io::Error::last_os_error()
+        );
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
 }
