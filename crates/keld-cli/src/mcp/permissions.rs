@@ -210,6 +210,24 @@ fn manifest_error(err: &ManifestError) -> KeldErrorObject {
             )
             .with_cause(err.to_string())
         }
+        ManifestError::InvalidUtf8 { path, detail } => KeldErrorObject::new(
+            MANIFEST_PARSE_CODE,
+            format!("permissions manifest at `{}` is not UTF-8", path.display()),
+            format!(
+                "write `{}` as UTF-8 JSONC and retry — {detail}",
+                path.display()
+            ),
+        )
+        .with_cause(err.to_string()),
+        ManifestError::IntegrityMismatch { path, .. } => KeldErrorObject::new(
+            MANIFEST_UNREADABLE_CODE,
+            format!(
+                "permissions manifest at `{}` failed integrity verification",
+                path.display()
+            ),
+            "rebuild or re-sign the boot artifact through the guarded host startup path",
+        )
+        .with_cause(err.to_string()),
     }
 }
 
