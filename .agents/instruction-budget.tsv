@@ -4,6 +4,7 @@ CLAUDE.md	always	64	claude-root-alias	claude-session
 crates/keld-compat/AGENTS.md	always	1536	compat-invariants	path:crates/keld-compat
 crates/keld-guard/AGENTS.md	always	2560	guard-invariants	path:crates/keld-guard
 crates/keld-ipc/AGENTS.md	always	2560	ipc-invariants	path:crates/keld-ipc
+crates/keld-runtime/AGENTS.md	always	1536	runtime-invariants	path:crates/keld-runtime
 crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv
 .agents/index.md	routed	4096	task-router	root:instruction-loading
 .agents/ci.md	routed	4096	ci-keldbot-policy	route:ci
