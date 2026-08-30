@@ -15,6 +15,7 @@ const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
 const WORKFLOW: &str = ".github/workflows/ci.yml";
 const KELDBOT_WORKFLOW: &str = ".github/workflows/keldbot.yml";
 const CI_REQUIRED_EVALUATOR: &str = "tools/ci_required.sh";
+const ATOMIC_PROTOCOL_CHECKER: &str = "tools/atomic_protocol.rs";
 const GITIGNORE: &str = ".gitignore";
 const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
@@ -65,6 +66,14 @@ const WORKFLOW_RUN_NEEDLES: &[&str] = &[
     "--test tools/mermaid_docs.rs",
     "mermaid-docs check .",
     "tools/mermaid_render_check.sh",
+];
+
+const ATOMIC_PROTOCOL_COMMANDS: &[&str] = &[
+    "mkdir -p target/atomic-protocol",
+    "rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test",
+    "target/atomic-protocol/atomic-protocol-test",
+    "rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol",
+    "target/atomic-protocol/atomic-protocol check .",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -128,6 +137,41 @@ fn yaml_content(line: &str) -> Option<(usize, &str)> {
         .map_or(trimmed, |(before, _)| before)
         .trim_end();
     Some((indent, content))
+}
+
+fn yaml_mapping_key(content: &str) -> Option<(String, &str)> {
+    let content = content.strip_prefix("- ").unwrap_or(content);
+    let (key, value) = content.split_once(':')?;
+    Some((
+        key.trim().trim_matches(['\'', '"']).to_owned(),
+        value.trim(),
+    ))
+}
+
+fn forbidden_workflow_control_key(text: &str) -> Option<String> {
+    let mut run_block_indent = None;
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if let Some(run_indent) = run_block_indent {
+            if indent > run_indent {
+                continue;
+            }
+            run_block_indent = None;
+        }
+        let Some((key, value)) = yaml_mapping_key(content) else {
+            continue;
+        };
+        if key == "run" && (value.starts_with('|') || value.starts_with('>')) {
+            run_block_indent = Some(indent);
+            continue;
+        }
+        if key == "continue-on-error" || key == "defaults" {
+            return Some(key);
+        }
+    }
+    None
 }
 
 fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
@@ -307,6 +351,31 @@ fn workflow_job_block<'a>(text: &'a str, job_name: &str) -> Option<String> {
             continue;
         }
         if matches!(parsed, Some((indent, _)) if indent <= 2) {
+            break;
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+
+    found.then_some(block)
+}
+
+fn workflow_direct_named_step_block(text: &str, step_name: &str) -> Option<String> {
+    let expected_name = format!("- name: {step_name}");
+    let mut found = false;
+    let mut block = String::new();
+
+    for line in text.lines() {
+        let parsed = yaml_content(line);
+        if !found {
+            if matches!(parsed, Some((6, ref content)) if content == &expected_name) {
+                found = true;
+                block.push_str(line);
+                block.push('\n');
+            }
+            continue;
+        }
+        if matches!(parsed, Some((indent, _)) if indent <= 6) {
             break;
         }
         block.push_str(line);
@@ -673,8 +742,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `required` must not set `continue-on-error`; the merge decision must preserve a failing exit status."
         ));
     }
-    let evaluator_keys = workflow_named_step_direct_keys(&block, "Verify required CI results")
-        .unwrap_or_default();
+    let evaluator_keys =
+        workflow_named_step_direct_keys(&block, "Verify required CI results").unwrap_or_default();
     if evaluator_keys != ["env", "run"] {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `required` evaluator step may contain only direct `env` and `run` keys; got `{}`. Conditions, custom shells, and continue-on-error can erase its failing status.",
@@ -693,9 +762,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "hygiene",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
-        format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence."
-        )
+        format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
     })?;
     if actual_needs != expected_needs {
         return Err(format!(
@@ -709,10 +776,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_RESULT_FMT", "${{ needs.fmt.result }}"),
         ("KELD_RESULT_CHECK", "${{ needs.check.result }}"),
         ("KELD_RESULT_BUN", "${{ needs['bun-test'].result }}"),
-        (
-            "KELD_RESULT_GUI",
-            "${{ needs['linux-gui-smoke'].result }}",
-        ),
+        ("KELD_RESULT_GUI", "${{ needs['linux-gui-smoke'].result }}"),
         ("KELD_RESULT_MSRV", "${{ needs.msrv.result }}"),
         ("KELD_RESULT_DENY", "${{ needs.deny.result }}"),
         ("KELD_RESULT_SECRETS", "${{ needs.secrets.result }}"),
@@ -722,10 +786,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_GUI", "${{ needs.changes.outputs.gui }}"),
         ("KELD_ROUTE_MSRV", "${{ needs.changes.outputs.msrv }}"),
         ("KELD_ROUTE_DENY", "${{ needs.changes.outputs.deny }}"),
-        (
-            "KELD_ROUTE_HYGIENE",
-            "${{ needs.changes.outputs.hygiene }}",
-        ),
+        ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
     ] {
         if workflow_named_step_env_value(&block, "Verify required CI results", key).as_deref()
@@ -749,11 +810,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "tools/ci_required.sh test".to_owned(),
         expected_check_command.to_owned(),
     ];
-    let actual_commands = workflow_named_step_shell_commands(
-        &block,
-        "Verify required CI results",
-    )
-    .unwrap_or_default();
+    let actual_commands = workflow_named_step_shell_commands(&block, "Verify required CI results")
+        .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 16-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
@@ -762,6 +820,62 @@ fn check_required_job(text: &str) -> Result<(), String> {
     if !workflow_has_checkout_persist_credentials_false(&block) {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `required` checkout must set `persist-credentials: false`; the merge-decision job needs repository bytes, not push authority."
+        ));
+    }
+    Ok(())
+}
+
+fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
+    const STEP: &str = "Atomic problem-solving protocol contract";
+    let Some(hygiene) = workflow_job_block(text, "hygiene") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for the atomic protocol contract."
+        ));
+    };
+    let expected_if =
+        "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'";
+    if workflow_job_level_if(&hygiene).as_deref() != Some(expected_if) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must run for both hygiene and docs router outputs so the atomic protocol gate cannot disappear on a docs-only edit."
+        ));
+    }
+    if workflow_job_level_property(&hygiene, "continue-on-error").is_some() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must not set `continue-on-error`; `CI required` needs the atomic check's failing status."
+        ));
+    }
+    let expected_name = format!("- name: {STEP}");
+    let name_count = hygiene
+        .lines()
+        .filter_map(yaml_content)
+        .filter(|(indent, content)| *indent == 6 && *content == expected_name)
+        .count();
+    if name_count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{STEP}` step; found {name_count}."
+        ));
+    }
+    let atomic_step = workflow_direct_named_step_block(&hygiene, STEP).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{STEP}` must be a direct child of `hygiene.steps`.")
+    })?;
+    let expected_keys = ["run".to_owned()];
+    if workflow_named_step_direct_keys(&atomic_step, STEP).as_deref()
+        != Some(expected_keys.as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{STEP}` may contain only its `run` key. A condition, custom shell, or continue-on-error can erase enforcement."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&atomic_step, STEP).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{STEP}` has no executable multiline `run` block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(ATOMIC_PROTOCOL_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{STEP}` must compile and run the checker tests and real checkout exactly, without wrappers or exit suppression."
         ));
     }
     Ok(())
@@ -1171,6 +1285,12 @@ fn check_issue_templates(root: &Path) -> Result<(), String> {
 fn check_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, WORKFLOW)?;
     let _required_evaluator = read(root, CI_REQUIRED_EVALUATOR)?;
+    let _atomic_protocol_checker = read(root, ATOMIC_PROTOCOL_CHECKER)?;
+    if let Some(key) = forbidden_workflow_control_key(&text) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must not set `{key}` at workflow, job, or step scope. Required jobs use the default failure-preserving shell and must expose every failing exit status."
+        ));
+    }
     for needle in WORKFLOW_TEXT_NEEDLES {
         if !uncommented_line_contains(&text, needle) {
             return Err(format!(
@@ -1193,6 +1313,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
     check_required_job(&text)?;
+    check_atomic_protocol_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -1384,8 +1505,16 @@ mod tests {
             "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
             "      - run: gitleaks detect --source . --exit-code 1",
             "  hygiene:",
+            "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "      - name: Atomic problem-solving protocol contract",
+            "        run: |",
+            "          mkdir -p target/atomic-protocol",
+            "          rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test",
+            "          target/atomic-protocol/atomic-protocol-test",
+            "          rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol",
+            "          target/atomic-protocol/atomic-protocol check .",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
@@ -1499,6 +1628,7 @@ mod tests {
         temp.write(WORKFLOW, &valid_workflow());
         temp.write(KELDBOT_WORKFLOW, &valid_keldbot_workflow());
         temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
+        temp.write(ATOMIC_PROTOCOL_CHECKER, "fn main() {}\n");
         temp.write(MERMAID_CHECKER, "fn main() {}\n");
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
@@ -1534,6 +1664,121 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("non-always required result must fail");
         assert!(error.contains("always"), "{error}");
+    }
+
+    #[test]
+    fn atomic_protocol_step_is_mandatory_and_failure_preserving() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "      - name: Atomic problem-solving protocol contract\n",
+                "",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("missing atomic step must fail");
+        assert!(error.contains("Atomic problem-solving"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          target/atomic-protocol/atomic-protocol check .",
+                "          echo target/atomic-protocol/atomic-protocol check .",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("echoed atomic check must fail");
+        assert!(error.contains("without wrappers"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "      - name: Atomic problem-solving protocol contract\n        run:",
+                "      - name: Atomic problem-solving protocol contract\n        if: ${{ false }}\n        run:",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("skipped atomic step must fail");
+        assert!(error.contains("may contain only"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
+                "    if: needs.changes.outputs.hygiene == 'true'",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("docs-only atomic skip must fail");
+        assert!(error.contains("both hygiene and docs"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "  hygiene:\n    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
+                "  hygiene:\n    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'\n    continue-on-error: true",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("hygiene failure suppression must fail");
+        assert!(error.contains("continue-on-error"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "  hygiene:\n    if:",
+                "  hygiene:\n    \"continue-on-error\": true\n    if:",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("quoted failure suppression must fail");
+        assert!(error.contains("continue-on-error"), "{error}");
+
+        for (needle, replacement, label) in [
+            (
+                "  hygiene:\n    if:",
+                "  hygiene:\n    defaults:\n      run:\n        shell: bash {0} || true\n    if:",
+                "job inherited shell",
+            ),
+            (
+                "jobs:\n",
+                "defaults:\n  run:\n    shell: bash {0} || true\njobs:\n",
+                "workflow inherited shell",
+            ),
+        ] {
+            temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("defaults"), "{error}");
+        }
+
+        let real_step = concat!(
+            "      - name: Atomic problem-solving protocol contract\n",
+            "        run: |\n",
+            "          mkdir -p target/atomic-protocol\n",
+            "          rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test\n",
+            "          target/atomic-protocol/atomic-protocol-test\n",
+            "          rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol\n",
+            "          target/atomic-protocol/atomic-protocol check .\n",
+        );
+        let decoy_step = concat!(
+            "      - name: Disabled decoy\n",
+            "        if: ${{ false }}\n",
+            "        run: |\n",
+            "          - name: Atomic problem-solving protocol contract\n",
+            "            run: |\n",
+            "              mkdir -p target/atomic-protocol\n",
+            "              rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test\n",
+            "              target/atomic-protocol/atomic-protocol-test\n",
+            "              rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol\n",
+            "              target/atomic-protocol/atomic-protocol check .\n",
+        );
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(real_step, decoy_step, 1),
+        );
+        let error = check(temp.path()).expect_err("nested decoy step must fail");
+        assert!(error.contains("exactly one"), "{error}");
     }
 
     #[test]

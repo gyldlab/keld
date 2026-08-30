@@ -280,9 +280,8 @@ Local `ROADMAP.md` remains gitignored; the tracked map is
 [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md).
 A `bench/` harness is still absent (YAGNI until a live microbench).
 
-[`justfile`](../../justfile) mirrors the gates locally: `just ci` runs
-agents-md → llms → hygiene → fmt-check → clippy → test → doc → deny (gitleaks stays
-GitHub-only).
+[`justfile`](../../justfile) owns the exact local gate inventory and order; run `just ci`
+to execute the current list. Gitleaks stays GitHub-only.
 
 ## The roadmap in plain terms
 

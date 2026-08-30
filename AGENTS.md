@@ -25,6 +25,36 @@ The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in
 - Diagnose the root cause and keep execution scoped; park adjacent cleanup.
 - Ask one focused question only when a user-owned choice would materially change the result; otherwise take the smallest reversible path.
 
+## Atomic problem-solving protocol (MUST)
+
+Before selecting a design, answer or fix for any non-trivial design, diagnosis, review
+or implementation, agents MUST decompose the problem into atomic reasoning units. This
+is a decision input, not a retrospective explanation. Small obvious tasks MAY record it
+concisely, but no boundary or gate failure may skip it.
+
+1. **Decompose before deciding (MUST).** Split the problem into decision-bearing atoms
+   small enough that one observable can falsify each atom without relying on the final
+   conclusion.
+2. **State the logical component (MUST).** Each atom MUST name its owner, boundary and
+   inputs/outputs, failure mode, and observable contract.
+3. **Validate independence (MUST).** Changing or falsifying one atom MUST NOT silently
+   alter another. Hidden coupling MUST be promoted into its own atom or an explicit edge
+   between atoms.
+4. **Verify correctness (MUST).** Each atom MUST have direct evidence or a falsifiable
+   test or negative control. Prose, comments, mocks, or another atom's pass are not proof
+   of that atom.
+5. **Synthesize only after proof (MUST).** Agents MUST NOT synthesize an answer, design
+   or fix until every decision-bearing atom is passed, explicitly unknown, or named as a
+   blocker. If the synthesis contradicts a passed atom, agents MUST stop and correct the
+   model; they MUST NOT average away the contradiction.
+
+Performance decompositions MUST separate census, work, queue/copy, clock, statistic and
+artifact. Security decompositions MUST separate identity, authentication, authorization,
+OS containment, lifecycle/revocation and evidence provenance.
+
+Enforcement: `just atomic-protocol` validates the canonical stages and the narrower
+workflow, testing and routing references. It MUST pass after changing any of those files.
+
 ## Engineering principles — non-negotiable
 
 For every architecture, public-contract, process, IPC, permission, lifecycle or
@@ -34,9 +64,10 @@ language rewrite, and a passing happy path are not evidence that a design is cor
 secure or fast. For smaller changes, agents MUST state `No boundary change` when that
 distinction would otherwise be ambiguous.
 
-1. **Start from facts, not analogies.** Decompose the change into ownership, process,
-   memory, I/O, lifecycle, trust and failure facts. State who owns each handle, who can
-   mint each identity, what can crash independently, where copies/queues occur, and
+1. **Start from facts, not analogies.** Apply the Atomic problem-solving protocol above.
+   For Keld architecture and public-contract work, the atoms MUST cover ownership,
+   process, memory, I/O, lifecycle, trust and failure facts: who owns each handle, who
+   can mint each identity, what can crash independently, where copies/queues occur, and
    what observable contract proves the result. An unmeasured performance claim or an
    uncited platform assumption MUST NOT decide architecture.
 2. **Reuse before rewrite.** Agents MUST search for and evaluate the existing shared
@@ -97,6 +128,7 @@ cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo nextest run --workspace --profile ci    # verification gate — all three before "done"
 cargo nextest run -p <crate> [-- <filter>]         # single crate/test
 just llms-check                                    # generated docs are current
+just atomic-protocol                               # atomic problem-solving docs contract
 just mermaid-check                                 # Mermaid accessibility/type/palette contract
 just mermaid-render-check                          # digest-pinned isolated SVG render
 # Fallback: cargo test --workspace
@@ -321,16 +353,13 @@ Agents MUST follow `.agents/testing.md`. Tests MUST be falsifiable: a real contr
 No workarounds (MUST):
 Agents MUST fix causes, not symptoms — in code, tests, builds, docs, and tooling alike. When something resists, the reflex MUST be "why is this happening", never "how do I get past this". Agents MUST NOT make the signal fit the change.
 
-**Failure decomposition protocol (MUST):** before selecting any fix for a failed gate,
-CI dependency, platform behavior, build, test, security control, or runtime fault,
-agents MUST decompose the problem into atomic reasoning units. For each atom they MUST
-(1) state the logical component, (2) validate its independence from the other atoms,
-and (3) verify correctness with a falsifiable observation. Only then MAY they synthesize
-the atoms into a root-cause design and implementation. A timeout increase, retry,
-bypass, flag, skip, mock, hard-coded exception, test weakening, broader permission, or
-environment override is forbidden when it merely makes a symptom disappear; it is
-permitted only when the decomposed root cause proves that it is the owned correctness
-mechanism, its compatibility fallback is explicit, and a test falsifies its removal.
+For a failed gate, CI dependency, platform behavior, build, test, security control or
+runtime fault, agents MUST apply the Atomic problem-solving protocol above before
+selecting a fix. A timeout increase, retry, bypass, flag, skip, mock, hard-coded
+exception, test weakening, broader permission or environment override is forbidden when
+it merely makes a symptom disappear. It is permitted only when the verified root cause
+proves that it is the owned correctness mechanism, its compatibility fallback is
+explicit, and a test falsifies its removal.
 
 Forbidden in general:
 - Special-casing an input, hardcoding a value, or branching on a specific case to make one caller work, when the underlying rule is what is wrong.

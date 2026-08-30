@@ -359,6 +359,13 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
+      - name: Atomic problem-solving protocol contract
+        run: |
+          mkdir -p target/atomic-protocol
+          rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test
+          target/atomic-protocol/atomic-protocol-test
+          rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol
+          target/atomic-protocol/atomic-protocol check .
       - name: Contract tests
         if: needs.changes.outputs.hygiene == 'true'
         run: |
