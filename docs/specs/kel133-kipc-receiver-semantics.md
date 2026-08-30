@@ -82,7 +82,7 @@ It does not deviate from the architecture. The implementation PR updates archite
 8. Given an idle persistent session with no frame byte received, when short reader polls
    expire, then it remains live until shutdown or its separately declared session/call
    deadline. Idle polling is not a started-frame timeout and cannot busy-spin.
-9. Given `KELD-IPC-001`, `002`, `004`, `005`, `006`, or `007` during admission or a
+9. Given `KELD-IPC-001`, `002`, `003`, `004`, `005`, `006`, or `007` during admission or a
    session, when the receiver records the result, then the host-visible class/code,
    peer-visible close or `ERR`, session continuation/closure, and retry eligibility
    match §4. No failure is swallowed, relabeled as authentication, or retried after a
