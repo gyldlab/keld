@@ -84,7 +84,7 @@ pub struct ManifestPatch {
 pub const MANIFEST_MISSING_CODE: &str = "KELD-MCP010";
 /// Manifest exists but cannot be read.
 pub const MANIFEST_UNREADABLE_CODE: &str = "KELD-MCP013";
-/// Manifest is not valid JSONC.
+/// Manifest is ambiguous, malformed, or exceeds its size ceiling.
 pub const MANIFEST_PARSE_CODE: &str = "KELD-MCP011";
 /// Principal is not `app` (v0 evaluate is app-process grants only).
 pub const UNKNOWN_PRINCIPAL_CODE: &str = "KELD-MCP012";
@@ -190,10 +190,23 @@ fn manifest_error(err: &ManifestError) -> KeldErrorObject {
                 .map_or_else(|| "<memory>".to_owned(), |p| p.display().to_string());
             KeldErrorObject::new(
                 MANIFEST_PARSE_CODE,
-                format!("permissions manifest at `{tried}` is not valid JSONC"),
+                format!("permissions manifest at `{tried}` is ambiguous or not valid JSONC"),
                 format!(
-                    "fix JSON at `{tried}` (comments are allowed; trailing commas are not) — {detail}"
+                    "remove duplicate object keys or fix JSON at `{tried}` \
+                     (comments are allowed; trailing commas are not) — {detail}"
                 ),
+            )
+            .with_cause(err.to_string())
+        }
+        ManifestError::TooLarge { path, max_bytes } => {
+            let tried = path
+                .as_ref()
+                .map_or_else(|| "<memory>".to_owned(), |p| p.display().to_string());
+            let max_kib = max_bytes / 1024;
+            KeldErrorObject::new(
+                MANIFEST_PARSE_CODE,
+                format!("permissions manifest at `{tried}` exceeds {max_kib} KiB"),
+                format!("reduce `{tried}` to {max_kib} KiB or less and retry"),
             )
             .with_cause(err.to_string())
         }
@@ -472,5 +485,24 @@ mod tests {
             permissions_explain(&args(dir.path(), "fs.read", "$APPDATA/x")).expect_err("parse");
         assert_eq!(err.code, MANIFEST_PARSE_CODE);
         assert!(err.fix.contains("keld.permissions.jsonc"), "{}", err.fix);
+    }
+
+    #[test]
+    fn oversized_manifest_is_mcp011_with_guard017_cause() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keld.permissions.jsonc");
+        fs::write(&path, vec![b' '; 64 * 1024 + 1]).expect("write oversized manifest");
+        let err =
+            permissions_explain(&args(dir.path(), "fs.read", "$APPDATA/x")).expect_err("size");
+        assert_eq!(err.code, MANIFEST_PARSE_CODE);
+        assert!(err.message.contains("64 KiB"), "{}", err.message);
+        assert!(err.fix.contains("64 KiB or less"), "{}", err.fix);
+        assert!(
+            err.cause
+                .as_deref()
+                .is_some_and(|cause| cause.contains("KELD-GUARD017")),
+            "{:?}",
+            err.cause
+        );
     }
 }

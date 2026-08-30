@@ -250,8 +250,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-MCP011
 
 - crate: keld-cli
-- message: Permissions manifest is not valid JSONC
-- fix: Fix the JSON (comments are allowed; trailing commas are not).
+- message: Permissions manifest is ambiguous, malformed, or exceeds 64 KiB
+- fix: Remove duplicate keys, fix the JSONC, or reduce the file to 64 KiB or less.
 
 ## KELD-MCP012
 
@@ -304,8 +304,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-GUARD005
 
 - crate: keld-guard
-- message: Permissions manifest is not valid JSONC
-- fix: Fix the JSON (comments are allowed; trailing commas are not).
+- message: Permissions manifest is ambiguous or not valid JSONC
+- fix: Fix the JSON or remove duplicate object keys (comments are allowed; trailing commas are not).
 
 ## KELD-GUARD006
 
@@ -366,6 +366,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-guard
 - message: Strict archive row used the wrong layer or oracle (Display names recorded oracle, not only layer)
 - fix: Do not start a child and do not restart unsandboxed; keep requested=Strict or declare explicit Keld legacy.
+
+## KELD-GUARD017
+
+- crate: keld-guard
+- message: Permissions manifest exceeds the 64 KiB input limit
+- fix: Reduce keld.permissions.jsonc to 64 KiB or less and retry.
 
 ## KELD-DOCS001
 

@@ -59,6 +59,13 @@ cannot grant any authority.
 
 One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
 
+**v0 parser boundary:** `parse_manifest`, disk `load_manifest`, and MCP permission
+explain accept at most 64 KiB. JSONC block comments must terminate, and decoded object
+keys must be unique recursively (including escaped-equivalent spellings); ambiguity is
+`KELD-GUARD005`, while oversize input is `KELD-GUARD017`. KEL-102's verified
+retained-handle loader must reuse this parser and byte ceiling rather than add a second
+manifest decoder.
+
 ```jsonc
 {
   "$schema": "https://keld.dev/schemas/permissions-1.json",
