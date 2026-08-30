@@ -466,7 +466,11 @@ fn create_windows_stage_root(path: &Path) -> io::Result<()> {
     if unsafe { CreateDirectoryW(path_wide.as_ptr(), &raw const attributes) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    verify_windows_stage_acl_for(path, &current).map_err(io::Error::other)
+    if let Err(error) = verify_windows_stage_acl_for(path, &current) {
+        let _ = fs::remove_dir(path);
+        return Err(io::Error::other(error));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

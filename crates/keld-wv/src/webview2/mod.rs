@@ -340,7 +340,7 @@ fn install_app_navigation_handler(
             if !ready.swap(true, Ordering::AcqRel) {
                 let _ = events.send(AppWindowEvent::NavigationReady);
             }
-        } else {
+        } else if initial_navigation_failure_is_fatal(ready.load(Ordering::Acquire)) {
             failed.store(true, Ordering::Release);
         }
         Ok(())
@@ -656,6 +656,10 @@ const fn app_window_slot_available(created: bool, pending: bool, has_views: bool
     !created && !pending && !has_views
 }
 
+const fn initial_navigation_failure_is_fatal(initial_ready: bool) -> bool {
+    !initial_ready
+}
+
 fn finish_app_run(
     navigation_failed: bool,
     navigation_timed_out: bool,
@@ -911,7 +915,10 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebView2Engine, app_window_slot_available, runtime_version};
+    use super::{
+        WebView2Engine, app_window_slot_available, initial_navigation_failure_is_fatal,
+        runtime_version,
+    };
     use crate::error::WvError;
 
     /// The CI runners and this developer machine both ship the Evergreen
@@ -961,6 +968,12 @@ mod tests {
         assert!(!app_window_slot_available(false, true, false));
         assert!(!app_window_slot_available(false, false, true));
         assert!(app_window_slot_available(false, false, false));
+    }
+
+    #[test]
+    fn only_initial_navigation_failure_is_startup_fatal() {
+        assert!(initial_navigation_failure_is_fatal(false));
+        assert!(!initial_navigation_failure_is_fatal(true));
     }
 
     /// KEL-63: the profile must be per-user, not beside the executable.

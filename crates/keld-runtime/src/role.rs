@@ -245,6 +245,9 @@ pub enum RoleRevocationCause {
     ChildExited,
     /// The host requested shutdown.
     Shutdown,
+    /// The authenticated app link failed while the child remained live.
+    #[cfg(windows)]
+    LinkFailed,
     /// The supervisor could not safely start stdout/stderr capture.
     CaptureFailed,
     /// The generation failed before a live authenticated link was available.
@@ -260,6 +263,8 @@ impl From<RevocationCause> for RoleRevocationCause {
         match cause {
             RevocationCause::ChildExited => Self::ChildExited,
             RevocationCause::Shutdown => Self::Shutdown,
+            #[cfg(windows)]
+            RevocationCause::LinkFailed => Self::LinkFailed,
             RevocationCause::CaptureFailed => Self::CaptureFailed,
             RevocationCause::AdmissionFailed => Self::AdmissionFailed,
             RevocationCause::SpawnFailed => Self::SpawnFailed,
@@ -553,6 +558,13 @@ impl RoleSupervisor {
     /// Stops the child, if still live.
     pub fn shutdown(&self) {
         self.supervisor.shutdown();
+    }
+
+    /// Revokes, kills/reaps, and restart-policies the named Windows generation
+    /// after its authenticated app link fails while the process is still live.
+    #[cfg(windows)]
+    pub fn restart_generation(&self, attempt: u32) {
+        self.supervisor.restart_generation(attempt);
     }
 
     /// Waits for the generic supervisor's terminal outcome.

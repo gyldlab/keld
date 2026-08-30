@@ -137,11 +137,12 @@ sha2 = "0.10"
 # --- Dependency review (KEL-96/T4 / AGENTS.md gate) ---
 # Name: windows-permissions 0.2.4 (danieldulaney/windows-permissions-rs)
 # Purpose: safe target-only TokenUser SID plus protected DACL creation/readback
-#   for the Windows owner-private no-flag dev stage. Keld code remains free of
-#   local Win32 FFI/unsafe; the stage is cold tooling and validated again by
-#   the host before any app resource.
-# Alternatives rejected: (a) std exposes attributes, not DACLs; (b) direct
-#   windows-rs requires local unsafe outside keld-wv; (c) windows-acl exposes
+#   for the Windows owner-private no-flag dev stage. windows-sys supplies one
+#   atomic CreateDirectoryW call with a reviewed pointer-lifetime proof; the
+#   stage is cold tooling and independently validated before app resources.
+# Alternatives rejected: (a) std exposes attributes, not DACLs or atomic
+#   security attributes; (b) broader windows-rs calls add surface without
+#   removing the one required FFI proof; (c) windows-acl exposes
 #   raw PSID caller contracts; (d) icacls/PowerShell in production adds a
 #   localized subprocess and multi-step path mutation; (e) a new platform
 #   crate or keld-wv helper creates the wrong policy owner. Version 0.2.4 is

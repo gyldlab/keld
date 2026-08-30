@@ -159,6 +159,15 @@ fn windows_no_flag_host_owns_window_two_calls_ordered_quit_and_relaunch() {
 
 #[test]
 fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
+    run_same_window_recovery("CRASH");
+}
+
+#[test]
+fn windows_link_only_failure_uses_the_supervisor_owned_restart_path() {
+    run_same_window_recovery("CLOSE_LINK");
+}
+
+fn run_same_window_recovery(failure_command: &str) {
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
     let control_port = control_listener
@@ -172,7 +181,7 @@ fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>recovery</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>{failure_command}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("write recovery renderer");
@@ -196,8 +205,8 @@ fn windows_no_flag_host_recovers_bun_in_the_same_native_window() {
         .recv_timeout(PRODUCT_DEADLINE)
         .expect("initial renderer beacon");
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    g1_writer.write_all(b"CRASH\n").expect("crash g1");
-    g1_writer.flush().expect("flush g1 crash");
+    writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
+    g1_writer.flush().expect("flush g1 failure command");
     let mut closed = String::new();
     let _ = g1_reader.read_line(&mut closed);
 

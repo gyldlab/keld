@@ -1880,12 +1880,17 @@ impl WindowsPrimaryOwner {
                             let _ = recovery.deny();
                         }
                         Ok(WindowsPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
-                            // A crashing child closes its app link before the
-                            // Supervisor publishes Revoked. The Supervisor is
-                            // the sole process/restart owner, so this wake only
-                            // yields to that authoritative observation; it must
-                            // not race a second kill/restart loop in core.
-                            let _ = attempt;
+                            // The Supervisor is the sole process/restart owner.
+                            // Reject a reader's stale request after a natural
+                            // exit installed a successor; the worker also
+                            // matches the attempt before classifying a live
+                            // child as host-requested restart.
+                            if router
+                                .as_ref()
+                                .is_some_and(|router| router.is_current(attempt))
+                            {
+                                supervisor.restart_generation(attempt);
+                            }
                             let _ = reply.send(Ok(()));
                         }
                         Ok(WindowsPrimaryOwnerCommand::PrepareAcceptedShutdown(reply)) => {

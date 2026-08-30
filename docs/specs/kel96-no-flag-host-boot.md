@@ -700,15 +700,23 @@ Future implementation gates:
   mutation, tokens, child handles or control records. T1a's parser/descriptor
   remain private; later KEL-102 API evolution requires another gate. The
   artifact API gate above also applies.
-- Dependency addition: adding workspace-pinned `sha2` to a shipping crate still
-  requires human review.
+  T4 additionally exposes `PrimaryRecoveryGate`, the supervisor-owned
+  link-failure restart request and platform-neutral app-window command/events;
+  those exact surfaces require the same human public-API review.
+- Dependency addition: T4 adds target-only `windows-permissions` 0.2.4 plus
+  direct already-locked `winapi`/`windows-sys` constants and atomic directory
+  creation bindings. Their maintenance age, safe-wrapper boundary, features
+  and alternatives require human review.
 - Permission model: KEL-102 additionally owns manifest loading/evaluation and
   its separate human gate.
 - Wire protocol: existing HELLO/lifecycle/echo bytes remain unchanged; any kipc
   change is another wire review beyond the boot-manifest gate above. T3's
   fixed bounded `KGC1` guardian record is a reviewed private wire extension on
   the already authenticated registration stream; it is not a kipc channel.
-- Unsafe: none expected in KEL-96; Windows named-pipe FFI remains KEL-101.
+- Unsafe: **T4 Windows applies** to one `CreateDirectoryW` call that supplies
+  the already-built self-relative security descriptor atomically at stage-root
+  creation. The block is Windows-only and carries a pointer-lifetime proof;
+  human unsafe/security review is mandatory. Named-pipe FFI remains KEL-101.
 
 ## 9. Performance impact
 

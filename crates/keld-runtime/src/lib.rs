@@ -15,7 +15,7 @@
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -382,6 +382,9 @@ pub(crate) enum RevocationCause {
     ChildExited,
     /// The host requested shutdown before killing/reaping the child.
     Shutdown,
+    /// The authenticated app link failed while the child remained live.
+    #[cfg(windows)]
+    LinkFailed,
     /// The child could not be safely observed through stdout/stderr capture.
     CaptureFailed,
     /// The prepared generation failed before a live authenticated link.
@@ -496,6 +499,7 @@ pub struct Supervisor {
     #[cfg(target_os = "macos")]
     accepted_shutdown: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    restart_attempt: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -547,6 +551,7 @@ impl Supervisor {
         #[cfg(target_os = "macos")]
         let accepted_shutdown = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let restart_attempt = Arc::new(AtomicU32::new(0));
 
         let thread = {
             let output = Arc::clone(&output);
@@ -557,6 +562,7 @@ impl Supervisor {
             #[cfg(target_os = "macos")]
             let accepted_shutdown = Arc::clone(&accepted_shutdown);
             let shutdown = Arc::clone(&shutdown);
+            let restart_attempt = Arc::clone(&restart_attempt);
             thread::Builder::new()
                 .name("keld-runtime-supervisor".to_owned())
                 .spawn(move || {
@@ -591,6 +597,7 @@ impl Supervisor {
                         #[cfg(target_os = "macos")]
                         &accepted_shutdown,
                         &shutdown,
+                        &restart_attempt,
                     );
                 })
                 .map_err(RuntimeError::Spawn)?
@@ -627,6 +634,7 @@ impl Supervisor {
             #[cfg(target_os = "macos")]
             accepted_shutdown,
             shutdown,
+            restart_attempt,
             thread: Some(thread),
         })
     }
@@ -760,6 +768,16 @@ impl Supervisor {
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
     }
+
+    /// Requests host-owned revoke/kill/reap/restart of the named child attempt.
+    ///
+    /// This does not create another restart loop; the supervisor worker
+    /// consumes a matching signal at its existing wait boundary and applies
+    /// the same crash-loop policy before successor preparation. A stale
+    /// request cannot restart a later attempt.
+    pub(crate) fn restart_generation(&self, attempt: u32) {
+        self.restart_attempt.store(attempt, Ordering::Release);
+    }
 }
 
 impl Drop for Supervisor {
@@ -801,6 +819,7 @@ fn supervise<P>(
     terminal_error: &Arc<Mutex<Option<RuntimeError>>>,
     #[cfg(target_os = "macos")] accepted_shutdown: &Arc<AtomicBool>,
     shutdown: &Arc<AtomicBool>,
+    restart_attempt: &Arc<AtomicU32>,
 ) where
     P: ChildPreparer,
 {
@@ -842,26 +861,27 @@ fn supervise<P>(
                 return;
             }
         };
-        let wait = match wait_or_shutdown(&mut child, &mut lease, shutdown) {
-            Ok(wait) => wait,
-            Err(error) => {
-                let terminal = RuntimeError::Lifecycle {
-                    phase: "child wait",
-                    source: error,
-                };
-                let terminal = match lease.revoke(RevocationCause::WaitFailed) {
-                    Ok(()) => terminal,
-                    Err(revocation_error) => revocation_error,
-                };
-                let _ = child.kill();
-                let _ = child.wait();
-                join_capture_threads(capture_threads);
-                *lock_or_recover(current_pid) = None;
-                *lock_or_recover(terminal_error) = Some(terminal);
-                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                return;
-            }
-        };
+        let wait =
+            match wait_or_shutdown(&mut child, &mut lease, shutdown, restart_attempt, attempt) {
+                Ok(wait) => wait,
+                Err(error) => {
+                    let terminal = RuntimeError::Lifecycle {
+                        phase: "child wait",
+                        source: error,
+                    };
+                    let terminal = match lease.revoke(RevocationCause::WaitFailed) {
+                        Ok(()) => terminal,
+                        Err(revocation_error) => revocation_error,
+                    };
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    join_capture_threads(capture_threads);
+                    *lock_or_recover(current_pid) = None;
+                    *lock_or_recover(terminal_error) = Some(terminal);
+                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                    return;
+                }
+            };
         if let WaitResult::LeaseFailed(error) = wait {
             let terminal = match lease.revoke(RevocationCause::AdmissionFailed) {
                 Ok(()) => error,
@@ -930,43 +950,65 @@ fn supervise<P>(
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
         }
-        join_capture_threads(capture_threads);
-        *lock_or_recover(current_pid) = None;
-
         let code = match wait {
-            WaitResult::Exited(status) => status.code(),
+            WaitResult::RestartRequested => {
+                #[cfg(windows)]
+                let restart_cause = RevocationCause::LinkFailed;
+                #[cfg(not(windows))]
+                let restart_cause = RevocationCause::AdmissionFailed;
+                if let Err(error) = lease.revoke(restart_cause) {
+                    *lock_or_recover(terminal_error) = Some(error);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    join_capture_threads(capture_threads);
+                    *lock_or_recover(current_pid) = None;
+                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                    return;
+                }
+                let _ = child.kill();
+                if let Err(source) = child.wait() {
+                    *lock_or_recover(terminal_error) = Some(RuntimeError::Lifecycle {
+                        phase: "child restart wait",
+                        source,
+                    });
+                    join_capture_threads(capture_threads);
+                    *lock_or_recover(current_pid) = None;
+                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                    return;
+                }
+                join_capture_threads(capture_threads);
+                *lock_or_recover(current_pid) = None;
+                None
+            }
+            WaitResult::Exited(status) => {
+                join_capture_threads(capture_threads);
+                *lock_or_recover(current_pid) = None;
+                let code = status.code();
+                restart_attempt.store(0, Ordering::Release);
+                let _ = events_tx.send(SupervisorEvent::Exited { pid, code });
+                // The OS exit is already an observed fact. Publish it before
+                // revocation so a lifecycle failure cannot erase the durable
+                // ledger record (KEL-116).
+                #[cfg(target_os = "macos")]
+                let accepted = shutdown_was_accepted(accepted_shutdown);
+                #[cfg(not(target_os = "macos"))]
+                let accepted = shutdown_was_accepted();
+                if !accepted {
+                    record_self_termination(crash_ledger, output, pid, code);
+                }
+                if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
+                    *lock_or_recover(terminal_error) = Some(error);
+                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                    return;
+                }
+                if accepted || code == Some(0) {
+                    let _ = events_tx.send(SupervisorEvent::Stopped);
+                    return;
+                }
+                code
+            }
             WaitResult::ShutdownRequested | WaitResult::LeaseFailed(_) => return,
         };
-        let _ = events_tx.send(SupervisorEvent::Exited { pid, code });
-
-        // The OS exit is already an observed fact. Publish it before
-        // revocation so a lifecycle failure cannot erase the durable ledger
-        // record (KEL-116); the terminal lifecycle error still wins the
-        // supervisor outcome below.
-        #[cfg(target_os = "macos")]
-        let accepted = shutdown_was_accepted(accepted_shutdown);
-        #[cfg(not(target_os = "macos"))]
-        let accepted = shutdown_was_accepted();
-        if !accepted {
-            record_self_termination(crash_ledger, output, pid, code);
-        }
-
-        if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
-            *lock_or_recover(terminal_error) = Some(error);
-            let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-            return;
-        }
-
-        if accepted {
-            let _ = events_tx.send(SupervisorEvent::Stopped);
-            return;
-        }
-
-        let crashed = code != Some(0);
-        if !crashed {
-            let _ = events_tx.send(SupervisorEvent::Stopped);
-            return;
-        }
 
         let now = Instant::now();
         let window = Duration::from_secs(u64::from(policy.window_secs));
@@ -1117,6 +1159,7 @@ fn join_capture_threads(threads: CaptureThreads) {
 enum WaitResult {
     Exited(std::process::ExitStatus),
     ShutdownRequested,
+    RestartRequested,
     LeaseFailed(RuntimeError),
 }
 
@@ -1124,6 +1167,8 @@ fn wait_or_shutdown<L>(
     child: &mut Child,
     lease: &mut L,
     shutdown: &Arc<AtomicBool>,
+    restart_attempt: &Arc<AtomicU32>,
+    attempt: u32,
 ) -> Result<WaitResult, std::io::Error>
 where
     L: GenerationLease,
@@ -1147,6 +1192,12 @@ where
                         _ => Ok(WaitResult::ShutdownRequested),
                     };
                 }
+                if take_restart_for_attempt(restart_attempt, attempt) {
+                    return match child.try_wait() {
+                        Ok(Some(status)) => Ok(WaitResult::Exited(status)),
+                        _ => Ok(WaitResult::RestartRequested),
+                    };
+                }
                 if let Err(error) = lease.poll() {
                     return Ok(WaitResult::LeaseFailed(error));
                 }
@@ -1156,6 +1207,10 @@ where
             Err(error) => return Err(error),
         }
     }
+}
+
+fn take_restart_for_attempt(restart_attempt: &AtomicU32, attempt: u32) -> bool {
+    restart_attempt.swap(0, Ordering::AcqRel) == attempt
 }
 
 /// How long the supervisor lets a child it is about to stop finish dying on its
@@ -1274,7 +1329,6 @@ fn wait_backoff_or_shutdown(delay: Duration, shutdown: &AtomicBool) -> bool {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::AtomicU32;
 
     #[derive(Clone)]
     struct RecordingLease {
@@ -1287,6 +1341,8 @@ mod tests {
             let cause = match cause {
                 RevocationCause::ChildExited => "exited",
                 RevocationCause::Shutdown => "shutdown",
+                #[cfg(windows)]
+                RevocationCause::LinkFailed => "link-failed",
                 RevocationCause::CaptureFailed => "capture-failed",
                 RevocationCause::AdmissionFailed => "admission-failed",
                 RevocationCause::SpawnFailed => "spawn-failed",
@@ -1455,6 +1511,17 @@ mod tests {
             cmd.args(["/C", script]);
             cmd
         }
+    }
+
+    #[test]
+    fn stale_restart_request_cannot_restart_a_successor_generation() {
+        let requested = AtomicU32::new(1);
+        assert!(!take_restart_for_attempt(&requested, 2));
+        assert_eq!(requested.load(Ordering::Acquire), 0);
+
+        requested.store(2, Ordering::Release);
+        assert!(take_restart_for_attempt(&requested, 2));
+        assert_eq!(requested.load(Ordering::Acquire), 0);
     }
 
     #[test]
