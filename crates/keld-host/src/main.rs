@@ -13,16 +13,33 @@ use std::fs;
 #[cfg(target_os = "macos")]
 use std::fs::File;
 #[cfg(target_os = "macos")]
-use std::io::{self, Write};
+use std::io;
+#[cfg(any(target_os = "macos", windows))]
+use std::io::Write as _;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::path::PathBuf;
 use std::process;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 
+#[cfg(windows)]
+const WINDOWS_DEV_STAGE_CLEANUP_ARG: &str = "--keld-windows-dev-stage-cleanup-v1";
+
 fn main() {
+    #[cfg(windows)]
+    let windows_args: Vec<std::ffi::OsString> = env::args_os().collect();
+    #[cfg(windows)]
+    if windows_args.get(1).map(std::ffi::OsString::as_os_str)
+        == Some(std::ffi::OsStr::new(WINDOWS_DEV_STAGE_CLEANUP_ARG))
+    {
+        if let Err(error) = run_windows_dev_stage_cleanup(&windows_args) {
+            eprintln!("{error}");
+            process::exit(1);
+        }
+        return;
+    }
     let args: Vec<String> = env::args().collect();
     #[cfg(target_os = "macos")]
     if args.get(1).map(String::as_str)
@@ -83,6 +100,30 @@ fn main() {
     if failed {
         process::exit(1);
     }
+}
+
+#[cfg(windows)]
+fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), String> {
+    if args.len() != 4 {
+        return Err(String::from(
+            "KELD-CORE-037: private Windows dev-stage cleanup invocation is malformed. Launch it only through `keld dev`.",
+        ));
+    }
+    let root = PathBuf::from(&args[2]);
+    let host_pid = args[3].to_string_lossy().parse::<u32>().map_err(|source| {
+        format!(
+            "KELD-CORE-037: private Windows dev-stage cleanup PID is invalid: {source}. Relaunch through `keld dev`."
+        )
+    })?;
+    let cleanup = keld_core::app_session::WindowsDevStageCleanup::prepare(&root, host_pid)
+        .map_err(|error| error.to_string())?;
+    println!("KELD_WINDOWS_DEV_STAGE_CLEANUP_READY");
+    std::io::stdout().flush().map_err(|source| {
+        format!(
+            "KELD-CORE-037: private Windows dev-stage cleanup readiness failed: {source}. Relaunch through `keld dev`."
+        )
+    })?;
+    cleanup.wait_and_delete().map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "macos")]

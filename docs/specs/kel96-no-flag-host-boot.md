@@ -489,6 +489,28 @@ root, path, digest, principal, permission, or application-resource ownership.
 Tests inspect both process handle tables: the host never owns a writer copy and
 Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
 
+Windows dev-stage deletion uses the approved private
+`keld.windows-dev-stage-cleanup/v1` sentinel. The CLI launches the installed,
+non-staged `keld-host.exe` in that role after the staged host exists but before
+releasing its no-share-delete namespace guards. The sentinel opens the exact
+staged-host PID while the CLI still owns it, verifies from that live handle that
+the process image is `<validated-stage>/keld-host.exe`, retains the process
+handle, and reports no application readiness or authority. The CLI then releases
+the namespace guards. The sentinel waits for the exact host object, validates
+the nonce layout plus protected current-user-only stage DACL again, and deletes
+the nonce directory after host exit. It is a CLI child and host sibling, so it
+is never enrolled in or broken out of the host Job.
+
+The private role receives only the stage deletion target and staged-host PID;
+both are validation inputs, not authority to select an app. It cannot enter
+boot validation, open an app-link, own a window, supervise Bun, or mint a
+principal. Sentinel spawn failure drops the lease, waits/reaps the host,
+releases the guards, deletes the stage, and fails `keld dev`; continuing without
+a surviving cleanup owner is forbidden. Host self-delete, an inherited Job
+handle, Job breakaway, a shell/PowerShell janitor, and reboot/next-launch-only
+deletion are rejected. Direct-session approval and the atomic owner record are
+captured in KEL-96 comment `bf1228bd-1128-47fc-ba98-865d3abbf076`.
+
 Abnormal host-death descendant reaping remains the explicit KEL-75/KEL-78
 platform dependency. Windows and Linux may close their KEL-96 lifecycle rows
 only with the named reaper evidence from those specifications. macOS remains
@@ -582,8 +604,9 @@ privileged channel. The first and only production caller in T1b is the no-flag
       implement a second generation loop in `keld-core`.
       The Windows sub-row has real no-flag host/HWND/two-call/g1-to-g2/ordered
       Quit/CLI-death evidence on RAMANI, but T4 remains unchecked: Windows
-      abnormal-host-death waits on KEL-78/T3, post-CLI-death stage deletion has
-      no approved surviving owner, and the real Linux desktop rows are absent.
+      abnormal-host-death waits on KEL-78/T3 and the real Linux desktop rows are
+      absent. The approved Windows cleanup sentinel above owns post-CLI-death
+      stage deletion and is part of this T4 implementation/evidence slice.
       The CLI atomically protects and retains no-share-delete handles for
       `.keld` and `dev` before nonce creation (plus the canonical project
       handle), then pins and validates

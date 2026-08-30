@@ -37,7 +37,7 @@ pub struct DevBootStage {
     root: PathBuf,
     host: PathBuf,
     #[cfg(windows)]
-    _launch_guards: Vec<File>,
+    launch_guards: Vec<File>,
 }
 
 impl DevBootStage {
@@ -51,6 +51,13 @@ impl DevBootStage {
     #[must_use]
     pub fn host(&self) -> &Path {
         &self.host
+    }
+
+    /// Releases the Windows namespace pins after the staged host and its
+    /// independent cleanup sentinel both exist.
+    #[cfg(windows)]
+    pub(crate) fn release_launch_guards(&mut self) {
+        self.launch_guards.clear();
     }
 }
 
@@ -287,7 +294,7 @@ fn stage_dev_boot_platform(
         root,
         host: staged_host,
         #[cfg(windows)]
-        _launch_guards: launch_guards,
+        launch_guards,
     })
 }
 

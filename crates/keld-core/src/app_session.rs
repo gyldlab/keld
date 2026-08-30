@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::ffi::OsStr;
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::fmt;
 #[cfg(windows)]
 use std::fs;
@@ -13,6 +15,10 @@ use std::fs::File;
 use std::io::{self, Read};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStringExt as _;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
 #[cfg(any(target_os = "macos", windows, test))]
 use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
@@ -80,7 +86,7 @@ use windows_permissions::wrappers::GetNamedSecurityInfo;
 use windows_sys::Win32::Foundation::GetHandleInformation;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -88,6 +94,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    QueryFullProcessImageNameW, WaitForSingleObject,
+};
 
 /// Maximum accepted `keld.boot.json` size.
 #[cfg(any(target_os = "macos", windows, test))]
@@ -663,6 +674,183 @@ pub fn validate_windows_dev_stage_acl(root: &Path) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Prepared Windows dev-stage cleanup owner that survives the terminal CLI.
+///
+/// This owner contains only the validated nonce root and a live handle to the
+/// exact staged host process. It owns no window, app-link, Bun process, or
+/// application principal.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct WindowsDevStageCleanup {
+    root: PathBuf,
+    host: OwnedHandle,
+}
+
+#[cfg(windows)]
+impl WindowsDevStageCleanup {
+    /// Validates the owner-private stage and binds cleanup to the exact staged
+    /// host process object before the CLI releases its namespace guards.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-CORE-037` when the root is not the canonical nonce layout,
+    /// its DACL is not the approved current-user policy, the PID cannot be
+    /// opened, or the live process image is not this stage's `keld-host.exe`.
+    #[allow(unsafe_code)] // isolated Win32 process-handle acquisition and image readback
+    pub fn prepare(root: &Path, host_pid: u32) -> Result<Self, HostAppError> {
+        let root = root
+            .canonicalize()
+            .map_err(|source| app_io("Windows dev-stage cleanup root", &source))?;
+        validate_windows_cleanup_root(&root)?;
+        validate_windows_dev_stage_acl(&root)
+            .map_err(|source| app_io("Windows dev-stage cleanup ACL", &source))?;
+        let expected_host = root
+            .join("keld-host.exe")
+            .canonicalize()
+            .map_err(|source| app_io("Windows dev-stage cleanup host", &source))?;
+
+        // SAFETY: `host_pid` is the PID returned by the CLI's live Child. The
+        // requested rights are observation/wait only; a non-null result is one
+        // fresh owning handle converted exactly once below.
+        let raw_host = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                host_pid,
+            )
+        };
+        if raw_host.is_null() {
+            return Err(app_io(
+                "Windows dev-stage cleanup process open",
+                &io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: `raw_host` is the fresh non-null owning handle returned above.
+        let host = unsafe { OwnedHandle::from_raw_handle(raw_host.cast()) };
+        let observed_host = windows_process_image(&host)?
+            .canonicalize()
+            .map_err(|source| app_io("Windows dev-stage cleanup process image", &source))?;
+        if observed_host != expected_host {
+            return Err(app_detail(
+                "Windows dev-stage cleanup process identity",
+                format!(
+                    "live PID {host_pid} image `{}` does not equal staged host `{}`",
+                    observed_host.display(),
+                    expected_host.display()
+                ),
+            ));
+        }
+        Ok(Self { root, host })
+    }
+
+    /// Waits for the exact staged host object and deletes only its validated
+    /// owner-private nonce directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-CORE-037` if waiting, final ACL validation, or deletion
+    /// fails. A concurrent orderly CLI deletion is accepted as idempotent.
+    #[allow(unsafe_code)] // read-only wait on the owned staged-host process handle
+    pub fn wait_and_delete(self) -> Result<(), HostAppError> {
+        use std::os::windows::io::AsRawHandle as _;
+
+        // SAFETY: `host` is a live owning process handle. An infinite kernel
+        // wait is event-driven and returns only after that exact object exits.
+        if unsafe { WaitForSingleObject(self.host.as_raw_handle().cast(), u32::MAX) }
+            != WAIT_OBJECT_0
+        {
+            return Err(app_io(
+                "Windows dev-stage cleanup host wait",
+                &io::Error::last_os_error(),
+            ));
+        }
+        validate_windows_dev_stage_acl(&self.root)
+            .map_err(|source| app_io("Windows dev-stage cleanup final ACL", &source))?;
+        let Self { root, host } = self;
+        drop(host);
+        match fs::remove_dir_all(&root) {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(app_io("Windows dev-stage cleanup deletion", &source)),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_cleanup_root(root: &Path) -> Result<(), HostAppError> {
+    let nonce = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| app_detail("Windows dev-stage cleanup root", "nonce is not UTF-8"))?;
+    let exact_nonce = nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !exact_nonce
+        || root
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some("dev")
+        || root
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            != Some(".keld")
+    {
+        return Err(app_detail(
+            "Windows dev-stage cleanup root",
+            "expected canonical .keld/dev/<32-lowerhex> nonce layout",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // read-only Win32 process image query on an owned process handle
+fn windows_process_image(process: &OwnedHandle) -> Result<PathBuf, HostAppError> {
+    use std::os::windows::io::AsRawHandle as _;
+
+    let mut buffer = vec![0_u16; 32_768];
+    let mut length = u32::try_from(buffer.len()).map_err(|_| {
+        app_detail(
+            "Windows dev-stage cleanup process image",
+            "image buffer exceeds u32",
+        )
+    })?;
+    // SAFETY: `process` is live and buffer supplies `length` writable UTF-16
+    // units. The API writes the resulting unit count back to `length`.
+    if unsafe {
+        QueryFullProcessImageNameW(
+            process.as_raw_handle().cast(),
+            0,
+            buffer.as_mut_ptr(),
+            &raw mut length,
+        )
+    } == 0
+    {
+        return Err(app_io(
+            "Windows dev-stage cleanup process image",
+            &io::Error::last_os_error(),
+        ));
+    }
+    let length = usize::try_from(length).map_err(|_| {
+        app_detail(
+            "Windows dev-stage cleanup process image",
+            "returned image length exceeds usize",
+        )
+    })?;
+    if length > buffer.len() {
+        return Err(app_detail(
+            "Windows dev-stage cleanup process image",
+            "returned image length exceeds buffer",
+        ));
+    }
+    buffer.truncate(length);
+    Ok(PathBuf::from(OsString::from_wide(&buffer)))
 }
 
 #[cfg(windows)]

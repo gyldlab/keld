@@ -618,6 +618,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let cli_pid = cli.id();
     let host_pid =
         wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
@@ -631,6 +632,12 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
     wait_process_gone(host_pid, Instant::now() + PRODUCT_DEADLINE);
     wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
+    wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
+    println!(
+        "KELD_WINDOWS_STAGE_CLEANUP cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
+         sentinel_pid={cleanup_pid} stage_count=0"
+    );
     beacon.join().expect("lease beacon thread");
 }
 
@@ -651,6 +658,20 @@ fn prepare_keld_dev_helper(fixture: &ProductFixture) -> std::path::PathBuf {
 fn dev_stage_count(project: &Path) -> usize {
     fs::read_dir(project.join(".keld/dev"))
         .map_or(0, |entries| entries.filter_map(Result::ok).count())
+}
+
+fn wait_for_dev_stage_count(project: &Path, expected: usize, deadline: Instant) {
+    loop {
+        let observed = dev_stage_count(project);
+        if observed == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} dev stages after cleanup, observed {observed}"
+        );
+        thread::park_timeout(Duration::from_millis(20));
+    }
 }
 
 fn accept_ready_generation(
@@ -954,7 +975,7 @@ fn wait_process_gone(pid: u32, deadline: Instant) {
 fn wait_for_child_process(parent_pid: u32, name: &str, deadline: Instant) -> u32 {
     loop {
         let script = format!(
-            "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.Name -eq '{name}'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
+            "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.Name -eq '{name}' -and $_.CommandLine -notmatch 'keld-windows-dev-stage-cleanup'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
         );
         let output = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -970,6 +991,30 @@ fn wait_for_child_process(parent_pid: u32, name: &str, deadline: Instant) -> u32
         assert!(
             Instant::now() < deadline,
             "delegated child `{name}` did not appear under {parent_pid}"
+        );
+        thread::park_timeout(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_cleanup_sentinel(parent_pid: u32, deadline: Instant) -> u32 {
+    loop {
+        let script = format!(
+            "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.CommandLine -match 'keld-windows-dev-stage-cleanup-v1'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
+        );
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .expect("query cleanup sentinel process");
+        if output.status.success()
+            && let Ok(pid) = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<u32>()
+        {
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cleanup sentinel did not appear as a CLI-owned host sibling"
         );
         thread::park_timeout(Duration::from_millis(20));
     }
