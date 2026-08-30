@@ -827,10 +827,10 @@ flowchart LR
 
     subgraph Host["Trusted authority process: keld-host / keld-core"]
         Core["PARTIAL LIVE<br/>hello + macOS/Windows no-flag app window/session<br/>TARGET window registry"]
-        Link["PARTIAL LIVE<br/>hello echo + macOS primary app-link<br/>TARGET role-bound"]
+        Link["PARTIAL LIVE<br/>hello echo + macOS/Windows primary app-link<br/>TARGET role-bound"]
         Guard["PARTIAL LIVE<br/>verified startup snapshot + evaluator<br/>TARGET guard-before-handler"]
         Native["PARTIAL LIVE<br/>fs scoped + guard-checked<br/>TARGET remaining native services"]
-        Runtime["PARTIAL LIVE<br/>Bun supervisor + macOS guardian<br/>TARGET role identity"]
+        Runtime["PARTIAL LIVE<br/>Bun supervisor + platform generations<br/>macOS guardian; TARGET role identity"]
     end
 
     subgraph Prototype["Current diagnostic process: keld-cli"]

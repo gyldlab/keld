@@ -17,11 +17,13 @@ use windows_permissions::constants::{
 #[cfg(windows)]
 use windows_permissions::utilities::current_process_sid;
 #[cfg(windows)]
-use windows_permissions::wrappers::{
-    ConvertSidToStringSid, GetNamedSecurityInfo, SetNamedSecurityInfo,
-};
+use windows_permissions::wrappers::{ConvertSidToStringSid, GetNamedSecurityInfo};
 #[cfg(windows)]
 use windows_permissions::{LocalBox, SecurityDescriptor};
+#[cfg(windows)]
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 
 #[cfg(any(target_os = "macos", windows))]
 const PERMISSIONS_BYTES: &[u8] = b"{}\n";
@@ -279,16 +281,9 @@ fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
         #[cfg(target_os = "macos")]
         let created = fs::DirBuilder::new().mode(0o700).create(&root);
         #[cfg(windows)]
-        let created = fs::create_dir(&root);
+        let created = create_windows_stage_root(&root);
         match created {
-            Ok(()) => {
-                #[cfg(windows)]
-                if let Err(error) = protect_windows_stage_root(&root) {
-                    let _ = fs::remove_dir(&root);
-                    return Err(error);
-                }
-                return Ok(root);
-            }
+            Ok(()) => return Ok(root),
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
             Err(source) => {
                 return Err(BootCompileError::new(
@@ -443,34 +438,35 @@ fn write_new_file(
 }
 
 #[cfg(windows)]
-fn protect_windows_stage_root(path: &Path) -> Result<(), BootCompileError> {
-    let current = current_process_sid()
-        .map_err(|source| BootCompileError::new("stage DACL TokenUser", source.to_string()))?;
-    let sid = ConvertSidToStringSid(&current)
-        .map_err(|source| BootCompileError::new("stage DACL TokenUser", source.to_string()))?;
+#[allow(unsafe_code)] // reviewed Windows-only atomic creation boundary; see SAFETY proof at CreateDirectoryW
+fn create_windows_stage_root(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let current = current_process_sid()?;
+    let sid = ConvertSidToStringSid(&current)?;
     let descriptor: LocalBox<SecurityDescriptor> = format!(
         "O:{}D:P(A;OICI;FA;;;{})",
         sid.to_string_lossy(),
         sid.to_string_lossy()
     )
-    .parse()
-    .map_err(|source: io::Error| {
-        BootCompileError::new("stage DACL construction", source.to_string())
-    })?;
-    let dacl = descriptor.dacl().ok_or_else(|| {
-        BootCompileError::new("stage DACL construction", "descriptor contains no DACL")
-    })?;
-    SetNamedSecurityInfo(
-        path.as_os_str(),
-        SeObjectType::SE_FILE_OBJECT,
-        SecurityInformation::Owner | SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
-        Some(&current),
-        None,
-        Some(dacl),
-        None,
-    )
-    .map_err(|source| BootCompileError::new("stage DACL application", source.to_string()))?;
-    verify_windows_stage_acl_for(path, &current)
+    .parse()?;
+    let mut path_wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    path_wide.push(0);
+    let length =
+        u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>()).map_err(io::Error::other)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: length,
+        lpSecurityDescriptor: descriptor.as_ptr().cast(),
+        bInheritHandle: 0,
+    };
+    // SAFETY: `path_wide` is a live NUL-terminated UTF-16 buffer;
+    // `attributes` is correctly sized and points to the live self-relative
+    // descriptor owned by `descriptor`. Neither allocation moves or drops
+    // until CreateDirectoryW returns, and handle inheritance is disabled.
+    if unsafe { CreateDirectoryW(path_wide.as_ptr(), &raw const attributes) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    verify_windows_stage_acl_for(path, &current).map_err(io::Error::other)
 }
 
 #[cfg(windows)]

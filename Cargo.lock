@@ -1280,6 +1280,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "windows-permissions",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

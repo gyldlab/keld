@@ -265,16 +265,16 @@ sequenceDiagram
     autonumber
     participant CLI as keld dev<br/>(keld-cli)
     participant Host as staged keld-host<br/>+ keld-core app session
-    participant Guard as macOS guardian<br/>+ Supervisor
+    participant Owner as platform primary owner<br/>macOS guardian / Windows supervisor
     participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30)
-    participant Win as WKWebView window
+    participant Win as native window<br/>WKWebView / WebView2
 
     CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts?<br/>renderer HTML present and project-relative?
-    CLI->>CLI: stage_dev_boot() — fresh 0o700 layout
-    CLI->>Host: spawn no args in separate process group + stdin-v1 lease, inherit logs
-    Host->>Host: validate boot and mark lease reader non-inheritable
-    Host->>Guard: authenticated guardian bootstrap
-    Guard->>Bun: Supervisor spawn + KELD_APP_LINK
+    CLI->>CLI: stage_dev_boot() — fresh 0o700 / protected-DACL layout
+    CLI->>Host: spawn no args + stdin-v1 lease, inherit logs
+    Host->>Host: validate boot + platform lease boundary
+    Host->>Owner: start one platform primary owner
+    Owner->>Bun: Supervisor spawn + KELD_APP_LINK
     Bun->>Host: HELLO with possession token
     Host-->>Bun: HELLO
     Host->>Win: create and finish initial navigation
@@ -286,7 +286,7 @@ sequenceDiagram
         Host-->>Bun: Quit Reply, then link EOF
     else CLI exits or crashes
         CLI-->>Host: sole lease writer closes, stdin EOF observed
-        Host--xBun: no fake Reply, link EOF then guardian reap
+        Host--xBun: no fake Reply, link EOF then supervisor reap
     end
     Host-->>CLI: process status, CLI owns no app resource
 ```
@@ -294,10 +294,11 @@ sequenceDiagram
 The honest reading of that diagram:
 
 - **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template speaks kipc from `src/kipc.ts`, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
-- **The macOS window and IPC session are concurrent and host-owned.** One
+- **The macOS and Windows windows/IPC sessions are concurrent and host-owned.** One
   authenticated stream carries Ready, two echo calls and Quit while the
-  WKWebView is live. The CLI retains no listener, token, stream, window, or Bun
-  supervisor. Windows/Linux still use the older CLI-owned path until T4.
+  native window is live; a fresh stream replaces it after a recoverable crash
+  without changing that window. The CLI retains no listener, token, stream,
+  window, or Bun supervisor. Linux still uses the older CLI-owned path until T4.
 - **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
   (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
   echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic

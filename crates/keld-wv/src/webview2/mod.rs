@@ -403,6 +403,7 @@ pub struct WebView2Engine {
     pending_app_events: Option<Sender<AppWindowEvent>>,
     navigation_ready: Arc<AtomicBool>,
     navigation_failed: Arc<AtomicBool>,
+    app_window_created: bool,
 }
 
 impl fmt::Debug for WebView2Engine {
@@ -448,6 +449,7 @@ impl WebView2Engine {
             pending_app_events: None,
             navigation_ready: Arc::new(AtomicBool::new(false)),
             navigation_failed: Arc::new(AtomicBool::new(false)),
+            app_window_created: false,
         })
     }
 
@@ -520,9 +522,13 @@ impl WebView2Engine {
         spec: &WebviewSpec,
         events: Sender<AppWindowEvent>,
     ) -> Result<WebviewId, WvError> {
-        if self.pending_app_events.is_some() {
+        if !app_window_slot_available(
+            self.app_window_created,
+            self.pending_app_events.is_some(),
+            !self.views.is_empty(),
+        ) {
             return Err(WvError::EventLoop(String::from(
-                "an app window creation is already pending",
+                "the v0 app window was already created or is pending",
             )));
         }
         self.navigation_ready.store(false, Ordering::Release);
@@ -530,6 +536,9 @@ impl WebView2Engine {
         self.pending_app_events = Some(events);
         let result = self.create(spec);
         self.pending_app_events = None;
+        if result.is_ok() {
+            self.app_window_created = true;
+        }
         result
     }
 
@@ -641,6 +650,10 @@ impl WebView2Engine {
             .get(&id.0)
             .ok_or(WvError::UnknownWebview { id: id.0 })
     }
+}
+
+const fn app_window_slot_available(created: bool, pending: bool, has_views: bool) -> bool {
+    !created && !pending && !has_views
 }
 
 fn finish_app_run(
@@ -898,7 +911,7 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebView2Engine, runtime_version};
+    use super::{WebView2Engine, app_window_slot_available, runtime_version};
     use crate::error::WvError;
 
     /// The CI runners and this developer machine both ship the Evergreen
@@ -939,6 +952,15 @@ mod tests {
     fn unknown_webview_id_is_typed_not_panic() {
         let err = WvError::UnknownWebview { id: 3 };
         assert!(err.to_string().contains("KELD-WV-007"));
+    }
+
+    #[test]
+    fn app_window_slot_is_single_use_and_retryable_only_after_failed_setup() {
+        assert!(app_window_slot_available(false, false, false));
+        assert!(!app_window_slot_available(true, false, false));
+        assert!(!app_window_slot_available(false, true, false));
+        assert!(!app_window_slot_available(false, false, true));
+        assert!(app_window_slot_available(false, false, false));
     }
 
     /// KEL-63: the profile must be per-user, not beside the executable.
