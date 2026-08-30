@@ -16,6 +16,7 @@ const WORKFLOW: &str = ".github/workflows/ci.yml";
 const KELDBOT_WORKFLOW: &str = ".github/workflows/keldbot.yml";
 const CI_REQUIRED_EVALUATOR: &str = "tools/ci_required.sh";
 const ATOMIC_PROTOCOL_CHECKER: &str = "tools/atomic_protocol.rs";
+const AGENT_CONTEXT_CHECKER: &str = "tools/agent_context.rs";
 const GITIGNORE: &str = ".gitignore";
 const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
@@ -31,6 +32,7 @@ const REQUIRED_OWNER_PATHS: &[&str] = &[
     ".github",
     "AGENTS.md",
     ".agents",
+    ".codex",
     "docs/agents",
     "keld-error-codes.md",
     "justfile",
@@ -74,6 +76,14 @@ const ATOMIC_PROTOCOL_COMMANDS: &[&str] = &[
     "target/atomic-protocol/atomic-protocol-test",
     "rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol",
     "target/atomic-protocol/atomic-protocol check .",
+];
+
+const AGENT_CONTEXT_COMMANDS: &[&str] = &[
+    "mkdir -p target/agent-context",
+    "rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test",
+    "target/agent-context/agent-context-test",
+    "rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
+    "target/agent-context/agent-context check .",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -825,18 +835,21 @@ fn check_required_job(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
-    const STEP: &str = "Atomic problem-solving protocol contract";
+fn check_hygiene_contract_step(
+    text: &str,
+    step: &str,
+    expected_commands: &[&str],
+) -> Result<(), String> {
     let Some(hygiene) = workflow_job_block(text, "hygiene") else {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for the atomic protocol contract."
+            "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for `{step}`."
         ));
     };
     let expected_if =
         "needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'";
     if workflow_job_level_if(&hygiene).as_deref() != Some(expected_if) {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must run for both hygiene and docs router outputs so the atomic protocol gate cannot disappear on a docs-only edit."
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must run for both hygiene and docs router outputs so `{step}` cannot disappear on a docs-only edit."
         ));
     }
     if workflow_job_level_property(&hygiene, "continue-on-error").is_some() {
@@ -844,7 +857,7 @@ fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `hygiene` must not set `continue-on-error`; `CI required` needs the atomic check's failing status."
         ));
     }
-    let expected_name = format!("- name: {STEP}");
+    let expected_name = format!("- name: {step}");
     let name_count = hygiene
         .lines()
         .filter_map(yaml_content)
@@ -852,33 +865,49 @@ fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
         .count();
     if name_count != 1 {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{STEP}` step; found {name_count}."
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{step}` step; found {name_count}."
         ));
     }
-    let atomic_step = workflow_direct_named_step_block(&hygiene, STEP).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{STEP}` must be a direct child of `hygiene.steps`.")
+    let contract_step = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `hygiene.steps`.")
     })?;
     let expected_keys = ["run".to_owned()];
-    if workflow_named_step_direct_keys(&atomic_step, STEP).as_deref()
+    if workflow_named_step_direct_keys(&contract_step, step).as_deref()
         != Some(expected_keys.as_slice())
     {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{STEP}` may contain only its `run` key. A condition, custom shell, or continue-on-error can erase enforcement."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its `run` key. A condition, custom shell, or continue-on-error can erase enforcement."
         ));
     }
-    let commands = workflow_named_step_shell_commands(&atomic_step, STEP).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{STEP}` has no executable multiline `run` block.")
+    let commands = workflow_named_step_shell_commands(&contract_step, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline `run` block.")
     })?;
     if commands
         .iter()
         .map(String::as_str)
-        .ne(ATOMIC_PROTOCOL_COMMANDS.iter().copied())
+        .ne(expected_commands.iter().copied())
     {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{STEP}` must compile and run the checker tests and real checkout exactly, without wrappers or exit suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must compile and run checker tests and the real checkout exactly, without wrappers or exit suppression."
         ));
     }
     Ok(())
+}
+
+fn check_atomic_protocol_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(
+        text,
+        "Atomic problem-solving protocol contract",
+        ATOMIC_PROTOCOL_COMMANDS,
+    )
+}
+
+fn check_agent_context_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(
+        text,
+        "Agent instruction context budget",
+        AGENT_CONTEXT_COMMANDS,
+    )
 }
 
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
@@ -1242,8 +1271,8 @@ fn check_pr_template(root: &Path) -> Result<(), String> {
         if !text.contains(needle) {
             return Err(format!(
                 "CI-HYGIENE: `{PR_TEMPLATE}` is missing `{needle}`. \
-                 Restore the six required PR headings from AGENTS.md § Commits & PRs \
-                 and the verification-gate commands from AGENTS.md § Commands & verification."
+                 Restore the six required PR headings from .agents/ci.md § KeldBot \
+                 and the verification-gate commands from the justfile `ci` recipe."
             ));
         }
     }
@@ -1286,6 +1315,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, WORKFLOW)?;
     let _required_evaluator = read(root, CI_REQUIRED_EVALUATOR)?;
     let _atomic_protocol_checker = read(root, ATOMIC_PROTOCOL_CHECKER)?;
+    let _agent_context_checker = read(root, AGENT_CONTEXT_CHECKER)?;
     if let Some(key) = forbidden_workflow_control_key(&text) {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` must not set `{key}` at workflow, job, or step scope. Required jobs use the default failure-preserving shell and must expose every failing exit status."
@@ -1314,6 +1344,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_bun_test_job(&text)?;
     check_required_job(&text)?;
     check_atomic_protocol_step(&text)?;
+    check_agent_context_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -1515,6 +1546,13 @@ mod tests {
             "          target/atomic-protocol/atomic-protocol-test",
             "          rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol",
             "          target/atomic-protocol/atomic-protocol check .",
+            "      - name: Agent instruction context budget",
+            "        run: |",
+            "          mkdir -p target/agent-context",
+            "          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test",
+            "          target/agent-context/agent-context-test",
+            "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
+            "          target/agent-context/agent-context check .",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
@@ -1604,6 +1642,7 @@ mod tests {
          /.github/ @alice\n\
          /AGENTS.md @alice\n\
          /.agents/ @alice\n\
+         /.codex/ @alice\n\
          /docs/agents/ @alice\n\
          /docs/engineering/keld-error-codes.md @alice\n\
          /justfile @alice\n\
@@ -1629,6 +1668,7 @@ mod tests {
         temp.write(KELDBOT_WORKFLOW, &valid_keldbot_workflow());
         temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
         temp.write(ATOMIC_PROTOCOL_CHECKER, "fn main() {}\n");
+        temp.write(AGENT_CONTEXT_CHECKER, "fn main() {}\n");
         temp.write(MERMAID_CHECKER, "fn main() {}\n");
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
@@ -1779,6 +1819,37 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("nested decoy step must fail");
         assert!(error.contains("exactly one"), "{error}");
+    }
+
+    #[test]
+    fn agent_context_step_is_mandatory_and_failure_preserving() {
+        let temp = complete_fixture();
+        let context_step = concat!(
+            "      - name: Agent instruction context budget\n",
+            "        run: |\n",
+            "          mkdir -p target/agent-context\n",
+            "          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test\n",
+            "          target/agent-context/agent-context-test\n",
+            "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context\n",
+            "          target/agent-context/agent-context check .\n",
+        );
+        temp.write(WORKFLOW, &valid_workflow().replacen(context_step, "", 1));
+        let error = check(temp.path()).expect_err("missing context gate must fail");
+        assert!(
+            error.contains("Agent instruction context budget"),
+            "{error}"
+        );
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          target/agent-context/agent-context check .",
+                "          echo target/agent-context/agent-context check .",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("echoed context gate must fail");
+        assert!(error.contains("without wrappers"), "{error}");
     }
 
     #[test]

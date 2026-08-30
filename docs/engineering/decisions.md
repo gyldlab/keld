@@ -46,9 +46,9 @@ re-litigate it. Do not dump Linear tickets or research drafts here.
 3. Host and child talk over **kipc**, a typed binary plane the host mediates
    (`docs/architecture/02-ipc.md` §1).
 4. Privileged calls are **default-deny**: generated manifest, host-enforced
-   (`docs/architecture/03-security.md`; `AGENTS.md` § Security).
+   (`docs/architecture/03-security.md`; `AGENTS.md` § Security, performance, and review gates).
 
-`AGENTS.md` § Working rules: agents **MUST** protect those four uniques only and
+`AGENTS.md` § Working invariants: agents **MUST** protect those four uniques only and
 **MUST NOT** invent a fifth.
 
 **Why.** Each competitor already ships some of this and fails a different one
@@ -281,7 +281,7 @@ claiming KEL-28 fully done. See §11.
 
 **Chose.** Typed errors implement `Display` by hand with a `KELD-<AREA>-<nnn>` code
 and a sentence that states the fix. `thiserror` is not a workspace or crate
-dependency (`Cargo.toml`, grep of `crates/`). `AGENTS.md` § Rust: hand-rolled
+dependency (`Cargo.toml`, grep of `crates/`). `AGENTS.md` § Rust, TypeScript, and naming: hand-rolled
 `Display` + `KELD-*` codes (not `thiserror`).
 
 Canonical registry: [`keld-error-codes.md`](./keld-error-codes.md). CI
@@ -313,7 +313,8 @@ website pages stay deferred (registry header).
 
 ## 4. Verification gate, `just ci`, and git hooks
 
-**Chose — agent “done” bar (`AGENTS.md` § Commands).** All three, every time:
+**Chose — mandatory core Rust subset (`AGENTS.md` § Verification floor).** All three,
+every time, inside the exact `just ci` gate:
 
 ```bash
 cargo fmt --all --check
@@ -351,16 +352,15 @@ a committed Husky tree. Evidence (exploratory, not required reading):
 **Why.** Fmt/clippy/nextest are the contract testers can paste. `just ci` catches
 docs corpus drift, crate-`AGENTS.md` for `unsafe`, CODEOWNERS/template/SHA hygiene,
 rustdoc `-D warnings`, and cargo-deny without waiting for GitHub. Secret scan stays
-on GitHub so local clones do not need a gitleaks binary for the three-command bar.
+on GitHub so local clones do not need a gitleaks binary for the core Rust subset.
 
 **Why not.** A fourth always-on local tool (coverage, machete, nursery clippy, Biome
 while `packages/` is empty) — listed as later in
 [`tooling-audit.md`](./tooling-audit.md). Sleep-sync tests, skipping clippy because
 “tests pass,” or writing “should work” in a PR (`AGENTS.md`).
 
-**Next.** Keep the three-command bar as the definition of done. Run `just ci` before
-push when you touched docs corpus, `unsafe`, `.github/`, or dependencies. Do not
-install a hook manager for Phase 2.
+**Next.** Keep `just ci` as the definition of the full local gate; keep its three Rust
+commands mandatory. Do not install a hook manager for Phase 2.
 
 ---
 
@@ -415,7 +415,8 @@ Counsel reviews the first external distribution.
 `keld-compat`. Root `AGENTS.md` § Repo map: crate `AGENTS.md` only where invariants
 exist. Skeletons (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`,
 `keld-pack`, `keld-host`) and `keld-cli` get a spec pointer in the repo-map table,
-not a hollow file. `keld-cli` `expect` is already sanctioned in root § Rust.
+not a hollow file. `keld-cli` `expect` is already sanctioned in root § Rust, TypeScript,
+and naming.
 
 Nested files **add** constraints. They must not silently weaken root. Root wins on
 conflict unless the crate file names a documented exception with justification.
@@ -555,7 +556,7 @@ the same change as an unrelated in-flight review.
 
 ## 10. First-principles and YAGNI tests
 
-Quoted from `AGENTS.md` § Working rules (these **do** bind agents):
+Quoted from `AGENTS.md` § Working invariants (these **do** bind agents):
 
 1. Decompose every design to OS / process / memory / trust-boundary facts across
    host / Bun child / webview. If it does not change who owns a handle, who can
@@ -613,7 +614,7 @@ Linear issues Done from this document.
 
 ## 12. Human review gates
 
-`AGENTS.md` § Review gates — human sign-off; list under `## Review gates` in the PR,
+`AGENTS.md` § Security, performance, and review gates — list under `## Review gates` in the PR,
 or write **none** (the section is never omitted):
 
 1. **`unsafe`** (new or changed) — only `keld-wv` backends and future `keld-ipc` shm;
@@ -712,7 +713,7 @@ version floor** (not the running version) is what a replayed old signed manifest
 checked against, so an authorized local rollback can run an older version without
 reopening the door to an attacker replaying a stale feed.
 
-**Why.** `AGENTS.md` §Working rules forbids landing an RFC that "restates
+**Why.** `AGENTS.md` § Working invariants forbids landing an RFC that "restates
 `docs/architecture/` without binary acceptance tests" — the fix for prose that can't be
 tested is a concrete schema, not a longer paragraph. This is also explicitly a wire
 protocol change (root `AGENTS.md` review gate #5), so it is docs-only and flagged for

@@ -1,8 +1,8 @@
 # Learnings log
 
-Append-only log of non-obvious facts discovered during work. Read this before starting
-a task; append in the same PR when you learn something (protocol: root `AGENTS.md`
-§ Self-improvement).
+Evidence log of non-obvious facts. Before implementation/review, query only
+the relevant area(s); do not load this file in full. Append a deduped entry in the same
+PR when the root self-improvement threshold applies.
 
 Format — one line each, newest last:
 
@@ -18,10 +18,11 @@ names (`ipc`, `wv`, `guard`, `native`, `runtime`, `update`, `pack`, `compat`, `c
 the same PR that first uses it — an entry whose area is not listed here is the defect,
 not the list.
 
-Compaction (maintainers, roughly when this list passes ~40 entries): move learnings
-that proved stable into the root `AGENTS.md`, the relevant spec, or a crate
-`AGENTS.md`; delete entries that were compacted, superseded, or wrong; keep this file
-small — it is loaded by every agent session.
+Compaction (maintainers, roughly when this list passes ~40 entries): move stable facts
+to the relevant spec, routed playbook, or crate `AGENTS.md`; use root only for a truly
+universal invariant that still passes its budget. Delete compacted/superseded/wrong
+entries. Until compacted,
+agents MUST use bounded area queries rather than a full read.
 
 ## Log
 
@@ -56,8 +57,8 @@ small — it is loaded by every agent session.
 - 2026-08-13 [process] Hello size/RSS live in `docs/engineering/budget-scoreboard.md` (tracked); `just hello` is debug; do not put numbers only in gitignored `docs/research/` or Linear. (evidence: KEL-26, origin/main `b93ebb6`)
 - 2026-08-13 [pack] bun 1.3.14 this-Mac is 63,096,576 B; gzip -9 = 23,548,666 (over the ≤20 MB bun-installer budget before host); zstd -19 = 16,838,595. UDZO/zlib DMG of host+Bun cannot hit architecture 01 §5; zstd can. (evidence: `stat`/`gzip`/`zstd` on `$(command -v bun)`, budget-scoreboard Win conditions)
 - 2026-08-13 [process] just 1.58 still lexes `<<'EOF'` bodies inside shebang recipes as justfile syntax (`unknown start of token '-'`); use bash arrays/printf fixtures instead of heredocs in the justfile. (evidence: `just --list` on agents-md heredocs vs array rewrite)
-- 2026-08-13 [process] `docs/research/` must be a nested checkout of private `keld-research`; push with `just research-push` (same turn as edits). If it resolves to the Keld toplevel, research-push refuses — never `git add docs/research` from the monorepo root. (evidence: justfile `research-push`, AGENTS.md § Private research)
-- 2026-08-13 [process] Competitor/native hello fixtures live in public `gyldlab/keld-benches` under `{macos|windows|linux}/<framework>/...` (not Keld `docs/`/`competitors/`/`/tmp`-only, not OS-agnostic dumps at benches root); scoreboard rows SHOULD link the OS-qualified path. (evidence: AGENTS.md § Public benches, https://github.com/gyldlab/keld-benches)
+- 2026-08-13 [process] `docs/research/` must be a nested checkout of private `keld-research`; push with `just research-push` (same turn as edits). If it resolves to the Keld toplevel, research-push refuses — never `git add docs/research` from the monorepo root. (evidence: justfile `research-push`, `.agents/research.md`)
+- 2026-08-13 [process] Competitor/native hello fixtures live in public `gyldlab/keld-benches` under `{macos|windows|linux}/<framework>/...` (not Keld `docs/`/`competitors/`/`/tmp`-only, not OS-agnostic dumps at benches root); scoreboard rows SHOULD link the OS-qualified path. (evidence: `.agents/research.md`, https://github.com/gyldlab/keld-benches)
 - 2026-08-14 [cli] `keld_permissions_explain` must reject unimplemented `channel` before `load_manifest`/`evaluate`; otherwise an in-scope path returns `allow` and drops the channel. (evidence: KEL-58, `crates/keld-cli/src/mcp/permissions.rs`)
 - 2026-08-14 [process] keld-benches macOS Electron Forge `package` can exit 0 without writing `out/` (`extract-zip` aborts); weigh official `electron-v*-darwin-arm64.zip` via `ditto`. Neutralino `--macos-bundle` only renames the Mach-O. Electrobun launcher RSS is incomplete until Bun+WebKit helpers are enumerated. (evidence: gyldlab/keld-benches@0308d55 macos/*/hello, docs/engineering/budget-scoreboard.md)
 - 2026-08-14 [wv/macos] wry 0.56 still auto-grants camera/mic when `with_permission_handler` is omitted; the handler is `Fn(PermissionKind)` with no origin, so v0 evaluates requested resource `*`. (evidence: wry-0.56.1 `wry_web_view_ui_delegate.rs`, KEL-59)
@@ -120,7 +121,7 @@ small — it is loaded by every agent session.
 - 2026-08-20 [process] GitHub YAML issue forms are issues-only; PR templates are Markdown. Multiple PR templates have no chooser (query param only). HTML comments persist in `gh pr view` unless stripped. Feature branches are `agent/kel-<n>-<slug>` from `origin/main`, not Linear's `gyldlab/kel-…`. (evidence: docs.github.com issue-forms + PR-template pages; `gh pr view` #34/#41; KEL-84)
 - 2026-08-20 [process] Deleting only the PR template's top HTML comment still leaves per-heading hints in `gh pr view`; strip every `<!-- -->` before submit. (evidence: KEL-84, `.github/PULL_REQUEST_TEMPLATE.md`)
 - 2026-08-21 [git] unused extra worktrees MUST be removed before creating another; open-PR and dirty trees stay. (evidence: disk; user 2026-08-21)
-- 2026-08-21 [process] Branch + Linear handoff (`## Branch handoff` + merge intent) is binding in monorepo `AGENTS.md`, not only Prompt Tracker pastes; multi-device merge intent is Linear. (evidence: alignment audit; `0monish/prompt-tracker` `548e7db`)
+- 2026-08-21 [process] Branch + Linear handoff (`## Branch handoff` + merge intent) is binding in `.agents/coordination.md`, not only Prompt Tracker pastes; multi-device merge intent is Linear. (evidence: alignment audit; `0monish/prompt-tracker` `548e7db`)
 - 2026-08-21 [runtime] Bun 1.4 fixed `subprocess.kill()` after `'exit'`; floating `oven-sh/setup-bun` `latest` would fail the former KEL-77 pinned-defect test — pin CI to exact `1.4.0`. (evidence: oven-sh/bun `fc1b448`, KEL-77, `.github/workflows/ci.yml`)
 - 2026-08-21 [process] Local analysis clones under gitignored `competitors/` (bun, wry, tao) are invisible to agents unless listed in `competitors.lock.toml`; `just competitors-sync` only fetches lock entries. (evidence: competitors.lock.toml, tools/competitors_sync.rs, KEL-68)
 - 2026-08-21 [ci] Adding `keld-runtime` under `keld-core` puts runtime in the host dependency closure (`gui=true` for runtime-only paths); host-dirs must walk only normal cargo deps (`kind == null`), not `dev`/`build`, or runtime's test-only `keld-compat` edge falsely enables GUI smoke. (evidence: tools/ci_changes.sh `host_dependency_dirs`, KEL-30, PR #48)

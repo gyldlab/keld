@@ -366,6 +366,13 @@ jobs:
           target/atomic-protocol/atomic-protocol-test
           rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol
           target/atomic-protocol/atomic-protocol check .
+      - name: Agent instruction context budget
+        run: |
+          mkdir -p target/agent-context
+          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test
+          target/agent-context/agent-context-test
+          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
+          target/agent-context/agent-context check .
       - name: Contract tests
         if: needs.changes.outputs.hygiene == 'true'
         run: |

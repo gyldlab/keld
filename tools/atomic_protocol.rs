@@ -9,6 +9,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod markdown_contract;
+use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
+
 const ROOT: &str = "AGENTS.md";
 const WORKFLOW: &str = "docs/agents/workflow.md";
 const TESTING: &str = ".agents/testing.md";
@@ -108,53 +111,6 @@ fn without_html_comments(text: &str) -> String {
     }
     visible.push_str(remainder);
     visible
-}
-
-fn without_struck_text(line: &str) -> String {
-    let mut visible = String::with_capacity(line.len());
-    let mut remainder = line;
-    while let Some(start) = remainder.find("~~") {
-        visible.push_str(&remainder[..start]);
-        let struck = &remainder[start + 2..];
-        let Some(end) = struck.find("~~") else {
-            return visible;
-        };
-        remainder = &struck[end + 2..];
-    }
-    visible.push_str(remainder);
-    visible
-}
-
-fn without_inline_code(line: &str) -> String {
-    let mut visible = String::with_capacity(line.len());
-    let mut remainder = line;
-    while let Some(start) = remainder.find('`') {
-        visible.push_str(&remainder[..start]);
-        let opening = &remainder[start..];
-        let width = opening.bytes().take_while(|byte| *byte == b'`').count();
-        let marker = "`".repeat(width);
-        let code = &opening[width..];
-        let Some(end) = code.find(&marker) else {
-            return visible;
-        };
-        remainder = &code[end + width..];
-    }
-    visible.push_str(remainder);
-    visible
-}
-
-fn fence_marker(line: &str) -> Option<(u8, usize, bool)> {
-    let indent = line.bytes().take_while(|byte| *byte == b' ').count();
-    if indent > 3 || line.starts_with('\t') {
-        return None;
-    }
-    let trimmed = &line[indent..];
-    let marker = *trimmed.as_bytes().first()?;
-    if marker != b'`' && marker != b'~' {
-        return None;
-    }
-    let width = trimmed.bytes().take_while(|byte| *byte == marker).count();
-    (width >= 3).then(|| (marker, width, trimmed[width..].trim().is_empty()))
 }
 
 fn visible_markdown(text: &str) -> String {

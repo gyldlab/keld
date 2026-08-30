@@ -11,7 +11,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol ci-router-test mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -65,7 +65,7 @@ agents-md:
     crates=$(printf '%s\n' "$files" | awk -F/ '$1=="crates" && NF>=2 {print $2}' | sort -u)
     for crate in $crates; do
         if [[ ! -f "crates/$crate/AGENTS.md" ]]; then
-            echo "error: crates/$crate uses unsafe but has no AGENTS.md (root AGENTS.md § Working rules)"
+            echo "error: crates/$crate uses unsafe but has no AGENTS.md (root AGENTS.md § Working invariants)"
             fail=1
         fi
     done
@@ -79,6 +79,14 @@ atomic-protocol:
     target/atomic-protocol/atomic-protocol-test
     rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol
     target/atomic-protocol/atomic-protocol check .
+
+# KEL-147: instruction inventory, routing, and Codex automatic-chain budgets.
+agent-context:
+    mkdir -p target/agent-context
+    rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test
+    target/agent-context/agent-context-test
+    rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
+    target/agent-context/agent-context check .
 
 # Generate the checked-in agent-readable docs index and full corpus.
 llms:

@@ -1,0 +1,24 @@
+# path	class	max_bytes	owner	trigger
+AGENTS.md	always	13312	root-invariant-floor	always
+CLAUDE.md	always	64	claude-root-alias	claude-session
+crates/keld-compat/AGENTS.md	always	1536	compat-invariants	path:crates/keld-compat
+crates/keld-guard/AGENTS.md	always	2560	guard-invariants	path:crates/keld-guard
+crates/keld-ipc/AGENTS.md	always	2560	ipc-invariants	path:crates/keld-ipc
+crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv
+.agents/index.md	routed	4096	task-router	root:instruction-loading
+.agents/ci.md	routed	4096	ci-keldbot-policy	route:ci
+.agents/coordination.md	routed	3072	coordination-templates	route:coordination
+.agents/dependencies.md	routed	2560	dependency-policy	route:dependencies
+.agents/docs.md	routed	3072	documentation-policy	route:docs
+.agents/instructions.md	routed	3072	instruction-authoring-policy	route:instructions
+.agents/memory.md	routed	7168	external-memory-policy	route:memory
+.agents/research.md	routed	5120	research-publication-policy	route:research
+.agents/review.md	routed	2304	git-pr-review-policy	route:review
+.agents/testing.md	routed	8192	testing-evidence-policy	route:testing
+.agents/skills/autofix/SKILL.md	routed	14336	coderabbit-autofix-skill	skill:autofix
+.agents/skills/autofix/github.md	routed	6656	coderabbit-github-reference	skill:autofix-reference
+.agents/skills/code-review/SKILL.md	routed	6144	coderabbit-review-skill	skill:code-review
+.agents/skills/instruction-review/SKILL.md	routed	2048	instruction-review-skill	skill:instruction-review
+docs/agents/spec-template.md	routed	3072	feature-spec-template	route:spec
+docs/agents/workflow.md	routed	16384	agent-development-lifecycle	route:implementation-or-coordination
+docs/agents/learnings.md	evidence	61440	learning-evidence-log	query:area

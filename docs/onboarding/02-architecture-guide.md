@@ -699,8 +699,8 @@ protocol code and for documenting deviation from spec.
 **Before you write code**, root [`AGENTS.md`](../../AGENTS.md) is mandatory and short. Its
 practical demands: read the crate's own `AGENTS.md` first (each of `keld-ipc`, `keld-wv`,
 `keld-guard`, `keld-compat` has one with real invariants); run the full gate —
-`cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run
---workspace --profile ci` — before calling anything done; no `unwrap`/`expect`/`panic!` in library
+`just ci` — whose mandatory core Rust subset includes fmt, warning-denied clippy, and the
+full nextest workspace suite — before calling anything done; no `unwrap`/`expect`/`panic!` in library
 code; no `todo!()`/`unimplemented!()`/stubs on main; and append a one-line entry to
 [`docs/agents/learnings.md`](../agents/learnings.md) in the same PR whenever you lose more than ten
 minutes to a non-obvious gotcha.

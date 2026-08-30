@@ -3,13 +3,16 @@
 How Keld is developed by parallel agents with human architectural review. Rationale
 and sources: `docs/research/library/agents-tooling/07-agent-first.md`. Rules here bind agents and humans.
 Task-specific playbooks are routed from `.agents/index.md`; load only matching entries.
+Operational branch/OS templates are in `.agents/coordination.md`; PR/current-head review
+is in `.agents/review.md`.
 
 ## The loop (one issue, one agent, one concern)
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
    including its description, comments, status and relations. Reconcile it with the
    checked-out code and specs; read its spec, the governing `docs/architecture/*`
-   sections, the target crate's `AGENTS.md`, and `docs/agents/learnings.md`. Set only
+   sections and target crate `AGENTS.md`; query only relevant-area entries from
+   `docs/agents/learnings.md` (query/slice only). Set only
    the agent's own issue to `In Progress` and post scope, expected paths, non-goals,
    dependencies and the first falsifiable acceptance check. An agent MAY pick up only a
    `Todo` and unassigned issue, unless a human or the orchestration explicitly assigns
@@ -29,11 +32,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    local clock. A later claimant MUST record the conflict on its own issue and stop
    **before its first edit**. If two claims carry the same timestamp, neither
    proceeds: that is a human arbitration, not a coin flip.
-   Before implementation, classify every acceptance criterion as `CI-only`, `real
-   OS/device`, or `not applicable`. For a real OS/device criterion, the initial Linear
-   comment MUST include `## OS acceptance` with the required OS/device, exact observable
-   check, and current availability. A CI lane on that OS is not user-facing product
-   evidence unless the approved issue/spec explicitly says it is.
+   Classify every acceptance criterion through `.agents/coordination.md`; when a real
+   OS/device criterion applies, include that owner's initial `## OS acceptance` record.
+   Before implementation, compare the issue/paste pin with `origin/main`: inspect
+   `git log <pin>..origin/main`, newly landed `docs/research` notes, and open PRs. Record
+   that delta in this first Linear comment. A stale pin is a defect, not an excuse.
    For non-trivial work, that same first comment MUST record the decision-bearing atoms
    required by root `AGENTS.md` § Atomic problem-solving protocol. Record each atom's
    owner, boundary and inputs/outputs, failure mode, observable contract, independence
@@ -43,7 +46,7 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
 3. **Isolate.** Work in a git worktree sibling directory (`../keld-<issue>`), branch
-   `agent/kel-<n>-<slug>` from `origin/main` (root `AGENTS.md` § Commits & PRs). One
+   `agent/kel-<n>-<slug>` from `origin/main` (`.agents/review.md`). One
    issue per worktree. Never two agents in one tree.
 4. **Implement and coordinate.** Tests with the change (conformance entries *first* for
    compat work). Before a material design/scope decision and before integration,
@@ -59,20 +62,17 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    is a named task or acceptance checkpoint in the issue/spec. On duplicate,
    blocker, supersession or another active owner, stop the overlap, record the conflict
    on the agent's own issue (or handoff), and notify the human/orchestrator; a worktree
-   does not authorize competing architecture decisions. For a real OS/device criterion,
-   record the executed OS and evidence after each attempt; if its system is unavailable,
-   leave an `## OS handoff` naming the exact remaining check, availability blocker, and
-   next operator action rather than treating generic CI as completion.
-5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test
-   suite, plus the spec's test plan. Diagram changes additionally run
+   does not authorize competing architecture decisions. Apply the attempt, evidence,
+   status, and handoff rules owned by `.agents/coordination.md` to every OS criterion.
+5. **Verify**. `just ci` is the exact full local gate; format, warning-denied clippy, and
+   the full workspace test suite are its mandatory core Rust subset. Also run the spec's
+   test plan. Diagram changes additionally run
    `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
-   visual/report gate from `.agents/testing.md`; authoritative-doc changes run
-   `just llms-check` after regeneration. Paste real output in the PR; never "should work".
-   If any criterion is `real OS/device`, run it on its named platform. Otherwise run only
-   the applicable CI-only checks and record `not applicable` criteria. Cross-compilation,
-   emulation, and a different-OS test cannot replace a real OS/device acceptance. CI on
-   the named OS proves only its declared automation contract unless the issue/spec defines
-   that job as the product fixture.
+   visual/report gate from `.agents/testing.md`; included-source changes run both
+   `just llms-test` and `just llms-check` after regeneration. Paste both real outputs,
+   and every other gate result, in the PR; never "should work".
+   Apply `.agents/coordination.md` for real OS/device versus CI-only evidence; `just ci`
+   does not replace a named product-acceptance observable.
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review
    subagent): boundary violations? review gates missed? spec drift? slop (dead code,
    duplicated helpers, drive-by refactors)? Before pushing, explicitly answer: what
@@ -82,8 +82,8 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    policy/helper, copied parser/state machine, silent compatibility regression or
    performance claim based only on language choice blocks the PR until the root cause is
    fixed.
-   When CodeRabbit has not reviewed the current head commit (root `AGENTS.md` § Commits &
-   PRs), an adversarial isolated-context review is **mandatory**, not optional, and it MUST
+   When CodeRabbit has not reviewed the current head commit (`.agents/review.md`), an
+   adversarial isolated-context review is **mandatory**, not optional, and it MUST
    have all four of these or it is theatre:
    - **Isolated context.** Reviewers get the diff and the repo, and MUST NOT be given the
      author's rationale. A reviewer handed the reasoning grades the explanation instead of
@@ -96,23 +96,21 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    - **An independent refuter per finding**, whose default position is that the claim is
      wrong. What survives refutation is what gets reported.
 7. **PR and handoff.** Refresh Linear once more, then rebase onto `origin/main` first
-   (linear history; `--force-with-lease` the feature branch only — root `AGENTS.md`
-   § Commits & PRs). After CodeRabbit fixes, resolve the addressed GitHub review
-   threads on that PR (and on an earlier PR when a follow-up merged the fix) per root
-   `AGENTS.md` § Commits & PRs. Description per the intake form
+   (linear history; `--force-with-lease` the feature branch only — `.agents/review.md`
+   § Branch and commit contract). After CodeRabbit fixes, resolve the addressed GitHub
+   review threads on that PR (and on an earlier PR when a follow-up merged the fix) per
+   `.agents/review.md` § Current-head review. Description per the intake form
    [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST_TEMPLATE.md):
    Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Omit empty
    optional sections. Strip every template HTML comment from the submitted PR
-   body. Append any learnings to `docs/agents/learnings.md` in the same PR.
+   body. Append a deduped relevant-area learning only when the root threshold applies.
    Post actual gate output, unverified conditions, commit/PR links and follow-up issue
-   IDs. Before finishing, leave a Linear `## Branch handoff` block per root
-   `AGENTS.md` § Branch + Linear handoff (merge intent is `do-not-merge` /
+   IDs. Before finishing, leave a Linear `## Branch handoff` block per
+   `.agents/coordination.md` (merge intent is `do-not-merge` /
    `merge-when-CI-green` / `merge-after:<deps>` / `human-decide` — not every branch
-   merges). The handoff MUST include its OS acceptance and status. For an unavailable
-   real OS/device, also leave `## OS handoff`; a partial merge needs explicit human
-   authorization and does not close the parent issue. Move the issue to Done only when
-   every acceptance criterion is met; otherwise leave it In Progress or mark it Blocked
-   with the exact dependency.
+   merges). Use its OS acceptance/status and `## OS handoff` rules. Move the issue to Done
+   only when every acceptance criterion is met; otherwise leave it In Progress or mark it
+   Blocked with the exact dependency.
 
 ## Agent claim (mandatory, before any edit)
 
@@ -125,10 +123,11 @@ acceptance cannot move between agents.
 - Agent: claude-code | codex | cursor
 - Device: <host the work actually runs on>
 - Model/effort: e.g. opus-5 | gpt-5.6-sol@max
+- Repo: <actual repository>
 - Worktree: ../keld-<issue>
 - Branch: agent/kel-<n>-<slug>
 - Expected paths: <globs this work will write>
-- Single-writer files needed: none | <named shared file>
+- Single-writer files/keys needed: none | <human-designated shared files/keys>
 - Claim expires: <UTC timestamp, at most 24h ahead; refresh while working>
 - OS acceptance owned: real:<OS/device + observable> | none
 ```
@@ -162,8 +161,8 @@ after the claim — one record of availability, not two.
   effect immediately, regardless of the expiry, and the next agent records that it took
   a revoked claim. This is the override for a wedged or misbehaving agent that is still
   refreshing.
-- `Single-writer files needed` MUST be empty unless that agent is the designated writer
-  for the shared file (see § Parallelism rules). Claiming one does not grant it.
+- `Single-writer files/keys needed` MUST be empty unless that agent is the designated
+  writer for the shared file/key (see § Parallelism rules). Claiming one does not grant it.
 - The claim MUST be refreshed at each substantial milestone, alongside the progress
   comment step 4 already requires. An unrefreshed claim is a stale claim.
 

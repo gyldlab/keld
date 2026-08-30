@@ -42,7 +42,7 @@ numbered research is not.
 
 | File | What's in it | When you read it |
 |---|---|---|
-| [`AGENTS.md`](../../AGENTS.md) | **The single most important file in the repo.** Ground truth, crate map, the three-command verification gate, Rust rules (`unsafe` policy, no `unwrap`/`expect`/`panic!` in libs, typed errors, hot-path discipline, dependency review), TypeScript rules, naming, security/perf rules, the five human review gates, working rules, the mandatory self-improvement rule, and commit/PR format. | Before your first line of code, and again whenever you're unsure whether something is allowed. |
+| [`AGENTS.md`](../../AGENTS.md) | **The compact binding invariant floor.** Ground truth, atomic/engineering rules, crate map, verification floor, language/security constraints, review gates, and universal working invariants. [`.agents/index.md`](../../.agents/index.md) routes conditional process, CI, docs, research, and PR details. | Read the root before work, then load only index rows matching the task. |
 | [`README.md`](../../README.md) | The 30-second pitch, the intended `migrate → dev → build` flow, the workspace layout, and the two commands that work today. | First five minutes. |
 | [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Tracked phase map between Linear project numbers and the local `ROADMAP.md` (gitignored). Use this, not an untracked file, as required reading for “what is in scope now.” | When you want to know whether the thing you're about to build is in scope *now*. |
 | [`llms.txt`](../../llms.txt) · [`llms-full.txt`](../../llms-full.txt) | Generated agent-readable documentation: a compact curated index and the corresponding concatenated corpus. `tools/llms_docs.rs` fixes source order and excludes research/local-only paths; `just llms-check` rejects drift. | When wiring up agent tooling, bulk-ingesting the authoritative docs corpus, or checking what the official MCP docs search embeds. |
@@ -160,9 +160,9 @@ source ledger before promoting any unresolved claim.
 
 | Doc | What's in it |
 |---|---|
-| [`workflow.md`](../agents/workflow.md) | The development loop, binding on humans and agents alike: pick up a Linear issue → spec gate (never implement from an unapproved spec) → isolate in a git worktree (`../keld-<issue>`, branch `agent/kel-<n>-<slug>` from `origin/main`, one issue per tree) → implement with tests → run the verification gate → adversarial self-review of the full diff → PR. Plus parallelism rules (3–7 concurrent agents, disjoint crates, single-writer foundational files), the split between hard CI gates and human review gates, and failure etiquette ("a failing test you didn't write is signal, not noise"; "partial + accurate > complete + vague"). Binding branch/PR-body rules live in root [`AGENTS.md`](../../AGENTS.md) § Commits & PRs. |
+| [`workflow.md`](../agents/workflow.md) | The development loop: pick up a Linear issue → spec gate → isolated worktree → implementation/tests → verification → adversarial review → PR. Operational branch/OS rules live in `.agents/coordination.md`; current-head and PR rules live in `.agents/review.md`. |
 | [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<kebab-name>.md`: goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only after human approval; an approved spec may then move to `Status: implementing`. |
-| [`learnings.md`](../agents/learnings.md) | The **append-only gotcha log**. Read it before starting a task; it is deliberately kept small because every agent session loads it. |
+| [`learnings.md`](../agents/learnings.md) | The searchable evidence log. Query relevant areas only; it is not loaded wholesale into every agent session. |
 
 ### `.agents/` — conditional playbooks
 
@@ -318,8 +318,8 @@ the optional external KEL-67 memory pilot should also read
    binds.
 6. [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md)
    — Linear vs local `ROADMAP.md` numbering; the gitignored file is not required reading.
-7. [`docs/agents/learnings.md`](../agents/learnings.md) — the gotcha log; load-bearing
-   and short.
+7. Query the relevant area in [`docs/agents/learnings.md`](../agents/learnings.md); it is
+   load-bearing evidence, not a default full-file read.
 8. Run it: `cargo nextest run --workspace --profile ci`, then `just hello` on the target
    OS. A passing build proves only the compiled paths; observing the window on that OS is
    separate runtime evidence.

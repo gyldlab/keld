@@ -20,7 +20,7 @@ Non-goals:
 
 ## 2. Spec refs
 
-- `AGENTS.md` § CI dependency routing and § No workarounds
+- `.agents/ci.md` § Required workflow and routing and `AGENTS.md` § Working invariants
 - `docs/agents/workflow.md` § Review: CI is the arbiter, humans are the architects
 - `.agents/testing.md` § CI tiers
 - GitHub Actions official workflow/container documentation (accessed 2026-08-19)
