@@ -499,6 +499,7 @@ pub struct Supervisor {
     #[cfg(target_os = "macos")]
     accepted_shutdown: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    #[cfg(windows)]
     restart_attempt: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
 }
@@ -634,6 +635,7 @@ impl Supervisor {
             #[cfg(target_os = "macos")]
             accepted_shutdown,
             shutdown,
+            #[cfg(windows)]
             restart_attempt,
             thread: Some(thread),
         })
@@ -775,6 +777,7 @@ impl Supervisor {
     /// consumes a matching signal at its existing wait boundary and applies
     /// the same crash-loop policy before successor preparation. A stale
     /// request cannot restart a later attempt.
+    #[cfg(windows)]
     pub(crate) fn restart_generation(&self, attempt: u32) {
         self.restart_attempt.store(attempt, Ordering::Release);
     }
