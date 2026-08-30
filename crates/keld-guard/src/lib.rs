@@ -31,16 +31,19 @@
 mod admit;
 mod jsonc;
 mod probe;
+mod unique_json;
 
 use std::fmt;
-use std::fs;
-use std::io;
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::jsonc::strip_jsonc_comments;
+
+const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
 pub use admit::{
     AdmissionError, AdmissionRequest, ArchiveId, ArtifactDigest, CURRENT_POLICY_GENERATION,
@@ -265,6 +268,13 @@ pub enum ManifestError {
         /// `serde_json` error text.
         detail: String,
     },
+    /// The input exceeded the bounded permissions-manifest size.
+    TooLarge {
+        /// Path when loading from disk; `None` for [`parse_manifest`].
+        path: Option<PathBuf>,
+        /// Maximum accepted byte length.
+        max_bytes: usize,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -286,15 +296,33 @@ impl fmt::Display for ManifestError {
                 Some(p) => write!(
                     f,
                     "KELD-GUARD005: permissions manifest at `{}` is not valid JSONC — {detail}. \
-                     Fix the JSON (comments are allowed; trailing commas are not).",
+                     Fix the JSON or remove duplicate object keys \
+                     (comments are allowed; trailing commas are not).",
                     p.display()
                 ),
                 None => write!(
                     f,
                     "KELD-GUARD005: permissions manifest is not valid JSONC — {detail}. \
-                     Fix the JSON (comments are allowed; trailing commas are not)."
+                     Fix the JSON or remove duplicate object keys \
+                     (comments are allowed; trailing commas are not)."
                 ),
             },
+            Self::TooLarge { path, max_bytes } => {
+                let max_kib = max_bytes / 1024;
+                match path {
+                    Some(path) => write!(
+                        f,
+                        "KELD-GUARD017: permissions manifest at `{}` exceeds the {max_kib} KiB limit. \
+                         Reduce the manifest to {max_kib} KiB or less and retry.",
+                        path.display()
+                    ),
+                    None => write!(
+                        f,
+                        "KELD-GUARD017: permissions manifest exceeds the {max_kib} KiB limit. \
+                         Reduce the manifest to {max_kib} KiB or less and retry."
+                    ),
+                }
+            }
         }
     }
 }
@@ -329,9 +357,11 @@ pub fn json_pointer_for(capability: &str) -> String {
 ///
 /// # Errors
 ///
-/// Returns [`ManifestError::Parse`] when the comment-stripped text is not JSON
-/// or is not a JSON object.
+/// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
+/// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
+/// malformed, or not a JSON object.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
+    ensure_manifest_size(text.len(), None)?;
     parse_manifest_at(text, None)
 }
 
@@ -340,10 +370,11 @@ pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> 
 /// # Errors
 ///
 /// Returns [`ManifestError::NotFound`] when the file is missing,
-/// [`ManifestError::Read`] on other I/O errors, or [`ManifestError::Parse`]
-/// when the contents are not JSONC.
+/// [`ManifestError::Read`] on other I/O/encoding errors,
+/// [`ManifestError::TooLarge`] above 64 KiB, or [`ManifestError::Parse`] when
+/// the contents are ambiguous or malformed JSONC.
 pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> {
-    let text = fs::read_to_string(path).map_err(|e| {
+    let file = File::open(path).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
             ManifestError::NotFound {
                 path: path.to_path_buf(),
@@ -355,15 +386,53 @@ pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> 
             }
         }
     })?;
+    let bytes = read_manifest_bytes(file, path)?;
+    let text = String::from_utf8(bytes).map_err(|error| ManifestError::Read {
+        path: path.to_path_buf(),
+        detail: error.to_string(),
+    })?;
     parse_manifest_at(&text, Some(path))
+}
+
+pub(crate) fn read_manifest_bytes<R: Read>(
+    reader: R,
+    path: &Path,
+) -> Result<Vec<u8>, ManifestError> {
+    let mut bytes = Vec::with_capacity(MAX_MANIFEST_BYTES + 1);
+    reader
+        .take((MAX_MANIFEST_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| ManifestError::Read {
+            path: path.to_path_buf(),
+            detail: error.to_string(),
+        })?;
+    ensure_manifest_size(bytes.len(), Some(path))?;
+    Ok(bytes)
+}
+
+fn ensure_manifest_size(length: usize, path: Option<&Path>) -> Result<(), ManifestError> {
+    if length > MAX_MANIFEST_BYTES {
+        return Err(ManifestError::TooLarge {
+            path: path.map(Path::to_path_buf),
+            max_bytes: MAX_MANIFEST_BYTES,
+        });
+    }
+    Ok(())
 }
 
 fn parse_manifest_at(
     text: &str,
     path: Option<&Path>,
 ) -> Result<PermissionsManifest, ManifestError> {
-    let stripped = strip_jsonc_comments(text);
-    serde_json::from_str(&stripped).map_err(|e| ManifestError::Parse {
+    let stripped = strip_jsonc_comments(text).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
+    let value = unique_json::parse(&stripped).map_err(|e| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: e.to_string(),
+    })?;
+    serde_json::from_value(value).map_err(|e| ManifestError::Parse {
         path: path.map(Path::to_path_buf),
         detail: e.to_string(),
     })
@@ -460,7 +529,42 @@ fn path_in_scope(path: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
+
+    struct CountingReader {
+        remaining: usize,
+        bytes_read: Rc<Cell<usize>>,
+    }
+
+    impl Read for CountingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = buffer.len().min(self.remaining);
+            buffer[..count].fill(b' ');
+            self.remaining -= count;
+            self.bytes_read.set(self.bytes_read.get() + count);
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn bounded_reader_stops_after_limit_plus_one_byte() {
+        let bytes_read = Rc::new(Cell::new(0));
+        let reader = CountingReader {
+            remaining: MAX_MANIFEST_BYTES * 16,
+            bytes_read: Rc::clone(&bytes_read),
+        };
+        let path = Path::new("keld.permissions.jsonc");
+        let error = read_manifest_bytes(reader, path).expect_err("oversize input must fail");
+        assert!(matches!(error, ManifestError::TooLarge { .. }), "{error}");
+        assert_eq!(
+            bytes_read.get(),
+            MAX_MANIFEST_BYTES + 1,
+            "the reader must not consume the rest of an oversized source"
+        );
+    }
 
     #[test]
     fn deny_reasons_render_actionable_text() {
