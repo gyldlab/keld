@@ -5,12 +5,13 @@
 //! **Destination:** every privileged host operation passes through this crate's
 //! `(principal, capability, args) -> Decision` check before the handler runs.
 //!
-//! **v0 live callers:** webview media capture (`web.camera` / `web.microphone`)
+//! **v0 live owners:** the shipping macOS host loads one digest-verified policy
+//! snapshot before app resources; webview media capture (`web.camera` / `web.microphone`)
 //! on the three `keld-wv` backends, and host `fs.read` / `fs.write` via
 //! `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69 / KEL-71). Those
-//! media paths currently pass [`PermissionsManifest::default()`] (empty grants
-//! → default-deny), not a disk-loaded app manifest. `keld-core` depends on this
-//! crate but does not call [`evaluate`]. Echo and host-lifecycle session control
+//! media paths still pass [`PermissionsManifest::default()`] (empty grants →
+//! default-deny), not that snapshot. `keld-core` retains the verified snapshot
+//! but does not yet call [`evaluate`]. Echo and host-lifecycle session control
 //! stay ungated on purpose.
 //!
 //! v0 engine surface: parse `keld.permissions.jsonc` and default-deny
@@ -32,6 +33,7 @@ mod admit;
 mod jsonc;
 mod probe;
 mod unique_json;
+pub mod verified_manifest;
 
 use std::fmt;
 use std::fs::File;
@@ -275,6 +277,35 @@ pub enum ManifestError {
         /// Maximum accepted byte length.
         max_bytes: usize,
     },
+    /// The retained policy bytes are not valid UTF-8.
+    InvalidUtf8 {
+        /// Diagnostics-only path from the validated boot selection.
+        path: PathBuf,
+        /// UTF-8 decoder detail.
+        detail: String,
+    },
+    /// The retained policy bytes do not match the boot descriptor digest.
+    IntegrityMismatch {
+        /// Diagnostics-only path from the validated boot selection.
+        path: PathBuf,
+        /// Digest decoded from the validated boot descriptor.
+        expected: [u8; 32],
+        /// Digest computed over the exact bytes supplied to the parser.
+        actual: [u8; 32],
+    },
+}
+
+impl ManifestError {
+    /// Stable `KELD-GUARD*` code for this manifest failure.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::NotFound { .. } | Self::Read { .. } => "KELD-GUARD004",
+            Self::Parse { .. } | Self::InvalidUtf8 { .. } => "KELD-GUARD005",
+            Self::IntegrityMismatch { .. } => "KELD-GUARD016",
+            Self::TooLarge { .. } => "KELD-GUARD017",
+        }
+    }
 }
 
 impl fmt::Display for ManifestError {
@@ -323,8 +354,40 @@ impl fmt::Display for ManifestError {
                     ),
                 }
             }
+            Self::InvalidUtf8 { path, detail } => write!(
+                f,
+                "KELD-GUARD005: permissions manifest at `{}` is not UTF-8 — {detail}. \
+                 Write keld.permissions.jsonc as UTF-8 JSONC.",
+                path.display()
+            ),
+            Self::IntegrityMismatch {
+                path,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "KELD-GUARD016: permissions manifest integrity mismatch at `{}` \
+                     (expected ",
+                    path.display()
+                )?;
+                write_digest(f, expected)?;
+                write!(f, ", actual ")?;
+                write_digest(f, actual)?;
+                write!(
+                    f,
+                    "). Rebuild or re-sign the boot artifact so its digest matches the exact policy bytes."
+                )
+            }
         }
     }
+}
+
+fn write_digest(f: &mut fmt::Formatter<'_>, digest: &[u8; 32]) -> fmt::Result {
+    for byte in digest {
+        write!(f, "{byte:02x}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for ManifestError {}

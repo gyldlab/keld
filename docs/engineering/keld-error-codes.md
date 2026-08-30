@@ -304,8 +304,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-GUARD005
 
 - crate: keld-guard
-- message: Permissions manifest is ambiguous or not valid JSONC
-- fix: Fix the JSON or remove duplicate object keys (comments are allowed; trailing commas are not).
+- message: Permissions manifest is not UTF-8, is ambiguous, or is not valid JSONC
+- fix: Write UTF-8, remove duplicate object keys, or fix the JSON (comments are allowed; trailing commas are not).
 
 ## KELD-GUARD006
 
@@ -564,6 +564,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: Timed out waiting for a Bun ready marker
 - fix: Confirm Bun is on PATH and the project entry speaks kipc.
+
+## KELD-GUARD016
+
+- crate: keld-guard
+- message: Retained permissions-manifest bytes do not match the validated boot digest
+- fix: Rebuild or re-sign the boot artifact so its digest matches the exact policy bytes.
 
 ## KELD-CORE-033
 

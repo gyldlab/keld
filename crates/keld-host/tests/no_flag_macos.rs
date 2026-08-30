@@ -161,8 +161,51 @@ fn every_invalid_boot_class_fails_before_transient_window_listener_or_bun() {
                 .path()
                 .join(format!("invalid-{}.sock", invalid.name())),
             invalid.name(),
+            invalid.expected_code(),
+            None,
         );
     }
+}
+
+#[test]
+fn every_invalid_policy_class_fails_before_transient_window_listener_or_bun() {
+    let fixture = ProductFixture::new("invalid-policy");
+    let watcher = NativeAbsenceWatcher::compile(fixture.root.path());
+    for invalid in InvalidPolicy::ALL {
+        let stage = fixture.stage();
+        invalid.apply(stage.root());
+        assert_invalid_stage_is_resource_free(
+            &stage,
+            &watcher,
+            &fixture
+                .root
+                .path()
+                .join(format!("invalid-policy-{}.sock", invalid.name())),
+            invalid.name(),
+            invalid.expected_code(),
+            None,
+        );
+    }
+}
+
+#[test]
+fn retained_policy_read_failure_is_guard004_and_resource_free() {
+    let fixture = ProductFixture::new("policy-read-failure");
+    let watcher = NativeAbsenceWatcher::compile(fixture.root.path());
+    let fault = PolicyReadFault::compile(fixture.root.path());
+    let stage = fixture.stage();
+    assert_invalid_stage_is_resource_free(
+        &stage,
+        &watcher,
+        &fixture.root.path().join("policy-read-failure.sock"),
+        "retained-read-failure",
+        "KELD-GUARD004",
+        Some(&fault),
+    );
+    assert!(
+        fault.marker.exists(),
+        "read fault never reached the retained permissions handle"
+    );
 }
 
 #[test]
@@ -1253,8 +1296,10 @@ enum InvalidBoot {
     Version,
     NonUtf8,
     Oversize,
+    EmptyName,
     UnsafePath,
     BadDigest,
+    WrongPermissionsFile,
     MissingEntry,
     DirectoryEntry,
     SymlinkEntry,
@@ -1271,7 +1316,7 @@ enum InvalidBoot {
 }
 
 impl InvalidBoot {
-    const ALL: [Self; 25] = [
+    const ALL: [Self; 27] = [
         Self::MissingBoot,
         Self::UnreadableBoot,
         Self::DirectoryBoot,
@@ -1282,8 +1327,10 @@ impl InvalidBoot {
         Self::Version,
         Self::NonUtf8,
         Self::Oversize,
+        Self::EmptyName,
         Self::UnsafePath,
         Self::BadDigest,
+        Self::WrongPermissionsFile,
         Self::MissingEntry,
         Self::DirectoryEntry,
         Self::SymlinkEntry,
@@ -1311,8 +1358,10 @@ impl InvalidBoot {
             Self::Version => "unknown-version",
             Self::NonUtf8 => "non-utf8",
             Self::Oversize => "oversize",
+            Self::EmptyName => "empty-name",
             Self::UnsafePath => "unsafe-path",
             Self::BadDigest => "bad-digest",
+            Self::WrongPermissionsFile => "wrong-permissions-file",
             Self::MissingEntry => "missing-entry",
             Self::DirectoryEntry => "directory-entry",
             Self::SymlinkEntry => "symlink-entry",
@@ -1326,6 +1375,38 @@ impl InvalidBoot {
             Self::SymlinkPermissions => "symlink-permissions",
             Self::UnreadablePermissions => "unreadable-permissions",
             Self::WrongRootMode => "wrong-root-mode",
+        }
+    }
+
+    const fn expected_code(self) -> &'static str {
+        match self {
+            Self::Malformed
+            | Self::Duplicate
+            | Self::Unknown
+            | Self::Version
+            | Self::NonUtf8
+            | Self::Oversize
+            | Self::EmptyName
+            | Self::BadDigest
+            | Self::WrongPermissionsFile => "KELD-CORE-035",
+            Self::MissingBoot
+            | Self::UnreadableBoot
+            | Self::DirectoryBoot
+            | Self::SymlinkBoot
+            | Self::UnsafePath
+            | Self::MissingEntry
+            | Self::DirectoryEntry
+            | Self::SymlinkEntry
+            | Self::UnreadableEntry
+            | Self::MissingRenderer
+            | Self::DirectoryRenderer
+            | Self::SymlinkRenderer
+            | Self::UnreadableRenderer
+            | Self::MissingPermissions
+            | Self::DirectoryPermissions
+            | Self::SymlinkPermissions
+            | Self::UnreadablePermissions
+            | Self::WrongRootMode => "KELD-CORE-036",
         }
     }
 
@@ -1348,11 +1429,15 @@ impl InvalidBoot {
             Self::Version => mutate_boot(&boot, |document| document["schema"] = 2.into()),
             Self::NonUtf8 => replace_boot(&boot, &[0xff]),
             Self::Oversize => replace_boot(&boot, &vec![b' '; 64 * 1024 + 1]),
+            Self::EmptyName => mutate_boot(&boot, |document| document["name"] = "".into()),
             Self::UnsafePath => {
                 mutate_boot(&boot, |document| document["entry"] = "../escape.ts".into());
             }
             Self::BadDigest => mutate_boot(&boot, |document| {
                 document["permissions"]["content_sha256"] = "SHA256:BAD".into();
+            }),
+            Self::WrongPermissionsFile => mutate_boot(&boot, |document| {
+                document["permissions"]["file"] = "other.permissions.jsonc".into();
             }),
             Self::MissingEntry => fs::remove_file(entry).expect("remove entry"),
             Self::DirectoryEntry => replace_with_directory(&entry),
@@ -1378,6 +1463,90 @@ impl InvalidBoot {
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum InvalidPolicy {
+    Malformed,
+    NonUtf8,
+    DigestMismatch,
+    Oversized,
+    DuplicateKeys,
+}
+
+impl InvalidPolicy {
+    const ALL: [Self; 5] = [
+        Self::Malformed,
+        Self::NonUtf8,
+        Self::DigestMismatch,
+        Self::Oversized,
+        Self::DuplicateKeys,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::NonUtf8 => "non-utf8",
+            Self::DigestMismatch => "digest-mismatch",
+            Self::Oversized => "oversized",
+            Self::DuplicateKeys => "duplicate-keys",
+        }
+    }
+
+    const fn expected_code(self) -> &'static str {
+        match self {
+            Self::Malformed | Self::NonUtf8 | Self::DuplicateKeys => "KELD-GUARD005",
+            Self::DigestMismatch => "KELD-GUARD016",
+            Self::Oversized => "KELD-GUARD017",
+        }
+    }
+
+    fn apply(self, root: &Path) {
+        let policy = root.join("keld.permissions.jsonc");
+        let boot = root.join("keld.boot.json");
+        fs::set_permissions(&policy, fs::Permissions::from_mode(0o600))
+            .expect("make policy writable");
+        match self {
+            Self::Malformed => {
+                fs::write(&policy, b"{nope}\n").expect("write malformed policy");
+                set_policy_digest(
+                    &boot,
+                    "ed4d18e4d7f58b800fafc0e89f02e9b76eca431e8a8314df677d02cee467920e",
+                );
+            }
+            Self::NonUtf8 => {
+                fs::write(&policy, [0xff]).expect("write non-UTF-8 policy");
+                set_policy_digest(
+                    &boot,
+                    "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89",
+                );
+            }
+            Self::DigestMismatch => {
+                fs::write(&policy, b"{not the described bytes}\n")
+                    .expect("write digest-mismatched policy");
+            }
+            Self::Oversized => {
+                fs::write(&policy, vec![b' '; 64 * 1024 + 1]).expect("write oversized policy");
+            }
+            Self::DuplicateKeys => {
+                fs::write(
+                    &policy,
+                    br#"{"app":{"fs":{"read":[],"read":["/outside/**"]}}}"#,
+                )
+                .expect("write duplicate-key policy");
+                set_policy_digest(
+                    &boot,
+                    "06d74274d5d6a0351deac64c75ad477105c8316f61a0e6e62eb59e3e0f73e0d1",
+                );
+            }
+        }
+    }
+}
+
+fn set_policy_digest(boot: &Path, hex: &str) {
+    mutate_boot(boot, |document| {
+        document["permissions"]["content_sha256"] = format!("sha256:{hex}").into();
+    });
 }
 
 fn replace_boot(path: &Path, bytes: &[u8]) {
@@ -1415,6 +1584,67 @@ struct NativeAbsenceWatcher {
     executable: PathBuf,
 }
 
+struct PolicyReadFault {
+    library: PathBuf,
+    marker: PathBuf,
+}
+
+impl PolicyReadFault {
+    fn compile(root: &Path) -> Self {
+        const SOURCE: &str = r#"
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define DYLD_INTERPOSE(replacement, replacee) \
+  __attribute__((used)) static struct { const void *replacement_ptr; const void *replacee_ptr; } \
+  interpose_##replacee __attribute__((section("__DATA,__interpose"))) = { \
+    (const void *)(unsigned long)&replacement, (const void *)(unsigned long)&replacee \
+  };
+
+static ssize_t fault_read(int fd, void *buffer, size_t count) {
+  char path[PATH_MAX];
+  const char *suffix = "/keld.permissions.jsonc";
+  if (fcntl(fd, F_GETPATH, path) == 0) {
+    size_t path_len = strlen(path);
+    size_t suffix_len = strlen(suffix);
+    if (path_len >= suffix_len && strcmp(path + path_len - suffix_len, suffix) == 0) {
+      const char *marker = getenv("KELD_T2_READ_FAULT_MARKER");
+      if (marker != NULL) {
+        int marker_fd = open(marker, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (marker_fd >= 0) {
+          (void)write(marker_fd, "faulted\n", 8);
+          (void)close(marker_fd);
+        }
+      }
+      errno = EIO;
+      return -1;
+    }
+  }
+  return (ssize_t)syscall(SYS_read, fd, buffer, count);
+}
+
+DYLD_INTERPOSE(fault_read, read)
+"#;
+        let source = root.join("kel102-policy-read-fault.c");
+        let library = root.join("kel102-policy-read-fault.dylib");
+        let marker = root.join("kel102-policy-read-fault.marker");
+        fs::write(&source, SOURCE).expect("write policy read-fault interposer");
+        let output = Command::new("/usr/bin/clang")
+            .args(["-dynamiclib", "-O2", "-o"])
+            .arg(&library)
+            .arg(&source)
+            .output()
+            .expect("compile policy read-fault interposer");
+        assert!(output.status.success(), "compile interposer: {output:?}");
+        Self { library, marker }
+    }
+}
+
 impl NativeAbsenceWatcher {
     fn compile(root: &Path) -> Self {
         const SOURCE: &str = r#"
@@ -1430,7 +1660,7 @@ var children = Set<Int>()
 var sessions = Set<String>()
 
 func sample() {
-  let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
+  let rows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
   for row in rows {
     let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
     if owner == target, let number = row[kCGWindowNumber as String] as? NSNumber {
@@ -1504,23 +1734,49 @@ fn assert_invalid_stage_is_resource_free(
     watcher: &NativeAbsenceWatcher,
     control_path: &Path,
     case: &str,
+    expected_code: &str,
+    read_fault: Option<&PolicyReadFault>,
 ) {
     let listener = UnixListener::bind(control_path).expect("bind invalid control observer");
     listener
         .set_nonblocking(true)
         .expect("nonblocking invalid control observer");
-    let child = Command::new("/bin/sh")
-        .args(["-c", "kill -STOP $$; exec \"$1\"", "kel96-invalid"])
-        .arg(stage.host())
+    let mut command = Command::new("/bin/sh");
+    if let Some(fault) = read_fault {
+        command
+            .args([
+                "-c",
+                "kill -STOP $$; DYLD_INSERT_LIBRARIES=\"$2\" KELD_T2_READ_FAULT_MARKER=\"$3\" exec \"$1\"",
+                "kel102-policy-read-fault",
+            ])
+            .arg(stage.host())
+            .arg(&fault.library)
+            .arg(&fault.marker);
+    } else {
+        command
+            .args(["-c", "kill -STOP $$; exec \"$1\"", "kel96-invalid"])
+            .arg(stage.host());
+    }
+    command
         .env("KELD_T1B_CONTROL", control_path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start suspended invalid host");
+        .stderr(Stdio::piped());
+    let child = command.spawn().expect("start suspended invalid host");
     let host_pid = child.id();
     await_process_state(host_pid, 'T');
     let native = watcher.spawn(host_pid);
-    let output = wait_child_output(child, EVENT_DEADLINE);
+    let mut forbidden_control = false;
+    let output = wait_child_output_observing(child, EVENT_DEADLINE, || match listener.accept() {
+        Ok((mut stream, _)) => {
+            forbidden_control = true;
+            stream
+                .write_all(b"QUIT\n")
+                .expect("stop forbidden app through its owned lifecycle path");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(error) => panic!("inspect invalid-stage control: {error}"),
+    });
+    assert!(!forbidden_control, "{case}: Bun entered before preflight");
     assert!(
         !output.status.success(),
         "{case}: invalid boot became success"
@@ -1538,10 +1794,7 @@ fn assert_invalid_stage_is_resource_free(
         "{case}: transient resource: {observations}"
     );
     let stderr = String::from_utf8(output.stderr).expect("typed stderr UTF-8");
-    assert!(
-        stderr.contains("KELD-CORE-035") || stderr.contains("KELD-CORE-036"),
-        "{case}: {stderr}"
-    );
+    assert!(stderr.contains(expected_code), "{case}: {stderr}");
     assert!(
         stderr.contains("[startup-resource-attempts listener=0 child=0 window=0]"),
         "{case}: internal pre-resource ledger was not empty: {stderr}"
@@ -1820,7 +2073,15 @@ fn read_control_line(reader: &mut BufReader<UnixStream>) -> String {
     line.trim_end().to_owned()
 }
 
-fn wait_child_output(mut child: Child, timeout: Duration) -> Output {
+fn wait_child_output(child: Child, timeout: Duration) -> Output {
+    wait_child_output_observing(child, timeout, || {})
+}
+
+fn wait_child_output_observing(
+    mut child: Child,
+    timeout: Duration,
+    mut observe: impl FnMut(),
+) -> Output {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_reader = thread::spawn(move || read_child_pipe(stdout));
@@ -1830,6 +2091,7 @@ fn wait_child_output(mut child: Child, timeout: Duration) -> Output {
         if let Some(status) = child.try_wait().expect("inspect child exit") {
             break (status, false);
         }
+        observe();
         if Instant::now() >= deadline {
             let _ = child.kill();
             break (child.wait().expect("wait timed-out child"), true);

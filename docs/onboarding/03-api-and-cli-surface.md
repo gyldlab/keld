@@ -533,13 +533,20 @@ pub fn run_hello_window_titled(title: &str) -> Result<(), keld_wv::WvError>  // 
 pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // legacy hello path
 pub struct ValidatedBootSelection { /* private */ }  // keld_core::app_session
 pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // app_session
+pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // shipping macOS app_session
 pub const VERSION: &str                                    // = CARGO_PKG_VERSION
 ```
 
 Hello-window and config-title helpers live in
-[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The private
-macOS `app_session` owns strict boot validation, the one echo/lifecycle router,
-guardian supervision, CLI-lease loss and ordered UI exit. A complete
+[`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The public
+`app_session` module keeps its session implementation private and owns strict
+macOS boot validation, the one echo/lifecycle router,
+guardian supervision, CLI-lease loss and ordered UI exit. Its shipping no-flag
+caller uses `run_guarded`: before any app resource it transfers KEL-96's retained
+handle and digest for the owner-private staged `keld.permissions.jsonc` copy to
+`keld_guard::verified_manifest`, then retains the
+opaque immutable pair until ordered session cleanup completes. `run_unprivileged`
+remains an explicit diagnostic/test path and is not a fallback. A complete
 cross-platform window registry and privileged kipc↔native dispatch remain target
 work.
 
@@ -563,14 +570,14 @@ accepts one connection, serves it, and on `join()` or `Drop` closes the listener
 the worker, then removes the Unix socket. `start` returns `io::Result` (bind failure is
 not a process invariant).
 
-### 3.5 Placeholder crates — types only, no behavior
+### 3.5 Foundational and partial crates — current exposed behavior
 
-These compile, are documented, and have no functions. Do not mistake them for working
-subsystems:
+These compile and are documented, but none is a complete subsystem. The table names
+the behavior that exists today so target contracts are not mistaken for shipped paths:
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it — the last one is proven end-to-end but has no real capability using it yet (host `fs.read`/`fs.write` is KEL-71). |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`, plus `verified_manifest::{VerifiedManifest, load_verified_manifest}` for the shipping no-flag startup snapshot. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call the evaluator; reachable privileged host routing remains KEL-102/T3. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
 | `keld_pack` | `Format::{App, Dmg, Nsis, Msi, Deb, Rpm, AppImage}` |

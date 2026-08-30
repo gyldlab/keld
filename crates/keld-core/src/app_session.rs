@@ -34,6 +34,9 @@ use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 #[cfg(target_os = "macos")]
 use nix::sys::stat::{SFlag, fstat};
 
+use keld_guard::ManifestError;
+#[cfg(target_os = "macos")]
+use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
 #[cfg(target_os = "macos")]
 use keld_ipc::codec::{decode, encode};
 #[cfg(target_os = "macos")]
@@ -102,6 +105,10 @@ struct SessionShutdownState {
 pub struct ValidatedBootSelection {
     #[cfg(target_os = "macos")]
     app: AppBootSelection,
+    #[cfg(target_os = "macos")]
+    permissions_file: File,
+    #[cfg(target_os = "macos")]
+    permissions_digest: [u8; 32],
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -116,8 +123,24 @@ struct AppBootSelection {
     entry_path: PathBuf,
     entry_file: File,
     renderer_html: Vec<u8>,
-    permissions_file: File,
-    permissions_digest: [u8; 32],
+}
+
+#[cfg(target_os = "macos")]
+struct GuardSnapshot {
+    // T2 retains the verified pair for the whole app session. T3 is the first
+    // task allowed to read it at a privileged dispatch boundary.
+    verified: VerifiedManifest,
+    #[cfg(test)]
+    drop_observer: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(all(target_os = "macos", test))]
+impl Drop for GuardSnapshot {
+    fn drop(&mut self) {
+        if let Some(observer) = &self.drop_observer {
+            observer.store(true, Ordering::Release);
+        }
+    }
 }
 
 impl fmt::Debug for ValidatedBootSelection {
@@ -173,7 +196,7 @@ impl ValidatedBootSelection {
                     "Launch the staged host from the generated owner-private app directory.",
                 )
             })?;
-            validate_from_root(root).map(|app| Self { app })
+            validate_from_root(root)
         }
     }
 }
@@ -185,9 +208,11 @@ pub struct HostAppError {
     detail: String,
     fix: &'static str,
     resources: StartupResourceSnapshot,
+    #[cfg(target_os = "macos")]
+    manifest_source: Option<Box<ManifestError>>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct StartupResourceSnapshot {
     listener: u32,
     child: u32,
@@ -207,6 +232,22 @@ impl HostAppError {
             detail: detail.into(),
             fix,
             resources: startup_resource_snapshot(),
+            #[cfg(target_os = "macos")]
+            manifest_source: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn manifest(source: ManifestError) -> Self {
+        let code = source.code();
+        let detail = source.to_string();
+        Self {
+            code,
+            phase: "permissions manifest preflight",
+            detail,
+            fix: "Apply the keld-guard correction above, rebuild the staged boot artifact, and relaunch.",
+            resources: startup_resource_snapshot(),
+            manifest_source: Some(Box::new(source)),
         }
     }
 
@@ -246,11 +287,34 @@ impl fmt::Debug for HostAppError {
             .field("phase", &self.phase)
             .field("detail", &self.detail)
             .field("resources", &self.resources)
+            .field("manifest_source", &{
+                #[cfg(target_os = "macos")]
+                {
+                    self.manifest_source.as_ref()
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Option::<&ManifestError>::None
+                }
+            })
             .finish_non_exhaustive()
     }
 }
 
-impl std::error::Error for HostAppError {}
+impl std::error::Error for HostAppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        #[cfg(target_os = "macos")]
+        {
+            self.manifest_source
+                .as_ref()
+                .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+}
 
 fn startup_resource_snapshot() -> StartupResourceSnapshot {
     #[cfg(target_os = "macos")]
@@ -425,7 +489,7 @@ fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
 }
 
 #[cfg(target_os = "macos")]
-fn validate_from_root(root: &Path) -> Result<AppBootSelection, HostAppError> {
+fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppError> {
     use nix::sys::stat::fstat;
 
     let root = root.canonicalize().map_err(|source| {
@@ -455,12 +519,14 @@ fn validate_from_root(root: &Path) -> Result<AppBootSelection, HostAppError> {
         .map_err(|source| target_error("renderer", format!("HTML is not UTF-8: {source}")))?;
     let permissions_file =
         open_relative_file(&root_fd, Path::new(PERMISSIONS_FILE), "permissions file")?;
-    Ok(AppBootSelection {
-        root,
-        name: parsed.name,
-        entry_path: parsed.entry,
-        entry_file,
-        renderer_html,
+    Ok(ValidatedBootSelection {
+        app: AppBootSelection {
+            root,
+            name: parsed.name,
+            entry_path: parsed.entry,
+            entry_file,
+            renderer_html,
+        },
         permissions_file,
         permissions_digest: parsed.permissions_digest,
     })
@@ -579,7 +645,57 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
     }
     #[cfg(target_os = "macos")]
     {
-        run_app(boot.app)
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = boot;
+        // This explicit diagnostic/test path remains incapable of registering
+        // a privileged channel. It never serves as recovery from run_guarded.
+        drop((permissions_file, permissions_digest));
+        run_app(app, None)
+    }
+}
+
+/// Runs a validated no-flag host session with one immutable verified policy snapshot.
+///
+/// Policy preflight consumes the already-open KEL-96 permissions handle and
+/// decoded digest before the app can create a child, listener, or window.
+///
+/// # Errors
+///
+/// Returns [`HostAppError`] for a typed manifest preflight failure or any
+/// existing no-flag startup, session, window, guardian, Bun, or shutdown error.
+pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        drop(boot);
+        Err(HostAppError::new(
+            "KELD-CORE-034",
+            "platform availability",
+            "no-flag host support is unavailable on this platform",
+            "Complete and prove the named KEL-96/T4 platform slice before launching the host.",
+        ))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = boot;
+        let display_path = app.root.join(PERMISSIONS_FILE);
+        let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
+            .map_err(HostAppError::manifest)?;
+        let guard_snapshot = GuardSnapshot {
+            verified,
+            #[cfg(test)]
+            drop_observer: None,
+        };
+        // The owner stays in this frame while run_app performs every startup,
+        // event-loop, and ordered-cleanup step. run_app receives only a borrow,
+        // so it cannot destroy the verified session policy early.
+        run_app(app, Some(&guard_snapshot))
     }
 }
 
@@ -719,7 +835,10 @@ impl SessionShutdownState {
 
 #[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned handle transition contiguous
-fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
+fn run_app(
+    boot: AppBootSelection,
+    guard_snapshot: Option<&GuardSnapshot>,
+) -> Result<(), HostAppError> {
     let dev_lease = DevHostLease::from_environment()?;
     let shutdown = SessionShutdownState::new();
     let AppBootSelection {
@@ -728,13 +847,7 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
         entry_path,
         entry_file,
         renderer_html,
-        permissions_file,
-        permissions_digest,
     } = boot;
-    // T1a retains the already-open fixed file and decoded digest as immutable
-    // descriptor handoff data, then deliberately drops them without reading,
-    // hashing, or parsing policy. KEL-102/T2 owns that first same-handle read.
-    let _permissions_handoff = (permissions_file, permissions_digest);
     let html = String::from_utf8(renderer_html).map_err(|source| {
         HostAppError::new(
             "KELD-CORE-036",
@@ -806,42 +919,59 @@ fn run_app(boot: AppBootSelection) -> Result<(), HostAppError> {
     WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     if let Err(source) = engine.create_app(&spec, window_events_tx.clone()) {
         let primary = app_detail("initial window", source.to_string());
-        drop(window_events_tx);
+        return finish_guarded_session(guard_snapshot, |_| {
+            drop(window_events_tx);
+            let event_result = event_coordinator
+                .join()
+                .map_err(|_| app_detail("window event coordinator", "thread panicked"))
+                .and_then(std::convert::identity);
+            let router_result = router.shutdown();
+            let guardian_result = guardian_owner.shutdown();
+            Err(collapse_app_failures(
+                &primary,
+                [event_result, router_result, guardian_result],
+            ))
+        });
+    }
+    let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
+    finish_guarded_session(guard_snapshot, |_| {
+        drop(window_commands_tx);
         let event_result = event_coordinator
             .join()
             .map_err(|_| app_detail("window event coordinator", "thread panicked"))
             .and_then(std::convert::identity);
         let router_result = router.shutdown();
         let guardian_result = guardian_owner.shutdown();
-        return Err(collapse_app_failures(
-            &primary,
-            [event_result, router_result, guardian_result],
-        ));
-    }
-    let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
-    drop(window_commands_tx);
-    let event_result = event_coordinator
-        .join()
-        .map_err(|_| app_detail("window event coordinator", "thread panicked"))
-        .and_then(std::convert::identity);
-    let router_result = router.shutdown();
-    let guardian_result = guardian_owner.shutdown();
 
-    match window_result {
-        Err(source @ WvError::Navigate(_)) => {
-            let primary = app_detail("initial navigation", source.to_string());
-            Err(collapse_app_failures(
-                &primary,
-                [guardian_result, router_result, event_result],
-            ))
+        match window_result {
+            Err(source @ WvError::Navigate(_)) => {
+                let primary = app_detail("initial navigation", source.to_string());
+                Err(collapse_app_failures(
+                    &primary,
+                    [guardian_result, router_result, event_result],
+                ))
+            }
+            result => collapse_app_results([
+                result.map_err(|source| app_detail("macOS app window", source.to_string())),
+                event_result,
+                router_result,
+                guardian_result,
+            ]),
         }
-        result => collapse_app_results([
-            result.map_err(|source| app_detail("macOS app window", source.to_string())),
-            event_result,
-            router_result,
-            guardian_result,
-        ]),
-    }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn finish_guarded_session<T>(
+    guard_snapshot: Option<&GuardSnapshot>,
+    cleanup: impl FnOnce(Option<&GuardSnapshot>) -> T,
+) -> T {
+    let result = cleanup(guard_snapshot);
+    // Reading the verified identity after cleanup makes the retention order a
+    // compile-checked part of the borrowed session lifetime rather than an
+    // incidental use before cleanup.
+    let _retained_digest = guard_snapshot.map(|snapshot| snapshot.verified.verified_sha256());
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -1951,8 +2081,8 @@ mod tests {
         .expect("boot");
 
         let selection = validate_from_root(&root).expect("validated selection");
-        assert_eq!(selection.renderer_html, b"<p id=fixture>exact</p>\n");
-        assert_eq!(selection.name, "Fixture");
+        assert_eq!(selection.app.renderer_html, b"<p id=fixture>exact</p>\n");
+        assert_eq!(selection.app.name, "Fixture");
 
         let mut substituted: serde_json::Value =
             serde_json::from_slice(&valid_boot("src/main.ts", "index.html"))
@@ -1969,15 +2099,104 @@ mod tests {
         fs::remove_file(root.join("index.html")).expect("remove renderer");
         symlink(&outside, root.join("index.html")).expect("escape symlink");
         assert_eq!(
-            selection.renderer_html, b"<p id=fixture>exact</p>\n",
+            selection.app.renderer_html, b"<p id=fixture>exact</p>\n",
             "post-selection renderer substitution changed consumed bytes"
         );
         assert_eq!(
-            selection.name, "Fixture",
+            selection.app.name, "Fixture",
             "post-selection sidecar substitution changed owned fields"
         );
         let error = must_err(validate_from_root(&root), "symlink escape must fail");
         assert!(error.to_string().contains("renderer"), "{error}");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn guarded_preflight_preserves_read_error_before_resources() {
+        use std::fs::OpenOptions;
+
+        let temp = tempfile::tempdir().expect("temp root");
+        let root = temp.path().join("stage");
+        fs::create_dir(&root).expect("stage");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
+        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
+        fs::write(root.join("index.html"), "<p>guarded</p>\n").expect("renderer");
+        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
+
+        let mut selection = validate_from_root(&root).expect("validated selection");
+        selection.permissions_file = OpenOptions::new()
+            .write(true)
+            .open(root.join(PERMISSIONS_FILE))
+            .expect("write-only retained handle");
+        let before = startup_resource_snapshot();
+
+        let error = run_guarded(selection).expect_err("read failure must fail preflight");
+        assert_eq!(error.code(), "KELD-GUARD004");
+        assert_eq!(error.resources, before, "preflight advanced app resources");
+        let message = error.to_string();
+        assert!(message.contains("Check the path"), "{message}");
+        assert!(
+            message.contains("rebuild the staged boot artifact"),
+            "{message}"
+        );
+        let source = std::error::Error::source(&error).expect("manifest source");
+        assert!(source.downcast_ref::<ManifestError>().is_some());
+        assert_eq!(
+            source.to_string(),
+            error.manifest_source.as_ref().unwrap().to_string()
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn guard_snapshot_drops_only_after_ordered_cleanup() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let root = temp.path().join("stage");
+        fs::create_dir(&root).expect("stage");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
+        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
+        fs::write(root.join("index.html"), "<p>guarded</p>\n").expect("renderer");
+        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = validate_from_root(&root).expect("validated selection");
+        let verified = load_verified_manifest(
+            permissions_file,
+            root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .expect("verified manifest");
+        drop(app);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let snapshot = GuardSnapshot {
+            verified,
+            drop_observer: Some(Arc::clone(&dropped)),
+        };
+
+        let digest = finish_guarded_session(Some(&snapshot), |live| {
+            assert!(
+                !dropped.load(Ordering::Acquire),
+                "snapshot dropped before cleanup"
+            );
+            live.expect("guarded cleanup receives the snapshot")
+                .verified
+                .verified_sha256()
+        });
+
+        assert_eq!(digest, permissions_digest);
+        assert!(
+            !dropped.load(Ordering::Acquire),
+            "borrowed cleanup helper destroyed the outer session owner"
+        );
+        drop(snapshot);
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "outer session owner did not destroy the snapshot after cleanup"
+        );
     }
 
     #[test]
@@ -2013,7 +2232,7 @@ mod tests {
         .expect("boot");
 
         let selection = validate_from_root(&root).expect("large renderer is valid");
-        assert_eq!(selection.renderer_html, renderer);
+        assert_eq!(selection.app.renderer_html, renderer);
     }
 
     #[test]
