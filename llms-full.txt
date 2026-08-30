@@ -657,7 +657,7 @@ command
 | Variable | Value | Consumed by |
 |---|---|---|
 | `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (both minted by `keld_ipc::BootstrapListener`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
-| `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS and Windows hosts. macOS validates a read-only pipe and marks it non-inheritable before guardian spawn. Windows gives Bun null stdin and removes the variable at primary spawn. Both ignore bytes and treat EOF as CLI loss; raw Windows inherited-handle census remains an open T4 evidence row. |
+| `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS and Windows hosts. macOS validates a read-only pipe and marks it non-inheritable before guardian spawn. Windows clears inheritance on the live stdin handle before primary spawn, gives Bun null stdin, and removes the variable. Both ignore bytes and treat EOF as CLI loss; Windows also preserves read/tail errors, while its raw cross-process handle-table census remains an open T4 evidence row. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
 Bun child could shell out to `keld ipc-client` — it was removed in KEL-30 once `main.ts` started
@@ -1958,6 +1958,11 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   that same supervisor rather than creating a core-side process loop. Retired
   capture readers are detached at this boundary so a descendant-held pipe
   cannot delay the successor; KEL-78 still owns descendant termination.
+  The host clears inheritance on the stdin-v1 lease reader before the first
+  Bun spawn, preserves lease-read/tail errors through the window result, and
+  gates initial WebView2 creation under the common shutdown transition. An
+  unrequested status-zero Bun exit is reported with its retained PID/status
+  through `KELD-CORE-033` rather than collapsing to a generic UI failure.
   Correlated Quit and CLI EOF use the shared
   quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
   removes the stage after the host exits. CLI-death process teardown is live,

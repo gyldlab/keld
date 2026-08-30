@@ -710,9 +710,10 @@ Future implementation gates:
   the one shared Windows dev-stage ACL validator used by producer and host;
   those exact surfaces require the same human public-API review.
 - Dependency addition: T4 adds target-only `windows-permissions` 0.2.4 plus
-  direct already-locked `winapi`/`windows-sys` constants and atomic directory
-  creation bindings. Their maintenance age, safe-wrapper boundary, features
-  and alternatives require human review.
+  direct already-locked `windows-sys` constants, handle isolation, and atomic
+  directory creation bindings. `winapi` remains only the wrapper's transitive
+  dependency. Their maintenance age, safe-wrapper boundary, features and
+  alternatives require human review.
 - Permission model: KEL-102 additionally owns manifest loading/evaluation and
   its separate human gate.
 - Wire protocol: existing HELLO/lifecycle/echo bytes remain unchanged; any kipc
@@ -721,8 +722,10 @@ Future implementation gates:
   the already authenticated registration stream; it is not a kipc channel.
 - Unsafe: **T4 Windows applies** to one `CreateDirectoryW` call that supplies
   the already-built self-relative security descriptor atomically at stage-root
-  creation. The block is Windows-only and carries a pointer-lifetime proof;
-  human unsafe/security review is mandatory. Named-pipe FFI remains KEL-101.
+  creation and one `SetHandleInformation` call that clears inheritance on the
+  live borrowed stdin lease before Bun spawn. Both blocks are Windows-only and
+  carry pointer/handle-lifetime proofs; human unsafe/security review is
+  mandatory. Named-pipe FFI remains KEL-101.
 
 ## 9. Performance impact
 

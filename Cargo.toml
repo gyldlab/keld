@@ -137,9 +137,10 @@ sha2 = "0.10"
 # --- Dependency review (KEL-96/T4 / AGENTS.md gate) ---
 # Name: windows-permissions 0.2.4 (danieldulaney/windows-permissions-rs)
 # Purpose: safe target-only TokenUser SID plus protected DACL creation/readback
-#   for the Windows owner-private no-flag dev stage. windows-sys supplies one
-#   atomic CreateDirectoryW call with a reviewed pointer-lifetime proof; the
-#   stage is cold tooling and independently validated before app resources.
+#   for the Windows owner-private no-flag dev stage. windows-sys supplies the
+#   canonical filesystem/handle constants, one atomic CreateDirectoryW call,
+#   and stdin inheritance isolation; the stage is cold tooling and
+#   independently validated before app resources.
 # Alternatives rejected: (a) std exposes attributes, not DACLs or atomic
 #   security attributes; (b) broader windows-rs calls add surface without
 #   removing the one required FFI proof; (c) windows-acl exposes
@@ -150,12 +151,10 @@ sha2 = "0.10"
 #   last release commit is old (2021), so human dependency/security review is
 #   mandatory and this pin is intentionally exact.
 windows-permissions = "=0.2.4"
-# Same locked package used by windows-permissions; keld-core imports only the
-# canonical FILE_ATTRIBUTE_REPARSE_POINT value for same-handle boot traversal.
-winapi = { version = "=0.3.9", features = ["winbase", "winnt"] }
 # Already locked through the workspace Windows stack; direct target-only use
-# supplies CreateDirectoryW + SECURITY_ATTRIBUTES for atomic DACL creation.
-windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_Storage_FileSystem"] }
+# supplies canonical handle/filesystem constants, stdin inheritance isolation,
+# and CreateDirectoryW + SECURITY_ATTRIBUTES for atomic DACL creation.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

@@ -187,6 +187,48 @@ fn windows_link_only_failure_uses_the_supervisor_owned_restart_path() {
     run_same_window_recovery("CLOSE_LINK");
 }
 
+#[test]
+fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error() {
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind exit-zero control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage exit-zero host");
+    let mut child = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch exit-zero host");
+    let (_reader, mut writer, bun_pid, _link) =
+        accept_ready_generation(&control_listener, &mut child);
+
+    writer.write_all(b"EXIT0\n").expect("request status zero");
+    writer.flush().expect("flush status-zero request");
+    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
+    assert!(
+        !status.success(),
+        "status-zero Bun exit became host success"
+    );
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured exit-zero stderr")
+        .read_to_string(&mut stderr)
+        .expect("read exit-zero stderr");
+    assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
+    assert!(stderr.contains(&bun_pid.to_string()), "{stderr}");
+    assert!(stderr.contains("status Some(0)"), "{stderr}");
+}
+
 fn run_same_window_recovery(failure_command: &str) {
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");

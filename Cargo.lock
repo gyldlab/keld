@@ -1305,8 +1305,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "winapi",
  "windows-permissions",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

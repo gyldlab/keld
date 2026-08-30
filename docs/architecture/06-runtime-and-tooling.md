@@ -54,6 +54,11 @@
   that same supervisor rather than creating a core-side process loop. Retired
   capture readers are detached at this boundary so a descendant-held pipe
   cannot delay the successor; KEL-78 still owns descendant termination.
+  The host clears inheritance on the stdin-v1 lease reader before the first
+  Bun spawn, preserves lease-read/tail errors through the window result, and
+  gates initial WebView2 creation under the common shutdown transition. An
+  unrequested status-zero Bun exit is reported with its retained PID/status
+  through `KELD-CORE-033` rather than collapsing to a generic UI failure.
   Correlated Quit and CLI EOF use the shared
   quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
   removes the stage after the host exits. CLI-death process teardown is live,

@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
 #[cfg(any(target_os = "macos", windows))]
-use std::fs::{self, File};
+#[cfg(windows)]
+use std::fs;
+use std::fs::File;
 #[cfg(any(target_os = "macos", windows))]
 use std::io::{self, Read};
 #[cfg(target_os = "macos")]
@@ -67,10 +69,6 @@ use keld_wv::{AppWindowCommand, AppWindowEvent};
 #[cfg(any(target_os = "macos", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
 #[cfg(windows)]
-use winapi::um::winbase::FILE_FLAG_OPEN_REPARSE_POINT;
-#[cfg(windows)]
-use winapi::um::winnt::FILE_ATTRIBUTE_REPARSE_POINT;
-#[cfg(windows)]
 use windows_permissions::constants::{
     AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
 };
@@ -78,6 +76,16 @@ use windows_permissions::constants::{
 use windows_permissions::utilities::current_process_sid;
 #[cfg(windows)]
 use windows_permissions::wrappers::GetNamedSecurityInfo;
+#[cfg(all(test, windows))]
+use windows_sys::Win32::Foundation::GetHandleInformation;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{
+    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+};
 
 /// Maximum accepted `keld.boot.json` size.
 #[cfg(any(target_os = "macos", windows, test))]
@@ -1179,6 +1187,7 @@ fn run_app_windows(
         )
     })?;
     drop(entry_file);
+    let monitor_dev_lease = prepare_windows_dev_lease()?;
     let config = PrimaryRoleConfig::new("bun")
         .arg("run")
         .arg(root.join(&entry_path))
@@ -1229,7 +1238,8 @@ fn run_app_windows(
         shutdown.clone(),
     )?;
     primary_owner.attach_router(router.handle())?;
-    let _lease_reader = start_windows_dev_lease(router.handle(), shutdown.clone())?;
+    let lease_errors =
+        start_windows_dev_lease(monitor_dev_lease, router.handle(), shutdown.clone())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
@@ -1240,35 +1250,59 @@ fn run_app_windows(
         })
         .map_err(|source| app_io("Windows window event coordinator", &source))?;
 
-    let mut engine = WebView2Engine::new()
-        .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
     let spec = WebviewSpec {
         title: name,
         initial: NavTarget::Html(html),
         ..WebviewSpec::default()
     };
-    WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    if let Err(source) = engine.create_app(&spec, window_events_tx.clone()) {
-        let primary = app_detail("initial Windows window", source.to_string());
+    let engine = run_windows_startup_if_session_running(&shutdown, || {
+        WebView2Engine::new()
+            .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))
+            .and_then(|mut engine| {
+                WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+                engine
+                    .create_app(&spec, window_events_tx.clone())
+                    .map_err(|source| app_detail("initial Windows window", source.to_string()))?;
+                Ok(engine)
+            })
+    });
+    let Some(engine) = engine else {
         drop(window_events_tx);
         let event_result = event_coordinator
             .join()
             .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
             .and_then(std::convert::identity);
+        let lease_result = take_windows_lease_error(lease_errors.as_ref());
         let router_result = router.shutdown();
         let owner_result = primary_owner.shutdown();
         let _retained_digest = guard_snapshot.verified_sha256();
-        return Err(collapse_app_failures(
-            &primary,
-            [event_result, router_result, owner_result],
-        ));
-    }
+        return collapse_app_results([lease_result, event_result, router_result, owner_result]);
+    };
+    let engine = match engine {
+        Ok(engine) => engine,
+        Err(primary) => {
+            drop(window_events_tx);
+            let event_result = event_coordinator
+                .join()
+                .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
+                .and_then(std::convert::identity);
+            let lease_result = take_windows_lease_error(lease_errors.as_ref());
+            let router_result = router.shutdown();
+            let owner_result = primary_owner.shutdown();
+            let _retained_digest = guard_snapshot.verified_sha256();
+            return Err(collapse_app_failures(
+                &primary,
+                [lease_result, event_result, router_result, owner_result],
+            ));
+        }
+    };
     let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
     drop(window_commands_tx);
     let event_result = event_coordinator
         .join()
         .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
         .and_then(std::convert::identity);
+    let lease_result = take_windows_lease_error(lease_errors.as_ref());
     let router_result = router.shutdown();
     let owner_result = primary_owner.shutdown();
     let _retained_digest = guard_snapshot.verified_sha256();
@@ -1278,10 +1312,11 @@ fn run_app_windows(
             let primary = app_detail("initial Windows navigation", source.to_string());
             Err(collapse_app_failures(
                 &primary,
-                [owner_result, router_result, event_result],
+                [lease_result, owner_result, router_result, event_result],
             ))
         }
         result => collapse_app_results([
+            lease_result,
             result.map_err(|source| app_detail("Windows app window", source.to_string())),
             event_result,
             router_result,
@@ -1291,14 +1326,21 @@ fn run_app_windows(
 }
 
 #[cfg(windows)]
-fn start_windows_dev_lease(
-    router: PrimaryRouterHandle,
-    shutdown: SessionShutdownState,
-) -> Result<Option<JoinHandle<()>>, HostAppError> {
+fn run_windows_startup_if_session_running<T>(
+    shutdown: &SessionShutdownState,
+    startup: impl FnOnce() -> T,
+) -> Option<T> {
+    let _transition = shutdown.transition_guard();
+    shutdown.is_running().then(startup)
+}
+
+#[cfg(windows)]
+fn prepare_windows_dev_lease() -> Result<bool, HostAppError> {
     use std::ffi::OsStr;
+    use std::os::windows::io::AsRawHandle as _;
 
     let Some(value) = std::env::var_os(DEV_LEASE_ENV) else {
-        return Ok(None);
+        return Ok(false);
     };
     if value != OsStr::new(DEV_LEASE_STDIN_V1) {
         return Err(app_detail(
@@ -1309,7 +1351,42 @@ fn start_windows_dev_lease(
             ),
         ));
     }
-    let handle = thread::Builder::new()
+    let input = io::stdin();
+    let handle = input.as_raw_handle().cast();
+    clear_windows_handle_inheritance(handle)
+        .map_err(|source| app_io("Windows dev-host lease isolation", &source))?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // one reviewed Win32 flag mutation on a live borrowed standard-input handle
+fn clear_windows_handle_inheritance(handle: HANDLE) -> io::Result<()> {
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stdin-v1 has no valid standard-input handle",
+        ));
+    }
+    // SAFETY: `handle` is borrowed from the live process standard-input
+    // object. SetHandleInformation neither closes nor retains it; the mask
+    // changes only HANDLE_FLAG_INHERIT and zero clears that flag.
+    if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn start_windows_dev_lease(
+    enabled: bool,
+    router: PrimaryRouterHandle,
+    shutdown: SessionShutdownState,
+) -> Result<Option<Receiver<HostAppError>>, HostAppError> {
+    if !enabled {
+        return Ok(None);
+    }
+    let (error_tx, error_rx) = mpsc::channel();
+    let _handle = thread::Builder::new()
         .name("keld-core-windows-dev-lease".to_owned())
         .spawn(move || {
             let input = io::stdin();
@@ -1320,31 +1397,53 @@ fn start_windows_dev_lease(
                     Ok(0) => {
                         if shutdown.claim_cli_lease_lost() {
                             let result = router.cli_lease_lost();
-                            signal_windows_lease_result(&result, &router.window_commands);
+                            publish_windows_lease_result(
+                                result,
+                                &error_tx,
+                                &router.window_commands,
+                            );
                         }
                         return;
                     }
                     Ok(_) => {}
                     Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
-                    Err(_) => {
-                        let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                    Err(source) => {
+                        if shutdown.claim_cli_lease_lost() {
+                            let primary = app_io("Windows dev-host lease read", &source);
+                            let tail = router.cli_lease_lost();
+                            let error = match tail {
+                                Ok(()) => primary,
+                                Err(cleanup) => collapse_app_failures(&primary, [Err(cleanup)]),
+                            };
+                            let _ = error_tx.send(error);
+                            let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                        }
                         return;
                     }
                 }
             }
         })
         .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
-    Ok(Some(handle))
+    Ok(Some(error_rx))
 }
 
 #[cfg(windows)]
-fn signal_windows_lease_result(
-    result: &Result<(), HostAppError>,
+fn publish_windows_lease_result(
+    result: Result<(), HostAppError>,
+    error_tx: &Sender<HostAppError>,
     window_commands: &Sender<AppWindowCommand>,
 ) {
-    if result.is_err() {
+    if let Err(error) = result {
+        let _ = error_tx.send(error);
         let _ = window_commands.send(AppWindowCommand::Fatal);
     }
+}
+
+#[cfg(windows)]
+fn take_windows_lease_error(errors: Option<&Receiver<HostAppError>>) -> Result<(), HostAppError> {
+    errors
+        .and_then(|errors| errors.try_recv().ok())
+        .map_or(Ok(()), Err)
 }
 
 #[cfg(windows)]
@@ -1872,10 +1971,23 @@ impl WindowsPrimaryOwner {
                         }
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
-                        if shutdown.is_running() {
+                        let session_running = shutdown.is_running();
+                        if session_running {
                             let _ = window_commands.send(AppWindowCommand::Fatal);
                         }
                         return match outcome {
+                            keld_runtime::SupervisorOutcome::Stopped if session_running => {
+                                let ledger = supervisor.crash_ledger();
+                                ledger.last_self_termination.map_or_else(
+                                    || {
+                                        Err(app_detail(
+                                            "Windows primary self-termination",
+                                            "the primary process stopped without a retained termination record",
+                                        ))
+                                    },
+                                    |record| Err(app_self_termination(record)),
+                                )
+                            }
                             keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                             keld_runtime::SupervisorOutcome::CrashLoop(error)
                             | keld_runtime::SupervisorOutcome::Failed(error) => {
@@ -2699,6 +2811,19 @@ fn app_guardian_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) 
         phase,
         source.to_string(),
         "Fix the cause named by the nested KELD-RUNTIME diagnostic, then relaunch the no-flag host.",
+    )
+}
+
+#[cfg(windows)]
+fn app_self_termination(record: keld_runtime::SelfTerminationRecord) -> HostAppError {
+    HostAppError::new(
+        "KELD-CORE-033",
+        "Windows primary self-termination",
+        format!(
+            "Bun process {} exited without a host shutdown request (status {:?})",
+            record.pid, record.exit_code
+        ),
+        "Fix the primary process self-termination, then relaunch the no-flag host.",
     )
 }
 
@@ -3745,8 +3870,10 @@ mod tests {
     #[cfg(windows)]
     fn windows_lease_tail_failure_wakes_the_window_fatally() {
         let (window_tx, window_rx) = mpsc::channel();
-        signal_windows_lease_result(
-            &Err(app_detail("Windows lease test", "forced tail failure")),
+        let (error_tx, error_rx) = mpsc::channel();
+        publish_windows_lease_result(
+            Err(app_detail("Windows lease test", "forced tail failure")),
+            &error_tx,
             &window_tx,
         );
         assert_eq!(
@@ -3755,12 +3882,63 @@ mod tests {
                 .expect("lease failure Fatal wake"),
             AppWindowCommand::Fatal
         );
+        assert!(
+            error_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("lease failure diagnostic")
+                .to_string()
+                .contains("forced tail failure")
+        );
 
-        signal_windows_lease_result(&Ok(()), &window_tx);
+        publish_windows_lease_result(Ok(()), &error_tx, &window_tx);
         assert!(matches!(
             window_rx.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
+        assert!(matches!(
+            error_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[allow(unsafe_code)] // test owns the live tempfile handle for every Win32 flag query/mutation
+    fn windows_lease_handle_inheritance_is_cleared_before_bun_spawn() {
+        use std::os::windows::io::AsRawHandle as _;
+
+        let file = tempfile::tempfile().expect("temporary handle");
+        let handle = file.as_raw_handle().cast();
+        // SAFETY: `handle` is borrowed from `file`, which remains live through
+        // every call. The test changes and reads only HANDLE_FLAG_INHERIT.
+        assert_ne!(
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
+            0,
+            "mark test handle inheritable: {}",
+            io::Error::last_os_error()
+        );
+        let mut flags = 0;
+        // SAFETY: `flags` is a live writable u32 and `handle` is live.
+        assert_ne!(unsafe { GetHandleInformation(handle, &raw mut flags) }, 0);
+        assert_ne!(flags & HANDLE_FLAG_INHERIT, 0);
+
+        clear_windows_handle_inheritance(handle).expect("clear handle inheritance");
+        // SAFETY: same live handle and output storage as above.
+        assert_ne!(unsafe { GetHandleInformation(handle, &raw mut flags) }, 0);
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_shutdown_claim_blocks_late_ui_startup() {
+        let shutdown = SessionShutdownState::new();
+        assert!(shutdown.claim_cli_lease_lost());
+        let created = AtomicBool::new(false);
+        let result = run_windows_startup_if_session_running(&shutdown, || {
+            created.store(true, Ordering::Release);
+        });
+        assert!(result.is_none());
+        assert!(!created.load(Ordering::Acquire));
     }
 
     #[cfg(target_os = "macos")]

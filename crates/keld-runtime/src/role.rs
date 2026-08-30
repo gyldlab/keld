@@ -20,8 +20,8 @@ use keld_ipc::{
 };
 
 use crate::{
-    CapturedOutput, ChildPreparer, GenerationLease, PreparedChild, RestartPolicy, RevocationCause,
-    RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
+    CapturedOutput, ChildPreparer, CrashLedger, GenerationLease, PreparedChild, RestartPolicy,
+    RevocationCause, RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
 };
 
 pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -577,6 +577,13 @@ impl RoleSupervisor {
     #[must_use]
     pub fn output(&self) -> CapturedOutput {
         self.supervisor.output()
+    }
+
+    /// Snapshot of every unrequested child termination retained by the sole
+    /// generic supervisor.
+    #[must_use]
+    pub fn crash_ledger(&self) -> CrashLedger {
+        self.supervisor.crash_ledger()
     }
 }
 
