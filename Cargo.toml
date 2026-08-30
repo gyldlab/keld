@@ -154,7 +154,7 @@ windows-permissions = "=0.2.4"
 # Already locked through the workspace Windows stack; direct target-only use
 # supplies canonical handle/filesystem constants, stdin inheritance isolation,
 # and CreateDirectoryW + SECURITY_ATTRIBUTES for atomic DACL creation.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Pipes"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

@@ -21,6 +21,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
 #[cfg(target_os = "macos")]
 pub mod macos_guardian;
 #[cfg(any(unix, windows))]
@@ -490,6 +493,7 @@ pub struct Supervisor {
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
     crashes: Arc<Mutex<CrashLedger>>,
     terminal_error: Arc<Mutex<Option<RuntimeError>>>,
+    #[cfg(any(target_os = "macos", windows))]
     accepted_shutdown: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     #[cfg(windows)]
@@ -622,6 +626,7 @@ impl Supervisor {
             crash_loop_error,
             crashes,
             terminal_error,
+            #[cfg(any(target_os = "macos", windows))]
             accepted_shutdown,
             shutdown,
             #[cfg(windows)]
@@ -1086,6 +1091,8 @@ fn supervise<P>(
 struct CaptureThreads {
     stdout: Option<JoinHandle<()>>,
     stderr: Option<JoinHandle<()>>,
+    #[cfg(windows)]
+    stop: Arc<AtomicBool>,
 }
 
 struct CaptureStartError {
@@ -1097,39 +1104,63 @@ fn start_capture_threads(
     child: &mut Child,
     output: &Arc<Mutex<CapturedOutput>>,
 ) -> Result<CaptureThreads, CaptureStartError> {
+    #[cfg(windows)]
+    let stop = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_thread =
-        match stdout.map(|r| spawn_capture_thread(r, Arc::clone(output), "stdout", true)) {
-            Some(Ok(thread)) => Some(thread),
-            Some(Err(source)) => {
-                return Err(CaptureStartError {
-                    source,
-                    threads: CaptureThreads {
-                        stdout: None,
-                        stderr: None,
-                    },
-                });
-            }
-            None => None,
-        };
-    let stderr_thread =
-        match stderr.map(|r| spawn_capture_thread(r, Arc::clone(output), "stderr", false)) {
-            Some(Ok(thread)) => Some(thread),
-            Some(Err(source)) => {
-                return Err(CaptureStartError {
-                    source,
-                    threads: CaptureThreads {
-                        stdout: stdout_thread,
-                        stderr: None,
-                    },
-                });
-            }
-            None => None,
-        };
+    let stdout_thread = match stdout.map(|r| {
+        spawn_capture_thread(
+            r,
+            Arc::clone(output),
+            "stdout",
+            true,
+            #[cfg(windows)]
+            Arc::clone(&stop),
+        )
+    }) {
+        Some(Ok(thread)) => Some(thread),
+        Some(Err(source)) => {
+            return Err(CaptureStartError {
+                source,
+                threads: CaptureThreads {
+                    stdout: None,
+                    stderr: None,
+                    #[cfg(windows)]
+                    stop: Arc::clone(&stop),
+                },
+            });
+        }
+        None => None,
+    };
+    let stderr_thread = match stderr.map(|r| {
+        spawn_capture_thread(
+            r,
+            Arc::clone(output),
+            "stderr",
+            false,
+            #[cfg(windows)]
+            Arc::clone(&stop),
+        )
+    }) {
+        Some(Ok(thread)) => Some(thread),
+        Some(Err(source)) => {
+            return Err(CaptureStartError {
+                source,
+                threads: CaptureThreads {
+                    stdout: stdout_thread,
+                    stderr: None,
+                    #[cfg(windows)]
+                    stop: Arc::clone(&stop),
+                },
+            });
+        }
+        None => None,
+    };
     Ok(CaptureThreads {
         stdout: stdout_thread,
         stderr: stderr_thread,
+        #[cfg(windows)]
+        stop,
     })
 }
 
@@ -1148,10 +1179,15 @@ fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
     {
         // An uncontained descendant may retain an inherited pipe write end.
         // Waiting for that unowned process would block orderly host exit;
-        // KEL-78 remains the process-tree reaping owner. The readers retain
-        // their shared output sink and exit when the pipe eventually closes.
-        let CaptureThreads { stdout, stderr } = threads;
-        drop((stdout, stderr));
+        // KEL-78 remains the process-tree reaping owner. Stop only after each
+        // reader has drained bytes already buffered at direct-child exit.
+        threads.stop.store(true, Ordering::Release);
+        if let Some(thread) = threads.stdout {
+            let _ = thread.join();
+        }
+        if let Some(thread) = threads.stderr {
+            let _ = thread.join();
+        }
     }
     #[cfg(not(windows))]
     join_capture_threads(threads);
@@ -1287,6 +1323,7 @@ fn record_self_termination(
     }
 }
 
+#[cfg(not(windows))]
 fn spawn_capture_thread(
     mut reader: impl Read + Send + 'static,
     output: Arc<Mutex<CapturedOutput>>,
@@ -1312,6 +1349,72 @@ fn spawn_capture_thread(
                 }
             }
         })
+}
+
+#[cfg(windows)]
+fn spawn_capture_thread(
+    mut reader: impl Read + Send + std::os::windows::io::AsRawHandle + 'static,
+    output: Arc<Mutex<CapturedOutput>>,
+    name: &'static str,
+    is_stdout: bool,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<JoinHandle<()>> {
+    thread::Builder::new()
+        .name(format!("keld-runtime-capture-{name}"))
+        .spawn(move || {
+            let mut buf = [0_u8; 4096];
+            loop {
+                let Ok(available) = peek_pipe_available(&reader) else {
+                    return;
+                };
+                if available == 0 {
+                    if stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::park_timeout(POLL_INTERVAL);
+                    continue;
+                }
+                let read_len = usize::try_from(available)
+                    .unwrap_or(buf.len())
+                    .min(buf.len());
+                match reader.read(&mut buf[..read_len]) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]);
+                        let mut guard = lock_or_recover(&output);
+                        if is_stdout {
+                            guard.stdout.push_str(&chunk);
+                        } else {
+                            guard.stderr.push_str(&chunk);
+                        }
+                    }
+                }
+            }
+        })
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // read-only availability query on a live borrowed pipe handle
+fn peek_pipe_available(reader: &impl std::os::windows::io::AsRawHandle) -> std::io::Result<u32> {
+    let handle = reader.as_raw_handle().cast();
+    let mut available = 0_u32;
+    // SAFETY: `handle` is borrowed from the live capture reader and
+    // `available` is writable for the call. Null optional buffers request only
+    // the total bytes currently buffered; the function retains no pointer.
+    if unsafe {
+        PeekNamedPipe(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &raw mut available,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(available)
 }
 
 fn stop_was_requested(shutdown: &AtomicBool, accepted_shutdown: &AtomicBool) -> bool {

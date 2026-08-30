@@ -60,6 +60,16 @@ fn windows_stage_is_current_user_protected_and_byte_consistent() {
     assert_eq!(acl["inherited"], false);
     assert_eq!(acl["inheritance"], "ContainerInherit, ObjectInherit");
     assert_eq!(acl["propagation"], "None");
+    for parent in [
+        fixture.project.join(".keld"),
+        fixture.project.join(".keld/dev"),
+    ] {
+        let parent_acl = acl_observation(&parent);
+        assert_eq!(parent_acl["protected"], true, "{parent_acl}");
+        assert_eq!(parent_acl["count"], 1, "{parent_acl}");
+        assert_eq!(parent_acl["sid"], parent_acl["current"], "{parent_acl}");
+        assert_eq!(parent_acl["rights"], "FullControl", "{parent_acl}");
+    }
 }
 
 #[test]
@@ -86,7 +96,13 @@ fn windows_stage_namespace_is_pinned_until_the_host_owner_releases_it() {
 fn windows_stage_rejects_a_dev_junction_before_writing_through_it() {
     let fixture = StageFixture::new();
     let external = tempfile::tempdir().expect("external junction target");
-    fs::create_dir(fixture.project.join(".keld")).expect("create .keld parent");
+    let initial = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("create protected .keld parent");
+    drop(initial);
+    fs::remove_dir_all(fixture.project.join(".keld/dev")).expect("remove initial dev root");
     let junction = fixture.project.join(".keld/dev");
     let output = Command::new("powershell.exe")
         .args([

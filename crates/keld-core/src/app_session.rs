@@ -86,6 +86,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
 /// Maximum accepted `keld.boot.json` size.
 #[cfg(any(target_os = "macos", windows, test))]
@@ -1394,7 +1396,10 @@ fn run_windows_startup_if_session_running<T>(
     startup: impl FnOnce() -> T,
 ) -> Option<T> {
     let _transition = shutdown.transition_guard();
-    shutdown.is_running().then(startup)
+    if !shutdown.is_running() {
+        return None;
+    }
+    Some(startup())
 }
 
 #[cfg(windows)]
@@ -1432,6 +1437,18 @@ fn prepare_windows_dev_lease(
     clear_windows_handle_inheritance(handle)
         .map_err(|source| app_io("Windows dev-host lease isolation", &source))?;
     let (observation_tx, observation_rx) = mpsc::channel();
+    if !windows_lease_pipe_is_live(handle.addr())
+        .map_err(|source| app_io("Windows dev-host lease preflight", &source))?
+    {
+        publish_windows_lease_observation(
+            shutdown,
+            &observation_tx,
+            WindowsDevLeaseObservation::Eof,
+        );
+        return Ok(Some(WindowsDevLeaseMonitor {
+            observations: observation_rx,
+        }));
+    }
     let shutdown = shutdown.clone();
     let _handle = thread::Builder::new()
         .name("keld-core-windows-dev-lease-reader".to_owned())
@@ -1468,6 +1485,34 @@ fn prepare_windows_dev_lease(
     Ok(Some(WindowsDevLeaseMonitor {
         observations: observation_rx,
     }))
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // read-only state query on the borrowed stdin pipe handle
+fn windows_lease_pipe_is_live(handle: usize) -> io::Result<bool> {
+    let handle = std::ptr::with_exposed_provenance_mut(handle);
+    // SAFETY: the handle value comes from the live process stdin handle, which
+    // remains owned by `io::stdin` for the process lifetime. Null optional
+    // outputs make this a state-only query and no pointer is retained.
+    if unsafe {
+        PeekNamedPipe(
+            handle,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0
+    {
+        return Ok(true);
+    }
+    let source = io::Error::last_os_error();
+    if source.kind() == io::ErrorKind::BrokenPipe {
+        Ok(false)
+    } else {
+        Err(source)
+    }
 }
 
 #[cfg(windows)]
@@ -2066,27 +2111,42 @@ impl WindowsPrimaryOwner {
                     // These are separate channels, so preserve the generation
                     // owner's causal order explicitly at the fan-in: revoke
                     // authority before installing a queued successor stream.
-                    while let Some(event) = supervisor.try_recv_event() {
-                        if let Some(router) = router.as_ref()
-                            && let Err(error) =
-                                router.apply_generation_update(PrimaryOwnerUpdate::Role(event))
-                        {
-                            let _ = recovery.deny();
-                            supervisor.shutdown();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error);
-                        }
+                    if let Err(error) =
+                        drain_windows_primary_role_events(&supervisor, router.as_ref())
+                    {
+                        return Err(terminate_windows_primary_owner(
+                            error,
+                            &recovery,
+                            &supervisor,
+                            &window_commands,
+                        ));
                     }
                     while let Some(bound) = supervisor.try_recv_bound_generation() {
+                        // Bound is sent only after its predecessor's Revoked
+                        // event, but the two messages use independent channels.
+                        // Re-drain after receiving Bound so a scheduler gap
+                        // between the outer drains cannot invert that edge.
+                        if let Err(error) =
+                            drain_windows_primary_role_events(&supervisor, router.as_ref())
+                        {
+                            return Err(terminate_windows_primary_owner(
+                                error,
+                                &recovery,
+                                &supervisor,
+                                &window_commands,
+                            ));
+                        }
                         let Some(router) = router.as_ref() else {
                             let error = app_detail(
                                 "Windows primary owner",
                                 "successor bound before the app router was attached",
                             );
-                            let _ = recovery.deny();
-                            supervisor.shutdown();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error);
+                            return Err(terminate_windows_primary_owner(
+                                error,
+                                &recovery,
+                                &supervisor,
+                                &window_commands,
+                            ));
                         };
                         let attempt = bound.attempt();
                         if let Err(error) =
@@ -2232,6 +2292,32 @@ impl WindowsPrimaryOwner {
                 .map_err(|_| app_detail("Windows primary owner", "thread panicked"))?
         })
     }
+}
+
+#[cfg(windows)]
+fn drain_windows_primary_role_events(
+    supervisor: &PrimaryRoleSupervisor,
+    router: Option<&PrimaryRouterHandle>,
+) -> Result<(), HostAppError> {
+    while let Some(event) = supervisor.try_recv_event() {
+        if let Some(router) = router {
+            router.apply_generation_update(PrimaryOwnerUpdate::Role(event))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn terminate_windows_primary_owner(
+    error: HostAppError,
+    recovery: &PrimaryRecoveryGate,
+    supervisor: &PrimaryRoleSupervisor,
+    window_commands: &Sender<AppWindowCommand>,
+) -> HostAppError {
+    let _ = recovery.deny();
+    supervisor.shutdown();
+    let _ = window_commands.send(AppWindowCommand::Fatal);
+    error
 }
 
 #[cfg(windows)]
@@ -4096,6 +4182,35 @@ mod tests {
         // SAFETY: same live handle and output storage as above.
         assert_ne!(unsafe { GetHandleInformation(handle, &raw mut flags) }, 0);
         assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[allow(unsafe_code)] // test owns and closes both anonymous-pipe handles
+    fn windows_preflight_rejects_a_lease_pipe_with_no_writer() {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::System::Pipes::CreatePipe;
+
+        let mut reader = std::ptr::null_mut();
+        let mut writer = std::ptr::null_mut();
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                .expect("SECURITY_ATTRIBUTES size"),
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: 0,
+        };
+        // SAFETY: both output pointers and the attributes value remain live;
+        // successful handles are closed below exactly once.
+        assert_ne!(
+            unsafe { CreatePipe(&raw mut reader, &raw mut writer, &raw const attributes, 0) },
+            0
+        );
+        // SAFETY: `writer` is the unique live handle returned by CreatePipe.
+        assert_ne!(unsafe { CloseHandle(writer) }, 0);
+        assert!(!windows_lease_pipe_is_live(reader.addr()).expect("peek closed lease"));
+        // SAFETY: `reader` is the remaining unique live pipe handle.
+        assert_ne!(unsafe { CloseHandle(reader) }, 0);
     }
 
     #[test]

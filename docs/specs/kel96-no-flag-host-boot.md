@@ -584,13 +584,15 @@ privileged channel. The first and only production caller in T1b is the no-flag
       Quit/CLI-death evidence on RAMANI, but T4 remains unchecked: Windows
       abnormal-host-death waits on KEL-78/T3, post-CLI-death stage deletion has
       no approved surviving owner, and the real Linux desktop rows are absent.
-      The CLI validates and retains no-share-delete handles for the canonical
-      project, `.keld`, and `dev` before nonce creation, then pins and validates
+      The CLI atomically protects and retains no-share-delete handles for
+      `.keld` and `dev` before nonce creation (plus the canonical project
+      handle), then pins and validates
       the nonce before writing any staged child. It rechecks the locked stage
       DACL and host digest before launch. Windows direct-child terminal paths
-      do not join capture readers that a descendant can keep open; this
-      prevents successor/host-exit delay without claiming descendant process
-      ownership. Lease monitoring begins before listener/child creation,
+      signal capture readers to drain currently buffered bytes and stop without
+      waiting for descendant EOF; this preserves ledger ordering and prevents
+      successor/host-exit delay without claiming descendant process ownership.
+      Lease monitoring and a locked broken-pipe preflight precede listener/child creation,
       accepted shutdown closes successor admission before the reply tail, and
       revoked-attempt tombstones reject a bound stream observed after its
       revocation.
@@ -727,10 +729,11 @@ Future implementation gates:
   the already authenticated registration stream; it is not a kipc channel.
 - Unsafe: **T4 Windows applies** to one `CreateDirectoryW` call that supplies
   the already-built self-relative security descriptor atomically at stage-root
-  creation and one `SetHandleInformation` call that clears inheritance on the
-  live borrowed stdin lease before Bun spawn. Both blocks are Windows-only and
-  carry pointer/handle-lifetime proofs; human unsafe/security review is
-  mandatory. Named-pipe FFI remains KEL-101.
+  creation, one `SetHandleInformation` call that clears inheritance on the live
+  borrowed stdin lease before Bun spawn, and read-only `PeekNamedPipe` calls
+  for lease/capture state. These blocks are Windows-only and carry
+  pointer/handle-lifetime proofs; human unsafe/security review is mandatory.
+  Named-pipe transport FFI remains KEL-101.
 
 ## 9. Performance impact
 

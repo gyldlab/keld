@@ -301,7 +301,7 @@ fn prepare_windows_launch_parents(
     })?;
     let mut guards = vec![open_windows_launch_guard(project_root)?];
     for path in [keld_root, dev_root] {
-        match fs::create_dir(path) {
+        match create_windows_stage_root(path) {
             Ok(()) => {}
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
             Err(source) => {
@@ -311,7 +311,9 @@ fn prepare_windows_launch_parents(
                 ));
             }
         }
-        guards.push(open_windows_launch_guard(path)?);
+        let guard = open_windows_launch_guard(path)?;
+        verify_windows_stage_acl(path)?;
+        guards.push(guard);
     }
     Ok(guards)
 }
