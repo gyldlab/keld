@@ -20,7 +20,6 @@ permissions: {}                  # DEFAULT-DENY! Har job apna kaam ROBOKELD_TOKE
 
 jobs:
   gatekeeper:                    # job ka internal naam
-    if: github.event.action != 'synchronize'   # template sirf opened/edited pe check karo, har push pe nahi
     runs-on: ubuntu-latest       # GitHub ki free VM — Linux box
     steps:
       - name: Check PR template sections
@@ -141,7 +140,6 @@ jobs:
             core.info(`${changed} lines changed -> ${tier.name}`);
 
   title-lint:                    # teesra job — PR title ko conventional-commit format se match karo
-    if: github.event.action != 'synchronize'   # title sirf opened/edited pe badalta hai, har push pe nahi
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title format
