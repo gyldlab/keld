@@ -409,6 +409,14 @@ classify_path() {
     local changed_file="$1"
 
     case "$changed_file" in
+        # Agent instruction and assembly changes must run both generated-doc
+        # freshness and the merge-blocking instruction-context/hygiene gates.
+        AGENTS.md | AGENTS.override.md | */AGENTS.md | */AGENTS.override.md | CLAUDE.md | \
+        .agents/*.md | .agents/*.txt | docs/agents/*.md)
+            docs="$TRUE"
+            hygiene="$TRUE"
+            ;;
+
         # Markdown-like content is documentation even if it lives beside a
         # crate. It cannot alter the compiled host executable.
         *.adoc | *.md | *.mdx | *.rst | *.txt)
@@ -479,7 +487,7 @@ classify_path() {
             ;;
 
         # These tools own the generated-doc and Mermaid contracts.
-        docs/* | AGENTS.md | .agents/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
+        docs/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
         tools/llms_docs.rs | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
             docs="$TRUE"
             ;;
@@ -487,7 +495,8 @@ classify_path() {
         # These inputs own the repository-hygiene contract, but do not affect a
         # product build or graphical window.
         .github/CODEOWNERS | .github/PULL_REQUEST_TEMPLATE.md | .github/ISSUE_TEMPLATE/* | \
-        .gitignore | justfile | tools/ci_hygiene.rs | tools/atomic_protocol.rs)
+        .gitignore | justfile | .codex/* | .agents/instruction-budget.tsv | \
+        tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs)
             hygiene="$TRUE"
             ;;
 

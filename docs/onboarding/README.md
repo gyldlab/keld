@@ -14,7 +14,7 @@ fresh gate and target-host evidence, not the date this prose was last edited.
 | 02 | [Architecture guide](02-architecture-guide.md) | Before touching any crate. Three-principal trust model, end-to-end request flow, all 11 crates with real status. |
 | 03 | [API and CLI surface](03-api-and-cli-surface.md) | When you need to *use* Keld. Every implemented `keld` verb with real output, the public Rust surface, and what the README promises that doesn't exist yet. |
 | 04 | [Wire formats and contracts](04-wire-formats-and-contracts.md) | When you touch kipc, config files, or anything on the wire. Byte-level frame layout, handshake, codec, error taxonomy. |
-| 05 | [Development guide](05-development-guide.md) | Day one setup, and every day after. Prerequisites, the three-command verification gate, review gates, PR conventions, troubleshooting. |
+| 05 | [Development guide](05-development-guide.md) | Day one setup, and every day after. Prerequisites, the `just ci` gate and core Rust subset, review gates, PR conventions, troubleshooting. |
 | 06 | [Documentation map](06-documentation-map.md) | When you're lost. Every document in the repo, what's normative vs exploratory, and a reading order. |
 | 07 | [Use Keld from an MCP client](07-mcp-server.md) | When registering Keld's shipped local, read-only, three-tool MCP server. |
 | 08 | [Optional agent memory for Keld contributors](08-optional-agent-memory.md) | Only when evaluating the external, opt-in KEL-67 contributor pilot. It is not a Keld product feature. |

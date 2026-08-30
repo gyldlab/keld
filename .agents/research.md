@@ -3,14 +3,16 @@
 Load this playbook only for a material decision that may depend on current external
 evidence.
 
-Edits under `docs/research/` MUST follow root `AGENTS.md` § Private research (nested
-`keld-research` checkout; `just research-push` same turn; never stage into Keld).
+`docs/research/` is a nested `0monish/keld-research` checkout, not a Keld index entry.
+Research edits MUST commit inside it and push with `just research-push` (or nested git
+push) in the same turn; on access failure warn plainly. MUST NOT stage it from Keld root.
 
 Hello / installer / RSS competitor fixtures MUST live in
 [`gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) under
-`{macos|windows|linux}/<framework>/...` per root `AGENTS.md` § Public benches —
-never under Keld `docs/` or `competitors/`, and never as OS-agnostic dumps at the
-`keld-benches` repo root.
+`{macos|windows|linux}/<framework>/...`, never under Keld `docs/`/`competitors/`,
+at the benches root, or `/tmp`-only. Use the OS actually run. Push directly or open a
+fork PR; warn and skip when neither is possible. Published measurements link the
+OS-qualified fixture and immutable commit/tag.
 
 ## Where prompts live
 
@@ -43,9 +45,8 @@ uncertainty.
 ## Diagrams in private research
 
 - A Mermaid diagram under `docs/research/`, or one that synthesizes external evidence,
-  MUST also follow root `AGENTS.md` § Documentation diagrams and the render/report gate
-  in [`.agents/testing.md`](testing.md). The nested research commit/push rule still
-  applies to its Markdown source.
+  MUST also follow [`.agents/docs.md`](docs.md) and the render/report gate in
+  [`.agents/testing.md`](testing.md). The nested commit/push rule still applies.
 - A diagram is synthesis, not proof. Every decision-bearing node, edge, state transition
   and quantitative label MUST trace to a direct primary source or committed local/raw
   experiment artifact. Otherwise the label itself MUST say `inference`, `proposed` or

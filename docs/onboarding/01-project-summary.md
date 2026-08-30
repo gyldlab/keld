@@ -138,7 +138,7 @@ Everything else in the architecture follows from that ownership split. Hot paths
 event loop, guard) are callback/state-machine code with no async runtime and no
 steady-state allocation — the lesson taken from Bun's Rust rewrite
 ([`docs/research/library/agents-tooling/05-rust-wave.md`](../research/library/agents-tooling/05-rust-wave.md), enforced by
-[`AGENTS.md`](../../AGENTS.md) § Rust).
+[`AGENTS.md`](../../AGENTS.md) § Rust, TypeScript, and naming).
 
 ## Who it's for
 
@@ -176,7 +176,7 @@ hello-world app on an M-series Mac / mid-range Windows laptop:
 
 These are **target budgets**, not live gates. Once `bench/` exists, a regression greater
 than 5% fails the PR or needs a written waiver with benchmarks
-([`AGENTS.md`](../../AGENTS.md) § Security & performance). **Not yet real:** the `bench/`
+([`AGENTS.md`](../../AGENTS.md) § Security, performance, and review gates). **Not yet real:** the `bench/`
 directory does not exist, so none of these are currently gated. Living measured rows
 (hello host/CLI/RSS; no DMG yet) are in
 [`docs/engineering/budget-scoreboard.md`](../engineering/budget-scoreboard.md). Building
@@ -322,19 +322,16 @@ error-message, or API bug*.
 
 ## Before you write any code
 
-1. Read [`AGENTS.md`](../../AGENTS.md) end to end. It is short and it is binding: the
-   verification gate (`cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`
-   + `cargo nextest run --workspace --profile ci`, all three before "done"), the `unsafe`
-   policy, the no-`unwrap`/`expect`/`panic!`-in-libs rule, the five human review gates,
-   and the mandatory learnings-log rule.
+1. Read [`AGENTS.md`](../../AGENTS.md) end to end. It is the compact binding invariant
+   floor; `.agents/index.md` routes task-specific playbooks. `just ci` is the exact local
+   gate inventory.
 2. Read the crate-level `AGENTS.md` for whatever you're touching —
    [`keld-ipc`](../../crates/keld-ipc/AGENTS.md), [`keld-wv`](../../crates/keld-wv/AGENTS.md),
    [`keld-guard`](../../crates/keld-guard/AGENTS.md),
    [`keld-compat`](../../crates/keld-compat/AGENTS.md). This is required, not optional.
-3. Read [`docs/agents/learnings.md`](../agents/learnings.md). It is short, it is
-   append-only, and it will save you an afternoon (for example: the macOS hello window is
-   tao+wry scaffolding to be replaced with objc2; `cargo-deny`'s `unmaintained` key takes
-   `all|workspace|transitive|none`, not `warn`).
+3. Query only the relevant area in [`docs/agents/learnings.md`](../agents/learnings.md);
+   it is evidence, not default full-file context. For example, `wv/macos` records the
+   tao+wry scaffold and `tooling` records cargo-deny configuration gotchas.
 4. Then go to [`06-documentation-map.md`](06-documentation-map.md) for what to read, in
    what order, and which documents are binding versus exploratory.
 

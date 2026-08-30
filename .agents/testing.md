@@ -34,6 +34,8 @@ evidence only when a plausible defect can make it fail.
 - Tests MUST await observable conditions, bind port `0`, use isolated temporary paths,
   and clean up resources. They MUST NOT use sleeps for synchronization; a timeout is
   only a kill switch.
+- Keep tests colocated with the owned module/fixture when the repository layout permits.
+  Document why a non-obvious wait/resource boundary is the real condition, not timing.
 - Crash, lifetime, and hostile-shutdown tests MUST run the risky action in a child
   process and assert the relevant stdout, stderr, exit code, signal, cleanup, and next
   successful operation.
@@ -57,8 +59,8 @@ evidence only when a plausible defect can make it fail.
 
 ## Documentation and Mermaid render gate
 
-- Root `AGENTS.md` § Documentation diagrams owns diagram selection, accessibility,
-  semantic labels and the shared `classDef` palette. A changed diagram MUST preserve
+- [`.agents/docs.md`](docs.md) owns diagram selection, accessibility, semantic labels
+  and the shared `classDef` palette. A changed diagram MUST preserve
   explicit current/target and framework/showcase meaning in its labels and surrounding
   prose; color or layout alone is not an oracle.
 - Run `just mermaid-test` and `just mermaid-check` for every diagram change. These prove
@@ -86,28 +88,12 @@ evidence only when a plausible defect can make it fail.
 
 ## CI tiers
 
-- **Every PR, always-created workflow:** security scanning runs for every changed byte.
-  The repository-owned change router then schedules each non-security CI lane at the
-  job boundary from the observable contract and its inputs. It MUST NOT use
-  workflow-level path filters for required workflows: those leave a required check
-  pending. A skipped job is permitted only when it reports success and a falsifiable
-  router test covers that input class. Job-level `if` must not use `matrix` (GitHub
-  evaluates it before expansion). Unknown/shared/build-graph inputs run
-  every potentially affected lane, including Ubuntu WebKitGTK apt. Workflow/router
-  edits still create every job (GUI smoke owns live apt) but must not duplicate
-  `apt-get update` onto Ubuntu clippy and MSRV. No filename heuristic may silently
-  skip a proof.
-- **Rust-affecting PRs:** CI runs `cargo fmt --all --check` plus clippy, tests and MSRV
-  checks for the changed workspace package and every Cargo reverse-dependent consumer.
-  MSRV is a rustc-version gate on macOS (WKWebView, no apt). Ubuntu WebKitGTK apt for
-  clippy/test runs when the selected `--all-targets` package closure compiles `keld-wv`
-  (or an unknown/lockfile fail-safe). Other Ubuntu clippy uses the router's GTK-free
-  package set. A workflow/router edit preserves the explicit GTK-free subset so the GUI
-  smoke remains the only live apt owner for that input class. The Xvfb smoke separately runs when the current `keld-host`
-  dependency closure or graphical build/runtime inputs change. Replay
-  committed fuzz regressions as normal tests; build changed fuzz harnesses. A
-  documentation-affecting PR runs the generated docs and Mermaid render gates. Agents
-  still run the root `AGENTS.md` local verification gate before claiming their work done.
+- [`.agents/ci.md`](ci.md) owns routing, required-workflow, apt, MSRV, and
+  merge-admission invariants. This playbook owns what evidence each selected test lane
+  must produce.
+- **Rust-affecting PRs:** format, clippy, test, and MSRV cover changed packages and Cargo
+  reverse dependents. Replay committed fuzz regressions as normal tests; build changed
+  fuzz harnesses. Docs-affecting PRs run generated-doc and Mermaid gates.
 - **Nightly:** run bounded `cargo-fuzz` campaigns with retained corpora. Add targeted
   sanitizer or Miri lanes only where unsafe, FFI, allocation, or lifetime risk makes
   them applicable; print replayable seeds and promote every failure to a regression.

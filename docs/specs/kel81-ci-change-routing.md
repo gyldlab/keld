@@ -18,7 +18,7 @@ Non-goals:
 
 ## 2. Spec refs
 
-- `AGENTS.md` § Commands & verification, § CI dependency routing
+- `AGENTS.md` § Verification floor and `.agents/ci.md` § Required workflow and routing
 - `docs/agents/workflow.md` § Review: CI is the arbiter, humans are the architects
 - `.agents/testing.md` § CI tiers
 

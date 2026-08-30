@@ -95,10 +95,10 @@ KEL-28), but not yet watched on a real desktop with eyes on the screen.
 
 ## 3. The verification gate
 
-### 3.1 The three commands
+### 3.1 Mandatory core Rust subset
 
-`AGENTS.md` is unambiguous: **all three must pass before anything is "done".** Not two.
-Not "clippy passes, tests are flaky on my machine".
+These three are mandatory, but they are only the core Rust subset of the exact full
+local gate, `just ci`:
 
 ```bash
 cargo fmt --all --check
@@ -106,14 +106,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-Run `cargo fmt --all` (no `--check`) to fix formatting before the gate. Run the gate
-before every push, and report **real output** in the PR — never "should work". If a path
+Run `cargo fmt --all` (no `--check`) to fix formatting, then run `just ci` before every
+push and report **real output** in the PR — never "should work". If a path
 only exists on another OS, say so plainly rather than claiming coverage you do not have.
 
 ### 3.2 Report fresh results, not an onboarding snapshot
 
-Run all three commands against the exact checkout being handed off and quote their real
-exit status and summary. Test totals, durations, commit ids and dirty-tree shape change
+Run `just ci` against the exact checkout being handed off and quote its real exit status
+and summary, including the core Rust subset. Test totals, durations, commit ids and dirty-tree shape change
 too often to embed here. A platform-gated module compiling on this machine is not proof
 that its window, sandbox, installer or updater behavior ran on the target OS.
 
@@ -245,7 +245,8 @@ use an unpinned `cargo` on a random runner image.
 
 ## 6. Conventions that will get a PR rejected
 
-Read [`AGENTS.md`](../../AGENTS.md) in full. The greatest hits,
+Read [`AGENTS.md`](../../AGENTS.md) in full, then use [`.agents/index.md`](../../.agents/index.md)
+to load only the task-matched playbooks. The greatest hits,
 with the rationale, so you do not learn them from a review comment:
 
 - **No `unwrap`, `expect`, `panic!` in library code.** Return typed errors with the
@@ -305,7 +306,7 @@ they carry invariants the root file does not:
 ## 7. The five review gates
 
 Some changes cannot be merged on green CI alone; they need a human to sign off. From
-`AGENTS.md` § Review gates:
+`AGENTS.md` § Security, performance, and review gates:
 
 1. **`unsafe`** — new or changed
 2. **Public API** — new or changed
@@ -353,7 +354,7 @@ docs(research): fold the IPC survey into 10-ipc-state-of-the-art
   §5 could move, or `none`. A regression over 5% needs a written waiver.
 
 **Rebase onto `origin/main` before opening the PR** — linear history; `--force-with-lease`
-the feature branch only, never `main` (`AGENTS.md` § Commits & PRs). Small PRs, one
+the feature branch only, never `main` (`.agents/review.md` § Branch and commit contract). Small PRs, one
 concern each. No secrets, no `.env*` edits; destructive git operations need human
 approval.
 
@@ -366,8 +367,8 @@ the process of record. Condensed:
 
 1. **Read before writing** — the issue, the governing spec section in
    `docs/architecture/`, the target crate's `AGENTS.md`, and
-   [`docs/agents/learnings.md`](../agents/learnings.md). Then grep the codebase; a
-   surprising amount already exists.
+   only the relevant-area entries in [`docs/agents/learnings.md`](../agents/learnings.md).
+   Then grep the codebase; a surprising amount already exists.
 2. **Spec gate** — bigger than a bug fix and no approved spec? Write one from
    [`docs/agents/spec-template.md`](../agents/spec-template.md) into
    `docs/specs/<kebab-name>.md` and stop for human approval. Implementation starts only
@@ -375,8 +376,9 @@ the process of record. Condensed:
    shape, not implicit approval for a new implementation. Bug fixes skip the spec but
    not the regression test.
 3. **Isolate** — one concern per branch; work in a git worktree sibling
-   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` from `origin/main` (`AGENTS.md`
-   § Commits & PRs). Never two people building in one tree at once.
+   (`../keld-<issue>`) on `agent/kel-<n>-<slug>` from `origin/main`
+   (`.agents/review.md` § Branch and commit contract). Never two people building in one
+   tree at once.
 4. **Write the test first**, then implement. Vertical slices, no placeholders.
 5. **Run the gate** (§3) and paste the real output.
 6. **Self-review the whole diff** before pushing: boundary violations, missed review
@@ -465,7 +467,7 @@ behavior and the CI-identical output are only available through nextest.
 
 **`error: no such command: deny`.**
 `cargo install cargo-deny --locked`. It is only needed for `just ci` and `just deny`; the
-three-command gate in §3.1 does not use it. See §3.2 for the license failure that is
+core Rust subset in §3.1 does not use it. See §3.2 for the license failure that is
 already present.
 
 **`command not found: just`.**

@@ -65,6 +65,15 @@ expect_empty_packages() {
     expect_empty_output "$1" packages "$2"
 }
 
+expect_no_package_selection() {
+    local label="$1"
+    local actual="$2"
+    local output_name
+    for output_name in packages nongtk_packages ubuntu_packages ts_packages; do
+        expect_empty_output "$label ($output_name)" "$output_name" "$actual"
+    done
+}
+
 expect_empty_output() {
     local label="$1"
     local output_name="$2"
@@ -83,6 +92,7 @@ all_false=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=f
 runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 docs_only=$'rust=false\ndocs=true\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
+docs_hygiene=$'rust=false\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 # A TypeScript package change owns the Bun lane and the crates that read that
@@ -118,6 +128,18 @@ expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygien
 atomic_checker_classification="$(result_for_paths tools/atomic_protocol.rs)"
 expect_flags "atomic protocol checker runs only its hygiene contract" "$hygiene_only" "$atomic_checker_classification"
 expect_empty_packages "atomic protocol checker selects no package" "$atomic_checker_classification"
+
+agent_context_classification="$(result_for_paths tools/agent_context.rs tools/markdown_contract.rs .agents/instruction-budget.tsv)"
+expect_flags "instruction budget inputs run only hygiene" "$hygiene_only" "$agent_context_classification"
+expect_no_package_selection "instruction budget inputs select no package/suite" "$agent_context_classification"
+
+agent_instruction_classification="$(result_for_paths AGENTS.md crates/keld-wv/AGENTS.md .agents/index.md .agents/skills/instruction-review/SKILL.md .agents/new.txt docs/agents/workflow.md)"
+expect_flags "agent instruction Markdown runs docs and merge-blocking hygiene" "$docs_hygiene" "$agent_instruction_classification"
+expect_no_package_selection "agent instruction Markdown selects no package/suite" "$agent_instruction_classification"
+
+agent_assembly_classification="$(result_for_paths .codex/config.toml)"
+expect_flags "agent assembly config runs merge-blocking hygiene" "$hygiene_only" "$agent_assembly_classification"
+expect_no_package_selection "agent assembly config selects no package/suite" "$agent_assembly_classification"
 
 host_classification="$(result_for_paths crates/keld-ipc/src/lib.rs)"
 expect_flags "host dependency closure routes IPC change to GUI smoke and GTK for its selected test closure" "$host_dependency" "$host_classification"

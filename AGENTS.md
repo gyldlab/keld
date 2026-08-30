@@ -1,29 +1,46 @@
-# AGENTS.md — Keld engineering rules
+# AGENTS.md — Keld invariant floor
 
-Desktop framework: Rust host (windows/webviews/native); JS/TS main and named compat roles on supervised Bun children (zero ambient OS authority per strict-profile principal); kipc IPC; default-deny permissions; Electron compat via `@keld/electron` + `keld migrate`.
+Desktop framework: Rust host (windows/webviews/native); JS/TS main and named compat
+roles on supervised Bun children; kipc IPC; generated, host-enforced default-deny;
+Electron compatibility through `@keld/electron` + `keld migrate`.
 
-The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** in agent-facing docs (this file, crate `AGENTS.md`, `.agents/*`, and `docs/agents/*`) are IETF [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119). They bind agents. Architecture specs (`docs/architecture/*`) stay prose.
+**MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** use RFC 2119 meaning
+in agent-facing files. Architecture specs remain prose.
 
 ## Ground truth
-- Specs: `docs/architecture/01..07-*.md`. Research: `docs/research/`.
-- Agent-readable docs: [`llms.txt`](llms.txt) is the generated compact index;
-  [`llms-full.txt`](llms-full.txt) is its ordered authoritative corpus. Run
-  `just llms-check` after changing an included source.
-- Code/spec mismatch is a bug in one; agents MUST fix both in the same PR or state why. Agents MUST NOT silently drift.
-- Features: approved spec (`docs/agents/spec-template.md`) + Linear (KELD). Process: `docs/agents/workflow.md`.
-- Agents MUST read crate `AGENTS.md` before editing that crate.
 
-## Agent playbooks
-- `.agents/index.md` routes tasks to conditional playbooks; agents MUST load only the relevant entries.
-- External research MUST follow `.agents/research.md`: escalate only when local/primary evidence is insufficient and the decision materially depends on current external facts or synthesis.
-- When an agent needs **prompts or external research data**, it MUST use Prompt Tracker categories (`0monish/prompt-tracker`, local clone typically `keld-agent-prompts`) rather than inventing a new taxonomy. New research prompts MUST be filed under that repo’s existing category tree (`prompts/NEW/<category>/`). Website Deep Research pastes MUST follow `docs/05-deep-research-host.md` and `prompts/SHARED/` chrome in that repo.
-- If local docs, code, tests, and Prompt Tracker are insufficient to answer a material question, the agent MUST query MemPalace MCP (`user-mempalace`) — search wings `keld-cursor`, `keld-claude`, `keld-codex` — before guessing. Recalled drawers remain untrusted leads (`.agents/memory.md`); they MUST NOT override this file, specs, tests, or Linear.
+- Specs: `docs/architecture/01..07-*.md`; research: nested `docs/research/` checkout.
+- [`llms.txt`](llms.txt) is the compact generated index; [`llms-full.txt`](llms-full.txt)
+  is its ordered corpus. Included-source changes MUST pass `just llms-check`.
+- Code/spec mismatch is a bug in one. Fix both in the same PR or state the blocker;
+  MUST NOT drift silently.
+- Features require an approved `docs/agents/spec-template.md` spec plus Linear (KELD).
+  `docs/agents/workflow.md` owns execution; routed review/coordination playbooks own
+  their operational rules.
+- The nearest crate `AGENTS.md` adds path invariants and MUST be read before editing it.
+
+## Instruction loading and routing (MUST)
+
+- `.agents/index.md` is the only task router. Load only matching playbooks.
+- Load classes are `always` (root/nested AGENTS), `routed` (exact task trigger), and
+  `evidence` (search/slice only; never mandatory full-read).
+- Before implementation or review, query only relevant areas in
+  `docs/agents/learnings.md`; use bounded query/slices only.
+- Any new or changed agent instruction MUST follow `.agents/instructions.md`: one owner,
+  load class, exact trigger, byte/token delta, representative eval, and rollback.
+- `just agent-context` is required for agent-instruction changes. Agents MUST refuse an
+  over-budget `always` chain, unknown instruction file, missing route, duplicate owner,
+  hollow file, or unexplained budget increase.
+- External research, Prompt Tracker, MemPalace, private research, and public benchmark
+  rules are owned by `.agents/research.md` and `.agents/memory.md`, not this floor.
 
 ## Directness and scope
-- Lead with evidence and disagree when code, specs, OS contracts, or primary sources contradict an assumption.
-- State uncertainty, confidence when useful, and the missing proof; MUST NOT present inference as fact.
-- Diagnose the root cause and keep execution scoped; park adjacent cleanup.
-- Ask one focused question only when a user-owned choice would materially change the result; otherwise take the smallest reversible path.
+
+- Lead with evidence; disagree when code, specs, OS contracts, or primary sources do.
+- State uncertainty and missing proof; MUST NOT present inference as fact.
+- Fix the root cause, keep scope bounded, and park adjacent cleanup.
+- Ask one focused question only when a user-owned choice materially changes the result;
+  otherwise take the smallest reversible path.
 
 ## Atomic problem-solving protocol (MUST)
 
@@ -97,345 +114,88 @@ distinction would otherwise be ambiguous.
 
 ## Repo map
 
-Role is what the crate **is** today. `TARGET` marks specified destination scope that is
-not implemented; `SKELETON` marks a name-only module surface. Per-crate current status
-is `docs/architecture/01-overview.md` §1.
+`TARGET` is specified destination scope; `SKELETON` is a name-only surface. Current
+status is `docs/architecture/01-overview.md` §1.
 
-| Crate | Role |
+| Crate | Current role / destination |
 |---|---|
-| keld-core | Hello window + lifecycle session; TARGET event loop integration, window registry — spec 01 |
-| keld-wv | WebEngine; wkwebview/webview2/webkitgtk; TARGET cef — spec 05; `AGENTS.md` |
-| keld-ipc | kipc framing/codecs; TARGET channel registry + shm — spec 02; `AGENTS.md` |
-| keld-guard | Capabilities, manifest, scopes — spec 03; `AGENTS.md` |
-| keld-native | guard-checked brokers; `fs` live, rest SKELETON — spec 05 |
-| keld-runtime | Bun child-role supervisor — spec 06 |
-| keld-update | SKELETON (`Channel` enum only); TARGET bsdiff+zstd, signed manifests — spec 06 |
-| keld-pack | SKELETON (`Format` enum only); TARGET installers, signing, cross-compile — spec 06 |
-| keld-compat | Electron conformance evidence (KEL-74) + lifecycle oracle; TARGET host-side emulation — spec 04; `AGENTS.md` |
-| keld-host | Shipping host binary — spec 01/06 |
-| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved (`KELD-CLI-045`) — spec 06/07 |
-| packages/ | `@keld/electron` (KEL-72); other `@keld/*` upcoming |
+| keld-core | Hello window + lifecycle session; TARGET event loop/window registry |
+| keld-wv | System WebEngine backends; TARGET CEF; nested `AGENTS.md` |
+| keld-ipc | kipc framing/codecs; TARGET channel registry + shm; nested `AGENTS.md` |
+| keld-guard | Capabilities, manifest, scopes; nested `AGENTS.md` |
+| keld-native | Guard-checked brokers; `fs` live, rest SKELETON |
+| keld-runtime | Supervised Bun child-role runtime |
+| keld-update | SKELETON; TARGET signed manifests + delta update |
+| keld-pack | SKELETON; TARGET installers/signing/cross-compile |
+| keld-compat | Electron conformance/lifecycle oracle; TARGET host emulation; nested `AGENTS.md` |
+| keld-host | Shipping host binary |
+| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved |
+| packages/ | `@keld/electron` live; other `@keld/*` upcoming |
 
+Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
+`compat`). MUST NOT add hollow agent files.
 
-Crate `AGENTS.md` only where invariants exist (`wv`, `ipc`, `guard`, `compat`). Skeletons and `keld-cli`: spec in this table, no hollow file.
+## Verification floor
 
-## Commands & verification
-Toolchain: `rust-toolchain.toml` (1.97.1). TS: `bun install` / `bun test` in `packages/*`.
+- `just ci` is the sole exact local gate inventory. New behavior MUST have tests.
+- Before done, agents MUST run and report actual output for format, workspace clippy
+  with warnings denied, and the full workspace test gate. Conditional gates come from
+  `.agents/index.md`; MUST NOT report an unrun OS/path as passed.
+- Tests, failures, CI, docs/rendering, and dependency changes MUST load their routed
+  playbook before selecting a fix or proof.
 
-```bash
-cargo fmt --all                                    # before done
-cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings \
-  && cargo nextest run --workspace --profile ci    # verification gate — all three before "done"
-cargo nextest run -p <crate> [-- <filter>]         # single crate/test
-just llms-check                                    # generated docs are current
-just atomic-protocol                               # atomic problem-solving docs contract
-just mermaid-check                                 # Mermaid accessibility/type/palette contract
-just mermaid-render-check                          # digest-pinned isolated SVG render
-# Fallback: cargo test --workspace
-```
+## Rust, TypeScript, and naming
 
-Agents MUST run all three Rust gates before calling work done. Mermaid changes MUST also
-pass `just mermaid-test` and `just mermaid-check`, then render through an explicitly
-versioned stable Mermaid renderer using `just mermaid-render-check`. New behavior MUST
-have tests. Agents MUST report actual command output; MUST NOT write "should work".
-Failures on other-OS paths: say plainly.
+- Rust lints are workspace-owned. A new `allow` needs inline justification.
+- `unsafe` is limited to `keld-wv` backends (and future `keld-ipc` shm), with
+  `deny(unsafe_op_in_unsafe_fn)` and a `// SAFETY:` proof. Else requires human review.
+- Libraries MUST NOT add `unwrap`/`expect`/`panic!`. Typed errors are hand-written
+  `Display` + `KELD-*` fix guidance; test and `keld-cli` top-level invariants may expect.
+- Hot kipc/event-loop/guard paths use callbacks/state machines: no async runtime or
+  steady-state allocation. Async is cold-tooling only.
+- Dependencies are std-first, minimal, workspace-pinned and always a review gate.
+- Public Rust items are documented. TypeScript is strict; public APIs MUST NOT use
+  `any`; generated packages are never hand-edited; `@keld/electron` never imports
+  Electron at runtime.
+- Names: crates `keld-*`, libs `keld_*`, npm `@keld/*`, protocol `KI*`. Config names are
+  only `keld.config.ts`, `keld.permissions.jsonc`, `keld.build.ts`, `keld.compat.ts`.
 
-## CI dependency routing
+## Security, performance, and review gates
 
-GitHub Actions workflows MUST be created for every pull request and push. Agents MUST
-NOT use workflow-level `paths` or `paths-ignore` filters for a required workflow:
-GitHub leaves its required check pending when it skips the whole workflow. The
-repository-owned CI router instead classifies changed paths and applies conditions at
-the **job** boundary; a skipped job reports success while unrelated expensive work is
-not scheduled. Job-level `if` MUST use `needs` (and `github` / `vars` / `inputs` only).
-Agents MUST NOT reference `matrix` there: GitHub evaluates that condition before matrix
-expansion, and an invalid `matrix.os` guard fails the workflow file so rustc never starts.
+- Default-deny is sacred: MUST NOT bypass `keld-guard`. Dev-permissive exists only under
+  `keld dev` + recorder; release refuses it.
+- Perf claims use attributed reproducible measurements; >5% regression needs a written
+  waiver and benchmarks. Budgets: architecture 01 §5.
+- Threat models remain in the `keld-guard` and `keld-update` crate documentation.
+- PRs list these five review gates (or `none`); human sign-off is required when present:
+  `unsafe`, public API, permission model, dependency addition, wire protocol.
 
-- Every lane MUST name the observable contract and inputs it owns. A dependency install,
-  OS runtime, browser engine, device, cross-target toolchain, or benchmark MAY run only
-  when a changed input can affect that contract. `gitleaks` remains unconditional because
-  every changed byte is its input.
-- The router MUST derive build-dependency closures from the current build metadata where
-  available; agents MUST NOT copy a hand-maintained crate list. Unknown, shared,
-  workspace-graph, or comparison-base inputs MUST fail safe by enabling every potentially
-  affected lane, including Ubuntu WebKitGTK apt when the diff cannot be proven GTK-free.
-  Workflow and router edits MUST still create every job (Linux GUI smoke installs WebKitGTK)
-  but MUST NOT also `apt-get` on Ubuntu clippy or MSRV: those extra live apt-get update
-  calls hang on Azure Ubuntu mirrors while the GUI job finishes the same packages in
-  minutes. If the router itself cannot obtain required metadata or parse it, it MUST fail
-  the router job before emitting a partial/empty selection; it MUST NOT convert that fault
-  into a skipped-green result.
-- Conditional routing MUST have a falsifiable contract test for relevant, unrelated,
-  unknown, empty, pull-request and push diffs. A workflow/router edit MUST exercise all
-  conditional lanes. Agents MUST verify branch-protection behavior from current official
-  GitHub Actions documentation before changing this mechanism.
-- CI routing changes are a human-reviewed shared-file change. They MUST be their own
-  Linear-scoped PR unless the owning issue is CI itself; agents MUST NOT hide a CI
-  workaround in an unrelated product PR.
+## Working invariants
 
-## Rust
-- Lints: workspace `Cargo.toml` — `clippy::pedantic`, `missing_docs` warn (CI denies). A new `allow` MUST have an inline justification.
-- `unsafe` MUST appear only in `keld-wv` backends (and in `keld-ipc` shm once that module exists; it does not today); `#![deny(unsafe_op_in_unsafe_fn)]`, `// SAFETY:` proof. Else = human review.
-- Agents MUST NOT add `unwrap`/`expect`/`panic!` in libs. Typed errors: hand-rolled `Display` + `KELD-*` codes (not `thiserror`). `expect` MAY appear in tests + `keld-cli` top-level (state invariant).
-- Errors MUST state the fix — see `docs/architecture/07-agent-experience.md` §2; model `DenyReason`.
-- Hot paths (kipc, event-loop, guard): callbacks/state machines. Agents MUST NOT add an async runtime or steady-state alloc there. Async MAY appear only in cold tooling (cli/pack/update).
-- Deps: std-first, minimal, workspace-pinned. Each addition is a review gate (name, purpose, alternatives).
-- Public items MUST be documented.
-
-## TypeScript (`packages/*`)
-- Strict; public API MUST NOT use `any`. Generated (`@keld/schema`) MUST NOT be hand-edited.
-- `@keld/electron` MUST NOT import Electron at runtime.
-
-## Naming
-- Crates `keld-*`, libs `keld_*`, npm `@keld/*`, protocol `KI*`. One canonical name per concept.
-- Config: `keld.config.ts`, `keld.permissions.jsonc`, `keld.build.ts`, `keld.compat.ts` only (else spec change).
-- Numbered docs are paths; renumber → update all refs.
-
-## Documentation diagrams
-- Agents MUST add a Mermaid diagram only when it makes a relationship materially clearer
-  than prose or a small table; diagrams MUST NOT be decorative or duplicate nearby text.
-- Use `flowchart` for topology, dependencies or decisions; `sequenceDiagram` for ordered
-  messages/lifecycle; `stateDiagram-v2` for a state machine; `gantt` only for a real dated
-  schedule; and `erDiagram` only for a data model.
-- Every Mermaid block MUST include `accTitle` and `accDescr`. Labels MUST carry the
-  meaning without color, including current versus target and framework versus showcase;
-  styling is redundant emphasis only. The surrounding prose MUST name the source of
-  truth and any implementation gap.
-- Agents MUST use stable Mermaid syntax supported by the repository renderer/GitHub.
-  Before introducing unfamiliar syntax, agents SHOULD use Context7 when available to
-  locate current material and MUST confirm it against the current
-  [official Mermaid documentation](https://mermaid.js.org/). Every added or changed
-  block MUST pass `just mermaid-render-check` and the render/report gate in
-  [`.agents/testing.md`](.agents/testing.md); a browser preview or visual inspection
-  alone is not verification.
-- When a diagram uses semantic color, agents MUST reuse the applicable palette below
-  rather than inventing per-file colors:
-
-```text
-classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
-classDef target fill:#dbeafe,stroke:#1d4ed8,color:#172554,stroke-width:2px
-classDef showcase fill:#f3e8ff,stroke:#7e22ce,color:#3b0764,stroke-width:2px,stroke-dasharray:5 3
-classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
-classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
-classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
-```
-
-## Security & performance
-- Default-deny is sacred: agents MUST NOT bypass `keld-guard`. Dev-permissive MAY exist only under `keld dev` + recorder; release MUST refuse.
-- Perf budgets: `docs/architecture/01-overview.md` §5 (CI once `bench/` lands); >5% regression MUST have a waiver + benchmarks.
-- Threat models in `keld-guard`/`keld-update` crate docs.
-
-## Review gates — human sign-off; list under `## Review gates` in PR
-1. `unsafe` (new/changed)
-2. Public API (new/changed)
-3. Permission model
-4. Dependency addition
-5. Wire protocol (kipc frames, manifest schema, update feed)
-
-Agents MUST list these five (or write "none") in the PR. Human sign-off is required for any that apply.
-
-## Working rules
-- Tests are the contract. Compat work MUST land a conformance entry first (Electron docs = oracle). Bugs MUST have a regression test before the fix.
-- Anti-flake: agents MUST NOT sleep-sync; MUST await conditions; MUST bind port 0; MUST use temp dirs; colocated tests; doc *why*.
-- Agents MUST NOT land `todo!()`/`unimplemented!()`/stubs on main. PRs SHOULD be small, one concern.
-- Before coding, agents MUST: grep the codebase; read the spec section; read crate `AGENTS.md`; read `docs/agents/learnings.md`.
-- Before coding, agents MUST read the delta between their paste/issue pin and `origin/main` (`git log <pin>..origin/main`, new `docs/research` notes, open PRs) and record it in their first Linear comment; a stale pin is a defect, not an excuse.
-
-### OS-scoped acceptance (MUST)
-
-- Before implementation, agents MUST classify each acceptance criterion as `CI-only`,
-  `real OS/device`, or `not applicable`. A criterion that names an operating system,
-  device, native backend, visible window, installer, sandbox, or user-facing product
-  behavior is `real OS/device` unless its approved issue/spec explicitly says that a
-  CI fixture is the acceptance evidence.
-- For `real OS/device`, the first Linear scope comment MUST state the required OS/device,
-  exact observable acceptance, and availability. It passes only after an agent runs it
-  on that named OS/device and records evidence. Cross-compilation, emulation, a different
-  OS, and a generic CI lane MUST NOT be presented as that product evidence. A CI job on
-  the named OS proves only the job's declared automation contract unless the issue/spec
-  explicitly makes it the product-acceptance fixture.
-- When the required system is unavailable, agents MUST leave an `## OS handoff` comment
-  on Linear with the required OS/device, exact command or observable, evidence already
-  collected, availability blocker, and next operator action. They MUST leave the issue
-  `In Progress` while other work remains or mark it `Blocked` once that system is the
-  only remaining dependency; they MUST NOT mark it Done or imply the OS path passed.
-- When a required OS/device check runs and fails, agents MUST record
-  `failed:<evidence>` in the handoff and keep the issue `In Progress` until the
-  acceptance passes or a human changes its scope.
-- A partial PR may merge before its `real OS/device` criterion only with explicit human
-  authorization. Its PR and Linear record MUST name the remaining OS acceptance, and
-  the parent issue remains open until it is executed.
-
-Git worktrees:
-- Extra `git worktree`s (not the primary clone) that are unused MUST be removed: merged PR branch, no open PR, clean working tree.
-- In-use MUST stay: primary checkout, worktrees for **open** PRs, dirty trees with real uncommitted work.
-- When an agent will **add** a worktree, or at the start of a session that uses worktrees, it MUST run `git worktree list`, map branches to `gh pr list` (open vs merged), and `git worktree remove` unused + `git worktree prune` **before** creating a new one.
-- MUST NOT `--force` remove a dirty tree with real work; MUST NOT delete `main`; MUST NOT force-push; MUST NOT remove sibling repos (`keld-agent-prompts`, `docs/research` nested checkout).
-- `git worktree remove` is the owned mechanism; agents MUST NOT `rm -rf` a linked checkout unless `git worktree remove` already succeeded.
-
-## Linear coordination (mandatory)
-
-For every task associated with a KELD Linear issue, Linear is the shared execution
-record, not a final reporting form. When the connector is available, agents MUST follow
-the canonical lifecycle in [`docs/agents/workflow.md`](docs/agents/workflow.md). When it
-is unavailable or permissions prevent an update, agents MUST record that limitation in
-the PR or handoff and MUST NOT invent a ticket update.
-
-### Branch + Linear handoff (MUST)
-
-Paste chrome for multi-device agents lives in Prompt Tracker
-(`0monish/prompt-tracker` `prompts/SHARED/branch-linear-handoff.md`). Monorepo agents
-who never see that paste MUST still follow these rules — Linear is the shared merge-intent
-record across devices.
-
-Handoff records merge intent when work *ends*. Ownership is claimed before work
-*starts*: agents MUST post an `## Agent claim` naming their device before their first
-edit — [`docs/agents/workflow.md`](docs/agents/workflow.md) § Agent claim.
-
-1. If the agent creates or uses a git branch in `gyldlab/keld`, `0monish/keld-research`
-   (nested `docs/research`), or `0monish/prompt-tracker`, it MUST comment on the relevant
-   Linear issue(s) **before finishing** with a `## Branch handoff` block (template below).
-2. Agents MUST NOT silently abandon a branch with no Linear note.
-3. Agents MUST NOT auto-merge to `main` unless the paste explicitly authorizes
-   `MERGE: yes` / merge-when-green for that ticket, **or** Linear already records
-   `Merge: merge-when-CI-green`, required checks are green, and the paste allows merge.
-4. Research-note commits still follow Private research / `just research-push`. An incidental
-   **product** (`gyldlab/keld`) branch from research defaults to
-   `Merge: do-not-merge` or `human-decide` plus a Linear handoff unless the prompt
-   explicitly authorizes a PR merge.
-5. Not every branch should merge to `main`. Prefer `merge-after:<deps>` or `human-decide`
-   over guessing. Multi-device agents MUST read the latest Branch handoff comment before
-   creating a duplicate branch or merging.
-
-```text
-## Branch handoff
-- Repo:
-- Branch:
-- Tip SHA:
-- PR: (url or none)
-- Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
-- Depends on: (tickets/PRs/notes or none)
-- OS evidence (repeat this pair for each acceptance criterion; use one
-  `not-applicable` pair only when none is OS-scoped):
-  - Acceptance: CI-only:<contract> | real:<OS/device + observable> | not-applicable
-  - Status: passed:<evidence> | failed:<evidence> | awaiting:<system/operator> | not-applicable
-- Reason:
-```
-
-One block per branch (one per repo when several were touched).
-
-When `OS status` is `awaiting`, agents MUST also leave this separate Linear comment:
-
-```text
-## OS handoff
-
-Repeat this block for each remaining OS/device criterion:
-
-- Criterion:
-- Required OS/device:
-- Exact command or observable:
-- Current evidence:
-- Availability blocker:
-- Next operator action:
-- Ticket status: In Progress | Blocked
-```
-
-First-principles + YAGNI (MUST; `docs/research/library/agents-tooling/27-first-principles-yagni.md`):
-1. Apply the Engineering principles above across host / Bun child / webview; Keld-specific architecture additionally changes who owns a handle, who can crash whom, or who can mint a principal. If it changes none of those facts, it is not architecture.
-2. Agents MUST treat wry layout, Tauri ACL, Electron docs, and platform event loops as evidence of facts — not templates. Copying crate graphs, tokio-in-core, ACL wildcards, or in-process Node is cargo-cult.
-3. Agents MUST protect four uniques only: prebuilt host, supervised Bun process family with zero ambient OS authority per strict-profile principal, kipc, default-deny (generated, host-enforced). MUST NOT invent a fifth.
-4. Two YAGNI tests: (a) can Linear Phase 2 (window + kipc echo + crate map) ship without this? (b) does this file exist only to look complete? Either yes → agents MUST NOT land it.
-5. Anti-patterns: crate `AGENTS.md` only when it adds binding rules; agents MUST NOT write an RFC that restates `docs/architecture/` without binary acceptance tests; MUST NOT split toward a 100-crate graph; MUST NOT add a `WebEngine` method until a live backend implements it in the same PR.
-
-No slop (MUST):
-Agents MUST follow `.agents/testing.md`. Tests MUST be falsifiable: a real contract defect must fail the test. Test observable contracts (error code, wire bytes, process status, or OS behavior), not implementation-shaped essays.
-
-No workarounds (MUST):
-Agents MUST fix causes, not symptoms — in code, tests, builds, docs, and tooling alike. When something resists, the reflex MUST be "why is this happening", never "how do I get past this". Agents MUST NOT make the signal fit the change.
-
-For a failed gate, CI dependency, platform behavior, build, test, security control or
-runtime fault, agents MUST apply the Atomic problem-solving protocol above before
-selecting a fix. A timeout increase, retry, bypass, flag, skip, mock, hard-coded
-exception, test weakening, broader permission or environment override is forbidden when
-it merely makes a symptom disappear. It is permitted only when the verified root cause
-proves that it is the owned correctness mechanism, its compatibility fallback is
-explicit, and a test falsifies its removal.
-
-Forbidden in general:
-- Special-casing an input, hardcoding a value, or branching on a specific case to make one caller work, when the underlying rule is what is wrong.
-- Papering over a failure: swallowing an error, `unwrap_or_default()` on a real fault, retrying a deterministic failure, or widening a type/scope so a mismatch stops being visible.
-- Sleeping instead of awaiting a condition; the anti-flake rules above are a special case of this.
-- Duplicating a helper because the shared one does not quite fit. Fix the shared one — for a security control this is not slop but a defect, since the copies drift.
-- Reaching for a bigger permission, a wider scope, or a looser default because the correct one is inconvenient. Default-deny is not negotiable for convenience.
-- Declaring work done on a platform, path, or condition that was never exercised. Say plainly what was not run.
-
-Forbidden when a test, gate, or check fails:
-- Weakening, narrowing, `#[ignore]`-ing, or deleting a failing test so a change can land. If a test is genuinely wrong, say so, state why, and get human sign-off — do not edit it silently in the same commit it blocks.
-- `allow`-ing a lint, `--no-verify`, `--force` past a gate, or skipping a CI job to go green.
-- Regenerating or hand-editing a generated artifact until a check passes without confirming the generator itself is current. A stale generator can emit a self-consistent wrong artifact that satisfies a staleness check and still fails the content test. Rebuild the generator from the working tree first.
-- Treating a red gate as noise. Reproduce it locally, find the cause, then fix.
-
-When the real fix is genuinely out of scope, agents MUST stop and say so — name the cause, propose the fix, and let a human choose. A disclosed limitation is acceptable; a silent workaround is not. A required failing check MUST be fixed before merge. If its contract is wrong, the rule/test change requires explicit human approval and lands before or with the dependent implementation; approval alone MUST NOT waive the check.
-
-Nested `crates/<crate>/AGENTS.md` (`docs/research/library/agents-tooling/26-agents-md-cloudflare-rfc.md`):
-- A crate MUST have `AGENTS.md` when it has invariants not in this file: `unsafe`/WebEngine, `keld-guard` default-deny, kipc wire protocol. Nested files MUST add constraints; they MUST NOT silently weaken root. Root wins on conflict unless the crate file names a documented exception with justification.
-- Agents MUST NOT add hollow stubs; MUST NOT add files for crates whose invariants are all stated here (`keld-core`, `keld-native`, `keld-runtime`, `keld-host`) or for the skeletons (`keld-update`, `keld-pack`); MUST NOT add one for `keld-cli` — the root § Rust rules already govern it (`expect` only at its binary top-level, never in libs); MUST NOT add one under `packages/` until a TS package carries invariants not stated in § TypeScript (`@keld/electron` exists and is governed there). Point at the spec in the repo-map table instead.
-- Enforcement: `just agents-md` — fails if a crate with `unsafe` / `allow(unsafe_code)` has no `AGENTS.md`. Not a Codex.
-
-## Self-improvement (mandatory)
-Non-obvious gotcha (>10 min saved) → agents MUST append ONE line to `docs/agents/learnings.md` in the same PR:
-```
-- YYYY-MM-DD [area] fact. (evidence: path, issue, or command)
-```
-Agents MUST grep first (no dupes/opinions). Stale rule here → fixing it *is* the task.
-
-## Private research
-`docs/research/` is a nested git checkout of `https://github.com/0monish/keld-research.git` (not the Keld monorepo index). When an agent creates or edits files under `docs/research/`, it MUST commit inside that nested repo and push with `just research-push` (or `git -C docs/research push`) in the same turn, unless push soft-fails for no access (then warn the user). Agents MUST NOT `git add docs/research` from the Keld repo root / MUST NOT commit research into Keld.
-
-## Public benches
-Hello-window / installer / RSS fixtures for competitor frameworks and native Swift live in [`https://github.com/gyldlab/keld-benches`](https://github.com/gyldlab/keld-benches) (public) under **OS-first** paths `{macos|windows|linux}/<framework>/...` (e.g. `macos/swift/appkit-wk`, `windows/electron/hello`). When an agent creates or updates such benchmark apps, it MUST commit and push to `gyldlab/keld-benches`, not into the Keld monorepo. If direct push access is unavailable, agents MUST open a fork PR to `gyldlab/keld-benches`, or warn and skip (do not leave fixtures only under `/tmp` or inside Keld). Agents MUST pick the OS folder for the machine / pack they actually ran. Agents MUST NOT put OS-agnostic dumps at the `keld-benches` repo root. Agents MUST NOT add Electron / Tauri / Wails / Neutralino / NW.js / Electrobun / Swift hello apps under Keld `docs/`, `competitors/` (shallow reference clones from the lockfile), or `/tmp`-only without pushing to `keld-benches`. Measured numbers MAY be recorded in `docs/engineering/budget-scoreboard.md` (Keld); rows SHOULD link the OS-qualified fixture path **and an immutable commit SHA or tag** in `keld-benches` (not only `main`).
-
-## Commits & PRs
-- Conventional commit format for the PR title (KeldBot's `title-lint` job enforces this on `opened`/`edited` and auto-applies the matching `type:*` label, since squash-merge uses the PR title as the final commit message): `type(scope): subject` — `type` MUST be one of `feat fix docs test chore ci style build` (the eight in actual use in this repo's history; agents MUST NOT invent a ninth without adding its `type:*` label and updating this list and `title-lint`'s allowed set in the same PR). `scope` is optional, lower-kebab, usually a crate/package/area (`ipc`, `wv/macos`, `research`). `subject` is imperative mood, no trailing period. Examples: `feat(ipc): …`, `fix(wv/macos): …`, `docs(research): …`.
-- Individual commits within a branch are not linted and MAY be less formal (e.g. WIP fixups) — only the PR title, which becomes the merged history's commit message, MUST follow the standard.
-- Long-lived branch: `main` only. Feature branch: `agent/kel-<n>-<slug>` from `origin/main` (one Linear issue, one worktree `../keld-<issue>`). Agents MUST NOT commit on another agent's checkout. Rebase onto `origin/main` before PR. `--force-with-lease` MAY rewrite the feature branch; agents MUST NOT force-push `main`.
-- PR intake: [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — an intake form, not a second policy. Body MUST include headings Summary · Spec refs · Review gates · Tests · Platforms · Perf impact. Spec refs is architecture/spec paths or `No boundary change`. Review gates is the five names or `none`. Omit empty optional sections (Linear, rollback, screenshots); do not write N/A. Strip template HTML comments from the submitted body; do not delete them from the template file.
-- **CodeRabbit review threads:** after addressing CodeRabbit feedback (same PR or a follow-up), agents MUST resolve the corresponding GitHub review thread(s) on that PR before calling work done. If the fix landed in a follow-up PR, resolve on the original PR too and comment with the merge SHA. Procedure: `.agents/skills/autofix/github.md` § Resolve review threads. Do not resolve threads whose fixes have not landed.
-- **A PR with no review threads is not a reviewed PR.** CodeRabbit's free tier rate-limits, and when it does it posts `Review limit reached` instead of a review — leaving zero unresolved threads, a green check and `mergeStateStatus: CLEAN`. Those signals are identical to "reviewed and clean". Before treating a PR as reviewed, agents MUST confirm CodeRabbit reviewed the **current head commit** (compare the review's commit against the PR tip; a rate-limit comment, or a review predating the tip, means it did not). An explicit `@coderabbitai review` can also return "Review triggered" and then produce nothing, because incremental review skips already-reviewed commits — so a force-push that removes commits can leave a branch permanently unreviewed.
-- **When CodeRabbit has not reviewed the current tip, agents MUST substitute an adversarial isolated-context review** before calling the work reviewed, and MUST say so in the PR along with what it found. Its required properties are in [`docs/agents/workflow.md`](docs/agents/workflow.md) step 6. Skipping review because the tool was unavailable is not permitted; neither is reporting an unreviewed PR as reviewed.
-- Agents MUST NOT commit secrets or edit `.env*`; destructive git ops MUST have human approval.
-
-## KeldBot (automated PR checks)
-Before opening a PR, agents SHOULD self-check against this so the checks pass on the first
-try instead of round-tripping through a CI failure — `.github/workflows/keldbot.yml` is the
-source of truth if this drifts:
-1. PR title matches `type(scope): subject` (§ Commits & PRs above) — `title-lint` is a
-   **required** status check on `main`'s branch protection: a failing PR cannot merge.
-2. PR body has all six non-empty template sections (§ Commits & PRs' PR intake bullet) —
-   `gatekeeper` is likewise a **required** status check; a failing PR cannot merge.
-3. `size-label` auto-labels `size/XS`…`size/XL` from added+deleted lines — informational
-   only, never fails, not a required check.
-
-All three re-check on `edited` (title/body) or `synchronize` (new commits) and self-resolve:
-fixing the title/body removes the failing label and updates KeldBot's own PR comment to ✅ —
-agents MUST NOT wait for a human to clear it, just push the fix and let it re-run. If a check
-is red, read KeldBot's own comment first (it names exactly what's missing) before re-deriving
-the rule from this file. Comments/labels post from the `keldrobo` account, not
-`github-actions[bot]`.
-
-The workflow trigger is `pull_request_target`, not `pull_request` — deliberately, so PRs from
-forks also get real secrets and working checks (GitHub does not pass repo secrets to
-`pull_request`-triggered runs from a forked repo). Safe here specifically because
-`keldbot.yml` never runs `actions/checkout` and never interpolates PR title/body into
-shell/script text — only reads them as JS data via `context.payload` inside
-`actions/github-script`. Do not add a checkout step to this workflow without re-deriving this
-safety argument from scratch; that combination (`pull_request_target` + checking out
-untrusted PR code) is the classic vulnerable pattern this file avoids.
-
-Label taxonomy on `gyldlab/keld` — bot-applied vs. human-applied differ, don't assume either:
-- `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*` (8, one per allowed
-  commit type) — bot-applied, per the three checks above.
-- `gate:*` (5, matching the § Review gates names exactly) and `crate:*` (12, one per crate in
-  the repo-map table) — human-applied only, for reviewer/triage visibility. KeldBot does NOT
-  auto-detect `unsafe`/public-API/permission-model/dependency/wire-protocol changes or infer
-  which crate a diff touches; agents/reviewers apply these by hand.
+- Tests are contracts. Compat lands a conformance entry first; bugs land a regression
+  test before the fix. Anti-flake/test shape belongs to `.agents/testing.md`.
+- MUST NOT land `todo!()`/`unimplemented!()`/stubs. Keep one concern per PR.
+- Before implementation: grep/reuse the codebase, read the governing spec and nearest
+  crate rules, query relevant learnings, inspect the pin-to-`origin/main` delta and open
+  work, then load `docs/agents/workflow.md` through `.agents/index.md` before the first
+  edit.
+- Keld protects four uniques only: prebuilt host; supervised Bun process family with
+  zero ambient OS authority per strict-profile principal; kipc; generated host-enforced
+  default-deny. MUST NOT invent a fifth.
+- A change is architecture only if it changes handle ownership, crash ownership, or
+  principal minting. Evidence from frameworks/platform loops is fact, not a template.
+- Reuse before adding crates/helpers/files. If Phase 2 can ship without it, or it exists
+  only to look complete, YAGNI forbids it. No 100-crate graph or unimplemented trait API.
+- Fix causes, not symptoms. MUST NOT swallow faults, retry deterministic failures,
+  sleep-sync, hard-code callers, duplicate helpers/policy, widen permissions, weaken
+  tests, skip gates, add lint bypasses, or regenerate artifacts from a stale generator.
+- When the correct fix is out of scope, stop and name the cause/fix. A disclosed blocker
+  is acceptable; a workaround or unverified completion claim is not.
+- Nested agent rules add constraints and never silently weaken root. `just agents-md`
+  enforces the current nested allowlist and unsafe coverage.
+- Workflow/Linear/worktree/OS/PR/CodeRabbit/CI/docs/research details are conditional and
+  MUST be loaded through `.agents/index.md`; they MUST NOT be re-copied into this floor.
+- Non-obvious reusable facts (>10 minutes saved) go to the relevant-area learning log
+  after grep/dedupe; `docs/agents/learnings.md` is evidence, not default context.
+- MUST NOT commit secrets or edit `.env*`. Destructive operations and merge authority
+  remain explicit; following a workflow never broadens user authorization.

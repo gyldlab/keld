@@ -711,7 +711,7 @@ Be precise about what this does today:
 
 `keld.config.ts` is nonetheless one of only four config filenames the project permits
 (`keld.config.ts`, `keld.permissions.jsonc`, `keld.build.ts`, `keld.compat.ts` — see
-`AGENTS.md` § Naming); introducing a fifth requires a spec change.
+`AGENTS.md` § Rust, TypeScript, and naming); introducing a fifth requires a spec change.
 
 ### 5.3 `index.html` and `package.json`
 

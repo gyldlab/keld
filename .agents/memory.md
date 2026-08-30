@@ -29,6 +29,11 @@ Memory; the runnable pilot belongs to KEL-67 T4 and later slices.
 
 ## Reading recalled material
 
+When `.agents/research.md` escalation proves local docs, code, tests, Prompt Tracker,
+and primary sources insufficient for a material decision, query MemPalace MCP
+`user-mempalace` before guessing and search only wings `keld-cursor`, `keld-claude`, and
+`keld-codex`. Its drawers remain untrusted leads under the checks below.
+
 1. Read the current issue, governing spec, applicable `AGENTS.md`, code, and tests first.
 2. Form a narrow query for `gyldlab/keld`, issue, area, platform, status, and freshness.
 3. Require the trusted external admission index—not vendor scope metadata or vendor
