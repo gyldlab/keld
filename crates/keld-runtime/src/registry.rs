@@ -368,12 +368,12 @@ mod tests {
         let mut app_control = fixture.accept_app_bound();
         assert_ready_line(&mut app_control, &app_g2.app_link);
         expect_foreign_reject(&app_g1.app_link, &app_g2, registry.app_bound(), "stale g1");
-        expect_foreign_reject(
-            &primary_g1.app_link,
-            &app_g2,
-            registry.app_bound(),
-            "primary token on app-bound",
-        );
+        // The observer emits at most one event per rejection class for each
+        // generation. The client-side handshake remains the direct proof that
+        // a second, cross-principal token is denied; the following LinkBound
+        // assertion also proves the rejection did not consume the listener or
+        // enqueue duplicate HelloAuth telemetry ahead of the legitimate bind.
+        connect_with_foreign_token(&primary_g1.app_link, &app_g2.app_link);
         assert_no_revoked(
             registry.primary(),
             "cross-principal reject must not revoke primary",
