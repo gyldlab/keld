@@ -1,7 +1,14 @@
 # Spec: strict-profile OS sandbox and native-addon-worker proof
 
-Status: draft
-Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-08-19
+Status: approved
+Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-08-31
+
+Approval provenance: direct-session human authorization for the frozen Windows
+T3 contract is recorded in Linear comment
+`79e0c22e-6807-4a3d-a371-edbc11fd9f9b`. The approval covers the exact
+zero-capability LPAC + reviewed ACL + handle allowlist + non-breakaway Job
+Object scope below. It does not waive unsafe, public-API, permission-model,
+dependency, hostile-test, real-OS, or merge review gates.
 
 Primary sources: [`kel78-primary-sources.md`](kel78-primary-sources.md)
 Written against `origin/main` `67f39cdc898254f1e0c9cd50800f242ae7a4c493`
