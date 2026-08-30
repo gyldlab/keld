@@ -140,7 +140,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
-| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; on macOS and Windows `dev` compiles an owner-private stage, launches its no-flag host, forwards stdio and retains only the host handle plus liveness writer; Linux retains the older CLI-owned slice until its KEL-96/T4 row; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
+| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; on macOS and Windows `dev` compiles an owner-private stage, launches its no-flag host, forwards stdio and retains only the host handle plus liveness writer; Linux `dev` fails closed until its KEL-96/T4 no-flag row; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
 | `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
 
 npm packages (TypeScript, in `packages/`):

@@ -231,13 +231,13 @@ Verified on macOS, 2026-08-29:
 | `just hello` / `cargo run -p keld-host -- --hello` | Opens a `WKWebView`/`WebView2`/`WebKitGTK` window with static HTML (macOS/Windows/Linux, KEL-28) |
 | `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
 | `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS, Windows, and Linux |
-| `keld dev` | Runs doctor. On macOS and Windows it compiles an owner-private stage, launches the staged `keld-host` with no Keld argument, forwards stdio, and retains only the host handle plus a private stdin-v1 liveness writer; the host owns the window, app link and Bun supervisor. Linux retains the older CLI-owned echo/window slice until its KEL-96/T4 work. Extra tokens including `--watch` are `KELD-CLI-044`. |
+| `keld dev` | Runs doctor. On macOS and Windows it compiles an owner-private stage, launches the staged `keld-host` with no Keld argument, forwards stdio, and retains only the host handle plus a private stdin-v1 liveness writer; the host owns the window, app link and Bun supervisor. Linux fails closed until its KEL-96/T4 no-flag work. Extra tokens including `--watch` are `KELD-CLI-044`. |
 | `keld ipc-echo` | Server + client kipc echo round trip in one process |
 | `cargo nextest run --workspace --profile ci` | Runs the current workspace CI suite |
 
 `keld dev` is still a slice, not the destination architecture. On macOS and Windows the
 CLI now delegates application ownership to a staged no-flag `keld-host`; on
-Linux the older CLI-owned loop remains until KEL-96/T4. There is still
+Linux the command fails closed until KEL-96/T4. There is still
 no `@keld/api`, dev permission recorder, Bun-watch recovery, or complete
 host-wired guarded app API. The guard-checked `keld_native::fs` broker exists,
 but the shipping host does not yet route app calls to that broader native

@@ -193,7 +193,7 @@ roles follow only after those slices and their shipping integration gates.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | **Today:** on macOS and Windows compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux retains the older CLI-owned hello slice until its KEL-96/T4 row. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
+| `keld dev` | **Today:** on macOS and Windows compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux fails closed until its KEL-96/T4 no-flag row. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
@@ -291,10 +291,10 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-Two limits remain. Linux still uses the legacy CLI-owned window path and reports
-its exit only after the developer closes that window. The Windows no-flag slice
-does not prove abnormal host-death descendant cleanup, post-CLI-death stage
-deletion, LPAC containment or the Linux T4 rows.
+Two limits remain. Linux `keld dev` fails closed before creating an app resource,
+and its real T4 product rows are absent. The Windows no-flag slice does not prove
+abnormal host-death descendant cleanup, post-CLI-death stage deletion, or LPAC
+containment.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /

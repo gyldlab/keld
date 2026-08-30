@@ -46,7 +46,7 @@ from `std::env::args()`.
 | `keld --version` / `keld -V` | `main.rs` | prints `keld <CARGO_PKG_VERSION>` |
 | `keld` (no args) | `main.rs::print_usage` | usage on **stderr**, exit 0 |
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
-| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS and Windows stages and launches the no-flag host with a private liveness lease; Linux retains the CLI-owned echo/window path until its KEL-96/T4 row |
+| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS and Windows stages and launches the no-flag host with a private liveness lease; Linux fails closed until its KEL-96/T4 no-flag row |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
 | `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
@@ -163,8 +163,8 @@ The one verb that ties everything together. Sequence, from
 5. **Wait for the host.** Lifecycle Ready follows initial navigation, and the
    same authenticated session remains live for multiple calls and Quit. If the
    CLI exits, EOF on the sole lease writer makes the host quiesce, close the
-   link, reap Bun, close the window, and exit. Linux retains the older
-   CLI-owned sequence. macOS removes its validated nonce stage on normal Quit
+   link, reap Bun, close the window, and exit. Linux fails closed before this
+   sequence until its no-flag owner lands. macOS removes its validated nonce stage on normal Quit
    and CLI loss; on Windows the live CLI removes it after orderly host exit,
    while post-CLI-death deletion remains open because the running executable is
    locked and no surviving cleanup helper is approved.
@@ -203,10 +203,11 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **On macOS the host, not the CLI, owns close and Quit.** The live WKWebView
-  path uses an event-loop wake command; `LastWindowClosed` stays on the same
-  link, and the correlated Quit reply precedes link close and guardian reap.
-  The older cross-platform hello backends remain the Windows/Linux T4 input.
+- **On macOS and Windows the host, not the CLI, owns close and Quit.** The live
+  WKWebView/WebView2 paths use event-loop wake commands; `LastWindowClosed`
+  stays on the same link, and the correlated Quit reply precedes link close
+  and supervisor reap. The Linux hello backend remains its T4 input, but
+  shipping Linux `keld dev` fails closed until that host-owned path lands.
 - **Linux has a live backend too, as of KEL-28.** `run_hello_window_html` is the
   same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
   `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now

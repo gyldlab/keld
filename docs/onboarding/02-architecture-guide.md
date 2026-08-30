@@ -251,8 +251,8 @@ Five things to notice, because they are each a deliberate decision rather than a
 ### 4b. What actually happens today when you run `keld dev`
 
 On macOS and Windows, read `crates/keld-cli/src/dev.rs` together with
-`crates/keld-core/src/app_session.rs`. Linux still uses the older CLI-owned
-hello path until its KEL-96/T4 row.
+`crates/keld-core/src/app_session.rs`. Linux `keld dev` fails closed until its
+KEL-96/T4 no-flag row.
 
 ```mermaid
 sequenceDiagram
@@ -298,7 +298,7 @@ The honest reading of that diagram:
   authenticated stream carries Ready, two echo calls and Quit while the
   native window is live; a fresh stream replaces it after a recoverable crash
   without changing that window. The CLI retains no listener, token, stream,
-  window, or Bun supervisor. Linux still uses the older CLI-owned path until T4.
+  window, or Bun supervisor. Linux fails closed until T4.
 - **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
   (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
   echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic
@@ -379,7 +379,7 @@ skeleton scope; grey = external dependency. One specified edge is missing today:
 `keld-runtime` for the guardian-composed Bun supervisor (KEL-96 T1a/T1b/T2), while
 `keld-wv::wkwebview` owns the concrete AppKit event loop, native handles, navigation
 callback, and `EventLoopProxy` wake. The broader
-named-role registry, guarded native dispatch, and Windows/Linux no-flag owners remain later work.
+named-role registry, guarded native dispatch, and the Linux no-flag owner remain later work.
 
 ### The two crates that carry real weight
 
@@ -453,7 +453,7 @@ From [`01` §4](../architecture/01-overview.md). Four kinds of execution context
 |---|---|---|
 | **Host main thread** | Is the platform UI thread (AppKit and GTK require it; Win32 tolerates it). *All* webview and window mutations happen here, delivered via a lock-free MPSC command queue into the event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add` | The macOS and Windows no-flag paths have a private `mpsc` + tao `EventLoopProxy` wake for Quit/Fatal; the complete multi-window registry remains target work. Partial |
 | **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | The macOS/Windows app session has one reader and one mutex-serialized writer per current generation; diagnostics retain the blocking echo-session thread. The complete pool/channel router is absent. Partial |
-| **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | On macOS the staged guardian composes `Supervisor`; on Windows the host consumes T8's primary supervisor. Both preserve one native window across fresh authenticated generations. Linux retains the CLI-owned one-use hello path. Partial |
+| **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | On macOS the staged guardian composes `Supervisor`; on Windows the host consumes T8's primary supervisor. Both preserve one native window across fresh authenticated generations. Linux `keld dev` fails closed. Partial |
 | **Webview content processes** | Whatever the engine does — WKWebView WebContent, WebView2 helpers, WebKitGTK web process, CEF subprocesses. "We never fight the engine's model" | Inherited from WKWebView via wry on macOS. Live by delegation |
 
 The UI-thread rule is the one that will bite you first. `keld-wv`'s crate `AGENTS.md` states it
@@ -665,12 +665,12 @@ The summary table. "Live" means it works and a test proves it.
 | `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (three backends) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |
 | Linux webview backend | **Implemented + build-tested (KEL-28); window unverified on a real desktop** | `keld-wv/src/webkitgtk/`, wry interim (GTK3 + WebKit2GTK 4.1, `build_gtk` for Wayland) mirroring how macOS/Windows started; GPU-stack probe (NVIDIA+Wayland safe-mode) built in. Compiles/clippy/225-test-green on real Ubuntu; `Xvfb`+`xdotool` finds a real correctly-titled window; nobody has watched pixels render yet |
 | Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
-| `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; macOS `dev` stages and launches the no-flag host with a CLI-death lease; Windows/Linux remain CLI-owned until T4 |
+| `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; macOS and Windows `dev` stage and launch the no-flag host with a CLI-death lease; Linux fails closed until T4 |
 | `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain`, all three webview media-capture handlers, and the isolated/test `keld_native::fs` broker (KEL-71, via `dispatch_privileged`, KEL-69) call them. The shipping host has no `keld-core → keld-native` route; echo dispatch deliberately does not call the guard. |
 | Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is host-reachable and default-deny, while `fs.read`/`fs.write` enforcement is live only through the isolated/test broker session. Shipping app-process filesystem dispatch and the recorder are absent. `$VARS` matched literally in v0. |
 | Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
 | shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
-| Bun supervision (restart, backoff, crash ledger) | **Implemented (KEL-70/KEL-116)** | `keld_runtime::Supervisor`; macOS `keld dev` reaches it through the host-owned guardian, retained diagnostics call it directly |
+| Bun supervision (restart, backoff, crash ledger) | **Implemented (KEL-70/KEL-116)** | `keld_runtime::Supervisor`; macOS and Windows `keld dev` reach it through their host-owned primary owners, retained diagnostics call it directly |
 | `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | The guard-checked `fs.read`/`fs.write` broker and real isolated kipc session are implemented (KEL-71), but no shipping host depends on or routes to `keld-native`; the other 14 modules are still names only. |
 | Electron compat (`@keld/electron`, tiers, conformance suite) | **Partial (KEL-72)** | `packages/@keld/electron`: `app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`. Other Tier 1 APIs and `keld migrate` are later. Bun 1.3.14 remaps `electron` via `tsconfig.json` paths, not bunfig `[alias]`. |
 | `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | Only `@keld/electron` exists under `packages/` |

@@ -62,7 +62,7 @@ explicitly unprivileged loopback interim. The locator is consumed at successful
 authentication. `keld dev` now uses the staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
-permission. Linux retains the older CLI-owned hello session until its KEL-96/T4 row.
+permission. Linux `keld dev` fails closed until its KEL-96/T4 no-flag row.
 Windows abnormal-host-death descendant cleanup still awaits KEL-78/T3 and no
 privileged channel may use this transport before KEL-101.
 

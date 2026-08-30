@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
-use keld_core::run_hello_window_html;
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, HostOwnedHelloSession, read_config_renderer,
     read_config_title,
@@ -204,8 +202,8 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
 ///
 /// On macOS and Windows this compiles one owner-private stage and launches its no-flag
 /// host with a private stdin liveness lease. The host owns the window,
-/// authenticated app link, and Bun. Linux retains the CLI-owned hello session
-/// until its KEL-96/T4 platform slice.
+/// authenticated app link, and Bun. Other platforms fail closed until their
+/// KEL-96/T4 no-flag host slice lands.
 ///
 /// # Errors
 ///
@@ -215,11 +213,11 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
     {
         run_dev_host(project_root)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
-        run_dev_with_window(project_root, |title, html| {
-            run_hello_window_html(title, html).map_err(|e| DevError::Runtime(e.to_string()))
-        })
+        crate::boot::stage_dev_boot(project_root, Path::new(""))
+            .map(|_| ())
+            .map_err(|error| DevError::Doctor(error.to_string()))
     }
 }
 
@@ -295,9 +293,9 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
 
 /// The retained CLI-owned hello path with its window phase injected.
 ///
-/// On Windows/Linux this remains the shipping path until KEL-96/T4. On macOS
-/// it remains a diagnostic/test seam for the KEL-105 supervision verdict;
-/// [`run_dev`] delegates to the staged host instead. `window` stands where the
+/// Shipping macOS/Windows [`run_dev`] delegates to the staged host and other
+/// platforms fail closed until their no-flag host slice. This retained
+/// diagnostic/test seam exercises the KEL-105 supervision verdict. `window` stands where the
 /// legacy `tao` `run_return` phase does: it borrows the
 /// thread for the whole window phase, during which the host observes nothing
 /// about the app process. Everything after it — reaping Bun, reading the
@@ -385,6 +383,16 @@ mod tests {
         keld_core::HelloSessionError::WindowPhase {
             cause: "KELD-RUNTIME-002: child crashed 3 times within 30s".to_owned(),
         }
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn shipping_dev_fails_closed_before_resources_on_an_unsupported_platform() {
+        let error = run_dev(Path::new("unused-on-an-unsupported-platform"))
+            .expect_err("unsupported no-flag host must fail closed");
+        let rendered = error.to_string();
+        assert!(rendered.contains("KELD-CLI-047"), "{rendered}");
+        assert!(rendered.contains("platform availability"), "{rendered}");
     }
 
     #[test]

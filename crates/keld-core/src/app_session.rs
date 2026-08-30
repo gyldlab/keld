@@ -1315,7 +1315,8 @@ fn start_windows_dev_lease(
                 match input.read(&mut buffer) {
                     Ok(0) => {
                         if shutdown.claim_cli_lease_lost() {
-                            let _ = router.cli_lease_lost();
+                            let result = router.cli_lease_lost();
+                            signal_windows_lease_result(&result, &router.window_commands);
                         }
                         return;
                     }
@@ -1330,6 +1331,16 @@ fn start_windows_dev_lease(
         })
         .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
     Ok(Some(handle))
+}
+
+#[cfg(windows)]
+fn signal_windows_lease_result(
+    result: &Result<(), HostAppError>,
+    window_commands: &Sender<AppWindowCommand>,
+) {
+    if result.is_err() {
+        let _ = window_commands.send(AppWindowCommand::Fatal);
+    }
 }
 
 #[cfg(windows)]
@@ -1953,7 +1964,7 @@ impl WindowsPrimaryOwner {
         self.command_tx
             .send(WindowsPrimaryOwnerCommand::AttachRouter(router, reply_tx))
             .map_err(|_| app_detail("Windows primary router attachment", "owner stopped"))?;
-        receive_windows_owner_reply(&reply_rx, "Windows primary router attachment")
+        receive_windows_owner_reply(&reply_rx, "Windows primary router attachment", false)
     }
 
     fn shutdown(mut self) -> Result<(), HostAppError> {
@@ -2004,7 +2015,7 @@ impl WindowsPrimaryOwnerHandle {
                 attempt, reply_tx,
             ))
             .map_err(|_| app_detail("Windows primary app-link failure", "owner stopped"))?;
-        receive_windows_owner_reply(&reply_rx, "Windows primary app-link failure")
+        receive_windows_owner_reply(&reply_rx, "Windows primary app-link failure", false)
     }
 
     fn prepare_accepted_shutdown(&self) -> Result<(), HostAppError> {
@@ -2023,7 +2034,7 @@ impl WindowsPrimaryOwnerHandle {
         {
             return Ok(());
         }
-        receive_windows_owner_reply(&reply_rx, "Windows primary shutdown")
+        receive_windows_owner_reply(&reply_rx, "Windows primary shutdown", true)
     }
 
     fn request(
@@ -2035,7 +2046,7 @@ impl WindowsPrimaryOwnerHandle {
         self.command_tx
             .send(command(reply_tx))
             .map_err(|_| app_detail(phase, "owner stopped"))?;
-        receive_windows_owner_reply(&reply_rx, phase)
+        receive_windows_owner_reply(&reply_rx, phase, false)
     }
 }
 
@@ -2043,6 +2054,7 @@ impl WindowsPrimaryOwnerHandle {
 fn receive_windows_owner_reply(
     reply_rx: &Receiver<Result<(), String>>,
     phase: &'static str,
+    owner_exit_is_success: bool,
 ) -> Result<(), HostAppError> {
     match reply_rx.recv_timeout(WINDOWS_PRIMARY_OWNER_REPLY_DEADLINE) {
         Ok(Ok(())) => Ok(()),
@@ -2051,6 +2063,7 @@ fn receive_windows_owner_reply(
             phase,
             "owner did not acknowledge before deadline",
         )),
+        Err(RecvTimeoutError::Disconnected) if owner_exit_is_success => Ok(()),
         Err(RecvTimeoutError::Disconnected) => {
             Err(app_detail(phase, "owner ended before acknowledgment"))
         }
@@ -3705,6 +3718,45 @@ mod tests {
                 count: correlation,
             }
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_shutdown_disconnect_is_idempotent_but_other_requests_fail() {
+        let (shutdown_tx, shutdown_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        drop(shutdown_tx);
+        assert!(
+            receive_windows_owner_reply(&shutdown_rx, "Windows primary shutdown", true).is_ok()
+        );
+
+        let (request_tx, request_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+        drop(request_tx);
+        assert!(
+            receive_windows_owner_reply(&request_rx, "Windows primary recovery arm", false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_lease_tail_failure_wakes_the_window_fatally() {
+        let (window_tx, window_rx) = mpsc::channel();
+        signal_windows_lease_result(
+            &Err(app_detail("Windows lease test", "forced tail failure")),
+            &window_tx,
+        );
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("lease failure Fatal wake"),
+            AppWindowCommand::Fatal
+        );
+
+        signal_windows_lease_result(&Ok(()), &window_tx);
+        assert!(matches!(
+            window_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
     }
 
     #[cfg(target_os = "macos")]
