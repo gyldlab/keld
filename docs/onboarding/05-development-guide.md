@@ -163,7 +163,7 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 | `just deny` | `cargo deny check` |
 | `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
 | `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
-| `just ci` | agent instructions + Mermaid + generated docs + hygiene + `fmt-check clippy test doc deny` |
+| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |
 
 `just ci` is the local mirror of CI, minus the three-OS matrix and the manual Mermaid
 visual-inspection/report step. If it is green and you only touched
