@@ -418,6 +418,13 @@ jobs:
           KELD_RESULT_DENY: ${{ needs.deny.result }}
           KELD_RESULT_SECRETS: ${{ needs.secrets.result }}
           KELD_RESULT_HYGIENE: ${{ needs.hygiene.result }}
+          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}
+          KELD_ROUTE_TS: ${{ needs.changes.outputs.ts }}
+          KELD_ROUTE_GUI: ${{ needs.changes.outputs.gui }}
+          KELD_ROUTE_MSRV: ${{ needs.changes.outputs.msrv }}
+          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}
+          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}
+          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -429,4 +436,11 @@ jobs:
             "$KELD_RESULT_MSRV" \
             "$KELD_RESULT_DENY" \
             "$KELD_RESULT_SECRETS" \
-            "$KELD_RESULT_HYGIENE"
+            "$KELD_RESULT_HYGIENE" \
+            "$KELD_ROUTE_RUST" \
+            "$KELD_ROUTE_TS" \
+            "$KELD_ROUTE_GUI" \
+            "$KELD_ROUTE_MSRV" \
+            "$KELD_ROUTE_DENY" \
+            "$KELD_ROUTE_HYGIENE" \
+            "$KELD_ROUTE_DOCS"

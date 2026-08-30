@@ -415,22 +415,12 @@ classify_path() {
             docs="$TRUE"
             ;;
 
-        # The router and ci.yml decide which jobs execute. Any edit here must
-        # exercise every conditional lane, otherwise a classification defect can
-        # hide the very job that would expose it.
-        .github/workflows/ci.yml | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh)
+        # The router, merge evaluator, and every workflow can change the
+        # repository's automation or required-check surface. Any edit here must
+        # exercise every conditional lane, otherwise a workflow can introduce a
+        # false-green check while skipping the contracts that would expose it.
+        .github/workflows/* | tools/ci_changes.sh | tools/ci_changes_test.sh | tools/ci_required.sh)
             mark_all
-            ;;
-
-        # KeldBot owns required PR metadata checks. It cannot affect product
-        # compilation, but the hygiene lane reads and validates that workflow.
-        .github/workflows/keldbot.yml)
-            hygiene="$TRUE"
-            ;;
-
-        # Any other workflow file has no path into the Rust workspace, GUI, or
-        # either repository-owned required workflow. Nothing to mark.
-        .github/workflows/*)
             ;;
 
         # Workspace and toolchain inputs can alter every Rust build, keld-host's
