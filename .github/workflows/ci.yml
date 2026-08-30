@@ -387,3 +387,60 @@ jobs:
       - name: Render Mermaid docs in pinned isolated container
         if: needs.changes.outputs.docs == 'true'
         run: tools/mermaid_render_check.sh
+
+  required:
+    name: CI required
+    if: ${{ always() }}
+    needs:
+      - changes
+      - fmt
+      - check
+      - bun-test
+      - linux-gui-smoke
+      - msrv
+      - deny
+      - secrets
+      - hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify required CI results
+        env:
+          KELD_RESULT_CHANGES: ${{ needs.changes.result }}
+          KELD_RESULT_FMT: ${{ needs.fmt.result }}
+          KELD_RESULT_CHECK: ${{ needs.check.result }}
+          KELD_RESULT_BUN: ${{ needs['bun-test'].result }}
+          KELD_RESULT_GUI: ${{ needs['linux-gui-smoke'].result }}
+          KELD_RESULT_MSRV: ${{ needs.msrv.result }}
+          KELD_RESULT_DENY: ${{ needs.deny.result }}
+          KELD_RESULT_SECRETS: ${{ needs.secrets.result }}
+          KELD_RESULT_HYGIENE: ${{ needs.hygiene.result }}
+          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}
+          KELD_ROUTE_TS: ${{ needs.changes.outputs.ts }}
+          KELD_ROUTE_GUI: ${{ needs.changes.outputs.gui }}
+          KELD_ROUTE_MSRV: ${{ needs.changes.outputs.msrv }}
+          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}
+          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}
+          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}
+        run: |
+          tools/ci_required.sh test
+          tools/ci_required.sh check \
+            "$KELD_RESULT_CHANGES" \
+            "$KELD_RESULT_FMT" \
+            "$KELD_RESULT_CHECK" \
+            "$KELD_RESULT_BUN" \
+            "$KELD_RESULT_GUI" \
+            "$KELD_RESULT_MSRV" \
+            "$KELD_RESULT_DENY" \
+            "$KELD_RESULT_SECRETS" \
+            "$KELD_RESULT_HYGIENE" \
+            "$KELD_ROUTE_RUST" \
+            "$KELD_ROUTE_TS" \
+            "$KELD_ROUTE_GUI" \
+            "$KELD_ROUTE_MSRV" \
+            "$KELD_ROUTE_DENY" \
+            "$KELD_ROUTE_HYGIENE" \
+            "$KELD_ROUTE_DOCS"

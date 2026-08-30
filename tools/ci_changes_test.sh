@@ -4,6 +4,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 router="$repo_root/tools/ci_changes.sh"
+required="$repo_root/tools/ci_required.sh"
+
+"$required" test
 
 result_for_paths() {
     printf '%s\0' "$@" | "$router" classify
@@ -159,15 +162,22 @@ workflow_classification="$(result_for_paths .github/workflows/ci.yml)"
 expect_flags "workflow input exercises all jobs; GTK apt stays on GUI smoke only" "$workflow_all" "$workflow_classification"
 expect_output_package_token "workflow input exercises the Bun lane over every suite" ts_packages packages/@keld/electron "$workflow_classification"
 
-other_workflow_classification="$(result_for_paths .github/workflows/keldbot.yml)"
-expect_flags "unrelated bot workflow has no path into any conditional lane" "$all_false" "$other_workflow_classification"
-expect_empty_packages "unrelated bot workflow selects no package" "$other_workflow_classification"
+keldbot_workflow_classification="$(result_for_paths .github/workflows/keldbot.yml)"
+expect_flags "KeldBot workflow exercises every conditional lane" "$workflow_all" "$keldbot_workflow_classification"
+expect_output_package_token "KeldBot workflow exercises the Bun lane over every suite" ts_packages packages/@keld/electron "$keldbot_workflow_classification"
+
+other_workflow_classification="$(result_for_paths .github/workflows/unrelated-bot.yml)"
+expect_flags "every workflow edit exercises every conditional lane" "$workflow_all" "$other_workflow_classification"
+expect_output_package_token "new workflow exercises the Bun lane over every suite" ts_packages packages/@keld/electron "$other_workflow_classification"
 
 router_script_classification="$(result_for_paths tools/ci_changes.sh)"
 expect_flags "router script edit still exercises all jobs" "$workflow_all" "$router_script_classification"
 
 router_test_classification="$(result_for_paths tools/ci_changes_test.sh)"
 expect_flags "router test edit still exercises all jobs" "$workflow_all" "$router_test_classification"
+
+required_script_classification="$(result_for_paths tools/ci_required.sh)"
+expect_flags "required-result evaluator edit still exercises all jobs" "$workflow_all" "$required_script_classification"
 
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
 for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-runtime crates/keld-wv; do

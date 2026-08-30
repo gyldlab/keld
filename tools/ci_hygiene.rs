@@ -13,6 +13,8 @@ const CODEOWNERS: &str = ".github/CODEOWNERS";
 const PR_TEMPLATE: &str = ".github/PULL_REQUEST_TEMPLATE.md";
 const ISSUE_DIR: &str = ".github/ISSUE_TEMPLATE";
 const WORKFLOW: &str = ".github/workflows/ci.yml";
+const KELDBOT_WORKFLOW: &str = ".github/workflows/keldbot.yml";
+const CI_REQUIRED_EVALUATOR: &str = "tools/ci_required.sh";
 const GITIGNORE: &str = ".gitignore";
 const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
@@ -314,6 +316,189 @@ fn workflow_job_block<'a>(text: &'a str, job_name: &str) -> Option<String> {
     found.then_some(block)
 }
 
+fn workflow_job_sequence_values(block: &str, key: &str) -> Option<Vec<String>> {
+    let expected_key = format!("{key}:");
+    let mut sequence_indent = None;
+    let mut values = Vec::new();
+
+    for line in block.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if sequence_indent.is_none() {
+            if indent == 4 && content == expected_key {
+                sequence_indent = Some(indent);
+            }
+            continue;
+        }
+        let sequence = sequence_indent?;
+        if indent <= sequence {
+            break;
+        }
+        if indent == sequence + 2 {
+            values.push(content.strip_prefix("- ")?.to_owned());
+        }
+    }
+
+    sequence_indent.map(|_| values)
+}
+
+fn workflow_named_step_env_value(text: &str, step_name: &str, key: &str) -> Option<String> {
+    let expected_name = format!("- name: {step_name}");
+    let expected_key = format!("{key}:");
+    let mut step_indent = None;
+    let mut env_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if step_indent.is_none() {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
+            continue;
+        }
+        let step = step_indent?;
+        if indent <= step {
+            break;
+        }
+        if env_indent.is_none() {
+            if content == "env:" {
+                env_indent = Some(indent);
+            }
+            continue;
+        }
+        let env = env_indent?;
+        if indent <= env {
+            return None;
+        }
+        if indent == env + 2 {
+            if let Some(value) = content.strip_prefix(&expected_key) {
+                return Some(value.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn workflow_named_step_shell_commands(text: &str, step_name: &str) -> Option<Vec<String>> {
+    let expected_name = format!("- name: {step_name}");
+    let mut step_indent = None;
+    let mut run_indent = None;
+    let mut command_text = None::<String>;
+    let mut commands = Vec::new();
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if step_indent.is_none() {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
+            continue;
+        }
+        let step = step_indent?;
+        if indent <= step {
+            break;
+        }
+        if run_indent.is_none() {
+            if content.starts_with("run: |") {
+                run_indent = Some(indent);
+                continue;
+            }
+            continue;
+        }
+        let run = run_indent?;
+        if indent <= run {
+            break;
+        }
+        if let Some(current) = command_text.as_mut() {
+            current.push(' ');
+            current.push_str(content.trim_end_matches('\\').trim_end());
+            if !content.ends_with('\\') {
+                commands.push(command_text.take()?);
+            }
+            continue;
+        }
+        let continued = content.ends_with('\\');
+        let command = content.trim_end_matches('\\').trim_end().to_owned();
+        if continued {
+            command_text = Some(command);
+        } else {
+            commands.push(command);
+        }
+    }
+    if let Some(command) = command_text {
+        if command.is_empty() {
+            return None;
+        }
+        commands.push(command);
+    }
+    run_indent.map(|_| commands)
+}
+
+fn workflow_job_level_property(block: &str, key: &str) -> Option<String> {
+    let expected_key = format!("{key}:");
+    for line in block.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content == "steps:" {
+            return None;
+        }
+        if indent == 4 {
+            if let Some(value) = content.strip_prefix(&expected_key) {
+                return Some(value.trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn workflow_named_step_direct_keys(text: &str, step_name: &str) -> Option<Vec<String>> {
+    let expected_name = format!("- name: {step_name}");
+    let mut step_indent = None;
+    let mut keys = Vec::new();
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if step_indent.is_none() {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
+            continue;
+        }
+        let step = step_indent?;
+        if indent <= step {
+            break;
+        }
+        if indent == step + 2 {
+            let (key, _) = content.split_once(':')?;
+            keys.push(key.trim().trim_matches(['\'', '"']).to_owned());
+        }
+    }
+    step_indent.map(|_| keys)
+}
+
+fn workflow_job_level_if(block: &str) -> Option<String> {
+    for line in block.lines() {
+        let Some((_indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if content == "steps:" {
+            return None;
+        }
+        if let Some(value) = content.strip_prefix("if:") {
+            return Some(value.trim().to_owned());
+        }
+    }
+    None
+}
+
 fn check_change_router_job(text: &str) -> Result<(), String> {
     let Some(block) = workflow_job_block(text, "changes") else {
         return Err(format!(
@@ -462,6 +647,176 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
     if uncommented_line_contains(&block, "apt-get") {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must not call `apt-get`. Bun ships from `oven-sh/setup-bun`; a second live Ubuntu apt lane contends with Linux GUI smoke on the Azure mirrors."
+        ));
+    }
+    Ok(())
+}
+
+fn check_required_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "required") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `required` job. Add one always-created merge-admission result that consumes every conditional lane plus unconditional gitleaks."
+        ));
+    };
+    if !uncommented_line_contains(&block, "name: CI required") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` must publish the stable check name `CI required` for branch protection."
+        ));
+    }
+    if workflow_job_level_if(&block).as_deref() != Some("${{ always() }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` must use job-level `if: ${{{{ always() }}}}`. Otherwise a failed/cancelled dependency skips the merge decision instead of making it fail."
+        ));
+    }
+    if workflow_job_level_property(&block, "continue-on-error").is_some() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` must not set `continue-on-error`; the merge decision must preserve a failing exit status."
+        ));
+    }
+    let evaluator_keys = workflow_named_step_direct_keys(&block, "Verify required CI results")
+        .unwrap_or_default();
+    if evaluator_keys != ["env", "run"] {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator step may contain only direct `env` and `run` keys; got `{}`. Conditions, custom shells, and continue-on-error can erase its failing status.",
+            evaluator_keys.join(", ")
+        ));
+    }
+    let expected_needs = [
+        "changes",
+        "fmt",
+        "check",
+        "bun-test",
+        "linux-gui-smoke",
+        "msrv",
+        "deny",
+        "secrets",
+        "hygiene",
+    ];
+    let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
+        format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence."
+        )
+    })?;
+    if actual_needs != expected_needs {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required.needs` must be exactly `{}`; got `{}`. The result must observe every routed lane plus unconditional gitleaks.",
+            expected_needs.join(", "),
+            actual_needs.join(", ")
+        ));
+    }
+    for (key, expression) in [
+        ("KELD_RESULT_CHANGES", "${{ needs.changes.result }}"),
+        ("KELD_RESULT_FMT", "${{ needs.fmt.result }}"),
+        ("KELD_RESULT_CHECK", "${{ needs.check.result }}"),
+        ("KELD_RESULT_BUN", "${{ needs['bun-test'].result }}"),
+        (
+            "KELD_RESULT_GUI",
+            "${{ needs['linux-gui-smoke'].result }}",
+        ),
+        ("KELD_RESULT_MSRV", "${{ needs.msrv.result }}"),
+        ("KELD_RESULT_DENY", "${{ needs.deny.result }}"),
+        ("KELD_RESULT_SECRETS", "${{ needs.secrets.result }}"),
+        ("KELD_RESULT_HYGIENE", "${{ needs.hygiene.result }}"),
+        ("KELD_ROUTE_RUST", "${{ needs.changes.outputs.rust }}"),
+        ("KELD_ROUTE_TS", "${{ needs.changes.outputs.ts }}"),
+        ("KELD_ROUTE_GUI", "${{ needs.changes.outputs.gui }}"),
+        ("KELD_ROUTE_MSRV", "${{ needs.changes.outputs.msrv }}"),
+        ("KELD_ROUTE_DENY", "${{ needs.changes.outputs.deny }}"),
+        (
+            "KELD_ROUTE_HYGIENE",
+            "${{ needs.changes.outputs.hygiene }}",
+        ),
+        ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
+    ] {
+        if workflow_named_step_env_value(&block, "Verify required CI results", key).as_deref()
+            != Some(expression)
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `required` must bind `{key}: {expression}` in the evaluator step's `env` mapping. Do not let a missing or spoofed handoff erase the merge gate."
+            ));
+        }
+    }
+    let expected_check_command = concat!(
+        "tools/ci_required.sh check ",
+        "\"$KELD_RESULT_CHANGES\" \"$KELD_RESULT_FMT\" \"$KELD_RESULT_CHECK\" ",
+        "\"$KELD_RESULT_BUN\" \"$KELD_RESULT_GUI\" \"$KELD_RESULT_MSRV\" ",
+        "\"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" ",
+        "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
+        "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
+        "\"$KELD_ROUTE_DOCS\""
+    );
+    let expected_commands = [
+        "tools/ci_required.sh test".to_owned(),
+        expected_check_command.to_owned(),
+    ];
+    let actual_commands = workflow_named_step_shell_commands(
+        &block,
+        "Verify required CI results",
+    )
+    .unwrap_or_default();
+    if actual_commands != expected_commands {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 16-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+        ));
+    }
+    if !workflow_has_checkout_persist_credentials_false(&block) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` checkout must set `persist-credentials: false`; the merge-decision job needs repository bytes, not push authority."
+        ));
+    }
+    Ok(())
+}
+
+fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
+    let text = read(root, KELDBOT_WORKFLOW)?;
+    for needle in [
+        "pull_request_target:",
+        "types: [opened, edited, synchronize]",
+        "permissions: {}",
+    ] {
+        if !uncommented_line_contains(&text, needle) {
+            return Err(format!(
+                "CI-HYGIENE: `{KELDBOT_WORKFLOW}` is missing `{needle}`. Keep final-head metadata validation on opened, edited, and synchronize with a default-deny token."
+            ));
+        }
+    }
+    if uncommented_line_contains(&text, "actions/checkout@")
+        || uncommented_line_contains(&text, "run:")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{KELDBOT_WORKFLOW}` uses `pull_request_target` with a repository checkout or shell `run:` step. Keep PR-controlled code off this secret-bearing workflow; validate proposed workflow bytes in unprivileged CI instead."
+        ));
+    }
+    for job in ["gatekeeper", "title-lint"] {
+        let Some(block) = workflow_job_block(&text, job) else {
+            return Err(format!(
+                "CI-HYGIENE: `{KELDBOT_WORKFLOW}` has no `{job}` job. Restore the required PR metadata check."
+            ));
+        };
+        if let Some(condition) = workflow_job_level_if(&block) {
+            return Err(format!(
+                "CI-HYGIENE: `{KELDBOT_WORKFLOW}` `{job}` has job-level `if: {condition}`. Required metadata checks must run again on synchronize; a skipped job satisfies branch protection without revalidating the final head."
+            ));
+        }
+    }
+    for heading in [
+        "Summary",
+        "Spec refs",
+        "Review gates",
+        "Tests",
+        "Platforms",
+        "Perf impact",
+    ] {
+        if !text.contains(&format!("\"{heading}\"")) {
+            return Err(format!(
+                "CI-HYGIENE: `{KELDBOT_WORKFLOW}` gatekeeper omits required PR heading `{heading}`. Keep it aligned with `{PR_TEMPLATE}`."
+            ));
+        }
+    }
+    let unpinned = action_uses_unpinned(&text);
+    if !unpinned.is_empty() {
+        return Err(format!(
+            "CI-HYGIENE: `{KELDBOT_WORKFLOW}` has unpinned `uses:` entries. Pin every action to a 40-character commit SHA; offenders: {unpinned:?}"
         ));
     }
     Ok(())
@@ -729,7 +1084,11 @@ fn gate_section_setting_retries(text: &str) -> Option<String> {
             }
             continue;
         }
-        if line.split('=').next().is_some_and(|key| key.trim() == "retries") {
+        if line
+            .split('=')
+            .next()
+            .is_some_and(|key| key.trim() == "retries")
+        {
             if let Some(header) = current.clone() {
                 return Some(header);
             }
@@ -811,6 +1170,7 @@ fn check_issue_templates(root: &Path) -> Result<(), String> {
 
 fn check_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, WORKFLOW)?;
+    let _required_evaluator = read(root, CI_REQUIRED_EVALUATOR)?;
     for needle in WORKFLOW_TEXT_NEEDLES {
         if !uncommented_line_contains(&text, needle) {
             return Err(format!(
@@ -832,6 +1192,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_check_job_if_avoids_matrix(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
+    check_required_job(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -902,6 +1263,7 @@ fn check(root: &Path) -> Result<(), String> {
     check_pr_template(root)?;
     check_issue_templates(root)?;
     check_workflow(root)?;
+    check_keldbot_workflow(root)?;
     check_mermaid_gate_files(root)?;
     Ok(())
 }
@@ -1030,6 +1392,77 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/mermaid_docs.rs",
             "      - run: mermaid-docs check .",
             "      - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf",
+            "  required:",
+            "    name: CI required",
+            "    if: ${{ always() }}",
+            "    needs:",
+            "      - changes",
+            "      - fmt",
+            "      - check",
+            "      - bun-test",
+            "      - linux-gui-smoke",
+            "      - msrv",
+            "      - deny",
+            "      - secrets",
+            "      - hygiene",
+            "    steps:",
+            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          persist-credentials: false",
+            "      - name: Verify required CI results",
+            "        env:",
+            "          KELD_RESULT_CHANGES: ${{ needs.changes.result }}",
+            "          KELD_RESULT_FMT: ${{ needs.fmt.result }}",
+            "          KELD_RESULT_CHECK: ${{ needs.check.result }}",
+            "          KELD_RESULT_BUN: ${{ needs['bun-test'].result }}",
+            "          KELD_RESULT_GUI: ${{ needs['linux-gui-smoke'].result }}",
+            "          KELD_RESULT_MSRV: ${{ needs.msrv.result }}",
+            "          KELD_RESULT_DENY: ${{ needs.deny.result }}",
+            "          KELD_RESULT_SECRETS: ${{ needs.secrets.result }}",
+            "          KELD_RESULT_HYGIENE: ${{ needs.hygiene.result }}",
+            "          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}",
+            "          KELD_ROUTE_TS: ${{ needs.changes.outputs.ts }}",
+            "          KELD_ROUTE_GUI: ${{ needs.changes.outputs.gui }}",
+            "          KELD_ROUTE_MSRV: ${{ needs.changes.outputs.msrv }}",
+            "          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}",
+            "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
+            "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
+            "        run: |",
+            "          tools/ci_required.sh test",
+            "          tools/ci_required.sh check \\",
+            "            \"$KELD_RESULT_CHANGES\" \"$KELD_RESULT_FMT\" \"$KELD_RESULT_CHECK\" \\",
+            "            \"$KELD_RESULT_BUN\" \"$KELD_RESULT_GUI\" \"$KELD_RESULT_MSRV\" \\",
+            "            \"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" \\",
+            "            \"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" \\",
+            "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
+            "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\"",
+            "",
+        ]
+        .join("\n")
+    }
+
+    fn valid_keldbot_workflow() -> String {
+        [
+            "name: KeldBot",
+            "on:",
+            "  pull_request_target:",
+            "    types: [opened, edited, synchronize]",
+            "permissions: {}",
+            "jobs:",
+            "  gatekeeper:",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0",
+            "        with:",
+            "          script: |",
+            "            const REQUIRED = [\"Summary\", \"Spec refs\", \"Review gates\", \"Tests\", \"Platforms\", \"Perf impact\"];",
+            "  title-lint:",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0",
+            "        with:",
+            "          script: |",
+            "            core.info('title');",
             "",
         ]
         .join("\n")
@@ -1064,6 +1497,8 @@ mod tests {
             "name: Bug\nbody:\n  - type: markdown\n",
         );
         temp.write(WORKFLOW, &valid_workflow());
+        temp.write(KELDBOT_WORKFLOW, &valid_keldbot_workflow());
+        temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
         temp.write(MERMAID_CHECKER, "fn main() {}\n");
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
@@ -1081,6 +1516,216 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn required_result_job_is_mandatory_and_always_created() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen("  required:\n", "  removed-required:\n", 1),
+        );
+        let error = check(temp.path()).expect_err("missing required result must fail");
+        assert!(error.contains("required"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen("    if: ${{ always() }}", "    if: ${{ success() }}", 1),
+        );
+        let error = check(temp.path()).expect_err("non-always required result must fail");
+        assert!(error.contains("always"), "{error}");
+    }
+
+    #[test]
+    fn required_result_must_observe_unconditional_gitleaks() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen("      - secrets\n", "", 1),
+        );
+        let error = check(temp.path()).expect_err("missing gitleaks dependency must fail");
+        assert!(error.contains("secrets"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow()
+                .replacen("      - secrets\n", "", 1)
+                .replacen(
+                    "      - name: Verify required CI results\n        env:\n",
+                    "      - name: Verify required CI results\n        env:\n          SPOOF: '- secrets'\n",
+                    1,
+                ),
+        );
+        let error = check(temp.path()).expect_err("needs text in env must not count");
+        assert!(error.contains("secrets"), "{error}");
+    }
+
+    #[test]
+    fn required_result_must_receive_router_applicability() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}\n",
+                "",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("missing router output must fail");
+        assert!(error.contains("KELD_ROUTE_RUST"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
+        );
+        let error = check(temp.path()).expect_err("unused router output must fail");
+        assert!(error.contains("16-argument"), "{error}");
+    }
+
+    #[test]
+    fn required_evaluator_text_must_be_executed() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          tools/ci_required.sh check \\",
+                "          echo tools/ci_required.sh check \\",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("echoed evaluator text must fail");
+        assert!(error.contains("run block"), "{error}");
+    }
+
+    #[test]
+    fn required_evaluator_rejects_false_green_shell_shapes() {
+        let temp = complete_fixture();
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          KELD_RESULT_SECRETS: ${{ needs.secrets.result }}",
+                "          KELD_RESULT_SECRETS: success",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("literal gitleaks success must fail");
+        assert!(error.contains("KELD_RESULT_SECRETS"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\"",
+                "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" || true",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("exit-status suppression must fail");
+        assert!(error.contains("run block"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "      - name: Verify required CI results\n        env:",
+                "      - name: Verify required CI results\n        continue-on-error: true\n        env:",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("continue-on-error must fail");
+        assert!(error.contains("continue-on-error"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "  required:\n    name: CI required",
+                "  required:\n    name: CI required\n    continue-on-error: true",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("job continue-on-error must fail");
+        assert!(error.contains("continue-on-error"), "{error}");
+
+        for (property, label) in [
+            ("if: ${{ false }}", "skipped evaluator"),
+            ("shell: bash {0} || true", "failure-suppressing shell"),
+            ("\"if\": ${{ false }}", "quoted skipped evaluator"),
+            (
+                "\"shell\": bash {0} || true",
+                "quoted failure-suppressing shell",
+            ),
+        ] {
+            temp.write(
+                WORKFLOW,
+                &valid_workflow().replacen(
+                    "      - name: Verify required CI results\n        env:",
+                    &format!(
+                        "      - name: Verify required CI results\n        {property}\n        env:"
+                    ),
+                    1,
+                ),
+            );
+            let error = check(temp.path()).expect_err(label);
+            assert!(error.contains("only direct"), "{error}");
+        }
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          tools/ci_required.sh check \\",
+                "          if false; then\n          tools/ci_required.sh check \\",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("unreachable check must fail");
+        assert!(error.contains("run block"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          tools/ci_required.sh check \\",
+                "          KELD_RESULT_SECRETS=success\n          tools/ci_required.sh check \\",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("result reassignment must fail");
+        assert!(error.contains("run block"), "{error}");
+    }
+
+    #[test]
+    fn keldbot_required_jobs_revalidate_synchronized_heads() {
+        let temp = complete_fixture();
+        temp.write(
+            KELDBOT_WORKFLOW,
+            &valid_keldbot_workflow().replacen(
+                "  gatekeeper:\n",
+                "  gatekeeper:\n    if: github.event.action != 'synchronize'\n",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("skipped gatekeeper must fail");
+        assert!(error.contains("synchronize"), "{error}");
+
+        temp.write(
+            KELDBOT_WORKFLOW,
+            &valid_keldbot_workflow().replace(", synchronize", ""),
+        );
+        let error = check(temp.path()).expect_err("missing synchronize trigger must fail");
+        assert!(error.contains("synchronize"), "{error}");
+    }
+
+    #[test]
+    fn keldbot_pull_request_target_never_checks_out_or_runs_pr_code() {
+        let temp = complete_fixture();
+        temp.write(
+            KELDBOT_WORKFLOW,
+            &valid_keldbot_workflow().replacen(
+                "    steps:\n",
+                "    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("secret-bearing checkout must fail");
+        assert!(error.contains("checkout"), "{error}");
     }
 
     #[test]
@@ -1135,8 +1780,8 @@ mod tests {
                 NEXTEST_CONFIG,
                 &format!("[profile.ci]\n\n{header}\ncount = 2\nbackoff = \"fixed\"\n"),
             );
-            let error = check(temp.path())
-                .expect_err("a retries sub-table retries the mandated gate");
+            let error =
+                check(temp.path()).expect_err("a retries sub-table retries the mandated gate");
             assert!(error.contains(header), "{error}");
         }
     }
@@ -1175,7 +1820,10 @@ mod tests {
         // A message hard-coding `[profile.ci]` sends the reader to the wrong
         // line when the key is under the profile `ci` inherits.
         let temp = complete_fixture();
-        temp.write(NEXTEST_CONFIG, "[profile.default]\nretries = 2\n\n[profile.ci]\n");
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.default]\nretries = 2\n\n[profile.ci]\n",
+        );
         let error = check(temp.path()).expect_err("inherited retries bind the gate");
         assert!(error.contains("[profile.default]"), "{error}");
         assert!(
@@ -1195,8 +1843,8 @@ mod tests {
             NEXTEST_CONFIG,
             "[profile.shared]\nretries = 2\n\n[profile.ci]\ninherits = \"shared\"\n",
         );
-        let error = check(temp.path())
-            .expect_err("a parent this check cannot follow must fail closed");
+        let error =
+            check(temp.path()).expect_err("a parent this check cannot follow must fail closed");
         assert!(error.contains("shared"), "{error}");
         assert!(error.contains("cannot follow"), "{error}");
     }
@@ -1244,7 +1892,10 @@ mod tests {
     #[test]
     fn commented_out_retries_is_not_a_retry() {
         let temp = complete_fixture();
-        temp.write(NEXTEST_CONFIG, "[profile.ci]\n# retries = 1 (removed, KEL-112)\n");
+        temp.write(
+            NEXTEST_CONFIG,
+            "[profile.ci]\n# retries = 1 (removed, KEL-112)\n",
+        );
         check(temp.path()).expect("a comment is documentation, not configuration");
     }
 
