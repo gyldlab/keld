@@ -487,6 +487,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The private macOS host-death guardian exited while the host session was still live
 - fix: Confirm the registered-group fail-safe completed; restart the host session, diagnose the guardian exit, then relaunch the app.
 
+## KELD-RUNTIME-014
+
+- crate: keld-runtime
+- message: Windows host-death Job installation failed before child creation
+- fix: Stop before spawning Bun, verify nested Job support and exact non-breakaway `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` configuration, then retry.
+
+## KELD-RUNTIME-015
+
+- crate: keld-runtime
+- message: Windows zero-capability LPAC admission failed
+- fix: Do not start an unconfined replacement. Repair the AppContainer profile, reviewed path ACLs, explicit environment, or private inherited-handle allowlist and refresh the hostile proof.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native
