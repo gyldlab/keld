@@ -35,6 +35,25 @@ const ROOT_SEMANTICS: &[&str] = &[
     "Security decompositions MUST separate identity, authentication, authorization, OS containment, lifecycle/revocation and evidence provenance.",
 ];
 
+const WORKFLOW_REQUIREMENTS: &[&str] = &[
+    "root `AGENTS.md` § Atomic problem-solving protocol",
+    "same first comment MUST record the decision-bearing atoms",
+    "owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier",
+    "A material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier",
+];
+
+const TESTING_REQUIREMENTS: &[&str] = &[
+    "Root `AGENTS.md` § Atomic problem-solving protocol owns the decomposition.",
+    "bind it to one named atom's observable contract",
+    "state why its oracle is independent of the implementation and the other atoms",
+    "Every negative control MUST name the one fault or mutation that falsifies that atom",
+];
+
+const INDEX_REQUIREMENTS: &[&str] = &[
+    "Any non-trivial design, diagnosis, review, or implementation",
+    "Root `AGENTS.md` § Atomic problem-solving protocol",
+];
+
 fn read(root: &Path, relative: &str) -> Result<String, String> {
     let path = root.join(relative);
     fs::read_to_string(&path).map_err(|error| {
@@ -45,8 +64,56 @@ fn read(root: &Path, relative: &str) -> Result<String, String> {
     })
 }
 
+fn without_html_comments(text: &str) -> String {
+    let mut visible = String::with_capacity(text.len());
+    let mut remainder = text;
+    while let Some(start) = remainder.find("<!--") {
+        visible.push_str(&remainder[..start]);
+        let comment = &remainder[start + "<!--".len()..];
+        let Some(end) = comment.find("-->") else {
+            return visible;
+        };
+        remainder = &comment[end + "-->".len()..];
+    }
+    visible.push_str(remainder);
+    visible
+}
+
+fn visible_markdown(text: &str) -> String {
+    let without_comments = without_html_comments(text);
+    let mut visible = String::with_capacity(without_comments.len());
+    let mut fence: Option<&str> = None;
+
+    for line in without_comments.lines() {
+        let trimmed = line.trim_start();
+        let marker = if trimmed.starts_with("```") {
+            Some("```")
+        } else if trimmed.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(active) = fence {
+            if marker == Some(active) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(opening) = marker {
+            fence = Some(opening);
+            continue;
+        }
+        visible.push_str(line);
+        visible.push('\n');
+    }
+    visible
+}
+
 fn normalize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    visible_markdown(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn section<'a>(text: &'a str, heading: &str) -> Result<&'a str, String> {
@@ -105,36 +172,19 @@ fn check_root(text: &str) -> Result<(), String> {
 
 fn check_references(root: &Path) -> Result<(), String> {
     let workflow = read(root, WORKFLOW)?;
-    for requirement in [
-        "root `AGENTS.md` § Atomic problem-solving protocol",
-        "same first comment MUST record the decision-bearing atoms",
-        "owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier",
-        "A material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier",
-    ] {
+    for requirement in WORKFLOW_REQUIREMENTS {
         require_normalized(&workflow, requirement, WORKFLOW)?;
     }
 
     let testing = read(root, TESTING)?;
-    for requirement in [
-        "Root `AGENTS.md` § Atomic problem-solving protocol owns the decomposition.",
-        "bind it to one named atom's observable contract",
-        "state why its oracle is independent of the implementation and the other atoms",
-        "Every negative control MUST name the one fault or mutation that falsifies that atom",
-    ] {
+    for requirement in TESTING_REQUIREMENTS {
         require_normalized(&testing, requirement, TESTING)?;
     }
 
     let index = read(root, INDEX)?;
-    require_normalized(
-        &index,
-        "Any non-trivial design, diagnosis, review, or implementation",
-        INDEX,
-    )?;
-    require_normalized(
-        &index,
-        "Root `AGENTS.md` § Atomic problem-solving protocol",
-        INDEX,
-    )?;
+    for requirement in INDEX_REQUIREMENTS {
+        require_normalized(&index, requirement, INDEX)?;
+    }
 
     for (path, text) in [(WORKFLOW, workflow), (TESTING, testing), (INDEX, index)] {
         for stage in STAGES {
@@ -242,6 +292,15 @@ mod tests {
         temp
     }
 
+    fn replace_requirement(temp: &TempDir, path: &str, requirement: &str) {
+        let contents = fs::read_to_string(temp.path.join(path)).expect("read fixture document");
+        assert!(
+            contents.contains(requirement),
+            "fixture must contain `{requirement}`"
+        );
+        temp.write(path, &contents.replacen(requirement, "", 1));
+    }
+
     #[test]
     fn complete_contract_passes() {
         let temp = fixture();
@@ -279,6 +338,29 @@ mod tests {
     }
 
     #[test]
+    fn every_root_semantic_fails_when_removed() {
+        for requirement in ROOT_SEMANTICS {
+            let temp = fixture();
+            replace_requirement(&temp, ROOT, requirement);
+            let error = check(&temp.path).expect_err("removed root semantic must fail");
+            assert!(error.contains(requirement), "{error}");
+        }
+    }
+
+    #[test]
+    fn hidden_stage_text_cannot_satisfy_the_contract() {
+        for hidden in [
+            format!("<!-- {} -->", STAGES[0]),
+            format!("```text\n{}\n```", STAGES[0]),
+        ] {
+            let temp = fixture();
+            temp.write(ROOT, &valid_root().replacen(STAGES[0], &hidden, 1));
+            let error = check(&temp.path).expect_err("hidden stage must not count as policy");
+            assert!(error.contains(STAGES[0]), "{error}");
+        }
+    }
+
+    #[test]
     fn old_failure_protocol_cannot_remain_as_a_second_owner() {
         let temp = fixture();
         temp.write(
@@ -304,5 +386,22 @@ mod tests {
         temp.write(WORKFLOW, &copied);
         let error = check(&temp.path).expect_err("copied canonical stages must fail");
         assert!(error.contains("copies canonical stage"), "{error}");
+    }
+
+    #[test]
+    fn every_operational_requirement_is_independently_enforced() {
+        for (path, requirements) in [
+            (WORKFLOW, WORKFLOW_REQUIREMENTS),
+            (TESTING, TESTING_REQUIREMENTS),
+            (INDEX, INDEX_REQUIREMENTS),
+        ] {
+            for requirement in requirements {
+                let temp = fixture();
+                replace_requirement(&temp, path, requirement);
+                let error = check(&temp.path).expect_err("removed reference must fail");
+                assert!(error.contains(path), "{error}");
+                assert!(error.contains(requirement), "{error}");
+            }
+        }
     }
 }
