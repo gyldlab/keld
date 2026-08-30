@@ -377,8 +377,12 @@ Required:
   experiment proves them required. Each such SID is a **permission-model
   review gate** (same class as macOS extra entitlements). A network SID
   MUST NOT be added because of a `keld-guard` net grant.
-- Handle allowlist via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Default
-  `bInheritHandles = FALSE` (ledger W6).
+- Handle allowlist via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. A spawn with no
+  admitted handles uses `bInheritHandles = FALSE`. Win32 requires `TRUE` when
+  the explicit handle-list attribute is present, so that path MUST first mark
+  only the listed app-link/log handles inheritable, pass `TRUE`, and verify by
+  raw child-handle census that no other handle crossed the boundary (ledger
+  W6). `TRUE` without the attribute list is forbidden.
 - Job object for descendants: no `BREAKAWAY_OK` / `SILENT_BREAKAWAY_OK`;
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` for host-death cleanup (ledger W5).
   The job is **not** the authority sandbox.

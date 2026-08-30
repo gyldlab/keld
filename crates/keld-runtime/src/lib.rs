@@ -31,6 +31,8 @@ pub mod registry;
 mod role;
 #[cfg(unix)]
 mod virtual_port;
+#[cfg(windows)]
+pub mod windows_job;
 
 /// How often the supervisor thread polls a running child for exit, and the
 /// granularity at which `shutdown()` is observed.
