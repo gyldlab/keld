@@ -15,7 +15,9 @@
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -1101,6 +1103,10 @@ struct CaptureThreads {
     stdout_budget: Arc<AtomicU64>,
     #[cfg(windows)]
     stderr_budget: Arc<AtomicU64>,
+    #[cfg(windows)]
+    stdout_lock: Arc<Mutex<()>>,
+    #[cfg(windows)]
+    stderr_lock: Arc<Mutex<()>>,
 }
 
 struct CaptureStartError {
@@ -1108,6 +1114,7 @@ struct CaptureStartError {
     threads: CaptureThreads,
 }
 
+#[allow(clippy::too_many_lines)] // one transaction must return every partial thread/handle/budget when the second capture spawn fails
 fn start_capture_threads(
     child: &mut Child,
     output: &Arc<Mutex<CapturedOutput>>,
@@ -1116,6 +1123,10 @@ fn start_capture_threads(
     let stdout_budget = Arc::new(AtomicU64::new(u64::MAX));
     #[cfg(windows)]
     let stderr_budget = Arc::new(AtomicU64::new(u64::MAX));
+    #[cfg(windows)]
+    let stdout_lock = Arc::new(Mutex::new(()));
+    #[cfg(windows)]
+    let stderr_lock = Arc::new(Mutex::new(()));
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     #[cfg(windows)]
@@ -1134,6 +1145,8 @@ fn start_capture_threads(
             handle,
             #[cfg(windows)]
             Arc::clone(&stdout_budget),
+            #[cfg(windows)]
+            Arc::clone(&stdout_lock),
         )
     }) {
         Some(Ok(thread)) => Some(thread),
@@ -1151,6 +1164,10 @@ fn start_capture_threads(
                     stdout_budget: Arc::clone(&stdout_budget),
                     #[cfg(windows)]
                     stderr_budget: Arc::clone(&stderr_budget),
+                    #[cfg(windows)]
+                    stdout_lock: Arc::clone(&stdout_lock),
+                    #[cfg(windows)]
+                    stderr_lock: Arc::clone(&stderr_lock),
                 },
             });
         }
@@ -1168,6 +1185,8 @@ fn start_capture_threads(
             handle,
             #[cfg(windows)]
             Arc::clone(&stderr_budget),
+            #[cfg(windows)]
+            Arc::clone(&stderr_lock),
         )
     }) {
         Some(Ok(thread)) => Some(thread),
@@ -1185,6 +1204,10 @@ fn start_capture_threads(
                     stdout_budget: Arc::clone(&stdout_budget),
                     #[cfg(windows)]
                     stderr_budget: Arc::clone(&stderr_budget),
+                    #[cfg(windows)]
+                    stdout_lock: Arc::clone(&stdout_lock),
+                    #[cfg(windows)]
+                    stderr_lock: Arc::clone(&stderr_lock),
                 },
             });
         }
@@ -1201,6 +1224,10 @@ fn start_capture_threads(
         stdout_budget,
         #[cfg(windows)]
         stderr_budget,
+        #[cfg(windows)]
+        stdout_lock,
+        #[cfg(windows)]
+        stderr_lock,
     })
 }
 
@@ -1223,20 +1250,16 @@ fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
         // currently buffered bytes, then let the reader drain exactly that
         // budget. Descendant writes after this point cannot extend the join or
         // contaminate a later generation's capture ledger.
-        let stdout_available = threads
-            .stdout_handle
-            .and_then(|handle| peek_pipe_available_handle(handle).ok())
-            .unwrap_or(0);
-        let stderr_available = threads
-            .stderr_handle
-            .and_then(|handle| peek_pipe_available_handle(handle).ok())
-            .unwrap_or(0);
-        threads
-            .stdout_budget
-            .store(u64::from(stdout_available), Ordering::Release);
-        threads
-            .stderr_budget
-            .store(u64::from(stderr_available), Ordering::Release);
+        publish_capture_drain_budget(
+            threads.stdout_handle,
+            &threads.stdout_budget,
+            &threads.stdout_lock,
+        );
+        publish_capture_drain_budget(
+            threads.stderr_handle,
+            &threads.stderr_budget,
+            &threads.stderr_lock,
+        );
         if let Some(thread) = threads.stdout {
             let _ = thread.join();
         }
@@ -1246,6 +1269,19 @@ fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
     }
     #[cfg(not(windows))]
     join_capture_threads(threads);
+}
+
+#[cfg(windows)]
+fn publish_capture_drain_budget(
+    handle: Option<usize>,
+    budget: &AtomicU64,
+    iteration_lock: &Mutex<()>,
+) {
+    let _iteration = lock_or_recover(iteration_lock);
+    let available = handle
+        .and_then(|handle| peek_pipe_available_handle(handle).ok())
+        .unwrap_or(0);
+    budget.store(u64::from(available), Ordering::Release);
 }
 
 /// Polls `child` for exit, honoring `shutdown`. Returns `true` if it killed
@@ -1414,12 +1450,14 @@ fn spawn_capture_thread(
     is_stdout: bool,
     handle: usize,
     budget: Arc<AtomicU64>,
+    iteration_lock: Arc<Mutex<()>>,
 ) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name(format!("keld-runtime-capture-{name}"))
         .spawn(move || {
             let mut buf = [0_u8; 4096];
             loop {
+                let iteration = lock_or_recover(&iteration_lock);
                 let remaining = budget.load(Ordering::Acquire);
                 if remaining == 0 {
                     return;
@@ -1431,6 +1469,7 @@ fn spawn_capture_thread(
                     if remaining != u64::MAX {
                         return;
                     }
+                    drop(iteration);
                     thread::park_timeout(POLL_INTERVAL);
                     continue;
                 }
@@ -1451,6 +1490,7 @@ fn spawn_capture_thread(
                             budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                                 (current != u64::MAX).then_some(current.saturating_sub(n as u64))
                             });
+                        drop(iteration);
                     }
                 }
             }
