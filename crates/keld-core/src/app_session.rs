@@ -822,7 +822,7 @@ fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppErr
 /// Returns [`HostAppError`] for startup, authenticated session, window,
 /// guardian, Bun self-termination, or ordered-shutdown failure.
 pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         drop(boot);
         Err(HostAppError::new(
@@ -843,6 +843,16 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
         // a privileged channel. It never serves as recovery from run_guarded.
         drop((permissions_file, permissions_digest));
         run_app(app, None)
+    }
+    #[cfg(windows)]
+    {
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = boot;
+        drop((permissions_file, permissions_digest));
+        run_app_windows(app, None)
     }
 }
 
@@ -876,7 +886,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
-        run_app_windows(app, &verified)
+        run_app_windows(app, Some(&verified))
     }
     #[cfg(target_os = "macos")]
     {
@@ -998,12 +1008,12 @@ impl SessionShutdownState {
         self.claim(SESSION_LIFECYCLE_QUIT)
     }
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", all(test, windows)))]
     fn claim_cli_lease_lost(&self) -> bool {
         self.claim(SESSION_CLI_LEASE_LOST)
     }
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", test))]
     fn claim(&self, cause: u8) -> bool {
         let _transition = self.transition_guard();
         self.claim_guarded(cause)
@@ -1168,7 +1178,7 @@ fn run_app(
 #[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned Windows handle transition contiguous
 fn run_app_windows(
     boot: AppBootSelection,
-    guard_snapshot: &VerifiedManifest,
+    guard_snapshot: Option<&VerifiedManifest>,
 ) -> Result<(), HostAppError> {
     let shutdown = SessionShutdownState::new();
     let AppBootSelection {
@@ -1187,7 +1197,7 @@ fn run_app_windows(
         )
     })?;
     drop(entry_file);
-    let monitor_dev_lease = prepare_windows_dev_lease()?;
+    let dev_lease = prepare_windows_dev_lease(&shutdown)?;
     let config = PrimaryRoleConfig::new("bun")
         .arg("run")
         .arg(root.join(&entry_path))
@@ -1195,15 +1205,37 @@ fn run_app_windows(
         .env_remove(DEV_LEASE_ENV);
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let (supervisor, recovery) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
-        .map_err(|source| app_runtime("Windows primary startup", &source))?;
+    let supervisor = run_windows_startup_if_session_running(&shutdown, || {
+        PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+            .map_err(|source| app_runtime("Windows primary startup", &source))
+    });
+    let Some(supervisor) = supervisor else {
+        return take_windows_prestart_lease_result(dev_lease.as_ref());
+    };
+    let (supervisor, recovery) = supervisor?;
     let initial = match await_windows_bound_generation(
         &supervisor,
         &recovery,
+        &shutdown,
         Instant::now() + APP_LINK_IO_DEADLINE,
     ) {
         Ok(bound) => bound,
         Err(primary) => {
+            if !shutdown.is_running() {
+                let _ = recovery.deny();
+                supervisor.shutdown();
+                let cleanup = match supervisor.wait_for_outcome() {
+                    keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+                    keld_runtime::SupervisorOutcome::CrashLoop(error)
+                    | keld_runtime::SupervisorOutcome::Failed(error) => {
+                        Err(app_runtime("Windows primary startup cleanup", &error))
+                    }
+                };
+                return collapse_app_results([
+                    take_windows_prestart_lease_result(dev_lease.as_ref()),
+                    cleanup,
+                ]);
+            }
             let output = supervisor.output();
             let primary = app_detail(
                 "initial Windows primary startup",
@@ -1224,6 +1256,22 @@ fn run_app_windows(
         }
     };
 
+    if !shutdown.is_running() {
+        let _ = recovery.deny();
+        supervisor.shutdown();
+        let cleanup = match supervisor.wait_for_outcome() {
+            keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+            keld_runtime::SupervisorOutcome::CrashLoop(error)
+            | keld_runtime::SupervisorOutcome::Failed(error) => {
+                Err(app_runtime("Windows primary startup cleanup", &error))
+            }
+        };
+        return collapse_app_results([
+            take_windows_prestart_lease_result(dev_lease.as_ref()),
+            cleanup,
+        ]);
+    }
+
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
     let primary_owner = WindowsPrimaryOwner::start(
         supervisor,
@@ -1238,8 +1286,7 @@ fn run_app_windows(
         shutdown.clone(),
     )?;
     primary_owner.attach_router(router.handle())?;
-    let lease_errors =
-        start_windows_dev_lease(monitor_dev_lease, router.handle(), shutdown.clone())?;
+    let lease_errors = start_windows_dev_lease_tail(dev_lease, router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
@@ -1275,7 +1322,7 @@ fn run_app_windows(
         let lease_result = take_windows_lease_error(lease_errors.as_ref());
         let router_result = router.shutdown();
         let owner_result = primary_owner.shutdown();
-        let _retained_digest = guard_snapshot.verified_sha256();
+        let _retained_digest = guard_snapshot.map(VerifiedManifest::verified_sha256);
         return collapse_app_results([lease_result, event_result, router_result, owner_result]);
     };
     let engine = match engine {
@@ -1289,7 +1336,7 @@ fn run_app_windows(
             let lease_result = take_windows_lease_error(lease_errors.as_ref());
             let router_result = router.shutdown();
             let owner_result = primary_owner.shutdown();
-            let _retained_digest = guard_snapshot.verified_sha256();
+            let _retained_digest = guard_snapshot.map(VerifiedManifest::verified_sha256);
             return Err(collapse_app_failures(
                 &primary,
                 [lease_result, event_result, router_result, owner_result],
@@ -1305,7 +1352,23 @@ fn run_app_windows(
     let lease_result = take_windows_lease_error(lease_errors.as_ref());
     let router_result = router.shutdown();
     let owner_result = primary_owner.shutdown();
-    let _retained_digest = guard_snapshot.verified_sha256();
+    let _retained_digest = guard_snapshot.map(VerifiedManifest::verified_sha256);
+
+    let owner_result = match owner_result {
+        Err(primary) if primary.code == "KELD-CORE-033" => {
+            return Err(append_app_cleanup(
+                primary,
+                [
+                    lease_result,
+                    window_result
+                        .map_err(|source| app_detail("Windows app window", source.to_string())),
+                    event_result,
+                    router_result,
+                ],
+            ));
+        }
+        result => result,
+    };
 
     match window_result {
         Err(source @ WvError::Navigate(_)) => {
@@ -1335,12 +1398,25 @@ fn run_windows_startup_if_session_running<T>(
 }
 
 #[cfg(windows)]
-fn prepare_windows_dev_lease() -> Result<bool, HostAppError> {
+enum WindowsDevLeaseObservation {
+    Eof,
+    ReadFailed(HostAppError),
+}
+
+#[cfg(windows)]
+struct WindowsDevLeaseMonitor {
+    observations: Receiver<WindowsDevLeaseObservation>,
+}
+
+#[cfg(windows)]
+fn prepare_windows_dev_lease(
+    shutdown: &SessionShutdownState,
+) -> Result<Option<WindowsDevLeaseMonitor>, HostAppError> {
     use std::ffi::OsStr;
     use std::os::windows::io::AsRawHandle as _;
 
     let Some(value) = std::env::var_os(DEV_LEASE_ENV) else {
-        return Ok(false);
+        return Ok(None);
     };
     if value != OsStr::new(DEV_LEASE_STDIN_V1) {
         return Err(app_detail(
@@ -1355,7 +1431,55 @@ fn prepare_windows_dev_lease() -> Result<bool, HostAppError> {
     let handle = input.as_raw_handle().cast();
     clear_windows_handle_inheritance(handle)
         .map_err(|source| app_io("Windows dev-host lease isolation", &source))?;
-    Ok(true)
+    let (observation_tx, observation_rx) = mpsc::channel();
+    let shutdown = shutdown.clone();
+    let _handle = thread::Builder::new()
+        .name("keld-core-windows-dev-lease-reader".to_owned())
+        .spawn(move || {
+            let mut input = input.lock();
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                match input.read(&mut buffer) {
+                    Ok(0) => {
+                        publish_windows_lease_observation(
+                            &shutdown,
+                            &observation_tx,
+                            WindowsDevLeaseObservation::Eof,
+                        );
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+                    Err(source) => {
+                        publish_windows_lease_observation(
+                            &shutdown,
+                            &observation_tx,
+                            WindowsDevLeaseObservation::ReadFailed(app_io(
+                                "Windows dev-host lease read",
+                                &source,
+                            )),
+                        );
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
+    Ok(Some(WindowsDevLeaseMonitor {
+        observations: observation_rx,
+    }))
+}
+
+#[cfg(windows)]
+fn publish_windows_lease_observation(
+    shutdown: &SessionShutdownState,
+    observations: &Sender<WindowsDevLeaseObservation>,
+    observation: WindowsDevLeaseObservation,
+) {
+    let _transition = shutdown.transition_guard();
+    if shutdown.claim_guarded(SESSION_CLI_LEASE_LOST) {
+        let _ = observations.send(observation);
+    }
 }
 
 #[cfg(windows)]
@@ -1377,53 +1501,38 @@ fn clear_windows_handle_inheritance(handle: HANDLE) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn start_windows_dev_lease(
-    enabled: bool,
+fn start_windows_dev_lease_tail(
+    monitor: Option<WindowsDevLeaseMonitor>,
     router: PrimaryRouterHandle,
-    shutdown: SessionShutdownState,
 ) -> Result<Option<Receiver<HostAppError>>, HostAppError> {
-    if !enabled {
+    let Some(monitor) = monitor else {
         return Ok(None);
-    }
+    };
     let (error_tx, error_rx) = mpsc::channel();
     let _handle = thread::Builder::new()
-        .name("keld-core-windows-dev-lease".to_owned())
+        .name("keld-core-windows-dev-lease-tail".to_owned())
         .spawn(move || {
-            let input = io::stdin();
-            let mut input = input.lock();
-            let mut buffer = [0_u8; 8 * 1024];
-            loop {
-                match input.read(&mut buffer) {
-                    Ok(0) => {
-                        if shutdown.claim_cli_lease_lost() {
-                            let result = router.cli_lease_lost();
-                            publish_windows_lease_result(
-                                result,
-                                &error_tx,
-                                &router.window_commands,
-                            );
-                        }
-                        return;
-                    }
-                    Ok(_) => {}
-                    Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
-                    Err(source) => {
-                        if shutdown.claim_cli_lease_lost() {
-                            let primary = app_io("Windows dev-host lease read", &source);
-                            let tail = router.cli_lease_lost();
-                            let error = match tail {
-                                Ok(()) => primary,
-                                Err(cleanup) => collapse_app_failures(&primary, [Err(cleanup)]),
-                            };
-                            let _ = error_tx.send(error);
-                            let _ = router.window_commands.send(AppWindowCommand::Fatal);
-                        }
-                        return;
-                    }
+            let Ok(observation) = monitor.observations.recv() else {
+                return;
+            };
+            match observation {
+                WindowsDevLeaseObservation::Eof => publish_windows_lease_result(
+                    router.cli_lease_lost(),
+                    &error_tx,
+                    &router.window_commands,
+                ),
+                WindowsDevLeaseObservation::ReadFailed(primary) => {
+                    let tail = router.cli_lease_lost();
+                    let error = match tail {
+                        Ok(()) => primary,
+                        Err(cleanup) => collapse_app_failures(&primary, [Err(cleanup)]),
+                    };
+                    let _ = error_tx.send(error);
+                    let _ = router.window_commands.send(AppWindowCommand::Fatal);
                 }
             }
         })
-        .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
+        .map_err(|source| app_io("Windows dev-host lease tail", &source))?;
     Ok(Some(error_rx))
 }
 
@@ -1447,12 +1556,30 @@ fn take_windows_lease_error(errors: Option<&Receiver<HostAppError>>) -> Result<(
 }
 
 #[cfg(windows)]
+fn take_windows_prestart_lease_result(
+    monitor: Option<&WindowsDevLeaseMonitor>,
+) -> Result<(), HostAppError> {
+    match monitor.and_then(|monitor| monitor.observations.try_recv().ok()) {
+        Some(WindowsDevLeaseObservation::ReadFailed(error)) => Err(error),
+        Some(WindowsDevLeaseObservation::Eof) | None => Ok(()),
+    }
+}
+
+#[cfg(windows)]
 fn await_windows_bound_generation(
     supervisor: &PrimaryRoleSupervisor,
     recovery: &PrimaryRecoveryGate,
+    shutdown: &SessionShutdownState,
     deadline: Instant,
 ) -> Result<BoundPrimaryGeneration, HostAppError> {
     loop {
+        if !shutdown.is_running() {
+            let _ = recovery.deny();
+            return Err(app_detail(
+                "initial Windows app-link authentication",
+                "startup was cancelled by CLI lease loss",
+            ));
+        }
         if let Some(bound) = supervisor.try_recv_bound_generation() {
             return Ok(bound);
         }
@@ -2215,6 +2342,7 @@ struct PrimaryRouterHandle {
     window_ready: Arc<AtomicBool>,
     last_window_closed: Arc<AtomicBool>,
     recovery_armed: Arc<AtomicBool>,
+    last_revoked_attempt: Arc<AtomicU32>,
     shutdown: SessionShutdownState,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
@@ -2365,6 +2493,8 @@ impl PrimaryRouterHandle {
     fn apply_generation_update(&self, update: PrimaryOwnerUpdate) -> Result<(), HostAppError> {
         match update {
             PrimaryOwnerUpdate::Role(PrimaryRoleEvent::Revoked { attempt, .. }) => {
+                self.last_revoked_attempt
+                    .fetch_max(attempt, Ordering::AcqRel);
                 if !self.window_ready.load(Ordering::Acquire) {
                     return Err(app_detail(
                         "primary generation before Ready",
@@ -2375,7 +2505,13 @@ impl PrimaryRouterHandle {
             }
             PrimaryOwnerUpdate::Role(_) => Ok(()),
             PrimaryOwnerUpdate::Bound(bound) => {
-                self.install_generation(bound.attempt(), bound.into_stream())
+                let attempt = bound.attempt();
+                if attempt <= self.last_revoked_attempt.load(Ordering::Acquire) {
+                    let stream = bound.into_stream();
+                    let _ = stream.shutdown_app_link();
+                    return Ok(());
+                }
+                self.install_generation(attempt, bound.into_stream())
             }
         }
     }
@@ -2509,6 +2645,7 @@ impl PrimaryRouter {
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(true)),
+            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown,
             guardian,
             window_commands,
@@ -2531,6 +2668,7 @@ impl PrimaryRouter {
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(false)),
+            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown,
             guardian,
             window_commands,
@@ -2766,6 +2904,18 @@ fn collapse_app_failures<const N: usize>(
         detail.push_str(&error.to_string());
     }
     app_detail("startup cleanup", detail)
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn append_app_cleanup<const N: usize>(
+    mut primary: HostAppError,
+    cleanup: [Result<(), HostAppError>; N],
+) -> HostAppError {
+    for error in cleanup.into_iter().filter_map(Result::err) {
+        primary.detail.push_str("; cleanup: ");
+        primary.detail.push_str(&error.to_string());
+    }
+    primary
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -3423,6 +3573,7 @@ mod tests {
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
             recovery_armed: Arc::new(AtomicBool::new(false)),
+            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown: SessionShutdownState::new(),
             guardian: GuardianOwnerHandle {
                 command_tx: guardian_tx,

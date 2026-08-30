@@ -534,7 +534,8 @@ impl RoleSupervisor {
     /// or `timeout` elapses.
     ///
     /// Returns `None` when this supervisor was started without
-    /// [`Self::start_with_bound_generations`].
+    /// [`Self::start_with_bound_generations`] or
+    /// [`Self::start_with_bound_generations_gated`].
     #[must_use]
     pub fn recv_bound_generation(&self, timeout: Duration) -> Option<BoundRoleGeneration> {
         self.bound_rx.as_ref()?.recv_timeout(timeout).ok()
@@ -543,7 +544,8 @@ impl RoleSupervisor {
     /// Returns the next already-authenticated generation without waiting.
     ///
     /// Returns `None` when no generation is queued or this supervisor was
-    /// started without [`Self::start_with_bound_generations`].
+    /// started without [`Self::start_with_bound_generations`] or
+    /// [`Self::start_with_bound_generations_gated`].
     #[must_use]
     pub fn try_recv_bound_generation(&self) -> Option<BoundRoleGeneration> {
         self.bound_rx.as_ref()?.try_recv().ok()

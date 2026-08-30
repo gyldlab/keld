@@ -87,12 +87,16 @@ impl std::error::Error for BootCompileError {}
 struct StageGuard {
     root: PathBuf,
     keep: bool,
+    #[cfg(windows)]
+    launch_guards: Vec<File>,
 }
 
 #[cfg(any(target_os = "macos", windows))]
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if !self.keep {
+            #[cfg(windows)]
+            self.launch_guards.clear();
             let _ = fs::remove_dir_all(&self.root);
         }
     }
@@ -174,13 +178,23 @@ fn stage_dev_boot_platform(
     }
 
     let dev_root = project_root.join(".keld/dev");
+    #[cfg(target_os = "macos")]
     fs::create_dir_all(&dev_root)
         .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    #[cfg(windows)]
+    let launch_guards = prepare_windows_launch_parents(&project_root, &dev_root)?;
     let root = create_launch_root(&dev_root)?;
     let mut guard = StageGuard {
         root: root.clone(),
         keep: false,
+        #[cfg(windows)]
+        launch_guards,
     };
+    #[cfg(windows)]
+    {
+        guard.launch_guards.push(open_windows_launch_guard(&root)?);
+        verify_windows_stage_acl(&root)?;
+    }
 
     #[cfg(target_os = "macos")]
     let staged_host = root.join("keld-host");
@@ -256,8 +270,6 @@ fn stage_dev_boot_platform(
         }
     }
     #[cfg(windows)]
-    let launch_guards = retain_windows_launch_guards(&project_root, &dev_root, &root)?;
-    #[cfg(windows)]
     {
         verify_windows_stage_acl(&root)?;
         let locked_digest = digest_file(&staged_host, "locked staged host")?;
@@ -268,6 +280,8 @@ fn stage_dev_boot_platform(
             ));
         }
     }
+    #[cfg(windows)]
+    let launch_guards = std::mem::take(&mut guard.launch_guards);
     guard.keep = true;
     Ok(DevBootStage {
         root,
@@ -278,18 +292,28 @@ fn stage_dev_boot_platform(
 }
 
 #[cfg(windows)]
-fn retain_windows_launch_guards(
+fn prepare_windows_launch_parents(
     project_root: &Path,
     dev_root: &Path,
-    stage_root: &Path,
 ) -> Result<Vec<File>, BootCompileError> {
     let keld_root = dev_root.parent().ok_or_else(|| {
         BootCompileError::new("launch namespace", "the dev root has no .keld parent")
     })?;
-    [project_root, keld_root, dev_root, stage_root]
-        .into_iter()
-        .map(open_windows_launch_guard)
-        .collect()
+    let mut guards = vec![open_windows_launch_guard(project_root)?];
+    for path in [keld_root, dev_root] {
+        match fs::create_dir(path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(BootCompileError::new(
+                    "launch namespace",
+                    source.to_string(),
+                ));
+            }
+        }
+        guards.push(open_windows_launch_guard(path)?);
+    }
+    Ok(guards)
 }
 
 #[cfg(windows)]

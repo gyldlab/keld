@@ -2,6 +2,16 @@
 const KEL96_ECHO_CHANNEL = 1;
 const KEL96_CONTROL = process.env.KELD_T1B_CONTROL;
 const KEL96_LINK = process.env.KELD_APP_LINK;
+let generationAttempt = 0;
+const generationMarker = process.env.KELD_T4_GENERATION_MARKER;
+if (generationMarker) {
+  const prior = await Bun.file(generationMarker)
+    .text()
+    .then((text) => Number.parseInt(text, 10))
+    .catch(() => 0);
+  generationAttempt = Number.isFinite(prior) ? prior + 1 : 1;
+  await Bun.write(generationMarker, `${generationAttempt}\n`);
+}
 if (process.env.KELD_T3_CRASH_BEFORE_HELLO === "1") {
   const marker = process.env.KELD_T3_PRE_READY_MARKER;
   if (marker) await Bun.write(`${marker}.${process.pid}`, "attempt\n");
@@ -150,6 +160,9 @@ if (process.platform === "win32") {
     stderr: "ignore",
   });
   await sendControl(`DESCENDANT ${descendant.pid}`);
+}
+if (generationAttempt === 2) {
+  process.exit(23);
 }
 
 type PendingReply = {

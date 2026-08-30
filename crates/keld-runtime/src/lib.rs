@@ -910,7 +910,7 @@ fn supervise<P>(
                 *lock_or_recover(terminal_error) = Some(error);
                 let _ = child.kill();
                 let _ = child.wait();
-                join_capture_threads(capture_threads);
+                finish_capture_threads_after_shutdown(capture_threads);
                 #[cfg(target_os = "macos")]
                 let accepted = shutdown_was_accepted(accepted_shutdown);
                 #[cfg(not(target_os = "macos"))]
@@ -926,11 +926,7 @@ fn supervise<P>(
             }
             let _ = child.kill();
             let wait_result = child.wait();
-            // Join before recording: the capture threads may still hold unread
-            // bytes, and the natural-exit path below already joins first. A
-            // crash must not produce a complete diagnostic on one path and a
-            // truncated one on the other.
-            join_capture_threads(capture_threads);
+            finish_capture_threads_after_shutdown(capture_threads);
             if let Err(source) = wait_result {
                 *lock_or_recover(terminal_error) = Some(RuntimeError::Lifecycle {
                     phase: "child shutdown wait",
@@ -1161,6 +1157,19 @@ fn join_capture_threads(threads: CaptureThreads) {
     }
 }
 
+fn finish_capture_threads_after_shutdown(threads: CaptureThreads) {
+    #[cfg(windows)]
+    {
+        // An uncontained descendant may retain an inherited pipe write end.
+        // Waiting for that unowned process would block orderly host exit;
+        // KEL-78 remains the process-tree reaping owner. The readers retain
+        // their shared output sink and exit when the pipe eventually closes.
+        drop(threads);
+    }
+    #[cfg(not(windows))]
+    join_capture_threads(threads);
+}
+
 /// Polls `child` for exit, honoring `shutdown`. Returns `true` if it killed
 /// the child because `shutdown` was requested (caller must not treat this as
 /// a crash), `false` if the child exited on its own.
@@ -1203,7 +1212,9 @@ where
                 if take_restart_for_attempt(restart_attempt, attempt) {
                     return match child.try_wait() {
                         Ok(Some(status)) => Ok(WaitResult::Exited(status)),
-                        _ => Ok(WaitResult::RestartRequested),
+                        Ok(None) => Ok(wait_for_self_termination(child)
+                            .map_or(WaitResult::RestartRequested, WaitResult::Exited)),
+                        Err(error) => Err(error),
                     };
                 }
                 if let Err(error) = lease.poll() {
@@ -1576,6 +1587,90 @@ mod tests {
             supervisor.wait_for_outcome(),
             SupervisorOutcome::Stopped
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn link_failure_does_not_restart_a_child_already_exiting_zero() {
+        let temp = tempfile::tempdir().expect("helper tempdir");
+        let ready = temp.path().join("ready");
+        let exit = temp.path().join("exit");
+        let acknowledged = temp.path().join("acknowledged");
+        let released = temp.path().join("released");
+        let factory_attempt = Arc::new(AtomicU32::new(0));
+        let factory_counter = Arc::clone(&factory_attempt);
+        let command_ready = ready.clone();
+        let command_exit = exit.clone();
+        let command_acknowledged = acknowledged.clone();
+        let command_released = released.clone();
+        let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+            if factory_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+                let mut command = self_termination_helper_command(
+                    &command_ready,
+                    &command_exit,
+                    &command_acknowledged,
+                );
+                command.env("KELD_RUNTIME_EXIT_RELEASED", &command_released);
+                command
+            } else {
+                long_running_command()
+            }
+        })
+        .expect("status-zero child starts");
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Started { attempt: 1, .. })
+        ));
+        await_marker(&ready);
+        std::fs::write(&exit, b"exit").expect("request helper exit");
+        await_marker(&acknowledged);
+        supervisor.restart_generation(1);
+        std::fs::write(&released, b"release").expect("release helper exit");
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
+        assert_eq!(
+            factory_attempt.load(Ordering::Acquire),
+            1,
+            "a cleanly exiting child was replaced by generation 2"
+        );
+        assert_eq!(
+            supervisor
+                .crash_ledger()
+                .last_self_termination
+                .and_then(|record| record.exit_code),
+            Some(0)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn orderly_shutdown_does_not_wait_for_descendant_capture_eof() {
+        let supervisor = Supervisor::start(RestartPolicy::default(), || {
+            let mut command = Command::new("cmd");
+            command.args([
+                "/C",
+                "start \"\" /B ping -n 5 127.0.0.1 & ping -n 5 127.0.0.1",
+            ]);
+            command
+        })
+        .expect("child with inherited-pipe descendant starts");
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Started { .. })
+        ));
+
+        let started = Instant::now();
+        supervisor.shutdown();
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "orderly shutdown waited for an unowned descendant pipe"
+        );
     }
 
     #[test]
@@ -2022,6 +2117,12 @@ mod tests {
             std::thread::yield_now();
         }
         std::fs::write(acknowledged, b"acknowledged").expect("acknowledge helper exit signal");
+        if let Some(released) = std::env::var_os("KELD_RUNTIME_EXIT_RELEASED") {
+            let released = PathBuf::from(released);
+            while !released.exists() {
+                std::thread::yield_now();
+            }
+        }
         std::process::exit(0);
     }
 

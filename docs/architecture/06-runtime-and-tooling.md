@@ -50,18 +50,23 @@
   `PrimaryRoleSupervisor` with a pre-Ready recovery gate. One logical router
   spans fresh loopback generations while the same WebView2 HWND remains live;
   `NavigationCompleted` drives `Ready` through tao's UI-thread
-  `EventLoopProxy`. A link-only failure requests revoke/kill/reap/restart from
+  `EventLoopProxy`. Revoked-attempt tombstones prevent a separately queued
+  bound stream from being installed after its revocation. A link-only failure requests revoke/kill/reap/restart from
   that same supervisor rather than creating a core-side process loop. Retired
-  capture readers are detached at this boundary so a descendant-held pipe
-  cannot delay the successor; KEL-78 still owns descendant termination.
-  The host clears inheritance on the stdin-v1 lease reader before the first
-  Bun spawn, preserves lease-read/tail errors through the window result, and
-  gates initial WebView2 creation under the common shutdown transition. An
-  unrequested status-zero Bun exit is reported with its retained PID/status
-  through `KELD-CORE-033` rather than collapsing to a generic UI failure.
+  capture readers are detached on link restart and orderly Windows shutdown so
+  a descendant-held pipe cannot delay the successor or host exit; KEL-78 still
+  owns descendant termination. The host clears inheritance and starts watching
+  the stdin-v1 lease before the first Bun spawn, preserves lease-read/tail
+  errors through the window result, and gates listener/child and initial
+  WebView2 creation under the common shutdown transition. A bounded existing
+  self-termination observation prevents socket EOF from restarting a Bun that
+  is already exiting zero. That exit is reported as the top-level
+  `KELD-CORE-033` with its retained PID/status.
   Correlated Quit and CLI EOF use the shared
   quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
-  removes the stage after the host exits. CLI-death process teardown is live,
+  removes the stage after the host exits. Windows staging pins and validates
+  `.keld`/`dev` before nonce creation and pins the nonce before the first staged
+  file write, rejecting junctions without writing through them. CLI-death process teardown is live,
   but Windows cannot remove its running staged executable and no surviving
   cleanup helper is approved, so that empty-stage cleanup row remains open.
   Abnormal host-death descendants likewise remain KEL-78/T3 Job Object work;

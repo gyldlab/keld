@@ -83,6 +83,45 @@ fn windows_stage_namespace_is_pinned_until_the_host_owner_releases_it() {
 }
 
 #[test]
+fn windows_stage_rejects_a_dev_junction_before_writing_through_it() {
+    let fixture = StageFixture::new();
+    let external = tempfile::tempdir().expect("external junction target");
+    fs::create_dir(fixture.project.join(".keld")).expect("create .keld parent");
+    let junction = fixture.project.join(".keld/dev");
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:KELD_TEST_JUNCTION -Target $env:KELD_TEST_TARGET | Out-Null",
+        ])
+        .env("KELD_TEST_JUNCTION", &junction)
+        .env("KELD_TEST_TARGET", external.path())
+        .output()
+        .expect("create dev junction");
+    assert!(
+        output.status.success(),
+        "junction creation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let error = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect_err("a reparse-point dev root must fail before staging");
+    assert!(error.to_string().contains("launch namespace"), "{error}");
+    assert_eq!(
+        fs::read_dir(external.path())
+            .expect("read external target")
+            .filter_map(Result::ok)
+            .count(),
+        0,
+        "staging wrote through the rejected junction"
+    );
+}
+
+#[test]
 fn windows_host_validates_the_staged_descriptor_before_platform_session_start() {
     let fixture = StageFixture::new();
     let stage = keld_cli::boot::stage_dev_boot(
@@ -224,9 +263,73 @@ fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error()
         .expect("captured exit-zero stderr")
         .read_to_string(&mut stderr)
         .expect("read exit-zero stderr");
-    assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
+    assert!(stderr.trim_start().starts_with("KELD-CORE-033"), "{stderr}");
     assert!(stderr.contains(&bun_pid.to_string()), "{stderr}");
     assert!(stderr.contains("status Some(0)"), "{stderr}");
+}
+
+#[test]
+fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fast-g2 control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let marker = fixture.project.join("generation-attempt");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage fast-g2 host");
+    let mut child = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T4_GENERATION_MARKER", &marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch fast-g2 host");
+    let host_pid = child.id();
+
+    let (_g1_reader, mut g1_writer, g1_pid, _g1_link) =
+        accept_ready_generation(&control_listener, &mut child);
+    let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    g1_writer.write_all(b"CRASH\n").expect("crash g1");
+    g1_writer.flush().expect("flush g1 crash");
+
+    let g2 = accept_control_or_host_failure(
+        &control_listener,
+        &mut child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    g2.set_read_timeout(Some(PRODUCT_DEADLINE))
+        .expect("g2 control deadline");
+    let mut g2_reader = BufReader::new(g2);
+    let g2_hello = read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 HELLO");
+    let mut g2_fields = g2_hello.split_whitespace();
+    assert_eq!(g2_fields.next(), Some("HELLO"), "{g2_hello}");
+    let g2_pid = g2_fields
+        .next()
+        .expect("g2 pid")
+        .parse::<u32>()
+        .expect("numeric g2 pid");
+    assert_eq!(
+        read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT"),
+        "DESCENDANT 0"
+    );
+
+    let (_g3_reader, mut g3_writer, g3_pid, _g3_link) =
+        accept_ready_generation(&control_listener, &mut child);
+    let g3_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    assert_ne!(g1_pid, g2_pid);
+    assert_ne!(g2_pid, g3_pid);
+    assert_eq!(g1_window["handle"], g3_window["handle"]);
+
+    g3_writer.write_all(b"QUIT\n").expect("request g3 Quit");
+    g3_writer.flush().expect("flush g3 Quit");
+    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
+    assert!(status.success(), "fast-g2 recovery host exited {status}");
 }
 
 fn run_same_window_recovery(failure_command: &str) {
