@@ -1,4 +1,4 @@
-//! `keld dev` — macOS staged-host delegation plus retained hello diagnostics.
+//! `keld dev` — staged-host delegation plus retained hello diagnostics.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -6,11 +6,11 @@ use std::io::{self, ErrorKind, Write};
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use keld_core::run_hello_window_html;
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, HostOwnedHelloSession, read_config_renderer,
@@ -202,20 +202,20 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
 
 /// Runs `keld dev` in `project_root`.
 ///
-/// On macOS this compiles one owner-private stage and launches its no-flag
+/// On macOS and Windows this compiles one owner-private stage and launches its no-flag
 /// host with a private stdin liveness lease. The host owns the window,
-/// authenticated app link, and Bun. Windows/Linux retain the CLI-owned hello
-/// session until KEL-96/T4.
+/// authenticated app link, and Bun. Linux retains the CLI-owned hello session
+/// until its KEL-96/T4 platform slice.
 ///
 /// # Errors
 ///
 /// Returns [`DevError`] when checks, staging, host launch, Bun, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         run_dev_host(project_root)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         run_dev_with_window(project_root, |title, html| {
             run_hello_window_html(title, html).map_err(|e| DevError::Runtime(e.to_string()))
@@ -223,7 +223,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
@@ -234,17 +234,23 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
                 "the keld executable has no parent directory; install keld and keld-host together",
             ))
         })?
-        .join("keld-host");
+        .join(if cfg!(windows) {
+            "keld-host.exe"
+        } else {
+            "keld-host"
+        });
     let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
-    let host = Command::new(stage.host())
+    let mut command = Command::new(stage.host());
+    command
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
-        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn();
+        .stderr(Stdio::inherit());
+    #[cfg(target_os = "macos")]
+    command.process_group(0);
+    let host = command.spawn();
     let mut host = match host {
         Ok(host) => host,
         Err(source) => {
@@ -265,6 +271,15 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     })?;
     let status = host.wait()?;
     drop(lease_writer);
+    #[cfg(windows)]
+    if let Err(source) = fs::remove_dir_all(stage.root())
+        && source.kind() != io::ErrorKind::NotFound
+    {
+        return Err(DevError::Doctor(format!(
+            "KELD-CLI-047: boot staging failed during Windows host cleanup — {source}. Remove `{}` after confirming the host has exited.",
+            stage.root().display()
+        )));
+    }
     if status.success() {
         Ok(())
     } else {

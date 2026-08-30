@@ -1,32 +1,34 @@
 //! Validated no-flag application boot and host-owned primary session (KEL-96).
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::ffi::OsStr;
 use std::fmt;
-#[cfg(target_os = "macos")]
-use std::fs::File;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
+use std::fs::{self, File};
+#[cfg(any(target_os = "macos", windows))]
 use std::io::{self, Read};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 #[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::thread::{self, JoinHandle};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 use serde::Deserialize;
 
 #[cfg(target_os = "macos")]
@@ -35,57 +37,75 @@ use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 use nix::sys::stat::{SFlag, fstat};
 
 use keld_guard::ManifestError;
-#[cfg(target_os = "macos")]
-use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
+use keld_guard::verified_manifest::VerifiedManifest;
+#[cfg(any(target_os = "macos", windows))]
+use keld_guard::verified_manifest::load_verified_manifest;
+#[cfg(any(target_os = "macos", windows))]
 use keld_ipc::codec::{decode, encode};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use keld_ipc::link::{AppLinkDeadlines, read_frame_interruptible, write_frame};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use keld_ipc::{
-    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, ECHO_CHANNEL, IpcError, LIFECYCLE_CHANNEL,
-    LifecycleEvent, LifecycleRequest, LifecycleResponse,
+    APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
+    LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
 #[cfg(target_os = "macos")]
 use keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate, GuardianBootstrap};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent};
+#[cfg(windows)]
+use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
+#[cfg(windows)]
+use keld_wv::webview2::WebView2Engine;
 #[cfg(target_os = "macos")]
 use keld_wv::wkwebview::{AppWindowCommand, AppWindowEvent, WkWebViewEngine};
-#[cfg(target_os = "macos")]
+#[cfg(windows)]
+use keld_wv::{AppWindowCommand, AppWindowEvent};
+#[cfg(any(target_os = "macos", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
+#[cfg(windows)]
+use winapi::um::winnt::FILE_ATTRIBUTE_REPARSE_POINT;
+#[cfg(windows)]
+use windows_permissions::constants::{
+    AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
+};
+#[cfg(windows)]
+use windows_permissions::utilities::current_process_sid;
+#[cfg(windows)]
+use windows_permissions::wrappers::GetNamedSecurityInfo;
 
 /// Maximum accepted `keld.boot.json` size.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const MAX_BOOT_BYTES: usize = 64 * 1024;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const BOOT_FILE: &str = "keld.boot.json";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 const DIGEST_PREFIX: &str = "sha256:";
 #[cfg(target_os = "macos")]
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const DEV_LEASE_STDIN_V1: &str = "stdin-v1";
 #[cfg(target_os = "macos")]
 const DEV_LEASE_DRAIN_READS: usize = 64;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const SESSION_RUNNING: u8 = 0;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const SESSION_LIFECYCLE_QUIT: u8 = 1;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const SESSION_CLI_LEASE_LOST: u8 = 2;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 static LISTENER_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 static CHILD_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 static WINDOW_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(target_os = "macos")]
@@ -93,7 +113,7 @@ struct DevHostLease {
     input: io::Stdin,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Clone)]
 struct SessionShutdownState {
     cause: Arc<AtomicU8>,
@@ -103,20 +123,20 @@ struct SessionShutdownState {
 }
 /// Opaque host-owned selection minted only from the staged executable layout.
 pub struct ValidatedBootSelection {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     app: AppBootSelection,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     permissions_file: File,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     permissions_digest: [u8; 32],
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 impl Drop for ValidatedBootSelection {
     fn drop(&mut self) {}
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct AppBootSelection {
     root: PathBuf,
     name: String,
@@ -130,7 +150,7 @@ struct GuardSnapshot {
     // T2 retains the verified pair for the whole app session. T3 is the first
     // task allowed to read it at a privileged dispatch boundary.
     verified: VerifiedManifest,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     drop_observer: Option<Arc<AtomicBool>>,
 }
 
@@ -161,7 +181,7 @@ impl ValidatedBootSelection {
     /// Returns [`HostAppError`] for unsupported platforms, invalid descriptor
     /// bytes, an unsafe staged root, or a missing/escaping/non-regular target.
     pub fn from_current_exe_unprivileged() -> Result<Self, HostAppError> {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             Err(HostAppError::new(
                 "KELD-CORE-034",
@@ -170,7 +190,7 @@ impl ValidatedBootSelection {
                 "Complete and prove the named KEL-96/T4 platform slice before launching the host.",
             ))
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             let executable = std::env::current_exe().map_err(|source| {
                 HostAppError::io(
@@ -208,7 +228,7 @@ pub struct HostAppError {
     detail: String,
     fix: &'static str,
     resources: StartupResourceSnapshot,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     manifest_source: Option<Box<ManifestError>>,
 }
 
@@ -232,12 +252,12 @@ impl HostAppError {
             detail: detail.into(),
             fix,
             resources: startup_resource_snapshot(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             manifest_source: None,
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn manifest(source: ManifestError) -> Self {
         let code = source.code();
         let detail = source.to_string();
@@ -251,7 +271,7 @@ impl HostAppError {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn io(code: &'static str, phase: &'static str, source: &io::Error, fix: &'static str) -> Self {
         Self::new(code, phase, source.to_string(), fix)
     }
@@ -288,11 +308,11 @@ impl fmt::Debug for HostAppError {
             .field("detail", &self.detail)
             .field("resources", &self.resources)
             .field("manifest_source", &{
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 {
                     self.manifest_source.as_ref()
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", windows)))]
                 {
                     Option::<&ManifestError>::None
                 }
@@ -303,13 +323,13 @@ impl fmt::Debug for HostAppError {
 
 impl std::error::Error for HostAppError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             self.manifest_source
                 .as_ref()
                 .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             None
         }
@@ -317,7 +337,7 @@ impl std::error::Error for HostAppError {
 }
 
 fn startup_resource_snapshot() -> StartupResourceSnapshot {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         StartupResourceSnapshot {
             listener: LISTENER_ATTEMPTS.load(Ordering::Acquire),
@@ -325,13 +345,13 @@ fn startup_resource_snapshot() -> StartupResourceSnapshot {
             window: WINDOW_ATTEMPTS.load(Ordering::Acquire),
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         StartupResourceSnapshot::default()
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootDocument {
@@ -342,7 +362,7 @@ struct BootDocument {
     permissions: PermissionsDocument,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PermissionsDocument {
@@ -350,7 +370,7 @@ struct PermissionsDocument {
     content_sha256: String,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 struct ParsedBoot {
     name: String,
     entry: PathBuf,
@@ -358,7 +378,7 @@ struct ParsedBoot {
     permissions_digest: [u8; 32],
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
     if bytes.len() > MAX_BOOT_BYTES {
         return Err(boot_error(
@@ -410,12 +430,12 @@ fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn boot_error(detail: impl Into<String>, fix: &'static str) -> HostAppError {
     HostAppError::new("KELD-CORE-035", "boot descriptor validation", detail, fix)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn target_error(kind: &'static str, detail: impl Into<String>) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-036",
@@ -425,7 +445,7 @@ fn target_error(kind: &'static str, detail: impl Into<String>) -> HostAppError {
     )
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn validate_relative_path(kind: &'static str, value: &str) -> Result<PathBuf, HostAppError> {
     if value.is_empty()
         || value.contains('\\')
@@ -451,7 +471,7 @@ fn validate_relative_path(kind: &'static str, value: &str) -> Result<PathBuf, Ho
     Ok(path.to_path_buf())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
     let Some(hex) = value.strip_prefix(DIGEST_PREFIX) else {
         return Err(boot_error(
@@ -532,6 +552,154 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     })
 }
 
+#[cfg(windows)]
+fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppError> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let root = root.canonicalize().map_err(|source| {
+        HostAppError::io(
+            "KELD-CORE-036",
+            "staged app root",
+            &source,
+            "Restore the generated owner-private stage directory.",
+        )
+    })?;
+    let root_metadata = fs::symlink_metadata(&root)
+        .map_err(|source| target_error("app root", source.to_string()))?;
+    if !root_metadata.is_dir()
+        || root_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(target_error(
+            "app root",
+            "root must be a real directory, not a file or reparse point",
+        ));
+    }
+    verify_windows_stage_acl(&root)?;
+    let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
+    let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
+    let parsed = parse_boot_bytes(&boot_bytes)?;
+    let entry_file = open_relative_file_windows(&root, &parsed.entry, "entry")?;
+    let renderer_file = open_relative_file_windows(&root, &parsed.renderer, "renderer")?;
+    let renderer_html = read_target(renderer_file, "renderer")?;
+    std::str::from_utf8(&renderer_html)
+        .map_err(|source| target_error("renderer", format!("HTML is not UTF-8: {source}")))?;
+    let permissions_file =
+        open_relative_file_windows(&root, Path::new(PERMISSIONS_FILE), "permissions file")?;
+    Ok(ValidatedBootSelection {
+        app: AppBootSelection {
+            root,
+            name: parsed.name,
+            entry_path: parsed.entry,
+            entry_file,
+            renderer_html,
+        },
+        permissions_file,
+        permissions_digest: parsed.permissions_digest,
+    })
+}
+
+#[cfg(windows)]
+fn verify_windows_stage_acl(root: &Path) -> Result<(), HostAppError> {
+    let current = current_process_sid()
+        .map_err(|source| target_error("app root DACL TokenUser", source.to_string()))?;
+    let descriptor = GetNamedSecurityInfo(
+        root.as_os_str(),
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner | SecurityInformation::Dacl,
+    )
+    .map_err(|source| target_error("app root DACL readback", source.to_string()))?;
+    if descriptor.owner() != Some(&current) {
+        return Err(target_error(
+            "app root DACL",
+            "owner does not equal the current process TokenUser SID",
+        ));
+    }
+    let sddl = descriptor
+        .as_sddl()
+        .map_err(|source| target_error("app root DACL readback", source.to_string()))?;
+    if !sddl.to_string_lossy().contains("D:P") {
+        return Err(target_error(
+            "app root DACL",
+            "DACL inheritance is not protected",
+        ));
+    }
+    let dacl = descriptor
+        .dacl()
+        .ok_or_else(|| target_error("app root DACL", "security descriptor contains no DACL"))?;
+    if dacl.len() != 1 {
+        return Err(target_error(
+            "app root DACL",
+            format!("expected one access rule, found {}", dacl.len()),
+        ));
+    }
+    let ace = dacl
+        .get_ace(0)
+        .ok_or_else(|| target_error("app root DACL", "the one access rule is unreadable"))?;
+    let required_flags = AceFlags::ContainerInherit | AceFlags::ObjectInherit;
+    if ace.ace_type() != AceType::ACCESS_ALLOWED_ACE_TYPE
+        || ace.mask() != AccessRights::FileAllAccess
+        || ace.sid() != Some(&current)
+        || ace.flags() != required_flags
+    {
+        return Err(target_error(
+            "app root DACL",
+            "expected one non-inherited current-user full-control rule for files and directories",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_relative_file_windows(
+    root: &Path,
+    path: &Path,
+    kind: &'static str,
+) -> Result<File, HostAppError> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let components = path
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => Ok(value),
+            _ => Err(target_error(kind, "path is not project-relative")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if components.is_empty() {
+        return Err(target_error(kind, "path is empty"));
+    }
+    let mut candidate = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        candidate.push(component);
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|source| target_error(kind, source.to_string()))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(target_error(kind, "path contains a reparse point"));
+        }
+        let is_leaf = index + 1 == components.len();
+        if (is_leaf && !metadata.is_file()) || (!is_leaf && !metadata.is_dir()) {
+            return Err(target_error(
+                kind,
+                if is_leaf {
+                    "target is not a regular file"
+                } else {
+                    "parent component is not a directory"
+                },
+            ));
+        }
+    }
+    let file = File::open(&candidate).map_err(|source| target_error(kind, source.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| target_error(kind, source.to_string()))?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(target_error(
+            kind,
+            "opened target is not a regular non-reparse file",
+        ));
+    }
+    Ok(file)
+}
+
 #[cfg(target_os = "macos")]
 fn open_root(path: &Path) -> Result<std::os::fd::OwnedFd, HostAppError> {
     use nix::fcntl::{OFlag, open};
@@ -598,7 +766,7 @@ fn open_relative_file(
     Ok(file)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn read_bounded(mut file: File, limit: usize, kind: &'static str) -> Result<Vec<u8>, HostAppError> {
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
@@ -618,7 +786,7 @@ fn read_bounded(mut file: File, limit: usize, kind: &'static str) -> Result<Vec<
     Ok(bytes)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppError> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -667,7 +835,7 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
 /// Returns [`HostAppError`] for a typed manifest preflight failure or any
 /// existing no-flag startup, session, window, guardian, Bun, or shutdown error.
 pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         drop(boot);
         Err(HostAppError::new(
@@ -676,6 +844,18 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
             "no-flag host support is unavailable on this platform",
             "Complete and prove the named KEL-96/T4 platform slice before launching the host.",
         ))
+    }
+    #[cfg(windows)]
+    {
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = boot;
+        let display_path = app.root.join(PERMISSIONS_FILE);
+        let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
+            .map_err(HostAppError::manifest)?;
+        run_app_windows(app, &verified)
     }
     #[cfg(target_os = "macos")]
     {
@@ -773,7 +953,7 @@ fn configure_dev_lease_fd(fd: &impl std::os::fd::AsFd) -> Result<(), HostAppErro
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl SessionShutdownState {
     fn new() -> Self {
         Self {
@@ -792,15 +972,17 @@ impl SessionShutdownState {
         self.cause() == SESSION_RUNNING
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn claim_lifecycle_quit(&self) -> bool {
         self.claim(SESSION_LIFECYCLE_QUIT)
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     fn claim_cli_lease_lost(&self) -> bool {
         self.claim(SESSION_CLI_LEASE_LOST)
     }
 
+    #[cfg(any(target_os = "macos", windows))]
     fn claim(&self, cause: u8) -> bool {
         let _transition = self.transition_guard();
         self.claim_guarded(cause)
@@ -961,6 +1143,229 @@ fn run_app(
     })
 }
 
+#[cfg(windows)]
+#[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned Windows handle transition contiguous
+fn run_app_windows(
+    boot: AppBootSelection,
+    guard_snapshot: &VerifiedManifest,
+) -> Result<(), HostAppError> {
+    let shutdown = SessionShutdownState::new();
+    let AppBootSelection {
+        root,
+        name,
+        entry_path,
+        entry_file,
+        renderer_html,
+    } = boot;
+    let html = String::from_utf8(renderer_html).map_err(|source| {
+        HostAppError::new(
+            "KELD-CORE-036",
+            "renderer",
+            source.to_string(),
+            "Regenerate the stage with UTF-8 renderer HTML.",
+        )
+    })?;
+    drop(entry_file);
+    let config = PrimaryRoleConfig::new("bun")
+        .arg("run")
+        .arg(root.join(&entry_path))
+        .current_dir(&root)
+        .env_remove(DEV_LEASE_ENV);
+    LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    let (supervisor, recovery) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+        .map_err(|source| app_runtime("Windows primary startup", &source))?;
+    let initial = match await_windows_bound_generation(
+        &supervisor,
+        &recovery,
+        Instant::now() + APP_LINK_IO_DEADLINE,
+    ) {
+        Ok(bound) => bound,
+        Err(primary) => {
+            let output = supervisor.output();
+            let primary = app_detail(
+                "initial Windows primary startup",
+                format!(
+                    "{primary}; captured stdout: {}; captured stderr: {}",
+                    output.stdout, output.stderr
+                ),
+            );
+            supervisor.shutdown();
+            let cleanup = match supervisor.wait_for_outcome() {
+                keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+                keld_runtime::SupervisorOutcome::CrashLoop(error)
+                | keld_runtime::SupervisorOutcome::Failed(error) => {
+                    Err(app_runtime("Windows primary startup cleanup", &error))
+                }
+            };
+            return Err(collapse_app_failures(&primary, [cleanup]));
+        }
+    };
+
+    let (window_commands_tx, window_commands_rx) = mpsc::channel();
+    let primary_owner = WindowsPrimaryOwner::start(
+        supervisor,
+        recovery,
+        window_commands_tx.clone(),
+        shutdown.clone(),
+    )?;
+    let router = PrimaryRouter::start_bound(
+        initial,
+        window_commands_tx.clone(),
+        primary_owner.handle(),
+        shutdown.clone(),
+    )?;
+    primary_owner.attach_router(router.handle())?;
+    let _lease_reader = start_windows_dev_lease(router.handle(), shutdown.clone())?;
+    let (window_events_tx, window_events_rx) = mpsc::channel();
+    let router_handle = router.handle();
+    let commands_for_events = window_commands_tx.clone();
+    let event_coordinator = thread::Builder::new()
+        .name("keld-core-windows-app-window-events".to_owned())
+        .spawn(move || {
+            coordinate_window_events(&window_events_rx, &router_handle, &commands_for_events)
+        })
+        .map_err(|source| app_io("Windows window event coordinator", &source))?;
+
+    let mut engine = WebView2Engine::new()
+        .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
+    let spec = WebviewSpec {
+        title: name,
+        initial: NavTarget::Html(html),
+        ..WebviewSpec::default()
+    };
+    WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    if let Err(source) = engine.create_app(&spec, window_events_tx.clone()) {
+        let primary = app_detail("initial Windows window", source.to_string());
+        drop(window_events_tx);
+        let event_result = event_coordinator
+            .join()
+            .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
+            .and_then(std::convert::identity);
+        let router_result = router.shutdown();
+        let owner_result = primary_owner.shutdown();
+        let _retained_digest = guard_snapshot.verified_sha256();
+        return Err(collapse_app_failures(
+            &primary,
+            [event_result, router_result, owner_result],
+        ));
+    }
+    let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
+    drop(window_commands_tx);
+    let event_result = event_coordinator
+        .join()
+        .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
+        .and_then(std::convert::identity);
+    let router_result = router.shutdown();
+    let owner_result = primary_owner.shutdown();
+    let _retained_digest = guard_snapshot.verified_sha256();
+
+    match window_result {
+        Err(source @ WvError::Navigate(_)) => {
+            let primary = app_detail("initial Windows navigation", source.to_string());
+            Err(collapse_app_failures(
+                &primary,
+                [owner_result, router_result, event_result],
+            ))
+        }
+        result => collapse_app_results([
+            result.map_err(|source| app_detail("Windows app window", source.to_string())),
+            event_result,
+            router_result,
+            owner_result,
+        ]),
+    }
+}
+
+#[cfg(windows)]
+fn start_windows_dev_lease(
+    router: PrimaryRouterHandle,
+    shutdown: SessionShutdownState,
+) -> Result<Option<JoinHandle<()>>, HostAppError> {
+    use std::ffi::OsStr;
+
+    let Some(value) = std::env::var_os(DEV_LEASE_ENV) else {
+        return Ok(None);
+    };
+    if value != OsStr::new(DEV_LEASE_STDIN_V1) {
+        return Err(app_detail(
+            "Windows dev-host lease",
+            format!(
+                "unsupported {DEV_LEASE_ENV} value `{}`",
+                value.to_string_lossy()
+            ),
+        ));
+    }
+    let handle = thread::Builder::new()
+        .name("keld-core-windows-dev-lease".to_owned())
+        .spawn(move || {
+            let input = io::stdin();
+            let mut input = input.lock();
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                match input.read(&mut buffer) {
+                    Ok(0) => {
+                        if shutdown.claim_cli_lease_lost() {
+                            let _ = router.cli_lease_lost();
+                        }
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+                    Err(_) => {
+                        let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
+    Ok(Some(handle))
+}
+
+#[cfg(windows)]
+fn await_windows_bound_generation(
+    supervisor: &PrimaryRoleSupervisor,
+    recovery: &PrimaryRecoveryGate,
+    deadline: Instant,
+) -> Result<BoundPrimaryGeneration, HostAppError> {
+    loop {
+        if let Some(bound) = supervisor.try_recv_bound_generation() {
+            return Ok(bound);
+        }
+        while let Some(event) = supervisor.try_recv_event() {
+            if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
+                let _ = recovery.deny();
+                return Err(app_detail(
+                    "initial Windows app-link authentication",
+                    "Bun terminated before its initial authenticated generation bound",
+                ));
+            }
+        }
+        if let Some(outcome) = supervisor.try_wait_for_outcome() {
+            let _ = recovery.deny();
+            return Err(match outcome {
+                keld_runtime::SupervisorOutcome::Stopped => app_detail(
+                    "initial Windows app-link authentication",
+                    "Bun stopped before its initial authenticated generation bound",
+                ),
+                keld_runtime::SupervisorOutcome::CrashLoop(error)
+                | keld_runtime::SupervisorOutcome::Failed(error) => {
+                    app_runtime("initial Windows app-link authentication", &error)
+                }
+            });
+        }
+        if Instant::now() >= deadline {
+            let _ = recovery.deny();
+            return Err(app_detail(
+                "initial Windows app-link authentication",
+                "Bun did not authenticate before the generation deadline",
+            ));
+        }
+        thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn finish_guarded_session<T>(
     guard_snapshot: Option<&GuardSnapshot>,
@@ -1009,7 +1414,7 @@ fn await_bound_generation(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn coordinate_window_events(
     events: &Receiver<AppWindowEvent>,
     router: &PrimaryRouterHandle,
@@ -1153,7 +1558,7 @@ impl GuardianOwner {
                                         "generation changed before the primary router attached",
                                     ));
                                 };
-                                if let Err(error) = router.apply_generation_update(update) {
+                                if let Err(error) = router.apply_generation_update(update.into()) {
                                     guardian.deny_recovery();
                                     let _ = window_commands.send(AppWindowCommand::Fatal);
                                     return Err(error);
@@ -1358,7 +1763,296 @@ impl GuardianOwnerHandle {
     }
 }
 
+#[cfg(windows)]
+const WINDOWS_PRIMARY_OWNER_POLL: Duration = Duration::from_millis(10);
+#[cfg(windows)]
+const WINDOWS_PRIMARY_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
+
+#[cfg(windows)]
+struct WindowsPrimaryOwnerHandle {
+    command_tx: Sender<WindowsPrimaryOwnerCommand>,
+}
+
+#[cfg(windows)]
+impl Clone for WindowsPrimaryOwnerHandle {
+    fn clone(&self) -> Self {
+        Self {
+            command_tx: self.command_tx.clone(),
+        }
+    }
+}
+
+#[cfg(windows)]
+enum WindowsPrimaryOwnerCommand {
+    AttachRouter(PrimaryRouterHandle, mpsc::SyncSender<Result<(), String>>),
+    ArmRecovery(mpsc::SyncSender<Result<(), String>>),
+    DenyRecovery,
+    FailGeneration(u32, mpsc::SyncSender<Result<(), String>>),
+    PrepareAcceptedShutdown(mpsc::SyncSender<Result<(), String>>),
+    Shutdown(mpsc::SyncSender<Result<(), String>>),
+}
+
+#[cfg(windows)]
+struct WindowsPrimaryOwner {
+    command_tx: Sender<WindowsPrimaryOwnerCommand>,
+    handle: Option<JoinHandle<Result<(), HostAppError>>>,
+}
+
+#[cfg(windows)]
+impl WindowsPrimaryOwner {
+    fn start(
+        supervisor: PrimaryRoleSupervisor,
+        recovery: PrimaryRecoveryGate,
+        window_commands: Sender<AppWindowCommand>,
+        shutdown: SessionShutdownState,
+    ) -> Result<Self, HostAppError> {
+        let (command_tx, command_rx) = mpsc::channel();
+        let handle = thread::Builder::new()
+            .name("keld-core-windows-primary-owner".to_owned())
+            .spawn(move || {
+                let mut router: Option<PrimaryRouterHandle> = None;
+                loop {
+                    // These are separate channels, so preserve the generation
+                    // owner's causal order explicitly at the fan-in: revoke
+                    // authority before installing a queued successor stream.
+                    while let Some(event) = supervisor.try_recv_event() {
+                        if let Some(router) = router.as_ref()
+                            && let Err(error) =
+                                router.apply_generation_update(PrimaryOwnerUpdate::Role(event))
+                        {
+                            let _ = recovery.deny();
+                            supervisor.shutdown();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(error);
+                        }
+                    }
+                    while let Some(bound) = supervisor.try_recv_bound_generation() {
+                        let Some(router) = router.as_ref() else {
+                            return Err(app_detail(
+                                "Windows primary owner",
+                                "successor bound before the app router was attached",
+                            ));
+                        };
+                        router.apply_generation_update(PrimaryOwnerUpdate::Bound(bound))?;
+                    }
+                    if let Some(outcome) = supervisor.try_wait_for_outcome() {
+                        if shutdown.is_running() {
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                        }
+                        return match outcome {
+                            keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+                            keld_runtime::SupervisorOutcome::CrashLoop(error)
+                            | keld_runtime::SupervisorOutcome::Failed(error) => {
+                                Err(app_runtime("Windows primary supervisor", &error))
+                            }
+                        };
+                    }
+                    match command_rx.recv_timeout(WINDOWS_PRIMARY_OWNER_POLL) {
+                        Ok(WindowsPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
+                            let result = if router.is_some() {
+                                Err(String::from("primary router was already attached"))
+                            } else {
+                                router = Some(attached);
+                                Ok(())
+                            };
+                            let _ = reply.send(result);
+                        }
+                        Ok(WindowsPrimaryOwnerCommand::ArmRecovery(reply)) => {
+                            let result = recovery
+                                .arm()
+                                .then_some(())
+                                .ok_or_else(|| String::from("recovery was already denied"));
+                            let _ = reply.send(result);
+                        }
+                        Ok(WindowsPrimaryOwnerCommand::DenyRecovery) => {
+                            let _ = recovery.deny();
+                        }
+                        Ok(WindowsPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
+                            // A crashing child closes its app link before the
+                            // Supervisor publishes Revoked. The Supervisor is
+                            // the sole process/restart owner, so this wake only
+                            // yields to that authoritative observation; it must
+                            // not race a second kill/restart loop in core.
+                            let _ = attempt;
+                            let _ = reply.send(Ok(()));
+                        }
+                        Ok(WindowsPrimaryOwnerCommand::PrepareAcceptedShutdown(reply)) => {
+                            let _ = recovery.deny();
+                            let _ = reply.send(Ok(()));
+                        }
+                        Ok(WindowsPrimaryOwnerCommand::Shutdown(reply)) => {
+                            let _ = recovery.deny();
+                            supervisor.shutdown();
+                            let result = match supervisor.wait_for_outcome() {
+                                keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+                                keld_runtime::SupervisorOutcome::CrashLoop(error)
+                                | keld_runtime::SupervisorOutcome::Failed(error) => {
+                                    Err(error.to_string())
+                                }
+                            };
+                            let _ = reply.send(result.clone());
+                            return result
+                                .map_err(|detail| app_detail("Windows primary shutdown", detail));
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => {
+                            let _ = recovery.deny();
+                            supervisor.shutdown();
+                            return match supervisor.wait_for_outcome() {
+                                keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+                                keld_runtime::SupervisorOutcome::CrashLoop(error)
+                                | keld_runtime::SupervisorOutcome::Failed(error) => {
+                                    Err(app_runtime("Windows primary owner", &error))
+                                }
+                            };
+                        }
+                    }
+                }
+            })
+            .map_err(|source| app_io("Windows primary owner", &source))?;
+        Ok(Self {
+            command_tx,
+            handle: Some(handle),
+        })
+    }
+
+    fn handle(&self) -> WindowsPrimaryOwnerHandle {
+        WindowsPrimaryOwnerHandle {
+            command_tx: self.command_tx.clone(),
+        }
+    }
+
+    fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WindowsPrimaryOwnerCommand::AttachRouter(router, reply_tx))
+            .map_err(|_| app_detail("Windows primary router attachment", "owner stopped"))?;
+        receive_windows_owner_reply(&reply_rx, "Windows primary router attachment")
+    }
+
+    fn shutdown(mut self) -> Result<(), HostAppError> {
+        let requested = self.handle().shutdown_and_wait();
+        let joined = self.join();
+        joined.and(requested)
+    }
+
+    fn join(&mut self) -> Result<(), HostAppError> {
+        self.handle.take().map_or(Ok(()), |handle| {
+            handle
+                .join()
+                .map_err(|_| app_detail("Windows primary owner", "thread panicked"))?
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsPrimaryOwner {
+    fn drop(&mut self) {
+        if self.handle.is_none() {
+            return;
+        }
+        let _ = self.handle().shutdown_and_wait();
+        let _ = self.join();
+    }
+}
+
+#[cfg(windows)]
+impl WindowsPrimaryOwnerHandle {
+    fn deny_recovery(&self) {
+        let _ = self
+            .command_tx
+            .send(WindowsPrimaryOwnerCommand::DenyRecovery);
+    }
+
+    fn arm_recovery(&self) -> Result<(), HostAppError> {
+        self.request(
+            WindowsPrimaryOwnerCommand::ArmRecovery,
+            "Windows primary recovery arm",
+        )
+    }
+
+    fn fail_generation(&self, attempt: u32) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WindowsPrimaryOwnerCommand::FailGeneration(
+                attempt, reply_tx,
+            ))
+            .map_err(|_| app_detail("Windows primary app-link failure", "owner stopped"))?;
+        receive_windows_owner_reply(&reply_rx, "Windows primary app-link failure")
+    }
+
+    fn prepare_accepted_shutdown(&self) -> Result<(), HostAppError> {
+        self.request(
+            WindowsPrimaryOwnerCommand::PrepareAcceptedShutdown,
+            "Windows accepted-shutdown preparation",
+        )
+    }
+
+    fn shutdown_and_wait(&self) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        if self
+            .command_tx
+            .send(WindowsPrimaryOwnerCommand::Shutdown(reply_tx))
+            .is_err()
+        {
+            return Ok(());
+        }
+        receive_windows_owner_reply(&reply_rx, "Windows primary shutdown")
+    }
+
+    fn request(
+        &self,
+        command: impl FnOnce(mpsc::SyncSender<Result<(), String>>) -> WindowsPrimaryOwnerCommand,
+        phase: &'static str,
+    ) -> Result<(), HostAppError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(command(reply_tx))
+            .map_err(|_| app_detail(phase, "owner stopped"))?;
+        receive_windows_owner_reply(&reply_rx, phase)
+    }
+}
+
+#[cfg(windows)]
+fn receive_windows_owner_reply(
+    reply_rx: &Receiver<Result<(), String>>,
+    phase: &'static str,
+) -> Result<(), HostAppError> {
+    match reply_rx.recv_timeout(WINDOWS_PRIMARY_OWNER_REPLY_DEADLINE) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(detail)) => Err(app_detail(phase, detail)),
+        Err(RecvTimeoutError::Timeout) => Err(app_detail(
+            phase,
+            "owner did not acknowledge before deadline",
+        )),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err(app_detail(phase, "owner ended before acknowledgment"))
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+enum PrimaryOwnerUpdate {
+    Role(PrimaryRoleEvent),
+    Bound(BoundPrimaryGeneration),
+}
+
 #[cfg(target_os = "macos")]
+impl From<GuardedPrimaryUpdate> for PrimaryOwnerUpdate {
+    fn from(update: GuardedPrimaryUpdate) -> Self {
+        match update {
+            GuardedPrimaryUpdate::Role(event) => Self::Role(event),
+            GuardedPrimaryUpdate::Bound(bound) => Self::Bound(bound),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+type PlatformPrimaryOwnerHandle = GuardianOwnerHandle;
+#[cfg(windows)]
+type PlatformPrimaryOwnerHandle = WindowsPrimaryOwnerHandle;
+
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Clone)]
 struct PrimaryRouterHandle {
     current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
@@ -1367,20 +2061,20 @@ struct PrimaryRouterHandle {
     last_window_closed: Arc<AtomicBool>,
     recovery_armed: Arc<AtomicBool>,
     shutdown: SessionShutdownState,
-    guardian: GuardianOwnerHandle,
+    guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct ActivePrimaryGeneration {
     attempt: u32,
-    writer: std::os::unix::net::UnixStream,
+    writer: BootstrapStream,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl PrimaryRouterHandle {
     fn signal_ready(&self) -> Result<(), HostAppError> {
         if self.recovery_armed.load(Ordering::Acquire) {
@@ -1513,9 +2207,9 @@ impl PrimaryRouterHandle {
         self.finish_tail("CLI lease loss")
     }
 
-    fn apply_generation_update(&self, update: GuardedPrimaryUpdate) -> Result<(), HostAppError> {
+    fn apply_generation_update(&self, update: PrimaryOwnerUpdate) -> Result<(), HostAppError> {
         match update {
-            GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { attempt, .. }) => {
+            PrimaryOwnerUpdate::Role(PrimaryRoleEvent::Revoked { attempt, .. }) => {
                 if !self.window_ready.load(Ordering::Acquire) {
                     return Err(app_detail(
                         "primary generation before Ready",
@@ -1524,8 +2218,8 @@ impl PrimaryRouterHandle {
                 }
                 self.retire_generation(attempt)
             }
-            GuardedPrimaryUpdate::Role(_) => Ok(()),
-            GuardedPrimaryUpdate::Bound(bound) => {
+            PrimaryOwnerUpdate::Role(_) => Ok(()),
+            PrimaryOwnerUpdate::Bound(bound) => {
                 self.install_generation(bound.attempt(), bound.into_stream())
             }
         }
@@ -1534,7 +2228,7 @@ impl PrimaryRouterHandle {
     fn install_generation(
         &self,
         attempt: u32,
-        mut stream: std::os::unix::net::UnixStream,
+        mut stream: BootstrapStream,
     ) -> Result<(), HostAppError> {
         stream
             .set_app_link_read_deadline(Some(APP_LINK_READER_POLL))
@@ -1640,18 +2334,18 @@ impl PrimaryRouterHandle {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct PrimaryRouter {
     handle: PrimaryRouterHandle,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl PrimaryRouter {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn start(
-        stream: std::os::unix::net::UnixStream,
+        stream: BootstrapStream,
         window_commands: Sender<AppWindowCommand>,
-        guardian: GuardianOwnerHandle,
+        guardian: PlatformPrimaryOwnerHandle,
         shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
         let handle = PrimaryRouterHandle {
@@ -1671,7 +2365,7 @@ impl PrimaryRouter {
     fn start_bound(
         bound: BoundPrimaryGeneration,
         window_commands: Sender<AppWindowCommand>,
-        guardian: GuardianOwnerHandle,
+        guardian: PlatformPrimaryOwnerHandle,
         shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
         let attempt = bound.attempt();
@@ -1725,17 +2419,17 @@ impl PrimaryRouter {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Drop for PrimaryRouter {
     fn drop(&mut self) {
         let _ = self.stop_and_join();
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[allow(clippy::too_many_lines)] // one reader owns the complete echo/lifecycle frame dispatch
 fn read_primary_frames(
-    reader: &mut std::os::unix::net::UnixStream,
+    reader: &mut BootstrapStream,
     handle: &PrimaryRouterHandle,
     attempt: u32,
 ) -> Result<(), HostAppError> {
@@ -1753,7 +2447,14 @@ fn read_primary_frames(
                 }
                 return Ok(());
             }
-            Err(IpcError::Io(source)) if source.kind() == io::ErrorKind::UnexpectedEof => {
+            Err(IpcError::Io(source))
+                if matches!(
+                    source.kind(),
+                    io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                ) =>
+            {
                 if !handle.is_current(attempt) {
                     return Ok(());
                 }
@@ -1847,7 +2548,7 @@ fn read_primary_frames(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn write_primary_reply(
     current: &Mutex<Option<ActivePrimaryGeneration>>,
     shutdown: &SessionShutdownState,
@@ -1880,7 +2581,7 @@ fn write_primary_reply(
     .map_err(|source| app_ipc("primary session reply", &source))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(), HostAppError> {
     match result {
         Ok(()) => Ok(()),
@@ -1889,7 +2590,7 @@ fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn app_detail(phase: &'static str, detail: impl Into<String>) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-037",
@@ -1899,7 +2600,7 @@ fn app_detail(phase: &'static str, detail: impl Into<String>) -> HostAppError {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn collapse_app_failures<const N: usize>(
     primary: &HostAppError,
     cleanup: [Result<(), HostAppError>; N],
@@ -1912,7 +2613,7 @@ fn collapse_app_failures<const N: usize>(
     app_detail("startup cleanup", detail)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn collapse_app_results(
     results: impl IntoIterator<Item = Result<(), HostAppError>>,
 ) -> Result<(), HostAppError> {
@@ -1933,7 +2634,7 @@ fn collapse_app_results(
     Err(app_detail("session cleanup", detail))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn app_io(phase: &'static str, source: &io::Error) -> HostAppError {
     HostAppError::io(
         "KELD-CORE-037",
@@ -1943,7 +2644,7 @@ fn app_io(phase: &'static str, source: &io::Error) -> HostAppError {
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn app_runtime(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
     app_detail(phase, source.to_string())
 }
@@ -1958,7 +2659,7 @@ fn app_guardian_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) 
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn app_ipc(phase: &'static str, source: &IpcError) -> HostAppError {
     app_detail(phase, source.to_string())
 }

@@ -1,6 +1,6 @@
 [package]
 name = "keld-host"
-description = "The Keld host executable (macOS no-flag app owner plus unprivileged hello diagnostic)"
+description = "The Keld host executable (macOS/Windows no-flag app owner plus unprivileged hello diagnostic)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

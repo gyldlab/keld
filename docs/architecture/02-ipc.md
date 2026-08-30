@@ -45,25 +45,26 @@ window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export th
 same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
 current-user DACL.
 
-**macOS no-flag primary (KEL-96 T1a/T1b/T3):** the staged `keld-host` process
-mints and authenticates one one-use Unix bootstrap per Bun generation, then
+**macOS/Windows no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
+mints and authenticates one one-use platform bootstrap per Bun generation, then
 gives the accepted stream to one logical private router with serialized writes.
 Each active stream routes
 both echo channel 1 and KEL-72 lifecycle channel 3; there is no lifecycle-side
 listener or second HELLO within a generation. Initial `Ready` follows native
 renderer navigation; a replacement generation receives `Ready` after its fresh
 HELLO while the same native window remains live. The old endpoint/token/stream
-is revoked before the guardian requests its successor.
+is revoked before the platform owner accepts its successor.
 Quit atomically quiesces dispatch and records accepted-shutdown attribution,
-writes its correlated reply, closes the link, signals the guardian-owned Bun
-process group, waits/reaps the guardian's direct Bun child, and only then wakes
-the macOS UI loop to exit. The locator is unlinked at successful
-authentication. `keld dev` now uses the
-staged no-flag host on macOS: the CLI owns no app-link endpoint, token, stream,
+writes its correlated reply, closes the link, stops and reaps the supervised Bun
+child, and only then wakes the platform UI loop to exit. macOS composes the
+guardian/process-group owner; Windows consumes T8's `PrimaryRoleSupervisor` over the
+explicitly unprivileged loopback interim. The locator is consumed at successful
+authentication. `keld dev` now uses the staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
-permission. Windows/Linux retain the older CLI-owned hello session until
-KEL-96/T4.
+permission. Linux retains the older CLI-owned hello session until its KEL-96/T4 row.
+Windows abnormal-host-death descendant cleanup still awaits KEL-78/T3 and no
+privileged channel may use this transport before KEL-101.
 
 ## 2. Wire protocol (control plane)
 

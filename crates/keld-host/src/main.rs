@@ -9,7 +9,9 @@
 
 use std::env;
 #[cfg(target_os = "macos")]
-use std::fs::{self, File};
+use std::fs;
+#[cfg(target_os = "macos")]
+use std::fs::File;
 #[cfg(target_os = "macos")]
 use std::io::{self, Write};
 #[cfg(target_os = "macos")]

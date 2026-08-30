@@ -86,6 +86,24 @@ pub struct WebviewSpec {
     pub initial: NavTarget,
 }
 
+/// Command delivered from the primary app-link owner to the platform UI loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppWindowCommand {
+    /// Correlated Quit reply has been written; close windows and exit.
+    Quit,
+    /// The primary app session failed; close windows and exit with an error.
+    Fatal,
+}
+
+/// Observable UI-owned milestone delivered to the host session coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppWindowEvent {
+    /// Initial renderer navigation completed on the live backend.
+    NavigationReady,
+    /// The primary-window count transitioned from one to zero.
+    LastWindowClosed,
+}
+
 impl Default for WebviewSpec {
     /// A 960x640 window titled "Keld" on a blank page — the Phase 1 hello
     /// slice geometry.

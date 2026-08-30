@@ -456,13 +456,15 @@ unprivileged lifecycle/echo evidence. That result is labeled interim and cannot
 close KEL-101 or authorize a privileged Windows channel. KEL-101's own approved
 scope remains the authority for the named-pipe/current-user-DACL gate.
 
-The atomic T1b head initially enables no-flag startup only on macOS. On Windows
-or Linux before its T4 slice lands, no-flag `keld-host` fails before boot-file
-read or any application resource with proposed `KELD-CORE-034`: no-flag host
-support is unavailable on this platform; complete the named KEL-96/T4 platform
-slice. It must not fall through to the pre-alpha banner, `--hello`, CLI-owned
-session, or a partially installed app-link. T4 registers the code before
-removing each platform guard.
+The atomic T1b head initially enabled no-flag startup only on macOS. The T4
+Windows slice now removes that guard only after protected staging/readback,
+strict boot/policy validation, one T8-owned supervisor, the live WebView2
+command/event loop and real process/window/restart/teardown evidence pass.
+Linux still fails before boot-file read or any application resource with
+`KELD-CORE-034`: no-flag host support is unavailable on this platform; complete
+the named KEL-96/T4 platform slice. No unsupported platform may fall through to
+the pre-alpha banner, `--hello`, CLI-owned session, or a partially installed
+app-link.
 
 KEL-100's macOS and Windows records prove the current CLI-owned concurrent path,
 not no-flag host ownership. Their ordered witness method is reusable. Each KEL-96
@@ -578,6 +580,10 @@ privileged channel. The first and only production caller in T1b is the no-flag
       applicable KEL-75/KEL-78 host-death reaper artifacts. This is
       implementation plus evidence, not an evidence-only task; it must not
       implement a second generation loop in `keld-core`.
+      The Windows sub-row has real no-flag host/HWND/two-call/g1-to-g2/ordered
+      Quit/CLI-death evidence on RAMANI, but T4 remains unchecked: Windows
+      abnormal-host-death waits on KEL-78/T3, post-CLI-death stage deletion has
+      no approved surviving owner, and the real Linux desktop rows are absent.
 - [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
       actually proved by landed T1a–T4 work.
 

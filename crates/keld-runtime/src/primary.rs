@@ -7,5 +7,6 @@
 pub use crate::role::{
     BoundRoleGeneration as BoundPrimaryGeneration, RoleConfig as PrimaryRoleConfig,
     RoleEvent as PrimaryRoleEvent, RoleGeneration, RoleOwner,
-    RoleRevocationCause as PrimaryRoleRevocationCause, RoleSupervisor as PrimaryRoleSupervisor,
+    RoleRecoveryGate as PrimaryRecoveryGate, RoleRevocationCause as PrimaryRoleRevocationCause,
+    RoleSupervisor as PrimaryRoleSupervisor,
 };

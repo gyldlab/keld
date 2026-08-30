@@ -42,6 +42,21 @@
   dev-leased host removes its own validated `.keld/dev/<nonce>` root on every
   ordered return, including CLI loss; an uncatchable host `SIGKILL` can retain
   that owner-private stage for a future bounded GC policy.
+- **Windows no-flag primary (KEL-96/T4 Windows slice):** `keld dev` creates a
+  fresh protected-current-user stage, launches `keld-host.exe` with no Keld
+  flag, forwards logs and retains only the host handle plus stdin-v1 writer.
+  The host independently reads back the protected one-ACE DACL, validates the
+  same closed boot/policy contract before resources, and consumes T8's one
+  `PrimaryRoleSupervisor` with a pre-Ready recovery gate. One logical router
+  spans fresh loopback generations while the same WebView2 HWND remains live;
+  `NavigationCompleted` drives `Ready` through tao's UI-thread
+  `EventLoopProxy`. Correlated Quit and CLI EOF use the shared
+  quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
+  removes the stage after the host exits. CLI-death process teardown is live,
+  but Windows cannot remove its running staged executable and no surviving
+  cleanup helper is approved, so that empty-stage cleanup row remains open.
+  Abnormal host-death descendants likewise remain KEL-78/T3 Job Object work;
+  this slice makes no LPAC, named-pipe/DACL, or privileged-dispatch claim.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -174,7 +189,7 @@ roles follow only after those slices and their shipping integration gates.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | **Today:** on macOS compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Windows/Linux retain the older CLI-owned hello slice until KEL-96/T4. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
+| `keld dev` | **Today:** on macOS and Windows compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux retains the older CLI-owned hello slice until its KEL-96/T4 row. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
@@ -201,21 +216,22 @@ command". Garbage verbs are `KELD-CLI-046` (exit 2).
 **The Bun bootstrap env var is `KELD_APP_LINK`, not
 `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT`.** The separate
 `KELD_DEV_LEASE=stdin-v1` value is private CLI-to-host liveness classification:
-it is removed at guardian spawn and never reaches Bun or selects authority.
+it is removed at macOS guardian spawn or Windows primary spawn and never reaches Bun or selects authority.
 §1's contract above is the destination shape; `keld-runtime`'s pinning/download of Bun,
 the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are not
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
 `keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
 on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
-before giving up with a typed `KELD-RUNTIME-002`. On macOS shipping `keld dev`
-delegates to the staged host, which composes that supervisor through the shared
-guardian. The retained `run_dev_echo` diagnostic/test seam also spawns through
+before giving up with a typed `KELD-RUNTIME-002`. On macOS and Windows shipping
+`keld dev` delegates to the staged host. macOS composes that supervisor through
+the shared guardian; Windows consumes T8's primary supervisor directly. The
+retained `run_dev_echo` diagnostic/test seam also spawns through
 the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
 Teardown reads the supervision verdict rather than dropping it (KEL-105): if
-the app process dies without a successful recovery, the macOS no-flag host (or
-the retained legacy hello session on other platforms) exits non-zero with
+the app process dies without a successful recovery, a no-flag host (or the
+retained legacy Linux hello session) exits non-zero with
 `KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error and captured stderr,
 instead of exiting 0 with no diagnostic.
 
@@ -247,7 +263,7 @@ The fact and policy have separate owners. `keld-runtime` counts every observed
 self-termination and retains the latest all-termination record plus the latest
 crash-class diagnostic/record. The legacy window path uses strict
 `HostOwnedHelloSession::shutdown` and treats every post-ready self-termination as
-fatal. The macOS no-flag path recovers nonzero crashes below the breaker with a
+fatal. The macOS and Windows no-flag paths recover nonzero crashes below the breaker with a
 fresh generation while keeping status zero, admission failure and a tripped
 breaker terminal. The windowless echo path has completed its observable work after its reply is
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
@@ -271,10 +287,10 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-Two limits remain. The legacy Windows/Linux CLI-owned window path does not close
-its window until the developer does; only then does its exit code appear. macOS
-recovery does not prove the Windows/Linux T4 transport, window, restart or
-cleanup rows.
+Two limits remain. Linux still uses the legacy CLI-owned window path and reports
+its exit only after the developer closes that window. The Windows no-flag slice
+does not prove abnormal host-death descendant cleanup, post-CLI-death stage
+deletion, LPAC containment or the Linux T4 rows.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /

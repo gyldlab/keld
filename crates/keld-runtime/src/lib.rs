@@ -2,8 +2,8 @@
 //!
 //! Spawns the developer's JS/TS main under the caller-provided Bun, supervises
 //! it (exponential backoff, crash-loop breaker), and hands it the kipc link at
-//! spawn. KEL-96/T3 exercises macOS native-window survival across a primary
-//! generation restart, while KEL-75/T4 still owns document-nonce plus
+//! spawn. KEL-96/T3 and T4 exercise macOS/Windows native-window survival across
+//! a primary generation restart, while KEL-75/T4 still owns document-nonce plus
 //! post-restart renderer-beacon continuity on every claimed backend. Normative
 //! spec: `docs/architecture/06-runtime-and-tooling.md` §1.
 //!
@@ -423,6 +423,13 @@ pub(crate) trait ChildPreparer: Send + 'static {
 
     /// Prepares exactly one fresh child attempt.
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError>;
+
+    /// Waits at the post-revocation boundary before a crash successor may be
+    /// provisioned. Ordinary supervisors permit restart immediately; a host
+    /// session may require an externally observable readiness decision first.
+    fn allow_restart(&mut self, _shutdown: &AtomicBool) -> Result<bool, RuntimeError> {
+        Ok(true)
+    }
 }
 
 struct NoLease;
@@ -664,6 +671,51 @@ impl Supervisor {
                     return SupervisorOutcome::Stopped;
                 }
                 Ok(_) => {}
+            }
+        }
+    }
+
+    /// Returns a terminal outcome when one is already queued, without
+    /// blocking. Intermediate lifecycle events are consumed because the
+    /// durable crash ledger and current-pid snapshots retain their facts.
+    #[must_use]
+    pub fn try_wait_for_outcome(&self) -> Option<SupervisorOutcome> {
+        loop {
+            match self.events_rx.try_recv() {
+                Ok(SupervisorEvent::CrashLoopTripped) => {
+                    let error = lock_or_recover(&self.crash_loop_error).clone().unwrap_or(
+                        RuntimeError::CrashLoop {
+                            crashes: 0,
+                            window_secs: 0,
+                            last_exit_code: None,
+                            stderr_tail: String::new(),
+                        },
+                    );
+                    return Some(SupervisorOutcome::CrashLoop(error));
+                }
+                Ok(SupervisorEvent::Failed { .. }) => {
+                    let error = lock_or_recover(&self.terminal_error).clone().unwrap_or(
+                        RuntimeError::Lifecycle {
+                            phase: "unknown",
+                            source: std::io::Error::other(
+                                "prepared child failed without diagnostic",
+                            ),
+                        },
+                    );
+                    return Some(SupervisorOutcome::Failed(error));
+                }
+                Ok(SupervisorEvent::Stopped) => return Some(SupervisorOutcome::Stopped),
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if let Some(error) = lock_or_recover(&self.crash_loop_error).clone() {
+                        return Some(SupervisorOutcome::CrashLoop(error));
+                    }
+                    if let Some(error) = lock_or_recover(&self.terminal_error).clone() {
+                        return Some(SupervisorOutcome::Failed(error));
+                    }
+                    return Some(SupervisorOutcome::Stopped);
+                }
             }
         }
     }
@@ -937,6 +989,21 @@ fn supervise<P>(
         if wait_backoff_or_shutdown(backoff_delay(crash_count), shutdown) {
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
+        }
+
+        match preparer.allow_restart(shutdown) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = events_tx.send(SupervisorEvent::Stopped);
+                return;
+            }
+            Err(error) => {
+                *lock_or_recover(terminal_error) = Some(error);
+                let _ = events_tx.send(SupervisorEvent::Failed {
+                    attempt: attempt.saturating_add(1),
+                });
+                return;
+            }
         }
 
         attempt += 1;

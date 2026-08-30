@@ -1,21 +1,33 @@
-//! Non-release owner-private boot stage compiler (KEL-96/T1a).
+//! Non-release owner-private boot stage compiler (KEL-96/T1a/T4).
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::fs::{self, File, OpenOptions};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::io::{self, Read, Seek, SeekFrom, Write};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use sha2::{Digest, Sha256};
+#[cfg(windows)]
+use windows_permissions::constants::{
+    AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
+};
+#[cfg(windows)]
+use windows_permissions::utilities::current_process_sid;
+#[cfg(windows)]
+use windows_permissions::wrappers::{
+    ConvertSidToStringSid, GetNamedSecurityInfo, SetNamedSecurityInfo,
+};
+#[cfg(windows)]
+use windows_permissions::{LocalBox, SecurityDescriptor};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const PERMISSIONS_BYTES: &[u8] = b"{}\n";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// One completed owner-private non-release app stage.
@@ -68,13 +80,13 @@ impl std::fmt::Display for BootCompileError {
 
 impl std::error::Error for BootCompileError {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 struct StageGuard {
     root: PathBuf,
     keep: bool,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if !self.keep {
@@ -83,7 +95,7 @@ impl Drop for StageGuard {
     }
 }
 
-/// Compiles one fresh, non-release owner-private macOS boot stage.
+/// Compiles one fresh, non-release owner-private platform boot stage.
 ///
 /// This is a tooling surface: it creates the bytes consumed by the exact
 /// `keld_core::app_session` host API, but cannot select boot input inside the
@@ -97,7 +109,7 @@ pub fn stage_dev_boot(
     project_root: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (project_root, developer_host);
         Err(BootCompileError::new(
@@ -105,18 +117,19 @@ pub fn stage_dev_boot(
             "the first boot compiler slice is macOS-only; complete KEL-96/T4 for this platform",
         ))
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        stage_dev_boot_macos(project_root, developer_host)
+        stage_dev_boot_platform(project_root, developer_host)
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[allow(clippy::too_many_lines)] // one atomic staging transaction keeps cleanup and integrity checks contiguous
-fn stage_dev_boot_macos(
+fn stage_dev_boot_platform(
     project_root: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     let project_root = project_root
@@ -143,10 +156,17 @@ fn stage_dev_boot_macos(
     let host_source_metadata = host_source
         .metadata()
         .map_err(|source| BootCompileError::new("developer host", source.to_string()))?;
-    if !host_source_metadata.is_file() || host_source_metadata.permissions().mode() & 0o100 == 0 {
+    if !host_source_metadata.is_file() {
         return Err(BootCompileError::new(
             "developer host",
-            "source must be a regular owner-executable file",
+            "source must be a regular file",
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    if host_source_metadata.permissions().mode() & 0o100 == 0 {
+        return Err(BootCompileError::new(
+            "developer host",
+            "source must be owner-executable",
         ));
     }
 
@@ -159,7 +179,10 @@ fn stage_dev_boot_macos(
         keep: false,
     };
 
+    #[cfg(target_os = "macos")]
     let staged_host = root.join("keld-host");
+    #[cfg(windows)]
+    let staged_host = root.join("keld-host.exe");
     let source_digest = copy_host(&mut host_source, &staged_host)?;
     let staged_digest = digest_file(&staged_host, "staged host")?;
     if source_digest != staged_digest {
@@ -168,8 +191,10 @@ fn stage_dev_boot_macos(
             "staged host digest differs from the already-open source bytes",
         ));
     }
+    #[cfg(target_os = "macos")]
     let staged_metadata = fs::metadata(&staged_host)
         .map_err(|source| BootCompileError::new("staged host", source.to_string()))?;
+    #[cfg(target_os = "macos")]
     if (host_source_metadata.dev(), host_source_metadata.ino())
         == (staged_metadata.dev(), staged_metadata.ino())
     {
@@ -178,9 +203,13 @@ fn stage_dev_boot_macos(
             "staged host reuses the source inode",
         ));
     }
-    let read_execute_mode = (host_source_metadata.permissions().mode() & 0o555) | 0o100;
-    fs::set_permissions(&staged_host, fs::Permissions::from_mode(read_execute_mode))
-        .map_err(|source| BootCompileError::new("staged host permissions", source.to_string()))?;
+    #[cfg(target_os = "macos")]
+    {
+        let read_execute_mode = (host_source_metadata.permissions().mode() & 0o555) | 0o100;
+        fs::set_permissions(&staged_host, fs::Permissions::from_mode(read_execute_mode)).map_err(
+            |source| BootCompileError::new("staged host permissions", source.to_string()),
+        )?;
+    }
 
     stage_project_file(&root, &entry, &entry_source, "entry")?;
     stage_project_file(&root, &renderer, &renderer_source, "renderer")?;
@@ -209,17 +238,22 @@ fn stage_dev_boot_macos(
         "boot descriptor",
     )?;
 
-    let mode = fs::metadata(&root)
-        .map_err(|source| BootCompileError::new("stage mode", source.to_string()))?
-        .permissions()
-        .mode()
-        & 0o7777;
-    if mode != 0o700 {
-        return Err(BootCompileError::new(
-            "stage mode",
-            format!("expected 0o700, found 0o{mode:o}"),
-        ));
+    #[cfg(target_os = "macos")]
+    {
+        let mode = fs::metadata(&root)
+            .map_err(|source| BootCompileError::new("stage mode", source.to_string()))?
+            .permissions()
+            .mode()
+            & 0o7777;
+        if mode != 0o700 {
+            return Err(BootCompileError::new(
+                "stage mode",
+                format!("expected 0o700, found 0o{mode:o}"),
+            ));
+        }
     }
+    #[cfg(windows)]
+    verify_windows_stage_acl(&root)?;
     guard.keep = true;
     Ok(DevBootStage {
         root,
@@ -227,8 +261,9 @@ fn stage_dev_boot_macos(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::DirBuilderExt;
 
     for _ in 0..8 {
@@ -241,8 +276,19 @@ fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
             name.push(char::from(LOWER_HEX[usize::from(byte & 0x0f)]));
         }
         let root = dev_root.join(name);
-        match fs::DirBuilder::new().mode(0o700).create(&root) {
-            Ok(()) => return Ok(root),
+        #[cfg(target_os = "macos")]
+        let created = fs::DirBuilder::new().mode(0o700).create(&root);
+        #[cfg(windows)]
+        let created = fs::create_dir(&root);
+        match created {
+            Ok(()) => {
+                #[cfg(windows)]
+                if let Err(error) = protect_windows_stage_root(&root) {
+                    let _ = fs::remove_dir(&root);
+                    return Err(error);
+                }
+                return Ok(root);
+            }
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
             Err(source) => {
                 return Err(BootCompileError::new(
@@ -258,7 +304,7 @@ fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn validate_relative(kind: &'static str, value: &str) -> Result<(), BootCompileError> {
     if value.is_empty()
         || value.contains('\\')
@@ -278,7 +324,7 @@ fn validate_relative(kind: &'static str, value: &str) -> Result<(), BootCompileE
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn contained_source(
     project_root: &Path,
     relative: &str,
@@ -302,17 +348,19 @@ fn contained_source(
     Ok(path)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn copy_host(source: &mut File, destination: &Path) -> Result<[u8; 32], BootCompileError> {
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::OpenOptionsExt;
 
     source
         .seek(SeekFrom::Start(0))
         .map_err(|error| BootCompileError::new("developer host", error.to_string()))?;
-    let mut destination = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(target_os = "macos")]
+    options.mode(0o700);
+    let mut destination = options
         .open(destination)
         .map_err(|error| BootCompileError::new("staged host", error.to_string()))?;
     let mut hasher = Sha256::new();
@@ -335,7 +383,7 @@ fn copy_host(source: &mut File, destination: &Path) -> Result<[u8; 32], BootComp
     Ok(hasher.finalize().into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn digest_file(path: &Path, kind: &'static str) -> Result<[u8; 32], BootCompileError> {
     let mut file =
         File::open(path).map_err(|error| BootCompileError::new(kind, error.to_string()))?;
@@ -353,7 +401,7 @@ fn digest_file(path: &Path, kind: &'static str) -> Result<[u8; 32], BootCompileE
     Ok(hasher.finalize().into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn stage_project_file(
     root: &Path,
     relative: &str,
@@ -369,25 +417,122 @@ fn stage_project_file(
     write_new_file(&destination, &bytes, 0o400, kind)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn write_new_file(
     path: &Path,
     bytes: &[u8],
     mode: u32,
     kind: &'static str,
 ) -> Result<(), BootCompileError> {
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::OpenOptionsExt;
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(target_os = "macos")]
+    options.mode(mode);
+    #[cfg(windows)]
+    let _ = mode;
+    let mut file = options
         .open(path)
         .map_err(|error| BootCompileError::new(kind, error.to_string()))?;
     file.write_all(bytes)
         .map_err(|error| BootCompileError::new(kind, error.to_string()))?;
     file.sync_all()
         .map_err(|error| BootCompileError::new(kind, error.to_string()))
+}
+
+#[cfg(windows)]
+fn protect_windows_stage_root(path: &Path) -> Result<(), BootCompileError> {
+    let current = current_process_sid()
+        .map_err(|source| BootCompileError::new("stage DACL TokenUser", source.to_string()))?;
+    let sid = ConvertSidToStringSid(&current)
+        .map_err(|source| BootCompileError::new("stage DACL TokenUser", source.to_string()))?;
+    let descriptor: LocalBox<SecurityDescriptor> = format!(
+        "O:{}D:P(A;OICI;FA;;;{})",
+        sid.to_string_lossy(),
+        sid.to_string_lossy()
+    )
+    .parse()
+    .map_err(|source: io::Error| {
+        BootCompileError::new("stage DACL construction", source.to_string())
+    })?;
+    let dacl = descriptor.dacl().ok_or_else(|| {
+        BootCompileError::new("stage DACL construction", "descriptor contains no DACL")
+    })?;
+    SetNamedSecurityInfo(
+        path.as_os_str(),
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner | SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+        Some(&current),
+        None,
+        Some(dacl),
+        None,
+    )
+    .map_err(|source| BootCompileError::new("stage DACL application", source.to_string()))?;
+    verify_windows_stage_acl_for(path, &current)
+}
+
+#[cfg(windows)]
+fn verify_windows_stage_acl(path: &Path) -> Result<(), BootCompileError> {
+    let current = current_process_sid()
+        .map_err(|source| BootCompileError::new("stage DACL TokenUser", source.to_string()))?;
+    verify_windows_stage_acl_for(path, &current)
+}
+
+#[cfg(windows)]
+fn verify_windows_stage_acl_for(
+    path: &Path,
+    current: &windows_permissions::Sid,
+) -> Result<(), BootCompileError> {
+    let descriptor = GetNamedSecurityInfo(
+        path.as_os_str(),
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner | SecurityInformation::Dacl,
+    )
+    .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))?;
+    if descriptor.owner() != Some(current) {
+        return Err(BootCompileError::new(
+            "stage DACL readback",
+            "owner does not equal the current process TokenUser SID",
+        ));
+    }
+    let sddl = descriptor
+        .as_sddl()
+        .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))?;
+    if !sddl.to_string_lossy().contains("D:P") {
+        return Err(BootCompileError::new(
+            "stage DACL readback",
+            "DACL inheritance is not protected",
+        ));
+    }
+    let dacl = descriptor.dacl().ok_or_else(|| {
+        BootCompileError::new(
+            "stage DACL readback",
+            "security descriptor contains no DACL",
+        )
+    })?;
+    if dacl.len() != 1 {
+        return Err(BootCompileError::new(
+            "stage DACL readback",
+            format!("expected one access rule, found {}", dacl.len()),
+        ));
+    }
+    let ace = dacl.get_ace(0).ok_or_else(|| {
+        BootCompileError::new("stage DACL readback", "the one access rule is unreadable")
+    })?;
+    let required_flags = AceFlags::ContainerInherit | AceFlags::ObjectInherit;
+    if ace.ace_type() != AceType::ACCESS_ALLOWED_ACE_TYPE
+        || ace.mask() != AccessRights::FileAllAccess
+        || ace.sid() != Some(current)
+        || ace.flags() != required_flags
+    {
+        return Err(BootCompileError::new(
+            "stage DACL readback",
+            "expected one non-inherited current-user full-control rule for files and directories",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(all(test, target_os = "macos"))]

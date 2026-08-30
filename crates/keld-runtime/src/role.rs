@@ -7,8 +7,8 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -26,6 +26,59 @@ use crate::{
 
 pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const FRESH_BOOTSTRAP_ATTEMPTS: usize = 8;
+const RECOVERY_PENDING: u8 = 0;
+const RECOVERY_ARMED: u8 = 1;
+const RECOVERY_DENIED: u8 = 2;
+const RECOVERY_POLL: Duration = Duration::from_millis(10);
+
+/// Host decision that gates crash recovery until initial application readiness.
+///
+/// The generic supervisor remains the sole restart owner. This handle only
+/// releases or rejects its existing post-revocation/pre-provision boundary.
+#[derive(Debug)]
+pub struct RoleRecoveryGate {
+    decision: Arc<AtomicU8>,
+}
+
+impl RoleRecoveryGate {
+    /// Allows the supervisor to provision crash successors for this session.
+    ///
+    /// Returns `true` when recovery is armed after this call.
+    #[must_use]
+    pub fn arm(&self) -> bool {
+        self.decision
+            .compare_exchange(
+                RECOVERY_PENDING,
+                RECOVERY_ARMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            || self.decision.load(Ordering::Acquire) == RECOVERY_ARMED
+    }
+
+    /// Rejects successor provisioning before initial readiness.
+    ///
+    /// Returns `true` when recovery is denied after this call.
+    #[must_use]
+    pub fn deny(&self) -> bool {
+        self.decision
+            .compare_exchange(
+                RECOVERY_PENDING,
+                RECOVERY_DENIED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            || self.decision.load(Ordering::Acquire) == RECOVERY_DENIED
+    }
+}
+
+impl Drop for RoleRecoveryGate {
+    fn drop(&mut self) {
+        let _ = self.deny();
+    }
+}
 
 struct BootstrapCandidate<T> {
     resource: T,
@@ -267,6 +320,7 @@ pub struct RoleConfig {
     owner: RoleOwner,
     program: OsString,
     args: Vec<OsString>,
+    env_remove: Vec<OsString>,
     current_dir: Option<PathBuf>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
@@ -304,6 +358,7 @@ impl RoleConfig {
             owner,
             program: program.into(),
             args: Vec::new(),
+            env_remove: Vec::new(),
             current_dir: None,
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
@@ -334,6 +389,13 @@ impl RoleConfig {
         S: Into<OsString>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Removes one inherited environment key from every child generation.
+    #[must_use]
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.env_remove.push(key.into());
         self
     }
 
@@ -382,7 +444,7 @@ impl RoleSupervisor {
     /// Returns [`RuntimeError`] if the initial generation cannot be
     /// provisioned or the first child cannot be spawned.
     pub fn start(config: RoleConfig) -> Result<Self, RuntimeError> {
-        Self::start_inner(config, None, None)
+        Self::start_inner(config, None, None, None)
     }
 
     /// Starts the role and exposes each authenticated generation to its host
@@ -399,13 +461,39 @@ impl RoleSupervisor {
     /// provisioned or the first child cannot be spawned.
     pub fn start_with_bound_generations(config: RoleConfig) -> Result<Self, RuntimeError> {
         let (bound_tx, bound_rx) = mpsc::channel();
-        Self::start_inner(config, Some(bound_tx), Some(bound_rx))
+        Self::start_inner(config, Some(bound_tx), Some(bound_rx), None)
+    }
+
+    /// Starts the role with authenticated-generation handoff and a one-time
+    /// host readiness decision before the first crash successor is prepared.
+    ///
+    /// The returned gate defaults to deny when dropped. Call
+    /// [`RoleRecoveryGate::arm`] only after the host has made initial readiness
+    /// externally observable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError`] if the initial generation cannot be
+    /// provisioned or the first child cannot be spawned.
+    pub fn start_with_bound_generations_gated(
+        config: RoleConfig,
+    ) -> Result<(Self, RoleRecoveryGate), RuntimeError> {
+        let (bound_tx, bound_rx) = mpsc::channel();
+        let decision = Arc::new(AtomicU8::new(RECOVERY_PENDING));
+        let supervisor = Self::start_inner(
+            config,
+            Some(bound_tx),
+            Some(bound_rx),
+            Some(Arc::clone(&decision)),
+        )?;
+        Ok((supervisor, RoleRecoveryGate { decision }))
     }
 
     fn start_inner(
         config: RoleConfig,
         bound_tx: Option<Sender<BoundRoleGeneration>>,
         bound_rx: Option<Receiver<BoundRoleGeneration>>,
+        recovery_decision: Option<Arc<AtomicU8>>,
     ) -> Result<Self, RuntimeError> {
         let (events_tx, events_rx) = mpsc::channel();
         let policy = config.restart_policy;
@@ -421,6 +509,7 @@ impl RoleSupervisor {
         let preparer = RolePreparer {
             config,
             generation_owner,
+            recovery_decision,
         };
         let supervisor = Supervisor::start_prepared(policy, preparer)?;
         Ok(Self {
@@ -472,6 +561,12 @@ impl RoleSupervisor {
         self.supervisor.wait_for_outcome()
     }
 
+    /// Returns the terminal supervisor outcome when it is already available.
+    #[must_use]
+    pub fn try_wait_for_outcome(&self) -> Option<SupervisorOutcome> {
+        self.supervisor.try_wait_for_outcome()
+    }
+
     /// Snapshot of captured child stdout/stderr.
     #[must_use]
     pub fn output(&self) -> CapturedOutput {
@@ -482,6 +577,7 @@ impl RoleSupervisor {
 struct RolePreparer {
     config: RoleConfig,
     generation_owner: RoleGenerationOwner,
+    recovery_decision: Option<Arc<AtomicU8>>,
 }
 
 impl ChildPreparer for RolePreparer {
@@ -494,11 +590,39 @@ impl ChildPreparer for RolePreparer {
         if let Some(current_dir) = &self.config.current_dir {
             command.current_dir(current_dir);
         }
-        command.env("KELD_APP_LINK", &provisioned.app_link);
+        for key in &self.config.env_remove {
+            command.env_remove(key);
+        }
+        command
+            .env("KELD_APP_LINK", &provisioned.app_link)
+            .stdin(Stdio::null());
         Ok(PreparedChild {
             command,
             lease: provisioned.lease,
         })
+    }
+
+    fn allow_restart(&mut self, shutdown: &AtomicBool) -> Result<bool, RuntimeError> {
+        let Some(decision) = &self.recovery_decision else {
+            return Ok(true);
+        };
+        loop {
+            match decision.load(Ordering::Acquire) {
+                RECOVERY_ARMED => return Ok(true),
+                RECOVERY_DENIED => return Ok(false),
+                RECOVERY_PENDING if shutdown.load(Ordering::Acquire) => return Ok(false),
+                RECOVERY_PENDING => thread::park_timeout(RECOVERY_POLL),
+                _ => {
+                    return Err(RuntimeError::Lifecycle {
+                        phase: "primary recovery decision",
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid recovery decision",
+                        ),
+                    });
+                }
+            }
+        }
     }
 }
 

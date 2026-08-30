@@ -585,7 +585,7 @@ command
 | Variable | Value | Consumed by |
 |---|---|---|
 | `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (both minted by `keld_ipc::BootstrapListener`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
-| `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS host only. It validates a read-only pipe, marks the reader non-inheritable, removes the variable at guardian spawn, ignores bytes, and treats EOF as CLI loss. Bun receives neither the value nor an end of the pipe. |
+| `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS and Windows hosts. macOS validates a read-only pipe and marks it non-inheritable before guardian spawn. Windows gives Bun null stdin and removes the variable at primary spawn. Both ignore bytes and treat EOF as CLI loss; raw Windows inherited-handle census remains an open T4 evidence row. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
 Bun child could shell out to `keld ipc-client` — it was removed in KEL-30 once `main.ts` started

@@ -1,6 +1,6 @@
 [package]
 name = "keld-core"
-description = "Keld host runtime: hello/lifecycle plus verified macOS no-flag boot, app session, and CLI-lease teardown"
+description = "Keld host runtime: hello/lifecycle plus verified macOS/Windows no-flag boot, app session, and CLI-lease teardown"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,10 @@ serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-permissions = { workspace = true }
+winapi = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

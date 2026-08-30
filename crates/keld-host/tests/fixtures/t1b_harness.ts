@@ -42,28 +42,29 @@ function deliverCommand(line: string): void {
   }
 }
 
-const control = await Bun.connect({
-  unix: KEL96_CONTROL,
-  socket: {
-    binaryType: "uint8array",
-    data(_socket: unknown, data: Uint8Array) {
-      controlBuffer += controlDecoder.decode(data, { stream: true });
-      for (;;) {
-        const newline = controlBuffer.indexOf("\n");
-        if (newline < 0) break;
-        const line = controlBuffer.slice(0, newline);
-        controlBuffer = controlBuffer.slice(newline + 1);
-        deliverCommand(line);
-      }
-    },
-    drain() {
-      controlDrain.fire();
-    },
-    error(_socket: unknown, error: Error) {
-      throw error;
-    },
+const controlSocket = {
+  binaryType: "uint8array" as const,
+  data(_socket: unknown, data: Uint8Array) {
+    controlBuffer += controlDecoder.decode(data, { stream: true });
+    for (;;) {
+      const newline = controlBuffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = controlBuffer.slice(0, newline);
+      controlBuffer = controlBuffer.slice(newline + 1);
+      deliverCommand(line);
+    }
   },
-});
+  drain() {
+    controlDrain.fire();
+  },
+  error(_socket: unknown, error: Error) {
+    throw error;
+  },
+};
+const control =
+  process.platform === "win32"
+    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(KEL96_CONTROL), socket: controlSocket })
+    : await Bun.connect({ unix: KEL96_CONTROL, socket: controlSocket });
 
 let controlWriteChain: Promise<void> = Promise.resolve();
 
@@ -97,33 +98,34 @@ let resolveCloseNotified: (() => void) | undefined;
 const closeNotified = new Promise<void>((resolve) => {
   resolveCloseNotified = resolve;
 });
-const appSocket = await Bun.connect({
-  unix: endpoint,
-  socket: {
-    binaryType: "uint8array",
-    data(_socket: unknown, data: Uint8Array) {
-      reader.push(data);
-    },
-    drain() {
-      appDrain.fire();
-    },
-    error(_socket: unknown, error: Error) {
-      reader.fail(error);
-    },
-    close() {
-      linkClosed = true;
-      reader.fail(new Error("KEL96 app link closed by host"));
-      const notify = async (): Promise<void> => {
-        if (orderlyQuit) await quitReplySent;
-        await sendControl("LINK_EOF");
-        if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
-      };
-      void notify()
-        .catch(() => undefined)
-        .finally(() => resolveCloseNotified?.());
-    },
+const appSocketHandlers = {
+  binaryType: "uint8array" as const,
+  data(_socket: unknown, data: Uint8Array) {
+    reader.push(data);
   },
-});
+  drain() {
+    appDrain.fire();
+  },
+  error(_socket: unknown, error: Error) {
+    reader.fail(error);
+  },
+  close() {
+    linkClosed = true;
+    reader.fail(new Error("KEL96 app link closed by host"));
+    const notify = async (): Promise<void> => {
+      if (orderlyQuit) await quitReplySent;
+      await sendControl("LINK_EOF");
+      if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
+    };
+    void notify()
+      .catch(() => undefined)
+      .finally(() => resolveCloseNotified?.());
+  },
+};
+const appSocket =
+  process.platform === "win32"
+    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(endpoint), socket: appSocketHandlers })
+    : await Bun.connect({ unix: endpoint, socket: appSocketHandlers });
 const writes = new WriteQueue(appSocket, appDrain);
 await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
 const helloReply = await withIoDeadline(reader.readFrame());
@@ -136,13 +138,19 @@ for (let index = 0; index < token.length; index += 1) {
   }
 }
 await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
-// Real-macOS acceptance pins the system tool instead of trusting a caller-controlled PATH.
-const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {
-  stdin: "ignore",
-  stdout: "ignore",
-  stderr: "ignore",
-});
-await sendControl(`DESCENDANT ${descendant.pid}`);
+if (process.platform === "win32") {
+  // Windows descendant cleanup is a KEL-78/T3 Job Object acceptance row.
+  // T4's uncontained loopback slice must not manufacture that evidence.
+  await sendControl("DESCENDANT 0");
+} else {
+  // Real-macOS acceptance pins the system tool instead of trusting a caller-controlled PATH.
+  const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  await sendControl(`DESCENDANT ${descendant.pid}`);
+}
 
 type PendingReply = {
   resolve: (payload: Uint8Array) => void;

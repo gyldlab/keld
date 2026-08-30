@@ -250,16 +250,16 @@ Five things to notice, because they are each a deliberate decision rather than a
 
 ### 4b. What actually happens today when you run `keld dev`
 
-On macOS, read `crates/keld-cli/src/dev.rs` together with
-`crates/keld-core/src/app_session.rs`. Windows/Linux still use the older
-CLI-owned hello path until KEL-96/T4.
+On macOS and Windows, read `crates/keld-cli/src/dev.rs` together with
+`crates/keld-core/src/app_session.rs`. Linux still uses the older CLI-owned
+hello path until its KEL-96/T4 row.
 
 ```mermaid
 sequenceDiagram
-    accTitle: Current macOS keld dev delegated host flow
+    accTitle: Current macOS and Windows keld dev delegated host flow
     accDescr {
-      The live macOS CLI compiles an owner-private stage and launches a no-flag host.
-      The host owns the authenticated app link, guardian-supervised Bun child and native
+      The live macOS and Windows CLI compiles an owner-private stage and launches a no-flag host.
+      The host owns the authenticated app link, platform-supervised Bun child and native
       window. CLI lease loss and lifecycle Quit converge on the host's ordered teardown.
     }
     autonumber
@@ -346,7 +346,7 @@ flowchart TD
     cli --> runtime
     cli --> pack["TARGET keld-pack"]
     cli --> update["TARGET keld-update"]
-    host["CURRENT PARTIAL keld-host · hello + macOS no-flag app owner"] --> core
+    host["CURRENT PARTIAL keld-host · hello + macOS/Windows no-flag app owner"] --> core
     host --> runtime
     compat["CURRENT keld-compat · lifecycle slice"] --> core
     core["CURRENT keld-core · host boot/session owner"] --> ipc["CURRENT keld-ipc"]
@@ -421,14 +421,14 @@ but written down next to the code with the reason and the milestone that closes 
 
 | Crate | Lines | Status | Role | Spec | What's actually in it |
 |---|---|---|---|---|---|
-| `keld-core` | ~3,700 | Partial | Host boot/session ordering, lifecycle and dispatch; TARGET complete window registry | [`01`](../architecture/01-overview.md) | `app_session` owns strict macOS no-flag boot, the single echo/lifecycle router, guardian coordination and ordered cleanup; hello/diagnostic sessions remain. `keld-wv::wkwebview` owns the concrete current AppKit event loop and handles |
+| `keld-core` | ~3,700 | Partial | Host boot/session ordering, lifecycle and dispatch; TARGET complete window registry | [`01`](../architecture/01-overview.md) | `app_session` owns strict macOS/Windows no-flag boot, the single echo/lifecycle router, platform supervision and ordered cleanup; hello/diagnostic sessions remain. `keld-wv` owns the concrete AppKit/WebView2 event loops and handles |
 | `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. Proven wiring, no real capability uses it yet (host `fs.read`/`fs.write` is KEL-71). `$VARS`/symlink resolution is not in this slice. |
 | `keld-native` | ~345 | Partial | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules. `fs` is live (KEL-71): `fs_read`/`fs_write` (capability ids `fs.read`/`fs.write`), a real `serve_fs_session` kipc channel, every call routed through `keld_ipc::guard_dispatch::dispatch_privileged` before touching disk. The other 14 modules are still names only |
-| `keld-runtime` | ~7,300 | Partial | Bun supervisor, Unix role-generation library, and macOS host-death guardian | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor` owns spawn/capture/restart ledger; the macOS guardian composes it for KEL-96 no-flag Bun group ownership and host-death cleanup. Unix `RoleRegistry`/virtual ports remain library/test surfaces; Bun discovery/pinning, `--inspect`, watch restart and shipping named roles are not built |
+| `keld-runtime` | ~7,300 | Partial | Bun supervisor, platform primary generations, Unix role registry, and macOS host-death guardian | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor` owns spawn/capture/restart ledger; macOS composes it through the guardian and Windows through the T8 primary owner plus KEL-96 recovery gate. Unix `RoleRegistry`/virtual ports remain library/test surfaces; Bun discovery/pinning, `--inspect`, watch restart and shipping named roles are not built |
 | `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
 | `keld-pack` | 25 | Skeleton | Packaging, signing, cross-compilation | [`06` §3](../architecture/06-runtime-and-tooling.md) | A `Format` enum (`App`, `Dmg`, `Nsis`, `Msi`, `Deb`, `Rpm`, `AppImage`) |
 | `keld-compat` | 18 | Skeleton | Host-side Electron emulation (what JS can't fake) | [`04` §3](../architecture/04-electron-compat.md) | A `Tier` enum (`One`/`Two`/`Three`) |
-| `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` keeps `--hello` diagnostic-only; on macOS, no arguments consume the strict owner-private KEL-96 boot stage and own the native window, authenticated primary session, supervised Bun lifetime, and ordered Quit cleanup. Windows/Linux no-flag remain fail-closed pending T4 |
+| `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` keeps `--hello` diagnostic-only; on macOS and Windows, no arguments consume the strict owner-private KEL-96 boot stage and own the native window, authenticated primary session, supervised Bun lifetime, and ordered Quit cleanup. Linux no-flag remains fail-closed pending T4 |
 | `keld-cli` | — | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`. Absent: `build`, `migrate`, `gen`, `ext`, and `--json` on every verb |
 
 Each skeleton crate's `lib.rs` opens with a module doc naming its spec section. Those docs are
@@ -450,9 +450,9 @@ From [`01` §4](../architecture/01-overview.md). Four kinds of execution context
 
 | Context | Rule | Today |
 |---|---|---|
-| **Host main thread** | Is the platform UI thread (AppKit and GTK require it; Win32 tolerates it). *All* webview and window mutations happen here, delivered via a lock-free MPSC command queue into the event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add` | The macOS no-flag path has a private `mpsc` + `EventLoopProxy` wake for Quit/Fatal; the complete cross-platform command queue and window registry remain target work. Partial |
-| **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | The macOS app session has one reader and one mutex-serialized writer; diagnostics retain the blocking echo-session thread. The complete readiness-driven pool/channel router is absent. Partial |
-| **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | On macOS the staged host's guardian composes `keld_runtime::Supervisor`; T2 makes an unrequested post-Ready exit fatal, while same-window fresh-link recovery remains T3. Windows/Linux retain the CLI-owned `HostOwnedHelloSession` + Supervisor path, whose restarted child cannot recover the one-use app link. Partial |
+| **Host main thread** | Is the platform UI thread (AppKit and GTK require it; Win32 tolerates it). *All* webview and window mutations happen here, delivered via a lock-free MPSC command queue into the event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add` | The macOS and Windows no-flag paths have a private `mpsc` + tao `EventLoopProxy` wake for Quit/Fatal; the complete multi-window registry remains target work. Partial |
+| **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | The macOS/Windows app session has one reader and one mutex-serialized writer per current generation; diagnostics retain the blocking echo-session thread. The complete pool/channel router is absent. Partial |
+| **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | On macOS the staged guardian composes `Supervisor`; on Windows the host consumes T8's primary supervisor. Both preserve one native window across fresh authenticated generations. Linux retains the CLI-owned one-use hello path. Partial |
 | **Webview content processes** | Whatever the engine does — WKWebView WebContent, WebView2 helpers, WebKitGTK web process, CEF subprocesses. "We never fight the engine's model" | Inherited from WKWebView via wry on macOS. Live by delegation |
 
 The UI-thread rule is the one that will bite you first. `keld-wv`'s crate `AGENTS.md` states it
