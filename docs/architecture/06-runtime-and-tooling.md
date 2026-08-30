@@ -234,10 +234,11 @@ the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
 Teardown reads the supervision verdict rather than dropping it (KEL-105): if
-the app process dies without a successful recovery, a no-flag host (or the
-retained legacy Linux hello session) exits non-zero with
-`KELD-CORE-033` wrapping the owning `KELD-RUNTIME-*` error and captured stderr,
-instead of exiting 0 with no diagnostic.
+the app process dies without a successful recovery, the no-flag host emits
+`KELD-CORE-033` with the owning `KELD-RUNTIME-*` error and captured stderr, then
+exits non-zero. Delegated `keld dev` forwards that stderr and returns its own
+`KELD-CLI-048` host-exit wrapper instead of exiting 0 with no diagnostic. The
+retained `run_dev_echo` diagnostic reports its direct session error.
 
 The breaker alone cannot carry that verdict, which is why the supervisor also
 publishes `CrashLedger`. Its original KEL-105 fields retain the crash-class count,

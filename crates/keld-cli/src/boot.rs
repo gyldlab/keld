@@ -11,13 +11,9 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", windows))]
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
-use windows_permissions::constants::{
-    AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
-};
-#[cfg(windows)]
 use windows_permissions::utilities::current_process_sid;
 #[cfg(windows)]
-use windows_permissions::wrappers::{ConvertSidToStringSid, GetNamedSecurityInfo};
+use windows_permissions::wrappers::ConvertSidToStringSid;
 #[cfg(windows)]
 use windows_permissions::{LocalBox, SecurityDescriptor};
 #[cfg(windows)]
@@ -521,7 +517,7 @@ fn create_windows_stage_root(path: &Path) -> io::Result<()> {
     if unsafe { CreateDirectoryW(path_wide.as_ptr(), &raw const attributes) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    if let Err(error) = verify_windows_stage_acl_for(path, &current) {
+    if let Err(error) = keld_core::app_session::validate_windows_dev_stage_acl(path) {
         let _ = fs::remove_dir(path);
         return Err(io::Error::other(error));
     }
@@ -530,64 +526,8 @@ fn create_windows_stage_root(path: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn verify_windows_stage_acl(path: &Path) -> Result<(), BootCompileError> {
-    let current = current_process_sid()
-        .map_err(|source| BootCompileError::new("stage DACL TokenUser", source.to_string()))?;
-    verify_windows_stage_acl_for(path, &current)
-}
-
-#[cfg(windows)]
-fn verify_windows_stage_acl_for(
-    path: &Path,
-    current: &windows_permissions::Sid,
-) -> Result<(), BootCompileError> {
-    let descriptor = GetNamedSecurityInfo(
-        path.as_os_str(),
-        SeObjectType::SE_FILE_OBJECT,
-        SecurityInformation::Owner | SecurityInformation::Dacl,
-    )
-    .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))?;
-    if descriptor.owner() != Some(current) {
-        return Err(BootCompileError::new(
-            "stage DACL readback",
-            "owner does not equal the current process TokenUser SID",
-        ));
-    }
-    let sddl = descriptor
-        .as_sddl()
-        .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))?;
-    if !sddl.to_string_lossy().contains("D:P") {
-        return Err(BootCompileError::new(
-            "stage DACL readback",
-            "DACL inheritance is not protected",
-        ));
-    }
-    let dacl = descriptor.dacl().ok_or_else(|| {
-        BootCompileError::new(
-            "stage DACL readback",
-            "security descriptor contains no DACL",
-        )
-    })?;
-    if dacl.len() != 1 {
-        return Err(BootCompileError::new(
-            "stage DACL readback",
-            format!("expected one access rule, found {}", dacl.len()),
-        ));
-    }
-    let ace = dacl.get_ace(0).ok_or_else(|| {
-        BootCompileError::new("stage DACL readback", "the one access rule is unreadable")
-    })?;
-    let required_flags = AceFlags::ContainerInherit | AceFlags::ObjectInherit;
-    if ace.ace_type() != AceType::ACCESS_ALLOWED_ACE_TYPE
-        || ace.mask() != AccessRights::FileAllAccess
-        || ace.sid() != Some(current)
-        || ace.flags() != required_flags
-    {
-        return Err(BootCompileError::new(
-            "stage DACL readback",
-            "expected one non-inherited current-user full-control rule for files and directories",
-        ));
-    }
-    Ok(())
+    keld_core::app_session::validate_windows_dev_stage_acl(path)
+        .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))
 }
 
 #[cfg(all(test, target_os = "macos"))]

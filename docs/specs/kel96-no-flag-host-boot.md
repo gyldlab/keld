@@ -706,7 +706,8 @@ Future implementation gates:
   remain private; later KEL-102 API evolution requires another gate. The
   artifact API gate above also applies.
   T4 additionally exposes `PrimaryRecoveryGate`, the supervisor-owned
-  link-failure restart request and platform-neutral app-window command/events;
+  link-failure restart request, platform-neutral app-window command/events, and
+  the one shared Windows dev-stage ACL validator used by producer and host;
   those exact surfaces require the same human public-API review.
 - Dependency addition: T4 adds target-only `windows-permissions` 0.2.4 plus
   direct already-locked `winapi`/`windows-sys` constants and atomic directory

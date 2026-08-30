@@ -576,7 +576,8 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             "root must be a real directory, not a file or reparse point",
         ));
     }
-    verify_windows_stage_acl(&root)?;
+    validate_windows_dev_stage_acl(&root)
+        .map_err(|source| target_error("app root DACL", source.to_string()))?;
     let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
@@ -600,51 +601,54 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     })
 }
 
+/// Validates the one canonical owner-private Windows dev-stage ACL policy.
+///
+/// The boot compiler calls this after atomic creation and the host calls it
+/// again before consuming any staged resource, so the producer and enforcer
+/// cannot drift onto different owner/ACE rules.
+///
+/// # Errors
+///
+/// Returns an I/O error when `TokenUser` or descriptor readback fails, or when
+/// the root is not protected by exactly one inheritable current-user
+/// full-control allow ACE.
 #[cfg(windows)]
-fn verify_windows_stage_acl(root: &Path) -> Result<(), HostAppError> {
-    let current = current_process_sid()
-        .map_err(|source| target_error("app root DACL TokenUser", source.to_string()))?;
+pub fn validate_windows_dev_stage_acl(root: &Path) -> io::Result<()> {
+    let current = current_process_sid().map_err(io::Error::other)?;
     let descriptor = GetNamedSecurityInfo(
         root.as_os_str(),
         SeObjectType::SE_FILE_OBJECT,
         SecurityInformation::Owner | SecurityInformation::Dacl,
     )
-    .map_err(|source| target_error("app root DACL readback", source.to_string()))?;
+    .map_err(io::Error::other)?;
     if descriptor.owner() != Some(&current) {
-        return Err(target_error(
-            "app root DACL",
+        return Err(io::Error::other(
             "owner does not equal the current process TokenUser SID",
         ));
     }
-    let sddl = descriptor
-        .as_sddl()
-        .map_err(|source| target_error("app root DACL readback", source.to_string()))?;
+    let sddl = descriptor.as_sddl().map_err(io::Error::other)?;
     if !sddl.to_string_lossy().contains("D:P") {
-        return Err(target_error(
-            "app root DACL",
-            "DACL inheritance is not protected",
-        ));
+        return Err(io::Error::other("DACL inheritance is not protected"));
     }
     let dacl = descriptor
         .dacl()
-        .ok_or_else(|| target_error("app root DACL", "security descriptor contains no DACL"))?;
+        .ok_or_else(|| io::Error::other("security descriptor contains no DACL"))?;
     if dacl.len() != 1 {
-        return Err(target_error(
-            "app root DACL",
-            format!("expected one access rule, found {}", dacl.len()),
-        ));
+        return Err(io::Error::other(format!(
+            "expected one access rule, found {}",
+            dacl.len()
+        )));
     }
     let ace = dacl
         .get_ace(0)
-        .ok_or_else(|| target_error("app root DACL", "the one access rule is unreadable"))?;
+        .ok_or_else(|| io::Error::other("the one access rule is unreadable"))?;
     let required_flags = AceFlags::ContainerInherit | AceFlags::ObjectInherit;
     if ace.ace_type() != AceType::ACCESS_ALLOWED_ACE_TYPE
         || ace.mask() != AccessRights::FileAllAccess
         || ace.sid() != Some(&current)
         || ace.flags() != required_flags
     {
-        return Err(target_error(
-            "app root DACL",
+        return Err(io::Error::other(
             "expected one non-inherited current-user full-control rule for files and directories",
         ));
     }
