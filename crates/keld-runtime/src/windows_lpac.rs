@@ -19,8 +19,9 @@ use windows_sys::Win32::Foundation::{
     WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS,
-    SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE,
+    SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
+    TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile,
@@ -163,6 +164,47 @@ impl WindowsLpacProfile {
             ));
         }
         Ok(Self { name, sid })
+    }
+
+    /// Returns the canonical package SID string for evidence identity.
+    ///
+    /// # Errors
+    ///
+    /// Fails if Windows cannot serialize the profile SID or returns malformed
+    /// non-terminated output.
+    pub fn sid_string(&self) -> Result<String, WindowsLpacError> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: `sid` is live and valid; `raw` receives one LocalAlloc string.
+        if unsafe { ConvertSidToStringSidW(self.sid, &raw mut raw) } == 0 {
+            return Err(WindowsLpacError::last_os("AppContainer SID serialization"));
+        }
+        if raw.is_null() {
+            return Err(WindowsLpacError::contract(
+                "AppContainer SID serialization",
+                "success returned a null string",
+            ));
+        }
+        let allocation = LocalAllocation(raw.cast());
+        let mut length = 0_usize;
+        while length < 256 {
+            // SAFETY: ConvertSidToStringSidW guarantees NUL-terminated output;
+            // the conservative SID-string bound prevents an unbounded scan.
+            if unsafe { *raw.add(length) } == 0 {
+                // SAFETY: `raw` is live UTF-16 storage of `length` units.
+                let units = unsafe { std::slice::from_raw_parts(raw, length) };
+                let value = String::from_utf16(units).map_err(|error| WindowsLpacError {
+                    phase: "AppContainer SID serialization",
+                    detail: error.to_string(),
+                })?;
+                drop(allocation);
+                return Ok(value);
+            }
+            length += 1;
+        }
+        Err(WindowsLpacError::contract(
+            "AppContainer SID serialization",
+            "SID string exceeded 255 UTF-16 units without a terminator",
+        ))
     }
 
     /// Adds the package SID to an existing filesystem DACL without replacing

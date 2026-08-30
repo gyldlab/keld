@@ -16,6 +16,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use keld_runtime::windows_lpac::{WindowsLpacPathAccess, WindowsLpacProfile, WindowsLpacStdio};
+use sha2::{Digest as _, Sha256};
 use tempfile::tempdir;
 use windows_sys::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle,
@@ -176,7 +177,7 @@ fn zero_capability_lpac_denies_host_authority_and_inherits_only_allowlisted_hand
             OsString::from("KELD_LPAC_CONTROLLER_PID"),
             OsString::from(std::process::id().to_string()),
         ),
-        (OsString::from("SystemRoot"), system_root),
+        (OsString::from("SystemRoot"), system_root.clone()),
         (OsString::from("TEMP"), role_dir.clone().into_os_string()),
         (OsString::from("TMP"), role_dir.clone().into_os_string()),
     ];
@@ -264,6 +265,11 @@ fn zero_capability_lpac_denies_host_authority_and_inherits_only_allowlisted_hand
         ) || observed.contains("LPAC_DESCENDANT spawn_denied=true"),
         "descendant neither inherited LPAC nor received an OS spawn deny: {observed}"
     );
+    println!(
+        "KELD_WINDOWS_T3_HOSTILE synthetic_handle_count={} fs=deny private=allow network=deny \
+         registry=deny process=deny dll=deny update_stage=deny descendant=deny-or-same-lpac",
+        census.len()
+    );
     assert!(
         !handle_inheritable(input.as_raw_handle().cast()),
         "stdin inherit flag was not restored"
@@ -272,7 +278,135 @@ fn zero_capability_lpac_denies_host_authority_and_inherits_only_allowlisted_hand
         !handle_inheritable(output.as_raw_handle().cast()),
         "log inherit flag was not restored"
     );
+    prove_bun_artifact_starts_under_lpac(
+        &profile,
+        &runtime_dir,
+        &role_dir,
+        &system_root,
+        marker.as_raw_handle().cast(),
+    );
     set_inheritable(marker.as_raw_handle().cast(), false);
+}
+
+fn prove_bun_artifact_starts_under_lpac(
+    profile: &WindowsLpacProfile,
+    runtime_dir: &Path,
+    role_dir: &Path,
+    system_root: &OsStr,
+    excluded_marker: HANDLE,
+) {
+    let bun_source = env::split_paths(&env::var_os("PATH").expect("PATH for Bun lookup"))
+        .map(|directory| directory.join("bun.exe"))
+        .find(|candidate| candidate.is_file())
+        .expect("bun.exe on PATH");
+    let revision_output = Command::new(&bun_source)
+        .arg("--revision")
+        .output()
+        .expect("read Bun revision");
+    assert!(
+        revision_output.status.success(),
+        "Bun revision query failed"
+    );
+    let revision = String::from_utf8(revision_output.stdout)
+        .expect("Bun revision is UTF-8")
+        .trim()
+        .to_owned();
+    let artifact_bytes = std::fs::read(&bun_source).expect("read Bun artifact for digest");
+    let artifact_digest = format!("{:x}", Sha256::digest(&artifact_bytes));
+    let bun = runtime_dir.join("bun.exe");
+    std::fs::copy(&bun_source, &bun).expect("copy pinned Bun artifact into reviewed runtime ACL");
+
+    let output_path = role_dir.join("bun-output.txt");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(output_path)
+        .expect("open Bun log sink");
+    let input = File::open("NUL").expect("open Bun null stdin");
+    let stdio = WindowsLpacStdio {
+        stdin: input.as_handle(),
+        stdout: output.as_handle(),
+        stderr: output.as_handle(),
+    };
+    let mut environment = vec![
+        (OsString::from("SystemRoot"), system_root.to_os_string()),
+        (OsString::from("TEMP"), role_dir.as_os_str().to_os_string()),
+        (OsString::from("TMP"), role_dir.as_os_str().to_os_string()),
+    ];
+    for key in ["LOCALAPPDATA", "USERPROFILE", "WINDIR"] {
+        if let Some(value) = env::var_os(key) {
+            environment.push((OsString::from(key), value));
+        }
+    }
+    let arguments = vec![
+        OsString::from("--eval"),
+        OsString::from("console.log(`BUN_LPAC_OK ${Bun.version}`)"),
+    ];
+    let mut child = profile
+        .spawn_suspended(
+            &bun,
+            &arguments,
+            &environment,
+            Some(role_dir),
+            Some(stdio),
+            &[],
+        )
+        .expect("create suspended Bun LPAC process");
+    let token = child.observe_token().expect("observe Bun LPAC token");
+    assert!(token.is_app_container);
+    assert!(token.all_application_packages_opt_out_configured);
+    assert_eq!(token.capability_count, 0);
+
+    let census = raw_process_handle_census(child.id());
+    assert!(child_contains_object(
+        &child,
+        &census,
+        input.as_raw_handle().cast()
+    ));
+    assert!(child_contains_object(
+        &child,
+        &census,
+        output.as_raw_handle().cast()
+    ));
+    assert!(
+        !child_contains_object(&child, &census, excluded_marker),
+        "Bun inherited the excluded host marker"
+    );
+
+    child.resume().expect("resume audited Bun LPAC process");
+    let exit = child.wait(10_000).expect("wait for Bun LPAC probe");
+    output.seek(SeekFrom::Start(0)).expect("rewind Bun output");
+    let mut observed = String::new();
+    output
+        .read_to_string(&mut observed)
+        .expect("read Bun LPAC output");
+    assert_eq!(exit, 0, "Bun LPAC process failed; output: {observed}");
+    assert!(
+        observed.contains("BUN_LPAC_OK 1.4.0"),
+        "unexpected Bun LPAC output: {observed}"
+    );
+    print_bun_evidence(profile, &revision, &artifact_digest, census.len());
+}
+
+fn print_bun_evidence(
+    profile: &WindowsLpacProfile,
+    revision: &str,
+    artifact_digest: &str,
+    raw_handle_count: usize,
+) {
+    let sid = profile.sid_string().expect("serialize AppContainer SID");
+    let profile_material = format!(
+        "keld.windows-lpac/v1\0sid={sid}\0capabilities=0\0all_application_packages=opt_out\0\
+         acl=root:traverse,runtime:read_execute,role:private\0handles=stdin,stdout,stderr"
+    );
+    let profile_digest = format!("{:x}", Sha256::digest(profile_material.as_bytes()));
+    println!(
+        "KELD_WINDOWS_T3_BUN revision={revision} artifact_sha256={artifact_digest} \
+         profile_sha256={profile_digest} package_sid={sid} raw_handle_count={raw_handle_count} \
+         capabilities=0 all_application_packages=opt_out"
+    );
 }
 
 #[test]
