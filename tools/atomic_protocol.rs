@@ -26,7 +26,7 @@ const STAGES: &[&str] = &[
 
 const ROOT_SEMANTICS: &[&str] = &[
     "Before selecting a design, answer or fix",
-    "owner, boundary and inputs/outputs, failure mode, and observable contract",
+    "Each atom MUST name its owner, boundary and inputs/outputs, failure mode, and observable contract",
     "Hidden coupling MUST be promoted into its own atom or an explicit edge between atoms.",
     "direct evidence or a falsifiable test or negative control",
     "until every decision-bearing atom is passed, explicitly unknown, or named as a blocker",
@@ -117,14 +117,21 @@ fn normalize(text: &str) -> String {
 }
 
 fn section<'a>(text: &'a str, heading: &str) -> Result<&'a str, String> {
-    if text.match_indices(heading).count() != 1 {
+    let heading_offsets = text
+        .split_inclusive('\n')
+        .scan(0, |offset, line| {
+            let current = *offset;
+            *offset += line.len();
+            Some((current, line.trim_end_matches(['\r', '\n'])))
+        })
+        .filter_map(|(offset, line)| (line == heading).then_some(offset))
+        .collect::<Vec<_>>();
+    if heading_offsets.len() != 1 {
         return Err(format!(
             "ATOMIC-PROTOCOL: `{ROOT}` must contain exactly one `{heading}` section. Restore the canonical owner instead of copying or deleting it."
         ));
     }
-    let start = text.find(heading).ok_or_else(|| {
-        format!("ATOMIC-PROTOCOL: `{ROOT}` is missing canonical section `{heading}`.")
-    })?;
+    let start = heading_offsets[0];
     let after_heading = start + heading.len();
     let end = text[after_heading..]
         .find("\n## ")
@@ -142,32 +149,58 @@ fn require_normalized(haystack: &str, needle: &str, path: &str) -> Result<(), St
 }
 
 fn require_ordered(haystack: &str, needles: &[&str], path: &str) -> Result<(), String> {
-    let normalized = normalize(haystack);
-    let mut cursor = 0;
+    let visible = visible_markdown(haystack);
+    let lines = visible.lines().collect::<Vec<_>>();
+    let mut cursor = 0_usize;
     for needle in needles {
-        let expected = normalize(needle);
-        let Some(offset) = normalized[cursor..].find(&expected) else {
+        let Some(offset) = lines[cursor..]
+            .iter()
+            .position(|line| line.starts_with(needle))
+        else {
             return Err(format!(
                 "ATOMIC-PROTOCOL: `{path}` is missing or reorders mandatory stage `{needle}`. Restore all stages in canonical order."
             ));
         };
-        cursor += offset + expected.len();
+        cursor += offset + 1;
     }
     Ok(())
 }
 
 fn check_root(text: &str) -> Result<(), String> {
-    if text.contains(RETIRED_HEADING) {
+    let visible = visible_markdown(text);
+    if visible.contains(RETIRED_HEADING) {
         return Err(format!(
             "ATOMIC-PROTOCOL: `{ROOT}` still contains retired duplicate `{RETIRED_HEADING}`. Reconcile failures into `{ROOT_HEADING}`."
         ));
     }
-    let protocol = section(text, ROOT_HEADING)?;
+    let protocol = section(&visible, ROOT_HEADING)?;
     require_ordered(protocol, STAGES, ROOT)?;
     for requirement in ROOT_SEMANTICS {
         require_normalized(protocol, requirement, ROOT)?;
     }
     Ok(())
+}
+
+fn require_index_route(text: &str) -> Result<(), String> {
+    let visible = visible_markdown(text);
+    let routed = visible.lines().any(|line| {
+        let cells = line
+            .strip_prefix('|')
+            .and_then(|line| line.strip_suffix('|'))
+            .map(|line| line.split('|').map(str::trim).collect::<Vec<_>>());
+        cells.is_some_and(|cells| {
+            cells.len() == 2
+                && cells[0] == INDEX_REQUIREMENTS[0]
+                && cells[1].contains(INDEX_REQUIREMENTS[1])
+        })
+    });
+    if routed {
+        return Ok(());
+    }
+    Err(format!(
+        "ATOMIC-PROTOCOL: `{INDEX}` must route `{}` to `{}` in one task-routing table row. Plain prose is not a route.",
+        INDEX_REQUIREMENTS[0], INDEX_REQUIREMENTS[1]
+    ))
 }
 
 fn check_references(root: &Path) -> Result<(), String> {
@@ -182,9 +215,7 @@ fn check_references(root: &Path) -> Result<(), String> {
     }
 
     let index = read(root, INDEX)?;
-    for requirement in INDEX_REQUIREMENTS {
-        require_normalized(&index, requirement, INDEX)?;
-    }
+    require_index_route(&index)?;
 
     for (path, text) in [(WORKFLOW, workflow), (TESTING, testing), (INDEX, index)] {
         for stage in STAGES {
@@ -269,7 +300,7 @@ mod tests {
 
     fn valid_root() -> String {
         format!(
-            "# Rules\n\n{ROOT_HEADING}\n\nBefore selecting a design, answer or fix.\n\n{}\n{} Each atom names its owner, boundary and inputs/outputs, failure mode, and observable contract.\n{} Hidden coupling MUST be promoted into its own atom or an explicit edge between atoms.\n{} Each atom needs direct evidence or a falsifiable test or negative control.\n{} Do not synthesize until every decision-bearing atom is passed, explicitly unknown, or named as a blocker. If the synthesis contradicts a passed atom, agents MUST stop and correct the model.\n\nPerformance decompositions MUST separate census, work, queue/copy, clock, statistic and artifact. Security decompositions MUST separate identity, authentication, authorization, OS containment, lifecycle/revocation and evidence provenance.\n\n## Next\n",
+            "# Rules\n\n{ROOT_HEADING}\n\nBefore selecting a design, answer or fix.\n\n{}\n{} Each atom MUST name its owner, boundary and inputs/outputs, failure mode, and observable contract.\n{} Hidden coupling MUST be promoted into its own atom or an explicit edge between atoms.\n{} Each atom needs direct evidence or a falsifiable test or negative control.\n{} Do not synthesize until every decision-bearing atom is passed, explicitly unknown, or named as a blocker. If the synthesis contradicts a passed atom, agents MUST stop and correct the model.\n\nPerformance decompositions MUST separate census, work, queue/copy, clock, statistic and artifact. Security decompositions MUST separate identity, authentication, authorization, OS containment, lifecycle/revocation and evidence provenance.\n\n## Next\n",
             STAGES[0], STAGES[1], STAGES[2], STAGES[3], STAGES[4]
         )
     }
@@ -287,7 +318,7 @@ mod tests {
         );
         temp.write(
             INDEX,
-            "Any non-trivial design, diagnosis, review, or implementation reads Root `AGENTS.md` § Atomic problem-solving protocol.\n",
+            "| Task or path | Read |\n|---|---|\n| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol. |\n",
         );
         temp
     }
@@ -358,6 +389,37 @@ mod tests {
             let error = check(&temp.path).expect_err("hidden stage must not count as policy");
             assert!(error.contains(STAGES[0]), "{error}");
         }
+    }
+
+    #[test]
+    fn canonical_structure_and_normative_strength_are_mandatory() {
+        let temp = fixture();
+        temp.write(
+            ROOT,
+            &valid_root().replacen(ROOT_HEADING, "Atomic problem-solving protocol (MUST)", 1),
+        );
+        let error = check(&temp.path).expect_err("ordinary prose heading must fail");
+        assert!(error.contains("exactly one"), "{error}");
+
+        let temp = fixture();
+        temp.write(
+            ROOT,
+            &valid_root().replacen(
+                "Each atom MUST name its owner",
+                "Each atom MAY name its owner",
+                1,
+            ),
+        );
+        let error = check(&temp.path).expect_err("MAY must not satisfy MUST");
+        assert!(error.contains("Each atom MUST name"), "{error}");
+
+        let temp = fixture();
+        temp.write(
+            INDEX,
+            "Any non-trivial design, diagnosis, review, or implementation reads Root `AGENTS.md` § Atomic problem-solving protocol.\n",
+        );
+        let error = check(&temp.path).expect_err("plain prose is not task routing");
+        assert!(error.contains("table row"), "{error}");
     }
 
     #[test]
