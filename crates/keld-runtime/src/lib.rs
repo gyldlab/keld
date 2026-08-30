@@ -33,6 +33,8 @@ mod role;
 mod virtual_port;
 #[cfg(windows)]
 pub mod windows_job;
+#[cfg(windows)]
+pub mod windows_lpac;
 
 /// How often the supervisor thread polls a running child for exit, and the
 /// granularity at which `shutdown()` is observed.
