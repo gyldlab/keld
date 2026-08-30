@@ -26,7 +26,8 @@ the OS proof for that separate layer.
 
 Non-goals:
 
-- Implementing this specification in this documentation PR.
+- Implementing T3-T6 in the T2 implementation PR; each remains a separate
+  task-specific vertical slice.
 - Changing `docs/architecture/03-security.md`, the kipc frame format, or the
   current `KELD_APP_LINK=<endpoint>#<64 hex chars>` contract.
 - Adding `roles`, window grants, channel grants, manifest generation,
@@ -208,7 +209,7 @@ trailing newline. Its SHA-256 is recorded in the header.
 
 | Fact | Decision |
 |---|---|
-| Policy-file authority | The `keld-host` process owns selection and the immutable policy snapshot. A single `keld-guard` verified-load operation owns reading, byte verification, and parsing. `keld-core` receives the snapshot as trusted session state; Bun and webviews receive neither a path nor a mutable manifest. |
+| Policy-file authority | The `keld-host` process owns selection of the owner-private staged policy copy and the immutable policy snapshot. A single `keld-guard` verified-load operation owns reading its retained handle, byte verification, and parsing. `keld-core` receives the snapshot as trusted session state; Bun and webviews receive neither a path nor a mutable manifest. |
 | Manifest path and trust | The exact filename is `keld.permissions.jsonc` beneath the canonical app root. KEL-96's dev stage is owner-controlled and its digest proves byte consistency, not release authenticity. A future production boot artifact must authenticate its relative location, content digest, and container-to-root relationship through KEL-103 or an approved successor. In both cases the host selects the exact relative filename and rejects a missing, escaping, or non-regular file; a child payload never selects it. |
 | Caller identity | The host creates the dispatch context after link authentication or from its webview/navigation registry. v0 maps its only accepted app link to `AppProcess`; destination role bindings come from KEL-75. No wire field, endpoint string, token, PID, environment variable, or Electron option is identity. |
 | Permission decision | `keld_guard` remains the one evaluator and `keld_ipc::guard_dispatch::dispatch_privileged` remains the one production guard-before-handler helper. `keld-core` owns routing and supplies trusted context; `keld-native` calls the helper immediately before a native OS operation, while `MediaPolicy` calls it when constructing the webview platform `Allow` response. |
@@ -329,8 +330,9 @@ its manifest and digest cannot be paired independently. Existing
 `load_manifest(&Path)` remains available for unprivileged
 diagnostics but MUST NOT be used by a privileged app-session startup path.
 
-`ManifestError` remains the one public typed loader error and gains only these
-variants beyond the existing `NotFound`, `Read`, and `Parse` cases:
+`ManifestError` remains the one public typed loader error. KEL-131 already
+added `TooLarge { path, max_bytes }` (`KELD-GUARD017`) beside `NotFound`,
+`Read`, and `Parse`; T2 adds only these variants:
 
 ```rust
 InvalidUtf8 { path: PathBuf, detail: String } // KELD-GUARD005
@@ -348,8 +350,11 @@ impl ManifestError {
 `KELD-GUARD016` tells the operator to rebuild the staged descriptor/fixture or
 re-sign the release artifact; it never falls back to an empty manifest.
 Adding the workspace-pinned `sha2` dependency to `keld-guard` is the selected
-reuse path, but this specification does not approve that Cargo change: the T2
-implementation PR must list and obtain the dependency review gate explicitly.
+reuse path. The original contract freeze did not blanket-approve that Cargo
+change; the later delegated execution record
+`bb431bf4-9d07-41ca-8525-7affd8c9f36e` separately approves this exact T2 edge
+after its registry/source, license, MSRV, and alternatives review. The T2
+implementation PR must still list that dependency review gate explicitly.
 Hand-rolled SHA-256, transitive-dependency reuse, platform crypto wrappers, and
 a host-side pre-read are rejected.
 
@@ -584,6 +589,15 @@ shutdown order; KEL-75 owns generation revocation. This rule prevents an old
 connection or in-flight request from retaining or gaining authority across a
 manifest change.
 
+Task ownership is deliberately incremental. T2 establishes verified preflight
+and retains the immutable snapshot through the existing ordered app-session
+cleanup; there is no privileged admission to drain yet. T3 introduces the first
+reachable native handler and therefore owns the core admission coordinator,
+native in-flight accounting, quiescing publication and drain/cancel barrier.
+T4 extends that live barrier to the private media binding-owner/weak-callback
+path and completes the cross-boundary race proof in AC8. Moving those T3/T4
+owners into T2 would create unused scaffolding or implement later tasks early.
+
 ## 5. Boundaries
 
 - Implement in later PRs: `crates/keld-guard` (the minimal single-read
@@ -621,13 +635,14 @@ manifest change.
       source `b330c2ec-2193-4aa6-b324-67187cdda4d5`. The record binds the
       decision digest and current authoring base and honestly states that Codex
       created it under delegation; no independent-human review is claimed.
-- [ ] T0g: L0 verifies that Prompt Tracker `guard/34` retains the atomic
+- [x] T0g: L0 verified that Prompt Tracker `guard/34` retains the atomic
       `host-boot-and-session` plus exact KEL-102 contract predicates, consumes
       `kel97_predecessor_task_id=none` by removing `runtime/04`'s now-invalid
       semantic KEL-102-artifact requirement while leaving its static `AFTER`
-      set empty, and publishes a successor frontier that supersedes blocked
-      snapshot 222. This spec PR does not edit Prompt Tracker, research, or
-      dormant `runtime/04`; no implementation node is ready before T0g lands.
+      set empty, and published successor frontier 223, which supersedes blocked
+      snapshot 222 and names only exact `KEL-102/T2` ready. Landed evidence:
+      Prompt Tracker `26e47df70cefeff1e05d317566c7f1df94423dfa` and research
+      `e110c57267d3f2b2f36af8b47552b5df41a7e196`.
 - [x] T1: KEL-96 landed one atomic T1a+T1b `host-boot-and-session` head at
       `7cec425fcd14eac00c5fb34534f3a74d43b4b35e` with
       both acceptance rows passed. The T1a row provides the verified canonical
@@ -636,16 +651,25 @@ manifest change.
       consumer. Later KEL-96 T2/T3 are landed but are not KEL-102 predecessors.
 - [ ] `KEL-102/T2`: Add the exact guard-owned loader and `run_guarded` API,
       host-owned manifest resolution, private immutable `GuardSnapshot`, and
-      typed fail-closed startup errors. Replace the shipping no-flag
-      `keld-host` call to `run_unprivileged` with `run_guarded`; a guarded-load
+      typed fail-closed startup errors. Reuse KEL-131's landed bounded,
+      duplicate-rejecting parser and 64 KiB retained-handle read; a verified
+      loader must not add an unbounded buffer or second decoder. Replace the
+      shipping no-flag `keld-host` call to `run_unprivileged` with
+      `run_guarded`; a guarded-load
       failure must never retry through `run_unprivileged` or a default
-      manifest. Add the session quiescence/drain barrier defined in §4. Prove
+      manifest. Retain the snapshot through the existing ordered app-session
+      cleanup; T3 owns the first live privileged-admission/drain barrier. Prove
       no listener handle, child
       process, host-registry window, or platform-native window handle exists
       for every manifest failure class and that the digest covers the exact
       parsed bytes. A binary-level negative control that leaves the shipping
-      caller on `run_unprivileged` must fail. This is
-      `first_task_id=KEL-102/T2`.
+      caller on `run_unprivileged` must fail. Oversize and decoded-duplicate
+      verified inputs must fail before policy construction. This is
+      `first_task_id=KEL-102/T2`. Candidate evidence: six public loader tests,
+      the injected retained-handle read failure, 27 exact KEL-96 boot classes,
+      five post-selection policy byte classes, the full 16-test real-macOS
+      no-flag suite, Windows cross-check, and 576/576 workspace tests. Landing
+      and the final execution artifact remain required before T3 becomes ready.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
       context. Core routes and passes the verified snapshot/principal/request;
@@ -655,7 +679,10 @@ manifest change.
       delete or refactor any parallel FS dispatch path rather than retaining
       both. T3 does not claim repository-wide D5 completion while the existing
       media path still evaluates directly; T4 must remove that last direct
-      caller and enforce the global sole-evaluator invariant.
+      caller and enforce the global sole-evaluator invariant. Add the core
+      admission coordinator, quiescing linearization, native in-flight
+      accounting and drain/cancel barrier here with the first live privileged
+      handler.
 - [ ] `KEL-102/T4`: Pass `MediaPolicy` and the registry-derived webview
       principal to all three live media backends. Preserve default denial
       until a separately approved window-grant slice exists; prove a loaded
@@ -665,7 +692,8 @@ manifest change.
       calls `evaluate` directly. Retain a platform callback/private weak lease
       across webview teardown and session quiescence and prove it cannot
       upgrade/authorize or produce an `Allow` response. `MediaPolicy` itself
-      is not cloneable.
+      is not cloneable. Extend T3's live barrier to media binding-owner and
+      weak-callback admission, then complete AC8's cross-boundary race proof.
 - [ ] `KEL-102/T5`: After KEL-75/KEL-97 define and ship role-link identity,
       bind that role-aware guard principal at accepted-link dispatch and prove
       stale role generations cannot invoke the FS handler. This is a dependent
@@ -678,7 +706,7 @@ Task-specific predecessor artifacts:
 
 | Task | Required passed artifacts |
 |---|---|
-| `KEL-102/T2` | `keld.execution-artifact/v1` with `node_id=kel102-contract-freeze`, `issue_id=KEL-102`, `first_task_id=KEL-102/T2`, the approved spec blob/digest/delegated provenance, and `status=passed`; plus `node_id=host-boot-and-session`, `issue_id=KEL-96`, landed `head_sha=7cec425fcd14eac00c5fb34534f3a74d43b4b35e`, passed acceptance rows `KEL-96/T1a` and `KEL-96/T1b`, and `status=passed`. T2 semantically consumes T1a's retained permissions handle/digest; it does not consume KEL-96 T2/T3. The old `node_id=host-boot-descriptor` is invalid. |
+| `KEL-102/T2` | `keld.execution-artifact/v1` with `node_id=kel102-contract-freeze`, `issue_id=KEL-102`, `first_task_id=KEL-102/T2`, the approved spec blob/digest/delegated provenance, and `status=passed`; plus `node_id=host-boot-and-session`, `issue_id=KEL-96`, landed `head_sha=7cec425fcd14eac00c5fb34534f3a74d43b4b35e`, passed acceptance rows `KEL-96/T1a` and `KEL-96/T1b`, and `status=passed`; plus landed KEL-131 parser-hardening head `0009f7d00cdc617a23ec513972f3c7b1ff4be6a7` (PR #116, issue status Done). T2 semantically consumes T1a's retained permissions handle/digest and KEL-131's one bounded unique-key parser; it does not consume KEL-96 T2/T3. The old `node_id=host-boot-descriptor` is invalid. |
 | `KEL-102/T3` | `node_id=host-guard-enforcement`, `issue_id=KEL-102`, `task_id=KEL-102/T2`, landed `head_sha`, `status=passed`. |
 | `KEL-102/T4` | Same schema with exact `task_id=KEL-102/T3`; a generic earlier KEL-102 pass is insufficient. |
 | `KEL-102/T5` | Same schema with exact `task_id=KEL-102/T4`, plus `node_id=principal-shipping-link`, `issue_id=KEL-97`, landed `head_sha`, `status=passed`, and passed acceptance rows `KEL-97/role-guard-principal` and `KEL-97/stale-generation-dispatch`. A generic KEL-97 RoleRegistry/link pass is insufficient. KEL-97 or its approved predecessor must first adopt and prove those exact acceptances because current KEL-75 T1-T3 do not ship role grants. |
@@ -698,7 +726,7 @@ consumes this field; it must not manufacture a T2/T3/T4 edge.
 | 4 | KEL-75 dependent integration: bind a generation, revoke it, then send a formerly valid privileged request. Independent oracle is typed stale/revoked rejection plus absent filesystem marker. |
 | 5 | Backend state tests plus real platform smoke: media callback receives a host registry principal; missing state returns `KELD-GUARD007`; `/app` camera grant remains denied for a webview; the production callback recorder's digest equals `GuardSnapshot` on all three backends. A contract assertion proves `MediaPolicy` reaches `dispatch_privileged` and neither it nor a backend calls `evaluate` directly. Retain a platform callback/private weak lease, drop the distinct private `MediaBindingOwner` during webview teardown under the shared transition lock, and prove the retained lease no longer finds a registration, returns `KELD-GUARD007`/platform deny, and produces no `Allow` response. Assert `MediaPolicy` is not `Clone`, its public API has no bind/authorize/gate-injection method, and neither private value adds a durable `Arc` strong count. Retaining `PermissionsManifest::default()` or dropping `MediaPolicy` fails. Navigation-rotation assertions wait for the actual registry event once that feature exists. |
 | 6–7 | Real socket/kipc FS session on temp paths: core routes a verified snapshot/principal/request to the native broker; within that native path the broker's sole `dispatch_privileged` call returns `KELD-GUARD002` for out-of-scope write and the target does not exist; allowed write/read returns exact bytes. The production adapter recorder is zero on denied read and nonzero on allowed read. A contract assertion rejects any core-local `evaluate`/`dispatch_privileged` call. This T3 oracle is native-path-specific; AC5/T4 later removes the existing media direct caller and proves repository-wide D5. |
-| 8 | Start with a denying snapshot, retain its already-authenticated stream and one media platform callback/private weak lease, modify the manifest, and verify the live session's decision is unchanged. Acquire the core admission coordinator, race a new request against teardown, drop the unique `MediaPolicy` owner and wait for any admitted media operation, then publish `Quiescing` as the linearization point. Prove no handler closure enters after that publication. Invoke the retained callback and prove its weak upgrade fails or observes inactive state without invoking the operation or producing a platform `Allow` response. Assert the state owner is actually dropped/has no durable strong reference after an admitted operation drains. A separately synchronized race must prove an operation admitted under the media lock records its terminal result before owner drop completes. Drain or cancel native requests admitted before the coordinator was acquired and record their terminal outcomes before destroying the remaining snapshot. Assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
+| 8 (T3/T4; not T2) | Start with a denying snapshot, retain its already-authenticated stream and one media platform callback/private weak lease, modify the manifest, and verify the live session's decision is unchanged. Acquire the core admission coordinator, race a new request against teardown, drop the unique `MediaPolicy` owner and wait for any admitted media operation, then publish `Quiescing` as the linearization point. Prove no handler closure enters after that publication. Invoke the retained callback and prove its weak upgrade fails or observes inactive state without invoking the operation or producing a platform `Allow` response. Assert the state owner is actually dropped/has no durable strong reference after an admitted operation drains. A separately synchronized race must prove an operation admitted under the media lock records its terminal result before owner drop completes. Drain or cancel native requests admitted before the coordinator was acquired and record their terminal outcomes before destroying the remaining snapshot. Assert a privileged call on the retained old stream is rejected/closed with no handler entry. Only then launch a fresh session with new credentials and prove it uses the new snapshot. |
 
 Anti-flake requirements: use a temporary root and port `0`; await host/child
 markers and process termination rather than sleeping; run crash/reload cases
@@ -756,8 +784,8 @@ which the untouched approved document must pass again:
    `run_unprivileged` fallback after guarded failure; and
 10. remove the quiescence/drain barrier while leaving snapshot restart prose.
 
-This documentation-only PR has no new behavior tests. The implementation PRs
-must run `cargo fmt --all --check`,
+The contract-freeze PR had no new behavior tests. Each implementation PR must
+run `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`,
 `cargo nextest run --workspace --profile ci`, their mapped integration tests,
 and `just llms-check` after authoritative-document changes.
@@ -779,9 +807,10 @@ and `just llms-check` after authoritative-document changes.
   decision source**. This spec defines the fail-closed policy-loading,
   caller-identity, enforcement, and lifecycle contract. Each implementation PR
   must prove its exact task slice and may not widen the approved model.
-- dependency addition: **none approved by this spec**. T2's selected reuse of
-  workspace-pinned `sha2` in `keld-guard` must receive a separate explicit
-  dependency gate in its implementation PR. T3's `keld-core` → `keld-native`
+- dependency addition: **yes for the T2 implementation PR**. The delegated
+  execution record `bb431bf4-9d07-41ca-8525-7affd8c9f36e` approves the direct
+  `keld-guard` → workspace-pinned `sha2` 0.10.9 edge after registry/source,
+  license, MSRV and alternative review. T3's `keld-core` → `keld-native`
   sibling-crate edge and T4's `keld-wv` → `keld-ipc` sibling-crate edge each
   require their own explicit dependency gate; none is waived by an existing
   workspace declaration.
@@ -791,8 +820,9 @@ and `just llms-check` after authoritative-document changes.
 
 ## 9. Perf impact
 
-None claimed for this documentation pass. The one manifest read/digest check
-is cold host-start work. A later implementation must measure only if it alters
+No performance improvement is claimed for T2. Its one bounded manifest
+read/digest/parse is cold host-start work and does not alter the steady-state
+guard allow path. A later implementation must measure only if it alters
 the existing no-allocation guard allow path, IPC dispatch allocations, or the
 architecture 01 §5 cold-start/RSS budgets.
 
@@ -805,9 +835,12 @@ delegation; no independent-human review is claimed. The resulting contract
 artifact records the delegated approver identity, stable Linear source id,
 decision digest, and landed approved spec blob.
 
-Implementation remains blocked until L0 completes T0g and reissues the current
-frontier. The atomic KEL-96 `host-boot-and-session` artifact already exists and
-passes both T1a/T1b rows. T2 additionally requests its dependency review; T4's
+T0g is landed and frontier 223 names exact T2 ready. The atomic KEL-96
+`host-boot-and-session` artifact passes both T1a/T1b rows. The later KEL-131
+blocking relation is also landed at `0009f7d00cdc617a23ec513972f3c7b1ff4be6a7`;
+T2 reuses that parser and byte ceiling. T2's dependency review and candidate
+evidence are recorded above; T2 does not become a passed
+predecessor until this implementation lands with its final artifact. T4's
 real macOS/Windows/Linux backend observations and T5's KEL-97 join remain
-task-owned evidence. None of those gates authorizes product code in this PR or
-changes KEL-102 to Done.
+task-owned evidence. None of those remaining gates authorizes T3-T5 product
+code in this T2 PR, and T2 landing does not change KEL-102 to Done.
