@@ -1393,6 +1393,25 @@ fn run_app_windows(
         .arg(root.join(&entry_path))
         .current_dir(&root)
         .env_remove(DEV_LEASE_ENV);
+    #[cfg(debug_assertions)]
+    let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        let handle = dev_lease.as_ref().ok_or_else(|| {
+            app_detail(
+                "Windows dev-host lease census",
+                "test census requested without a live dev lease",
+            )
+        })?;
+        config
+            .env(
+                "KELD_TEST_WINDOWS_HOST_LEASE_HANDLE",
+                format!("{:x}", handle.raw_handle_value),
+            )
+            .env_remove("KELD_TEST_WINDOWS_LEASE_CENSUS")
+    } else {
+        config
+    };
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     let supervisor = run_windows_startup_if_session_running(&shutdown, || {
@@ -1599,6 +1618,7 @@ enum WindowsDevLeaseObservation {
 #[cfg(windows)]
 struct WindowsDevLeaseMonitor {
     observations: Receiver<WindowsDevLeaseObservation>,
+    raw_handle_value: usize,
 }
 
 #[cfg(windows)]
@@ -1635,6 +1655,7 @@ fn prepare_windows_dev_lease(
         );
         return Ok(Some(WindowsDevLeaseMonitor {
             observations: observation_rx,
+            raw_handle_value: handle.addr(),
         }));
     }
     let shutdown = shutdown.clone();
@@ -1672,6 +1693,7 @@ fn prepare_windows_dev_lease(
         .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
     Ok(Some(WindowsDevLeaseMonitor {
         observations: observation_rx,
+        raw_handle_value: handle.addr(),
     }))
 }
 

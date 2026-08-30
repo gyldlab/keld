@@ -1,11 +1,15 @@
 //! Real-Windows KEL-96/T4 no-flag host acceptance.
 
 #![cfg(windows)]
+#![allow(unsafe_code)] // test-only raw cross-process handle-table observation
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: process and OS observations are assertion oracles
+#![deny(unsafe_op_in_unsafe_fn)]
 
+use std::ffi::c_void;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -13,9 +17,42 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use windows_sys::Win32::Foundation::{
+    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE,
+};
+use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
+const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
+const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
+const OBJ_INHERIT: u32 = 0x0000_0002;
+
+unsafe extern "system" {
+    fn NtQuerySystemInformation(
+        system_information_class: u32,
+        system_information: *mut c_void,
+        system_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct SystemHandleEntry {
+    object: *mut c_void,
+    unique_process_id: usize,
+    handle_value: usize,
+    granted_access: u32,
+    creator_backtrace_index: u16,
+    object_type_index: u16,
+    handle_attributes: u32,
+    reserved: u32,
+}
 
 #[test]
 fn keld_dev_windows_helper() {
@@ -611,6 +648,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .arg("--nocapture")
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_TEST_WINDOWS_LEASE_CENSUS", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -619,11 +657,25 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let host_pid =
         wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
-    let (mut reader, _writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
+    let (mut reader, _writer, bun_pid, _, lease_handle) =
+        accept_ready_generation_with_lease(&control_listener, &mut cli);
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
         .expect("lease renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    let controller_pipe = cli
+        .stdout
+        .as_ref()
+        .expect("captured CLI stdout for File object type")
+        .as_raw_handle()
+        .cast();
+    let handle_census = assert_dev_lease_handle_isolation(
+        cli_pid,
+        host_pid,
+        bun_pid,
+        controller_pipe,
+        lease_handle,
+    );
 
     cli.kill()
         .expect("kill only the terminal-facing CLI helper");
@@ -636,7 +688,12 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
     println!(
         "KELD_WINDOWS_STAGE_CLEANUP cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
-         sentinel_pid={cleanup_pid} stage_count=0"
+         sentinel_pid={cleanup_pid} stage_count=0 cli_handles={} host_handles={} bun_handles={} \
+         lease_host_handle=0x{:x} lease_inheritable=false",
+        handle_census.cli_count,
+        handle_census.host_count,
+        handle_census.bun_count,
+        handle_census.lease_host_handle,
     );
     beacon.join().expect("lease beacon thread");
 }
@@ -674,10 +731,236 @@ fn wait_for_dev_stage_count(project: &Path, expected: usize, deadline: Instant) 
     }
 }
 
+#[derive(Debug)]
+struct LeaseHandleCensus {
+    cli_count: usize,
+    host_count: usize,
+    bun_count: usize,
+    lease_host_handle: usize,
+}
+
+fn assert_dev_lease_handle_isolation(
+    cli_pid: u32,
+    host_pid: u32,
+    bun_pid: u32,
+    known_file_handle: HANDLE,
+    lease_handle_value: usize,
+) -> LeaseHandleCensus {
+    let cli = open_process_for_census(cli_pid);
+    let host = open_process_for_census(host_pid);
+    let bun = open_process_for_census(bun_pid);
+    let cli_entries = raw_process_handle_census(cli_pid);
+    let host_entries = raw_process_handle_census(host_pid);
+    let bun_entries = raw_process_handle_census(bun_pid);
+    let current_entries = raw_process_handle_census(std::process::id());
+    let known_value = known_file_handle.addr();
+    let file_type_index = current_entries
+        .iter()
+        .find(|entry| entry.handle_value == known_value)
+        .map(|entry| entry.object_type_index)
+        .expect("known controller pipe exists in the raw handle table");
+    assert_eq!(
+        cli_entries.len(),
+        process_handle_count(&cli),
+        "CLI raw handle census disagrees with GetProcessHandleCount"
+    );
+    assert_eq!(
+        host_entries.len(),
+        process_handle_count(&host),
+        "host raw handle census disagrees with GetProcessHandleCount"
+    );
+    assert_eq!(
+        bun_entries.len(),
+        process_handle_count(&bun),
+        "Bun raw handle census disagrees with GetProcessHandleCount"
+    );
+
+    let lease = host_entries
+        .iter()
+        .find(|entry| entry.handle_value == lease_handle_value)
+        .expect("reported host stdin lease handle exists in raw table");
+    assert_eq!(
+        lease.object_type_index, file_type_index,
+        "reported host lease is not a kernel File/pipe object"
+    );
+    assert_eq!(
+        lease.granted_access, FILE_GENERIC_READ,
+        "host lease is not the read-only pipe endpoint"
+    );
+    assert_eq!(
+        lease.handle_attributes & OBJ_INHERIT,
+        0,
+        "host lease reader remained inheritable in the raw handle table"
+    );
+    let lease_object = duplicate_process_handle(&host, lease.handle_value)
+        .expect("duplicate exact host lease reader for comparison");
+    assert!(
+        !process_contains_same_object(&bun, &bun_entries, file_type_index, &lease_object),
+        "Bun inherited the host's exact lease reader object"
+    );
+    LeaseHandleCensus {
+        cli_count: cli_entries.len(),
+        host_count: host_entries.len(),
+        bun_count: bun_entries.len(),
+        lease_host_handle: lease.handle_value,
+    }
+}
+
+fn open_process_for_census(pid: u32) -> OwnedHandle {
+    // SAFETY: numeric PID belongs to a live test-owned process; the returned
+    // handle requests query/duplicate rights only and is converted once.
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    assert!(
+        !raw.is_null(),
+        "open PID {pid} for handle census: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: raw is the fresh non-null owning process handle returned above.
+    unsafe { OwnedHandle::from_raw_handle(raw.cast()) }
+}
+
+fn raw_process_handle_census(pid: u32) -> Vec<SystemHandleEntry> {
+    let mut bytes = 1_u32 << 20;
+    loop {
+        let words = usize::try_from(bytes)
+            .expect("NT handle table size fits usize")
+            .div_ceil(std::mem::size_of::<usize>());
+        let mut storage = vec![0_usize; words];
+        let mut returned = 0_u32;
+        // SAFETY: aligned storage supplies `bytes` writable bytes and returned
+        // length is live. Class 64 is the extended system handle table.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_EXTENDED_HANDLE_INFORMATION,
+                storage.as_mut_ptr().cast(),
+                bytes,
+                &raw mut returned,
+            )
+        };
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            bytes = returned.max(bytes.saturating_mul(2));
+            continue;
+        }
+        assert_eq!(
+            status,
+            0,
+            "NtQuerySystemInformation failed: 0x{:08x}",
+            status.cast_unsigned()
+        );
+        let count = storage[0];
+        let header_bytes = 2 * std::mem::size_of::<usize>();
+        let available = usize::try_from(bytes)
+            .expect("NT handle table size fits usize")
+            .saturating_sub(header_bytes)
+            / std::mem::size_of::<SystemHandleEntry>();
+        assert!(count <= available, "NT handle table count exceeds buffer");
+        // SAFETY: class 64 begins with two usize fields followed by `count`
+        // aligned entries, and count was bounded by the allocated buffer.
+        let entries = unsafe {
+            std::slice::from_raw_parts(storage.as_ptr().add(2).cast::<SystemHandleEntry>(), count)
+        };
+        return entries
+            .iter()
+            .copied()
+            .filter(|entry| entry.unique_process_id == pid as usize)
+            .collect();
+    }
+}
+
+fn process_handle_count(process: &OwnedHandle) -> usize {
+    let mut count = 0_u32;
+    // SAFETY: process is live and count is writable storage.
+    assert_ne!(
+        unsafe { GetProcessHandleCount(process.as_raw_handle().cast(), &raw mut count) },
+        0,
+        "GetProcessHandleCount failed: {}",
+        std::io::Error::last_os_error()
+    );
+    usize::try_from(count).expect("process handle count fits usize")
+}
+
+fn duplicate_process_handle(process: &OwnedHandle, value: usize) -> Option<OwnedHandle> {
+    let mut duplicate: HANDLE = std::ptr::null_mut();
+    // SAFETY: process is live; value came from its raw handle table; target is
+    // the current-process pseudo-handle; output receives one handle on success.
+    if unsafe {
+        DuplicateHandle(
+            process.as_raw_handle().cast(),
+            std::ptr::with_exposed_provenance_mut(value),
+            GetCurrentProcess(),
+            &raw mut duplicate,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+        || duplicate.is_null()
+    {
+        return None;
+    }
+    // SAFETY: duplicate is the fresh non-null owning handle returned above.
+    Some(unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) })
+}
+
+fn process_contains_same_object(
+    process: &OwnedHandle,
+    entries: &[SystemHandleEntry],
+    file_type_index: u16,
+    object: &OwnedHandle,
+) -> bool {
+    entries.iter().any(|entry| {
+        if entry.object_type_index != file_type_index {
+            return false;
+        }
+        let Some(candidate) = duplicate_process_handle(process, entry.handle_value) else {
+            return false;
+        };
+        // SAFETY: both duplicated handles are live for this comparison.
+        (unsafe {
+            CompareObjectHandles(
+                object.as_raw_handle().cast(),
+                candidate.as_raw_handle().cast(),
+            )
+        }) != 0
+    })
+}
+
 fn accept_ready_generation(
     listener: &TcpListener,
     child: &mut Child,
 ) -> (BufReader<TcpStream>, TcpStream, u32, String) {
+    let (reader, writer, pid, link, lease_handle) =
+        accept_ready_generation_inner(listener, child, false);
+    assert!(lease_handle.is_none(), "unexpected lease census disclosure");
+    (reader, writer, pid, link)
+}
+
+fn accept_ready_generation_with_lease(
+    listener: &TcpListener,
+    child: &mut Child,
+) -> (BufReader<TcpStream>, TcpStream, u32, String, usize) {
+    let (reader, writer, pid, link, lease_handle) =
+        accept_ready_generation_inner(listener, child, true);
+    (
+        reader,
+        writer,
+        pid,
+        link,
+        lease_handle.expect("host lease handle census value"),
+    )
+}
+
+fn accept_ready_generation_inner(
+    listener: &TcpListener,
+    child: &mut Child,
+    expect_lease_handle: bool,
+) -> (BufReader<TcpStream>, TcpStream, u32, String, Option<usize>) {
     let control =
         accept_control_or_host_failure(listener, child, Instant::now() + PRODUCT_DEADLINE);
     control
@@ -699,6 +982,15 @@ fn accept_ready_generation(
         read_control_line_or_host_failure(&mut reader, child, "DESCENDANT"),
         "DESCENDANT 0"
     );
+    let lease_handle = if expect_lease_handle {
+        let lease_record = read_control_line_or_host_failure(&mut reader, child, "LEASE_HANDLE");
+        let value = lease_record
+            .strip_prefix("LEASE_HANDLE ")
+            .expect("lease census line prefix");
+        Some(usize::from_str_radix(value, 16).expect("hexadecimal host lease handle"))
+    } else {
+        None
+    };
     assert_eq!(
         read_control_line_or_host_failure(&mut reader, child, "READY"),
         "READY"
@@ -711,7 +1003,7 @@ fn accept_ready_generation(
         read_control_line_or_host_failure(&mut reader, child, "ECHO2"),
         "ECHO2"
     );
-    (reader, writer, pid, link)
+    (reader, writer, pid, link, lease_handle)
 }
 
 struct ProductEvidence {

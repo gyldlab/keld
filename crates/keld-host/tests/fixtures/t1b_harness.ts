@@ -152,6 +152,8 @@ if (process.platform === "win32") {
   // Windows descendant cleanup is a KEL-78/T3 Job Object acceptance row.
   // T4's uncontained loopback slice must not manufacture that evidence.
   await sendControl("DESCENDANT 0");
+  const leaseHandle = process.env.KELD_TEST_WINDOWS_HOST_LEASE_HANDLE;
+  if (leaseHandle) await sendControl(`LEASE_HANDLE ${leaseHandle}`);
 } else {
   // Real-macOS acceptance pins the system tool instead of trusting a caller-controlled PATH.
   const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {

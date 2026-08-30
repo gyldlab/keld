@@ -319,6 +319,7 @@ pub struct RoleConfig {
     owner: RoleOwner,
     program: OsString,
     args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
     env_remove: Vec<OsString>,
     current_dir: Option<PathBuf>,
     restart_policy: RestartPolicy,
@@ -357,6 +358,7 @@ impl RoleConfig {
             owner,
             program: program.into(),
             args: Vec::new(),
+            env: Vec::new(),
             env_remove: Vec::new(),
             current_dir: None,
             restart_policy: RestartPolicy::default(),
@@ -388,6 +390,13 @@ impl RoleConfig {
         S: Into<OsString>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Sets one explicit environment key for every child generation.
+    #[must_use]
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -614,6 +623,9 @@ impl ChildPreparer for RolePreparer {
         }
         for key in &self.config.env_remove {
             command.env_remove(key);
+        }
+        for (key, value) in &self.config.env {
+            command.env(key, value);
         }
         command
             .env("KELD_APP_LINK", &provisioned.app_link)

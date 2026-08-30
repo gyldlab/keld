@@ -488,6 +488,12 @@ most make the caller's own host monitor stdin and shut down; it carries no app
 root, path, digest, principal, permission, or application-resource ownership.
 Tests inspect both process handle tables: the host never owns a writer copy and
 Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
+The Windows fixture uses raw `SystemExtendedHandleInformation` for CLI, host,
+and Bun, cross-checks each count with `GetProcessHandleCount`, binds the host's
+reported debug-only stdin handle value to the raw File entry, verifies read-only
+access with no inherit attribute, and uses duplicated-handle object comparison
+to prove Bun has no copy. A temporary inherit-bit mutation must fail that same
+oracle; a process list or aggregate count alone is insufficient.
 
 Windows dev-stage deletion uses the approved private
 `keld.windows-dev-stage-cleanup/v1` sentinel. The CLI launches the installed,
