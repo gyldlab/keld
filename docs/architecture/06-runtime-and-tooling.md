@@ -51,7 +51,9 @@
   spans fresh loopback generations while the same WebView2 HWND remains live;
   `NavigationCompleted` drives `Ready` through tao's UI-thread
   `EventLoopProxy`. A link-only failure requests revoke/kill/reap/restart from
-  that same supervisor rather than creating a core-side process loop.
+  that same supervisor rather than creating a core-side process loop. Retired
+  capture readers are detached at this boundary so a descendant-held pipe
+  cannot delay the successor; KEL-78 still owns descendant termination.
   Correlated Quit and CLI EOF use the shared
   quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
   removes the stage after the host exits. CLI-death process teardown is live,

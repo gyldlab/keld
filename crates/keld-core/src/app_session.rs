@@ -67,6 +67,8 @@ use keld_wv::{AppWindowCommand, AppWindowEvent};
 #[cfg(any(target_os = "macos", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
 #[cfg(windows)]
+use winapi::um::winbase::FILE_FLAG_OPEN_REPARSE_POINT;
+#[cfg(windows)]
 use winapi::um::winnt::FILE_ATTRIBUTE_REPARSE_POINT;
 #[cfg(windows)]
 use windows_permissions::constants::{
@@ -655,7 +657,7 @@ fn open_relative_file_windows(
     path: &Path,
     kind: &'static str,
 ) -> Result<File, HostAppError> {
-    use std::os::windows::fs::MetadataExt as _;
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 
     let components = path
         .components()
@@ -687,7 +689,14 @@ fn open_relative_file_windows(
             ));
         }
     }
-    let file = File::open(&candidate).map_err(|source| target_error(kind, source.to_string()))?;
+    // Open the leaf reparse point itself instead of following it. The
+    // owner-private root makes component replacement by another principal
+    // unavailable; same-user mutation remains outside this dev-only boundary.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&candidate)
+        .map_err(|source| target_error(kind, source.to_string()))?;
     let metadata = file
         .metadata()
         .map_err(|source| target_error(kind, source.to_string()))?;

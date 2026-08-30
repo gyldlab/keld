@@ -152,7 +152,7 @@ sha2 = "0.10"
 windows-permissions = "=0.2.4"
 # Same locked package used by windows-permissions; keld-core imports only the
 # canonical FILE_ATTRIBUTE_REPARSE_POINT value for same-handle boot traversal.
-winapi = "=0.3.9"
+winapi = { version = "=0.3.9", features = ["winbase", "winnt"] }
 # Already locked through the workspace Windows stack; direct target-only use
 # supplies CreateDirectoryW + SECURITY_ATTRIBUTES for atomic DACL creation.
 windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_Storage_FileSystem"] }

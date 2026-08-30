@@ -57,20 +57,14 @@ impl RoleRecoveryGate {
             || self.decision.load(Ordering::Acquire) == RECOVERY_ARMED
     }
 
-    /// Rejects successor provisioning before initial readiness.
+    /// Rejects further successor provisioning for startup rollback or
+    /// accepted session shutdown.
     ///
     /// Returns `true` when recovery is denied after this call.
     #[must_use]
     pub fn deny(&self) -> bool {
-        self.decision
-            .compare_exchange(
-                RECOVERY_PENDING,
-                RECOVERY_DENIED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-            || self.decision.load(Ordering::Acquire) == RECOVERY_DENIED
+        self.decision.store(RECOVERY_DENIED, Ordering::Release);
+        true
     }
 }
 
@@ -1022,6 +1016,19 @@ mod lifecycle_tests {
         let shutdown = AtomicBool::new(true);
         assert!(matches!(
             await_recovery_decision(&decision, &shutdown),
+            Ok(false)
+        ));
+    }
+
+    #[test]
+    fn accepted_shutdown_disarms_an_armed_recovery_gate() {
+        let gate = RoleRecoveryGate {
+            decision: Arc::new(AtomicU8::new(RECOVERY_PENDING)),
+        };
+        assert!(gate.arm());
+        assert!(gate.deny());
+        assert!(matches!(
+            await_recovery_decision(&gate.decision, &AtomicBool::new(false)),
             Ok(false)
         ));
     }

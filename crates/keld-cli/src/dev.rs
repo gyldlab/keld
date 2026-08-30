@@ -241,6 +241,7 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         });
     let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
+    let stage_root = stage.root().to_owned();
     let mut command = Command::new(stage.host());
     command
         .current_dir(stage.root())
@@ -254,7 +255,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     let mut host = match host {
         Ok(host) => host,
         Err(source) => {
-            if let Err(cleanup) = fs::remove_dir_all(stage.root()) {
+            drop(stage);
+            if let Err(cleanup) = fs::remove_dir_all(&stage_root) {
                 return Err(DevError::Doctor(format!(
                     "KELD-CLI-047: boot staging failed during host launch cleanup — \
                      spawn failed: {source}; cleanup failed: {cleanup}. \
@@ -271,13 +273,14 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     })?;
     let status = host.wait()?;
     drop(lease_writer);
+    drop(stage);
     #[cfg(windows)]
-    if let Err(source) = fs::remove_dir_all(stage.root())
+    if let Err(source) = fs::remove_dir_all(&stage_root)
         && source.kind() != io::ErrorKind::NotFound
     {
         return Err(DevError::Doctor(format!(
             "KELD-CLI-047: boot staging failed during Windows host cleanup — {source}. Remove `{}` after confirming the host has exited.",
-            stage.root().display()
+            stage_root.display()
         )));
     }
     if status.success() {

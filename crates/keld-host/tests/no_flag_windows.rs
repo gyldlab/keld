@@ -63,6 +63,26 @@ fn windows_stage_is_current_user_protected_and_byte_consistent() {
 }
 
 #[test]
+fn windows_stage_namespace_is_pinned_until_the_host_owner_releases_it() {
+    let fixture = StageFixture::new();
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage namespace-pinning fixture");
+    let keld_root = fixture.project.join(".keld");
+    let moved = fixture.project.join(".keld-moved");
+
+    fs::rename(&keld_root, &moved)
+        .expect_err("a retained no-share-delete handle must pin the staged pathname chain");
+    assert!(stage.host().is_file(), "pinned host path disappeared");
+
+    drop(stage);
+    fs::rename(&keld_root, &moved).expect("releasing the stage must release namespace guards");
+    fs::rename(&moved, &keld_root).expect("restore fixture namespace");
+}
+
+#[test]
 fn windows_host_validates_the_staged_descriptor_before_platform_session_start() {
     let fixture = StageFixture::new();
     let stage = keld_cli::boot::stage_dev_boot(

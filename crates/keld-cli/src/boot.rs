@@ -23,7 +23,10 @@ use windows_permissions::{LocalBox, SecurityDescriptor};
 #[cfg(windows)]
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 #[cfg(windows)]
-use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
 
 #[cfg(any(target_os = "macos", windows))]
 const PERMISSIONS_BYTES: &[u8] = b"{}\n";
@@ -37,6 +40,8 @@ const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 pub struct DevBootStage {
     root: PathBuf,
     host: PathBuf,
+    #[cfg(windows)]
+    _launch_guards: Vec<File>,
 }
 
 impl DevBootStage {
@@ -255,12 +260,62 @@ fn stage_dev_boot_platform(
         }
     }
     #[cfg(windows)]
-    verify_windows_stage_acl(&root)?;
+    let launch_guards = retain_windows_launch_guards(&project_root, &dev_root, &root)?;
+    #[cfg(windows)]
+    {
+        verify_windows_stage_acl(&root)?;
+        let locked_digest = digest_file(&staged_host, "locked staged host")?;
+        if source_digest != locked_digest {
+            return Err(BootCompileError::new(
+                "host copy integrity",
+                "locked staged host digest differs from the already-open source bytes",
+            ));
+        }
+    }
     guard.keep = true;
     Ok(DevBootStage {
         root,
         host: staged_host,
+        #[cfg(windows)]
+        _launch_guards: launch_guards,
     })
+}
+
+#[cfg(windows)]
+fn retain_windows_launch_guards(
+    project_root: &Path,
+    dev_root: &Path,
+    stage_root: &Path,
+) -> Result<Vec<File>, BootCompileError> {
+    let keld_root = dev_root.parent().ok_or_else(|| {
+        BootCompileError::new("launch namespace", "the dev root has no .keld parent")
+    })?;
+    [project_root, keld_root, dev_root, stage_root]
+        .into_iter()
+        .map(open_windows_launch_guard)
+        .collect()
+}
+
+#[cfg(windows)]
+fn open_windows_launch_guard(path: &Path) -> Result<File, BootCompileError> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+    let guard = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|source| BootCompileError::new("launch namespace", source.to_string()))?;
+    let metadata = guard
+        .metadata()
+        .map_err(|source| BootCompileError::new("launch namespace", source.to_string()))?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(BootCompileError::new(
+            "launch namespace",
+            format!("{} is not a real directory", path.display()),
+        ));
+    }
+    Ok(guard)
 }
 
 #[cfg(any(target_os = "macos", windows))]

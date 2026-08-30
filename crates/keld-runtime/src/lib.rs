@@ -960,7 +960,7 @@ fn supervise<P>(
                     *lock_or_recover(terminal_error) = Some(error);
                     let _ = child.kill();
                     let _ = child.wait();
-                    join_capture_threads(capture_threads);
+                    drop(capture_threads);
                     *lock_or_recover(current_pid) = None;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
@@ -971,12 +971,17 @@ fn supervise<P>(
                         phase: "child restart wait",
                         source,
                     });
-                    join_capture_threads(capture_threads);
+                    drop(capture_threads);
                     *lock_or_recover(current_pid) = None;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
-                join_capture_threads(capture_threads);
+                // A descendant can retain Bun's inherited pipe write end.
+                // Retired readers share the output mutex safely and exit when
+                // that handle closes; joining here would block successor
+                // provisioning on a process this supervisor does not own.
+                // KEL-78 remains the descendant reaping owner.
+                drop(capture_threads);
                 *lock_or_recover(current_pid) = None;
                 None
             }
@@ -1522,6 +1527,52 @@ mod tests {
         requested.store(2, Ordering::Release);
         assert!(take_restart_for_attempt(&requested, 2));
         assert_eq!(requested.load(Ordering::Acquire), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn host_requested_restart_does_not_wait_for_descendant_capture_eof() {
+        let factory_attempt = Arc::new(AtomicU32::new(0));
+        let factory_counter = Arc::clone(&factory_attempt);
+        let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+            if factory_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+                let mut command = Command::new("cmd");
+                command.args([
+                    "/C",
+                    "start \"\" /B ping -n 5 127.0.0.1 & ping -n 5 127.0.0.1",
+                ]);
+                command
+            } else {
+                long_running_command()
+            }
+        })
+        .expect("first child starts");
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Started { attempt: 1, .. })
+        ));
+
+        supervisor.restart_generation(1);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut successor_started = false;
+        while Instant::now() < deadline {
+            if matches!(
+                supervisor.recv_event(Duration::from_millis(100)),
+                Some(SupervisorEvent::Started { attempt: 2, .. })
+            ) {
+                successor_started = true;
+                break;
+            }
+        }
+        assert!(
+            successor_started,
+            "retired capture readers blocked successor provisioning"
+        );
+        supervisor.shutdown();
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
     }
 
     #[test]

@@ -584,6 +584,11 @@ privileged channel. The first and only production caller in T1b is the no-flag
       Quit/CLI-death evidence on RAMANI, but T4 remains unchecked: Windows
       abnormal-host-death waits on KEL-78/T3, post-CLI-death stage deletion has
       no approved surviving owner, and the real Linux desktop rows are absent.
+      The CLI retains no-share-delete handles for the canonical project,
+      `.keld`, `dev`, and nonce directories through host exit and rechecks the
+      locked stage DACL and host digest before launch. Link-only restart does
+      not join retired capture readers that a descendant can keep open; this
+      prevents successor delay without claiming descendant process ownership.
 - [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
       actually proved by landed T1a–T4 work.
 
