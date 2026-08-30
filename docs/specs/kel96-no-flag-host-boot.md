@@ -587,11 +587,12 @@ privileged channel. The first and only production caller in T1b is the no-flag
       The CLI validates and retains no-share-delete handles for the canonical
       project, `.keld`, and `dev` before nonce creation, then pins and validates
       the nonce before writing any staged child. It rechecks the locked stage
-      DACL and host digest before launch. Link restart and orderly Windows
-      shutdown do not join retired capture readers that a descendant can keep
-      open; this prevents successor/host-exit delay without claiming descendant
-      process ownership. Lease monitoring begins before listener/child creation,
-      and revoked-attempt tombstones reject a bound stream observed after its
+      DACL and host digest before launch. Windows direct-child terminal paths
+      do not join capture readers that a descendant can keep open; this
+      prevents successor/host-exit delay without claiming descendant process
+      ownership. Lease monitoring begins before listener/child creation,
+      accepted shutdown closes successor admission before the reply tail, and
+      revoked-attempt tombstones reject a bound stream observed after its
       revocation.
 - [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
       actually proved by landed T1a–T4 work.

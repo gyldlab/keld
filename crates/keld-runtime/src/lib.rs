@@ -468,14 +468,8 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn shutdown_was_accepted(state: &AtomicBool) -> bool {
     state.load(Ordering::Acquire)
-}
-
-#[cfg(not(target_os = "macos"))]
-const fn shutdown_was_accepted() -> bool {
-    false
 }
 
 /// Supervises one Bun (or other) child process: spawns it, captures its
@@ -496,7 +490,6 @@ pub struct Supervisor {
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
     crashes: Arc<Mutex<CrashLedger>>,
     terminal_error: Arc<Mutex<Option<RuntimeError>>>,
-    #[cfg(target_os = "macos")]
     accepted_shutdown: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     #[cfg(windows)]
@@ -549,7 +542,6 @@ impl Supervisor {
         let crash_loop_error = Arc::new(Mutex::new(None));
         let crashes = Arc::new(Mutex::new(CrashLedger::default()));
         let terminal_error = Arc::new(Mutex::new(None));
-        #[cfg(target_os = "macos")]
         let accepted_shutdown = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let restart_attempt = Arc::new(AtomicU32::new(0));
@@ -560,7 +552,6 @@ impl Supervisor {
             let crash_loop_error = Arc::clone(&crash_loop_error);
             let crashes = Arc::clone(&crashes);
             let terminal_error = Arc::clone(&terminal_error);
-            #[cfg(target_os = "macos")]
             let accepted_shutdown = Arc::clone(&accepted_shutdown);
             let shutdown = Arc::clone(&shutdown);
             let restart_attempt = Arc::clone(&restart_attempt);
@@ -595,7 +586,6 @@ impl Supervisor {
                         &crash_loop_error,
                         &crashes,
                         &terminal_error,
-                        #[cfg(target_os = "macos")]
                         &accepted_shutdown,
                         &shutdown,
                         &restart_attempt,
@@ -632,7 +622,6 @@ impl Supervisor {
             crash_loop_error,
             crashes,
             terminal_error,
-            #[cfg(target_os = "macos")]
             accepted_shutdown,
             shutdown,
             #[cfg(windows)]
@@ -759,7 +748,7 @@ impl Supervisor {
     /// Marks a caller-accepted shutdown before its reply can make the child
     /// terminate cooperatively. This changes attribution only; [`Self::shutdown`]
     /// remains the sole signal that initiates kill/reap.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(crate) fn accept_shutdown(&self) {
         self.accepted_shutdown.store(true, Ordering::Release);
     }
@@ -820,7 +809,7 @@ fn supervise<P>(
     crash_loop_error: &Arc<Mutex<Option<RuntimeError>>>,
     crash_ledger: &Arc<Mutex<CrashLedger>>,
     terminal_error: &Arc<Mutex<Option<RuntimeError>>>,
-    #[cfg(target_os = "macos")] accepted_shutdown: &Arc<AtomicBool>,
+    accepted_shutdown: &Arc<AtomicBool>,
     shutdown: &Arc<AtomicBool>,
     restart_attempt: &Arc<AtomicU32>,
 ) where
@@ -857,7 +846,7 @@ fn supervise<P>(
                 };
                 let _ = child.kill();
                 let _ = child.wait();
-                join_capture_threads(error.threads);
+                finish_capture_threads_after_direct_child(error.threads);
                 *lock_or_recover(current_pid) = None;
                 *lock_or_recover(terminal_error) = Some(terminal);
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
@@ -878,7 +867,7 @@ fn supervise<P>(
                     };
                     let _ = child.kill();
                     let _ = child.wait();
-                    join_capture_threads(capture_threads);
+                    finish_capture_threads_after_direct_child(capture_threads);
                     *lock_or_recover(current_pid) = None;
                     *lock_or_recover(terminal_error) = Some(terminal);
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
@@ -892,7 +881,7 @@ fn supervise<P>(
             };
             let _ = child.kill();
             let _ = child.wait();
-            join_capture_threads(capture_threads);
+            finish_capture_threads_after_direct_child(capture_threads);
             *lock_or_recover(current_pid) = None;
             *lock_or_recover(terminal_error) = Some(terminal);
             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
@@ -910,11 +899,8 @@ fn supervise<P>(
                 *lock_or_recover(terminal_error) = Some(error);
                 let _ = child.kill();
                 let _ = child.wait();
-                finish_capture_threads_after_shutdown(capture_threads);
-                #[cfg(target_os = "macos")]
+                finish_capture_threads_after_direct_child(capture_threads);
                 let accepted = shutdown_was_accepted(accepted_shutdown);
-                #[cfg(not(target_os = "macos"))]
-                let accepted = shutdown_was_accepted();
                 if let Some(status) = self_terminated
                     && !accepted
                 {
@@ -926,7 +912,7 @@ fn supervise<P>(
             }
             let _ = child.kill();
             let wait_result = child.wait();
-            finish_capture_threads_after_shutdown(capture_threads);
+            finish_capture_threads_after_direct_child(capture_threads);
             if let Err(source) = wait_result {
                 *lock_or_recover(terminal_error) = Some(RuntimeError::Lifecycle {
                     phase: "child shutdown wait",
@@ -936,10 +922,7 @@ fn supervise<P>(
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
-            #[cfg(target_os = "macos")]
             let accepted = shutdown_was_accepted(accepted_shutdown);
-            #[cfg(not(target_os = "macos"))]
-            let accepted = shutdown_was_accepted();
             if let Some(status) = self_terminated
                 && !accepted
             {
@@ -985,7 +968,7 @@ fn supervise<P>(
                 None
             }
             WaitResult::Exited(status) => {
-                join_capture_threads(capture_threads);
+                finish_capture_threads_after_direct_child(capture_threads);
                 *lock_or_recover(current_pid) = None;
                 let code = status.code();
                 restart_attempt.store(0, Ordering::Release);
@@ -993,10 +976,7 @@ fn supervise<P>(
                 // The OS exit is already an observed fact. Publish it before
                 // revocation so a lifecycle failure cannot erase the durable
                 // ledger record (KEL-116).
-                #[cfg(target_os = "macos")]
                 let accepted = shutdown_was_accepted(accepted_shutdown);
-                #[cfg(not(target_os = "macos"))]
-                let accepted = shutdown_was_accepted();
                 if !accepted {
                     record_self_termination(crash_ledger, output, pid, code);
                 }
@@ -1032,7 +1012,7 @@ fn supervise<P>(
             return;
         }
 
-        if wait_backoff_or_shutdown(backoff_delay(crash_count), shutdown) {
+        if wait_backoff_or_stop(backoff_delay(crash_count), shutdown, accepted_shutdown) {
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
         }
@@ -1052,9 +1032,14 @@ fn supervise<P>(
             }
         }
 
+        if stop_was_requested(shutdown, accepted_shutdown) {
+            let _ = events_tx.send(SupervisorEvent::Stopped);
+            return;
+        }
+
         attempt += 1;
         match preparer.prepare(attempt) {
-            Ok(next_prepared_child) if shutdown.load(Ordering::SeqCst) => {
+            Ok(next_prepared_child) if stop_was_requested(shutdown, accepted_shutdown) => {
                 let PreparedChild { lease, .. } = next_prepared_child;
                 if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
                     *lock_or_recover(terminal_error) = Some(error);
@@ -1066,7 +1051,7 @@ fn supervise<P>(
             }
             Ok(next_prepared_child) => match spawn_prepared(next_prepared_child) {
                 Ok((next_child, next_lease)) => {
-                    if shutdown.load(Ordering::SeqCst) {
+                    if stop_was_requested(shutdown, accepted_shutdown) {
                         let mut next_child = next_child;
                         if let Err(error) = next_lease.revoke(RevocationCause::Shutdown) {
                             *lock_or_recover(terminal_error) = Some(error);
@@ -1148,6 +1133,7 @@ fn start_capture_threads(
     })
 }
 
+#[cfg(not(windows))]
 fn join_capture_threads(threads: CaptureThreads) {
     if let Some(thread) = threads.stdout {
         let _ = thread.join();
@@ -1157,14 +1143,15 @@ fn join_capture_threads(threads: CaptureThreads) {
     }
 }
 
-fn finish_capture_threads_after_shutdown(threads: CaptureThreads) {
+fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
     #[cfg(windows)]
     {
         // An uncontained descendant may retain an inherited pipe write end.
         // Waiting for that unowned process would block orderly host exit;
         // KEL-78 remains the process-tree reaping owner. The readers retain
         // their shared output sink and exit when the pipe eventually closes.
-        drop(threads);
+        let CaptureThreads { stdout, stderr } = threads;
+        drop((stdout, stderr));
     }
     #[cfg(not(windows))]
     join_capture_threads(threads);
@@ -1327,18 +1314,26 @@ fn spawn_capture_thread(
         })
 }
 
-fn wait_backoff_or_shutdown(delay: Duration, shutdown: &AtomicBool) -> bool {
+fn stop_was_requested(shutdown: &AtomicBool, accepted_shutdown: &AtomicBool) -> bool {
+    shutdown.load(Ordering::SeqCst) || shutdown_was_accepted(accepted_shutdown)
+}
+
+fn wait_backoff_or_stop(
+    delay: Duration,
+    shutdown: &AtomicBool,
+    accepted_shutdown: &AtomicBool,
+) -> bool {
     let start = Instant::now();
     loop {
-        if shutdown.load(Ordering::SeqCst) {
+        if stop_was_requested(shutdown, accepted_shutdown) {
             return true;
         }
         let elapsed = start.elapsed();
         if elapsed >= delay {
-            return shutdown.load(Ordering::SeqCst);
+            return stop_was_requested(shutdown, accepted_shutdown);
         }
         let Some(remaining) = delay.checked_sub(elapsed) else {
-            return shutdown.load(Ordering::SeqCst);
+            return stop_was_requested(shutdown, accepted_shutdown);
         };
         thread::sleep(remaining.min(POLL_INTERVAL));
     }
@@ -1671,6 +1666,53 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "orderly shutdown waited for an unowned descendant pipe"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn natural_exit_does_not_wait_for_descendant_capture_eof_before_restart() {
+        let factory_attempt = Arc::new(AtomicU32::new(0));
+        let factory_counter = Arc::clone(&factory_attempt);
+        let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+            if factory_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+                let mut command = Command::new("powershell");
+                command.args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "$null = Start-Process powershell -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 4' -NoNewWindow -PassThru; exit 17",
+                ]);
+                command
+            } else {
+                long_running_command()
+            }
+        })
+        .expect("crashing child with inherited-pipe descendant starts");
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Started { attempt: 1, .. })
+        ));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut successor_started = false;
+        while Instant::now() < deadline {
+            if matches!(
+                supervisor.recv_event(Duration::from_millis(100)),
+                Some(SupervisorEvent::Started { attempt: 2, .. })
+            ) {
+                successor_started = true;
+                break;
+            }
+        }
+        assert!(
+            successor_started,
+            "natural exit waited for an unowned descendant pipe"
+        );
+        supervisor.shutdown();
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
     }
 
     #[test]

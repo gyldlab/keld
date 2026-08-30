@@ -53,15 +53,18 @@
   `EventLoopProxy`. Revoked-attempt tombstones prevent a separately queued
   bound stream from being installed after its revocation. A link-only failure requests revoke/kill/reap/restart from
   that same supervisor rather than creating a core-side process loop. Retired
-  capture readers are detached on link restart and orderly Windows shutdown so
-  a descendant-held pipe cannot delay the successor or host exit; KEL-78 still
-  owns descendant termination. The host clears inheritance and starts watching
+  capture readers are detached after every Windows direct-child terminal path
+  so a descendant-held pipe cannot delay the successor or host exit; KEL-78
+  still owns descendant termination. Accepted shutdown also closes successor
+  admission without killing the current child before its correlated reply.
+  The host clears inheritance and starts watching
   the stdin-v1 lease before the first Bun spawn, preserves lease-read/tail
   errors through the window result, and gates listener/child and initial
   WebView2 creation under the common shutdown transition. A bounded existing
   self-termination observation prevents socket EOF from restarting a Bun that
   is already exiting zero. That exit is reported as the top-level
-  `KELD-CORE-033` with its retained PID/status.
+  `KELD-CORE-033` with its retained PID/status; crash-loop/runtime failures use
+  the same outer code with their `KELD-RUNTIME-*` cause nested.
   Correlated Quit and CLI EOF use the shared
   quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
   removes the stage after the host exits. Windows staging pins and validates

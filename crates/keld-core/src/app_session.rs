@@ -5,9 +5,9 @@ use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::ffi::OsStr;
 use std::fmt;
-#[cfg(any(target_os = "macos", windows))]
 #[cfg(windows)]
 use std::fs;
+#[cfg(any(target_os = "macos", windows))]
 use std::fs::File;
 #[cfg(any(target_os = "macos", windows))]
 use std::io::{self, Read};
@@ -2088,9 +2088,17 @@ impl WindowsPrimaryOwner {
                             let _ = window_commands.send(AppWindowCommand::Fatal);
                             return Err(error);
                         };
+                        let attempt = bound.attempt();
                         if let Err(error) =
                             router.apply_generation_update(PrimaryOwnerUpdate::Bound(bound))
                         {
+                            if router.window_ready.load(Ordering::Acquire)
+                                && router.is_current(attempt)
+                                && shutdown.is_running()
+                            {
+                                supervisor.restart_generation(attempt);
+                                continue;
+                            }
                             let _ = recovery.deny();
                             supervisor.shutdown();
                             let _ = window_commands.send(AppWindowCommand::Fatal);
@@ -2118,7 +2126,7 @@ impl WindowsPrimaryOwner {
                             keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                             keld_runtime::SupervisorOutcome::CrashLoop(error)
                             | keld_runtime::SupervisorOutcome::Failed(error) => {
-                                Err(app_runtime("Windows primary supervisor", &error))
+                                Err(app_runtime_fatal("Windows primary supervisor", &error))
                             }
                         };
                     }
@@ -2158,6 +2166,7 @@ impl WindowsPrimaryOwner {
                         }
                         Ok(WindowsPrimaryOwnerCommand::PrepareAcceptedShutdown(reply)) => {
                             let _ = recovery.deny();
+                            supervisor.accept_shutdown();
                             let _ = reply.send(Ok(()));
                         }
                         Ok(WindowsPrimaryOwnerCommand::Shutdown(reply)) => {
@@ -2906,7 +2915,7 @@ fn collapse_app_failures<const N: usize>(
     app_detail("startup cleanup", detail)
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(windows)]
 fn append_app_cleanup<const N: usize>(
     mut primary: HostAppError,
     cleanup: [Result<(), HostAppError>; N],
@@ -2956,6 +2965,16 @@ fn app_runtime(phase: &'static str, source: &keld_runtime::RuntimeError) -> Host
 
 #[cfg(target_os = "macos")]
 fn app_guardian_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
+    HostAppError::new(
+        "KELD-CORE-033",
+        phase,
+        source.to_string(),
+        "Fix the cause named by the nested KELD-RUNTIME diagnostic, then relaunch the no-flag host.",
+    )
+}
+
+#[cfg(windows)]
+fn app_runtime_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-033",
         phase,

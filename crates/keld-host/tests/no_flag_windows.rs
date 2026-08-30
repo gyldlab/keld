@@ -332,6 +332,46 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     assert!(status.success(), "fast-g2 recovery host exited {status}");
 }
 
+#[test]
+fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind crash-loop control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage crash-loop host");
+    let mut child = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch crash-loop host");
+
+    for _ in 0..3 {
+        let (_reader, mut writer, _pid, _link) =
+            accept_ready_generation(&control_listener, &mut child);
+        writer.write_all(b"CRASH\n").expect("crash generation");
+        writer.flush().expect("flush generation crash");
+    }
+    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
+    assert!(!status.success(), "crash loop became host success");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured crash-loop stderr")
+        .read_to_string(&mut stderr)
+        .expect("read crash-loop stderr");
+    assert!(stderr.trim_start().starts_with("KELD-CORE-033"), "{stderr}");
+    assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+}
+
 fn run_same_window_recovery(failure_command: &str) {
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");

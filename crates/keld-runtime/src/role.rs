@@ -556,6 +556,13 @@ impl RoleSupervisor {
         self.supervisor.shutdown();
     }
 
+    /// Stops crash-successor admission without killing the current Windows
+    /// generation before its accepted Quit reply is written.
+    #[cfg(windows)]
+    pub fn accept_shutdown(&self) {
+        self.supervisor.accept_shutdown();
+    }
+
     /// Revokes, kills/reaps, and restart-policies the named Windows generation
     /// after its authenticated app link fails while the process is still live.
     #[cfg(windows)]
