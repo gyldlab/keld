@@ -487,7 +487,7 @@ classify_path() {
         # These inputs own the repository-hygiene contract, but do not affect a
         # product build or graphical window.
         .github/CODEOWNERS | .github/PULL_REQUEST_TEMPLATE.md | .github/ISSUE_TEMPLATE/* | \
-        .gitignore | justfile | tools/ci_hygiene.rs)
+        .gitignore | justfile | tools/ci_hygiene.rs | tools/atomic_protocol.rs)
             hygiene="$TRUE"
             ;;
 

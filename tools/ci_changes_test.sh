@@ -115,6 +115,10 @@ expect_empty_packages "docs-only change selects no package" "$docs_classificatio
 hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"
 
+atomic_checker_classification="$(result_for_paths tools/atomic_protocol.rs)"
+expect_flags "atomic protocol checker runs only its hygiene contract" "$hygiene_only" "$atomic_checker_classification"
+expect_empty_packages "atomic protocol checker selects no package" "$atomic_checker_classification"
+
 host_classification="$(result_for_paths crates/keld-ipc/src/lib.rs)"
 expect_flags "host dependency closure routes IPC change to GUI smoke and GTK for its selected test closure" "$host_dependency" "$host_classification"
 expect_package_token "IPC change includes host consumer" keld-host "$host_classification"
