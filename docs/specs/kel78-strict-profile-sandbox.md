@@ -613,7 +613,7 @@ Renderer sandbox is a different column.
       requires them. Enumerate `temporary-exception.*` as unexpected.
       Integrate the approved T2b guardian without duplicating lifecycle policy,
       and prove the strict child/descendant enrollment separately.
-- [ ] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
+- [x] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
 - [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
       work; mount-table change or `pivot_root`, not Landlock) +
