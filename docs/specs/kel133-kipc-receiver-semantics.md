@@ -1,5 +1,5 @@
 # Spec: kipc receiver semantics and absolute admission deadlines
-Status: draft
+Status: approved
 Linear: KEL-133 · Owner: GYLDLAB · Updated: 2026-08-30
 
 ## 1. Goal & non-goals
@@ -319,7 +319,7 @@ Must not touch:
 
 ## 6. Tasks (each approximately one PR; ordered)
 
-- [ ] **T0 — contract freeze:** approve this spec, the exact owner partition, v0
+- [x] **T0 — contract freeze:** approve this spec, the exact owner partition, v0
   semantic table, deadline model, vector format, failure actions, and review gates. No
   product code or OS acceptance.
 - [ ] **T1a — deterministic validator and corpus:** land failure-first Rust tests,
@@ -345,7 +345,7 @@ and one landed artifact. A partial merge cannot unlock KEL-130, KEL-102/T3, or K
 
 | Acceptance | Test and independent oracle |
 |---|---|
-| 1–3 | Unit table over exact headers plus integration receiver effect counter. Mutating validator dispatch to unconditional success fails zero-correlation, RAW, unknown-flag, wrong-channel, and malformed-payload cases independently. |
+| 1–3 | Unit table over exact headers plus an integration receiver effect counter. Mutating header validation to unconditional success fails zero-correlation, RAW, unknown-flag, and wrong-channel cases. A separate malformed/trailing-payload mutation bypasses or weakens the postcard decode boundary and must fail exact `KELD-IPC-003` plus zero-handler-effect assertions; payload-codec proof is not attributed to the header validator. |
 | 4 | Existing real HELLO link plus raw clients for reserved fields, 0/31/32/33-byte payloads and foreign token. Host observer code and absence of any reply/token bytes are the oracle. Collapsing shape failure into `007` fails. |
 | 5 | Reply/event waiter fixtures send wrong kind/channel/correlation and assert the intended waiter never completes before the typed session rejection. Removing exact-correlation matching fails. |
 | 6 | Real listener with a 100 ms generation deadline and a byte-drip child; elapsed monotonic bound, terminal state, joined child, removed locator, and next fresh-generation success are asserted. Resetting the deadline on accept/read/retry must make the named test exceed its bound and fail. |
@@ -390,7 +390,6 @@ waiver and attributed benchmark per architecture 01 §5.
 
 ## 10. Open questions
 
-1. Human approval of this exact T0 spec and its wire-behavior ruling.
-2. At T1 claim time, confirm whether the shared validated-header types can remain
-   `keld-ipc`-public but workspace-internal in practice, or whether a crate-private
-   adapter is sufficient; any public-contract change requires explicit review.
+None. T1 keeps the validator implementation owned by `keld-ipc` and uses the narrowest
+consumer API that existing crate boundaries permit. Any exported type or accessor is a
+public-API review gate on the T1 candidate, not an unresolved T0 design question.
