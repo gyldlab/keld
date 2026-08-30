@@ -114,7 +114,7 @@ pub fn stage_dev_boot(
         let _ = (project_root, developer_host);
         Err(BootCompileError::new(
             "platform availability",
-            "the first boot compiler slice is macOS-only; complete KEL-96/T4 for this platform",
+            "the boot compiler supports macOS and Windows; complete KEL-96/T4 for this platform",
         ))
     }
     #[cfg(any(target_os = "macos", windows))]

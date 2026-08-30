@@ -606,21 +606,30 @@ impl ChildPreparer for RolePreparer {
         let Some(decision) = &self.recovery_decision else {
             return Ok(true);
         };
-        loop {
-            match decision.load(Ordering::Acquire) {
-                RECOVERY_ARMED => return Ok(true),
-                RECOVERY_DENIED => return Ok(false),
-                RECOVERY_PENDING if shutdown.load(Ordering::Acquire) => return Ok(false),
-                RECOVERY_PENDING => thread::park_timeout(RECOVERY_POLL),
-                _ => {
-                    return Err(RuntimeError::Lifecycle {
-                        phase: "primary recovery decision",
-                        source: std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "invalid recovery decision",
-                        ),
-                    });
-                }
+        await_recovery_decision(decision, shutdown)
+    }
+}
+
+fn await_recovery_decision(
+    decision: &AtomicU8,
+    shutdown: &AtomicBool,
+) -> Result<bool, RuntimeError> {
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        match decision.load(Ordering::Acquire) {
+            RECOVERY_ARMED => return Ok(true),
+            RECOVERY_DENIED => return Ok(false),
+            RECOVERY_PENDING => thread::park_timeout(RECOVERY_POLL),
+            _ => {
+                return Err(RuntimeError::Lifecycle {
+                    phase: "primary recovery decision",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid recovery decision",
+                    ),
+                });
             }
         }
     }
@@ -994,6 +1003,16 @@ impl BootstrapRejectionObserver for RoleBootstrapObserver {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn armed_recovery_gate_never_overrides_shutdown() {
+        let decision = AtomicU8::new(RECOVERY_ARMED);
+        let shutdown = AtomicBool::new(true);
+        assert!(matches!(
+            await_recovery_decision(&decision, &shutdown),
+            Ok(false)
+        ));
+    }
 
     #[test]
     fn repeated_rejections_are_coalesced_to_one_event_per_class() {

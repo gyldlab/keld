@@ -1800,6 +1800,7 @@ struct WindowsPrimaryOwner {
 
 #[cfg(windows)]
 impl WindowsPrimaryOwner {
+    #[allow(clippy::too_many_lines)] // one owner loop keeps event/bound fan-in, recovery decisions, shutdown and terminal outcome causally ordered
     fn start(
         supervisor: PrimaryRoleSupervisor,
         recovery: PrimaryRecoveryGate,
@@ -1828,12 +1829,23 @@ impl WindowsPrimaryOwner {
                     }
                     while let Some(bound) = supervisor.try_recv_bound_generation() {
                         let Some(router) = router.as_ref() else {
-                            return Err(app_detail(
+                            let error = app_detail(
                                 "Windows primary owner",
                                 "successor bound before the app router was attached",
-                            ));
+                            );
+                            let _ = recovery.deny();
+                            supervisor.shutdown();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(error);
                         };
-                        router.apply_generation_update(PrimaryOwnerUpdate::Bound(bound))?;
+                        if let Err(error) =
+                            router.apply_generation_update(PrimaryOwnerUpdate::Bound(bound))
+                        {
+                            let _ = recovery.deny();
+                            supervisor.shutdown();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(error);
+                        }
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
                         if shutdown.is_running() {
