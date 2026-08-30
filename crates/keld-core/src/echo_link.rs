@@ -8,15 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-#[cfg(windows)]
-use keld_ipc::serve_echo_session_until_stopped;
-#[cfg(unix)]
 use keld_ipc::{BootstrapListener, serve_echo_requests_until_stopped};
 use keld_ipc::{EchoRequest, EchoResponse, echo_call, parse_app_link};
 #[cfg(windows)]
 use keld_ipc::{SessionToken, format_app_link};
 
-/// Endpoint for the echo server (Unix socket path or TCP port).
+/// Compatibility endpoint value for the Windows loopback echo surface.
 #[cfg(windows)]
 #[derive(Debug, Clone)]
 pub enum EchoEndpoint {
@@ -41,15 +38,8 @@ impl EchoEndpoint {
 /// Handle to a background echo server thread.
 #[derive(Debug)]
 pub struct EchoServer {
-    /// The Unix listener is reusable bootstrap infrastructure owned by kipc.
-    #[cfg(unix)]
+    /// The reusable platform listener is owned by kipc.
     bootstrap: Arc<BootstrapListener>,
-    /// Windows retains the v0 loopback implementation until KEL-75 names a
-    /// pipe/DACL transport slice.
-    #[cfg(windows)]
-    endpoint: EchoEndpoint,
-    #[cfg(windows)]
-    token: SessionToken,
     /// Stops an authenticated idle reader before joining its worker thread.
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<Result<(), keld_ipc::IpcError>>>,
@@ -65,65 +55,30 @@ impl EchoServer {
     /// Returns [`io::Error`] if the bootstrap endpoint cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
-        #[cfg(unix)]
-        {
-            let bootstrap = Arc::new(BootstrapListener::bind()?);
-            ready.send(()).ok();
-            let acceptor = Arc::clone(&bootstrap);
-            let stop_for_worker = Arc::clone(&stop);
-            let handle = thread::spawn(move || {
-                let Some(mut stream) = acceptor.accept_authenticated()? else {
-                    return Err(keld_ipc::IpcError::Io(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        "echo bootstrap listener stopped before authentication",
-                    )));
-                };
-                serve_echo_requests_until_stopped(&mut stream, stop_for_worker.as_ref())
-            });
-            Ok(Self {
-                bootstrap,
-                stop,
-                handle: Some(handle),
-            })
-        }
-        #[cfg(windows)]
-        {
-            let token = SessionToken::random()?;
-            // Destination: named pipe + current-user DACL (02-ipc §1). v0 is
-            // loopback TCP; peer auth is the v2 HELLO token (KEL-60).
-            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-            let port = listener.local_addr()?.port();
-            ready.send(()).ok();
-            let serve_token = token;
-            let stop_for_worker = Arc::clone(&stop);
-            let handle = thread::spawn(move || {
-                let (mut stream, _) = listener.accept()?;
-                serve_echo_session_until_stopped(
-                    &mut stream,
-                    &serve_token,
-                    stop_for_worker.as_ref(),
-                )
-            });
-            Ok(Self {
-                endpoint: EchoEndpoint::Tcp(port),
-                token,
-                stop,
-                handle: Some(handle),
-            })
-        }
+        let bootstrap = Arc::new(BootstrapListener::bind()?);
+        ready.send(()).ok();
+        let acceptor = Arc::clone(&bootstrap);
+        let stop_for_worker = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            let Some(mut stream) = acceptor.accept_authenticated()? else {
+                return Err(keld_ipc::IpcError::Io(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "echo bootstrap listener stopped before authentication",
+                )));
+            };
+            serve_echo_requests_until_stopped(&mut stream, stop_for_worker.as_ref())
+        });
+        Ok(Self {
+            bootstrap,
+            stop,
+            handle: Some(handle),
+        })
     }
 
     /// App-link value for clients (`<endpoint>#<64 hex chars>`).
     #[must_use]
     pub fn link(&self) -> String {
-        #[cfg(unix)]
-        {
-            self.bootstrap.app_link()
-        }
-        #[cfg(windows)]
-        {
-            self.endpoint.link_env(&self.token)
-        }
+        self.bootstrap.app_link()
     }
 
     /// Waits for the server thread.
@@ -167,15 +122,7 @@ impl EchoServer {
     }
 
     fn interrupt_accept(&self) {
-        #[cfg(unix)]
-        {
-            let _ = self.bootstrap.shutdown();
-        }
-        #[cfg(windows)]
-        {
-            let EchoEndpoint::Tcp(port) = &self.endpoint;
-            let _ = std::net::TcpStream::connect(("127.0.0.1", *port));
-        }
+        let _ = self.bootstrap.shutdown();
     }
 }
 
@@ -326,7 +273,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn wrong_token_is_ipc_007_and_does_not_consume_echo_listener() {
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -370,37 +316,6 @@ mod tests {
         assert_eq!(response.message, "legitimate");
         assert_eq!(response.count, 2);
         server.join().expect("legitimate session finishes");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn wrong_token_is_ipc_007_on_the_one_accept_loopback_server() {
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let server = EchoServer::start(&ready_tx).expect("bind echo server");
-        ready_rx.recv().expect("server ready");
-        let link = server.link();
-        let (endpoint, token) = parse_app_link(&link).expect("link");
-        let mut foreign = *token.as_bytes();
-        foreign[0] ^= 1;
-        let bad_link = format_app_link(endpoint, &SessionToken::from_bytes(foreign));
-        let error = echo_roundtrip(
-            &bad_link,
-            &EchoRequest {
-                message: "stolen".to_owned(),
-                count: 1,
-            },
-        )
-        .expect_err("foreign token must fail");
-        assert!(
-            error.to_string().contains("KELD-IPC-001")
-                || error.to_string().contains("KELD-IPC-007"),
-            "foreign caller must not receive an echo result: {error}"
-        );
-        let server_error = server
-            .join()
-            .expect_err("v0 Windows one-accept listener closes after the rejected HELLO")
-            .to_string();
-        assert!(server_error.contains("KELD-IPC-007"), "{server_error}");
     }
 
     #[test]

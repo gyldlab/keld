@@ -1,7 +1,7 @@
 # Spec: principalized Bun child roles and virtual-port routing
 
 Status: approved
-Linear: KEL-75 · Owner: GYLDLAB · Updated: 2026-08-29
+Linear: KEL-75 · Owner: GYLDLAB · Updated: 2026-08-30
 
 ## 1. Goal & non-goals
 
@@ -169,7 +169,8 @@ trait ChildPreparer {
 ```
 
 The supervisor calls `prepare` exactly once before every OS spawn. The primary-role
-preparer mints an opaque monotonic generation, binds a fresh Unix `BootstrapListener`,
+preparer mints an opaque monotonic generation, binds a fresh platform
+`BootstrapListener`,
 creates the trusted Bun command with only its generation-specific `KELD_APP_LINK` as
 role bootstrap metadata, and returns the listener as the generation lease. After the OS
 spawn succeeds, the supervisor calls `child_spawned`; the lease starts cancellable
@@ -294,6 +295,55 @@ witness whose EOF/status identifies the enrolled child and descendants, then pro
 clean relaunch; polling `kill(pid, 0)` or an empty window list alone cannot exclude PID
 reuse.
 
+### T8 Windows primary-generation predecessor
+
+T8 is the human-promoted Windows predecessor required by approved KEL-96-D7. It
+extends the T1b generation owner to Windows without creating another restart,
+backoff, crash-loop, admission or reap policy. `keld-runtime::Supervisor` remains the
+only child/process-handle owner; the same platform-neutral role coordinator owns the
+monotonic generation, prepared-child lease, authenticated bind and synchronous
+revocation-before-successor transition.
+
+KEL-96-D10 explicitly permits T8 to use the current unprivileged Windows loopback
+transport. `keld-ipc::BootstrapListener` therefore owns both current backends behind
+one public contract: an owner-only Unix socket and Windows `127.0.0.1:0`. Both mint a
+fresh `SessionToken`, continue after rejected `HELLO`, enforce the same generation and
+handshake deadlines, publish the same redacted rejection taxonomy, consume the
+locator after authentication and close it on revocation. Windows keeps the existing
+decimal endpoint plus v2 `HELLO` bytes; T8 adds no frame, channel, parser or fallback.
+KEL-101 remains the separate named-pipe/current-user-DACL security migration and is
+not passed or partially claimed here.
+
+The default role-generation admission deadline is ten seconds while one peer's kipc
+I/O deadline remains five seconds. A first silent connector is therefore classified
+and closed before the generation expires, and a queued legitimate Bun child can still
+authenticate. Repeated rejections are coalesced to one diagnostic event per one of the
+six redacted rejection classes, bounding hostile telemetry to six records per
+generation without blocking lifecycle events. Repeated same-user connectors can still
+consume the finite unprivileged loopback admission window; T8 makes no denial-of-service
+or named-pipe/DACL claim against that active local adversary.
+
+The primary coordinator's opt-in bound-generation feed transfers one already
+authenticated platform stream plus host-only generation and attempt metadata at the
+existing successful-admission transition. Callers must not run a second handshake or
+derive identity from payload bytes. The ordinary `RoleRegistry` path does not enable
+that feed, and its app-bound/virtual-port implementation remains Unix-only pending
+KEL-97. Event delivery is observation only: revocation mutates the generation lease
+even if the event receiver is not drained.
+
+Each successor must have a generation, endpoint and token distinct from the retired
+generation. Provisioning retries a bounded number of freshly OS-minted listeners if
+an endpoint or cryptographic token repeats and fails typed lifecycle setup rather than
+accepting a collision. A real Windows Bun fixture proves g1 authenticated echo, an
+explicit g1 crash, `Revoked(g1)` before `Provisioned(g2)`, stale g1 locator closure,
+g1-token rejection on the still-live g2 listener, legitimate g2 authenticated echo,
+orderly revoke/reap and a clean next coordinator cycle.
+
+T8 does not implement KEL-96/T4's no-flag Windows host, window/router integration,
+CLI-death behavior or product evidence. It also does not prove Windows host-death
+descendant cleanup, which remains a separately approved KEL-75/KEL-78 process/job
+artifact, or any privileged Windows dispatch.
+
 ### Routed virtual ports
 
 The host owns `VirtualPort` pairs. A port capability is bound to one principal
@@ -350,6 +400,12 @@ never silently weaken a strict profile.
   ordering, opaque authority revocation, PID-independent host-death evidence contract and exact
   renderer-continuity beacon. The portable executable trace oracle is contract proof,
   not a shipping implementation or real-webview pass.
+- [x] T8: Extend the one T1b generation owner to a Windows `primary` over the
+  KEL-96-D10 unprivileged loopback interim. Reuse one cross-platform
+  `keld-ipc::BootstrapListener`, expose the authenticated bound generation to its
+  future host router, and prove real Bun g1→g2 rotation, stale authority rejection,
+  revoke-before-successor, handle-owned shutdown and a clean next cycle. T8 is an
+  independently promoted predecessor and does not wait for T5–T7.
 - [ ] T4: Add `window-bound` role lifecycle and real host-window-close integration.
   Consume T4a without adding a second restart loop or treating the event queue as the
   authority ledger. Real macOS, Windows and Linux acceptance remains here (or in an
@@ -366,6 +422,7 @@ never silently weaken a strict profile.
 | Acceptance | Future fixture | Independent oracle |
 |---|---|---|
 | T1b subset of 1–3 | real Bun subprocess + owner-only test control socket + hostile raw kipc client | ordered `Provisioned(g1) → Spawned(g1) → LinkBound(g1) → Revoked(g1) → Provisioned(g2) → Spawned(g2) → LinkBound(g2)`; host-only redacted `KELD-IPC-007` rejection; stale g1 locator fails; legitimate g2 client binds after foreign g1-token input |
+| T8 Windows subset of 1–2 | real Bun subprocess + loopback test-control socket + shared `BootstrapListener` + authenticated stream echo worker | first silent peer times out without consuming the generation; distinct g1/g2 generation, endpoint and token; real echo on both; exact `Revoked(g1)` before `Provisioned(g2)`; exact stale g1 port can be rebound; g1 token rejected once on g2 without consuming it; shutdown wait succeeds, the same fixture's instance-bound control connection closes, and a clean next coordinator cycle completes |
 | 4 / T4a | portable trace model plus direct-child subprocess-isolation helper | exact owner-window tombstone; close at successor prepare/spawn/bind/ready boundaries; every opaque authority class revoked; stale/PID-only/duplicate cleanup rejected; correlated app-bound and other-window replies; admitted-work drain; app shutdown cleans every role; next helper cycle succeeds |
 | 4 / T4 | per-backend host integration fixture with two real temporary window owners and hostile child processes | exact identity-qualified close delivery; bound role and descendants gone; app-bound and other-window positive call; clean relaunch |
 | 5 / T3 | virtual-port contract fixture | ordered received sequence, exactly-once disconnect, and no foreign delivery |
@@ -395,6 +452,17 @@ Acceptance classification for T4a is fixed:
   sandbox admission, and KEL-97/runtime-04 must re-check its own shipping/OS entry gate;
 - no real-OS criterion is owned or passed by T4a.
 
+Acceptance classification for T8 is separate:
+
+- `CI-only`: shared generation-owner ordering, cross-platform compilation and
+  existing Unix bootstrap/role regression coverage;
+- `real OS/device`: Windows 11 with pinned Bun 1.4.0 — both authenticated
+  generations complete an echo after a first silent peer, stale g1 authority fails,
+  revoke precedes g2, shutdown wait succeeds, that Bun instance's control connection
+  closes and a fresh same-fixture cycle succeeds;
+- `not-applicable`: KEL-96/T4 no-flag host/window behavior, KEL-101 named-pipe/DACL,
+  privileged dispatch, strict OS containment and Windows abnormal-host-death cleanup.
+
 The T4a assertions are named so review can repeat the negative control instead of
 accepting a prose claim:
 
@@ -419,6 +487,12 @@ accepting a prose claim:
 | stop cleanup after the first failure or discard the aggregated terminal failure | `application_shutdown_continues_after_cleanup_failure` |
 | run hostile shutdown in the test runner or break relaunch | `hostile_shutdown_is_subprocess_isolated_and_next_cycle_succeeds` |
 
+T8's real-Windows negative controls temporarily remove revoke-before-successor,
+reuse the retired endpoint or token, stop accepting after a foreign `HELLO`, and
+disable supervisor shutdown before the clean next cycle. Each mutation must make
+`windows_primary_restart_rotates_authenticated_generation_and_rejects_stale_authority`
+fail and must be restored before review.
+
 The completed node publishes `keld.execution-artifact/v1` with
 `node_id=role-lifecycle-contract`, `issue_id=KEL-75`,
 `approved_task_id=KEL-75/T4a`, `status=passed`, an ancestor-of-current-main
@@ -427,17 +501,24 @@ explicit `not-applicable` product-OS rows. That artifact records contract comple
 it cannot mark T4 implemented, satisfy a KEL-102 approval, or substitute for
 KEL-97/runtime-04's own entry gate and real-OS observations.
 
+The completed T8 node publishes a separate `keld.execution-artifact/v1` with
+`node_id=windows-primary-generation`, `issue_id=KEL-75`,
+`acceptance.id=KEL-75/T8`, `status=passed`, an ancestor-of-current-main
+`head_sha`, the real Windows/Bun observation and explicit not-applicable rows for
+KEL-96/T4, KEL-101, privileged dispatch, containment and host-death cleanup.
+
 ## 8. Review gates triggered
 
 - unsafe: none in this specification; later platform sandbox and shared-memory changes
   require review.
 - public API: yes — the original role configuration, generated policy and virtual-port
-  contract plus T4a's window-bound lifecycle/renderer observable require human review.
+  contract, T4a's lifecycle/renderer observable, and T8's cross-platform bootstrap
+  stream plus bound-generation handoff require human review.
 - permission model: yes for the original role-specific grant subset/elevation contract.
-  The T4a amendment adds no grant representation or evaluator decision and therefore
-  does not approve or implement the pending KEL-102 permission model.
-- dependency addition: none in this specification or T4a.
-- wire protocol: no new frame in this specification or T4a; later virtual-port channel,
+  The T4a/T8 amendments add no grant representation or evaluator decision and therefore
+  do not approve or implement privileged Windows dispatch or another permission model.
+- dependency addition: none in this specification, T4a or T8.
+- wire protocol: no new frame in this specification, T4a or T8; later virtual-port channel,
   readiness signal or handshake metadata changes require their own versioned wire
   review.
 
@@ -454,7 +535,6 @@ P13 new-run evidence and `docs/research/campaigns/vscode/reports/48-p13-new-run-
   host death cannot orphan role descendants on each supported OS.
 - KEL-74 must freeze the versioned compatibility-record format that stores the Electron
   oracle revision, fixture artifact hash and operation-level result.
-- KEL-96 names a future human-promoted `KEL-75/T8` Windows primary-generation
-  predecessor, while this approved KEL-75 task list currently ends at T7. T4a neither
-  creates nor satisfies T8; a human must reconcile that future task before Windows
-  shipping integration consumes it.
+- KEL-101 must separately approve and prove the named-pipe/current-user-DACL
+  transport before privileged Windows dispatch can replace T8's explicitly
+  unprivileged loopback predecessor.

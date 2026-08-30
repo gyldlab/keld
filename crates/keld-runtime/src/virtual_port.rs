@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::unix_role::{RoleGeneration, RoleOwner};
+use crate::role::{RoleGeneration, RoleOwner};
 
 /// Default maximum queued messages per port end before send is rejected.
 pub const DEFAULT_PORT_QUEUE_CAPACITY: usize = 64;

@@ -1,52 +1,81 @@
-//! Host-owned authenticated Unix bootstrap listeners.
+//! Host-owned authenticated bootstrap listeners.
 //!
-//! This cold-path primitive owns an owner-only listener, a fresh `HELLO`
-//! possession token, and cleanup. It deliberately accepts another client
-//! after an invalid handshake so an untrusted connector cannot consume the
-//! legitimate role's one bootstrap opportunity.
+//! This cold-path primitive owns a platform listener, a fresh `HELLO`
+//! possession token, and cleanup. Unix uses an owner-only socket directory.
+//! Windows uses the explicitly unprivileged loopback interim allowed by
+//! KEL-96-D10 until KEL-101's named-pipe/DACL contract is approved and lands.
+//! Both deliberately accept another client after an invalid handshake so an
+//! untrusted connector cannot consume the legitimate role's bootstrap.
 
+#[cfg(unix)]
 use std::fs;
 use std::io;
+#[cfg(windows)]
+use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::APP_LINK_IO_DEADLINE;
 use crate::IpcError;
+use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL};
 // Re-exported, not merely imported: these were public at
 // `keld_ipc::bootstrap::{BootstrapRejection, BootstrapRejectionObserver}`
 // before the taxonomy moved to `admission`, and a crate-root export does not
 // preserve that path. Moving the owner must not break the published one.
 pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
-use crate::link::{AppLinkDeadlines, handshake_server};
+use crate::link::{AppLinkDeadlines, handshake_server_interruptible_until};
 use crate::token::{SessionToken, format_app_link};
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(unix)]
 static UNIQUE_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Owner-only Unix listener that authenticates one role bootstrap connection.
+/// Platform-selected connected stream returned after bootstrap authentication.
+#[cfg(unix)]
+pub type BootstrapStream = UnixStream;
+
+/// Platform-selected connected stream returned after bootstrap authentication.
+#[cfg(windows)]
+pub type BootstrapStream = TcpStream;
+
+/// Host-owned listener that authenticates one role bootstrap connection.
 ///
 /// The listener is a cold setup mechanism, not a general application channel.
 /// It remains available after rejected `HELLO` frames until a valid role
 /// connects or [`Self::shutdown`] is requested.
 #[derive(Debug)]
 pub struct BootstrapListener {
+    #[cfg(unix)]
     listener: Mutex<Option<UnixListener>>,
+    #[cfg(windows)]
+    listener: Mutex<Option<TcpListener>>,
+    #[cfg(unix)]
     path: PathBuf,
+    #[cfg(unix)]
     session_dir: PathBuf,
+    #[cfg(windows)]
+    port: u16,
     token: SessionToken,
     stopping: Arc<AtomicBool>,
-    active_stream: Arc<Mutex<Option<UnixStream>>>,
+    listening: Arc<AtomicBool>,
+    active_stream: Arc<Mutex<Option<BootstrapStream>>>,
 }
 
 /// Result of one bounded bootstrap admission attempt.
 #[derive(Debug)]
 pub enum BootstrapAdmission {
     /// A peer proved possession of the listener's token.
-    Authenticated(UnixStream),
+    Authenticated(BootstrapStream),
     /// The host cancelled admission before authentication completed.
     Cancelled,
     /// The generation-wide admission deadline elapsed before authentication.
@@ -62,48 +91,78 @@ impl BootstrapRejectionObserver for NoopRejectionObserver {
 /// Cancellation handle for a blocked bootstrap admission worker.
 #[derive(Debug, Clone)]
 pub struct BootstrapCancellation {
+    #[cfg(unix)]
     path: PathBuf,
+    #[cfg(windows)]
+    port: u16,
     stopping: Arc<AtomicBool>,
-    active_stream: Arc<Mutex<Option<UnixStream>>>,
+    listening: Arc<AtomicBool>,
+    active_stream: Arc<Mutex<Option<BootstrapStream>>>,
 }
 
 impl BootstrapListener {
-    /// Binds a new owner-only Unix endpoint and mints its session token.
+    /// Binds a fresh platform endpoint and mints its session token.
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] if the random source, session directory, or Unix
-    /// listener cannot be created.
+    /// Returns [`io::Error`] if the random source or platform listener cannot
+    /// be created.
     pub fn bind() -> io::Result<Self> {
         let token = SessionToken::random()?;
-        let session_dir = unique_session_dir()?;
-        let path = session_dir.join("app.sock");
-        let listener = match UnixListener::bind(&path) {
-            Ok(listener) => listener,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&session_dir);
-                return Err(error);
-            }
-        };
-        listener.set_nonblocking(true)?;
-        Ok(Self {
-            listener: Mutex::new(Some(listener)),
-            path,
-            session_dir,
-            token,
-            stopping: Arc::new(AtomicBool::new(false)),
-            active_stream: Arc::new(Mutex::new(None)),
-        })
+        #[cfg(unix)]
+        {
+            let session_dir = unique_session_dir()?;
+            let path = session_dir.join("app.sock");
+            let listener = match UnixListener::bind(&path) {
+                Ok(listener) => listener,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&session_dir);
+                    return Err(error);
+                }
+            };
+            listener.set_nonblocking(true)?;
+            Ok(Self {
+                listener: Mutex::new(Some(listener)),
+                path,
+                session_dir,
+                token,
+                stopping: Arc::new(AtomicBool::new(false)),
+                listening: Arc::new(AtomicBool::new(true)),
+                active_stream: Arc::new(Mutex::new(None)),
+            })
+        }
+        #[cfg(windows)]
+        {
+            let listener = TcpListener::bind(("127.0.0.1", 0))?;
+            let port = listener.local_addr()?.port();
+            listener.set_nonblocking(true)?;
+            Ok(Self {
+                listener: Mutex::new(Some(listener)),
+                port,
+                token,
+                stopping: Arc::new(AtomicBool::new(false)),
+                listening: Arc::new(AtomicBool::new(true)),
+                active_stream: Arc::new(Mutex::new(None)),
+            })
+        }
     }
 
     /// Canonical `KELD_APP_LINK` value for the one role this listener admits.
     #[must_use]
     pub fn app_link(&self) -> String {
-        format_app_link(&self.path.display().to_string(), &self.token)
+        #[cfg(unix)]
+        {
+            format_app_link(&self.path.display().to_string(), &self.token)
+        }
+        #[cfg(windows)]
+        {
+            format_app_link(&self.port.to_string(), &self.token)
+        }
     }
 
     /// Filesystem endpoint for host-side assertions and cleanup diagnostics.
     #[must_use]
+    #[cfg(unix)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -112,8 +171,12 @@ impl BootstrapListener {
     #[must_use]
     pub fn cancellation(&self) -> BootstrapCancellation {
         BootstrapCancellation {
+            #[cfg(unix)]
             path: self.path.clone(),
+            #[cfg(windows)]
+            port: self.port,
             stopping: Arc::clone(&self.stopping),
+            listening: Arc::clone(&self.listening),
             active_stream: Arc::clone(&self.active_stream),
         }
     }
@@ -129,7 +192,7 @@ impl BootstrapListener {
     /// Returns [`io::Error`] only when the listener itself cannot accept a
     /// connection. Peer handshake errors are untrusted input and are handled
     /// by continuing to accept.
-    pub fn accept_authenticated(&self) -> io::Result<Option<UnixStream>> {
+    pub fn accept_authenticated(&self) -> io::Result<Option<BootstrapStream>> {
         let observer = NoopRejectionObserver;
         match self.accept_loop(None, APP_LINK_IO_DEADLINE, &observer)? {
             BootstrapAdmission::Authenticated(stream) => Ok(Some(stream)),
@@ -211,6 +274,10 @@ impl BootstrapListener {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             }
+            let Some(peer_deadline) = Instant::now().checked_add(timeout) else {
+                self.close_endpoint()?;
+                return Ok(BootstrapAdmission::DeadlineElapsed);
+            };
             // Setting the deadline is a fact about THIS PEER, not about the
             // listener: the call's outcome depends on the peer's state. `?`
             // made it fatal to admission instead.
@@ -227,7 +294,11 @@ impl BootstrapListener {
             // Classified per peer and skipped, so the listener keeps accepting.
             // Setting the deadline earlier cannot fix this: a peer may close at
             // any point, including between accept() and setsockopt.
-            if stream.set_app_link_deadlines(Some(timeout)).is_err() {
+            if stream
+                .set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(timeout)))
+                .and_then(|()| stream.set_app_link_write_deadline(Some(timeout)))
+                .is_err()
+            {
                 observer.rejected(BootstrapRejection::Io);
                 continue;
             }
@@ -241,10 +312,19 @@ impl BootstrapListener {
             let _active = ActiveHandshake {
                 active_stream: Arc::clone(&self.active_stream),
             };
-            match handshake_server(&mut stream, &self.token) {
-                Ok(()) => {
+            match handshake_server_interruptible_until(
+                &mut stream,
+                &self.token,
+                self.stopping.as_ref(),
+                peer_deadline,
+            ) {
+                Ok(true) => {
                     self.close_endpoint()?;
                     return Ok(BootstrapAdmission::Authenticated(stream));
+                }
+                Ok(false) => {
+                    self.close_endpoint()?;
+                    return Ok(BootstrapAdmission::Cancelled);
                 }
                 Err(_) if self.stopping.load(Ordering::SeqCst) => {
                     self.close_endpoint()?;
@@ -266,46 +346,87 @@ impl BootstrapListener {
         }
     }
 
-    fn try_accept(&self) -> io::Result<Option<UnixStream>> {
-        let guard = lock_or_recover(&self.listener);
-        let Some(listener) = guard.as_ref() else {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "bootstrap listener already consumed",
-            ));
-        };
-        match listener.accept() {
-            Ok((stream, _)) => {
-                // The bootstrap listener itself is non-blocking so generation
-                // deadline/cancellation can be polled without a helper
-                // accept-waker. The admitted app-link must be blocking:
-                // `APP_LINK_IO_DEADLINE` is the session contract, and a
-                // leaked non-blocking flag turns a quiet-but-live peer into an
-                // immediate `KELD-IPC-006`.
-                stream.set_nonblocking(false)?;
-                Ok(Some(stream))
+    fn try_accept(&self) -> io::Result<Option<BootstrapStream>> {
+        #[cfg(unix)]
+        {
+            let guard = lock_or_recover(&self.listener);
+            let Some(listener) = guard.as_ref() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "bootstrap listener already consumed",
+                ));
+            };
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    // The bootstrap listener itself is non-blocking so generation
+                    // deadline/cancellation can be polled without a helper
+                    // accept-waker. The admitted app-link must be blocking:
+                    // `APP_LINK_IO_DEADLINE` is the session contract, and a
+                    // leaked non-blocking flag turns a quiet-but-live peer into an
+                    // immediate `KELD-IPC-006`.
+                    stream.set_nonblocking(false)?;
+                    Ok(Some(stream))
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+                Err(error) => Err(error),
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error),
+        }
+        #[cfg(windows)]
+        {
+            let guard = lock_or_recover(&self.listener);
+            let Some(listener) = guard.as_ref() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "bootstrap listener already consumed",
+                ));
+            };
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false)?;
+                    Ok(Some(stream))
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+                Err(error) => Err(error),
+            }
         }
     }
 
+    #[cfg_attr(
+        windows,
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "the shared lifecycle API is fallible on Unix; Windows listener close is deliberately outcome-preserving"
+        )
+    )]
     fn close_endpoint(&self) -> io::Result<()> {
-        let _ = lock_or_recover(&self.listener).take();
-        let mut first_error = None;
-        if let Err(error) = fs::remove_file(&self.path)
-            && error.kind() != io::ErrorKind::NotFound
+        let listener = lock_or_recover(&self.listener).take();
+        self.listening.store(false, Ordering::Release);
+        #[cfg(windows)]
         {
-            first_error = Some(error);
+            // Authentication/cancellation/deadline has already selected the
+            // admission outcome. A historical listener SO_ERROR must not
+            // replace that outcome or discard an authenticated stream.
+            drop(listener);
+            Ok(())
         }
-        if let Err(error) = fs::remove_dir(&self.session_dir)
-            && error.kind() != io::ErrorKind::NotFound
+        #[cfg(unix)]
         {
-            first_error.get_or_insert(error);
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
+            drop(listener);
+            let mut first_error = None;
+            if let Err(error) = fs::remove_file(&self.path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                first_error = Some(error);
+            }
+            if let Err(error) = fs::remove_dir(&self.session_dir)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                first_error.get_or_insert(error);
+            }
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         }
     }
 }
@@ -322,29 +443,56 @@ impl BootstrapCancellation {
         if let Some(stream) = lock_or_recover(&self.active_stream).take() {
             let _ = stream.shutdown_app_link();
         }
-        match UnixStream::connect(&self.path) {
-            Ok(stream) => match stream.shutdown_app_link() {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+        if !self.listening.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            match UnixStream::connect(&self.path) {
+                Ok(stream) => match stream.shutdown_app_link() {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+                    Err(error) => Err(error),
+                },
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotConnected
+                            | io::ErrorKind::NotFound
+                            | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    Ok(())
+                }
                 Err(error) => Err(error),
-            },
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotConnected
-                        | io::ErrorKind::NotFound
-                        | io::ErrorKind::ConnectionRefused
-                ) =>
-            {
-                Ok(())
             }
-            Err(error) => Err(error),
+        }
+        #[cfg(windows)]
+        {
+            match TcpStream::connect(("127.0.0.1", self.port)) {
+                Ok(stream) => match stream.shutdown_app_link() {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+                    Err(error) => Err(error),
+                },
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotConnected
+                            | io::ErrorKind::ConnectionRefused
+                            | io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
         }
     }
 }
 
 struct ActiveHandshake {
-    active_stream: Arc<Mutex<Option<UnixStream>>>,
+    active_stream: Arc<Mutex<Option<BootstrapStream>>>,
 }
 
 impl Drop for ActiveHandshake {
@@ -377,6 +525,75 @@ impl Drop for BootstrapListener {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use crate::parse_app_link;
+
+    use super::{BootstrapAdmission, BootstrapListener, lock_or_recover};
+
+    #[test]
+    fn cancellation_interrupts_active_silent_handshake_promptly() {
+        let listener = Arc::new(BootstrapListener::bind().expect("bind Windows bootstrap"));
+        let cancellation = listener.cancellation();
+        let link = listener.app_link();
+        let (endpoint, _) = parse_app_link(&link).expect("Windows app link");
+        let port = endpoint.parse::<u16>().expect("Windows bootstrap port");
+        let acceptor = Arc::clone(&listener);
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = acceptor.accept_authenticated_until(
+                Instant::now() + Duration::from_secs(30),
+                &super::NoopRejectionObserver,
+            );
+            let _ = result_tx.send(result);
+        });
+        let silent = TcpStream::connect(("127.0.0.1", port)).expect("connect silent peer");
+
+        let active_deadline = Instant::now() + Duration::from_secs(2);
+        while lock_or_recover(&cancellation.active_stream).is_none() {
+            assert!(
+                Instant::now() < active_deadline,
+                "silent peer never became the active handshake"
+            );
+            thread::yield_now();
+        }
+        let cancel_started = Instant::now();
+        cancellation.cancel().expect("cancel active handshake");
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation must beat the five-second peer deadline")
+            .expect("listener cancellation result");
+        assert!(matches!(result, BootstrapAdmission::Cancelled));
+        assert!(
+            cancel_started.elapsed() < Duration::from_secs(1),
+            "active Windows handshake cancellation exceeded one second"
+        );
+        worker.join().expect("admission worker");
+        drop(silent);
+    }
+
+    #[test]
+    fn consumed_windows_listener_close_preserves_outcome_and_rejects_reconnect() {
+        let listener = BootstrapListener::bind().expect("bind Windows bootstrap");
+        let link = listener.app_link();
+        let (endpoint, _) = parse_app_link(&link).expect("Windows app link");
+        let port = endpoint.parse::<u16>().expect("Windows bootstrap port");
+
+        listener
+            .close_endpoint()
+            .expect("locator close cannot replace the selected admission outcome");
+        let rebound = TcpListener::bind(("127.0.0.1", port))
+            .expect("consumed listener must release its exact OS endpoint");
+        assert_eq!(rebound.local_addr().expect("rebound address").port(), port);
+    }
+}
+
+#[cfg(unix)]
 fn unique_session_dir() -> io::Result<PathBuf> {
     // `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). Keep the
     // generated component short, and fall back to short sticky temp roots if
@@ -428,7 +645,7 @@ fn unique_session_dir() -> io::Result<PathBuf> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::io::ErrorKind;
     use std::os::unix::fs::PermissionsExt;

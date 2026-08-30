@@ -29,7 +29,7 @@ use keld_ipc::{
     parse_app_link,
 };
 
-use crate::unix_role::{
+use crate::role::{
     BoundRoleGeneration, DEFAULT_ADMISSION_TIMEOUT, RoleEvent, RoleGenerationLease,
     RoleGenerationOwner, RoleOwner,
 };
@@ -1852,6 +1852,7 @@ fn run_generation_host(
         events_tx,
         Some(bound_tx),
         #[cfg(test)]
+        #[cfg(unix)]
         None,
     );
     let mut lease: Option<RoleGenerationLease> = None;

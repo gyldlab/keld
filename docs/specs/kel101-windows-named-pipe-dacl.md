@@ -1,7 +1,7 @@
 # Spec: Windows named-pipe app-link with current-user DACL
 
 Status: draft
-Linear: KEL-101 · Owner: GYLDLAB · Updated: 2026-08-23
+Linear: KEL-101 · Owner: GYLDLAB · Updated: 2026-08-30
 
 ## 1. Goal & non-goals
 
@@ -101,11 +101,12 @@ remote-client rejection, and deletes an instance after its last handle closes
 
 ### First-principles and reuse decision
 
-Today `keld_core::EchoServer` mints a token, binds one `127.0.0.1:0`
-`TcpListener`, and accepts one Windows session. The Unix path already delegates
-owner-only endpoint/token lifecycle and retry-after-bad-HELLO semantics to
-`keld_ipc::BootstrapListener`. The Windows one-accept listener is not a reusable
-admission boundary because one bad peer consumes it.
+After KEL-75/T8, `keld_core::EchoServer` and the Windows primary-generation
+coordinator both delegate token minting, `127.0.0.1:0` lifecycle,
+retry-after-bad-HELLO semantics and consumed-locator cleanup to the same
+`keld_ipc::BootstrapListener`. That live backend is still explicitly
+unprivileged loopback. This specification replaces its Windows transport with
+the named-pipe/DACL backend; it does not add another bootstrap owner.
 
 `keld-ipc` owns the Windows bootstrap primitive, name/DACL construction,
 cancellation, and deadline mapping. `keld-core`/the future `keld-host` owns the

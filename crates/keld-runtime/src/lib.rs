@@ -2,10 +2,10 @@
 //!
 //! Spawns the developer's JS/TS main under the caller-provided Bun, supervises
 //! it (exponential backoff, crash-loop breaker), and hands it the kipc link at
-//! spawn. Because the host owns all windows, renderer survival across an
-//! app-process restart is architecturally plausible but not yet an exercised
-//! v0 contract — no committed oracle proves it (spec 06 §1). Normative spec:
-//! `docs/architecture/06-runtime-and-tooling.md` §1.
+//! spawn. KEL-96/T3 exercises macOS native-window survival across a primary
+//! generation restart, while KEL-75/T4 still owns document-nonce plus
+//! post-restart renderer-beacon continuity on every claimed backend. Normative
+//! spec: `docs/architecture/06-runtime-and-tooling.md` §1.
 //!
 //! v0 scope (KEL-70): spawn + capture + restart-on-crash + crash-loop
 //! breaker. Out of scope here: OS sandbox on the child, Bun
@@ -23,12 +23,12 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 pub mod macos_guardian;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod primary;
 #[cfg(unix)]
 pub mod registry;
-#[cfg(unix)]
-mod unix_role;
+#[cfg(any(unix, windows))]
+mod role;
 #[cfg(unix)]
 mod virtual_port;
 
@@ -846,12 +846,21 @@ fn supervise<P>(
                 return;
             }
             let _ = child.kill();
-            let _ = child.wait();
+            let wait_result = child.wait();
             // Join before recording: the capture threads may still hold unread
             // bytes, and the natural-exit path below already joins first. A
             // crash must not produce a complete diagnostic on one path and a
             // truncated one on the other.
             join_capture_threads(capture_threads);
+            if let Err(source) = wait_result {
+                *lock_or_recover(terminal_error) = Some(RuntimeError::Lifecycle {
+                    phase: "child shutdown wait",
+                    source,
+                });
+                *lock_or_recover(current_pid) = None;
+                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
+                return;
+            }
             #[cfg(target_os = "macos")]
             let accepted = shutdown_was_accepted(accepted_shutdown);
             #[cfg(not(target_os = "macos"))]

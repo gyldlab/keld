@@ -1,4 +1,4 @@
-//! Unix authenticated Bun role coordinator shared by KEL-75 T1b/T2.
+//! Authenticated Bun role coordinator shared by KEL-75 T1b/T2/T8.
 //!
 //! One coordinator instance is one lifecycle owner (`primary` or `app-bound`).
 //! It consumes the crate-private prepared-child lease in [`Supervisor`] and
@@ -6,9 +6,9 @@
 //! breaking, output capture, shutdown and reap stay in the generic supervisor.
 
 use std::ffi::OsString;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use keld_ipc::{
     AppLinkDeadlines, BootstrapAdmission, BootstrapCancellation, BootstrapListener,
-    BootstrapRejection, BootstrapRejectionObserver,
+    BootstrapRejection, BootstrapRejectionObserver, BootstrapStream, SessionToken, parse_app_link,
 };
 
 use crate::{
@@ -24,7 +24,36 @@ use crate::{
     RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
 };
 
-pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const FRESH_BOOTSTRAP_ATTEMPTS: usize = 8;
+
+struct BootstrapCandidate<T> {
+    resource: T,
+    app_link: String,
+    endpoint: String,
+    token: SessionToken,
+}
+
+fn select_fresh_candidate<T, E>(
+    last_endpoint: Option<&str>,
+    last_token: Option<SessionToken>,
+    mut mint: impl FnMut() -> Result<BootstrapCandidate<T>, E>,
+) -> Result<Option<BootstrapCandidate<T>>, E> {
+    let mut rejected = Vec::with_capacity(FRESH_BOOTSTRAP_ATTEMPTS);
+    for _ in 0..FRESH_BOOTSTRAP_ATTEMPTS {
+        let candidate = mint()?;
+        let endpoint_is_fresh = last_endpoint != Some(candidate.endpoint.as_str());
+        let token_is_fresh = last_token != Some(candidate.token);
+        if endpoint_is_fresh && token_is_fresh {
+            return Ok(Some(candidate));
+        }
+        // Keep rejected endpoint owners live until selection completes. On
+        // Windows, dropping a port-0 listener would make that same numeric
+        // endpoint immediately eligible for the next retry.
+        rejected.push(candidate.resource);
+    }
+    Ok(None)
+}
 
 /// Host-owned lifecycle category for one authenticated Bun role.
 ///
@@ -104,6 +133,7 @@ pub struct RoleGeneration(u64);
 impl RoleGeneration {
     /// Creates a generation counter for crate-internal tests.
     #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn from_test_counter(value: u64) -> Self {
         Self(value)
     }
@@ -123,7 +153,7 @@ impl std::fmt::Debug for RoleGeneration {
 pub struct BoundRoleGeneration {
     generation: RoleGeneration,
     attempt: u32,
-    stream: UnixStream,
+    stream: BootstrapStream,
 }
 
 impl BoundRoleGeneration {
@@ -141,7 +171,7 @@ impl BoundRoleGeneration {
 
     /// Transfers the authenticated stream to the host router.
     #[must_use]
-    pub fn into_stream(self) -> UnixStream {
+    pub fn into_stream(self) -> BootstrapStream {
         self.stream
     }
 }
@@ -231,7 +261,7 @@ pub enum RoleEvent {
     },
 }
 
-/// Configuration for one Unix authenticated Bun role coordinator.
+/// Configuration for one authenticated Bun role coordinator.
 #[derive(Debug, Clone)]
 pub struct RoleConfig {
     owner: RoleOwner,
@@ -241,6 +271,7 @@ pub struct RoleConfig {
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
     #[cfg(test)]
+    #[cfg(unix)]
     probe_tx: Option<Sender<ProvisionedProbe>>,
 }
 
@@ -263,6 +294,7 @@ impl RoleConfig {
 
     /// Creates an `app-bound` lifecycle owner config.
     #[must_use]
+    #[cfg(unix)]
     pub fn app_bound(program: impl Into<OsString>) -> Self {
         Self::for_owner(RoleOwner::AppBound, program)
     }
@@ -276,6 +308,7 @@ impl RoleConfig {
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             #[cfg(test)]
+            #[cfg(unix)]
             probe_tx: None,
         }
     }
@@ -326,6 +359,7 @@ impl RoleConfig {
     }
 
     #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn with_probe(mut self, probe_tx: Sender<ProvisionedProbe>) -> Self {
         self.probe_tx = Some(probe_tx);
         self
@@ -337,6 +371,7 @@ impl RoleConfig {
 pub struct RoleSupervisor {
     supervisor: Supervisor,
     events_rx: Receiver<RoleEvent>,
+    bound_rx: Option<Receiver<BoundRoleGeneration>>,
 }
 
 impl RoleSupervisor {
@@ -347,14 +382,40 @@ impl RoleSupervisor {
     /// Returns [`RuntimeError`] if the initial generation cannot be
     /// provisioned or the first child cannot be spawned.
     pub fn start(config: RoleConfig) -> Result<Self, RuntimeError> {
+        Self::start_inner(config, None, None)
+    }
+
+    /// Starts the role and exposes each authenticated generation to its host
+    /// stream owner.
+    ///
+    /// This opt-in surface is for the primary host router. Ordinary registry
+    /// roles use [`Self::start`] and do not allocate an unconsumed stream feed.
+    /// The received stream has already completed `HELLO`; the host must not
+    /// authenticate it again or derive role identity from peer bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError`] if the initial generation cannot be
+    /// provisioned or the first child cannot be spawned.
+    pub fn start_with_bound_generations(config: RoleConfig) -> Result<Self, RuntimeError> {
+        let (bound_tx, bound_rx) = mpsc::channel();
+        Self::start_inner(config, Some(bound_tx), Some(bound_rx))
+    }
+
+    fn start_inner(
+        config: RoleConfig,
+        bound_tx: Option<Sender<BoundRoleGeneration>>,
+        bound_rx: Option<Receiver<BoundRoleGeneration>>,
+    ) -> Result<Self, RuntimeError> {
         let (events_tx, events_rx) = mpsc::channel();
         let policy = config.restart_policy;
         let generation_owner = RoleGenerationOwner::new(
             config.owner,
             config.admission_timeout,
             events_tx,
-            None,
+            bound_tx,
             #[cfg(test)]
+            #[cfg(unix)]
             config.probe_tx.clone(),
         );
         let preparer = RolePreparer {
@@ -365,6 +426,7 @@ impl RoleSupervisor {
         Ok(Self {
             supervisor,
             events_rx,
+            bound_rx,
         })
     }
 
@@ -378,6 +440,25 @@ impl RoleSupervisor {
     #[must_use]
     pub fn try_recv_event(&self) -> Option<RoleEvent> {
         self.events_rx.try_recv().ok()
+    }
+
+    /// Blocks until the next authenticated generation is handed to the host,
+    /// or `timeout` elapses.
+    ///
+    /// Returns `None` when this supervisor was started without
+    /// [`Self::start_with_bound_generations`].
+    #[must_use]
+    pub fn recv_bound_generation(&self, timeout: Duration) -> Option<BoundRoleGeneration> {
+        self.bound_rx.as_ref()?.recv_timeout(timeout).ok()
+    }
+
+    /// Returns the next already-authenticated generation without waiting.
+    ///
+    /// Returns `None` when no generation is queued or this supervisor was
+    /// started without [`Self::start_with_bound_generations`].
+    #[must_use]
+    pub fn try_recv_bound_generation(&self) -> Option<BoundRoleGeneration> {
+        self.bound_rx.as_ref()?.try_recv().ok()
     }
 
     /// Stops the child, if still live.
@@ -424,10 +505,13 @@ impl ChildPreparer for RolePreparer {
 pub(crate) struct RoleGenerationOwner {
     owner: RoleOwner,
     next_generation: u64,
+    last_endpoint: Option<String>,
+    last_token: Option<SessionToken>,
     admission_timeout: Duration,
     events_tx: Sender<RoleEvent>,
     bound_tx: Option<Sender<BoundRoleGeneration>>,
     #[cfg(test)]
+    #[cfg(unix)]
     probe_tx: Option<Sender<ProvisionedProbe>>,
 }
 
@@ -437,15 +521,20 @@ impl RoleGenerationOwner {
         admission_timeout: Duration,
         events_tx: Sender<RoleEvent>,
         bound_tx: Option<Sender<BoundRoleGeneration>>,
-        #[cfg(test)] probe_tx: Option<Sender<ProvisionedProbe>>,
+        #[cfg(test)]
+        #[cfg(unix)]
+        probe_tx: Option<Sender<ProvisionedProbe>>,
     ) -> Self {
         Self {
             owner,
             next_generation: 1,
+            last_endpoint: None,
+            last_token: None,
             admission_timeout,
             events_tx,
             bound_tx,
             #[cfg(test)]
+            #[cfg(unix)]
             probe_tx,
         }
     }
@@ -465,18 +554,15 @@ impl RoleGenerationOwner {
                         self.owner.as_str()
                     )),
                 })?;
-        let listener = BootstrapListener::bind().map_err(|source| RuntimeError::Lifecycle {
-            phase: self.owner.bootstrap_bind_phase(),
-            source,
-        })?;
+        let (listener, app_link) = self.bind_fresh_bootstrap()?;
         let cancellation = listener.cancellation();
-        let app_link = listener.app_link();
         let (admission_tx, admission_rx) = mpsc::channel();
         let _ = self.events_tx.send(RoleEvent::Provisioned {
             generation,
             attempt,
         });
         #[cfg(test)]
+        #[cfg(unix)]
         let probe = self.probe_tx.as_ref().map(|probe_tx| {
             (
                 probe_tx.clone(),
@@ -503,9 +589,44 @@ impl RoleGenerationOwner {
                 events_tx: self.events_tx.clone(),
                 bound_tx: self.bound_tx.clone(),
                 #[cfg(test)]
+                #[cfg(unix)]
                 probe,
             },
         })
+    }
+
+    fn bind_fresh_bootstrap(&mut self) -> Result<(BootstrapListener, String), RuntimeError> {
+        let owner = self.owner;
+        let candidate =
+            select_fresh_candidate(self.last_endpoint.as_deref(), self.last_token, || {
+                let listener =
+                    BootstrapListener::bind().map_err(|source| RuntimeError::Lifecycle {
+                        phase: owner.bootstrap_bind_phase(),
+                        source,
+                    })?;
+                let app_link = listener.app_link();
+                let (endpoint, token) =
+                    parse_app_link(&app_link).map_err(|source| RuntimeError::Lifecycle {
+                        phase: owner.bootstrap_bind_phase(),
+                        source: std::io::Error::other(source.to_string()),
+                    })?;
+                let endpoint = endpoint.to_owned();
+                Ok(BootstrapCandidate {
+                    resource: listener,
+                    app_link,
+                    endpoint,
+                    token,
+                })
+            })?
+            .ok_or_else(|| RuntimeError::Lifecycle {
+                phase: owner.bootstrap_bind_phase(),
+                source: std::io::Error::other(
+                    "could not mint endpoint and token distinct from the retired generation",
+                ),
+            })?;
+        self.last_endpoint = Some(candidate.endpoint);
+        self.last_token = Some(candidate.token);
+        Ok((candidate.resource, candidate.app_link))
     }
 }
 
@@ -525,10 +646,11 @@ pub(crate) struct RoleGenerationLease {
     admission_rx: Receiver<AdmissionResult>,
     admission_thread: Option<JoinHandle<()>>,
     admission_done: bool,
-    link: Arc<Mutex<Option<UnixStream>>>,
+    link: Arc<Mutex<Option<BootstrapStream>>>,
     events_tx: Sender<RoleEvent>,
     bound_tx: Option<Sender<BoundRoleGeneration>>,
     #[cfg(test)]
+    #[cfg(unix)]
     probe: Option<(Sender<ProvisionedProbe>, ProvisionedProbe)>,
 }
 
@@ -556,6 +678,7 @@ impl GenerationLease for RoleGenerationLease {
             generation: self.generation,
             attempt: self.attempt,
             events_tx: self.events_tx.clone(),
+            seen_rejections: AtomicU8::new(0),
         };
         self.admission_thread = Some(
             thread::Builder::new()
@@ -585,6 +708,7 @@ impl GenerationLease for RoleGenerationLease {
             attempt,
         });
         #[cfg(test)]
+        #[cfg(unix)]
         if let Some((probe_tx, probe)) = self.probe.take() {
             let _ = probe_tx.send(probe);
         }
@@ -629,20 +753,8 @@ impl RoleGenerationLease {
         }
         match self.admission_rx.try_recv() {
             Ok(AdmissionResult::Bound(stream)) => {
-                let bound = if self.bound_tx.is_some() {
-                    Some(
-                        stream
-                            .try_clone()
-                            .map_err(|source| RuntimeError::Lifecycle {
-                                phase: self.owner.bootstrap_admission_phase(),
-                                source,
-                            })?,
-                    )
-                } else {
-                    None
-                };
-                *lock_or_recover(&self.link) = Some(stream);
-                self.admission_done = true;
+                let bound =
+                    self.retain_and_clone_bound_stream(stream, BootstrapStream::try_clone)?;
                 if let (Some(bound_tx), Some(stream)) = (&self.bound_tx, bound) {
                     bound_tx
                         .send(BoundRoleGeneration {
@@ -691,10 +803,37 @@ impl RoleGenerationLease {
             }
         }
     }
+
+    fn retain_and_clone_bound_stream(
+        &mut self,
+        stream: BootstrapStream,
+        clone_stream: impl FnOnce(&BootstrapStream) -> std::io::Result<BootstrapStream>,
+    ) -> Result<Option<BootstrapStream>, RuntimeError> {
+        *lock_or_recover(&self.link) = Some(stream);
+        self.admission_done = true;
+        if self.bound_tx.is_none() {
+            return Ok(None);
+        }
+        let link = lock_or_recover(&self.link);
+        let Some(stream) = link.as_ref() else {
+            return Err(RuntimeError::Lifecycle {
+                phase: self.owner.bootstrap_admission_phase(),
+                source: std::io::Error::other(
+                    "authenticated stream was not retained by its generation lease",
+                ),
+            });
+        };
+        clone_stream(stream)
+            .map(Some)
+            .map_err(|source| RuntimeError::Lifecycle {
+                phase: self.owner.bootstrap_admission_phase(),
+                source,
+            })
+    }
 }
 
 enum AdmissionResult {
-    Bound(UnixStream),
+    Bound(BootstrapStream),
     Cancelled,
     DeadlineElapsed,
     Failed(RuntimeError),
@@ -704,10 +843,22 @@ struct RoleBootstrapObserver {
     generation: RoleGeneration,
     attempt: u32,
     events_tx: Sender<RoleEvent>,
+    seen_rejections: AtomicU8,
 }
 
 impl BootstrapRejectionObserver for RoleBootstrapObserver {
     fn rejected(&self, rejection: BootstrapRejection) {
+        let bit = match rejection {
+            BootstrapRejection::Io => 1 << 0,
+            BootstrapRejection::Header => 1 << 1,
+            BootstrapRejection::PayloadTooLarge => 1 << 2,
+            BootstrapRejection::Protocol => 1 << 3,
+            BootstrapRejection::Timeout => 1 << 4,
+            BootstrapRejection::HelloAuth => 1 << 5,
+        };
+        if self.seen_rejections.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
+            return;
+        }
         let _ = self.events_tx.send(RoleEvent::BootstrapRejected {
             generation: self.generation,
             attempt: self.attempt,
@@ -717,6 +868,159 @@ impl BootstrapRejectionObserver for RoleBootstrapObserver {
 }
 
 #[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_rejections_are_coalesced_to_one_event_per_class() {
+        let (events_tx, events_rx) = mpsc::channel();
+        let observer = RoleBootstrapObserver {
+            generation: RoleGeneration(1),
+            attempt: 1,
+            events_tx,
+            seen_rejections: AtomicU8::new(0),
+        };
+
+        observer.rejected(BootstrapRejection::HelloAuth);
+        observer.rejected(BootstrapRejection::HelloAuth);
+        observer.rejected(BootstrapRejection::Timeout);
+        observer.rejected(BootstrapRejection::Timeout);
+
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(RoleEvent::BootstrapRejected {
+                code: "KELD-IPC-007",
+                ..
+            })
+        ));
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(RoleEvent::BootstrapRejected {
+                code: "KELD-IPC-006",
+                ..
+            })
+        ));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn freshness_selection_retains_endpoint_and_token_collisions_until_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct DropProbe(Arc<AtomicUsize>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut call = 0_u8;
+        let retired_token = SessionToken::from_bytes([1_u8; keld_ipc::SESSION_TOKEN_LEN]);
+        let selected = select_fresh_candidate(
+            Some("retired"),
+            Some(retired_token),
+            || -> Result<BootstrapCandidate<DropProbe>, std::convert::Infallible> {
+                assert_eq!(
+                    drops.load(Ordering::SeqCst),
+                    0,
+                    "rejected endpoint owners must stay live while the allocator retries"
+                );
+                call += 1;
+                let (endpoint, token) = match call {
+                    1 => (
+                        "retired",
+                        SessionToken::from_bytes([2_u8; keld_ipc::SESSION_TOKEN_LEN]),
+                    ),
+                    2 => ("fresh", retired_token),
+                    _ => (
+                        "fresh",
+                        SessionToken::from_bytes([3_u8; keld_ipc::SESSION_TOKEN_LEN]),
+                    ),
+                };
+                Ok(BootstrapCandidate {
+                    resource: DropProbe(Arc::clone(&drops)),
+                    app_link: format!("{endpoint}#candidate"),
+                    endpoint: endpoint.to_owned(),
+                    token,
+                })
+            },
+        )
+        .expect("infallible candidate allocator")
+        .expect("third candidate must satisfy endpoint and token freshness");
+
+        assert_eq!(call, 3);
+        assert_eq!(selected.endpoint, "fresh");
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            2,
+            "rejected owners drop only after selection completes"
+        );
+        drop(selected);
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn bound_stream_clone_failure_is_latched_and_not_masked_during_revoke() {
+        let listener = BootstrapListener::bind().expect("bootstrap listener");
+        let cancellation = listener.cancellation();
+        let (_admission_tx, admission_rx) = mpsc::channel();
+        let (events_tx, _events_rx) = mpsc::channel();
+        let (bound_tx, _bound_rx) = mpsc::channel();
+        let mut lease = RoleGenerationLease {
+            owner: RoleOwner::Primary,
+            generation: RoleGeneration(1),
+            attempt: 1,
+            admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
+            listener: Some(listener),
+            cancellation,
+            admission_tx: None,
+            admission_rx,
+            admission_thread: None,
+            admission_done: false,
+            link: Arc::new(Mutex::new(None)),
+            events_tx,
+            bound_tx: Some(bound_tx),
+            #[cfg(test)]
+            #[cfg(unix)]
+            probe: None,
+        };
+        let (stream, peer) = connected_stream_pair();
+
+        let error = lease
+            .retain_and_clone_bound_stream(stream, |_| Err(std::io::Error::other("clone sentinel")))
+            .expect_err("injected clone failure");
+        assert!(error.to_string().contains("clone sentinel"), "{error}");
+        assert!(lease.admission_done, "consumed admission must stay latched");
+        assert!(
+            lock_or_recover(&lease.link).is_some(),
+            "the generation lease must retain the authenticated stream for revoke"
+        );
+
+        drop(peer);
+        lease
+            .revoke(RevocationCause::AdmissionFailed)
+            .expect("revoke must not replace the clone failure with channel disconnect");
+    }
+
+    #[cfg(unix)]
+    fn connected_stream_pair() -> (BootstrapStream, BootstrapStream) {
+        std::os::unix::net::UnixStream::pair().expect("bound stream pair")
+    }
+
+    #[cfg(windows)]
+    fn connected_stream_pair() -> (BootstrapStream, BootstrapStream) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("pair listener");
+        let address = listener.local_addr().expect("pair address");
+        let client = std::net::TcpStream::connect(address).expect("pair client");
+        let (server, _) = listener.accept().expect("pair server");
+        (server, client)
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
 #[derive(Debug)]
 pub(crate) struct ProvisionedProbe {
     pub(crate) generation: RoleGeneration,
@@ -724,10 +1028,12 @@ pub(crate) struct ProvisionedProbe {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 #[path = "unix_role_fixture.rs"]
 pub(crate) mod fixture;
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::fixture::{PrimaryFixture, assert_ready_line, connect_with_foreign_token};
     use std::process::Command;
