@@ -9,8 +9,9 @@ Review the exact diff; do not rewrite policy unless the user also asks for fixes
 
 1. Read root `AGENTS.md`, `.agents/instructions.md`, `.agents/index.md`, and
    `.agents/instruction-budget.tsv`. Load only changed routed owners after that.
-2. Run `just agent-context` and `just atomic-protocol`. A failure blocks approval; do not
-   raise a budget, weaken a rule/test, or add a route merely to make the check green.
+2. Run `just agent-context`, `just atomic-protocol`, `just llms-test`, and
+   `just llms-check`; any failure blocks. Do not raise a budget, weaken a rule/test, or
+   add a route merely to make the check green.
 3. Verify every changed normative rule has one owner, correct `always|routed|evidence`
    class, exact trigger, updated consumers, before/after bytes and pinned-token count,
    representative eval, negative control, and rollback.

@@ -61,10 +61,10 @@ learning query.
 | Task shape | Before | After | Reduction |
 |---|---:|---:|---:|
 | Root-only | 8,554 | 2,859 | 67% |
-| Generic issue implementation floor | 28,837 | 7,018 | 76% |
-| Webview + testing | 31,574 | 9,494 | 70% |
-| PR review workflow | 30,026 | 9,281 | 69% |
-| External research | 10,115 | 4,576 | 55% |
+| Generic issue implementation floor | 28,837 | 7,028 | 76% |
+| Webview + testing | 31,574 | 9,504 | 70% |
+| PR review workflow | 30,026 | 9,291 | 69% |
+| External research | 10,115 | 4,586 | 55% |
 
 Read-only Codex routing simulations also preserved semantics:
 
@@ -212,7 +212,7 @@ language rules, review gates, and explicit refusal/budget rules.
 
 `.agents/instruction-budget.tsv` inventories every instruction owner/class/trigger and
 budget. `tools/agent_context.rs` fails on unknown `.md`/`.txt`, stale, renamed,
-symlinked, comment-only/hollow, or override files; class/trigger drift; duplicate owners; wrong,
+discovery-relevant symlinked, comment-only/hollow, or override files; class/trigger drift; duplicate owners; wrong,
 missing, non-contiguous, fenced, quoted, HTML, struck, or inline-code routes; mandatory
 full evidence reads; per-file overflow; root >16 KiB; nested >4 KiB; or a complete
 root-to-directory chain >24 KiB. Manifest caps sit close to current sizes; class ceilings

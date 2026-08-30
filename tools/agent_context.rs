@@ -150,6 +150,15 @@ fn should_skip_dir(name: &str) -> bool {
     )
 }
 
+fn is_instruction_path(relative_text: &str, name: &str) -> bool {
+    name == "AGENTS.md"
+        || name == "AGENTS.override.md"
+        || relative_text == CLAUDE
+        || (relative_text.starts_with(".agents/")
+            && (name.ends_with(".md") || name.ends_with(".txt")))
+        || (relative_text.starts_with("docs/agents/") && name.ends_with(".md"))
+}
+
 fn walk(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Result<(), String> {
     for item in fs::read_dir(directory).map_err(|error| {
         format!(
@@ -159,6 +168,12 @@ fn walk(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Result<(
     })? {
         let item = item.map_err(|error| format!("AGENT-CONTEXT: directory entry failed: {error}"))?;
         let path = item.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| format!("AGENT-CONTEXT: path escape: {error}"))?;
+        let relative_text = relative.to_string_lossy().replace('\\', "/");
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let skipped_directory = should_skip_dir(&relative_text) || should_skip_dir(name);
         let file_type = item.file_type().map_err(|error| {
             format!(
                 "AGENT-CONTEXT: cannot inspect `{}`: {error}. Fix the filesystem entry before checking instruction inventory.",
@@ -166,35 +181,29 @@ fn walk(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Result<(
             )
         })?;
         if file_type.is_symlink() {
-            return Err(format!(
-                "AGENT-CONTEXT: symlinked path `{}` is forbidden because instruction discovery must not escape or loop. Use a real repository path.",
-                path.display()
-            ));
+            let target_is_directory = fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+            if target_is_directory && !skipped_directory {
+                return Err(format!(
+                    "AGENT-CONTEXT: symlinked path `{}` is forbidden because instruction discovery would traverse or loop. Use a real repository directory.",
+                    path.display()
+                ));
+            }
+            if is_instruction_path(&relative_text, name) {
+                return Err(format!(
+                    "AGENT-CONTEXT: symlinked path `{}` is forbidden because an instruction owner must be a real repository file.",
+                    path.display()
+                ));
+            }
+            continue;
         }
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|error| format!("AGENT-CONTEXT: path escape: {error}"))?;
-        let relative_text = relative.to_string_lossy().replace('\\', "/");
         if file_type.is_dir() {
-            if should_skip_dir(&relative_text)
-                || path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(should_skip_dir)
-            {
+            if skipped_directory {
                 continue;
             }
             walk(root, &path, files)?;
             continue;
         }
-        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        let instruction = name == "AGENTS.md"
-            || name == "AGENTS.override.md"
-            || relative_text == CLAUDE
-            || (relative_text.starts_with(".agents/")
-                && (name.ends_with(".md") || name.ends_with(".txt")))
-            || (relative_text.starts_with("docs/agents/") && name.ends_with(".md"));
-        if instruction {
+        if is_instruction_path(&relative_text, name) {
             files.insert(relative_text);
         }
     }
@@ -316,6 +325,74 @@ fn active_table_lines(text: &str, heading: &str) -> Result<Vec<String>, String> 
         ));
     }
     Ok(lines)
+}
+
+fn markdown_list_item(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        return true;
+    }
+    let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0 && trimmed[digits..].starts_with(". ")
+}
+
+fn markdown_block_boundary(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    let atx_heading = (1..=6).contains(&hashes)
+        && trimmed[hashes..]
+            .bytes()
+            .next()
+            .is_none_or(|byte| byte.is_ascii_whitespace());
+    let compact = trimmed
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    let thematic_break = compact.len() >= 3
+        && matches!(compact.first(), Some(b'-' | b'*' | b'_'))
+        && compact.iter().all(|byte| Some(byte) == compact.first());
+    atx_heading || thematic_break || markdown_list_item(trimmed)
+}
+
+fn visible_instruction_lines(text: &str) -> Vec<String> {
+    let uncommented = strip_html_comments(text);
+    let mut fence: Option<(u8, usize)> = None;
+    let mut block_quote = false;
+    uncommented
+        .lines()
+        .map(|raw| {
+            let trimmed = raw.trim_start();
+            let marker = fence_marker(raw);
+            if let Some((active, width)) = fence {
+                if marker.is_some_and(|(candidate, candidate_width, closing)| {
+                    candidate == active && candidate_width >= width && closing
+                }) {
+                    fence = None;
+                }
+                return String::new();
+            }
+            if let Some((opening, width, _)) = marker {
+                block_quote = false;
+                fence = Some((opening, width));
+                return String::new();
+            }
+            if trimmed.is_empty() {
+                block_quote = false;
+                return String::new();
+            }
+            if trimmed.starts_with('>') {
+                block_quote = true;
+                return String::new();
+            }
+            if block_quote && markdown_block_boundary(trimmed) {
+                block_quote = false;
+            }
+            if block_quote || raw.starts_with('\t') || raw.len() - trimmed.len() >= 4 {
+                return String::new();
+            }
+            without_struck_text(raw)
+        })
+        .collect()
 }
 
 fn route_visible(router: &str, entry: &Entry) -> Result<bool, String> {
@@ -440,27 +517,18 @@ fn validate_routed_trigger(root: &Path, router: &str, entry: &Entry) -> Result<(
 }
 
 fn logical_markdown_block(lines: &[&str], index: usize) -> String {
-    fn list_item(line: &str) -> bool {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
-            return true;
-        }
-        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
-        digits > 0 && trimmed[digits..].starts_with(". ")
-    }
-
     let mut start = index;
-    if !list_item(lines[start]) {
+    if !markdown_list_item(lines[start]) {
         while start > 0 && !lines[start - 1].trim().is_empty() {
             start -= 1;
-            if list_item(lines[start]) {
+            if markdown_list_item(lines[start]) {
                 break;
             }
         }
     }
     let mut end = index + 1;
     while end < lines.len() && !lines[end].trim().is_empty() {
-        if end > start && list_item(lines[end]) {
+        if end > start && markdown_list_item(lines[end]) {
             break;
         }
         end += 1;
@@ -651,7 +719,8 @@ fn check(root: &Path) -> Result<Vec<(Entry, usize)>, String> {
             continue;
         }
         let text = read(root, &consumer.path)?;
-        let lines = text.lines().collect::<Vec<_>>();
+        let visible = visible_instruction_lines(&text);
+        let lines = visible.iter().map(String::as_str).collect::<Vec<_>>();
         for path in &evidence {
             for (index, _) in lines
                 .iter()
@@ -1002,6 +1071,28 @@ docs/agents/learnings.md\tevidence\t4096\tlearnings\tquery:area\n"
         );
         let error = check(&temp.path).expect_err("bounded verb cannot mask whole-file read");
         assert!(error.contains("look like a full read"), "{error}");
+
+        let temp = fixture();
+        temp.write(
+            ROOT,
+            "# Root\n\nquery relevant-area `docs/agents/learnings.md` evidence\n\n<!-- Read `docs/agents/learnings.md` completely. -->\n\n```text\nRead `docs/agents/learnings.md` in full.\n```\n\n> Read `docs/agents/learnings.md` completely.\n\n    Read `docs/agents/learnings.md` in full.\n",
+        );
+        check(&temp.path).expect("non-binding Markdown examples must not become evidence rules");
+
+        let temp = fixture();
+        temp.write(
+            ROOT,
+            "# Root\n\nquery relevant-area `docs/agents/learnings.md` evidence\n\n> historical example\n## Active rule\nRead `docs/agents/learnings.md` completely.\n",
+        );
+        let error = check(&temp.path).expect_err("ATX heading must end the block quote");
+        assert!(error.contains("look like a full read"), "{error}");
+
+        let temp = fixture();
+        temp.write(
+            ROOT,
+            "# Root\n\nquery relevant-area `docs/agents/learnings.md` evidence\n\n> historical example\nRead `docs/agents/learnings.md` completely as lazy quoted continuation.\n",
+        );
+        check(&temp.path).expect("lazy block-quote continuation must remain non-binding");
     }
 
     #[test]
@@ -1087,5 +1178,14 @@ docs/agents/learnings.md\tevidence\t4096\tlearnings\tquery:area\n"
             .expect("create directory loop");
         let error = check(&temp.path).expect_err("symlinked directory loop");
         assert!(error.contains("symlinked path"), "{error}");
+
+        let temp = fixture();
+        temp.write("assets/source.bin", "unrelated asset\n");
+        symlink(
+            temp.path.join("assets/source.bin"),
+            temp.path.join("assets/source-link.bin"),
+        )
+        .expect("create unrelated file symlink");
+        check(&temp.path).expect("unrelated file symlink must not block instruction inventory");
     }
 }
