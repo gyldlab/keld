@@ -34,9 +34,10 @@ handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plu
 possession secret; it never carries role or principal identity.
 
 **v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
-`HostOwnedHelloSession`) is a domain socket inside an owner-only (`0o700`) session
-directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
-section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
+`HostOwnedHelloSession`) uses the shared `keld-ipc::BootstrapListener`: a domain
+socket inside an owner-only (`0o700`) session directory on Unix and loopback TCP
+(`127.0.0.1:0`) on Windows — not yet the named pipe this section specifies. Both
+require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
 `<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
 shipping `keld dev` path keeps the listener and supervised Bun live for the hello
@@ -104,15 +105,16 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
-  deadline.   Its Unix `BootstrapListener` primitive is now live and used by the host-owned
-  echo server (`keld-core`) and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  deadline. Its platform `BootstrapListener` primitive is live and used by the host-owned
+  echo server (`keld-core`) plus the T1b Unix and T8 Windows primary-generation
+  coordinator. T1b/T8 add cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
-  observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
-  dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain
-  destination work.
+  observation, and consumed-locator cleanup after bind. Multi-role dispatch, role
+  grants, privileged Windows dispatch, and Windows named-pipe/DACL bootstrap remain
+  destination work; T3 virtual ports remain a Unix library/test surface.
   Channel-table exchange remains later work.
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
-  `BootstrapListener` unlinks the socket path immediately
+  `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
   locator is gone. A supervised app child that dies and is restarted therefore
   cannot re-enter the session: its `connect` fails at the OS

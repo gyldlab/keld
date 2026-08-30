@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 use crate::RuntimeError;
 
-pub use crate::unix_role::{
+pub use crate::role::{
     RoleConfig, RoleEvent, RoleGeneration, RoleOwner, RoleRevocationCause, RoleSupervisor,
 };
 use crate::virtual_port::VirtualPortRegistry;
@@ -275,7 +275,7 @@ mod tests {
         RoleConfig, RoleEvent, RoleGeneration, RoleOwner, RolePrincipal, RoleRegistry,
         RoleRevocationCause,
     };
-    use crate::unix_role::fixture::{FamilyFixture, assert_ready_line, connect_with_foreign_token};
+    use crate::role::fixture::{FamilyFixture, assert_ready_line, connect_with_foreign_token};
     use crate::{RestartPolicy, RuntimeError, SupervisorOutcome};
 
     #[test]
@@ -368,12 +368,12 @@ mod tests {
         let mut app_control = fixture.accept_app_bound();
         assert_ready_line(&mut app_control, &app_g2.app_link);
         expect_foreign_reject(&app_g1.app_link, &app_g2, registry.app_bound(), "stale g1");
-        expect_foreign_reject(
-            &primary_g1.app_link,
-            &app_g2,
-            registry.app_bound(),
-            "primary token on app-bound",
-        );
+        // The observer emits at most one event per rejection class for each
+        // generation. The client-side handshake remains the direct proof that
+        // a second, cross-principal token is denied; the following LinkBound
+        // assertion also proves the rejection did not consume the listener or
+        // enqueue duplicate HelloAuth telemetry ahead of the legitimate bind.
+        connect_with_foreign_token(&primary_g1.app_link, &app_g2.app_link);
         assert_no_revoked(
             registry.primary(),
             "cross-principal reject must not revoke primary",
@@ -424,9 +424,9 @@ mod tests {
     }
 
     fn recv_probe(
-        rx: &mpsc::Receiver<crate::unix_role::ProvisionedProbe>,
+        rx: &mpsc::Receiver<crate::role::ProvisionedProbe>,
         label: &str,
-    ) -> crate::unix_role::ProvisionedProbe {
+    ) -> crate::role::ProvisionedProbe {
         rx.recv_timeout(Duration::from_secs(2))
             .unwrap_or_else(|_| panic!("{label} app link"))
     }
@@ -441,10 +441,10 @@ mod tests {
     fn bind_attempt(
         registry: &mut RoleRegistry,
         owner: RoleOwner,
-        probe: &crate::unix_role::ProvisionedProbe,
+        probe: &crate::role::ProvisionedProbe,
         attempt: u32,
-        control: crate::unix_role::fixture::ControlPeer,
-    ) -> crate::unix_role::fixture::ControlPeer {
+        control: crate::role::fixture::ControlPeer,
+    ) -> crate::role::fixture::ControlPeer {
         let supervisor = supervisor_for(registry, owner);
         expect_provisioned_spawned(supervisor, probe, attempt);
         bind_generation(registry, owner, probe, control)
@@ -452,7 +452,7 @@ mod tests {
 
     fn expect_provisioned_spawned(
         supervisor: &super::RoleSupervisor,
-        probe: &crate::unix_role::ProvisionedProbe,
+        probe: &crate::role::ProvisionedProbe,
         attempt: u32,
     ) {
         assert_next(
@@ -470,9 +470,9 @@ mod tests {
     fn bind_generation(
         registry: &mut RoleRegistry,
         owner: RoleOwner,
-        probe: &crate::unix_role::ProvisionedProbe,
-        mut control: crate::unix_role::fixture::ControlPeer,
-    ) -> crate::unix_role::fixture::ControlPeer {
+        probe: &crate::role::ProvisionedProbe,
+        mut control: crate::role::fixture::ControlPeer,
+    ) -> crate::role::fixture::ControlPeer {
         assert_ready_line(&mut control, &probe.app_link);
         complete_bind(registry, owner, probe, &mut control);
         control
@@ -481,8 +481,8 @@ mod tests {
     fn complete_bind(
         registry: &mut RoleRegistry,
         owner: RoleOwner,
-        probe: &crate::unix_role::ProvisionedProbe,
-        control: &mut crate::unix_role::fixture::ControlPeer,
+        probe: &crate::role::ProvisionedProbe,
+        control: &mut crate::role::fixture::ControlPeer,
     ) {
         let supervisor = supervisor_for(registry, owner);
         control.write_line("BIND");
@@ -497,7 +497,7 @@ mod tests {
 
     fn expect_foreign_reject(
         token_link: &str,
-        endpoint: &crate::unix_role::ProvisionedProbe,
+        endpoint: &crate::role::ProvisionedProbe,
         supervisor: &super::RoleSupervisor,
         label: &str,
     ) {
@@ -520,7 +520,7 @@ mod tests {
 
     fn expect_child_exit_revoke(
         supervisor: &super::RoleSupervisor,
-        probe: &crate::unix_role::ProvisionedProbe,
+        probe: &crate::role::ProvisionedProbe,
         attempt: u32,
         label: &str,
     ) {

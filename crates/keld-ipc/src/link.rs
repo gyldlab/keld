@@ -206,12 +206,30 @@ pub fn read_frame_interruptible<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_stall(stream, stop, APP_LINK_IO_DEADLINE)
+    read_frame_interruptible_with_limits(stream, stop, None, APP_LINK_IO_DEADLINE)
 }
 
+#[cfg(test)]
 fn read_frame_interruptible_with_stall<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
+    stall_limit: Duration,
+) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    read_frame_interruptible_with_limits(stream, stop, None, stall_limit)
+}
+
+pub(crate) fn read_frame_interruptible_until<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    deadline: Instant,
+) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    read_frame_interruptible_with_limits(stream, stop, Some(deadline), APP_LINK_IO_DEADLINE)
+}
+
+fn read_frame_interruptible_with_limits<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    deadline: Option<Instant>,
     stall_limit: Duration,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
     let mut stall_deadline = None;
@@ -220,6 +238,7 @@ fn read_frame_interruptible_with_stall<S: Read>(
         stream,
         &mut header_bytes,
         stop,
+        deadline,
         &mut stall_deadline,
         stall_limit,
     )? {
@@ -230,7 +249,14 @@ fn read_frame_interruptible_with_stall<S: Read>(
     ensure_payload_len(len)?;
     let mut payload = vec![0u8; len];
     if !payload.is_empty()
-        && !read_exact_interruptible(stream, &mut payload, stop, &mut stall_deadline, stall_limit)?
+        && !read_exact_interruptible(
+            stream,
+            &mut payload,
+            stop,
+            deadline,
+            &mut stall_deadline,
+            stall_limit,
+        )?
     {
         return Ok(None);
     }
@@ -248,6 +274,7 @@ fn read_exact_interruptible<S: Read>(
     stream: &mut S,
     buf: &mut [u8],
     stop: &AtomicBool,
+    deadline: Option<Instant>,
     stall_deadline: &mut Option<Instant>,
     stall_limit: Duration,
 ) -> Result<bool, IpcError> {
@@ -255,6 +282,9 @@ fn read_exact_interruptible<S: Read>(
     while filled < buf.len() {
         if stop.load(Ordering::Acquire) {
             return Ok(false);
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(IpcError::Timeout);
         }
         if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(IpcError::Timeout);
@@ -338,6 +368,10 @@ fn write_hello<S: Write>(stream: &mut S, token: &SessionToken) -> Result<(), Ipc
 
 fn read_and_verify_hello<S: Read>(stream: &mut S, token: &SessionToken) -> Result<(), IpcError> {
     let (header, payload) = read_frame(stream)?;
+    verify_hello(header, &payload, token)
+}
+
+fn verify_hello(header: FrameHeader, payload: &[u8], token: &SessionToken) -> Result<(), IpcError> {
     if header.kind != FrameKind::Hello {
         return Err(IpcError::Protocol {
             detail: "expected HELLO from peer",
@@ -348,7 +382,7 @@ fn read_and_verify_hello<S: Read>(stream: &mut S, token: &SessionToken) -> Resul
             detail: "HELLO must have reserved channel/corr 0",
         });
     }
-    let peer = SessionToken::try_from_slice(&payload)?;
+    let peer = SessionToken::try_from_slice(payload)?;
     if peer != *token {
         return Err(IpcError::HelloAuth {
             detail: "HELLO session token mismatch",
@@ -392,6 +426,26 @@ pub fn handshake_server<S: Read + Write>(
 ) -> Result<(), IpcError> {
     read_and_verify_hello(stream, token)?;
     write_hello(stream, token)
+}
+
+pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
+    stream: &mut S,
+    token: &SessionToken,
+    stop: &AtomicBool,
+    deadline: Instant,
+) -> Result<bool, IpcError> {
+    let Some((header, payload)) = read_frame_interruptible_until(stream, stop, deadline)? else {
+        return Ok(false);
+    };
+    if stop.load(Ordering::Acquire) {
+        return Ok(false);
+    }
+    if Instant::now() >= deadline {
+        return Err(IpcError::Timeout);
+    }
+    verify_hello(header, &payload, token)?;
+    write_hello(stream, token)?;
+    Ok(true)
 }
 
 #[cfg(test)]

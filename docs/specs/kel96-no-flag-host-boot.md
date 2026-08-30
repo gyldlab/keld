@@ -354,17 +354,15 @@ Recovery is armed only after the initial `Ready` write succeeds. A concurrent
 successor request waits for that decision; a failed write or earlier crash
 rejects successor preparation and remains startup failure.
 
-The landed KEL-75 coordinator is Unix-only. A Unix recovery proof does not claim
-Windows recovery. Before T4, a KEL-75-owned platform-generic/Windows primary
-generation coordinator, designated `KEL-75/T8` by this dependency decision,
-must be human-promoted/scoped, land, and prove fresh provision/bind/revoke/restart
-without duplicating the policy in `keld-core`. KEL-96/T4 consumes that artifact
-and does not implement Windows generation/transport changes under its own
-scope. If its approved
-transport is the named pipe, KEL-101 is also a predecessor; an explicitly
-unprivileged loopback implementation may prove KEL-96 lifecycle only and cannot
-claim KEL-101 or privileged Windows dispatch. Windows still needs its own real
-product evidence under T4.
+KEL-75/T8 extends the landed generation coordinator to Windows over D10's
+explicitly unprivileged loopback interim. Its real-Windows predecessor proof owns
+fresh provision/bind/revoke/restart and the authenticated bound-stream handoff
+without duplicating policy in `keld-core`. KEL-96/T4 consumes the landed T8
+artifact and does not implement another Windows generation or transport loop.
+T8 does not select the named pipe, so KEL-101 is not this lifecycle predecessor;
+it remains mandatory before privileged Windows dispatch can claim the
+named-pipe/current-user-DACL boundary. Windows still needs its own no-flag host,
+window/router, CLI-death and applicable host-death product evidence under T4.
 
 One private `keld-core` logical app-session router owns at most one accepted
 generation stream. Each generation performs one HELLO and has one reader plus
@@ -574,10 +572,10 @@ privileged channel. The first and only production caller in T1b is the no-flag
 - [x] T3: After KEL-116 records all self-termination, integrate fresh KEL-75
       link generation and prove same-window macOS recovery; retain the qualified
       KEL-105 SURFACE behavior until this passes.
-- [ ] T4: Implement the remaining Windows generation/recovery and per-backend
-      host lifecycle integration after the KEL-75-owned Windows generation
-      coordinator lands, run the real Windows and Linux product rows, and
-      consume the applicable KEL-75/KEL-78 host-death reaper artifacts. This is
+- [ ] T4: Integrate the landed KEL-75/T8 Windows generation/recovery coordinator
+      into the no-flag host, complete the remaining per-backend host lifecycle
+      integration, run the real Windows and Linux product rows, and consume the
+      applicable KEL-75/KEL-78 host-death reaper artifacts. This is
       implementation plus evidence, not an evidence-only task; it must not
       implement a second generation loop in `keld-core`.
 - [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior

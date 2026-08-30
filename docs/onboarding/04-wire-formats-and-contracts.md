@@ -416,14 +416,17 @@ host    ⇄ app process "app-link"  UDS/named pipe (control) + shm rings (bulk)
 webview ⇄ app process             routed via host (both links), never direct
 ```
 
-Only the app-link control plane exists, and it is implemented in `crates/keld-core/src/echo_link.rs`
-(CLI diagnostics re-export it) rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and
-operates on any `Read + Write`.
+Only the app-link control plane exists. Its platform listener, session token,
+authenticated admission, and endpoint cleanup are implemented by
+`keld_ipc::BootstrapListener` (`crates/keld-ipc/src/bootstrap.rs`).
+`crates/keld-core/src/echo_link.rs` consumes that primitive for the host-owned echo
+session, which CLI diagnostics re-export; the kipc wire/session functions remain
+generic over their I/O traits.
 
 | | Unix | Windows |
 |---|---|---|
 | **Spec** ([`02` §1](../architecture/02-ipc.md)) | Unix domain socket | **Named pipe** |
-| **Code** (`echo_link.rs:12-19`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind("127.0.0.1:0")` |
+| **Code** (`crates/keld-ipc/src/bootstrap.rs`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind(("127.0.0.1", 0))` |
 | Endpoint value | Path + `#` + 64 hex chars | Port + `#` + 64 hex chars |
 
 **The Windows transport still diverges from the spec on the OS object.** Loopback TCP is
@@ -434,9 +437,10 @@ DACL remains the destination Windows transport. Electrobun choosing localhost We
 is still called out in the research corpus as one of the things Keld exists to do
 better.
 
-The Unix side cleans up its socket file on `join()` and best-effort on `Drop`
-(`echo_link.rs:103-119`), which matters because a stale socket file at the same path would make the
-next `bind` fail.
+On successful authentication, `BootstrapListener` removes the Unix socket and
+owner-only session directory; shutdown and `Drop` also perform best-effort endpoint
+cleanup (`crates/keld-ipc/src/bootstrap.rs`). That matters because a stale Unix socket
+at the same path would make the next `bind` fail.
 
 ---
 
@@ -580,7 +584,7 @@ command
 
 | Variable | Value | Consumed by |
 |---|---|---|
-| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (`echo_link.rs`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (both minted by `keld_ipc::BootstrapListener`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
 | `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS host only. It validates a read-only pipe, marks the reader non-inheritable, removes the variable at guardian spawn, ignores bytes, and treats EOF as CLI loss. Bun receives neither the value nor an end of the pipe. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the

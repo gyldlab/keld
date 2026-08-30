@@ -99,15 +99,18 @@ never a PID recovered after exit.
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. Current Unix implementation is a two-slot host registry, not a complete
-role family: KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authenticated
-bootstrap listener, T1b's per-role generation coordinator, and T2's
+authority. Current implementation is not a complete role family: KEL-70's generic
+one-child supervisor, KEL-75 T1a/T8's platform authenticated bootstrap listener,
+T1b/T8's shared per-role generation coordinator, and T2's Unix
 `keld_runtime::registry::RoleRegistry` which owns one `primary` and one `app-bound`
 supervisor independently. A primary restart does not revoke or stop the app-bound
 role. It does not implement window-bound lifecycle, role-specific grants, or
 strict OS sandboxing. KEL-75 T3 adds bounded host-owned virtual ports between
-authenticated role generations in `VirtualPortRegistry`. Windows named-pipe/DACL
-bootstrap remains later work.
+authenticated role generations in the Unix `VirtualPortRegistry`. T8 proves a real
+Windows Bun primary g1→g2 over the unprivileged loopback interim and exposes the
+authenticated stream to a future host router; it does not implement KEL-96/T4's
+no-flag Windows host/window path or privileged dispatch. Windows named-pipe/DACL
+bootstrap remains KEL-101 work.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
@@ -160,10 +163,11 @@ does not obtain a raw child endpoint, mapping handle or authority to spawn a pro
 Ports are FIFO per generation, transfers are one-shot and receiver-bound, and close or
 generation revocation disconnects the peer without exposing another principal. Exact
 Electron-observable queue/start, transfer validation and close-event behavior is owned
-by pinned conformance entries—not assumed from this generic runtime contract. Live Unix
-slices are T1b (one authenticated role generation), T2 (one primary plus one
-independent app-bound role in `RoleRegistry`), and T3 (bounded virtual ports between
-authenticated roles). Window-bound roles follow only after those slices.
+by pinned conformance entries—not assumed from this generic runtime contract. Live role
+slices are T1b/T8 (one authenticated primary generation on Unix/Windows), T2 (one
+primary plus one independent app-bound role in `RoleRegistry`), and T3 (bounded
+virtual ports between authenticated roles); T2/T3 remain Unix-only. Window-bound
+roles follow only after those slices and their shipping integration gates.
 
 ## 2. keld CLI: verbs and guarantees
 

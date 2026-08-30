@@ -136,7 +136,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing/evaluation plus single-handle SHA-256-verified startup loading; TARGET complete generated scopes, per-window/per-principal grants and audit log | sha2 |
-| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor with KEL-75 fresh primary generations for KEL-96's same-window recovery; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor with KEL-75 fresh primary generations for KEL-96's same-window recovery; KEL-75/T8 exposes the same primary-generation owner on Windows over the unprivileged loopback interim; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
@@ -183,13 +183,14 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
   macOS no-flag validated boot plus one-link echo/lifecycle session and live
   event-loop wake, and KEL-96/T2's macOS CLI-to-host delegation with
-  lease-loss ordered teardown, KEL-75 T1b's
-  Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
+  lease-loss ordered teardown, KEL-75 T1b/T8's platform primary-generation
+  coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
-  between authenticated role generations. Window-bound roles, role grants,
-  strict sandbox admission, and Windows named-pipe/DACL bootstrap remain later
-  KEL-75/KEL-78 slices.
+  between authenticated role generations. The Windows T8 surface is a
+  runtime/real-Bun predecessor, not no-flag host/window integration or privileged
+  dispatch. Window-bound roles, role grants, strict sandbox admission, and Windows
+  named-pipe/DACL bootstrap remain later KEL-75/KEL-78/KEL-101 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

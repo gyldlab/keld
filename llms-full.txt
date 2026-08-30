@@ -488,14 +488,17 @@ host    ⇄ app process "app-link"  UDS/named pipe (control) + shm rings (bulk)
 webview ⇄ app process             routed via host (both links), never direct
 ```
 
-Only the app-link control plane exists, and it is implemented in `crates/keld-core/src/echo_link.rs`
-(CLI diagnostics re-export it) rather than in `keld-ipc` — `keld-ipc` is transport-agnostic and
-operates on any `Read + Write`.
+Only the app-link control plane exists. Its platform listener, session token,
+authenticated admission, and endpoint cleanup are implemented by
+`keld_ipc::BootstrapListener` (`crates/keld-ipc/src/bootstrap.rs`).
+`crates/keld-core/src/echo_link.rs` consumes that primitive for the host-owned echo
+session, which CLI diagnostics re-export; the kipc wire/session functions remain
+generic over their I/O traits.
 
 | | Unix | Windows |
 |---|---|---|
 | **Spec** ([`02` §1](../architecture/02-ipc.md)) | Unix domain socket | **Named pipe** |
-| **Code** (`echo_link.rs:12-19`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind("127.0.0.1:0")` |
+| **Code** (`crates/keld-ipc/src/bootstrap.rs`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind(("127.0.0.1", 0))` |
 | Endpoint value | Path + `#` + 64 hex chars | Port + `#` + 64 hex chars |
 
 **The Windows transport still diverges from the spec on the OS object.** Loopback TCP is
@@ -506,9 +509,10 @@ DACL remains the destination Windows transport. Electrobun choosing localhost We
 is still called out in the research corpus as one of the things Keld exists to do
 better.
 
-The Unix side cleans up its socket file on `join()` and best-effort on `Drop`
-(`echo_link.rs:103-119`), which matters because a stale socket file at the same path would make the
-next `bind` fail.
+On successful authentication, `BootstrapListener` removes the Unix socket and
+owner-only session directory; shutdown and `Drop` also perform best-effort endpoint
+cleanup (`crates/keld-ipc/src/bootstrap.rs`). That matters because a stale Unix socket
+at the same path would make the next `bind` fail.
 
 ---
 
@@ -652,7 +656,7 @@ command
 
 | Variable | Value | Consumed by |
 |---|---|---|
-| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (`echo_link.rs`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (both minted by `keld_ipc::BootstrapListener`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
 | `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS host only. It validates a read-only pipe, marks the reader non-inheritable, removes the variable at guardian spawn, ignores bytes, and treats EOF as CLI loss. Bun receives neither the value nor an end of the pipe. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
@@ -936,7 +940,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing/evaluation plus single-handle SHA-256-verified startup loading; TARGET complete generated scopes, per-window/per-principal grants and audit log | sha2 |
-| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor with KEL-75 fresh primary generations for KEL-96's same-window recovery; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor with KEL-75 fresh primary generations for KEL-96's same-window recovery; KEL-75/T8 exposes the same primary-generation owner on Windows over the unprivileged loopback interim; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
@@ -983,13 +987,14 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
   macOS no-flag validated boot plus one-link echo/lifecycle session and live
   event-loop wake, and KEL-96/T2's macOS CLI-to-host delegation with
-  lease-loss ordered teardown, KEL-75 T1b's
-  Unix authenticated role coordinator (`keld_runtime::primary`), and KEL-75 T2's
+  lease-loss ordered teardown, KEL-75 T1b/T8's platform primary-generation
+  coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
-  between authenticated role generations. Window-bound roles, role grants,
-  strict sandbox admission, and Windows named-pipe/DACL bootstrap remain later
-  KEL-75/KEL-78 slices.
+  between authenticated role generations. The Windows T8 surface is a
+  runtime/real-Bun predecessor, not no-flag host/window integration or privileged
+  dispatch. Window-bound roles, role grants, strict sandbox admission, and Windows
+  named-pipe/DACL bootstrap remain later KEL-75/KEL-78/KEL-101 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.
@@ -1079,9 +1084,10 @@ handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plu
 possession secret; it never carries role or principal identity.
 
 **v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
-`HostOwnedHelloSession`) is a domain socket inside an owner-only (`0o700`) session
-directory. Windows is loopback TCP (`127.0.0.1:0`) — not yet the named pipe this
-section specifies. Both require a 32-byte session token in the v2 `HELLO` payload,
+`HostOwnedHelloSession`) uses the shared `keld-ipc::BootstrapListener`: a domain
+socket inside an owner-only (`0o700`) session directory on Unix and loopback TCP
+(`127.0.0.1:0`) on Windows — not yet the named pipe this section specifies. Both
+require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
 `<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
 shipping `keld dev` path keeps the listener and supervised Bun live for the hello
@@ -1149,15 +1155,16 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   possess the token never learns it from the wire. This proves possession of the
   session token; it is not a principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
-  deadline.   Its Unix `BootstrapListener` primitive is now live and used by the host-owned
-  echo server (`keld-core`) and the Unix T1b primary-role coordinator. T1b adds cancellable admission,
+  deadline. Its platform `BootstrapListener` primitive is live and used by the host-owned
+  echo server (`keld-core`) plus the T1b Unix and T8 Windows primary-generation
+  coordinator. T1b/T8 add cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
-  observation, and close/unlink-after-bind for the bootstrap endpoint. Multi-role
-  dispatch, virtual ports, role grants, and Windows named-pipe/DACL bootstrap remain
-  destination work.
+  observation, and consumed-locator cleanup after bind. Multi-role dispatch, role
+  grants, privileged Windows dispatch, and Windows named-pipe/DACL bootstrap remain
+  destination work; T3 virtual ports remain a Unix library/test surface.
   Channel-table exchange remains later work.
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
-  `BootstrapListener` unlinks the socket path immediately
+  `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
   locator is gone. A supervised app child that dies and is restarted therefore
   cannot re-enter the session: its `connect` fails at the OS
@@ -1994,15 +2001,18 @@ never a PID recovered after exit.
 `keld.config.ts` owns entry/lifecycle declaration; `keld.permissions.jsonc` owns the
 generated capability subset and any separately reviewed role-specific addition. No
 environment identity, child payload, token, PID or facade option can choose a role or
-authority. Current Unix implementation is a two-slot host registry, not a complete
-role family: KEL-70's generic one-child supervisor, KEL-75 T1a's Unix authenticated
-bootstrap listener, T1b's per-role generation coordinator, and T2's
+authority. Current implementation is not a complete role family: KEL-70's generic
+one-child supervisor, KEL-75 T1a/T8's platform authenticated bootstrap listener,
+T1b/T8's shared per-role generation coordinator, and T2's Unix
 `keld_runtime::registry::RoleRegistry` which owns one `primary` and one `app-bound`
 supervisor independently. A primary restart does not revoke or stop the app-bound
 role. It does not implement window-bound lifecycle, role-specific grants, or
 strict OS sandboxing. KEL-75 T3 adds bounded host-owned virtual ports between
-authenticated role generations in `VirtualPortRegistry`. Windows named-pipe/DACL
-bootstrap remains later work.
+authenticated role generations in the Unix `VirtualPortRegistry`. T8 proves a real
+Windows Bun primary g1→g2 over the unprivileged loopback interim and exposes the
+authenticated stream to a future host router; it does not implement KEL-96/T4's
+no-flag Windows host/window path or privileged dispatch. Windows named-pipe/DACL
+bootstrap remains KEL-101 work.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
@@ -2055,10 +2065,11 @@ does not obtain a raw child endpoint, mapping handle or authority to spawn a pro
 Ports are FIFO per generation, transfers are one-shot and receiver-bound, and close or
 generation revocation disconnects the peer without exposing another principal. Exact
 Electron-observable queue/start, transfer validation and close-event behavior is owned
-by pinned conformance entries—not assumed from this generic runtime contract. Live Unix
-slices are T1b (one authenticated role generation), T2 (one primary plus one
-independent app-bound role in `RoleRegistry`), and T3 (bounded virtual ports between
-authenticated roles). Window-bound roles follow only after those slices.
+by pinned conformance entries—not assumed from this generic runtime contract. Live role
+slices are T1b/T8 (one authenticated primary generation on Unix/Windows), T2 (one
+primary plus one independent app-bound role in `RoleRegistry`), and T3 (bounded
+virtual ports between authenticated roles); T2/T3 remain Unix-only. Window-bound
+roles follow only after those slices and their shipping integration gates.
 
 ## 2. keld CLI: verbs and guarantees
 
