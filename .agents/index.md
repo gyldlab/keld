@@ -16,7 +16,7 @@ do not silently choose the less restrictive rule.
 
 | Task or path | Read |
 |---|---|
-| Any implementation or review | Root `AGENTS.md`, [`docs/agents/workflow.md`](../docs/agents/workflow.md), relevant architecture section, nearest crate `AGENTS.md`, and [`docs/agents/learnings.md`](../docs/agents/learnings.md) |
+| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, [`docs/agents/workflow.md`](../docs/agents/workflow.md), relevant architecture section, nearest crate `AGENTS.md`, and [`docs/agents/learnings.md`](../docs/agents/learnings.md) |
 | Creating/using a git branch, opening a PR, or deciding merge intent across devices | Root `AGENTS.md` § Branch + Linear handoff (Prompt Tracker paste chrome: `0monish/prompt-tracker` `prompts/SHARED/branch-linear-handoff.md`) |
 | Starting work on an issue when another agent or device may also hold it | `docs/agents/workflow.md` § Agent claim |
 | Addressing CodeRabbit PR feedback or resolving review threads | Root `AGENTS.md` § Commits & PRs (CodeRabbit review threads); [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) § Resolve review threads |

@@ -34,6 +34,11 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    comment MUST include `## OS acceptance` with the required OS/device, exact observable
    check, and current availability. A CI lane on that OS is not user-facing product
    evidence unless the approved issue/spec explicitly says it is.
+   For non-trivial work, that same first comment MUST record the decision-bearing atoms
+   required by root `AGENTS.md` § Atomic problem-solving protocol. Record each atom's
+   owner, boundary and inputs/outputs, failure mode, observable contract, independence
+   from the other atoms, and first falsifier. This is the working model before a design
+   or fix is selected, not a rationale added after implementation.
 2. **Spec gate.** Larger than a bug fix and no spec? Write one from
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
@@ -45,10 +50,13 @@ Task-specific playbooks are routed from `.agents/index.md`; load only matching e
    refresh Linear to pick up other-agent changes. Post a Linear progress comment after
    every contract decision, material pass/fail, blocker, scope change, and substantial
    milestone; name completed work, evidence, remaining work, risks and the next
-   acceptance check. Small commits, conventional messages. No placeholder code on the
-   branch tip. A *material decision* changes a public API, permission, wire protocol,
-   dependency, architecture-spec interpretation, or crate/path boundary. A *substantial
-   milestone* is a named task or acceptance checkpoint in the issue/spec. On duplicate,
+   acceptance check. A material-decision comment MUST also record every atom changed or
+   added by the decision, its independence edges and first falsifier; synthesis waits
+   until each decision-bearing atom is passed, explicitly unknown, or a named blocker.
+   Small commits, conventional messages. No placeholder code on the branch tip. A
+   *material decision* changes a public API, permission, wire protocol, dependency,
+   architecture-spec interpretation, or crate/path boundary. A *substantial milestone*
+   is a named task or acceptance checkpoint in the issue/spec. On duplicate,
    blocker, supersession or another active owner, stop the overlap, record the conflict
    on the agent's own issue (or handoff), and notify the human/orchestrator; a worktree
    does not authorize competing architecture decisions. For a real OS/device criterion,

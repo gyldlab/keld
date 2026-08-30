@@ -6,6 +6,12 @@ evidence only when a plausible defect can make it fail.
 
 ## Failure-first proof
 
+- Root `AGENTS.md` § Atomic problem-solving protocol owns the decomposition. Before
+  selecting a regression, conformance, benchmark, or negative control, the author MUST
+  bind it to one named atom's observable contract and state why its oracle is independent
+  of the implementation and the other atoms. Every negative control MUST name the one
+  fault or mutation that falsifies that atom; one atom's pass MUST NOT stand in for proof
+  of another.
 - When feasible, a bug fix MUST first prove its regression test fails on the unfixed
   code and then passes with the fix. If that proof is infeasible, record the exact
   platform, environment, or historical limitation instead of implying it ran.

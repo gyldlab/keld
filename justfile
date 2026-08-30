@@ -11,7 +11,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md ci-router-test mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
+ci: agents-md atomic-protocol ci-router-test mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -71,6 +71,14 @@ agents-md:
     done
     if [[ "$fail" -ne 0 ]]; then exit 1; fi
     echo "agents-md ok"
+
+# KEL-145: one canonical atomic problem-solving protocol plus narrow references.
+atomic-protocol:
+    mkdir -p target/atomic-protocol
+    rustc --edition=2024 -D warnings --test tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol-test
+    target/atomic-protocol/atomic-protocol-test
+    rustc --edition=2024 -D warnings tools/atomic_protocol.rs -o target/atomic-protocol/atomic-protocol
+    target/atomic-protocol/atomic-protocol check .
 
 # Generate the checked-in agent-readable docs index and full corpus.
 llms:
