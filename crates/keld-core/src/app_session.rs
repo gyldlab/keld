@@ -2764,6 +2764,7 @@ impl PrimaryRouterHandle {
         attempt: u32,
         correlation: CorrelationId,
         reply: &[u8],
+        reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
         let transition = self.shutdown.transition_guard();
         let current_guard = self
@@ -2810,13 +2811,17 @@ impl PrimaryRouterHandle {
             reply,
         )
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-        finish_link_shutdown(
+        #[cfg(windows)]
+        let peer_close = await_windows_quit_peer_close(reader);
+        #[cfg(target_os = "macos")]
+        let peer_close = Ok(());
+        let link_close = finish_link_shutdown(
             active.writer.shutdown_app_link(),
             "lifecycle Quit link close",
-        )?;
+        );
         current_guard.take();
         drop(current_guard);
-        self.finish_tail("lifecycle Quit")
+        collapse_app_results([peer_close, link_close, self.finish_tail("lifecycle Quit")])
     }
 
     fn cli_lease_lost(&self) -> Result<(), HostAppError> {
@@ -3139,7 +3144,7 @@ fn read_primary_frames(
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
-                        handle.lifecycle_quit(attempt, header.corr, &reply)?;
+                        handle.lifecycle_quit(attempt, header.corr, &reply, reader)?;
                         return Ok(());
                     }
                 }
@@ -3229,6 +3234,55 @@ fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotConnected => Ok(()),
         Err(source) => Err(app_io(phase, &source)),
+    }
+}
+
+#[cfg(windows)]
+fn await_windows_quit_peer_close(reader: &mut BootstrapStream) -> Result<(), HostAppError> {
+    let deadline = Instant::now()
+        .checked_add(APP_LINK_IO_DEADLINE)
+        .ok_or_else(|| app_detail("lifecycle Quit drain", "peer-close deadline overflow"))?;
+    await_windows_quit_peer_close_until(reader, deadline)
+}
+
+#[cfg(windows)]
+fn await_windows_quit_peer_close_until(
+    reader: &mut BootstrapStream,
+    deadline: Instant,
+) -> Result<(), HostAppError> {
+    let mut unexpected = [0_u8; 1];
+    loop {
+        match reader.read(&mut unexpected) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {
+                return Err(app_detail(
+                    "lifecycle Quit drain",
+                    "app sent bytes after the terminal Quit reply",
+                ));
+            }
+            Err(error)
+                if matches!(error.raw_os_error(), Some(109 | 232 | 233))
+                    || error.kind() == io::ErrorKind::NotConnected =>
+            {
+                return Ok(());
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(app_detail(
+                        "lifecycle Quit drain",
+                        "app did not close after the terminal Quit reply deadline",
+                    ));
+                }
+            }
+            Err(error) => return Err(app_io("lifecycle Quit drain", &error)),
+        }
     }
 }
 
@@ -3390,6 +3444,43 @@ mod tests {
             Ok(_) => panic!("{message}"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn quit_peer_close_wait_is_bounded_for_a_non_closing_client() {
+        let listener = Arc::new(keld_ipc::BootstrapListener::bind().expect("bind pipe"));
+        let link = listener.app_link();
+        let (endpoint, token) = keld_ipc::parse_app_link(&link).expect("parse pipe link");
+        let endpoint = endpoint.to_owned();
+        let acceptor = Arc::clone(&listener);
+        let worker = thread::spawn(move || acceptor.accept_authenticated());
+        let mut client = BootstrapStream::connect(&endpoint).expect("connect pipe client");
+        client
+            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+            .expect("client deadlines");
+        keld_ipc::link::handshake_client(&mut client, &token).expect("client HELLO");
+        let mut server = worker
+            .join()
+            .expect("accept join")
+            .expect("accept result")
+            .expect("authenticated server stream");
+        server
+            .set_app_link_read_deadline(Some(Duration::from_millis(10)))
+            .expect("server poll deadline");
+
+        let started = Instant::now();
+        let error = await_windows_quit_peer_close_until(
+            &mut server,
+            Instant::now() + Duration::from_millis(50),
+        )
+        .expect_err("non-closing client must hit the peer-close deadline");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "peer-close deadline did not bound the wait"
+        );
+        assert!(error.to_string().contains("did not close"), "{error}");
+        drop(client);
     }
 
     #[test]

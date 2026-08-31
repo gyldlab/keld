@@ -67,7 +67,7 @@ pub fn serve_echo_requests<S: Read + Write>(stream: &mut S) -> Result<(), IpcErr
     loop {
         let (header, payload) = match read_frame(stream) {
             Ok(frame) => frame,
-            Err(IpcError::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(IpcError::Io(error)) if is_peer_eof(&error) => break,
             Err(e) => return Err(e),
         };
         serve_echo_frame(stream, header, &payload)?;
@@ -93,12 +93,26 @@ pub fn serve_echo_requests_until_stopped<S: Read + Write + AppLinkDeadlines>(
         let (header, payload) = match read_frame_interruptible(stream, stop) {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
-            Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof => break,
+            Err(IpcError::Io(error)) if is_peer_eof(&error) => break,
             Err(error) => return Err(error),
         };
         serve_echo_frame(stream, header, &payload)?;
     }
     Ok(())
+}
+
+fn is_peer_eof(error: &std::io::Error) -> bool {
+    if error.kind() == ErrorKind::UnexpectedEof {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        matches!(error.raw_os_error(), Some(109 | 232 | 233))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn serve_echo_frame<S: Write>(

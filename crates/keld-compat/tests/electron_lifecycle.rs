@@ -28,6 +28,8 @@ use std::thread;
 use std::time::Duration;
 
 use keld_core::LifecycleSession;
+#[cfg(windows)]
+use keld_ipc::BootstrapListener;
 use keld_ipc::{SessionToken, format_app_link};
 
 #[cfg(unix)]
@@ -161,7 +163,7 @@ struct Bound {
 
 #[cfg(windows)]
 struct Bound {
-    listener: std::net::TcpListener,
+    listener: BootstrapListener,
     link: String,
 }
 
@@ -191,9 +193,8 @@ fn bind_app_link() -> Bound {
 
 #[cfg(windows)]
 fn bind_app_link() -> Bound {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let link = format_app_link(&port.to_string(), &test_token());
+    let listener = BootstrapListener::bind().expect("bind named-pipe app link");
+    let link = listener.app_link();
     Bound { listener, link }
 }
 
@@ -251,14 +252,38 @@ fn bunfig_alias_resolves_electron_and_shims_process_fields() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn electron_main_keeps_app_link_out_of_renderer_and_preload_views() {
+    let bound = bind_app_link();
+    let mut child = spawn_fixture("app_link_scope.ts", Some(&bound.link));
+    let stdout = child.stdout.take().expect("stdout");
+    let mut log = spawn_line_log(stdout);
+    log.wait_contains("KEL101_MAIN_HAS_LINK=true");
+    log.wait_contains("KEL101_RENDERER_HAS_LINK=false");
+    log.wait_contains("KEL101_PRELOAD_HAS_LINK=false");
+    assert!(child.wait().expect("wait scope fixture").success());
+    assert!(
+        !log.acc.contains(&bound.link),
+        "scope fixture must not print the app-link value"
+    );
+}
+
 #[test]
 fn when_ready_does_not_resolve_before_host_ready_event() {
     let bound = bind_app_link();
+    #[cfg(windows)]
+    assert!(
+        bound.link.starts_with(r"\\.\pipe\keld-"),
+        "Electron main fixture must consume the shipping named-pipe form"
+    );
     let (session_tx, session_rx) = mpsc::channel();
     {
         let listener = bound.listener;
         thread::spawn(move || {
+            #[cfg(unix)]
             let accepted = listener.accept().map_err(|e| e.to_string());
+            #[cfg(unix)]
             let result = accepted.and_then(|(server, _)| {
                 server
                     .try_clone()
@@ -268,6 +293,16 @@ fn when_ready_does_not_resolve_before_host_ready_event() {
                             .map_err(|e| e.to_string())
                     })
             });
+            #[cfg(windows)]
+            let result = listener
+                .accept_authenticated()
+                .map_err(|error| error.to_string())
+                .and_then(|stream| {
+                    let server = stream.ok_or_else(|| String::from("pipe admission cancelled"))?;
+                    let writer = server.try_clone().map_err(|error| error.to_string())?;
+                    LifecycleSession::from_authenticated(server, writer)
+                        .map_err(|error| error.to_string())
+                });
             let _ = session_tx.send(result);
         });
     }
@@ -329,6 +364,42 @@ fn when_ready_does_not_resolve_before_host_ready_event() {
 
     #[cfg(unix)]
     let _ = std::fs::remove_dir_all(&bound.session_dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn electron_main_retains_decimal_diagnostic_compatibility() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind diagnostic TCP");
+    let port = listener.local_addr().expect("diagnostic address").port();
+    let link = format_app_link(&port.to_string(), &test_token());
+    let (session_tx, session_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = listener
+            .accept()
+            .map_err(|error| error.to_string())
+            .and_then(|(server, _)| {
+                let writer = server.try_clone().map_err(|error| error.to_string())?;
+                LifecycleSession::handshake(server, writer, &test_token())
+                    .map_err(|error| error.to_string())
+            });
+        let _ = session_tx.send(result);
+    });
+
+    let mut child = spawn_fixture("lifecycle.ts", Some(&link));
+    let stdout = child.stdout.take().expect("stdout");
+    let mut log = spawn_line_log(stdout);
+    log.wait_contains("KEL72_WAITING");
+    let mut host = session_rx
+        .recv_timeout(Duration::from_secs(8))
+        .expect("diagnostic handshake result")
+        .unwrap_or_else(|error| panic!("diagnostic lifecycle handshake failed: {error}"));
+    host.window_opened();
+    host.signal_ready().expect("diagnostic Ready");
+    log.wait_contains("KEL72_READY");
+    host.window_closed().expect("diagnostic close window");
+    log.wait_contains("KEL72_WINDOW_ALL_CLOSED");
+    host.wait_for_quit().expect("diagnostic Quit");
+    assert!(child.wait().expect("wait diagnostic Bun").success());
 }
 
 /// Isolation / connect-retry / unhandledRejection probe (`app_ready.ts`).

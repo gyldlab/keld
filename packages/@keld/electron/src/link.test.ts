@@ -18,6 +18,7 @@ import {
   WriteQueue,
   encodeHeader,
   parseWin32Port,
+  isWin32PipeEndpoint,
   withIoDeadline,
   decodeCallError,
   errorFromErrFrame,
@@ -112,8 +113,23 @@ describe("parseWin32Port", () => {
   });
 
   test("rejects 0, 65536, and trailing junk", () => {
-    for (const bad of ["0", "65536", "9000abc", "", " 9000"]) {
+    for (const bad of ["0", "01", "65536", "9000abc", "", " 9000"]) {
       expect(() => parseWin32Port(bad)).toThrow("KELD-IPC-007");
+    }
+  });
+});
+
+describe("isWin32PipeEndpoint", () => {
+  test("accepts only the exact host-minted lowercase pipe shape", () => {
+    const valid = String.raw`\\.\pipe\keld-${"ab".repeat(32)}`;
+    expect(isWin32PipeEndpoint(valid)).toBe(true);
+    for (const bad of [
+      String.raw`\\.\pipe\other-${"ab".repeat(32)}`,
+      String.raw`\\.\pipe\keld-${"AB".repeat(32)}`,
+      String.raw`\\.\pipe\keld-${"ab".repeat(31)}`,
+      "9000",
+    ]) {
+      expect(isWin32PipeEndpoint(bad)).toBe(false);
     }
   });
 });

@@ -27,7 +27,6 @@ use windows_sys::Win32::Foundation::{
     GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
     WAIT_TIMEOUT,
 };
-#[cfg(test)]
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_CREATE_PIPE_INSTANCE, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
@@ -305,7 +304,6 @@ impl WindowsNamedPipeServer {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) fn connect_client(endpoint: &str) -> io::Result<WindowsNamedPipeStream> {
         let endpoint_wide = wide(endpoint);
         // SAFETY: endpoint_wide is NUL terminated; no security template is
@@ -576,7 +574,7 @@ impl Read for WindowsNamedPipeStream {
         )?;
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
-        overlapped_io(
+        let result = overlapped_io(
             &self.read_event,
             self.raw_pipe()?,
             timeout,
@@ -587,7 +585,11 @@ impl Read for WindowsNamedPipeStream {
                 unsafe { ReadFile(handle, bytes, len, ptr::null_mut(), overlapped) }
             },
             buf.as_mut_ptr().cast(),
-        )
+        );
+        match result {
+            Err(error) if matches!(error.raw_os_error(), Some(109 | 232 | 233)) => Ok(0),
+            other => other,
+        }
     }
 }
 

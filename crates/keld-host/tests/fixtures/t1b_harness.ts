@@ -99,6 +99,7 @@ const { endpoint, token } = parseAppLink(KEL96_LINK);
 const reader = new FrameReader();
 const appDrain = new DrainSignal();
 let linkClosed = false;
+let closeNotificationStarted = false;
 let orderlyQuit = false;
 let resolveQuitReplySent: (() => void) | undefined;
 const quitReplySent = new Promise<void>((resolve) => {
@@ -108,6 +109,20 @@ let resolveCloseNotified: (() => void) | undefined;
 const closeNotified = new Promise<void>((resolve) => {
   resolveCloseNotified = resolve;
 });
+function notifyLinkClosed(error: Error): void {
+  linkClosed = true;
+  reader.fail(error);
+  if (closeNotificationStarted) return;
+  closeNotificationStarted = true;
+  const notify = async (): Promise<void> => {
+    if (orderlyQuit) await quitReplySent;
+    await sendControl("LINK_EOF");
+    if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
+  };
+  void notify()
+    .catch(() => undefined)
+    .finally(() => resolveCloseNotified?.());
+}
 const appSocketHandlers = {
   binaryType: "uint8array" as const,
   data(_socket: unknown, data: Uint8Array) {
@@ -117,24 +132,23 @@ const appSocketHandlers = {
     appDrain.fire();
   },
   error(_socket: unknown, error: Error) {
-    reader.fail(error);
+    if (process.platform === "win32" && error.message.includes("EPIPE")) {
+      notifyLinkClosed(error);
+    } else {
+      reader.fail(error);
+    }
   },
   close() {
-    linkClosed = true;
-    reader.fail(new Error("KEL96 app link closed by host"));
-    const notify = async (): Promise<void> => {
-      if (orderlyQuit) await quitReplySent;
-      await sendControl("LINK_EOF");
-      if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
-    };
-    void notify()
-      .catch(() => undefined)
-      .finally(() => resolveCloseNotified?.());
+    notifyLinkClosed(new Error("KEL96 app link closed by host"));
   },
 };
 const appSocket =
-  process.platform === "win32"
-    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(endpoint), socket: appSocketHandlers })
+  process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
+    ? await Bun.connect({
+        hostname: "127.0.0.1",
+        port: parseWin32DiagnosticPort(endpoint),
+        socket: appSocketHandlers,
+      })
     : await Bun.connect({ unix: endpoint, socket: appSocketHandlers });
 const writes = new WriteQueue(appSocket, appDrain);
 await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
@@ -327,5 +341,6 @@ if (!sameBytes(response, new Uint8Array([0]))) {
 }
 await sendControl("QUIT_REPLY");
 resolveQuitReplySent?.();
+appSocket.end();
 await closeNotified;
 process.exit(0);

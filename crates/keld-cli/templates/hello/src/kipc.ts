@@ -233,6 +233,29 @@ export function parseAppLink(link: string): AppLink {
   return { endpoint, token };
 }
 
+/** True only for a host-minted Keld Windows named-pipe endpoint. */
+export function isWin32PipeEndpoint(endpoint: string): boolean {
+  return /^\\\\\.\\pipe\\keld-[0-9a-f]{64}$/.test(endpoint);
+}
+
+/** Parses only the retained client-side decimal diagnostic compatibility form. */
+export function parseWin32DiagnosticPort(endpoint: string): number {
+  if (!/^[1-9][0-9]{0,4}$/.test(endpoint)) {
+    throw kipcError(
+      "KELD-IPC-007",
+      "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
+    );
+  }
+  const port = Number(endpoint);
+  if (port > 65535) {
+    throw kipcError(
+      "KELD-IPC-007",
+      "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
+    );
+  }
+  return port;
+}
+
 function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -423,10 +446,10 @@ export class AppLinkSession {
     };
 
     const socket: KipcSocket =
-      process.platform === "win32"
+      process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
         ? await Bun.connect({
             hostname: "127.0.0.1",
-            port: Number.parseInt(endpoint, 10),
+            port: parseWin32DiagnosticPort(endpoint),
             socket: handlers,
           })
         : await Bun.connect({
@@ -502,10 +525,10 @@ export class AppLinkSession {
  * Performs one echo round-trip: connect, `HELLO` handshake, one `Call`/`Reply`.
  *
  * One-shot wrapper over [`AppLinkSession`]. `link` is the `KELD_APP_LINK`
- * value (`<endpoint>#<64 hex chars>`); on Windows the endpoint is a loopback
- * TCP port, on Unix a domain socket path — the same branch
- * `crates/keld-core/src/echo_link.rs::echo_roundtrip` takes, decided by
- * platform (not by sniffing the endpoint string).
+ * value (`<endpoint>#<64 hex chars>`); on Windows the endpoint is a
+ * host-minted named pipe or an explicit decimal diagnostic port, while Unix
+ * uses a domain socket. This matches the selector in
+ * `crates/keld-core/src/echo_link.rs::echo_roundtrip`.
  *
  * @throws on I/O failure, protocol mismatch, auth failure, or codec error —
  * error messages carry the matching `KELD-IPC-*` code from `keld-ipc`.

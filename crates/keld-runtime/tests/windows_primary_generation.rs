@@ -13,7 +13,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use keld_ipc::link::{AppLinkDeadlines, handshake_client};
-use keld_ipc::{SessionToken, parse_app_link, serve_echo_requests_until_stopped};
+use keld_ipc::{
+    SessionToken, WindowsNamedPipeBootstrapStream, parse_app_link,
+    serve_echo_requests_until_stopped,
+};
 use keld_runtime::primary::{
     BoundPrimaryGeneration, PrimaryRoleConfig, PrimaryRoleEvent, PrimaryRoleRevocationCause,
     PrimaryRoleSupervisor,
@@ -51,7 +54,7 @@ fn windows_primary_restart_rotates_authenticated_generation_and_rejects_stale_au
     g1_control.write_line("CRASH");
     g1_echo.finish();
     expect_revoked(&supervisor, g1, 1, PrimaryRoleRevocationCause::ChildExited);
-    let _retired_locator_guard = bind_retired_locator(&g1_link);
+    assert_retired_locator_closed(&g1_link);
 
     let g2 = expect_provisioned(&supervisor, 2);
     assert_ne!(g2, g1, "successor generation must rotate");
@@ -178,19 +181,16 @@ fn expect_spawned(
     }
 }
 
-fn bind_retired_locator(link: &str) -> TcpListener {
+fn assert_retired_locator_closed(link: &str) {
     let (endpoint, _) = parse_app_link(link).expect("retired link");
-    let port = endpoint
-        .parse::<u16>()
-        .expect("retired Windows loopback port");
-    TcpListener::bind(("127.0.0.1", port))
-        .expect("retired generation must release its exact listener endpoint")
+    let error = WindowsNamedPipeBootstrapStream::connect(endpoint)
+        .expect_err("retired generation must close its exact pipe endpoint");
+    assert!(matches!(error.raw_os_error(), Some(2 | 231)));
 }
 
-fn connect_silent(link: &str) -> TcpStream {
+fn connect_silent(link: &str) -> WindowsNamedPipeBootstrapStream {
     let (endpoint, _) = parse_app_link(link).expect("silent peer link");
-    let port = endpoint.parse::<u16>().expect("Windows loopback port");
-    TcpStream::connect(("127.0.0.1", port)).expect("connect silent peer")
+    WindowsNamedPipeBootstrapStream::connect(endpoint).expect("connect silent peer")
 }
 
 fn expect_link_bound(
@@ -262,8 +262,8 @@ fn expect_revoked(
 fn connect_with_token_from(token_link: &str, endpoint_link: &str) {
     let (_, token) = parse_app_link(token_link).expect("g1 token link");
     let (endpoint, _) = parse_app_link(endpoint_link).expect("g2 endpoint link");
-    let port = endpoint.parse::<u16>().expect("Windows loopback port");
-    let mut hostile = TcpStream::connect(("127.0.0.1", port)).expect("connect stale client");
+    let mut hostile =
+        WindowsNamedPipeBootstrapStream::connect(endpoint).expect("connect stale client");
     hostile
         .set_app_link_deadlines(Some(Duration::from_millis(500)))
         .expect("hostile deadline");

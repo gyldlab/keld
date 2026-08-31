@@ -1,4 +1,4 @@
-//! Host-owned loopback app-link echo listener (KEL-30).
+//! Host-owned platform app-link echo listener (KEL-30/KEL-101).
 //!
 //! Lives in `keld-core` so `keld-host` can mint/own the same link without
 //! depending on `keld-cli`. CLI diagnostics re-export this module.
@@ -11,13 +11,13 @@ use std::thread;
 use keld_ipc::{BootstrapListener, serve_echo_requests_until_stopped};
 use keld_ipc::{EchoRequest, EchoResponse, echo_call, parse_app_link};
 #[cfg(windows)]
-use keld_ipc::{SessionToken, format_app_link};
+use keld_ipc::{SessionToken, WindowsNamedPipeBootstrapStream, format_app_link};
 
-/// Compatibility endpoint value for the Windows loopback echo surface.
+/// Compatibility endpoint value for the legacy Windows diagnostic echo surface.
 #[cfg(windows)]
 #[derive(Debug, Clone)]
 pub enum EchoEndpoint {
-    /// Loopback TCP port (Windows).
+    /// Legacy client-only loopback TCP diagnostic port (Windows).
     Tcp(u16),
 }
 
@@ -151,14 +151,35 @@ pub fn echo_roundtrip(
     }
     #[cfg(windows)]
     {
-        let port: u16 = endpoint
-            .parse()
-            .map_err(|_| keld_ipc::IpcError::HelloAuth {
-                detail: "KELD_APP_LINK Windows endpoint must be a TCP port",
-            })?;
-        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        echo_call(&mut stream, request, &token)
+        if WindowsNamedPipeBootstrapStream::is_keld_endpoint(endpoint) {
+            let mut stream = WindowsNamedPipeBootstrapStream::connect(endpoint)?;
+            echo_call(&mut stream, request, &token)
+        } else {
+            let port = parse_decimal_diagnostic_port(endpoint)?;
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+            echo_call(&mut stream, request, &token)
+        }
     }
+}
+
+#[cfg(windows)]
+fn parse_decimal_diagnostic_port(endpoint: &str) -> Result<u16, keld_ipc::IpcError> {
+    if endpoint.is_empty()
+        || endpoint.len() > 5
+        || endpoint.starts_with('0')
+        || !endpoint.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(keld_ipc::IpcError::HelloAuth {
+            detail: "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
+        });
+    }
+    endpoint
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or(keld_ipc::IpcError::HelloAuth {
+            detail: "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
+        })
 }
 
 #[cfg(test)]
@@ -166,6 +187,8 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::fs;
+    #[cfg(windows)]
+    use std::net::TcpListener;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     #[cfg(unix)]
@@ -190,7 +213,7 @@ mod tests {
     #[cfg(unix)]
     type PersistentClient = std::os::unix::net::UnixStream;
     #[cfg(windows)]
-    type PersistentClient = std::net::TcpStream;
+    type PersistentClient = WindowsNamedPipeBootstrapStream;
 
     fn open_persistent_client(server: &EchoServer) -> PersistentClient {
         let link = server.link();
@@ -198,11 +221,7 @@ mod tests {
         #[cfg(unix)]
         let mut stream = PersistentClient::connect(endpoint).expect("connect unix app link");
         #[cfg(windows)]
-        let mut stream = PersistentClient::connect((
-            "127.0.0.1",
-            endpoint.parse::<u16>().expect("Windows app-link TCP port"),
-        ))
-        .expect("connect loopback app link");
+        let mut stream = PersistentClient::connect(endpoint).expect("connect named-pipe app link");
         stream
             .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
             .expect("set client deadlines");
@@ -251,7 +270,7 @@ mod tests {
                 .map_or(0, |d| d.as_nanos())
         );
         #[cfg(windows)]
-        let endpoint = "1".to_owned(); // port 1: connection refused on loopback
+        let endpoint = format!(r"\\.\pipe\keld-{}", "0".repeat(64));
         let link = format_app_link(&endpoint, &token);
         let err = echo_roundtrip(
             &link,
@@ -271,6 +290,66 @@ mod tests {
             !msg.contains(&token.to_hex()),
             "must not leak the session token: {msg}"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn malformed_windows_endpoint_is_ipc_007_without_disclosure() {
+        let token = fixture_token();
+        for endpoint in [
+            r"\\.\pipe\other-0123",
+            r"\\.\pipe\keld-ABCDEF",
+            "0",
+            "01",
+            "65536",
+            "127.0.0.1:9000",
+        ] {
+            let link = format_app_link(endpoint, &token);
+            let error = echo_roundtrip(
+                &link,
+                &EchoRequest {
+                    message: "must-not-echo".to_owned(),
+                    count: 1,
+                },
+            )
+            .expect_err("unknown Windows endpoint must fail locally");
+            let message = error.to_string();
+            assert!(message.contains("KELD-IPC-007"), "{message}");
+            assert!(!message.contains(&link), "full app link leaked: {message}");
+            assert!(
+                !message.contains(&token.to_hex()),
+                "token leaked: {message}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn decimal_port_remains_explicit_client_only_diagnostic_compatibility() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind diagnostic TCP");
+        let port = listener.local_addr().expect("diagnostic address").port();
+        let token = fixture_token();
+        let server_token = token;
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept diagnostic client");
+            stream
+                .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+                .expect("diagnostic deadlines");
+            keld_ipc::link::handshake_server(&mut stream, &server_token).expect("diagnostic HELLO");
+            keld_ipc::serve_echo_requests(&mut stream).expect("diagnostic echo");
+        });
+        let link = format_app_link(&port.to_string(), &token);
+        let response = echo_roundtrip(
+            &link,
+            &EchoRequest {
+                message: "diagnostic-only".to_owned(),
+                count: 17,
+            },
+        )
+        .expect("consume explicit decimal diagnostic link");
+        assert_eq!(response.message, "diagnostic-only");
+        assert_eq!(response.count, 17);
+        worker.join().expect("join diagnostic server");
     }
 
     #[test]
@@ -334,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_over_loopback_copies_fields() {
+    fn roundtrip_over_platform_app_link_copies_fields() {
         let (ready_tx, ready_rx) = mpsc::channel();
         let server = EchoServer::start(&ready_tx).expect("bind echo server");
         ready_rx.recv().expect("server ready");
@@ -350,6 +429,14 @@ mod tests {
         );
         let (_, token) = parse_app_link(&link).expect("link");
         assert_eq!(token.to_hex().len(), 64);
+        #[cfg(windows)]
+        assert!(
+            parse_app_link(&link)
+                .expect("link")
+                .0
+                .starts_with(r"\\.\pipe\keld-"),
+            "shipping Windows echo must mint a named pipe"
+        );
         server.join().expect("join");
         assert_eq!(response.message, "cli-loopback");
         assert_eq!(response.count, 11);
