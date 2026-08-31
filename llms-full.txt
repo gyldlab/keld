@@ -640,7 +640,7 @@ because Bun has no stable embedding C API.
 
 On macOS and Windows, `keld dev` first spawns the staged no-flag host. The
 macOS authenticated guardian or Windows primary owner composes
-`keld_runtime::Supervisor`, which owns Bun's captured stdio and termination
+`keld_runtime::Supervisor`, which owns Bun's captured stdout/stderr and termination
 ledger. The command factory sets argv/cwd/env for the staged entry:
 
 ```rust

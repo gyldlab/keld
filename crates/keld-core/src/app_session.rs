@@ -2510,9 +2510,16 @@ fn drain_windows_primary_role_events(
     router: Option<&PrimaryRouterHandle>,
 ) -> Result<(), HostAppError> {
     while let Some(event) = supervisor.try_recv_event() {
-        if let Some(router) = router {
-            router.apply_generation_update(PrimaryOwnerUpdate::Role(event))?;
-        }
+        let Some(router) = router else {
+            if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
+                return Err(app_detail(
+                    "Windows primary generation update",
+                    "generation changed before the primary router attached",
+                ));
+            }
+            continue;
+        };
+        router.apply_generation_update(PrimaryOwnerUpdate::Role(event))?;
     }
     Ok(())
 }

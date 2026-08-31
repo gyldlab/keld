@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, ErrorKind, Read as _, Write};
 #[cfg(windows)]
 use std::io::{BufRead as _, BufReader};
 #[cfg(target_os = "macos")]
@@ -276,7 +276,7 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         ))
     })?;
     #[cfg(windows)]
-    let mut cleanup_sentinel = match start_windows_stage_cleanup_sentinel(
+    let cleanup_sentinel = match start_windows_stage_cleanup_sentinel(
         &developer_host,
         &stage_root,
         host.id(),
@@ -301,14 +301,7 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     drop(lease_writer);
     drop(stage);
     #[cfg(windows)]
-    let cleanup_status = cleanup_sentinel.wait()?;
-    #[cfg(windows)]
-    if !cleanup_status.success() {
-        return Err(DevError::Doctor(format!(
-            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {cleanup_status}. Remove `{}` after confirming the host has exited.",
-            stage_root.display()
-        )));
-    }
+    cleanup_sentinel.wait(&stage_root)?;
     if status.success() {
         Ok(())
     } else {
@@ -324,7 +317,7 @@ fn start_windows_stage_cleanup_sentinel(
     installed_host: &Path,
     stage_root: &Path,
     staged_host_pid: u32,
-) -> Result<std::process::Child, DevError> {
+) -> Result<WindowsStageCleanupSentinel, DevError> {
     let mut sentinel = Command::new(installed_host);
     sentinel
         .arg("--keld-windows-dev-stage-cleanup-v1")
@@ -332,7 +325,7 @@ fn start_windows_stage_cleanup_sentinel(
         .arg(staged_host_pid.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     let mut sentinel = sentinel.spawn()?;
     let stdout = sentinel.stdout.take().ok_or_else(|| {
@@ -340,17 +333,52 @@ fn start_windows_stage_cleanup_sentinel(
             "Windows dev-stage cleanup sentinel has no readiness pipe",
         ))
     })?;
+    let mut stderr = sentinel.stderr.take().ok_or_else(|| {
+        DevError::Runtime(String::from(
+            "Windows dev-stage cleanup sentinel has no diagnostic pipe",
+        ))
+    })?;
     let mut ready = String::new();
     let mut stdout = BufReader::new(stdout);
     stdout.read_line(&mut ready)?;
     if ready.trim_end() != "KELD_WINDOWS_DEV_STAGE_CLEANUP_READY" {
         let status = sentinel.wait()?;
+        let mut detail = String::new();
+        stderr.read_to_string(&mut detail)?;
         return Err(DevError::Runtime(format!(
-            "Windows dev-stage cleanup sentinel failed readiness with {status}"
+            "Windows dev-stage cleanup sentinel failed readiness with {status}: {}",
+            detail.trim()
         )));
     }
     drop(stdout);
-    Ok(sentinel)
+    Ok(WindowsStageCleanupSentinel {
+        child: sentinel,
+        stderr,
+    })
+}
+
+#[cfg(windows)]
+struct WindowsStageCleanupSentinel {
+    child: std::process::Child,
+    stderr: std::process::ChildStderr,
+}
+
+#[cfg(windows)]
+impl WindowsStageCleanupSentinel {
+    fn wait(mut self, stage_root: &Path) -> Result<(), DevError> {
+        let status = self.child.wait()?;
+        let mut detail = String::new();
+        self.stderr.read_to_string(&mut detail)?;
+        if status.success() {
+            return Ok(());
+        }
+        Err(DevError::Doctor(format!(
+            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {status}: {}. \
+             Remove `{}` after confirming the host has exited.",
+            detail.trim(),
+            stage_root.display()
+        )))
+    }
 }
 
 /// The retained CLI-owned hello path with its window phase injected.

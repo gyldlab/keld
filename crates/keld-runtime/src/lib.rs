@@ -437,7 +437,11 @@ pub(crate) trait ChildPreparer: Send + 'static {
     /// Waits at the post-revocation boundary before a crash successor may be
     /// provisioned. Ordinary supervisors permit restart immediately; a host
     /// session may require an externally observable readiness decision first.
-    fn allow_restart(&mut self, _shutdown: &AtomicBool) -> Result<bool, RuntimeError> {
+    fn allow_restart(
+        &mut self,
+        _shutdown: &AtomicBool,
+        _accepted_shutdown: &AtomicBool,
+    ) -> Result<bool, RuntimeError> {
         Ok(true)
     }
 }
@@ -1026,7 +1030,7 @@ fn supervise<P>(
             return;
         }
 
-        match preparer.allow_restart(shutdown) {
+        match preparer.allow_restart(shutdown, accepted_shutdown) {
             Ok(true) => {}
             Ok(false) => {
                 let _ = events_tx.send(SupervisorEvent::Stopped);
@@ -1923,7 +1927,10 @@ mod tests {
             "natural exit waited for an unowned descendant pipe"
         );
         let captured_at_successor = supervisor.output();
-        thread::park_timeout(Duration::from_secs(2));
+        let observation_deadline = Instant::now() + Duration::from_secs(2);
+        while let Some(remaining) = observation_deadline.checked_duration_since(Instant::now()) {
+            thread::park_timeout(remaining);
+        }
         let captured_after_descendant_writes = supervisor.output();
         assert_eq!(
             captured_at_successor.stdout, captured_after_descendant_writes.stdout,

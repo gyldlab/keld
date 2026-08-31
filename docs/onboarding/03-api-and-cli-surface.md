@@ -165,9 +165,11 @@ The one verb that ties everything together. Sequence, from
    CLI exits, EOF on the sole lease writer makes the host quiesce, close the
    link, reap Bun, close the window, and exit. Linux fails closed before this
    sequence until its no-flag owner lands. macOS removes its validated nonce stage on normal Quit
-   and CLI loss; on Windows the live CLI removes it after orderly host exit,
-   while post-CLI-death deletion remains open because the running executable is
-   locked and no surviving cleanup helper is approved.
+   and CLI loss. On Windows the approved private
+   `keld.windows-dev-stage-cleanup/v1` sentinel survives terminal-CLI death,
+   waits the exact staged-host process object, and owns nonce deletion. Windows
+   abnormal-host-death reaping still depends on KEL-78/T3; Linux product
+   implementation and real-desktop evidence remain separate open rows.
 
 Representative Bun output from a session in a freshly scaffolded `my-app`
 (forwarded through the host/CLI stdio chain):

@@ -224,7 +224,7 @@ concluding anything about the state of the tree.
 
 ### What actually runs today
 
-Verified on macOS, 2026-08-29:
+Verified on macOS (2026-08-29) and Windows (2026-08-31):
 
 | Command | What it really does |
 |---|---|

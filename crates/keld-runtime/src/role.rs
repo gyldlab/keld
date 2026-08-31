@@ -70,7 +70,12 @@ impl RoleRecoveryGate {
 
 impl Drop for RoleRecoveryGate {
     fn drop(&mut self) {
-        let _ = self.deny();
+        let _ = self.decision.compare_exchange(
+            RECOVERY_PENDING,
+            RECOVERY_DENIED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 }
 
@@ -475,9 +480,9 @@ impl RoleSupervisor {
     /// Starts the role with authenticated-generation handoff and a one-time
     /// host readiness decision before the first crash successor is prepared.
     ///
-    /// The returned gate defaults to deny when dropped. Call
-    /// [`RoleRecoveryGate::arm`] only after the host has made initial readiness
-    /// externally observable.
+    /// Dropping an undecided gate defaults to deny; dropping an already armed
+    /// gate preserves that decision. Call [`RoleRecoveryGate::arm`] only after
+    /// the host has made initial readiness externally observable.
     ///
     /// # Errors
     ///
@@ -636,20 +641,25 @@ impl ChildPreparer for RolePreparer {
         })
     }
 
-    fn allow_restart(&mut self, shutdown: &AtomicBool) -> Result<bool, RuntimeError> {
+    fn allow_restart(
+        &mut self,
+        shutdown: &AtomicBool,
+        accepted_shutdown: &AtomicBool,
+    ) -> Result<bool, RuntimeError> {
         let Some(decision) = &self.recovery_decision else {
             return Ok(true);
         };
-        await_recovery_decision(decision, shutdown)
+        await_recovery_decision(decision, shutdown, accepted_shutdown)
     }
 }
 
 fn await_recovery_decision(
     decision: &AtomicU8,
     shutdown: &AtomicBool,
+    accepted_shutdown: &AtomicBool,
 ) -> Result<bool, RuntimeError> {
     loop {
-        if shutdown.load(Ordering::Acquire) {
+        if shutdown.load(Ordering::Acquire) || accepted_shutdown.load(Ordering::Acquire) {
             return Ok(false);
         }
         match decision.load(Ordering::Acquire) {
@@ -1043,9 +1053,29 @@ mod lifecycle_tests {
         let decision = AtomicU8::new(RECOVERY_ARMED);
         let shutdown = AtomicBool::new(true);
         assert!(matches!(
-            await_recovery_decision(&decision, &shutdown),
+            await_recovery_decision(&decision, &shutdown, &AtomicBool::new(false)),
             Ok(false)
         ));
+    }
+
+    #[test]
+    fn accepted_shutdown_interrupts_a_pending_recovery_gate() {
+        let decision = AtomicU8::new(RECOVERY_PENDING);
+        assert!(matches!(
+            await_recovery_decision(&decision, &AtomicBool::new(false), &AtomicBool::new(true),),
+            Ok(false)
+        ));
+    }
+
+    #[test]
+    fn dropping_an_armed_recovery_gate_preserves_the_decision() {
+        let decision = Arc::new(AtomicU8::new(RECOVERY_PENDING));
+        let gate = RoleRecoveryGate {
+            decision: Arc::clone(&decision),
+        };
+        assert!(gate.arm());
+        drop(gate);
+        assert_eq!(decision.load(Ordering::Acquire), RECOVERY_ARMED);
     }
 
     #[test]
@@ -1056,7 +1086,11 @@ mod lifecycle_tests {
         assert!(gate.arm());
         assert!(gate.deny());
         assert!(matches!(
-            await_recovery_decision(&gate.decision, &AtomicBool::new(false)),
+            await_recovery_decision(
+                &gate.decision,
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+            ),
             Ok(false)
         ));
     }

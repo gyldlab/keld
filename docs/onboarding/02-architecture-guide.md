@@ -379,7 +379,10 @@ skeleton scope; grey = external dependency. One specified edge is missing today:
 `keld-runtime` for the guardian-composed Bun supervisor (KEL-96 T1a/T1b/T2), while
 `keld-wv::wkwebview` owns the concrete AppKit event loop, native handles, navigation
 callback, and `EventLoopProxy` wake. The broader
-named-role registry, guarded native dispatch, and the Linux no-flag owner remain later work.
+named-role registry, shipping guarded-native route, and the Linux no-flag owner remain later work.
+`keld_ipc::guard_dispatch::dispatch_privileged` already drives the isolated/test
+`keld_native::fs` broker; the remaining guarded-dispatch gap is specifically the
+shipping `keld-core` to `keld-native` route plus the broader named-role registry.
 
 ### The two crates that carry real weight
 
