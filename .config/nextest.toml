@@ -26,3 +26,14 @@
 # gate command against a deliberately failing test and asserting one attempt.
 
 [profile.ci]
+
+# Real Windows no-flag rows each own a native WebView2 session. Running those
+# sessions concurrently on the two-core GitHub runner can starve a renderer
+# beacon while every process and port remains test-private. Serialize only this
+# binary so the existing event-driven assertions and deadlines remain exact.
+[test-groups.windows-no-flag-gui]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = "binary(no_flag_windows)"
+test-group = "windows-no-flag-gui"
