@@ -502,9 +502,10 @@ releasing its no-share-delete namespace guards. The sentinel opens the exact
 staged-host PID while the CLI still owns it, verifies from that live handle that
 the process image is `<validated-stage>/keld-host.exe`, retains the process
 handle, and reports no application readiness or authority. The CLI then releases
-the namespace guards. The sentinel waits for the exact host object, validates
-the nonce layout plus protected current-user-only stage DACL again, and deletes
-the nonce directory after host exit. It is a CLI child and host sibling, so it
+the namespace guards. The sentinel waits for the exact host object, rechecks
+the protected current-user-only stage DACL, and deletes the nonce directory
+after host exit. Nonce layout validation occurs once during sentinel prepare.
+It is a CLI child and host sibling, so it
 is never enrolled in or broken out of the host Job.
 
 The private role receives only the stage deletion target and staged-host PID;

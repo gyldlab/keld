@@ -1618,6 +1618,7 @@ enum WindowsDevLeaseObservation {
 #[cfg(windows)]
 struct WindowsDevLeaseMonitor {
     observations: Receiver<WindowsDevLeaseObservation>,
+    #[cfg(debug_assertions)]
     raw_handle_value: usize,
 }
 
@@ -1655,6 +1656,7 @@ fn prepare_windows_dev_lease(
         );
         return Ok(Some(WindowsDevLeaseMonitor {
             observations: observation_rx,
+            #[cfg(debug_assertions)]
             raw_handle_value: handle.addr(),
         }));
     }
@@ -1693,6 +1695,7 @@ fn prepare_windows_dev_lease(
         .map_err(|source| app_io("Windows dev-host lease reader", &source))?;
     Ok(Some(WindowsDevLeaseMonitor {
         observations: observation_rx,
+        #[cfg(debug_assertions)]
         raw_handle_value: handle.addr(),
     }))
 }
