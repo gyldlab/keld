@@ -1,7 +1,12 @@
 # Spec: Windows named-pipe app-link with current-user DACL
 
-Status: draft
-Linear: KEL-101 · Owner: GYLDLAB · Updated: 2026-08-30
+Status: approved
+Linear: KEL-101 · Owner: GYLDLAB · Updated: 2026-08-31
+
+Approval provenance: direct operator decisions in KEL-101 comments
+`eaed1777-00e2-480a-b512-fd22e564c18d` (T1 binding, unsafe boundary, and
+foreign-user fixture) and `e0f20ee7-a55b-479b-b673-07e3f2676fb2` (exact T2
+slice). T1's governance change does not itself claim T2 or T4 behavior.
 
 ## 1. Goal & non-goals
 
@@ -14,8 +19,9 @@ intended Bun child can complete `HELLO` and an echo call.
 
 Non-goals:
 
-- No implementation, Cargo change, `unsafe` exception, dependency addition, or
-  wire-version change is authorized by this draft.
+- No implementation, Cargo change, dependency addition, or wire-version change
+  is part of T1. The approved T2 slice may implement only the boundary frozen
+  below after T1 lands and receives its own review.
 - No role/principal identity is carried by the pipe name, PID, DACL,
   environment, or frame. KEL-75 remains the owner of post-admission role binding.
 - No Windows sandbox, AppContainer/LPAC policy, job-object policy,
@@ -125,6 +131,38 @@ Keld role identity. KEL-75 binds host-minted identity only after authentication.
 Extend the shared `BootstrapListener` under `cfg(windows)`; do not create an
 `EchoServer`-local alternative. Unix behavior stays unchanged. This is a cold
 security-correctness change and makes no performance claim.
+
+### Approved binding and unsafe boundary
+
+T1 selects the smallest reuse-compatible Windows boundary:
+
+- Reuse workspace-pinned `windows-permissions = 0.2.4` for the current
+  `TokenUser` SID, self-relative protected security-descriptor construction,
+  and handle-based DACL readback. KEL-78 already introduced and reviewed this
+  safe wrapper; T2 must not add a second SID/DACL parser or builder.
+- Use workspace-pinned Microsoft `windows-sys = 0.61.2` directly only in
+  `crates/keld-ipc/src/windows_named_pipe.rs` for named-pipe creation,
+  overlapped connect/read/write, completion waits/cancellation, disconnect,
+  handle flags, and handle ownership. Rust std exposes none of those complete
+  contracts, and `windows-permissions` does not wrap the pipe/overlapped state
+  machine.
+- `bootstrap.rs` remains the platform-neutral owner and delegates its Windows
+  transport mechanics to that module. Wire framing, codec, token, handshake,
+  and admission classification remain safe shared code; the ABI module must not
+  parse or authorize a kipc frame.
+- The ABI module denies `unsafe_op_in_unsafe_fn`; every unsafe block carries a
+  local pointer/buffer/handle lifetime proof. T2 adds target-only direct
+  dependencies from `keld-ipc` to the two existing workspace pins and therefore
+  still triggers dependency, unsafe, public-API, and permission-model review.
+
+Rejected alternatives: std cannot express exact named-pipe security and
+overlapped cancellation; `windows-permissions` alone lacks the pipe state
+machine; an `EchoServer`-local adapter would duplicate the live
+`BootstrapListener`; raw ACL construction would duplicate the reviewed safe
+wrapper; and an async/thread-per-operation transport violates the hot-path and
+bounded-cancellation contracts. No compatibility fallback is required for new
+hosts: decimal loopback remains a client-only diagnostic migration path until
+T5 and a pipe failure never downgrades to TCP.
 
 ### Pipe identity and DACL
 
@@ -251,8 +289,9 @@ Keld's endpoint or token protocol.
 
 ### Local compatibility evidence (not security proof)
 
-On 2026-08-23, a temporary Windows 11 build 26200 probe used Bun 1.4.1 and
-`node:net` to open a .NET `NamedPipeServerStream`, write `KI`, and close. A
+On 2026-08-23, a temporary Windows 11 build 26200 probe used
+Bun `1.4.1-canary.1+abe2ad4f0` and `node:net` to open a .NET
+`NamedPipeServerStream`, write `KI`, and close. A
 protected DACL granting the current `TokenUser` SID produced:
 
 | ACE mask | Result |
@@ -280,19 +319,27 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
 
 ## 5. Boundaries
 
-- Later approved implementation: shared Windows `BootstrapListener` in
-  `crates/keld-ipc`; consuming `keld-core` echo link; Windows CLI template/client
-  and diagnostics; Windows-only integration fixtures; the claim-update docs above.
-- This specification-only PR must not touch `crates/**`, Cargo manifests/lockfile,
-  `docs/architecture/**`, CI, KEL-102 materials, guard policy, Unix transport,
-  frame layout, or protocol version.
+- Approved T2 implementation: the shared Windows `BootstrapListener` transport
+  and focused Windows fixtures in `crates/keld-ipc` only. T2 does not migrate a
+  product consumer or update architecture LIVE text.
+- Later T3 atomically migrates `keld-core` echo, Windows diagnostics, and the Bun
+  template/client; T4 owns the foreign-user product evidence and claim-update
+  docs above.
+- This T1 governance PR may change only this specification, the root and
+  `keld-ipc` instruction owners, their measured instruction inventory if needed,
+  generated documentation, and compiler-only `forbid(unsafe_code)` attributes
+  on the shared framing/codec/handshake modules. It must not change executable
+  Rust/TypeScript behavior, Cargo manifests/lockfile, architecture LIVE text,
+  CI, KEL-102 materials, guard policy, Unix transport, frame layout, or protocol
+  version.
 - Reuse `SessionToken`, `format_app_link`/`parse_app_link`, handshake state machine,
   `BootstrapRejectionObserver`, and `APP_LINK_IO_DEADLINE`; do not copy them into
   a Windows parser or authorization path.
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders)
 
-- [ ] T1: obtain human approval for the FFI/safe-wrapper choice in Open Question 1.
+- [x] T1: approve the reused safe DACL wrapper plus narrow raw pipe/overlapped
+  ABI owner, foreign-user fixture, review gates, and rollback boundary.
 - [ ] T2: add Windows shared bootstrap, exact DACL, overlapped state machine,
   cancellation, redacted rejection, and inheritance proof with focused tests.
 - [ ] T3: atomically migrate echo server, diagnostics, and Bun template/client;
@@ -320,13 +367,20 @@ processes, and timeouts only as kill switches.
 
 ## 8. Review gates triggered
 
-- unsafe: **human decision required** — current `keld-ipc` rules allow unsafe only
-  for a future shared-memory module. Named-pipe/DACL code needs an approved safe
-  wrapper or narrowly documented exception with `// SAFETY:` proofs.
-- Public API: **yes** — platform-generic bootstrap transport and endpoint selector.
-- Permission model: **yes** — DACL scope is Windows OS-principal policy.
-- Dependency addition: **human decision required** if the approved safe wrapper is
-  not already workspace-pinned.
+- Unsafe: **yes** — T1's exact root/IPC instruction diff and T2's implementation
+  both require named independent exact-diff review. Only `windows_named_pipe`
+  may own the Win32
+  pipe/overlapped ABI, with local `// SAFETY:` proofs and
+  `unsafe_op_in_unsafe_fn` denied. SID/DACL construction and readback reuse
+  `windows-permissions`.
+- Public API: **yes** — T1 freezes the platform-generic bootstrap transport and
+  endpoint selector; T2's exact API still requires independent review.
+- Permission model: **yes** — T1 freezes current-user DACL scope and T2's exact
+  descriptor/denial implementation still requires independent review.
+- Dependency addition: **yes; T2 independent review required** — `keld-ipc`
+  will add target-only direct uses of existing workspace pins
+  `windows-permissions 0.2.4` and `windows-sys 0.61.2`; T1 changes no manifest
+  or lockfile.
 - Wire protocol: **none** — any HELLO/frame extension is out of scope and blocked.
 
 ## 9. Perf impact
@@ -337,15 +391,8 @@ HELLO/echo semantics; a speedup is not required to land correctness.
 
 ## 10. Open questions
 
-1. **Blocking:** Which reviewed safe Windows named-pipe/DACL abstraction may live
-   in `keld-ipc` without violating its current `forbid(unsafe_code)` rule? Choose
-   either a minimal safe dependency (dependency review) or a narrowly documented
-   exception; direct ad-hoc FFI in `keld-core` is forbidden.
-2. **Blocking test infrastructure:** Who owns and where runs the distinct-user
-   Windows credential fixture? A same-user test or `AccessCheck` simulation cannot
-   replace an actual `CreateFileW` DACL-denial observation.
-3. **Future hardening:** Should a later transport revision add a logon SID
-   constraint to exclude another terminal-services session of the same user? This
-   draft explicitly makes no such claim.
-4. **Migration completion:** Which approved ticket removes decimal diagnostic
-   endpoints, and what evidence proves no supported producer remains?
+None. T1 selected the bindings and unsafe boundary above, and RAMANI's
+operator-managed `KeldDaclTest` ordinary non-admin account owns T4's real
+foreign-user observation; no credential is stored in the repository, issue, or
+CI. A future logon-SID constraint and T5 decimal-endpoint removal require their
+own approved tickets and evidence and do not block T2.

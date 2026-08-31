@@ -25,6 +25,9 @@ Spec: `docs/architecture/02-ipc.md`. Hot path.
   handle does not wake a blocking `read` (rust-lang/rust#121594) — that is not
   peer-FIN. The writer deadline (`SO_SNDTIMEO`) stays `APP_LINK_IO_DEADLINE`.
   `read_frame` still cannot retry after Timeout. Spec 02 §2/§7 v0 host lifecycle.
-- `unsafe` only in future `shm` module (`deny(unsafe_op_in_unsafe_fn)`, `// SAFETY:`). Framing stays `#![forbid(unsafe_code)]`.
+- Production `unsafe` is limited to `windows_named_pipe` (KEL-101's Win32
+  pipe/overlapped ABI) and future `shm`; both deny `unsafe_op_in_unsafe_fn` and
+  require local `// SAFETY:` proofs. Wire framing/codec/handshake modules remain
+  safe and MUST NOT import either ABI owner.
 - postcard on hot path; JSON only for `--inspect-ipc` debug.
 - Fuzz decode paths — malformed webview input is expected, not a bug.
