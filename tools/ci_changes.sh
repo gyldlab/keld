@@ -82,7 +82,22 @@ load_workspace_metadata() {
         echo "ci router: jq is required to parse cargo metadata on the Ubuntu GitHub runner" >&2
         exit 1
     }
-    workspace_metadata_cache="$(cargo metadata --no-deps --format-version 1)"
+    # Cargo emits native Windows paths when this Bash script calls cargo.exe
+    # from Git Bash. Normalize only metadata filesystem fields at ingestion so
+    # every downstream ownership rule compares one slash-form representation.
+    workspace_metadata_cache="$(
+        cargo metadata --no-deps --format-version 1 |
+            jq '
+                .packages |= map(
+                    .manifest_path |= gsub("\\\\"; "/")
+                    | .dependencies |= map(
+                        if .path == null then .
+                        else .path |= gsub("\\\\"; "/")
+                        end
+                    )
+                )
+            '
+    )"
 }
 
 host_dependency_dirs() {
@@ -112,7 +127,7 @@ host_dependency_dirs() {
             | .manifest_path
             | sub("/Cargo.toml$"; "")
             | ltrimstr($root + "/")
-        '
+        ' | tr -d '\r'
 }
 
 workspace_package_entries() {
@@ -123,7 +138,7 @@ workspace_package_entries() {
         jq -r --arg root "$repo_root" '
             .packages[]
             | .name + "\t" + (.manifest_path | sub("/Cargo.toml$"; "") | ltrimstr($root + "/"))
-        '
+        ' | tr -d '\r'
 }
 
 package_for_path() {
@@ -158,7 +173,7 @@ reverse_dependency_closure() {
                       end
                 end;
             walk([$root]; [])[]
-        '
+        ' | tr -d '\r'
 }
 
 all_workspace_package_names() {

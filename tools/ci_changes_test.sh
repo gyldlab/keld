@@ -233,17 +233,32 @@ printf 'base\n' >"$temp_dir/README.md"
 git -C "$temp_dir" add README.md
 git -C "$temp_dir" commit -qm base
 base_sha="$(git -C "$temp_dir" rev-parse HEAD)"
+real_jq="$(command -v jq)"
 
 # The production script has no bypass/override: it always asks `cargo metadata`.
 # This temporary executable is a controlled external dependency fixture so PR/push
 # diff tests can create a minimal Git repository without copying the Keld workspace.
+# It deliberately emits JSON-escaped Windows backslash paths on every OS, pinning
+# the metadata-ingestion normalization that real cargo.exe requires under Git Bash.
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
-    'root="$(pwd -P)"' \
+    'root="$(git rev-parse --show-toplevel)"' \
+    'root="${root//\//\\}"' \
+    'root="${root//\\/\\\\}"' \
     'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[]}]}\\n" "$root" "$root" "$root" "$root" "$root" "$root"' \
     >"$temp_dir/fake-bin/cargo"
 chmod +x "$temp_dir/fake-bin/cargo"
+
+# Native Windows jq emits CRLF. Force that representation in the isolated
+# fixture on every OS so line-oriented metadata consumers cannot regress only
+# on Windows while Linux CI stays green.
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    "\"$real_jq\" \"\$@\" | sed 's/\$/\\r/'" \
+    >"$temp_dir/fake-bin/jq"
+chmod +x "$temp_dir/fake-bin/jq"
 
 printf 'runtime\n' >"$temp_dir/crates/keld-runtime/src/lib.rs"
 git -C "$temp_dir" add crates/keld-runtime/src/lib.rs
