@@ -117,7 +117,7 @@ nix = { version = "=0.31.3", default-features = false, features = ["fs", "signal
 #   does not implement the frozen manual LPAC contract. License MIT OR
 #   Apache-2.0; MSRV 1.71 <= workspace 1.97. Unsafe is isolated to reviewed
 #   Windows platform modules with exact handle/pointer lifetime proofs.
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 # --- Dependency review (KEL-77 T2 / AGENTS.md gate) ---
 # Name: sha2 0.10 (RustCrypto)
 # Purpose: SHA-256 for KEL-77 test artifacts and KEL-96's cold `keld-cli`
@@ -134,6 +134,23 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Netw
 #   Already in Cargo.lock at 0.10.9
 #   via wry. License: MIT OR Apache-2.0 (deny.toml allow-list).
 sha2 = "0.10"
+# --- Dependency review (KEL-96/T4 / AGENTS.md gate) ---
+# Name: windows-permissions 0.2.4 (danieldulaney/windows-permissions-rs)
+# Purpose: safe target-only TokenUser SID plus protected DACL creation/readback
+#   for the Windows owner-private no-flag dev stage. windows-sys supplies the
+#   canonical filesystem/handle constants, one atomic CreateDirectoryW call,
+#   and stdin inheritance isolation; the stage is cold tooling and
+#   independently validated before app resources.
+# Alternatives rejected: (a) std exposes attributes, not DACLs or atomic
+#   security attributes; (b) broader windows-rs calls add surface without
+#   removing the one required FFI proof; (c) windows-acl exposes
+#   raw PSID caller contracts; (d) icacls/PowerShell in production adds a
+#   localized subprocess and multi-step path mutation; (e) a new platform
+#   crate or keld-wv helper creates the wrong policy owner. Version 0.2.4 is
+#   the current crates.io release/tag, MIT, with no declared MSRV. Upstream's
+#   last release commit is old (2021), so human dependency/security review is
+#   mandatory and this pin is intentionally exact.
+windows-permissions = "=0.2.4"
 
 [workspace.lints.rust]
 missing_docs = "warn"

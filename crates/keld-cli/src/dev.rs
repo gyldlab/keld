@@ -1,26 +1,39 @@
-//! `keld dev` — macOS staged-host delegation plus retained hello diagnostics.
+//! `keld dev` — staged-host delegation plus retained hello diagnostics.
 
 use std::fmt::Write as _;
 use std::fs;
+#[cfg(windows)]
+use std::io::Read as _;
 use std::io::{self, ErrorKind, Write};
+#[cfg(windows)]
+use std::io::{BufRead as _, BufReader};
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt as _;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::sync::mpsc;
+#[cfg(windows)]
+use std::thread;
 use std::time::Duration;
 
-#[cfg(not(target_os = "macos"))]
-use keld_core::run_hello_window_html;
 use keld_core::{
     DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, HostOwnedHelloSession, read_config_renderer,
     read_config_title,
 };
 use keld_runtime::RestartPolicy;
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
+
+#[cfg(windows)]
+const WINDOWS_STAGE_CLEANUP_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors starting a dev session.
 #[derive(Debug)]
@@ -202,28 +215,28 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
 
 /// Runs `keld dev` in `project_root`.
 ///
-/// On macOS this compiles one owner-private stage and launches its no-flag
+/// On macOS and Windows this compiles one owner-private stage and launches its no-flag
 /// host with a private stdin liveness lease. The host owns the window,
-/// authenticated app link, and Bun. Windows/Linux retain the CLI-owned hello
-/// session until KEL-96/T4.
+/// authenticated app link, and Bun. Other platforms fail closed until their
+/// KEL-96/T4 no-flag host slice lands.
 ///
 /// # Errors
 ///
 /// Returns [`DevError`] when checks, staging, host launch, Bun, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         run_dev_host(project_root)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
-        run_dev_with_window(project_root, |title, html| {
-            run_hello_window_html(title, html).map_err(|e| DevError::Runtime(e.to_string()))
-        })
+        crate::boot::stage_dev_boot(project_root, Path::new(""))
+            .map(|_| ())
+            .map_err(|error| DevError::Doctor(error.to_string()))
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
@@ -234,21 +247,31 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
                 "the keld executable has no parent directory; install keld and keld-host together",
             ))
         })?
-        .join("keld-host");
+        .join(if cfg!(windows) {
+            "keld-host.exe"
+        } else {
+            "keld-host"
+        });
     let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
-    let host = Command::new(stage.host())
+    #[cfg(windows)]
+    let mut stage = stage;
+    let stage_root = stage.root().to_owned();
+    let mut command = Command::new(stage.host());
+    command
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
-        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn();
+        .stderr(Stdio::inherit());
+    #[cfg(target_os = "macos")]
+    command.process_group(0);
+    let host = command.spawn();
     let mut host = match host {
         Ok(host) => host,
         Err(source) => {
-            if let Err(cleanup) = fs::remove_dir_all(stage.root()) {
+            drop(stage);
+            if let Err(cleanup) = fs::remove_dir_all(&stage_root) {
                 return Err(DevError::Doctor(format!(
                     "KELD-CLI-047: boot staging failed during host launch cleanup — \
                      spawn failed: {source}; cleanup failed: {cleanup}. \
@@ -263,8 +286,33 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
             "the staged host did not receive its private stdin lease",
         ))
     })?;
+    #[cfg(windows)]
+    let cleanup_sentinel = match start_windows_stage_cleanup_sentinel(
+        &developer_host,
+        &stage_root,
+        host.id(),
+    ) {
+        Ok(sentinel) => sentinel,
+        Err(sentinel_error) => {
+            drop(lease_writer);
+            let host_result = host.wait();
+            stage.release_launch_guards();
+            let cleanup_result = fs::remove_dir_all(&stage_root);
+            return Err(DevError::Doctor(format!(
+                "KELD-CLI-047: Windows dev-stage cleanup owner failed before handoff: {sentinel_error}; \
+                 host cleanup={host_result:?}; stage cleanup={cleanup_result:?}. \
+                 Confirm the staged host exited, remove `{}`, and retry.",
+                stage_root.display()
+            )));
+        }
+    };
+    #[cfg(windows)]
+    stage.release_launch_guards();
     let status = host.wait()?;
     drop(lease_writer);
+    drop(stage);
+    #[cfg(windows)]
+    cleanup_sentinel.wait(&stage_root)?;
     if status.success() {
         Ok(())
     } else {
@@ -275,11 +323,159 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     }
 }
 
+#[cfg(windows)]
+fn start_windows_stage_cleanup_sentinel(
+    installed_host: &Path,
+    stage_root: &Path,
+    staged_host_pid: u32,
+) -> Result<WindowsStageCleanupSentinel, DevError> {
+    let mut sentinel = Command::new(installed_host);
+    sentinel
+        .arg("--keld-windows-dev-stage-cleanup-v1")
+        .arg(stage_root)
+        .arg(staged_host_pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    let mut sentinel = sentinel.spawn()?;
+    let stdout = sentinel.stdout.take().ok_or_else(|| {
+        DevError::Runtime(String::from(
+            "Windows dev-stage cleanup sentinel has no readiness pipe",
+        ))
+    })?;
+    let stderr = sentinel.stderr.take().ok_or_else(|| {
+        DevError::Runtime(String::from(
+            "Windows dev-stage cleanup sentinel has no diagnostic pipe",
+        ))
+    })?;
+    await_windows_stage_cleanup_sentinel(
+        sentinel,
+        stdout,
+        stderr,
+        WINDOWS_STAGE_CLEANUP_READY_TIMEOUT,
+    )
+}
+
+#[cfg(windows)]
+fn await_windows_stage_cleanup_sentinel(
+    mut sentinel: std::process::Child,
+    stdout: std::process::ChildStdout,
+    mut stderr: std::process::ChildStderr,
+    timeout: Duration,
+) -> Result<WindowsStageCleanupSentinel, DevError> {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let ready_thread = thread::Builder::new()
+        .name(String::from("keld-stage-cleanup-readiness"))
+        .spawn(move || {
+            let mut ready = String::new();
+            let result = BufReader::new(stdout).read_line(&mut ready).map(|_| ready);
+            let _ = ready_tx.send(result);
+        });
+    let ready_thread = match ready_thread {
+        Ok(thread) => thread,
+        Err(source) => {
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                &format!("could not start readiness reader: {source}"),
+            );
+        }
+    };
+    let ready = match ready_rx.recv_timeout(timeout) {
+        Ok(Ok(ready)) => ready,
+        Ok(Err(source)) => {
+            let _ = ready_thread.join();
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                &format!("readiness pipe failed: {source}"),
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = sentinel.kill();
+            let _ = ready_thread.join();
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                &format!("timed out after {timeout:?}"),
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = sentinel.kill();
+            let _ = ready_thread.join();
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                "readiness reader stopped without a result",
+            );
+        }
+    };
+    if ready_thread.join().is_err() {
+        return failed_windows_stage_cleanup_readiness(
+            &mut sentinel,
+            &mut stderr,
+            "readiness reader panicked",
+        );
+    }
+    if ready.trim_end() != "KELD_WINDOWS_DEV_STAGE_CLEANUP_READY" {
+        return failed_windows_stage_cleanup_readiness(
+            &mut sentinel,
+            &mut stderr,
+            &format!("unexpected readiness record {ready:?}"),
+        );
+    }
+    Ok(WindowsStageCleanupSentinel {
+        child: sentinel,
+        stderr,
+    })
+}
+
+#[cfg(windows)]
+fn failed_windows_stage_cleanup_readiness(
+    sentinel: &mut std::process::Child,
+    stderr: &mut std::process::ChildStderr,
+    reason: &str,
+) -> Result<WindowsStageCleanupSentinel, DevError> {
+    let _ = sentinel.kill();
+    let status = sentinel.wait()?;
+    let mut detail = String::new();
+    stderr.read_to_string(&mut detail)?;
+    Err(DevError::Runtime(format!(
+        "Windows dev-stage cleanup sentinel failed readiness ({reason}) with {status}: {}",
+        detail.trim()
+    )))
+}
+
+#[cfg(windows)]
+struct WindowsStageCleanupSentinel {
+    child: std::process::Child,
+    stderr: std::process::ChildStderr,
+}
+
+#[cfg(windows)]
+impl WindowsStageCleanupSentinel {
+    fn wait(mut self, stage_root: &Path) -> Result<(), DevError> {
+        let status = self.child.wait()?;
+        let mut detail = String::new();
+        self.stderr.read_to_string(&mut detail)?;
+        if status.success() {
+            return Ok(());
+        }
+        Err(DevError::Doctor(format!(
+            "KELD-CLI-047: Windows dev-stage cleanup sentinel exited with {status}: {}. \
+             Remove `{}` after confirming the host has exited.",
+            detail.trim(),
+            stage_root.display()
+        )))
+    }
+}
+
 /// The retained CLI-owned hello path with its window phase injected.
 ///
-/// On Windows/Linux this remains the shipping path until KEL-96/T4. On macOS
-/// it remains a diagnostic/test seam for the KEL-105 supervision verdict;
-/// [`run_dev`] delegates to the staged host instead. `window` stands where the
+/// Shipping macOS/Windows [`run_dev`] delegates to the staged host and other
+/// platforms fail closed until their no-flag host slice. This retained
+/// diagnostic/test seam exercises the KEL-105 supervision verdict. `window` stands where the
 /// legacy `tao` `run_return` phase does: it borrows the
 /// thread for the whole window phase, during which the host observes nothing
 /// about the app process. Everything after it — reaping Bun, reading the
@@ -362,11 +558,51 @@ pub fn start_dev_session(project_root: &Path) -> Result<HostOwnedHelloSession, D
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(windows)]
+    use std::time::Instant;
 
     fn window_phase_failure() -> keld_core::HelloSessionError {
         keld_core::HelloSessionError::WindowPhase {
             cause: "KELD-RUNTIME-002: child crashed 3 times within 30s".to_owned(),
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn cleanup_sentinel_readiness_has_a_deadline_and_reaps_the_child() {
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn blocked readiness fixture");
+        let stdout = child.stdout.take().expect("readiness stdout");
+        let stderr = child.stderr.take().expect("diagnostic stderr");
+        let started = Instant::now();
+        let Err(error) =
+            await_windows_stage_cleanup_sentinel(child, stdout, stderr, Duration::from_millis(100))
+        else {
+            panic!("silent sentinel must time out");
+        };
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.to_string().contains("timed out"), "{error}");
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn shipping_dev_fails_closed_before_resources_on_an_unsupported_platform() {
+        let error = run_dev(Path::new("unused-on-an-unsupported-platform"))
+            .expect_err("unsupported no-flag host must fail closed");
+        let rendered = error.to_string();
+        assert!(rendered.contains("KELD-CLI-047"), "{rendered}");
+        assert!(rendered.contains("platform availability"), "{rendered}");
     }
 
     #[test]

@@ -45,11 +45,15 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use tao::dpi::PhysicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::WindowExtWindows;
 use tao::window::{Window, WindowBuilder};
@@ -63,16 +67,19 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::{
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
-    PermissionRequestedEventHandler, wait_with_pump,
+    NavigationCompletedEventHandler, PermissionRequestedEventHandler, wait_with_pump,
 };
 use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, RECT};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
-use windows::core::HSTRING;
+use windows::core::{BOOL, HSTRING};
 
 use keld_guard::{PermissionsManifest, Principal};
 
 use crate::WebviewId;
-use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebView2EngineExt, WebviewSpec};
+use crate::engine::{
+    AppWindowCommand, AppWindowEvent, DevtoolsAction, NavTarget, Rect, WebEngine,
+    WebView2EngineExt, WebviewSpec,
+};
 use crate::error::WvError;
 use crate::media::{media_permission_allowed, webview_media_principal, webview2_media_kind};
 
@@ -129,6 +136,7 @@ pub fn runtime_version() -> Result<String, WvError> {
 /// slice has no config to read and a fake indirection would not make the path
 /// any more correct.
 const PROFILE_IDENTIFIER: &str = "dev.keld";
+const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Directory `WebView2` keeps its profile in.
 ///
@@ -311,6 +319,39 @@ fn navigate_initial(
     loaded.map_err(|err| WvError::Navigate(err.to_string()))
 }
 
+fn install_app_navigation_handler(
+    webview: &ICoreWebView2,
+    events: Sender<AppWindowEvent>,
+    ready: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
+) -> Result<(), WvError> {
+    let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else {
+            failed.store(true, Ordering::Release);
+            return Ok(());
+        };
+        // SAFETY: WebView2 invokes this handler on the creating STA and keeps
+        // the event args alive for this call. `IsSuccess` writes no caller
+        // memory and returns its BOOL by value.
+        let mut succeeded = BOOL::default();
+        // SAFETY: `succeeded` is a live BOOL out-parameter for this call.
+        unsafe { args.IsSuccess(&raw mut succeeded)? };
+        if succeeded.as_bool() {
+            if !ready.swap(true, Ordering::AcqRel) {
+                let _ = events.send(AppWindowEvent::NavigationReady);
+            }
+        } else if initial_navigation_failure_is_fatal(ready.load(Ordering::Acquire)) {
+            failed.store(true, Ordering::Release);
+        }
+        Ok(())
+    }));
+    let mut token = 0_i64;
+    // SAFETY: `webview` and the callback are created and registered on the
+    // engine STA. WebView2 retains the handler for the webview lifetime.
+    unsafe { webview.add_NavigationCompleted(&handler, &raw mut token) }
+        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))
+}
+
 /// One live webview and the host window it fills (v0: one per window).
 struct View {
     window: Window,
@@ -353,12 +394,16 @@ impl Drop for View {
 /// window closes (KEL-30 concurrent hello app-link).
 pub struct WebView2Engine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
-    event_loop: Option<EventLoop<()>>,
+    event_loop: Option<EventLoop<AppWindowCommand>>,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
     views: BTreeMap<u32, View>,
     next_id: u32,
+    pending_app_events: Option<Sender<AppWindowEvent>>,
+    navigation_ready: Arc<AtomicBool>,
+    navigation_failed: Arc<AtomicBool>,
+    app_window_created: bool,
 }
 
 impl fmt::Debug for WebView2Engine {
@@ -390,7 +435,7 @@ impl WebView2Engine {
         // The event loop comes before any COM object: tao declares the
         // process DPI awareness in `EventLoop::new`, and that must precede
         // window (and WebView2 helper-window) creation.
-        let event_loop = EventLoop::new();
+        let event_loop = EventLoopBuilder::with_user_event().build();
         // SAFETY: first COM init on this thread, or an S_FALSE no-op if tao's
         // OLE init already made it an STA — both fine, so the result is
         // deliberately ignored (the pattern wry uses for the same call).
@@ -401,6 +446,10 @@ impl WebView2Engine {
             environment,
             views: BTreeMap::new(),
             next_id: 1,
+            pending_app_events: None,
+            navigation_ready: Arc::new(AtomicBool::new(false)),
+            navigation_failed: Arc::new(AtomicBool::new(false)),
+            app_window_created: false,
         })
     }
 
@@ -462,11 +511,218 @@ impl WebView2Engine {
         }
     }
 
+    /// Creates the initial app window and emits live navigation readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError`] when the window, `WebView2` controller, guarded
+    /// permission hook, navigation callback, or initial navigation fails.
+    pub fn create_app(
+        &mut self,
+        spec: &WebviewSpec,
+        events: Sender<AppWindowEvent>,
+    ) -> Result<WebviewId, WvError> {
+        if !app_window_slot_available(
+            self.app_window_created,
+            self.pending_app_events.is_some(),
+            !self.views.is_empty(),
+        ) {
+            return Err(WvError::EventLoop(String::from(
+                "the v0 app window was already created or is pending",
+            )));
+        }
+        self.navigation_ready.store(false, Ordering::Release);
+        self.navigation_failed.store(false, Ordering::Release);
+        self.pending_app_events = Some(events);
+        let result = self.create(spec);
+        self.pending_app_events = None;
+        if result.is_ok() {
+            self.app_window_created = true;
+        }
+        result
+    }
+
+    /// Runs the Windows UI loop until Quit or a fatal app-session command.
+    ///
+    /// Commands cross tao's [`EventLoopProxy`], so I/O threads never mutate
+    /// the HWND or `WebView2` controller directly. Closing the last window emits
+    /// [`AppWindowEvent::LastWindowClosed`] and waits for the app's Quit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError::Navigate`] when initial navigation fails or exceeds
+    /// its deadline, and [`WvError::EventLoop`] for duplicate run, fatal
+    /// session command, or a non-zero tao exit.
+    pub fn run_app_until_quit(
+        mut self,
+        commands: Receiver<AppWindowCommand>,
+        events: Sender<AppWindowEvent>,
+    ) -> Result<(), WvError> {
+        let Some(mut event_loop) = self.event_loop.take() else {
+            return Err(WvError::EventLoop(String::from(
+                "run loop already started; call run_app_until_quit once",
+            )));
+        };
+        let proxy = event_loop.create_proxy();
+        let stop_bridge = Arc::new(AtomicBool::new(false));
+        let terminal_intent = Arc::new(AtomicBool::new(false));
+        let bridge = spawn_app_wake_bridge(
+            commands,
+            proxy,
+            Arc::clone(&stop_bridge),
+            Arc::clone(&terminal_intent),
+        )?;
+        let fatal = Arc::new(AtomicBool::new(false));
+        let fatal_in_loop = Arc::clone(&fatal);
+        let navigation_timed_out = Arc::new(AtomicBool::new(false));
+        let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
+        let navigation_ready = Arc::clone(&self.navigation_ready);
+        let navigation_failed = Arc::clone(&self.navigation_failed);
+        let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
+        let terminal_intent_in_loop = Arc::clone(&terminal_intent);
+        let mut views = std::mem::take(&mut self.views);
+        let code = event_loop.run_return(move |event, _, control_flow| {
+            let terminal = matches!(
+                event,
+                Event::UserEvent(AppWindowCommand::Quit | AppWindowCommand::Fatal)
+            ) || terminal_intent_in_loop.load(Ordering::Acquire);
+            if navigation_failed.load(Ordering::Acquire) {
+                views.clear();
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+            if navigation_ready.load(Ordering::Acquire) {
+                *control_flow = ControlFlow::Wait;
+            } else if !terminal && Instant::now() >= navigation_deadline {
+                navigation_timed_out_in_loop.store(true, Ordering::Release);
+                views.clear();
+                *control_flow = ControlFlow::Exit;
+                return;
+            } else {
+                *control_flow = ControlFlow::WaitUntil(navigation_deadline);
+            }
+            match event {
+                Event::UserEvent(AppWindowCommand::Quit) => {
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::UserEvent(AppWindowCommand::Fatal) => {
+                    fatal_in_loop.store(true, Ordering::Release);
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::Resized(size),
+                    ..
+                } => {
+                    for view in views.values() {
+                        if view.window.id() == window_id {
+                            view.fit_controller(size);
+                        }
+                    }
+                }
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    views.retain(|_, view| view.window.id() != window_id);
+                    if views.is_empty() {
+                        let _ = events.send(AppWindowEvent::LastWindowClosed);
+                    }
+                }
+                _ => {}
+            }
+        });
+        stop_bridge.store(true, Ordering::Release);
+        let _ = bridge.join();
+        finish_app_run(
+            self.navigation_failed.load(Ordering::Acquire),
+            navigation_timed_out.load(Ordering::Acquire),
+            fatal.load(Ordering::Acquire),
+            code,
+        )
+    }
+
     fn view(&self, id: WebviewId) -> Result<&View, WvError> {
         self.views
             .get(&id.0)
             .ok_or(WvError::UnknownWebview { id: id.0 })
     }
+}
+
+const fn app_window_slot_available(created: bool, pending: bool, has_views: bool) -> bool {
+    !created && !pending && !has_views
+}
+
+const fn initial_navigation_failure_is_fatal(initial_ready: bool) -> bool {
+    !initial_ready
+}
+
+fn finish_app_run(
+    navigation_failed: bool,
+    navigation_timed_out: bool,
+    fatal: bool,
+    code: i32,
+) -> Result<(), WvError> {
+    if navigation_failed {
+        return Err(WvError::Navigate(String::from(
+            "initial renderer navigation failed",
+        )));
+    }
+    if navigation_timed_out {
+        return Err(WvError::Navigate(String::from(
+            "initial renderer navigation did not finish before the startup deadline",
+        )));
+    }
+    if fatal {
+        return Err(WvError::EventLoop(String::from(
+            "primary app session failed while the Windows event loop was live",
+        )));
+    }
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(WvError::EventLoop(format!(
+            "event loop exited with status {code}"
+        )))
+    }
+}
+
+fn spawn_app_wake_bridge(
+    commands: Receiver<AppWindowCommand>,
+    proxy: EventLoopProxy<AppWindowCommand>,
+    stop: Arc<AtomicBool>,
+    terminal_intent: Arc<AtomicBool>,
+) -> Result<thread::JoinHandle<()>, WvError> {
+    thread::Builder::new()
+        .name("keld-wv-windows-app-wake".to_owned())
+        .spawn(move || {
+            loop {
+                match commands.recv_timeout(Duration::from_millis(100)) {
+                    Ok(command) => {
+                        let terminal =
+                            matches!(command, AppWindowCommand::Quit | AppWindowCommand::Fatal);
+                        if terminal {
+                            terminal_intent.store(true, Ordering::Release);
+                        }
+                        let _ = proxy.send_event(command);
+                        if terminal {
+                            return;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => {
+                        terminal_intent.store(true, Ordering::Release);
+                        let _ = proxy.send_event(AppWindowCommand::Fatal);
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
 }
 
 impl WebEngine for WebView2Engine {
@@ -547,6 +803,15 @@ impl WebEngine for WebView2Engine {
                 .and_then(|()| view.controller.SetIsVisible(true))
         };
         shown.map_err(|err| WvError::Webview(format!("initial bounds: {err}")))?;
+
+        if let Some(events) = self.pending_app_events.as_ref() {
+            install_app_navigation_handler(
+                &view.webview,
+                events.clone(),
+                Arc::clone(&self.navigation_ready),
+                Arc::clone(&self.navigation_failed),
+            )?;
+        }
 
         navigate_initial(&view.webview, &guard, &spec.initial)?;
 
@@ -650,7 +915,10 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WebView2Engine, runtime_version};
+    use super::{
+        WebView2Engine, app_window_slot_available, initial_navigation_failure_is_fatal,
+        runtime_version,
+    };
     use crate::error::WvError;
 
     /// The CI runners and this developer machine both ship the Evergreen
@@ -691,6 +959,21 @@ mod tests {
     fn unknown_webview_id_is_typed_not_panic() {
         let err = WvError::UnknownWebview { id: 3 };
         assert!(err.to_string().contains("KELD-WV-007"));
+    }
+
+    #[test]
+    fn app_window_slot_is_single_use_and_retryable_only_after_failed_setup() {
+        assert!(app_window_slot_available(false, false, false));
+        assert!(!app_window_slot_available(true, false, false));
+        assert!(!app_window_slot_available(false, true, false));
+        assert!(!app_window_slot_available(false, false, true));
+        assert!(app_window_slot_available(false, false, false));
+    }
+
+    #[test]
+    fn only_initial_navigation_failure_is_startup_fatal() {
+        assert!(initial_navigation_failure_is_fatal(false));
+        assert!(!initial_navigation_failure_is_fatal(true));
     }
 
     /// KEL-63: the profile must be per-user, not beside the executable.

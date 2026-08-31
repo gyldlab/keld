@@ -2,7 +2,10 @@
 AGENTS.md	always	13312	root-invariant-floor	always
 CLAUDE.md	always	64	claude-root-alias	claude-session
 crates/keld-compat/AGENTS.md	always	1536	compat-invariants	path:crates/keld-compat
+crates/keld-cli/AGENTS.md	always	1536	cli-invariants	path:crates/keld-cli
+crates/keld-core/AGENTS.md	always	1536	core-invariants	path:crates/keld-core
 crates/keld-guard/AGENTS.md	always	2560	guard-invariants	path:crates/keld-guard
+crates/keld-host/AGENTS.md	always	1536	host-invariants	path:crates/keld-host
 crates/keld-ipc/AGENTS.md	always	2560	ipc-invariants	path:crates/keld-ipc
 crates/keld-runtime/AGENTS.md	always	1536	runtime-invariants	path:crates/keld-runtime
 crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv

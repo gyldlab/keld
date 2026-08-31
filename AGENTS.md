@@ -119,7 +119,7 @@ status is `docs/architecture/01-overview.md` §1.
 
 | Crate | Current role / destination |
 |---|---|
-| keld-core | Hello window + lifecycle session; TARGET event loop/window registry |
+| keld-core | Hello window + lifecycle session; TARGET event loop/window registry; nested `AGENTS.md` |
 | keld-wv | System WebEngine backends; TARGET CEF; nested `AGENTS.md` |
 | keld-ipc | kipc framing/codecs; TARGET channel registry + shm; nested `AGENTS.md` |
 | keld-guard | Capabilities, manifest, scopes; nested `AGENTS.md` |
@@ -128,12 +128,12 @@ status is `docs/architecture/01-overview.md` §1.
 | keld-update | SKELETON; TARGET signed manifests + delta update |
 | keld-pack | SKELETON; TARGET installers/signing/cross-compile |
 | keld-compat | Electron conformance/lifecycle oracle; TARGET host emulation; nested `AGENTS.md` |
-| keld-host | Shipping host binary |
-| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved |
+| keld-host | Shipping host binary; nested `AGENTS.md` |
+| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved; nested `AGENTS.md` |
 | packages/ | `@keld/electron` live; other `@keld/*` upcoming |
 
 Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
-`compat`, `runtime`). MUST NOT add hollow agent files.
+`compat`, `runtime`, `core`, `host`, `cli`). MUST NOT add hollow agent files.
 
 ## Verification floor
 

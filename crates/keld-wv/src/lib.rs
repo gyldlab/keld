@@ -25,8 +25,8 @@ pub mod webview2;
 pub mod wkwebview;
 
 pub use engine::{
-    DevtoolsAction, LogicalSize, NavTarget, Rect, WebEngine, WebKitGtkEngineExt, WebView2EngineExt,
-    WebviewSpec, WkWebViewEngineExt,
+    AppWindowCommand, AppWindowEvent, DevtoolsAction, LogicalSize, NavTarget, Rect, WebEngine,
+    WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WkWebViewEngineExt,
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};

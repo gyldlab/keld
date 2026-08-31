@@ -212,6 +212,7 @@ fn keld_doctor_fails_when_bun_missing_from_path() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", windows))]
 fn keld_dev_without_config_is_cli_032() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = keld()
@@ -224,6 +225,22 @@ fn keld_dev_without_config_is_cli_032() {
     assert!(stderr.contains("KELD-CLI-032"), "{stderr}");
     assert!(stderr.contains("keld.config.ts"), "{stderr}");
     assert!(stderr.contains("[FAIL] project"), "{stderr}");
+}
+
+#[test]
+#[cfg(not(any(target_os = "macos", windows)))]
+fn keld_dev_fails_closed_before_project_checks_without_a_no_flag_host() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = keld()
+        .arg("dev")
+        .current_dir(dir.path())
+        .output()
+        .expect("dev");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("KELD-CLI-047"), "{stderr}");
+    assert!(stderr.contains("platform availability"), "{stderr}");
+    assert!(!stderr.contains("KELD-CLI-032"), "{stderr}");
 }
 
 #[test]

@@ -7,8 +7,8 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -20,12 +20,64 @@ use keld_ipc::{
 };
 
 use crate::{
-    CapturedOutput, ChildPreparer, GenerationLease, PreparedChild, RestartPolicy, RevocationCause,
-    RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
+    CapturedOutput, ChildPreparer, CrashLedger, GenerationLease, PreparedChild, RestartPolicy,
+    RevocationCause, RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
 };
 
 pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const FRESH_BOOTSTRAP_ATTEMPTS: usize = 8;
+const RECOVERY_PENDING: u8 = 0;
+const RECOVERY_ARMED: u8 = 1;
+const RECOVERY_DENIED: u8 = 2;
+const RECOVERY_POLL: Duration = Duration::from_millis(10);
+
+/// Host decision that gates crash recovery until initial application readiness.
+///
+/// The generic supervisor remains the sole restart owner. This handle only
+/// releases or rejects its existing post-revocation/pre-provision boundary.
+#[derive(Debug)]
+pub struct RoleRecoveryGate {
+    decision: Arc<AtomicU8>,
+}
+
+impl RoleRecoveryGate {
+    /// Allows the supervisor to provision crash successors for this session.
+    ///
+    /// Returns `true` when recovery is armed after this call.
+    #[must_use]
+    pub fn arm(&self) -> bool {
+        self.decision
+            .compare_exchange(
+                RECOVERY_PENDING,
+                RECOVERY_ARMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+            || self.decision.load(Ordering::Acquire) == RECOVERY_ARMED
+    }
+
+    /// Rejects further successor provisioning for startup rollback or
+    /// accepted session shutdown.
+    ///
+    /// Returns `true` when recovery is denied after this call.
+    #[must_use]
+    pub fn deny(&self) -> bool {
+        self.decision.store(RECOVERY_DENIED, Ordering::Release);
+        true
+    }
+}
+
+impl Drop for RoleRecoveryGate {
+    fn drop(&mut self) {
+        let _ = self.decision.compare_exchange(
+            RECOVERY_PENDING,
+            RECOVERY_DENIED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
 
 struct BootstrapCandidate<T> {
     resource: T,
@@ -192,6 +244,9 @@ pub enum RoleRevocationCause {
     ChildExited,
     /// The host requested shutdown.
     Shutdown,
+    /// The authenticated app link failed while the child remained live.
+    #[cfg(windows)]
+    LinkFailed,
     /// The supervisor could not safely start stdout/stderr capture.
     CaptureFailed,
     /// The generation failed before a live authenticated link was available.
@@ -207,6 +262,8 @@ impl From<RevocationCause> for RoleRevocationCause {
         match cause {
             RevocationCause::ChildExited => Self::ChildExited,
             RevocationCause::Shutdown => Self::Shutdown,
+            #[cfg(windows)]
+            RevocationCause::LinkFailed => Self::LinkFailed,
             RevocationCause::CaptureFailed => Self::CaptureFailed,
             RevocationCause::AdmissionFailed => Self::AdmissionFailed,
             RevocationCause::SpawnFailed => Self::SpawnFailed,
@@ -267,6 +324,8 @@ pub struct RoleConfig {
     owner: RoleOwner,
     program: OsString,
     args: Vec<OsString>,
+    env: Vec<(OsString, OsString)>,
+    env_remove: Vec<OsString>,
     current_dir: Option<PathBuf>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
@@ -304,6 +363,8 @@ impl RoleConfig {
             owner,
             program: program.into(),
             args: Vec::new(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
             current_dir: None,
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
@@ -334,6 +395,20 @@ impl RoleConfig {
         S: Into<OsString>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Sets one explicit environment key for every child generation.
+    #[must_use]
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Removes one inherited environment key from every child generation.
+    #[must_use]
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.env_remove.push(key.into());
         self
     }
 
@@ -382,7 +457,7 @@ impl RoleSupervisor {
     /// Returns [`RuntimeError`] if the initial generation cannot be
     /// provisioned or the first child cannot be spawned.
     pub fn start(config: RoleConfig) -> Result<Self, RuntimeError> {
-        Self::start_inner(config, None, None)
+        Self::start_inner(config, None, None, None)
     }
 
     /// Starts the role and exposes each authenticated generation to its host
@@ -399,13 +474,39 @@ impl RoleSupervisor {
     /// provisioned or the first child cannot be spawned.
     pub fn start_with_bound_generations(config: RoleConfig) -> Result<Self, RuntimeError> {
         let (bound_tx, bound_rx) = mpsc::channel();
-        Self::start_inner(config, Some(bound_tx), Some(bound_rx))
+        Self::start_inner(config, Some(bound_tx), Some(bound_rx), None)
+    }
+
+    /// Starts the role with authenticated-generation handoff and a one-time
+    /// host readiness decision before the first crash successor is prepared.
+    ///
+    /// Dropping an undecided gate defaults to deny; dropping an already armed
+    /// gate preserves that decision. Call [`RoleRecoveryGate::arm`] only after
+    /// the host has made initial readiness externally observable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError`] if the initial generation cannot be
+    /// provisioned or the first child cannot be spawned.
+    pub fn start_with_bound_generations_gated(
+        config: RoleConfig,
+    ) -> Result<(Self, RoleRecoveryGate), RuntimeError> {
+        let (bound_tx, bound_rx) = mpsc::channel();
+        let decision = Arc::new(AtomicU8::new(RECOVERY_PENDING));
+        let supervisor = Self::start_inner(
+            config,
+            Some(bound_tx),
+            Some(bound_rx),
+            Some(Arc::clone(&decision)),
+        )?;
+        Ok((supervisor, RoleRecoveryGate { decision }))
     }
 
     fn start_inner(
         config: RoleConfig,
         bound_tx: Option<Sender<BoundRoleGeneration>>,
         bound_rx: Option<Receiver<BoundRoleGeneration>>,
+        recovery_decision: Option<Arc<AtomicU8>>,
     ) -> Result<Self, RuntimeError> {
         let (events_tx, events_rx) = mpsc::channel();
         let policy = config.restart_policy;
@@ -421,6 +522,7 @@ impl RoleSupervisor {
         let preparer = RolePreparer {
             config,
             generation_owner,
+            recovery_decision,
         };
         let supervisor = Supervisor::start_prepared(policy, preparer)?;
         Ok(Self {
@@ -446,7 +548,8 @@ impl RoleSupervisor {
     /// or `timeout` elapses.
     ///
     /// Returns `None` when this supervisor was started without
-    /// [`Self::start_with_bound_generations`].
+    /// [`Self::start_with_bound_generations`] or
+    /// [`Self::start_with_bound_generations_gated`].
     #[must_use]
     pub fn recv_bound_generation(&self, timeout: Duration) -> Option<BoundRoleGeneration> {
         self.bound_rx.as_ref()?.recv_timeout(timeout).ok()
@@ -455,7 +558,8 @@ impl RoleSupervisor {
     /// Returns the next already-authenticated generation without waiting.
     ///
     /// Returns `None` when no generation is queued or this supervisor was
-    /// started without [`Self::start_with_bound_generations`].
+    /// started without [`Self::start_with_bound_generations`] or
+    /// [`Self::start_with_bound_generations_gated`].
     #[must_use]
     pub fn try_recv_bound_generation(&self) -> Option<BoundRoleGeneration> {
         self.bound_rx.as_ref()?.try_recv().ok()
@@ -466,10 +570,30 @@ impl RoleSupervisor {
         self.supervisor.shutdown();
     }
 
+    /// Stops crash-successor admission without killing the current Windows
+    /// generation before its accepted Quit reply is written.
+    #[cfg(windows)]
+    pub fn accept_shutdown(&self) {
+        self.supervisor.accept_shutdown();
+    }
+
+    /// Revokes, kills/reaps, and restart-policies the named Windows generation
+    /// after its authenticated app link fails while the process is still live.
+    #[cfg(windows)]
+    pub fn restart_generation(&self, attempt: u32) {
+        self.supervisor.restart_generation(attempt);
+    }
+
     /// Waits for the generic supervisor's terminal outcome.
     #[must_use]
     pub fn wait_for_outcome(&self) -> SupervisorOutcome {
         self.supervisor.wait_for_outcome()
+    }
+
+    /// Returns the terminal supervisor outcome when it is already available.
+    #[must_use]
+    pub fn try_wait_for_outcome(&self) -> Option<SupervisorOutcome> {
+        self.supervisor.try_wait_for_outcome()
     }
 
     /// Snapshot of captured child stdout/stderr.
@@ -477,11 +601,19 @@ impl RoleSupervisor {
     pub fn output(&self) -> CapturedOutput {
         self.supervisor.output()
     }
+
+    /// Snapshot of every unrequested child termination retained by the sole
+    /// generic supervisor.
+    #[must_use]
+    pub fn crash_ledger(&self) -> CrashLedger {
+        self.supervisor.crash_ledger()
+    }
 }
 
 struct RolePreparer {
     config: RoleConfig,
     generation_owner: RoleGenerationOwner,
+    recovery_decision: Option<Arc<AtomicU8>>,
 }
 
 impl ChildPreparer for RolePreparer {
@@ -494,11 +626,56 @@ impl ChildPreparer for RolePreparer {
         if let Some(current_dir) = &self.config.current_dir {
             command.current_dir(current_dir);
         }
-        command.env("KELD_APP_LINK", &provisioned.app_link);
+        for key in &self.config.env_remove {
+            command.env_remove(key);
+        }
+        for (key, value) in &self.config.env {
+            command.env(key, value);
+        }
+        command
+            .env("KELD_APP_LINK", &provisioned.app_link)
+            .stdin(Stdio::null());
         Ok(PreparedChild {
             command,
             lease: provisioned.lease,
         })
+    }
+
+    fn allow_restart(
+        &mut self,
+        shutdown: &AtomicBool,
+        accepted_shutdown: &AtomicBool,
+    ) -> Result<bool, RuntimeError> {
+        let Some(decision) = &self.recovery_decision else {
+            return Ok(true);
+        };
+        await_recovery_decision(decision, shutdown, accepted_shutdown)
+    }
+}
+
+fn await_recovery_decision(
+    decision: &AtomicU8,
+    shutdown: &AtomicBool,
+    accepted_shutdown: &AtomicBool,
+) -> Result<bool, RuntimeError> {
+    loop {
+        if shutdown.load(Ordering::Acquire) || accepted_shutdown.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        match decision.load(Ordering::Acquire) {
+            RECOVERY_ARMED => return Ok(true),
+            RECOVERY_DENIED => return Ok(false),
+            RECOVERY_PENDING => thread::park_timeout(RECOVERY_POLL),
+            _ => {
+                return Err(RuntimeError::Lifecycle {
+                    phase: "primary recovery decision",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid recovery decision",
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -870,6 +1047,53 @@ impl BootstrapRejectionObserver for RoleBootstrapObserver {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn armed_recovery_gate_never_overrides_shutdown() {
+        let decision = AtomicU8::new(RECOVERY_ARMED);
+        let shutdown = AtomicBool::new(true);
+        assert!(matches!(
+            await_recovery_decision(&decision, &shutdown, &AtomicBool::new(false)),
+            Ok(false)
+        ));
+    }
+
+    #[test]
+    fn accepted_shutdown_interrupts_a_pending_recovery_gate() {
+        let decision = AtomicU8::new(RECOVERY_PENDING);
+        assert!(matches!(
+            await_recovery_decision(&decision, &AtomicBool::new(false), &AtomicBool::new(true),),
+            Ok(false)
+        ));
+    }
+
+    #[test]
+    fn dropping_an_armed_recovery_gate_preserves_the_decision() {
+        let decision = Arc::new(AtomicU8::new(RECOVERY_PENDING));
+        let gate = RoleRecoveryGate {
+            decision: Arc::clone(&decision),
+        };
+        assert!(gate.arm());
+        drop(gate);
+        assert_eq!(decision.load(Ordering::Acquire), RECOVERY_ARMED);
+    }
+
+    #[test]
+    fn accepted_shutdown_disarms_an_armed_recovery_gate() {
+        let gate = RoleRecoveryGate {
+            decision: Arc::new(AtomicU8::new(RECOVERY_PENDING)),
+        };
+        assert!(gate.arm());
+        assert!(gate.deny());
+        assert!(matches!(
+            await_recovery_decision(
+                &gate.decision,
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+            ),
+            Ok(false)
+        ));
+    }
 
     #[test]
     fn repeated_rejections_are_coalesced_to_one_event_per_class() {

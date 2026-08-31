@@ -456,13 +456,15 @@ unprivileged lifecycle/echo evidence. That result is labeled interim and cannot
 close KEL-101 or authorize a privileged Windows channel. KEL-101's own approved
 scope remains the authority for the named-pipe/current-user-DACL gate.
 
-The atomic T1b head initially enables no-flag startup only on macOS. On Windows
-or Linux before its T4 slice lands, no-flag `keld-host` fails before boot-file
-read or any application resource with proposed `KELD-CORE-034`: no-flag host
-support is unavailable on this platform; complete the named KEL-96/T4 platform
-slice. It must not fall through to the pre-alpha banner, `--hello`, CLI-owned
-session, or a partially installed app-link. T4 registers the code before
-removing each platform guard.
+The atomic T1b head initially enabled no-flag startup only on macOS. The T4
+Windows slice now removes that guard only after protected staging/readback,
+strict boot/policy validation, one T8-owned supervisor, the live WebView2
+command/event loop and real process/window/restart/teardown evidence pass.
+Linux still fails before boot-file read or any application resource with
+`KELD-CORE-034`: no-flag host support is unavailable on this platform; complete
+the named KEL-96/T4 platform slice. No unsupported platform may fall through to
+the pre-alpha banner, `--hello`, CLI-owned session, or a partially installed
+app-link.
 
 KEL-100's macOS and Windows records prove the current CLI-owned concurrent path,
 not no-flag host ownership. Their ordered witness method is reusable. Each KEL-96
@@ -486,6 +488,35 @@ most make the caller's own host monitor stdin and shut down; it carries no app
 root, path, digest, principal, permission, or application-resource ownership.
 Tests inspect both process handle tables: the host never owns a writer copy and
 Bun owns neither end; otherwise EOF cannot satisfy the acceptance.
+The Windows fixture uses raw `SystemExtendedHandleInformation` for CLI, host,
+and Bun, cross-checks each count with `GetProcessHandleCount`, binds the host's
+reported debug-only stdin handle value to the raw File entry, verifies read-only
+access with no inherit attribute, and uses duplicated-handle object comparison
+to prove Bun has no copy. A temporary inherit-bit mutation must fail that same
+oracle; a process list or aggregate count alone is insufficient.
+
+Windows dev-stage deletion uses the approved private
+`keld.windows-dev-stage-cleanup/v1` sentinel. The CLI launches the installed,
+non-staged `keld-host.exe` in that role after the staged host exists but before
+releasing its no-share-delete namespace guards. The sentinel opens the exact
+staged-host PID while the CLI still owns it, verifies from that live handle that
+the process image is `<validated-stage>/keld-host.exe`, retains the process
+handle, and reports no application readiness or authority. The CLI then releases
+the namespace guards. The sentinel waits for the exact host object, rechecks
+the protected current-user-only stage DACL, and deletes the nonce directory
+after host exit. Nonce layout validation occurs once during sentinel prepare.
+It is a CLI child and host sibling, so it
+is never enrolled in or broken out of the host Job.
+
+The private role receives only the stage deletion target and staged-host PID;
+both are validation inputs, not authority to select an app. It cannot enter
+boot validation, open an app-link, own a window, supervise Bun, or mint a
+principal. Sentinel spawn failure drops the lease, waits/reaps the host,
+releases the guards, deletes the stage, and fails `keld dev`; continuing without
+a surviving cleanup owner is forbidden. Host self-delete, an inherited Job
+handle, Job breakaway, a shell/PowerShell janitor, and reboot/next-launch-only
+deletion are rejected. Direct-session approval and the atomic owner record are
+captured in KEL-96 comment `bf1228bd-1128-47fc-ba98-865d3abbf076`.
 
 Abnormal host-death descendant reaping remains the explicit KEL-75/KEL-78
 platform dependency. Windows and Linux may close their KEL-96 lifecycle rows
@@ -578,6 +609,25 @@ privileged channel. The first and only production caller in T1b is the no-flag
       applicable KEL-75/KEL-78 host-death reaper artifacts. This is
       implementation plus evidence, not an evidence-only task; it must not
       implement a second generation loop in `keld-core`.
+      The Windows sub-row has real no-flag host/HWND/two-call/g1-to-g2/ordered
+      Quit/CLI-death evidence on RAMANI. It now also consumes KEL-78/T3's
+      non-breakaway Job through the real no-flag host: killing only that host
+      reaps Bun plus a real descendant, the cleanup sentinel deletes the stage,
+      and a fresh no-flag launch succeeds. Raw CLI/host/Bun handle census and
+      post-CLI-death stage deletion also pass. T4 remains unchecked only because
+      the real interactive Linux implementation/evidence rows are absent.
+      The CLI atomically protects and retains no-share-delete handles for
+      `.keld` and `dev` before nonce creation (plus the canonical project
+      handle), then pins and validates
+      the nonce before writing any staged child. It rechecks the locked stage
+      DACL and host digest before launch. Windows direct-child terminal paths
+      signal capture readers to drain currently buffered bytes and stop without
+      waiting for descendant EOF; this preserves ledger ordering and prevents
+      successor/host-exit delay without claiming descendant process ownership.
+      Lease monitoring and a locked broken-pipe preflight precede listener/child creation,
+      accepted shutdown closes successor admission before the reply tail, and
+      revoked-attempt tombstones reject a bound stream observed after its
+      revocation.
 - [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
       actually proved by landed T1a–T4 work.
 
@@ -648,7 +698,7 @@ Task/platform completion matrix:
 | T2 CLI delegation/second call/CLI death | lease state model and process fixtures | required before T2 passes | required by T4 | required by T4 |
 | T3 fresh generation/window continuity | generation ordering and stale-link negatives | required before T3 passes | Windows equivalent implemented/proved by T4 | real proof required by T4 |
 | Orderly shutdown/reap | state/child-process negatives | required by T1b/T3 | required by T4 | required by T4 |
-| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | named reaper plus real kill-host/child-gone/relaunch run | named reaper plus real kill-host/child-gone/relaunch run |
+| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | KEL-78 Job consumed; real host-only kill reaps Bun + descendant, deletes stage, and relaunches | named reaper plus real kill-host/child-gone/relaunch run |
 
 KEL-96 remains open while any required cell is awaiting. A platform's T4 row
 cannot pass on ownership/echo evidence while its restart or teardown cell is
@@ -694,15 +744,32 @@ Future implementation gates:
   mutation, tokens, child handles or control records. T1a's parser/descriptor
   remain private; later KEL-102 API evolution requires another gate. The
   artifact API gate above also applies.
-- Dependency addition: adding workspace-pinned `sha2` to a shipping crate still
-  requires human review.
+  T4 additionally exposes `PrimaryRecoveryGate`, the supervisor-owned
+  link-failure restart request, platform-neutral app-window command/events, and
+  the one shared Windows dev-stage ACL validator used by producer and host;
+  those exact surfaces require the same human public-API review.
+- Dependency addition: T4 adds target-only `windows-permissions` 0.2.4 plus
+  direct already-locked `windows-sys` constants, handle isolation, and atomic
+  directory creation bindings. `winapi` remains only the wrapper's transitive
+  dependency. Their maintenance age, safe-wrapper boundary, features and
+  alternatives require human review.
 - Permission model: KEL-102 additionally owns manifest loading/evaluation and
   its separate human gate.
 - Wire protocol: existing HELLO/lifecycle/echo bytes remain unchanged; any kipc
   change is another wire review beyond the boot-manifest gate above. T3's
   fixed bounded `KGC1` guardian record is a reviewed private wire extension on
   the already authenticated registration stream; it is not a kipc channel.
-- Unsafe: none expected in KEL-96; Windows named-pipe FFI remains KEL-101.
+- Unsafe: **T4 Windows applies** to one `CreateDirectoryW` call that supplies
+  the already-built self-relative security descriptor atomically at stage-root
+  creation, one `SetHandleInformation` call that clears inheritance on the live
+  borrowed stdin lease before Bun spawn, and read-only `PeekNamedPipe` calls
+  for lease/capture state. The cleanup sentinel also uses `OpenProcess` plus
+  `OwnedHandle::from_raw_handle` to acquire the exact host object,
+  `QueryFullProcessImageNameW` to verify its staged image, and
+  `WaitForSingleObject` to await that object before deletion. These blocks are
+  Windows-only and carry pointer/handle-lifetime proofs; mandatory human review
+  of unsafe and security-sensitive code applies.
+  Named-pipe transport FFI remains KEL-101.
 
 ## 9. Performance impact
 

@@ -46,7 +46,7 @@ from `std::env::args()`.
 | `keld --version` / `keld -V` | `main.rs` | prints `keld <CARGO_PKG_VERSION>` |
 | `keld` (no args) | `main.rs::print_usage` | usage on **stderr**, exit 0 |
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
-| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS stages and launches the no-flag host with a private liveness lease; Windows/Linux retain the CLI-owned echo/window path until KEL-96/T4 |
+| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS and Windows stages and launches the no-flag host with a private liveness lease; Linux fails closed until its KEL-96/T4 no-flag row |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
 | `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
@@ -149,25 +149,27 @@ The one verb that ties everything together. Sequence, from
    error message, not the search.
 2. **Run the doctor checks.** Any failure aborts with `KELD-CLI-032` and the full check
    list, before any process is spawned.
-3. **On macOS, compile one fresh stage.** `stage_dev_boot` reads the reviewed
-   project fields, copies the sibling developer `keld-host` to a new inode,
+3. **On macOS and Windows, compile one fresh stage.** `stage_dev_boot` reads the reviewed
+   project fields, copies the sibling developer `keld-host`,
    writes the strict boot descriptor and explicit permissions fixture, and
-   returns the owner-private launch root.
+   returns the owner-private launch root. macOS verifies exact `0o700`; Windows
+   installs and reads back one protected current-TokenUser full-control DACL.
 4. **Launch the staged host with no Keld argument.** The CLI inherits its
    stdout/stderr and retains the child handle plus the write end of a private
-   stdin-v1 lease. The host runs in a process group separate from the
-   terminal-facing CLI, validates its sibling descriptor, makes the lease
-   reader non-inheritable, and owns the app link, guardian/Supervisor, Bun, and
-   native window. Bun receives only `KELD_APP_LINK`; it receives null stdin and
-   no lease variable or descriptor.
+   stdin-v1 lease. The host validates its sibling descriptor and owns the app
+   link, platform supervisor, Bun, and native window. macOS uses the guardian
+   process group; Windows consumes T8's primary supervisor. Bun receives only
+   `KELD_APP_LINK`; it receives null stdin and no lease variable.
 5. **Wait for the host.** Lifecycle Ready follows initial navigation, and the
    same authenticated session remains live for multiple calls and Quit. If the
    CLI exits, EOF on the sole lease writer makes the host quiesce, close the
-   link, reap Bun through the guardian, close the window, and exit. On
-   Windows/Linux, the older CLI-owned echo/window sequence remains until
-   KEL-96/T4. The dev-leased host removes its validated nonce stage on normal
-   Quit and CLI loss; an uncatchable host kill can leave one for future bounded
-   GC.
+   link, reap Bun, close the window, and exit. Linux fails closed before this
+   sequence until its no-flag owner lands. macOS removes its validated nonce stage on normal Quit
+   and CLI loss. On Windows the approved private
+   `keld.windows-dev-stage-cleanup/v1` sentinel survives terminal-CLI death,
+   waits the exact staged-host process object, and owns nonce deletion. Windows
+   abnormal-host-death reaping still depends on KEL-78/T3; Linux product
+   implementation and real-desktop evidence remain separate open rows.
 
 Representative Bun output from a session in a freshly scaffolded `my-app`
 (forwarded through the host/CLI stdio chain):
@@ -203,10 +205,11 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **On macOS the host, not the CLI, owns close and Quit.** The live WKWebView
-  path uses an event-loop wake command; `LastWindowClosed` stays on the same
-  link, and the correlated Quit reply precedes link close and guardian reap.
-  The older cross-platform hello backends remain the Windows/Linux T4 input.
+- **On macOS and Windows the host, not the CLI, owns close and Quit.** The live
+  WKWebView/WebView2 paths use event-loop wake commands; `LastWindowClosed`
+  stays on the same link, and the correlated Quit reply precedes link close
+  and supervisor reap. The Linux hello backend remains its T4 input, but
+  shipping Linux `keld dev` fails closed until that host-owned path lands.
 - **Linux has a live backend too, as of KEL-28.** `run_hello_window_html` is the
   same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
   `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
@@ -533,15 +536,15 @@ pub fn run_hello_window_titled(title: &str) -> Result<(), keld_wv::WvError>  // 
 pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // legacy hello path
 pub struct ValidatedBootSelection { /* private */ }  // keld_core::app_session
 pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // app_session
-pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // shipping macOS app_session
+pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // shipping macOS/Windows app_session
 pub const VERSION: &str                                    // = CARGO_PKG_VERSION
 ```
 
 Hello-window and config-title helpers live in
 [`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The public
 `app_session` module keeps its session implementation private and owns strict
-macOS boot validation, the one echo/lifecycle router,
-guardian supervision, CLI-lease loss and ordered UI exit. Its shipping no-flag
+macOS/Windows boot validation, the one echo/lifecycle router,
+platform supervision, CLI-lease loss and ordered UI exit. Its shipping no-flag
 caller uses `run_guarded`: before any app resource it transfers KEL-96's retained
 handle and digest for the owner-private staged `keld.permissions.jsonc` copy to
 `keld_guard::verified_manifest`, then retains the
@@ -560,7 +563,7 @@ subcommands can call in. Selected modules:
 |---|---|
 | `create` | `CreateError::{InvalidName, Exists, Io}`, `validate_name(&str)`, `create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>` |
 | `boot` | `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole owner-private stage producer |
-| `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS `run_dev` delegates to the staged no-flag host |
+| `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
 | `echo_link` | Windows-only compatibility `EchoEndpoint::Tcp(u16)`, `EchoServer::{start -> io::Result, link, join, shutdown}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
@@ -582,11 +585,12 @@ the behavior that exists today so target contracts are not mistaken for shipped 
 | Crate | Everything it exposes |
 |---|---|
 | `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`, plus `verified_manifest::{VerifiedManifest, load_verified_manifest}` for the shipping no-flag startup snapshot. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call the evaluator; reachable privileged host routing remains KEL-102/T3. |
+| `keld_runtime` | `primary::{PrimaryRoleSupervisor, PrimaryRoleConfig, BoundPrimaryGeneration, PrimaryRecoveryGate}` over the one shared generation/restart owner. The gated start surface pauses the first crash successor until the host arms recovery after initial Ready; dropping/denying the gate prevents provisioning. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
 | `keld_pack` | `Format::{App, Dmg, Nsis, Msi, Deb, Rpm, AppImage}` |
 | `keld_compat` | `Tier::{One, Two, Three}` |
-| `keld_host` | Binary crate. On macOS, no arguments consume the owner-private KEL-96 stage and own the app window/session; `--hello` remains an unprivileged diagnostic |
+| `keld_host` | Binary crate. On macOS and Windows, no arguments consume the owner-private KEL-96 stage and own the app window/session; `--hello` remains an unprivileged diagnostic |
 
 `keld-guard`'s `DenyReason` text is nonetheless treated as API: its crate `AGENTS.md`
 says "Deny text is API — test it", and it is tested.

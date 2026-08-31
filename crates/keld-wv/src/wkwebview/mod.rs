@@ -33,6 +33,7 @@ use tao::window::{Window, WindowBuilder};
 use keld_guard::PermissionsManifest;
 
 use crate::WebviewId;
+pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
@@ -45,24 +46,6 @@ const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 struct View {
     webview: wry::WebView,
     window: Window,
-}
-
-/// Command delivered from the primary app-link reader to the macOS UI loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppWindowCommand {
-    /// Correlated Quit reply has been written; close windows and exit.
-    Quit,
-    /// The primary app session failed; close windows and exit with an error.
-    Fatal,
-}
-
-/// Observable UI-owned milestone delivered to the host session coordinator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppWindowEvent {
-    /// Initial renderer navigation reached `PageLoadEvent::Finished`.
-    NavigationReady,
-    /// The primary-window count transitioned from one to zero.
-    LastWindowClosed,
 }
 
 /// The macOS [`WebEngine`] backend.

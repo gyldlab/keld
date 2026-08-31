@@ -2,6 +2,16 @@
 const KEL96_ECHO_CHANNEL = 1;
 const KEL96_CONTROL = process.env.KELD_T1B_CONTROL;
 const KEL96_LINK = process.env.KELD_APP_LINK;
+let generationAttempt = 0;
+const generationMarker = process.env.KELD_T4_GENERATION_MARKER;
+if (generationMarker) {
+  const prior = await Bun.file(generationMarker)
+    .text()
+    .then((text) => Number.parseInt(text, 10))
+    .catch(() => 0);
+  generationAttempt = Number.isFinite(prior) ? prior + 1 : 1;
+  await Bun.write(generationMarker, `${generationAttempt}\n`);
+}
 if (process.env.KELD_T3_CRASH_BEFORE_HELLO === "1") {
   const marker = process.env.KELD_T3_PRE_READY_MARKER;
   if (marker) await Bun.write(`${marker}.${process.pid}`, "attempt\n");
@@ -42,28 +52,29 @@ function deliverCommand(line: string): void {
   }
 }
 
-const control = await Bun.connect({
-  unix: KEL96_CONTROL,
-  socket: {
-    binaryType: "uint8array",
-    data(_socket: unknown, data: Uint8Array) {
-      controlBuffer += controlDecoder.decode(data, { stream: true });
-      for (;;) {
-        const newline = controlBuffer.indexOf("\n");
-        if (newline < 0) break;
-        const line = controlBuffer.slice(0, newline);
-        controlBuffer = controlBuffer.slice(newline + 1);
-        deliverCommand(line);
-      }
-    },
-    drain() {
-      controlDrain.fire();
-    },
-    error(_socket: unknown, error: Error) {
-      throw error;
-    },
+const controlSocket = {
+  binaryType: "uint8array" as const,
+  data(_socket: unknown, data: Uint8Array) {
+    controlBuffer += controlDecoder.decode(data, { stream: true });
+    for (;;) {
+      const newline = controlBuffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = controlBuffer.slice(0, newline);
+      controlBuffer = controlBuffer.slice(newline + 1);
+      deliverCommand(line);
+    }
   },
-});
+  drain() {
+    controlDrain.fire();
+  },
+  error(_socket: unknown, error: Error) {
+    throw error;
+  },
+};
+const control =
+  process.platform === "win32"
+    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(KEL96_CONTROL), socket: controlSocket })
+    : await Bun.connect({ unix: KEL96_CONTROL, socket: controlSocket });
 
 let controlWriteChain: Promise<void> = Promise.resolve();
 
@@ -97,33 +108,34 @@ let resolveCloseNotified: (() => void) | undefined;
 const closeNotified = new Promise<void>((resolve) => {
   resolveCloseNotified = resolve;
 });
-const appSocket = await Bun.connect({
-  unix: endpoint,
-  socket: {
-    binaryType: "uint8array",
-    data(_socket: unknown, data: Uint8Array) {
-      reader.push(data);
-    },
-    drain() {
-      appDrain.fire();
-    },
-    error(_socket: unknown, error: Error) {
-      reader.fail(error);
-    },
-    close() {
-      linkClosed = true;
-      reader.fail(new Error("KEL96 app link closed by host"));
-      const notify = async (): Promise<void> => {
-        if (orderlyQuit) await quitReplySent;
-        await sendControl("LINK_EOF");
-        if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
-      };
-      void notify()
-        .catch(() => undefined)
-        .finally(() => resolveCloseNotified?.());
-    },
+const appSocketHandlers = {
+  binaryType: "uint8array" as const,
+  data(_socket: unknown, data: Uint8Array) {
+    reader.push(data);
   },
-});
+  drain() {
+    appDrain.fire();
+  },
+  error(_socket: unknown, error: Error) {
+    reader.fail(error);
+  },
+  close() {
+    linkClosed = true;
+    reader.fail(new Error("KEL96 app link closed by host"));
+    const notify = async (): Promise<void> => {
+      if (orderlyQuit) await quitReplySent;
+      await sendControl("LINK_EOF");
+      if (process.env.KELD_T2_EXIT_ON_LINK_EOF === "1") process.exit(0);
+    };
+    void notify()
+      .catch(() => undefined)
+      .finally(() => resolveCloseNotified?.());
+  },
+};
+const appSocket =
+  process.platform === "win32"
+    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(endpoint), socket: appSocketHandlers })
+    : await Bun.connect({ unix: endpoint, socket: appSocketHandlers });
 const writes = new WriteQueue(appSocket, appDrain);
 await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
 const helloReply = await withIoDeadline(reader.readFrame());
@@ -136,13 +148,34 @@ for (let index = 0; index < token.length; index += 1) {
   }
 }
 await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
-// Real-macOS acceptance pins the system tool instead of trusting a caller-controlled PATH.
-const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {
-  stdin: "ignore",
-  stdout: "ignore",
-  stderr: "ignore",
-});
-await sendControl(`DESCENDANT ${descendant.pid}`);
+if (process.platform === "win32") {
+  if (process.env.KELD_T4_JOB_DESCENDANT === "1") {
+    const descendant = Bun.spawn(
+      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+    );
+    await sendControl(`DESCENDANT ${descendant.pid}`);
+  } else {
+    await sendControl("DESCENDANT 0");
+  }
+  const leaseHandle = process.env.KELD_TEST_WINDOWS_HOST_LEASE_HANDLE;
+  if (leaseHandle) await sendControl(`LEASE_HANDLE ${leaseHandle}`);
+} else {
+  // Real-macOS acceptance pins the system tool instead of trusting a caller-controlled PATH.
+  const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  await sendControl(`DESCENDANT ${descendant.pid}`);
+}
+if (generationAttempt === 2) {
+  // `Socket.write` accepting bytes does not prove Bun flushed its user-space
+  // queue before this deliberately abrupt exit. Preserve the fast-revoke
+  // timing while making the two already-awaited control records observable.
+  control.flush();
+  process.exit(23);
+}
 
 type PendingReply = {
   resolve: (payload: Uint8Array) => void;
