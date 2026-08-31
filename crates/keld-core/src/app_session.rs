@@ -113,6 +113,10 @@ const DIGEST_PREFIX: &str = "sha256:";
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
 #[cfg(any(target_os = "macos", windows))]
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
+#[cfg(windows)]
+const WINDOWS_DEV_STAGE_DELETE_ATTEMPTS: usize = 50;
+#[cfg(windows)]
+const WINDOWS_SHARING_VIOLATION: i32 = 32;
 #[cfg(any(target_os = "macos", windows))]
 const DEV_LEASE_STDIN_V1: &str = "stdin-v1";
 #[cfg(target_os = "macos")]
@@ -770,10 +774,39 @@ impl WindowsDevStageCleanup {
             .map_err(|source| app_io("Windows dev-stage cleanup final ACL", &source))?;
         let Self { root, host } = self;
         drop(host);
-        match fs::remove_dir_all(&root) {
-            Ok(()) => Ok(()),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(app_io("Windows dev-stage cleanup deletion", &source)),
+        remove_windows_dev_stage(&root)
+            .map_err(|source| app_io("Windows dev-stage cleanup deletion", &source))
+    }
+}
+
+#[cfg(windows)]
+fn remove_windows_dev_stage(root: &Path) -> io::Result<()> {
+    remove_windows_dev_stage_with(root, thread::yield_now)
+}
+
+#[cfg(windows)]
+fn remove_windows_dev_stage_with(
+    root: &Path,
+    mut on_transient_sharing_violation: impl FnMut(),
+) -> io::Result<()> {
+    let mut attempts_remaining = WINDOWS_DEV_STAGE_DELETE_ATTEMPTS;
+    loop {
+        match fs::remove_dir_all(root) {
+            Ok(()) => return Ok(()),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(source)
+                if source.raw_os_error() == Some(WINDOWS_SHARING_VIOLATION)
+                    && attempts_remaining > 1 =>
+            {
+                attempts_remaining -= 1;
+                // Windows can release a terminating Job member's current-directory
+                // handle just after the process object becomes signaled. Rust's
+                // remove_dir_all already uses this bounded yield strategy for child
+                // entry sharing violations; repeat the hardened whole-tree operation
+                // because its final-directory path does not cover that error.
+                on_transient_sharing_violation();
+            }
+            Err(source) => return Err(source),
         }
     }
 }
@@ -3311,14 +3344,29 @@ fn app_ipc(phase: &'static str, source: &IpcError) -> HostAppError {
 mod tests {
     use std::path::Path;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     use std::fs;
+    #[cfg(windows)]
+    use std::io::{BufRead as _, BufReader};
     #[cfg(target_os = "macos")]
     use std::os::unix::fs::{PermissionsExt, symlink};
+    #[cfg(windows)]
+    use std::process::{Command, Stdio};
 
     use super::*;
 
     const DIGEST: &str = "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
+
+    #[cfg(windows)]
+    struct ReapedTestChild(std::process::Child);
+
+    #[cfg(windows)]
+    impl Drop for ReapedTestChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 
     fn valid_boot(entry: &str, renderer: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
@@ -3339,6 +3387,83 @@ mod tests {
             Ok(_) => panic!("{message}"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn dev_stage_cleanup_retries_only_transient_final_directory_sharing() {
+        let temp = tempfile::tempdir().expect("cleanup fixture root");
+        let root = temp.path().join("stage");
+        fs::create_dir(&root).expect("cleanup stage");
+        fs::write(root.join("entry"), b"fixture").expect("cleanup stage entry");
+
+        let mut blocker = ReapedTestChild(
+            Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Write-Output (Get-Location).Path; $null = [Console]::In.ReadLine()",
+                ])
+                .current_dir(&root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn final-directory holder"),
+        );
+        let mut blocker_stdin = blocker.0.stdin.take();
+        let mut ready = String::new();
+        BufReader::new(blocker.0.stdout.take().expect("holder readiness pipe"))
+            .read_line(&mut ready)
+            .expect("holder readiness");
+        let observed_ready = Path::new(ready.trim_end())
+            .canonicalize()
+            .expect("canonical holder working directory");
+        let expected_root = root.canonicalize().expect("canonical cleanup stage");
+        assert_eq!(observed_ready, expected_root);
+
+        let bare_error = fs::remove_dir_all(&root)
+            .expect_err("bare Windows removal must expose the transient sharing violation");
+        assert_eq!(
+            bare_error.raw_os_error(),
+            Some(WINDOWS_SHARING_VIOLATION),
+            "{bare_error}"
+        );
+        assert!(root.is_dir(), "sharing failure removed the held directory");
+
+        let mut retry_count = 0;
+        remove_windows_dev_stage_with(&root, || {
+            retry_count += 1;
+            if let Some(stdin) = blocker_stdin.take() {
+                drop(stdin);
+                blocker.0.wait().expect("reap final-directory holder");
+            }
+            thread::yield_now();
+        })
+        .expect("bounded cleanup after holder exit");
+
+        assert!(retry_count > 0, "sharing violation did not exercise retry");
+        assert!(
+            retry_count < WINDOWS_DEV_STAGE_DELETE_ATTEMPTS,
+            "transient cleanup exhausted its bound"
+        );
+        assert!(!root.exists(), "cleanup left the final directory");
+
+        let file = temp.path().join("not-a-directory");
+        fs::write(&file, b"fixture").expect("non-directory fixture");
+        let mut unrelated_retry_count = 0;
+        let unrelated = remove_windows_dev_stage_with(&file, || unrelated_retry_count += 1)
+            .expect_err("non-directory cleanup must fail");
+        assert_ne!(
+            unrelated.raw_os_error(),
+            Some(WINDOWS_SHARING_VIOLATION),
+            "{unrelated}"
+        );
+        assert_eq!(
+            unrelated_retry_count, 0,
+            "non-sharing error entered the retry path"
+        );
     }
 
     #[test]

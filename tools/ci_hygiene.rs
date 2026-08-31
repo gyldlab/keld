@@ -1383,6 +1383,8 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "--pull never",
         "--jobs 2",
         ":/input/source.md:ro",
+        "docker_host_path",
+        "MSYS2_ARG_CONV_EXCL='*'",
         "trap cleanup EXIT",
         "/tmp/keld-mermaid-render.",
     ] {
@@ -1673,7 +1675,7 @@ mod tests {
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
             MERMAID_RENDERER,
-            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 120 docker run\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\n",
+            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 120 docker run\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ndocker_host_path\nMSYS2_ARG_CONV_EXCL='*'\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\n",
         );
         temp.write(
             MERMAID_CONFIG,
@@ -2627,6 +2629,19 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("network-enabled renderer must fail");
         assert!(error.contains("--network none"), "{error}");
+    }
+
+    #[test]
+    fn missing_mermaid_msys_path_exclusion_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace("MSYS2_ARG_CONV_EXCL='*'", ""),
+        );
+        let error = check(temp.path()).expect_err("MSYS path rewriting must stay disabled");
+        assert!(error.contains("MSYS2_ARG_CONV_EXCL"), "{error}");
     }
 
     #[test]

@@ -42,6 +42,25 @@ run_with_timeout() {
     exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
   ' "$seconds" "$@"
 }
+
+# Git Bash rewrites Unix-looking arguments passed to native Windows programs.
+# Docker bind sources need native host paths, while container paths must remain
+# literal Linux paths. Convert the former explicitly so the docker-run subshell
+# can disable MSYS argument conversion without making host mounts ambiguous.
+docker_host_path() {
+  local path=$1
+  case "${MSYSTEM:-}" in
+    MINGW* | MSYS*)
+      command -v cygpath >/dev/null 2>&1 || {
+        echo 'KELD-DOCS006: `cygpath` is required when rendering from Git Bash. Repair Git for Windows, then rerun.' >&2
+        return 1
+      }
+      cygpath -am "$path"
+      ;;
+    *) printf '%s\n' "$path" ;;
+  esac
+}
+
 docker info >/dev/null 2>&1 || {
   echo 'KELD-DOCS006: Docker daemon is unavailable. Start Docker, then rerun `just mermaid-render-check`.' >&2
   exit 1
@@ -114,6 +133,10 @@ trap 'exit 130' INT TERM HUP
 
 render_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)
 readonly render_dir
+docker_render_dir=$(docker_host_path "$render_dir")
+readonly docker_render_dir
+docker_render_config=$(docker_host_path "$render_config")
+readonly docker_render_config
 expected=0
 render_index=0
 
@@ -139,32 +162,39 @@ for file in "${files[@]}"; do
   safe_name=$(printf '%03d_%s' "$render_index" "${file//\//_}")
   container_name="keld-mermaid-$$-${render_index}"
   active_container=$container_name
+  docker_source=$(docker_host_path "$workspace/$file")
 
-  if ! run_with_timeout 120 docker run --rm \
-    --name "$container_name" \
-    --pull never \
-    --network none \
-    --read-only \
-    --cap-drop ALL \
-    --security-opt no-new-privileges \
-    --cpus 2 \
-    --memory 2g \
-    --memory-swap 2g \
-    --pids-limit 256 \
-    --shm-size 256m \
-    --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m \
-    --env HOME=/tmp \
-    --user "$(id -u):$(id -g)" \
-    --volume "$workspace/$file:/input/source.md:ro" \
-    --volume "$render_dir:/out" \
-    --volume "$render_config:/config/mermaid.json:ro" \
-    "$MERMAID_IMAGE" \
-    --configFile /config/mermaid.json \
-    --input /input/source.md \
-    --output "/out/$safe_name.md" \
-    --artefacts "/out/$safe_name-assets" \
-    --jobs 2 \
-    --quiet; then
+  if ! (
+    # These variables affect only the native docker.exe invocation. Host paths
+    # above are already native/mixed; container paths below must not be rewritten.
+    export MSYS_NO_PATHCONV=1
+    export MSYS2_ARG_CONV_EXCL='*'
+    run_with_timeout 120 docker run --rm \
+      --name "$container_name" \
+      --pull never \
+      --network none \
+      --read-only \
+      --cap-drop ALL \
+      --security-opt no-new-privileges \
+      --cpus 2 \
+      --memory 2g \
+      --memory-swap 2g \
+      --pids-limit 256 \
+      --shm-size 256m \
+      --tmpfs /tmp:rw,nosuid,nodev,noexec,size=512m \
+      --env HOME=/tmp \
+      --user "$(id -u):$(id -g)" \
+      --volume "$docker_source:/input/source.md:ro" \
+      --volume "$docker_render_dir:/out" \
+      --volume "$docker_render_config:/config/mermaid.json:ro" \
+      "$MERMAID_IMAGE" \
+      --configFile /config/mermaid.json \
+      --input /input/source.md \
+      --output "/out/$safe_name.md" \
+      --artefacts "/out/$safe_name-assets" \
+      --jobs 2 \
+      --quiet
+  ); then
     echo "KELD-DOCS006: pinned Mermaid render failed or exceeded 120 seconds for file '$file'. Inspect the source and rerun 'just mermaid-render-check'." >&2
     exit 1
   fi
