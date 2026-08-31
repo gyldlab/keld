@@ -238,8 +238,9 @@ real_jq="$(command -v jq)"
 # The production script has no bypass/override: it always asks `cargo metadata`.
 # This temporary executable is a controlled external dependency fixture so PR/push
 # diff tests can create a minimal Git repository without copying the Keld workspace.
-# It deliberately emits JSON-escaped Windows backslash paths on every OS, pinning
-# the metadata-ingestion normalization that real cargo.exe requires under Git Bash.
+# It emits JSON-escaped drive-qualified paths on Windows and native Unix paths
+# on Unix. Together the matrix pins Windows normalization without inventing a
+# root-relative path that cannot match a drive-qualified repository root.
 printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
@@ -251,8 +252,13 @@ printf '%s\n' \
     '    literal_package=",{\"name\":\"keld-literal\",\"manifest_path\":\"${json_unix_root}/crates/literal\\\\component/Cargo.toml\",\"dependencies\":[]}"' \
     '    ;;' \
     'esac' \
-    'root="${root//\//\\}"' \
-    'root="${root//\\/\\\\}"' \
+    'case "$root" in' \
+    '  [A-Za-z]:/*)' \
+    '    root="${root//\//\\}"' \
+    '    root="${root//\\/\\\\}"' \
+    '    ;;' \
+    '  *) root="${root//\\/\\\\}" ;;' \
+    'esac' \
     'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[]}%s]}\\n" "$root" "$root" "$root" "$root" "$root" "$root" "$literal_package"' \
     >"$temp_dir/fake-bin/cargo"
 chmod +x "$temp_dir/fake-bin/cargo"
@@ -278,8 +284,8 @@ expect_package_token "pull-request base/head selects changed package" keld-runti
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
 
 # A backslash is a legal Unix filename byte, not a path separator. On Unix,
-# prove ingestion preserves an embedded backslash while still normalizing the
-# synthetic root-relative Windows paths above. Windows cannot create this name.
+# prove ingestion preserves an embedded backslash. Windows cannot create this
+# name, while its matrix run independently exercises drive-qualified metadata.
 case "$(uname -s)" in
     MINGW* | MSYS*) ;;
     *)

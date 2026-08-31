@@ -89,7 +89,7 @@ load_workspace_metadata() {
         cargo metadata --no-deps --format-version 1 |
             jq '
                 def normalize_windows_path:
-                    if test("^[A-Za-z]:\\\\|^\\\\") then gsub("\\\\"; "/")
+                    if test("^[A-Za-z]:\\\\|^\\\\\\\\") then gsub("\\\\"; "/")
                     else .
                     end;
 
