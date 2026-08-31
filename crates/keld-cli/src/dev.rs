@@ -245,8 +245,10 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         } else {
             "keld-host"
         });
-    let mut stage = crate::boot::stage_dev_boot(project_root, &developer_host)
+    let stage = crate::boot::stage_dev_boot(project_root, &developer_host)
         .map_err(|error| DevError::Doctor(error.to_string()))?;
+    #[cfg(windows)]
+    let mut stage = stage;
     let stage_root = stage.root().to_owned();
     let mut command = Command::new(stage.host());
     command
