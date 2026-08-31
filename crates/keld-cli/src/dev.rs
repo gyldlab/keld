@@ -2,9 +2,11 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{self, ErrorKind, Read as _, Write};
+use std::io::{self, ErrorKind, Write};
 #[cfg(windows)]
 use std::io::{BufRead as _, BufReader};
+#[cfg(windows)]
+use std::io::Read as _;
 #[cfg(target_os = "macos")]
 use std::os::unix::process::CommandExt as _;
 #[cfg(windows)]
