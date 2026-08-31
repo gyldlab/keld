@@ -170,6 +170,10 @@ if (process.platform === "win32") {
   await sendControl(`DESCENDANT ${descendant.pid}`);
 }
 if (generationAttempt === 2) {
+  // `Socket.write` accepting bytes does not prove Bun flushed its user-space
+  // queue before this deliberately abrupt exit. Preserve the fast-revoke
+  // timing while making the two already-awaited control records observable.
+  control.flush();
   process.exit(23);
 }
 
