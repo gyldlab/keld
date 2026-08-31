@@ -147,11 +147,12 @@ Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 ## Rust, TypeScript, and naming
 
 - Rust lints are workspace-owned. A new `allow` needs inline justification.
-- Production `unsafe` is limited to sanctioned path owners: `keld-wv` backends and
-  `keld-runtime` Windows modules today; future `keld-ipc` shm is reserved. Each uses
-  `deny(unsafe_op_in_unsafe_fn)` and local `// SAFETY:` proofs. A new production path
-  requires an issue-scoped root/nested owner update plus independent `unsafe` gate
-  evidence on the exact final diff; tests follow their nearest owner.
+- Production `unsafe` is limited to sanctioned path owners: `keld-wv` backends,
+  `keld-runtime` Windows modules, and reviewed `keld-ipc::windows_named_pipe`;
+  future `keld-ipc` shm is reserved. Each denies `unsafe_op_in_unsafe_fn` and
+  carries local `// SAFETY:` proofs. A new production path requires an issue-scoped
+  root/nested owner update plus independent `unsafe` gate evidence on the exact
+  final diff; tests follow their nearest owner.
 - Libraries MUST NOT add `unwrap`/`expect`/`panic!`. Typed errors are hand-written
   `Display` + `KELD-*` fix guidance; test and `keld-cli` top-level invariants may expect.
 - Hot kipc/event-loop/guard paths use callbacks/state machines: no async runtime or
