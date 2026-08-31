@@ -214,7 +214,7 @@ of a sandbox, not containment.
 - **Publisher:** Microsoft Learn
 - **Dated:** current Win32 API page; accessed 2026-08-19
 - **Quote:** "If this parameter is TRUE, each inheritable handle in the calling process is inherited by the new process. If the parameter is FALSE, the handles are not inherited. Note that inherited handles have the same value and access rights as the original handles." The attribute-list contract adds: "if you use this attribute, pass in a value of TRUE for the bInheritHandles parameter of the CreateProcess function."
-- **Use:** A strict spawn with no admitted handles uses `bInheritHandles = FALSE`. An explicit `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` launch uses `TRUE` as Win32 requires, but only after the app-link/log handles in that list are marked inheritable. `TRUE` without the list is forbidden. A raw post-spawn child-handle census rejects every non-allowlisted handle.
+- **Use:** A strict spawn with no admitted handles uses `bInheritHandles = FALSE`. An explicit `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` launch uses `TRUE` as Win32 requires, but the list contains only private inheritable duplicates of the admitted app-link/log handles; caller-owned handle flags are never toggled. `TRUE` without the list is forbidden. A raw post-spawn child-handle census rejects every non-allowlisted handle.
 
 ---
 
