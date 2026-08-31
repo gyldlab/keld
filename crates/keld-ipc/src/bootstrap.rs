@@ -850,6 +850,10 @@ impl WindowsNamedPipeBootstrapListener {
     /// Returns the first cancellation or terminal-close error.
     pub fn shutdown(&self) -> io::Result<()> {
         let cancel_error = self.cancellation().cancel().err();
+        // CancelIoEx only requests cancellation. The admission owner keeps
+        // every stack OVERLAPPED/buffer live until it observes completion;
+        // do not close the pipe handle until that owner releases this guard.
+        let _admission = lock_or_recover(&self.admission);
         let close_error = lock_or_recover(&self.server)
             .take()
             .and_then(|server| server.close_terminal().err());
@@ -1972,9 +1976,8 @@ mod windows_tests {
     use super::{BootstrapAdmission, BootstrapListener, WindowsNamedPipeBootstrapStream};
 
     #[test]
-    fn cancellation_interrupts_active_silent_handshake_promptly() {
+    fn shipping_shutdown_waits_for_active_handshake_cancellation_observation() {
         let listener = Arc::new(BootstrapListener::bind().expect("bind Windows bootstrap"));
-        let cancellation = listener.cancellation();
         let link = listener.app_link();
         let (endpoint, _) = parse_app_link(&link).expect("Windows app link");
         let endpoint = endpoint.to_owned();
@@ -2000,7 +2003,7 @@ mod windows_tests {
             thread::yield_now();
         }
         let cancel_started = Instant::now();
-        cancellation.cancel().expect("cancel active handshake");
+        listener.shutdown().expect("shutdown active handshake");
         let result = result_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("cancellation must beat the five-second peer deadline")

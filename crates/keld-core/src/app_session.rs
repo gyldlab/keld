@@ -2764,7 +2764,7 @@ impl PrimaryRouterHandle {
         attempt: u32,
         correlation: CorrelationId,
         reply: &[u8],
-        reader: &mut BootstrapStream,
+        #[cfg(windows)] reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
         let transition = self.shutdown.transition_guard();
         let current_guard = self
@@ -3144,7 +3144,10 @@ fn read_primary_frames(
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
+                        #[cfg(windows)]
                         handle.lifecycle_quit(attempt, header.corr, &reply, reader)?;
+                        #[cfg(target_os = "macos")]
+                        handle.lifecycle_quit(attempt, header.corr, &reply)?;
                         return Ok(());
                     }
                 }

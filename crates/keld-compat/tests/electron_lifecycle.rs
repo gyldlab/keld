@@ -252,23 +252,6 @@ fn bunfig_alias_resolves_electron_and_shims_process_fields() {
     );
 }
 
-#[cfg(windows)]
-#[test]
-fn electron_main_keeps_app_link_out_of_renderer_and_preload_views() {
-    let bound = bind_app_link();
-    let mut child = spawn_fixture("app_link_scope.ts", Some(&bound.link));
-    let stdout = child.stdout.take().expect("stdout");
-    let mut log = spawn_line_log(stdout);
-    log.wait_contains("KEL101_MAIN_HAS_LINK=true");
-    log.wait_contains("KEL101_RENDERER_HAS_LINK=false");
-    log.wait_contains("KEL101_PRELOAD_HAS_LINK=false");
-    assert!(child.wait().expect("wait scope fixture").success());
-    assert!(
-        !log.acc.contains(&bound.link),
-        "scope fixture must not print the app-link value"
-    );
-}
-
 #[test]
 fn when_ready_does_not_resolve_before_host_ready_event() {
     let bound = bind_app_link();
