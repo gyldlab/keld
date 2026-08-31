@@ -15,7 +15,7 @@ use std::ptr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
@@ -31,11 +31,9 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_CREATE_PIPE_INSTANCE, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-    FlushFileBuffers, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
-use windows_sys::Win32::System::IO::{
-    CancelIoEx, CancelSynchronousIo, GetOverlappedResult, OVERLAPPED,
-};
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 #[cfg(test)]
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 use windows_sys::Win32::System::Pipes::{
@@ -67,13 +65,12 @@ struct ServerInner {
     connect_event: OwnedEvent,
     connected: AtomicBool,
     consumed: AtomicBool,
-    drain_active: AtomicBool,
     #[cfg(test)]
     accept_pending: AtomicBool,
     #[cfg(test)]
     active_stream_io: AtomicUsize,
     #[cfg(test)]
-    drain_pending: AtomicBool,
+    force_cancel_error: AtomicBool,
 }
 
 /// One host-owned named-pipe instance.
@@ -166,13 +163,12 @@ impl WindowsNamedPipeServer {
                 connect_event,
                 connected: AtomicBool::new(false),
                 consumed: AtomicBool::new(false),
-                drain_active: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
                 active_stream_io: AtomicUsize::new(0),
                 #[cfg(test)]
-                drain_pending: AtomicBool::new(false),
+                force_cancel_error: AtomicBool::new(false),
             }),
         };
         server.validate_security(&current_sid)?;
@@ -347,13 +343,12 @@ impl WindowsNamedPipeServer {
                 connect_event,
                 connected: AtomicBool::new(true),
                 consumed: AtomicBool::new(true),
-                drain_active: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
                 active_stream_io: AtomicUsize::new(0),
                 #[cfg(test)]
-                drain_pending: AtomicBool::new(false),
+                force_cancel_error: AtomicBool::new(false),
             }),
             read_event: OwnedEvent::new()?,
             write_event: OwnedEvent::new()?,
@@ -437,6 +432,10 @@ impl WindowsNamedPipeServer {
     }
 
     fn cancel_pending_io(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if self.inner.force_cancel_error.load(Ordering::Acquire) {
+            return Err(io::Error::from_raw_os_error(5));
+        }
         // SAFETY: null OVERLAPPED cancels all operations issued by this
         // process on the owned pipe. Each operation owner subsequently waits
         // for and observes its own completion before freeing state.
@@ -528,105 +527,24 @@ impl WindowsNamedPipeStream {
             inner: Arc::clone(&self.inner),
         };
         let _lifecycle = lock_or_recover(&self.inner.lifecycle);
-        server.cancel_pending_io()?;
+        let cancel_error = server.cancel_pending_io().err();
         // SAFETY: this is the live server pipe handle. Cancelling does not
         // free another operation's OVERLAPPED or buffer; each operation owner
         // retains and observes its own state. Disconnect only breaks the pipe
         // connection so peer and local waiters can finish.
-        if self.inner.connected.swap(false, Ordering::AcqRel)
-            && unsafe { DisconnectNamedPipe(server.raw_pipe()?) } == 0
-        {
-            let error = io::Error::last_os_error();
-            if !matches!(error.raw_os_error(), Some(109 | 232 | 233)) {
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn shutdown_after_drain(&self, deadline: Instant) -> io::Result<()> {
-        // FlushFileBuffers has no overlapped form. One terminal cold-path
-        // worker makes that synchronous OS wait cancellable; ordinary
-        // reads/writes retain their allocation-free reusable events.
-        if self
-            .inner
-            .drain_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "named-pipe orderly drain already active",
-            ));
-        }
-        let _claim = ActiveDrain::new(&self.inner.drain_active);
-        let total_remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| io::Error::from_raw_os_error(ERROR_SEM_TIMEOUT.cast_signed()))?;
-        let inner = Arc::clone(&self.inner);
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let worker = std::thread::Builder::new()
-            .name("keld-pipe-drain".to_owned())
-            .spawn(move || {
-                #[cfg(test)]
-                let _pending = PendingDrain::new(&inner.drain_pending);
-                let server = WindowsNamedPipeServer {
-                    inner: Arc::clone(&inner),
-                };
-                let result = (|| {
-                    let pipe = server.raw_pipe()?;
-                    // SAFETY: the worker's Arc keeps the owned connected pipe
-                    // handle live until this synchronous flush returns. The
-                    // caller observes worker completion before returning.
-                    if unsafe { FlushFileBuffers(pipe) } == 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                })();
-                let _ = result_tx.send(result);
-            })?;
-
-        match result_rx.recv_timeout(total_remaining) {
-            Ok(flush_result) => {
-                worker
-                    .join()
-                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
-                let shutdown_result = self.shutdown();
-                flush_result.and(shutdown_result)
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Disconnect first so a peer which never reads cannot retain
-                // the pipe while cancellation targets the synchronous flush.
-                let shutdown_error = self.shutdown().err();
-                // SAFETY: AsRawHandle exposes the live worker-thread handle,
-                // which remains owned until the unconditional join below.
-                let cancel_error = if unsafe { CancelSynchronousIo(worker.as_raw_handle()) } == 0 {
+        let disconnect_error = if self.inner.connected.swap(false, Ordering::AcqRel) {
+            match server.raw_pipe() {
+                Ok(pipe) if unsafe { DisconnectNamedPipe(pipe) } == 0 => {
                     let error = io::Error::last_os_error();
-                    (error.raw_os_error() != Some(1168)).then_some(error)
-                } else {
-                    None
-                };
-                worker
-                    .join()
-                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
-                if let Some(error) = shutdown_error.or(cancel_error) {
-                    return Err(error);
+                    (!matches!(error.raw_os_error(), Some(109 | 232 | 233))).then_some(error)
                 }
-                Err(io::Error::from_raw_os_error(
-                    ERROR_SEM_TIMEOUT.cast_signed(),
-                ))
+                Ok(_) => None,
+                Err(error) => Some(error),
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                worker
-                    .join()
-                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
-                self.shutdown()?;
-                Err(io::Error::other(
-                    "named-pipe drain worker exited without a result",
-                ))
-            }
-        }
+        } else {
+            None
+        };
+        disconnect_error.or(cancel_error).map_or(Ok(()), Err)
     }
 
     #[cfg(test)]
@@ -635,8 +553,8 @@ impl WindowsNamedPipeStream {
     }
 
     #[cfg(test)]
-    pub(crate) fn is_drain_pending(&self) -> bool {
-        self.inner.drain_pending.load(Ordering::Acquire)
+    pub(crate) fn force_cancel_error(&self) {
+        self.inner.force_cancel_error.store(true, Ordering::Release);
     }
 
     fn raw_pipe(&self) -> io::Result<*mut core::ffi::c_void> {
@@ -846,11 +764,6 @@ struct PendingAccept<'a>(&'a AtomicBool);
 struct ActiveStreamIo<'a>(&'a AtomicUsize);
 
 #[cfg(test)]
-struct PendingDrain<'a>(&'a AtomicBool);
-
-struct ActiveDrain<'a>(&'a AtomicBool);
-
-#[cfg(test)]
 impl<'a> PendingAccept<'a> {
     fn new(pending: &'a AtomicBool) -> Self {
         pending.store(true, Ordering::Release);
@@ -877,33 +790,6 @@ impl<'a> ActiveStreamIo<'a> {
 impl Drop for ActiveStreamIo<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-#[cfg(test)]
-impl<'a> PendingDrain<'a> {
-    fn new(pending: &'a AtomicBool) -> Self {
-        pending.store(true, Ordering::Release);
-        Self(pending)
-    }
-}
-
-#[cfg(test)]
-impl Drop for PendingDrain<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-impl<'a> ActiveDrain<'a> {
-    fn new(active: &'a AtomicBool) -> Self {
-        Self(active)
-    }
-}
-
-impl Drop for ActiveDrain<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
     }
 }
 
