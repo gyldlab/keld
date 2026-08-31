@@ -943,7 +943,10 @@ impl WindowsNamedPipeBootstrapStream {
                 "Windows app-link endpoint is not an exact Keld named pipe",
             ));
         }
-        WindowsNamedPipeServer::connect_client(endpoint).map(Self)
+        let deadline = Instant::now()
+            .checked_add(APP_LINK_IO_DEADLINE)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "deadline overflow"))?;
+        WindowsNamedPipeServer::connect_client_until(endpoint, deadline).map(Self)
     }
 
     /// Duplicates the Rust stream view while retaining the same owned pipe
@@ -962,7 +965,7 @@ impl WindowsNamedPipeBootstrapStream {
 mod named_pipe_tests {
     #![allow(unsafe_code)] // test-only independent Win32 descriptor/handle oracle
 
-    use std::io::{Read as _, Write as _};
+    use std::io::{self, Read as _, Write as _};
     use std::os::windows::io::AsRawHandle as _;
     use std::process::{Child, Command, Output, Stdio};
     use std::sync::{Arc, Mutex, mpsc};
@@ -978,7 +981,7 @@ mod named_pipe_tests {
     use crate::link::{AppLinkDeadlines, handshake_client};
     use crate::serve_echo_requests;
     use crate::token::{SessionToken, parse_app_link};
-    use crate::windows_named_pipe::{WindowsNamedPipeServer, process_handle_count};
+    use crate::windows_named_pipe::{WaitOutcome, WindowsNamedPipeServer, process_handle_count};
     use crate::{ChannelId, CorrelationId, FrameHeader, FrameKind, MAX_FRAME_LEN};
 
     use super::{
@@ -1289,6 +1292,106 @@ socket.end();
         let collision = WindowsNamedPipeServer::bind(endpoint)
             .expect_err("FILE_FLAG_FIRST_PIPE_INSTANCE must reject a second server");
         assert_eq!(collision.raw_os_error(), Some(5));
+    }
+
+    #[test]
+    fn shipping_client_waits_for_busy_instance_then_connects() {
+        let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind");
+        let endpoint = listener.endpoint().to_owned();
+        let server = lock_or_recover(&listener.server)
+            .as_ref()
+            .cloned()
+            .expect("live server");
+        let first = WindowsNamedPipeServer::connect_client(&endpoint).expect("first client");
+        assert!(matches!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(1)))
+                .expect("accept first client"),
+            WaitOutcome::Ready
+        ));
+        let busy = WindowsNamedPipeServer::connect_client(&endpoint)
+            .expect_err("one-shot open must expose the busy-instance control");
+        assert_eq!(busy.raw_os_error(), Some(231));
+
+        let (busy_tx, busy_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let connector = thread::spawn(move || {
+            WindowsNamedPipeServer::install_connect_busy_witness(busy_tx);
+            let _ = result_tx.send(WindowsNamedPipeBootstrapStream::connect(&endpoint));
+        });
+        busy_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shipping client must causally observe ERROR_PIPE_BUSY");
+
+        server.disconnect_for_retry().expect("release first client");
+        assert!(matches!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(1)))
+                .expect("rearm server for shipping client"),
+            WaitOutcome::Ready
+        ));
+        let second = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shipping client must finish after rearm")
+            .expect("shipping client must connect after rearm");
+        connector.join().expect("join shipping connector");
+        drop(first);
+        drop(second);
+        server.close_terminal().expect("close test server");
+    }
+
+    #[test]
+    fn busy_client_deadline_is_timeout_and_past_deadline_never_connects() {
+        let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind busy listener");
+        let endpoint = listener.endpoint().to_owned();
+        let server = lock_or_recover(&listener.server)
+            .as_ref()
+            .cloned()
+            .expect("live busy server");
+        let first = WindowsNamedPipeServer::connect_client(&endpoint).expect("first client");
+        assert!(matches!(
+            server
+                .accept_until(Some(Instant::now() + Duration::from_secs(1)))
+                .expect("accept first client"),
+            WaitOutcome::Ready
+        ));
+        let started = Instant::now();
+        let timeout = WindowsNamedPipeServer::connect_client_until(
+            &endpoint,
+            started + Duration::from_millis(40),
+        )
+        .expect_err("permanently busy instance must hit its deadline");
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(timeout.raw_os_error(), Some(121));
+        assert!(
+            started.elapsed() >= Duration::from_millis(30),
+            "busy-instance wait returned materially before its 40 ms deadline"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "busy-instance deadline exceeded its kill bound"
+        );
+        drop(first);
+        server.close_terminal().expect("close busy server");
+
+        let available = WindowsNamedPipeBootstrapListener::bind().expect("bind available listener");
+        let past = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("representable past deadline");
+        let timeout = WindowsNamedPipeServer::connect_client_until(available.endpoint(), past)
+            .expect_err("past deadline must not open an available instance");
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+        let available_server = lock_or_recover(&available.server)
+            .as_ref()
+            .cloned()
+            .expect("live available server");
+        assert!(matches!(
+            available_server
+                .accept_until(Some(Instant::now() + Duration::from_millis(40)))
+                .expect("observe available server after past-deadline call"),
+            WaitOutcome::DeadlineElapsed
+        ));
+        available.shutdown().expect("close available listener");
     }
 
     #[test]
