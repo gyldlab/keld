@@ -760,8 +760,12 @@ Future implementation gates:
   the already-built self-relative security descriptor atomically at stage-root
   creation, one `SetHandleInformation` call that clears inheritance on the live
   borrowed stdin lease before Bun spawn, and read-only `PeekNamedPipe` calls
-  for lease/capture state. These blocks are Windows-only and carry
-  pointer/handle-lifetime proofs; human unsafe/security review is mandatory.
+  for lease/capture state. The cleanup sentinel also uses `OpenProcess` plus
+  `OwnedHandle::from_raw_handle` to acquire the exact host object,
+  `QueryFullProcessImageNameW` to verify its staged image, and
+  `WaitForSingleObject` to await that object before deletion. These blocks are
+  Windows-only and carry pointer/handle-lifetime proofs; human unsafe/security
+  review is mandatory.
   Named-pipe transport FFI remains KEL-101.
 
 ## 9. Performance impact
