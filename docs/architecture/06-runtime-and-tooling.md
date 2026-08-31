@@ -48,7 +48,7 @@
   The host independently reads back the protected one-ACE DACL, validates the
   same closed boot/policy contract before resources, and consumes T8's one
   `PrimaryRoleSupervisor` with a pre-Ready recovery gate. One logical router
-  spans fresh loopback generations while the same WebView2 HWND remains live;
+  spans fresh authenticated app-link generations while the same WebView2 HWND remains live;
   `NavigationCompleted` drives `Ready` through tao's UI-thread
   `EventLoopProxy`. Revoked-attempt tombstones prevent a separately queued
   bound stream from being installed after its revocation. A link-only failure requests revoke/kill/reap/restart from
@@ -78,8 +78,8 @@
   identity, waits for that host object, and removes the stage. Before the first
   Bun spawn, the no-flag host also installs KEL-78/T3's unnamed,
   non-breakaway, kill-on-close Job, so abnormal host death reaps Bun and its
-  enrolled descendants. This slice makes no LPAC, named-pipe/DACL, or
-  privileged-dispatch claim.
+  enrolled descendants. KEL-101 separately owns the named-pipe/DACL boundary;
+  this KEL-96 slice makes no LPAC or privileged-dispatch claim.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns

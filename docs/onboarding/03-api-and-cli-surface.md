@@ -168,8 +168,9 @@ The one verb that ties everything together. Sequence, from
    and CLI loss. On Windows the approved private
    `keld.windows-dev-stage-cleanup/v1` sentinel survives terminal-CLI death,
    waits the exact staged-host process object, and owns nonce deletion. Windows
-   abnormal-host-death reaping still depends on KEL-78/T3; Linux product
-   implementation and real-desktop evidence remain separate open rows.
+   installs KEL-78/T3's non-breakaway kill-on-close Job before Bun spawn, so
+   host death reaps the enrolled descendants. Linux product implementation and
+   real-desktop evidence remain separate open rows.
 
 Representative Bun output from a session in a freshly scaffolded `my-app`
 (forwarded through the host/CLI stdio chain):
@@ -294,7 +295,7 @@ KELD-WV-001: no webview backend for `freebsd` yet. Track architecture spec 05 §
 
 ### 1.9 `keld ipc-echo`
 
-A self-contained kipc demo: starts an `EchoServer` on a loopback endpoint in a worker
+A self-contained kipc demo: starts an `EchoServer` on the platform app-link endpoint in a worker
 thread, performs one `echo_call` from the main thread, joins, prints the response. No
 Bun, no window, no project needed.
 

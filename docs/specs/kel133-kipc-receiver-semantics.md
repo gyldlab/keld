@@ -283,14 +283,14 @@ shared boundary. Positive legacy vectors prove the accepted v0 byte set is uncha
 
 ### Platform notes
 
-- Unix domain sockets and Windows loopback TCP use the same semantic validator and
+- Unix domain sockets and Windows named pipes use the same semantic validator and
   absolute-clock state. Transport-specific error acquisition stays in the adapter.
 - Windows clone shutdown does not wake a blocking local read; bounded reader polls must
   recompute remaining absolute time and observe cancellation.
 - Unix `SO_RCVTIMEO` may surface expiry as `WouldBlock`; Windows may surface
   `TimedOut`. Both map to the same clock result after remaining-time evaluation.
-- KEL-101 named pipes later consume this contract; DACL and overlapped-I/O ownership
-  remain KEL-101.
+- KEL-101 named pipes consume this contract; DACL and overlapped-I/O ownership
+  remain with KEL-101's transport boundary.
 
 ## 5. Boundaries
 
