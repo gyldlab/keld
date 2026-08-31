@@ -1266,6 +1266,60 @@ mod named_pipe_tests {
     }
 
     #[test]
+    fn stream_shutdown_cancels_pending_read_and_joins_without_peer_input() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("parse link");
+        let endpoint = endpoint.to_owned();
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || {
+            worker_listener.accept_authenticated_until(
+                Instant::now() + Duration::from_secs(2),
+                &super::NoopRejectionObserver,
+            )
+        });
+        let mut role = client(&endpoint).expect("open role");
+        role.set_app_link_deadlines(Some(Duration::from_millis(500)))
+            .expect("role deadlines");
+        handshake_client(&mut role, &token).expect("authenticate");
+        let outcome = worker.join().expect("join admission").expect("admission");
+        let BootstrapAdmission::Authenticated(server_stream) = outcome else {
+            panic!("expected authenticated named-pipe session")
+        };
+        let mut blocked_reader = server_stream.try_clone().expect("clone server stream");
+        blocked_reader
+            .set_app_link_read_deadline(Some(Duration::from_secs(5)))
+            .expect("reader deadline");
+        let (result_tx, result_rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            let _ = result_tx.send(blocked_reader.read_exact(&mut byte));
+        });
+        let active_deadline = Instant::now() + Duration::from_secs(1);
+        while !server_stream.0.has_active_io() {
+            assert!(
+                Instant::now() < active_deadline,
+                "reader never entered overlapped I/O"
+            );
+            thread::yield_now();
+        }
+        server_stream
+            .shutdown_app_link()
+            .expect("shutdown connected pipe");
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown must wake local read")
+            .expect_err("pending read must not succeed without peer bytes");
+        assert!(matches!(error.raw_os_error(), Some(995 | 109 | 233)));
+        reader.join().expect("join blocked reader");
+        let mut peer_byte = [0_u8; 1];
+        let peer_error = role
+            .read(&mut peer_byte)
+            .expect_err("shutdown must also close the peer-facing connection");
+        assert!(matches!(peer_error.raw_os_error(), Some(109 | 232 | 233)));
+    }
+
+    #[test]
     fn cancellation_handle_does_not_keep_dropped_listener_alive() {
         let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind");
         let endpoint = listener.endpoint().to_owned();

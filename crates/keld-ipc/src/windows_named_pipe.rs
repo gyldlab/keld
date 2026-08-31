@@ -12,6 +12,8 @@ use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::ptr;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -63,6 +65,8 @@ struct ServerInner {
     consumed: AtomicBool,
     #[cfg(test)]
     accept_pending: AtomicBool,
+    #[cfg(test)]
+    active_stream_io: AtomicUsize,
 }
 
 /// One host-owned named-pipe instance.
@@ -151,6 +155,8 @@ impl WindowsNamedPipeServer {
                 consumed: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
+                #[cfg(test)]
+                active_stream_io: AtomicUsize::new(0),
             }),
         };
         server.validate_security(&current_sid)?;
@@ -318,6 +324,8 @@ impl WindowsNamedPipeServer {
                 consumed: AtomicBool::new(true),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
+                #[cfg(test)]
+                active_stream_io: AtomicUsize::new(0),
             }),
             read_timeout: Mutex::new(None),
             write_timeout: Mutex::new(None),
@@ -493,6 +501,11 @@ impl WindowsNamedPipeStream {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_active_io(&self) -> bool {
+        self.inner.active_stream_io.load(Ordering::Acquire) != 0
+    }
+
     fn raw_pipe(&self) -> io::Result<*mut core::ffi::c_void> {
         lock_or_recover(&self.inner.pipe)
             .as_ref()
@@ -510,6 +523,8 @@ impl Read for WindowsNamedPipeStream {
             *lock_or_recover(&self.read_timeout),
             *lock_or_recover(&self.absolute_deadline),
         )?;
+        #[cfg(test)]
+        let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
         overlapped_io(
             self.raw_pipe()?,
             timeout,
@@ -533,6 +548,8 @@ impl Write for WindowsNamedPipeStream {
             *lock_or_recover(&self.write_timeout),
             *lock_or_recover(&self.absolute_deadline),
         )?;
+        #[cfg(test)]
+        let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
         overlapped_io(
             self.raw_pipe()?,
             timeout,
@@ -686,6 +703,9 @@ struct OwnedEvent(OwnedHandle);
 struct PendingAccept<'a>(&'a AtomicBool);
 
 #[cfg(test)]
+struct ActiveStreamIo<'a>(&'a AtomicUsize);
+
+#[cfg(test)]
 impl<'a> PendingAccept<'a> {
     fn new(pending: &'a AtomicBool) -> Self {
         pending.store(true, Ordering::Release);
@@ -697,6 +717,21 @@ impl<'a> PendingAccept<'a> {
 impl Drop for PendingAccept<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+impl<'a> ActiveStreamIo<'a> {
+    fn new(active: &'a AtomicUsize) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        Self(active)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActiveStreamIo<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
