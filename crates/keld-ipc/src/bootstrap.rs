@@ -895,8 +895,9 @@ impl WindowsNamedPipeBootstrapStream {
     ///
     /// # Errors
     ///
-    /// Returns a timeout if `deadline` wins; synchronous Windows flush is
-    /// cancelled and joined before the pipe is disconnected.
+    /// Returns a timeout if `deadline` wins. Timeout starts an abortive
+    /// disconnect, requests cancellation of the synchronous Windows flush,
+    /// and observes the drain worker's completion before returning.
     pub fn shutdown_after_drain(&self, deadline: Instant) -> io::Result<()> {
         self.0.shutdown_after_drain(deadline)
     }
@@ -1861,6 +1862,19 @@ socket.end();
             .shutdown_after_drain(Instant::now() + Duration::from_millis(50))
             .expect_err("non-reading peer must not wedge orderly shutdown");
         assert_eq!(error.raw_os_error(), Some(121));
+        assert!(
+            !server_stream.0.is_drain_pending(),
+            "timeout must observe drain-worker completion before returning"
+        );
+        if let Err(followup) =
+            server_stream.shutdown_after_drain(Instant::now() + Duration::from_millis(50))
+        {
+            assert_ne!(
+                followup.kind(),
+                std::io::ErrorKind::WouldBlock,
+                "timeout must release the single-drain claim"
+            );
+        }
         drop(role);
     }
 

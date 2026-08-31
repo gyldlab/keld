@@ -544,10 +544,6 @@ impl WindowsNamedPipeStream {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one linear terminal state machine keeps flush cancellation and join ordering auditable"
-    )]
     pub(crate) fn shutdown_after_drain(&self, deadline: Instant) -> io::Result<()> {
         // FlushFileBuffers has no overlapped form. One terminal cold-path
         // worker makes that synchronous OS wait cancellable; ordinary
@@ -563,21 +559,16 @@ impl WindowsNamedPipeStream {
                 "named-pipe orderly drain already active",
             ));
         }
+        let _claim = ActiveDrain::new(&self.inner.drain_active);
         let total_remaining = deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| {
-                self.inner.drain_active.store(false, Ordering::Release);
-                io::Error::from_raw_os_error(ERROR_SEM_TIMEOUT.cast_signed())
-            })?;
-        let cancel_reserve = Duration::from_millis(100).min(total_remaining / 2);
-        let flush_wait = total_remaining.saturating_sub(cancel_reserve);
+            .ok_or_else(|| io::Error::from_raw_os_error(ERROR_SEM_TIMEOUT.cast_signed()))?;
         let inner = Arc::clone(&self.inner);
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("keld-pipe-drain".to_owned())
             .spawn(move || {
-                let _claim = ActiveDrain::new(&inner.drain_active);
                 #[cfg(test)]
                 let _pending = PendingDrain::new(&inner.drain_pending);
                 let server = WindowsNamedPipeServer {
@@ -585,21 +576,18 @@ impl WindowsNamedPipeStream {
                 };
                 let result = (|| {
                     let pipe = server.raw_pipe()?;
-                    // SAFETY: the owned connected server handle stays live
-                    // under the lifecycle guard until this synchronous flush
-                    // returns or CancelSynchronousIo completes it.
+                    // SAFETY: the worker's Arc keeps the owned connected pipe
+                    // handle live until this synchronous flush returns. The
+                    // caller observes worker completion before returning.
                     if unsafe { FlushFileBuffers(pipe) } == 0 {
                         return Err(io::Error::last_os_error());
                     }
                     Ok(())
                 })();
                 let _ = result_tx.send(result);
-            })
-            .inspect_err(|_error| {
-                self.inner.drain_active.store(false, Ordering::Release);
             })?;
 
-        match result_rx.recv_timeout(flush_wait) {
+        match result_rx.recv_timeout(total_remaining) {
             Ok(flush_result) => {
                 worker
                     .join()
@@ -608,50 +596,26 @@ impl WindowsNamedPipeStream {
                 flush_result.and(shutdown_result)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Disconnect first so a peer which never reads cannot retain
+                // the pipe while cancellation targets the synchronous flush.
                 let shutdown_error = self.shutdown().err();
-                // SAFETY: AsRawHandle exposes the live worker-thread handle;
-                // the bounded wait below cannot outlive `worker`.
+                // SAFETY: AsRawHandle exposes the live worker-thread handle,
+                // which remains owned until the unconditional join below.
                 let cancel_error = if unsafe { CancelSynchronousIo(worker.as_raw_handle()) } == 0 {
                     let error = io::Error::last_os_error();
                     (error.raw_os_error() != Some(1168)).then_some(error)
                 } else {
                     None
                 };
-                let cleanup_wait = deadline
-                    .checked_duration_since(Instant::now())
-                    .map_or(0, |remaining| duration_to_wait_ms(Some(remaining)));
-                // SAFETY: the JoinHandle owns a live thread handle for this
-                // bounded wait and Windows retains no pointer.
-                match unsafe { WaitForSingleObject(worker.as_raw_handle(), cleanup_wait) } {
-                    WAIT_OBJECT_0 => {
-                        worker
-                            .join()
-                            .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
-                        if let Some(error) = shutdown_error.or(cancel_error) {
-                            return Err(error);
-                        }
-                        Err(io::Error::from_raw_os_error(
-                            ERROR_SEM_TIMEOUT.cast_signed(),
-                        ))
-                    }
-                    WAIT_TIMEOUT => {
-                        drop(worker);
-                        Err(io::Error::from_raw_os_error(
-                            ERROR_SEM_TIMEOUT.cast_signed(),
-                        ))
-                    }
-                    WAIT_FAILED => {
-                        let error = io::Error::last_os_error();
-                        drop(worker);
-                        Err(error)
-                    }
-                    other => {
-                        drop(worker);
-                        Err(io::Error::other(format!(
-                            "unexpected drain-worker wait result {other}"
-                        )))
-                    }
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
+                if let Some(error) = shutdown_error.or(cancel_error) {
+                    return Err(error);
                 }
+                Err(io::Error::from_raw_os_error(
+                    ERROR_SEM_TIMEOUT.cast_signed(),
+                ))
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 worker
