@@ -41,6 +41,8 @@ use windows_sys::Win32::System::Pipes::{
 use windows_sys::Win32::System::Threading::{
     CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
+#[cfg(test)]
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_ACCESS_MASK: u32 = 0x0012_019B;
@@ -813,4 +815,15 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn closed_pipe_error() -> io::Error {
     io::Error::new(io::ErrorKind::NotConnected, "named-pipe handle is closed")
+}
+
+#[cfg(test)]
+pub(crate) fn process_handle_count() -> io::Result<u32> {
+    let mut count = 0;
+    // SAFETY: GetCurrentProcess returns the caller's valid pseudo-handle and
+    // `count` is a live writable u32 for the duration of the query.
+    if unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(count)
 }

@@ -825,13 +825,14 @@ impl WindowsNamedPipeBootstrapStream {
 #[cfg(all(test, windows))]
 mod named_pipe_tests {
     use std::io::{Read as _, Write as _};
+    use std::process::Command;
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use crate::link::{AppLinkDeadlines, handshake_client};
     use crate::token::{SessionToken, parse_app_link};
-    use crate::windows_named_pipe::WindowsNamedPipeServer;
+    use crate::windows_named_pipe::{WindowsNamedPipeServer, process_handle_count};
     use crate::{ChannelId, CorrelationId, FrameHeader, FrameKind, MAX_FRAME_LEN};
 
     use super::{
@@ -1276,6 +1277,70 @@ mod named_pipe_tests {
         let stale = WindowsNamedPipeServer::connect_client(&endpoint)
             .expect_err("non-owning cancellation view must not preserve pipe handle");
         assert_eq!(stale.raw_os_error(), Some(2));
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "test cycle helper reports the exact failed handle-lifecycle boundary"
+    )]
+    fn run_cancelled_accept_cycle() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind cycle"));
+        let cancellation = listener.cancellation();
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || {
+            worker_listener.accept_authenticated_until(
+                Instant::now() + Duration::from_secs(2),
+                &super::NoopRejectionObserver,
+            )
+        });
+        let pending_deadline = Instant::now() + Duration::from_secs(1);
+        while !listener.is_accept_pending() {
+            assert!(
+                Instant::now() < pending_deadline,
+                "cycle accept never became pending"
+            );
+            thread::yield_now();
+        }
+        cancellation.cancel().expect("cancel cycle");
+        assert!(matches!(
+            worker.join().expect("join cycle").expect("cycle result"),
+            BootstrapAdmission::Cancelled
+        ));
+    }
+
+    #[test]
+    fn repeated_cancellation_returns_process_handle_count_to_baseline() {
+        const CHILD_ENV: &str = "KELD_TEST_PIPE_HANDLE_CENSUS_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = Command::new(std::env::current_exe().expect("current test binary"))
+                .args([
+                    "--exact",
+                    "bootstrap::named_pipe_tests::repeated_cancellation_returns_process_handle_count_to_baseline",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("run isolated handle census");
+            assert!(
+                output.status.success(),
+                "isolated handle census failed: status={:?}, stdout={}, stderr={}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        run_cancelled_accept_cycle();
+        let baseline = process_handle_count().expect("baseline handle count");
+        for _ in 0..32 {
+            run_cancelled_accept_cycle();
+        }
+        let final_count = process_handle_count().expect("final handle count");
+        assert_eq!(
+            final_count, baseline,
+            "pipe, cancel-event, or per-accept event handle leaked across cycles"
+        );
     }
 }
 
