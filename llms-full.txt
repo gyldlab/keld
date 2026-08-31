@@ -1124,14 +1124,12 @@ Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, stops and reaps the supervised Bun
 child, and only then wakes the platform UI loop to exit. macOS composes the
 guardian/process-group owner; Windows consumes T8's `PrimaryRoleSupervisor` over the
-current-user-DACL named pipe and composes KEL-78's host-death Job/LPAC owner.
+current-user-DACL named pipe.
 The locator is consumed at successful authentication. `keld dev` now uses the
 staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
 permission. Linux `keld dev` fails closed until its KEL-96/T4 no-flag row.
-Windows abnormal-host-death descendant cleanup is live and independently
-OS-proven.
 
 ## 2. Wire protocol (control plane)
 

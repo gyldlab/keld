@@ -71,6 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("KELD_T4_RESULT=passed");
     println!("KELD_T4_FOREIGN_OPEN=ERROR_ACCESS_DENIED(5)");
     println!("KELD_T4_AUTHORIZED_ECHO=passed");
+    println!("KELD_T4_STALE_LOCATOR=ERROR_FILE_NOT_FOUND(2)");
+    println!("KELD_T4_TOKEN_ROTATION=passed");
     println!("KELD_T4_NEXT_GENERATION=passed");
     Ok(())
 }
@@ -97,6 +99,16 @@ fn run_authorized_and_successor(
         )
         .into());
     }
+    let Err(stale_error) = WindowsNamedPipeBootstrapStream::connect(endpoint) else {
+        return Err("consumed pipe locator unexpectedly reopened".into());
+    };
+    if stale_error.raw_os_error() != Some(2) {
+        return Err(format!(
+            "consumed pipe locator returned raw={:?}, expected ERROR_FILE_NOT_FOUND (2)",
+            stale_error.raw_os_error()
+        )
+        .into());
+    }
     let successor = WindowsNamedPipeBootstrapListener::bind()?;
     let successor_link = successor.app_link();
     let (successor_endpoint, successor_token) = parse_app_link(&successor_link)?;
@@ -104,6 +116,9 @@ fn run_authorized_and_successor(
         || !WindowsNamedPipeBootstrapStream::is_keld_endpoint(successor_endpoint)
     {
         return Err("successor did not mint a fresh exact Keld pipe endpoint".into());
+    }
+    if successor_token == *token {
+        return Err("successor reused the consumed generation's HELLO token".into());
     }
     let successor_rejections = authenticated_echo(
         std::sync::Arc::new(successor),
@@ -172,6 +187,19 @@ fn validate_receipt(
     endpoint: &str,
     foreign_sid: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use windows_permissions::constants::{SeObjectType, SecurityInformation};
+    use windows_permissions::wrappers::GetNamedSecurityInfo;
+
+    let expected_owner =
+        foreign_sid.parse::<windows_permissions::LocalBox<windows_permissions::Sid>>()?;
+    let descriptor = GetNamedSecurityInfo(
+        path,
+        SeObjectType::SE_FILE_OBJECT,
+        SecurityInformation::Owner,
+    )?;
+    if descriptor.owner() != Some(&expected_owner) {
+        return Err("foreign-user receipt file owner does not match the expected SID".into());
+    }
     let body = std::fs::read_to_string(path)?;
     let mut fields = std::collections::BTreeMap::new();
     for line in body.lines() {

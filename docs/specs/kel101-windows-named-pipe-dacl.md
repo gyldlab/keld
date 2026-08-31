@@ -322,9 +322,12 @@ entered only into Windows `runas`; it was
 not stored in a file, process argument, log, test, CI job, or repository.
 
 The checked-in T4 fixture independently records the foreign process SID and
-both raw OS results while receiving only the public pipe name. Its server keeps
-the token private, validates the receipt before the authorized round trip, and
-requires a fresh successor. A temporary mutation that treated the live pipe as
+both raw OS results while receiving only the public pipe name. Its server reads
+the receipt file's owner from the Windows security descriptor, requires that
+owner and the receipt SID to equal the expected foreign SID, keeps the token
+private, validates the receipt before the authorized round trip, rejects the
+consumed locator, and requires a fresh successor endpoint and token with its own
+authenticated echo. A temporary mutation that treated the live pipe as
 absent failed with the exact observation `raw=Some(5) kind=PermissionDenied`.
 The focused `keld-ipc` suite passed 119/119 and the pre-documentation full
 Windows `just ci` gate passed 524/524 workspace tests plus format, warning-denied
