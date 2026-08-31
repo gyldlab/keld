@@ -33,8 +33,8 @@ pub use bootstrap::{
 };
 #[cfg(windows)]
 pub use bootstrap::{
-    NamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapCancellation,
-    WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
+    WindowsNamedPipeBootstrapCancellation, WindowsNamedPipeBootstrapListener,
+    WindowsNamedPipeBootstrapStream,
 };
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};

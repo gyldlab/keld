@@ -264,6 +264,9 @@ impl WindowsNamedPipeServer {
     pub(crate) fn close_terminal(&self) -> io::Result<()> {
         self.inner.consumed.store(true, Ordering::Release);
         self.cancel_pending_io()?;
+        // SAFETY: the server owns the live handle and all pending operations
+        // were cancelled; their owners retain state until they observe
+        // completion. Disconnect does not free an OVERLAPPED or its buffer.
         if self.inner.connected.swap(false, Ordering::AcqRel)
             && unsafe { DisconnectNamedPipe(self.raw_pipe()?) } == 0
         {
