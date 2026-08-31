@@ -6,6 +6,7 @@
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt;
@@ -22,6 +23,8 @@ use keld_runtime::macos_guardian;
 const ROLE_ENV: &str = "KELD_TEST_MACOS_REAPER_ROLE";
 const CONTROL_ENV: &str = "KELD_TEST_MACOS_REAPER_CONTROL";
 const APP_LINK_ENV: &str = "KELD_TEST_MACOS_REAPER_APP_LINK";
+const APP_LINK_LEAK_ENV: &str = "KELD_TEST_MACOS_REAPER_APP_LINK_LEAK";
+const EOF_WITNESS_ENV: &str = "KELD_TEST_MACOS_REAPER_EOF_WITNESS";
 const REGISTERED_LINK_ENV: &str = "KELD_TEST_MACOS_REAPER_REGISTERED_LINK";
 const TEST_EXE_ENV: &str = "KELD_TEST_MACOS_REAPER_EXE";
 const ROLE_TEST: &str = "macos_host_death_guardian_role";
@@ -41,6 +44,7 @@ fn macos_host_death_guardian_role() {
         "guardian" => run_guardian(&control),
         "descendant" => run_descendant(&control),
         "peer" => run_link_peer(&control),
+        "leaker" => thread::park(),
         other => panic!("unknown macOS reaper role: {other}"),
     }
 }
@@ -53,8 +57,19 @@ fn guardian_reaps_the_enrolled_group_after_host_sigkill_and_allows_relaunch() {
         .set_nonblocking(true)
         .expect("make controller socket nonblocking");
 
-    run_host_death_cycle(&listener, &fixture.control);
-    run_host_death_cycle(&listener, &fixture.control);
+    run_host_death_cycle(&listener, &fixture.control, false);
+    run_host_death_cycle(&listener, &fixture.control, false);
+}
+
+#[test]
+fn app_link_eof_witness_detects_a_leaked_server_descriptor() {
+    let fixture = Fixture::new();
+    let listener = UnixListener::bind(&fixture.control).expect("bind controller socket");
+    listener
+        .set_nonblocking(true)
+        .expect("make controller socket nonblocking");
+
+    run_host_death_cycle(&listener, &fixture.control, true);
 }
 
 #[test]
@@ -68,7 +83,7 @@ fn guardian_death_is_fatal_to_the_live_host_and_leaves_no_group() {
         .set_nonblocking(true)
         .expect("make controller socket nonblocking");
     let cycle_started = Instant::now();
-    let host = spawn_role("host", &fixture.control);
+    let host = spawn_host(&fixture.control, false);
     let host_pid = host.id();
     let mut cleanup = CycleCleanup::new(host);
     let ready = await_ready(
@@ -77,6 +92,8 @@ fn guardian_death_is_fatal_to_the_live_host_and_leaves_no_group() {
         host_pid,
         cycle_started,
         &mut cleanup,
+        None,
+        false,
     );
 
     kill_pid(ready.guardian_pid);
@@ -120,12 +137,22 @@ fn guardian_death_is_fatal_to_the_live_host_and_leaves_no_group() {
     cleanup.group_gone = true;
 }
 
-fn run_host_death_cycle(listener: &UnixListener, control: &Path) {
+fn run_host_death_cycle(listener: &UnixListener, control: &Path, leak_app_link: bool) {
+    let mut eof_witness = EofWitness::bind(control);
     let cycle_started = Instant::now();
-    let host = spawn_role("host", control);
+    let host = spawn_host(control, leak_app_link);
     let host_pid = host.id();
     let mut cleanup = CycleCleanup::new(host);
-    let ready = await_ready(listener, control, host_pid, cycle_started, &mut cleanup);
+    let ready = await_ready(
+        listener,
+        control,
+        host_pid,
+        cycle_started,
+        &mut cleanup,
+        Some(eof_witness.path()),
+        leak_app_link,
+    );
+    eof_witness.accept_before(Instant::now() + EVENT_DEADLINE);
 
     let mut host = cleanup.host.take().expect("live host child");
     host.kill().expect("SIGKILL host only");
@@ -136,7 +163,13 @@ fn run_host_death_cycle(listener: &UnixListener, control: &Path) {
         "controller must kill only the host with SIGKILL: {host_status:?}"
     );
 
-    await_cleanup(listener, &ready, &mut cleanup);
+    await_cleanup(
+        listener,
+        &ready,
+        &mut cleanup,
+        &mut eof_witness,
+        leak_app_link,
+    );
     await_process_gone(ready.leader_pid);
     await_process_gone(ready.descendant_pid);
     await_process_gone(ready.guardian_pid);
@@ -158,6 +191,8 @@ fn await_ready(
     host_pid: u32,
     cycle_started: Instant,
     cleanup: &mut CycleCleanup,
+    eof_witness: Option<&Path>,
+    expect_leaker: bool,
 ) -> ReadyState {
     let mut guardian_pid = None;
     let mut guardian_group_pid = None;
@@ -178,6 +213,7 @@ fn await_ready(
         || registered_link.is_none()
         || !link_bound
         || !peer_bound
+        || (expect_leaker && cleanup.leaker.is_none())
     {
         let line = accept_line_before(listener, ready_deadline);
         let mut fields = line.split_whitespace();
@@ -196,7 +232,7 @@ fn await_ready(
                     .next()
                     .unwrap_or_else(|| panic!("APP_LINK event omitted value: {line}"))
                     .to_owned();
-                cleanup.peer = Some(spawn_link_peer(control, &app_link_value));
+                cleanup.peer = Some(spawn_link_peer(control, &app_link_value, eof_witness));
                 app_link = Some(app_link_value);
             }
             Some("REGISTERED_LINK") => {
@@ -207,6 +243,7 @@ fn await_ready(
             }
             Some("LINK_BOUND") => link_bound = true,
             Some("PEER_BOUND") => peer_bound = true,
+            Some("LEAKER") => cleanup.leaker = Some(parse_pid(fields.next(), &line)),
             event => panic!("unexpected readiness event {event:?}: {line}"),
         }
     }
@@ -275,12 +312,17 @@ fn verify_ready_ownership(
     );
 }
 
-fn await_cleanup(listener: &UnixListener, ready: &ReadyState, cleanup: &mut CycleCleanup) {
+fn await_cleanup(
+    listener: &UnixListener,
+    ready: &ReadyState,
+    cleanup: &mut CycleCleanup,
+    eof_witness: &mut EofWitness,
+    leak_app_link: bool,
+) {
     let cleanup_deadline = Instant::now() + EVENT_DEADLINE;
     let mut guardian_revoked = false;
-    let mut link_eof = false;
     let mut reaped = false;
-    while !guardian_revoked || !link_eof || !reaped {
+    while !guardian_revoked || !reaped {
         let line = accept_line_before(listener, cleanup_deadline);
         match line.as_str() {
             "GUARDIAN_REVOKED" => {
@@ -298,21 +340,42 @@ fn await_cleanup(listener: &UnixListener, ready: &ReadyState, cleanup: &mut Cycl
                 );
                 guardian_revoked = true;
             }
-            "LINK_EOF" => link_eof = true,
+            "LINK_EOF" => {
+                panic!("peer reported EOF before the controller released its delayed report")
+            }
             value if value == format!("REAPED {}", ready.leader_pid) => {
                 assert!(
                     guardian_revoked,
                     "registered-resource revocation must precede reap completion"
-                );
-                assert!(
-                    link_eof,
-                    "authenticated app-link EOF must precede reap completion"
                 );
                 reaped = true;
             }
             other => panic!("unexpected cleanup event: {other}"),
         }
     }
+    if leak_app_link {
+        // REAPED is the synchronization boundary: the guardian finished while
+        // the independent leaker still owns a server descriptor, so a real
+        // peer EOF cannot already be present.
+        eof_witness.assert_no_eof_observed();
+        let leaker = cleanup
+            .leaker
+            .take()
+            .expect("live app-link descriptor leaker");
+        kill_pid(leaker);
+        await_process_gone(leaker);
+    }
+    // Actual socket EOF is proved on this persistent channel. The separate
+    // LINK_EOF controller connection is deliberately released only after
+    // REAPED, proving its arrival order is not the cleanup oracle.
+    eof_witness.await_eof_observed();
+    eof_witness.release_link_eof_report();
+    let link_eof_deadline = Instant::now() + EVENT_DEADLINE;
+    assert_eq!(
+        accept_line_before(listener, link_eof_deadline),
+        "LINK_EOF",
+        "peer must report its witnessed EOF after the controller releases it"
+    );
     let stale = UnixStream::connect(&ready.endpoint).expect_err("revoked locator must stay closed");
     assert!(
         matches!(
@@ -377,6 +440,17 @@ fn run_host(control: &Path) {
         .accept_authenticated()
         .expect("accept real app-link peer")
         .expect("peer authenticates before host death");
+    let _leaker = env::var_os(APP_LINK_LEAK_ENV).map(|_| {
+        let leaked: OwnedFd = authenticated_stream
+            .try_clone()
+            .expect("clone accepted app-link descriptor")
+            .into();
+        let mut command = role_command("leaker", control);
+        command.stdin(Stdio::from(leaked));
+        let child = command.spawn().expect("spawn app-link descriptor leaker");
+        send_event(control, &format!("LEAKER {}", child.id()));
+        child
+    });
     send_event(control, "LINK_BOUND");
     match guardian.wait_fatal() {
         Err(error @ keld_runtime::RuntimeError::GuardianExited { .. }) => {
@@ -419,6 +493,9 @@ fn run_descendant(control: &Path) {
 }
 
 fn run_link_peer(control: &Path) {
+    let mut eof_witness = env::var_os(EOF_WITNESS_ENV).map(|path| {
+        UnixStream::connect(path).expect("connect EOF witness channel before app-link use")
+    });
     let link = env::var(APP_LINK_ENV).expect("peer app link");
     let (endpoint, token) = parse_app_link(&link).expect("parse peer app link");
     let mut stream = UnixStream::connect(endpoint).expect("connect real app link");
@@ -430,6 +507,16 @@ fn run_link_peer(control: &Path) {
         .read_to_end(&mut unexpected)
         .expect("observe app-link revocation EOF");
     assert!(unexpected.is_empty(), "revoked app link emitted no data");
+    if let Some(witness) = eof_witness.as_mut() {
+        witness
+            .write_all(b"EOF_OBSERVED\n")
+            .expect("report independently witnessed EOF");
+        let mut release = [0_u8; 1];
+        witness
+            .read_exact(&mut release)
+            .expect("wait for controller report release");
+        assert_eq!(release, [b'R'], "unexpected EOF-report release byte");
+    }
     send_event(control, "LINK_EOF");
 }
 
@@ -473,15 +560,112 @@ process.exit(child.exitCode ?? 1);
     command
 }
 
-fn spawn_role(role: &str, control: &Path) -> Child {
-    let mut command = role_command(role, control);
-    command.spawn().expect("spawn role")
+fn spawn_host(control: &Path, leak_app_link: bool) -> Child {
+    let mut command = role_command("host", control);
+    if leak_app_link {
+        command.env(APP_LINK_LEAK_ENV, "1");
+    }
+    command.spawn().expect("spawn host role")
 }
 
-fn spawn_link_peer(control: &Path, app_link: &str) -> Child {
+fn spawn_link_peer(control: &Path, app_link: &str, eof_witness: Option<&Path>) -> Child {
     let mut command = role_command("peer", control);
     command.env(APP_LINK_ENV, app_link);
+    if let Some(path) = eof_witness {
+        command.env(EOF_WITNESS_ENV, path);
+    }
     command.spawn().expect("spawn real app-link peer")
+}
+
+struct EofWitness {
+    listener: UnixListener,
+    path: PathBuf,
+    stream: Option<UnixStream>,
+}
+
+impl EofWitness {
+    fn bind(control: &Path) -> Self {
+        let id = NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed);
+        let path = control.with_extension(format!("eof-{id}.sock"));
+        let listener = UnixListener::bind(&path).expect("bind EOF witness socket");
+        listener
+            .set_nonblocking(true)
+            .expect("make EOF witness socket nonblocking");
+        Self {
+            listener,
+            path,
+            stream: None,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn accept_before(&mut self, deadline: Instant) {
+        loop {
+            match self.listener.accept() {
+                Ok((stream, _)) => {
+                    self.stream = Some(stream);
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "peer did not connect its EOF witness before the deadline"
+                    );
+                    thread::yield_now();
+                }
+                Err(error) => panic!("accept EOF witness: {error}"),
+            }
+        }
+    }
+
+    fn assert_no_eof_observed(&mut self) {
+        let stream = self.stream.as_mut().expect("connected EOF witness");
+        stream
+            .set_nonblocking(true)
+            .expect("make EOF witness read nonblocking");
+        let mut byte = [0_u8; 1];
+        match stream.read(&mut byte) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Ok(0) => panic!("EOF witness peer exited before observing app-link EOF"),
+            Ok(_) => panic!("leaked app-link descriptor did not suppress the EOF witness"),
+            Err(error) => panic!("read EOF witness negative control: {error}"),
+        }
+        stream
+            .set_nonblocking(false)
+            .expect("restore blocking EOF witness read");
+    }
+
+    fn await_eof_observed(&mut self) {
+        let stream = self.stream.as_mut().expect("connected EOF witness");
+        stream
+            .set_read_timeout(Some(EVENT_DEADLINE))
+            .expect("bound EOF witness read");
+        let mut line = String::new();
+        BufReader::new(&mut *stream)
+            .read_line(&mut line)
+            .expect("read independently witnessed EOF");
+        assert_eq!(line, "EOF_OBSERVED\n", "unexpected EOF witness record");
+        stream
+            .set_read_timeout(None)
+            .expect("clear EOF witness read deadline");
+    }
+
+    fn release_link_eof_report(&mut self) {
+        self.stream
+            .as_mut()
+            .expect("connected EOF witness")
+            .write_all(b"R")
+            .expect("release peer LINK_EOF report");
+    }
+}
+
+impl Drop for EofWitness {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn send_event(control: &Path, event: &str) {
@@ -608,6 +792,7 @@ struct CycleCleanup {
     host: Option<Child>,
     peer: Option<Child>,
     group: Option<u32>,
+    leaker: Option<u32>,
     group_gone: bool,
 }
 
@@ -617,6 +802,7 @@ impl CycleCleanup {
             host: Some(host),
             peer: None,
             group: None,
+            leaker: None,
             group_gone: false,
         }
     }
@@ -640,6 +826,13 @@ impl Drop for CycleCleanup {
         if let Some(peer) = self.peer.as_mut() {
             let _ = peer.kill();
             let _ = peer.wait();
+        }
+        if let Some(leaker) = self.leaker {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &leaker.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
     }
 }
