@@ -569,6 +569,15 @@ pub struct WindowsNamedPipeBootstrapListener {
     endpoint: String,
     token: SessionToken,
     stopping: Arc<AtomicBool>,
+    #[cfg(test)]
+    before_consume: Mutex<Option<TestConsumeGate>>,
+}
+
+#[cfg(all(test, windows))]
+#[derive(Debug)]
+struct TestConsumeGate {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 /// Connected authenticated stream from [`WindowsNamedPipeBootstrapListener`].
@@ -608,6 +617,8 @@ impl WindowsNamedPipeBootstrapListener {
             endpoint,
             token,
             stopping: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            before_consume: Mutex::new(None),
         })
     }
 
@@ -652,6 +663,10 @@ impl WindowsNamedPipeBootstrapListener {
         self.accept_loop(deadline, APP_LINK_IO_DEADLINE, observer)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "linear admission state machine keeps deadline and handle transitions auditable"
+    )]
     fn accept_loop(
         &self,
         deadline: Instant,
@@ -699,7 +714,8 @@ impl WindowsNamedPipeBootstrapListener {
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let handshake_started = Instant::now();
+            let Some(remaining) = deadline.checked_duration_since(handshake_started) else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
@@ -710,7 +726,7 @@ impl WindowsNamedPipeBootstrapListener {
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             }
             let peer_timeout = remaining.min(handshake_deadline);
-            let Some(peer_deadline) = Instant::now().checked_add(peer_timeout) else {
+            let Some(peer_deadline) = handshake_started.checked_add(peer_timeout) else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
@@ -726,6 +742,23 @@ impl WindowsNamedPipeBootstrapListener {
                 peer_deadline,
             ) {
                 Ok(true) => {
+                    #[cfg(test)]
+                    if let Some(gate) = lock_or_recover(&self.before_consume).as_ref() {
+                        let _ = gate.entered.send(());
+                        let _ = gate.release.recv();
+                    }
+                    if self.stopping.load(Ordering::Acquire) {
+                        drop(stream);
+                        server.close_terminal()?;
+                        drop(lock_or_recover(&self.server).take());
+                        return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
+                    }
+                    if Instant::now() >= deadline {
+                        drop(stream);
+                        server.close_terminal()?;
+                        drop(lock_or_recover(&self.server).take());
+                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
+                    }
                     stream.0.set_absolute_deadline(None);
                     server.consume();
                     drop(lock_or_recover(&self.server).take());
@@ -781,6 +814,11 @@ impl WindowsNamedPipeBootstrapListener {
         lock_or_recover(&self.server)
             .as_ref()
             .is_some_and(WindowsNamedPipeServer::is_accept_pending)
+    }
+
+    #[cfg(test)]
+    fn install_before_consume_gate(&self, gate: TestConsumeGate) {
+        *lock_or_recover(&self.before_consume) = Some(gate);
     }
 }
 
@@ -888,8 +926,9 @@ mod named_pipe_tests {
     use crate::{ChannelId, CorrelationId, FrameHeader, FrameKind, MAX_FRAME_LEN};
 
     use super::{
-        BootstrapRejection, BootstrapRejectionObserver, WindowsNamedPipeBootstrapAdmission,
-        WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream, lock_or_recover,
+        BootstrapRejection, BootstrapRejectionObserver, TestConsumeGate,
+        WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapListener,
+        WindowsNamedPipeBootstrapStream, lock_or_recover,
     };
 
     #[derive(Clone)]
@@ -1509,6 +1548,45 @@ socket.end();
     }
 
     #[test]
+    fn generation_expiry_at_final_auth_boundary_is_not_consumed() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("parse link");
+        let endpoint = endpoint.to_owned();
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        listener.install_before_consume_gate(TestConsumeGate {
+            entered: entered_tx,
+            release: release_rx,
+        });
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || {
+            worker_listener.accept_authenticated_until(deadline, &super::NoopRejectionObserver)
+        });
+        let mut role = client(&endpoint).expect("open role");
+        role.set_app_link_deadlines(Some(Duration::from_millis(500)))
+            .expect("role deadlines");
+        handshake_client(&mut role, &token).expect("HELLO reaches final boundary");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("final authentication boundary");
+        while Instant::now() < deadline {
+            thread::yield_now();
+        }
+        release_tx.send(()).expect("release final boundary");
+        let outcome = worker.join().expect("join admission").expect("admission");
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::DeadlineElapsed
+        ));
+        let stale = WindowsNamedPipeServer::connect_client(&endpoint)
+            .expect_err("expired final authentication must not consume a session");
+        assert_eq!(stale.raw_os_error(), Some(2));
+        drop(role);
+    }
+
+    #[test]
     fn every_pre_auth_failure_uses_shared_redacted_taxonomy_and_reaccepts() {
         run_rejection_then_authenticate(None, BootstrapRejection::Io);
 
@@ -1783,6 +1861,69 @@ socket.end();
             .shutdown_after_drain(Instant::now() + Duration::from_millis(50))
             .expect_err("non-reading peer must not wedge orderly shutdown");
         assert_eq!(error.raw_os_error(), Some(121));
+        drop(role);
+    }
+
+    #[test]
+    fn concurrent_drain_is_rejected_and_abort_breaks_active_flush() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("parse link");
+        let endpoint = endpoint.to_owned();
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || {
+            worker_listener.accept_authenticated_until(
+                Instant::now() + Duration::from_secs(2),
+                &super::NoopRejectionObserver,
+            )
+        });
+        let mut role = client(&endpoint).expect("open role");
+        role.set_app_link_deadlines(Some(Duration::from_millis(500)))
+            .expect("role deadlines");
+        handshake_client(&mut role, &token).expect("authenticate");
+        let outcome = worker.join().expect("join admission").expect("admission");
+        let WindowsNamedPipeBootstrapAdmission::Authenticated(mut server_stream) = outcome else {
+            panic!("expected authenticated named-pipe session")
+        };
+        server_stream
+            .write_all(b"reply")
+            .expect("write orderly reply");
+        let first_drain = server_stream.try_clone().expect("clone first drain");
+        let second_drain = server_stream.try_clone().expect("clone second drain");
+        let (drain_tx, drain_rx) = mpsc::channel();
+        let drain = thread::spawn(move || {
+            let _ = drain_tx
+                .send(first_drain.shutdown_after_drain(Instant::now() + Duration::from_secs(5)));
+        });
+        let pending_deadline = Instant::now() + Duration::from_secs(1);
+        while !server_stream.0.is_drain_pending() {
+            assert!(
+                Instant::now() < pending_deadline,
+                "first drain never entered FlushFileBuffers"
+            );
+            thread::yield_now();
+        }
+        let second_error = second_drain
+            .shutdown_after_drain(Instant::now() + Duration::from_millis(50))
+            .expect_err("a concurrent drain must not queue behind the first");
+        assert_eq!(second_error.kind(), std::io::ErrorKind::WouldBlock);
+
+        let abort_started = Instant::now();
+        server_stream
+            .shutdown_app_link()
+            .expect("abort active orderly drain");
+        assert!(
+            abort_started.elapsed() < Duration::from_secs(1),
+            "abortive shutdown blocked behind orderly drain"
+        );
+        assert!(
+            drain_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("active drain completion after abort")
+                .is_err(),
+            "abortive shutdown must not report the interrupted drain as orderly"
+        );
+        drain.join().expect("join aborted drain");
         drop(role);
     }
 
