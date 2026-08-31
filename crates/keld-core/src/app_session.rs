@@ -3417,7 +3417,11 @@ mod tests {
         BufReader::new(blocker.0.stdout.take().expect("holder readiness pipe"))
             .read_line(&mut ready)
             .expect("holder readiness");
-        assert_eq!(Path::new(ready.trim_end()), root);
+        let observed_ready = Path::new(ready.trim_end())
+            .canonicalize()
+            .expect("canonical holder working directory");
+        let expected_root = root.canonicalize().expect("canonical cleanup stage");
+        assert_eq!(observed_ready, expected_root);
 
         let bare_error = fs::remove_dir_all(&root)
             .expect_err("bare Windows removal must expose the transient sharing violation");
