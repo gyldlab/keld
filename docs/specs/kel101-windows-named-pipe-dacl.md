@@ -368,17 +368,19 @@ processes, and timeouts only as kill switches.
 ## 8. Review gates triggered
 
 - Unsafe: **yes** — T1's exact root/IPC instruction diff and T2's implementation
-  both require human review. Only `windows_named_pipe` may own the Win32
+  both require named independent exact-diff review. Only `windows_named_pipe`
+  may own the Win32
   pipe/overlapped ABI, with local `// SAFETY:` proofs and
   `unsafe_op_in_unsafe_fn` denied. SID/DACL construction and readback reuse
   `windows-permissions`.
 - Public API: **yes** — T1 freezes the platform-generic bootstrap transport and
-  endpoint selector; T2's exact API still requires human review.
+  endpoint selector; T2's exact API still requires independent review.
 - Permission model: **yes** — T1 freezes current-user DACL scope and T2's exact
-  descriptor/denial implementation still requires human review.
-- Dependency addition: **yes; T2 human review required** — `keld-ipc` will add
-  target-only direct uses of existing workspace pins `windows-permissions 0.2.4`
-  and `windows-sys 0.61.2`; T1 changes no manifest or lockfile.
+  descriptor/denial implementation still requires independent review.
+- Dependency addition: **yes; T2 independent review required** — `keld-ipc`
+  will add target-only direct uses of existing workspace pins
+  `windows-permissions 0.2.4` and `windows-sys 0.61.2`; T1 changes no manifest
+  or lockfile.
 - Wire protocol: **none** — any HELLO/frame extension is out of scope and blocked.
 
 ## 9. Perf impact
