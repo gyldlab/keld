@@ -6,6 +6,8 @@
 //! magic:u16 | ver:u8 | kind:u8 | flags:u16 | channel:u16 | corr:u32 | len:u32
 //! ```
 
+#![forbid(unsafe_code)]
+
 use crate::{HEADER_LEN, MAGIC, PROTOCOL_VERSION};
 
 /// Identifies a numeric channel.

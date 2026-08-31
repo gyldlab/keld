@@ -1,5 +1,7 @@
 //! Framed read/write on a byte stream (app-link control plane v0).
 
+#![forbid(unsafe_code)]
+
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, Ordering};

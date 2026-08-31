@@ -327,9 +327,11 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
   docs above.
 - This T1 governance PR may change only this specification, the root and
   `keld-ipc` instruction owners, their measured instruction inventory if needed,
-  and generated documentation. It must not change Rust/TypeScript product code,
-  Cargo manifests/lockfile, architecture LIVE text, CI, KEL-102 materials,
-  guard policy, Unix transport, frame layout, or protocol version.
+  generated documentation, and compiler-only `forbid(unsafe_code)` attributes
+  on the shared framing/codec/handshake modules. It must not change executable
+  Rust/TypeScript behavior, Cargo manifests/lockfile, architecture LIVE text,
+  CI, KEL-102 materials, guard policy, Unix transport, frame layout, or protocol
+  version.
 - Reuse `SessionToken`, `format_app_link`/`parse_app_link`, handshake state machine,
   `BootstrapRejectionObserver`, and `APP_LINK_IO_DEADLINE`; do not copy them into
   a Windows parser or authorization path.

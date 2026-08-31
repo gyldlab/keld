@@ -1,5 +1,7 @@
 //! Postcard payload encoding (hot-path codec per spec §2).
 
+#![forbid(unsafe_code)]
+
 use postcard::{take_from_bytes, to_allocvec};
 
 use crate::IpcError;
