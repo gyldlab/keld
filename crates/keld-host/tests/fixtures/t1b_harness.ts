@@ -149,11 +149,15 @@ for (let index = 0; index < token.length; index += 1) {
 }
 await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
 if (process.platform === "win32") {
-  const descendant = Bun.spawn(
-    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
-    { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
-  );
-  await sendControl(`DESCENDANT ${descendant.pid}`);
+  if (process.env.KELD_T4_JOB_DESCENDANT === "1") {
+    const descendant = Bun.spawn(
+      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+    );
+    await sendControl(`DESCENDANT ${descendant.pid}`);
+  } else {
+    await sendControl("DESCENDANT 0");
+  }
   const leaseHandle = process.env.KELD_TEST_WINDOWS_HOST_LEASE_HANDLE;
   if (leaseHandle) await sendControl(`LEASE_HANDLE ${leaseHandle}`);
 } else {

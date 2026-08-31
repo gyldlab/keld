@@ -370,7 +370,7 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
         .expect("numeric g2 pid");
     let g2_descendant =
         read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT");
-    assert_ne!(parse_descendant_pid(&g2_descendant), 0);
+    assert_eq!(parse_descendant_pid(&g2_descendant), 0);
 
     let (_g3_reader, mut g3_writer, g3_pid, _g3_link) =
         accept_ready_generation(&control_listener, &mut child);
@@ -727,6 +727,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .arg("--nocapture")
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T4_JOB_DESCENDANT", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1071,6 +1072,10 @@ fn accept_ready_generation_with_descendant(
     let (reader, writer, pid, link, descendant_pid, lease_handle) =
         accept_ready_generation_inner(listener, child, false);
     assert!(lease_handle.is_none(), "unexpected lease census disclosure");
+    assert_ne!(
+        descendant_pid, 0,
+        "host-death proof needs a real descendant"
+    );
     (reader, writer, pid, link, descendant_pid)
 }
 
@@ -1105,10 +1110,6 @@ fn accept_ready_generation_inner(
     assert!(fields.next().is_none(), "{hello}");
     let descendant_record = read_control_line_or_host_failure(&mut reader, child, "DESCENDANT");
     let descendant_pid = parse_descendant_pid(&descendant_record);
-    assert_ne!(
-        descendant_pid, 0,
-        "Windows Job proof needs a real descendant"
-    );
     let lease_handle = if expect_lease_handle {
         let lease_record = read_control_line_or_host_failure(&mut reader, child, "LEASE_HANDLE");
         let value = lease_record
@@ -1191,7 +1192,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let app_link = hello_fields.next().expect("HELLO app link").to_owned();
     assert!(hello_fields.next().is_none(), "{hello}");
     let descendant_record = read_control_line(&mut reader);
-    assert_ne!(parse_descendant_pid(&descendant_record), 0);
+    assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
