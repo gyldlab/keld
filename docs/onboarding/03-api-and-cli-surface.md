@@ -565,7 +565,7 @@ subcommands can call in. Selected modules:
 | `boot` | `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole owner-private stage producer |
 | `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
-| `echo_link` | Windows-only compatibility `EchoEndpoint::Tcp(u16)`, `EchoServer::{start -> io::Result, link, join, shutdown}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
+| `echo_link` | `EchoServer::{start -> io::Result, link, join, shutdown}` uses the shared platform listener; Windows retains client-only decimal diagnostic compatibility as `EchoEndpoint::Tcp(u16)`; `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
 
 `EchoServer` serves one authenticated session by design: it binds the shared platform

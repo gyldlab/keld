@@ -145,10 +145,9 @@ supervisor independently. A primary restart does not revoke or stop the app-boun
 role. It does not implement window-bound lifecycle, role-specific grants, or
 strict OS sandboxing. KEL-75 T3 adds bounded host-owned virtual ports between
 authenticated role generations in the Unix `VirtualPortRegistry`. T8 proves a real
-Windows Bun primary g1→g2 over the unprivileged loopback interim and exposes the
-authenticated stream to a future host router; it does not implement KEL-96/T4's
-no-flag Windows host/window path or privileged dispatch. Windows named-pipe/DACL
-bootstrap remains KEL-101 work.
+Windows Bun primary g1→g2 over the current-user-DACL named pipe; KEL-96/T4
+consumes that authenticated stream in the no-flag Windows host/router and
+composes KEL-78's Windows Job/LPAC owner. Privileged dispatch remains later work.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.

@@ -136,7 +136,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing/evaluation plus single-handle SHA-256-verified startup loading; TARGET complete generated scopes, per-window/per-principal grants and audit log | sha2 |
-| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor with KEL-75 fresh primary generations for KEL-96's same-window recovery; KEL-75/T8 exposes the same primary-generation owner on Windows over the unprivileged loopback interim; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian and Windows Job/LPAC owner compose KEL-75 fresh primary generations for KEL-96 recovery; Windows uses the current-user-DACL named pipe; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
@@ -158,9 +158,10 @@ npm packages (TypeScript, in `packages/`):
 `@keld/api` is still absent. Other packages in this table are not in tree.
 
 Rules: crates never depend "upward"; `keld-wv`/`keld-ipc`/`keld-guard` are host-agnostic
-and unit-testable headless; every public item documented; `#![forbid(unsafe_code)]`
-everywhere except `keld-wv` backends today, and the shm module of `keld-ipc` once that
-module exists, where each `unsafe` block carries a `// SAFETY:` proof.
+and unit-testable headless; every public item documented. Production `unsafe` is
+limited to the sanctioned `keld-wv` backends, `keld-runtime` Windows modules,
+`keld-ipc::windows_named_pipe`, and the future `keld-ipc` shm owner; every block
+carries a local `// SAFETY:` proof.
 
 ## 4. Process & thread model
 
@@ -188,10 +189,10 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
   between authenticated role generations. KEL-96's Windows slice consumes T8 for
-  same-HWND recovery over the unprivileged loopback interim; it does not add privileged
-  dispatch or abnormal-host-death reaping. Window-bound roles, role grants, strict
-  sandbox admission, the Windows Job Object reaper, and named-pipe/DACL bootstrap remain
-  later KEL-75/KEL-78/KEL-101 slices.
+  same-HWND recovery over the current-user-DACL named pipe and composes KEL-78's
+  Windows Job/LPAC owner for abnormal-host-death reaping. It does not add
+  privileged dispatch. Window-bound roles, complete role grants, and complete
+  cross-platform strict sandbox admission remain later KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

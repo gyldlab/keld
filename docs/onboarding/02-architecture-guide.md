@@ -660,7 +660,7 @@ The summary table. "Live" means it works and a test proves it.
 | kipc frame format (16 B header, 11 kinds, flags, corr ids) | **Live** | `keld-ipc/src/frame.rs`; roundtrip test over all kinds, bad-magic and bad-kind rejection |
 | postcard codec for structured payloads | **Live** | `keld-ipc/src/codec.rs`; echo roundtrip test |
 | app-link transport (UDS on unix) | **Live** | `keld-ipc/tests/echo_link.rs`; real socket, real bytes |
-| Windows transport | **Partial / diverges** | Loopback **TCP** plus v2 HELLO token (KEL-60); named-pipe DACL is the destination (`keld-core/src/echo_link.rs`) |
+| Windows transport | **Live** | One host-owned named pipe with protected current-`TokenUser` DACL, remote-client rejection, and mandatory v2 HELLO token; real foreign-user denial and same-user echo (KEL-101) |
 | HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |

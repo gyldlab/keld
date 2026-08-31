@@ -192,7 +192,7 @@ Where the tests live:
 
 | Test | File |
 |---|---|
-| kipc echo over a real app-link transport (UDS / loopback TCP) | [`crates/keld-ipc/tests/echo_link.rs`](../../crates/keld-ipc/tests/echo_link.rs) |
+| kipc echo over a real app-link transport (UDS / Windows named pipe) | [`crates/keld-ipc/tests/echo_link.rs`](../../crates/keld-ipc/tests/echo_link.rs) |
 | Bun main process performing an IPC echo end to end | [`crates/keld-cli/tests/bun_echo.rs`](../../crates/keld-cli/tests/bun_echo.rs) |
 | Frame header encode/decode, bad magic, unknown kind | `crates/keld-ipc/src/frame.rs` (colocated `mod tests`) |
 | Echo payload round-trip | `crates/keld-ipc/src/echo.rs` |
