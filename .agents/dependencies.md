@@ -2,7 +2,7 @@
 
 Load this playbook for every dependency add, bump, removal, API migration, or claim
 about the current version of a Cargo crate, Bun package, or Bun itself. Dependency
-additions still trigger the root human review gate.
+additions trigger the root gate and its independent evidence requirement.
 
 ## Authoritative checks
 

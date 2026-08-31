@@ -22,8 +22,8 @@ are source of truth; this file owns the design invariants.
   empty/skipped-green selection.
 - Contract tests cover relevant, unrelated, unknown, empty, PR, and push diffs. Verify
   branch-protection behavior against current official GitHub documentation before change.
-- CI routing is a human-reviewed shared-file concern and lands in its own Linear-scoped
-  PR unless CI is already the owning issue.
+- CI routing is an independently reviewed shared-file concern and lands in its own
+  Linear-scoped PR unless CI is already the owning issue.
 
 ## Failure preservation
 

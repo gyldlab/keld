@@ -259,13 +259,13 @@ with the rationale, so you do not learn them from a review comment:
   not add a bare `#[allow]` without an inline justification.
 - **Every public item is documented.** `cargo doc` runs with `-D warnings`, so a missing
   doc comment is a build failure, not a nag.
-- **`unsafe` lives in exactly two sanctioned places**: `keld-wv` platform backends and
-  the future `keld-ipc` shm module. `unsafe_code = "deny"` workspace-wide, opted out with
-  a module-scope `#[allow(unsafe_code)]`, `#![deny(unsafe_op_in_unsafe_fn)]`, and a
-  `// SAFETY:` proof citing the platform contract. See
-  [`crates/keld-wv/src/wkwebview/mod.rs`](../../crates/keld-wv/src/wkwebview/mod.rs) for
-  the shape of an acceptable proof. `unsafe` anywhere else is a human review, not a lint
-  question.
+- **Production `unsafe` lives only in sanctioned path owners**: `keld-wv` platform
+  backends and `keld-runtime` Windows modules today; future `keld-ipc` shm is reserved.
+  `unsafe_code = "deny"` workspace-wide, opted out with a module-scope
+  `#[allow(unsafe_code)]`, `#![deny(unsafe_op_in_unsafe_fn)]`, and a `// SAFETY:` proof
+  citing the platform contract. A new production path requires an issue-scoped
+  root/nested owner update and independent `unsafe` gate evidence on the exact final
+  diff; tests follow the nearest owner.
 - **No async runtime in hot paths.** kipc, the event loop, and the guard are
   callback/state-machine code with no steady-state allocation. Async is permitted only in
   cold tooling (CLI, packager, updater fetches).

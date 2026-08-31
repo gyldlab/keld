@@ -147,8 +147,11 @@ Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 ## Rust, TypeScript, and naming
 
 - Rust lints are workspace-owned. A new `allow` needs inline justification.
-- `unsafe` is limited to `keld-wv` backends (and future `keld-ipc` shm), with
-  `deny(unsafe_op_in_unsafe_fn)` and a `// SAFETY:` proof. Else requires human review.
+- Production `unsafe` is limited to sanctioned path owners: `keld-wv` backends and
+  `keld-runtime` Windows modules today; future `keld-ipc` shm is reserved. Each uses
+  `deny(unsafe_op_in_unsafe_fn)` and local `// SAFETY:` proofs. A new production path
+  requires an issue-scoped root/nested owner update plus independent `unsafe` gate
+  evidence on the exact final diff; tests follow their nearest owner.
 - Libraries MUST NOT add `unwrap`/`expect`/`panic!`. Typed errors are hand-written
   `Display` + `KELD-*` fix guidance; test and `keld-cli` top-level invariants may expect.
 - Hot kipc/event-loop/guard paths use callbacks/state machines: no async runtime or
@@ -167,8 +170,10 @@ Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 - Perf claims use attributed reproducible measurements; >5% regression needs a written
   waiver and benchmarks. Budgets: architecture 01 §5.
 - Threat models remain in the `keld-guard` and `keld-update` crate documentation.
-- PRs list these five review gates (or `none`); human sign-off is required when present:
-  `unsafe`, public API, permission model, dependency addition, wire protocol.
+- PRs list these five review gates (or `none`): `unsafe`, public API, permission model,
+  dependency addition, wire protocol. Review gates require named independent security
+  or architecture evidence under the standing repository-owner delegation in
+  `.agents/coordination.md`; they do not require a human-only actor.
 
 ## Working invariants
 

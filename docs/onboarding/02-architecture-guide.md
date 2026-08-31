@@ -709,11 +709,10 @@ code; no `todo!()`/`unimplemented!()`/stubs on main; and append a one-line entry
 [`docs/agents/learnings.md`](../agents/learnings.md) in the same PR whenever you lose more than ten
 minutes to a non-obvious gotcha.
 
-**Five things need human sign-off** and must be listed under a `## Review gates` heading in the
-PR (root `AGENTS.md`): new or changed `unsafe`; new or changed public API; the permission model;
-any dependency addition; and any wire-protocol change (kipc frames, manifest schema, update feed).
-Write "none" when none apply. Given how much of the system is still unwritten, expect to hit at
-least one of these on most non-trivial work.
+**Five things need explicit independent review evidence** under the standing repository-owner
+delegation and must be listed under `## Review gates` in the PR (root `AGENTS.md`): new or changed
+`unsafe`; public API; permission model; dependency addition; and wire-protocol change. Write
+"none" when none apply. `.agents/coordination.md` owns the final merge predicate.
 
 **Phasing** is in [`ROADMAP.md`](../../ROADMAP.md) and gates on exit criteria rather than dates.
 Phase 1 ("window on screen") is in progress; its exit criterion — a hello-world app running on

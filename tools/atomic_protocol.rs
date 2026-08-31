@@ -1,4 +1,4 @@
-//! KEL-145 documentary contract check for Keld's atomic problem-solving protocol.
+//! KEL-145/KEL-148 documentary contract checks for atomic reasoning and merge authority.
 //!
 //! Root `AGENTS.md` owns the policy. This checker only pins its mandatory stage markers
 //! and the narrower operational references. It is deliberately std-only and outside the
@@ -15,6 +15,9 @@ use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
 const ROOT: &str = "AGENTS.md";
 const WORKFLOW: &str = "docs/agents/workflow.md";
 const TESTING: &str = ".agents/testing.md";
+const COORDINATION: &str = ".agents/coordination.md";
+const REVIEW: &str = ".agents/review.md";
+const CI: &str = ".agents/ci.md";
 const INDEX: &str = ".agents/index.md";
 const JUSTFILE: &str = "justfile";
 const DEVELOPMENT_GUIDE: &str = "docs/onboarding/05-development-guide.md";
@@ -22,6 +25,8 @@ const ROOT_HEADING: &str = "## Atomic problem-solving protocol (MUST)";
 const RETIRED_HEADING: &str = "Failure decomposition protocol (MUST)";
 const WORKFLOW_HEADING: &str = "## The loop (one issue, one agent, one concern)";
 const TESTING_HEADING: &str = "## Failure-first proof";
+const MERGE_HEADING: &str = "## Standing autonomous merge delegation";
+const MERGE_DEFAULT_PREFIX: &str = "Default eligible merge: ";
 const INDEX_HEADING: &str = "## Task routing";
 const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |";
 const ENFORCEMENT_LINE_PREFIX: &str =
@@ -87,6 +92,27 @@ const INDEX_REQUIREMENTS: &[&str] = &[
     "Any non-trivial design, diagnosis, review, or implementation",
     "Root `AGENTS.md` § Atomic problem-solving protocol",
 ];
+
+const MERGE_OWNER_REQUIREMENTS: &[&str] = &[
+    "The repository-owner standing delegation requires the issue agent to merge a Keld PR without another approval question only after every predicate below passes.",
+    "Scope, winning claim, required approval artifacts, current base, dependencies and single-writer collisions are reconciled.",
+    "Every owned acceptance criterion, including each required real OS/device observable, is passed rather than awaiting, failed or unrun.",
+    "`just ci` and every applicable GitHub required check pass on the final tip.",
+    "CodeRabbit reviewed the exact final tip or the isolated substitute passed, and every valid finding and review thread is fixed, independently refuted and resolved.",
+    "Every applicable unsafe, public API, permission model, dependency addition and wire protocol gate has named independent security or architecture evidence on the exact final diff.",
+    "The PR is mergeable and contains only the reviewed issue scope.",
+    "A narrower explicit `do-not-merge`, missing approval artifact, or proposal whose acceptance is the decision itself overrides this delegation.",
+    "This delegation authorizes only Keld PR merge; it does not authorize scope expansion, deployment, release, publication, production mutation, account administration or another repository.",
+    "After merge, fetch main, verify the landed patch or tree and ancestor relation, post the execution artifact, mark the issue Done, release the claim and remove the clean worktree.",
+];
+
+const ROOT_MERGE_REQUIREMENT: &str = "Review gates require named independent security or architecture evidence under the standing repository-owner delegation in `.agents/coordination.md`; they do not require a human-only actor.";
+const WORKFLOW_MERGE_REQUIREMENTS: &[&str] = &[
+    "Apply `.agents/coordination.md` § Standing autonomous merge delegation after the branch handoff.",
+    "When every predicate passes, merge without another approval question and complete its landed-verification sequence.",
+];
+const REVIEW_MERGE_REQUIREMENT: &str = "The terminal merge decision and post-merge verification are owned by `.agents/coordination.md` § Standing autonomous merge delegation.";
+const CI_MERGE_REQUIREMENT: &str = "CI routing is an independently reviewed shared-file concern";
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
     let path = root.join(relative);
@@ -456,6 +482,62 @@ fn check_references(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_autonomous_merge(root: &Path) -> Result<(), String> {
+    let root_text = read(root, ROOT)?;
+    let root_visible = binding_prose(&root_text);
+    require_normalized(&root_visible, ROOT_MERGE_REQUIREMENT, ROOT)?;
+    require_unique_normalized(&root_visible, ROOT_MERGE_REQUIREMENT, ROOT)?;
+
+    let coordination = read(root, COORDINATION)?;
+    let coordination_rendered = visible_markdown(&coordination);
+    let merge_rendered = section(&coordination_rendered, MERGE_HEADING, COORDINATION)?;
+    let coordination_visible = binding_prose(&coordination);
+    let merge_owner = section(&coordination_visible, MERGE_HEADING, COORDINATION)?;
+    for requirement in MERGE_OWNER_REQUIREMENTS {
+        require_normalized(merge_owner, requirement, COORDINATION)?;
+        require_unique_normalized(&coordination_visible, requirement, COORDINATION)?;
+    }
+    let defaults = merge_rendered
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(MERGE_DEFAULT_PREFIX))
+        .map(|value| value.trim().trim_end_matches('.').trim_matches('`'))
+        .collect::<Vec<_>>();
+    if defaults.len() != 1 || !defaults[0].eq_ignore_ascii_case("merge-when-complete") {
+        let declared = defaults.first().copied().unwrap_or("missing");
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{COORDINATION}` must declare one active `{MERGE_DEFAULT_PREFIX}` value of `merge-when-complete`; got `{declared}`. `human-decide` is not an eligible default."
+        ));
+    }
+
+    let workflow = read(root, WORKFLOW)?;
+    let workflow_visible = binding_prose(&workflow);
+    let workflow_loop = section(&workflow_visible, WORKFLOW_HEADING, WORKFLOW)?;
+    let handoff = line_block(workflow_loop, "7. **PR and handoff.**", None, WORKFLOW)?;
+    for requirement in WORKFLOW_MERGE_REQUIREMENTS {
+        require_normalized(handoff, requirement, WORKFLOW)?;
+        require_unique_normalized(&workflow_visible, requirement, WORKFLOW)?;
+    }
+    if normalize_binding(handoff)
+        .to_ascii_lowercase()
+        .contains("human-decide")
+    {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{WORKFLOW}` step 7 retains `human-decide` as an active merge state. Use `{MERGE_HEADING}` or `do-not-merge`."
+        ));
+    }
+
+    let review = read(root, REVIEW)?;
+    let review_visible = binding_prose(&review);
+    require_normalized(&review_visible, REVIEW_MERGE_REQUIREMENT, REVIEW)?;
+    require_unique_normalized(&review_visible, REVIEW_MERGE_REQUIREMENT, REVIEW)?;
+
+    let ci = binding_prose(&read(root, CI)?);
+    require_normalized(&ci, CI_MERGE_REQUIREMENT, CI)?;
+    require_unique_normalized(&ci, CI_MERGE_REQUIREMENT, CI)?;
+
+    Ok(())
+}
+
 fn check_justfile_and_development_guide(root: &Path) -> Result<(), String> {
     let justfile = read(root, JUSTFILE)?;
     let Some(ci_line) = justfile.lines().find(|line| line.starts_with("ci:")) else {
@@ -516,6 +598,7 @@ fn check(root: &Path) -> Result<(), String> {
     let root_text = read(root, ROOT)?;
     check_root(&root_text)?;
     check_references(root)?;
+    check_autonomous_merge(root)?;
     check_justfile_and_development_guide(root)
 }
 
@@ -587,6 +670,8 @@ mod tests {
             "# Rules\n\n{ROOT_HEADING}\n\nBefore selecting a design, answer or fix.\n\n{} Split the problem into decision-bearing atoms.\n{} Each atom MUST name its owner, boundary and inputs/outputs, failure mode, and observable contract.\n{} Changing or falsifying one atom MUST NOT silently alter another. Hidden coupling MUST be promoted into its own atom or an explicit edge between atoms.\n{} Each atom MUST have direct evidence or a falsifiable test or negative control. Prose, comments, mocks, or another atom's pass are not proof of that atom.\n{} Do not synthesize until every decision-bearing atom is passed, explicitly unknown, or named as a blocker. If the synthesis contradicts a passed atom, agents MUST stop and correct the model.\n\nPerformance decompositions MUST separate census, work, queue/copy, clock, statistic and artifact. Security decompositions MUST separate identity, authentication, authorization, OS containment, lifecycle/revocation and evidence provenance.\n\nEnforcement: `just atomic-protocol` validates the canonical stages.\n\n## Next\n",
             STAGES[0], STAGES[1], STAGES[2], STAGES[3], STAGES[4]
         )
+        + ROOT_MERGE_REQUIREMENT
+        + "\n"
     }
 
     fn fixture() -> TempDir {
@@ -594,8 +679,20 @@ mod tests {
         temp.write(ROOT, &valid_root());
         temp.write(
             WORKFLOW,
-            "# Workflow\n\n## The loop (one issue, one agent, one concern)\n\n1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),\nroot `AGENTS.md` § Atomic problem-solving protocol. The same first comment MUST record the decision-bearing atoms: owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier.\n2. **Spec gate.** Larger than a bug fix and no spec? Write one from\n3. **Isolate.** Work separately.\n4. **Implement and coordinate.** Tests with the change (conformance entries *first* for\nA material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier.\n5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test\n\n## Next\n",
+            &format!("# Workflow\n\n## The loop (one issue, one agent, one concern)\n\n1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),\nroot `AGENTS.md` § Atomic problem-solving protocol. The same first comment MUST record the decision-bearing atoms: owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier.\n2. **Spec gate.** Larger than a bug fix and no spec? Write one from\n3. **Isolate.** Work separately.\n4. **Implement and coordinate.** Tests with the change (conformance entries *first* for\nA material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier.\n5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test\n7. **PR and handoff.** {} {}\n\n## Next\n", WORKFLOW_MERGE_REQUIREMENTS[0], WORKFLOW_MERGE_REQUIREMENTS[1]),
         );
+        temp.write(
+            COORDINATION,
+            &format!(
+                "# Coordination\n\n{MERGE_HEADING}\n\n{MERGE_DEFAULT_PREFIX}`merge-when-complete`.\n{}\n\n## Next\n",
+                MERGE_OWNER_REQUIREMENTS.join("\n")
+            ),
+        );
+        temp.write(
+            REVIEW,
+            &format!("# Review\n\n{REVIEW_MERGE_REQUIREMENT}\n"),
+        );
+        temp.write(CI, &format!("# CI\n\n{CI_MERGE_REQUIREMENT}.\n"));
         temp.write(
             TESTING,
             "# Testing\n\n## Failure-first proof\n\nRoot `AGENTS.md` § Atomic problem-solving protocol owns the decomposition. The author MUST bind it to one named atom's observable contract and state why its oracle is independent of the implementation and the other atoms. Every negative control MUST name the one fault or mutation that falsifies that atom.\n\n## Next\n",
@@ -924,6 +1021,101 @@ mod tests {
                 assert!(error.contains(path), "{error}");
                 assert!(error.contains(requirement), "{error}");
             }
+        }
+    }
+
+    #[test]
+    fn every_autonomous_merge_predicate_is_independently_enforced() {
+        for requirement in MERGE_OWNER_REQUIREMENTS {
+            let temp = fixture();
+            replace_requirement(&temp, COORDINATION, requirement);
+            let error = check(&temp.path).expect_err("removed merge predicate must fail");
+            assert!(error.contains(requirement), "{error}");
+        }
+    }
+
+    #[test]
+    fn autonomous_merge_consumers_and_override_are_enforced() {
+        for (path, requirement) in [
+            (ROOT, ROOT_MERGE_REQUIREMENT),
+            (WORKFLOW, WORKFLOW_MERGE_REQUIREMENTS[0]),
+            (WORKFLOW, WORKFLOW_MERGE_REQUIREMENTS[1]),
+            (REVIEW, REVIEW_MERGE_REQUIREMENT),
+            (CI, CI_MERGE_REQUIREMENT),
+        ] {
+            let temp = fixture();
+            replace_requirement(&temp, path, requirement);
+            let error = check(&temp.path).expect_err("removed merge consumer must fail");
+            assert!(error.contains(path), "{error}");
+        }
+
+        for value in ["human-decide", "Human-Decide", "HUMAN-DECIDE"] {
+            let temp = fixture();
+            let coordination = fs::read_to_string(temp.path.join(COORDINATION))
+                .expect("read coordination fixture")
+                .replacen(
+                    "Default eligible merge: `merge-when-complete`.",
+                    &format!("Default eligible merge: `{value}`."),
+                    1,
+                );
+            temp.write(COORDINATION, &coordination);
+            let error = check(&temp.path).expect_err("human-decide default must fail");
+            assert!(error.contains("human-decide"), "{error}");
+        }
+
+        for value in ["human-decide", "Human-Decide", "HUMAN-DECIDE"] {
+            let temp = fixture();
+            let workflow = fs::read_to_string(temp.path.join(WORKFLOW))
+                .expect("read workflow fixture")
+                .replace(
+                    "\n## Next",
+                    &format!("\nFallback merge state: {value}.\n\n## Next"),
+                );
+            temp.write(WORKFLOW, &workflow);
+            let error = check(&temp.path).expect_err("human-decide workflow state must fail");
+            assert!(error.contains("human-decide"), "{error}");
+        }
+
+        let temp = fixture();
+        let coordination = fs::read_to_string(temp.path.join(COORDINATION))
+            .expect("read coordination fixture")
+            .replace(
+                "\n## Next",
+                "\nHistorical explanation: human-decide was the retired default.\n\n## Next",
+            );
+        temp.write(COORDINATION, &coordination);
+        check(&temp.path).expect("explanatory text must not become the active default");
+
+        let temp = fixture();
+        let workflow = fs::read_to_string(temp.path.join(WORKFLOW)).expect("read workflow");
+        let moved = workflow
+            .replacen(WORKFLOW_MERGE_REQUIREMENTS[0], "retired handoff pointer", 1)
+            .replacen(WORKFLOW_MERGE_REQUIREMENTS[1], "retired merge action", 1)
+            .replace(
+                "\n## Next",
+                &format!(
+                    "\n## Historical\n\n{} {}\n\n## Next",
+                    WORKFLOW_MERGE_REQUIREMENTS[0], WORKFLOW_MERGE_REQUIREMENTS[1]
+                ),
+            );
+        temp.write(WORKFLOW, &moved);
+        check(&temp.path).expect_err("historical merge prose must not satisfy step 7");
+    }
+
+    #[test]
+    fn hidden_merge_policy_cannot_satisfy_the_contract() {
+        let requirement = MERGE_OWNER_REQUIREMENTS[2];
+        for hidden in [
+            format!("<!-- {requirement} -->"),
+            format!("```text\n{requirement}\n```"),
+            format!("> {requirement}"),
+        ] {
+            let temp = fixture();
+            let coordination = fs::read_to_string(temp.path.join(COORDINATION))
+                .expect("read coordination fixture")
+                .replacen(requirement, &hidden, 1);
+            temp.write(COORDINATION, &coordination);
+            check(&temp.path).expect_err("hidden merge predicate must not count");
         }
     }
 }

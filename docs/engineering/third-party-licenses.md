@@ -97,6 +97,6 @@ separate dependency decision (KEL-53) — do not allowlist yanked crates here.
 
 ## Review
 
-Dependency/license policy is a human review gate (`AGENTS.md`). Engineering can
-record this position; it does not replace counsel review before first external
+Dependency/license policy is an independent review gate (`AGENTS.md`) under the standing
+repository-owner delegation. Engineering review does not replace counsel before first external
 distribution.
