@@ -35,9 +35,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok_or("usage: kel101_t4_server <receipt-path> <foreign-user-sid>")?;
     let foreign_sid = args
         .next()
-        .ok_or("usage: kel101_t4_server <receipt-path> <foreign-user-sid>")?;
+        .ok_or("usage: kel101_t4_server <receipt-path> <foreign-user-sid> <probe-executable>")?;
+    let probe_executable = args
+        .next()
+        .ok_or("usage: kel101_t4_server <receipt-path> <foreign-user-sid> <probe-executable>")?;
     if args.next().is_some() {
-        return Err("kel101_t4_server accepts exactly two arguments".into());
+        return Err("kel101_t4_server accepts exactly three arguments".into());
     }
     let receipt_path = Path::new(&receipt_path);
     if receipt_path.exists() {
@@ -60,15 +63,16 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("KELD_T4_FOREIGN_SID={foreign_sid}");
     println!("KELD_T4_RECEIPT={}", receipt_path.display());
     println!(
-        "Run kel101_foreign_user_probe under the foreign account, redirect its stdout to the receipt, then press Enter."
+        "Run kel101_foreign_user_probe under the foreign account, let it create the receipt, verify its live process identity, then press Enter."
     );
 
     let mut confirmation = String::new();
     io::stdin().read_line(&mut confirmation)?;
-    validate_receipt(receipt_path, endpoint, &foreign_sid)?;
+    let probe_pid = validate_receipt(receipt_path, endpoint, &foreign_sid, &probe_executable)?;
     run_authorized_and_successor(&listener, endpoint, &token)?;
 
     println!("KELD_T4_RESULT=passed");
+    println!("KELD_T4_PROBE_PID={probe_pid}");
     println!("KELD_T4_FOREIGN_OPEN=ERROR_ACCESS_DENIED(5)");
     println!("KELD_T4_AUTHORIZED_ECHO=passed");
     println!("KELD_T4_STALE_LOCATOR=ERROR_FILE_NOT_FOUND(2)");
@@ -186,21 +190,59 @@ fn validate_receipt(
     path: &std::path::Path,
     endpoint: &str,
     foreign_sid: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use windows_permissions::constants::{SeObjectType, SecurityInformation};
-    use windows_permissions::wrappers::GetNamedSecurityInfo;
+    probe_executable: &str,
+) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+    use std::io::Read as _;
+
+    use windows_permissions::constants::{
+        AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
+    };
+    use windows_permissions::utilities::current_process_sid;
+    use windows_permissions::wrappers::GetSecurityInfo;
 
     let expected_owner =
         foreign_sid.parse::<windows_permissions::LocalBox<windows_permissions::Sid>>()?;
-    let descriptor = GetNamedSecurityInfo(
-        path,
+    let host_sid = current_process_sid()?;
+    let mut file = std::fs::File::open(path)?;
+    let descriptor = GetSecurityInfo(
+        &file,
         SeObjectType::SE_FILE_OBJECT,
-        SecurityInformation::Owner,
+        SecurityInformation::Owner | SecurityInformation::Dacl,
     )?;
     if descriptor.owner() != Some(&expected_owner) {
         return Err("foreign-user receipt file owner does not match the expected SID".into());
     }
-    let body = std::fs::read_to_string(path)?;
+    if !descriptor.as_sddl()?.to_string_lossy().contains("D:P") {
+        return Err("foreign-user receipt DACL is not protected".into());
+    }
+    let dacl = descriptor
+        .dacl()
+        .ok_or("foreign-user receipt has no DACL")?;
+    if dacl.len() != 2 {
+        return Err("foreign-user receipt must have exactly two allow ACEs".into());
+    }
+    let mut foreign_rights = None;
+    let mut host_rights = None;
+    for index in 0..dacl.len() {
+        let ace = dacl
+            .get_ace(index)
+            .ok_or("foreign-user receipt DACL omitted an indexed ACE")?;
+        if ace.ace_type() != AceType::ACCESS_ALLOWED_ACE_TYPE || ace.flags() != AceFlags::empty() {
+            return Err("foreign-user receipt DACL contains a non-explicit allow ACE".into());
+        }
+        match ace.sid() {
+            Some(sid) if sid == &*expected_owner => foreign_rights = Some(ace.mask()),
+            Some(sid) if sid == &*host_sid => host_rights = Some(ace.mask()),
+            _ => return Err("foreign-user receipt DACL contains an unexpected SID".into()),
+        }
+    }
+    if foreign_rights != Some(AccessRights::FileGenericRead | AccessRights::FileGenericWrite)
+        || host_rights != Some(AccessRights::FileGenericRead)
+    {
+        return Err("foreign-user receipt DACL rights do not match owner-write/host-read".into());
+    }
+    let mut body = String::new();
+    file.read_to_string(&mut body)?;
     let mut fields = std::collections::BTreeMap::new();
     for line in body.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -218,6 +260,7 @@ fn validate_receipt(
         ("negative_kind", "NotFound"),
         ("live_raw_os_error", "5"),
         ("live_kind", "PermissionDenied"),
+        ("executable", probe_executable),
     ];
     for (key, expected) in required {
         if fields.get(key).copied() != Some(expected) {
@@ -228,15 +271,22 @@ fn validate_receipt(
             .into());
         }
     }
-    if fields.len() != required.len() {
+    let probe_pid = fields
+        .get("pid")
+        .ok_or("foreign-user receipt omits probe PID")?
+        .parse::<u32>()?;
+    if probe_pid == 0 || probe_pid == std::process::id() {
+        return Err("foreign-user receipt carries an invalid probe PID".into());
+    }
+    if fields.len() != required.len() + 1 {
         return Err(format!(
             "foreign-user receipt has {} fields, expected exactly {}",
             fields.len(),
-            required.len()
+            required.len() + 1
         )
         .into());
     }
-    Ok(())
+    Ok(probe_pid)
 }
 
 #[cfg(not(windows))]

@@ -321,14 +321,25 @@ fresh endpoint and completed its own authenticated echo. The credential was
 entered only into Windows `runas`; it was
 not stored in a file, process argument, log, test, CI job, or repository.
 
-The checked-in T4 fixture independently records the foreign process SID and
-both raw OS results while receiving only the public pipe name. Its server reads
-the receipt file's owner from the Windows security descriptor, requires that
-owner and the receipt SID to equal the expected foreign SID, keeps the token
-private, validates the receipt before the authorized round trip, rejects the
-consumed locator, and requires a fresh successor endpoint and token with its own
-authenticated echo. A temporary mutation that treated the live pipe as
+The operator-run T4 helper records the foreign process SID and both raw OS
+results while receiving only the public pipe name. It creates the receipt with
+a protected DACL granting itself read/write and the host read-only, syncs the
+bytes, and remains alive while the operator independently queries Windows for
+that PID's account and executable path. The server opens the receipt once,
+reads its owner and exact DACL from that handle, requires the owner and receipt
+SID to equal the expected foreign SID, matches the reported executable, and
+reads the bytes through the same handle. It keeps the token private,
+validates the receipt before the authorized round trip,
+rejects the consumed locator, and requires a fresh successor endpoint and token
+with its own authenticated echo. This is operator-attested real-OS evidence,
+not a self-authenticating plaintext claim. A temporary mutation that treated the live pipe as
 absent failed with the exact observation `raw=Some(5) kind=PermissionDenied`.
+The final process-attested run observed probe PID `13700` owned by
+`RAMANI\KeldDaclTest`, executable SHA-256
+`4807CF6B290B52E05D6ACE91E64BEB3C1C2FE376D8739143DF3FB1B537ADDB47`,
+and receipt SDDL with protected DACL `D:PAI`, host `FR`, and foreign-user
+`FRFW` only. The server then reported authorized echo passed, stale locator
+`ERROR_FILE_NOT_FOUND (2)`, token rotation passed, and next generation passed.
 The focused `keld-ipc` suite passed 119/119 and the pre-documentation full
 Windows `just ci` gate passed 524/524 workspace tests plus format, warning-denied
 Clippy, rustdoc, hygiene, generated-doc/Mermaid checks, and cargo-deny.
