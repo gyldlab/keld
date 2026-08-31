@@ -14,5 +14,9 @@ postcard = { workspace = true }
 serde = { workspace = true }
 getrandom = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-permissions = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_IO"] }
+
 [lints]
 workspace = true
