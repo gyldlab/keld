@@ -23,11 +23,19 @@ pub mod lifecycle;
 pub mod link;
 pub mod session;
 pub mod token;
+#[cfg(windows)]
+mod windows_named_pipe;
 
 pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
-    BootstrapAdmission, BootstrapCancellation, BootstrapListener, BootstrapStream,
+    BootstrapAdmission, BootstrapAdmissionFor, BootstrapCancellation, BootstrapListener,
+    BootstrapStream,
+};
+#[cfg(windows)]
+pub use bootstrap::{
+    WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapCancellation,
+    WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
 };
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};

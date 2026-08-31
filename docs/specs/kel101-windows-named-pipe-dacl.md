@@ -340,7 +340,7 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
 
 - [x] T1: approve the reused safe DACL wrapper plus narrow raw pipe/overlapped
   ABI owner, foreign-user fixture, review gates, and rollback boundary.
-- [ ] T2: add Windows shared bootstrap, exact DACL, overlapped state machine,
+- [x] T2: add Windows shared bootstrap, exact DACL, overlapped state machine,
   cancellation, redacted rejection, and inheritance proof with focused tests.
 - [ ] T3: atomically migrate echo server, diagnostics, and Bun template/client;
   retain only explicit decimal-port diagnostic consumption and prove bad-then-good HELLO.
