@@ -60,6 +60,7 @@ pub(crate) enum WaitOutcome {
 #[derive(Debug)]
 struct ServerInner {
     pipe: Mutex<Option<OwnedHandle>>,
+    lifecycle: Mutex<()>,
     cancel_event: OwnedHandle,
     connect_event: OwnedEvent,
     connected: AtomicBool,
@@ -154,6 +155,7 @@ impl WindowsNamedPipeServer {
         let server = Self {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
+                lifecycle: Mutex::new(()),
                 cancel_event,
                 connect_event,
                 connected: AtomicBool::new(false),
@@ -219,6 +221,7 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn disconnect_for_retry(&self) -> io::Result<()> {
+        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
         if self.inner.consumed.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -255,6 +258,7 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn cancel(&self) -> io::Result<()> {
+        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
         if self.inner.consumed.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -278,6 +282,7 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn close_terminal(&self) -> io::Result<()> {
+        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
         self.inner.consumed.store(true, Ordering::Release);
         self.cancel_pending_io()?;
         // SAFETY: the server owns the live handle and all pending operations
@@ -328,6 +333,7 @@ impl WindowsNamedPipeServer {
         Ok(WindowsNamedPipeStream {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
+                lifecycle: Mutex::new(()),
                 cancel_event,
                 connect_event,
                 connected: AtomicBool::new(true),
@@ -499,6 +505,7 @@ impl WindowsNamedPipeStream {
         let server = WindowsNamedPipeServer {
             inner: Arc::clone(&self.inner),
         };
+        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
         server.cancel_pending_io()?;
         // SAFETY: this is the live server pipe handle. Cancelling does not
         // free another operation's OVERLAPPED or buffer; each operation owner
