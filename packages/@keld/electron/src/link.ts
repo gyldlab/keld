@@ -108,25 +108,30 @@ export function parseAppLink(link: string): AppLink {
 }
 
 /**
- * Windows `KELD_APP_LINK` endpoint is a decimal loopback port, matching
- * `u16::from_str` on the host — not `Number.parseInt`, which accepts
+ * Legacy Windows diagnostic `KELD_APP_LINK` endpoints are strict decimal
+ * loopback ports — not `Number.parseInt`, which accepts
  * `"127.0.0.1:9000"` as `127`.
  */
 export function parseWin32Port(endpoint: string): number {
-  if (!/^[0-9]+$/.test(endpoint)) {
+  if (!/^[1-9][0-9]{0,4}$/.test(endpoint)) {
     throw kipcError(
       "KELD-IPC-007",
-      "KELD_APP_LINK Windows endpoint must be a TCP port in 1–65535",
+      "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
     );
   }
   const port = Number(endpoint);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw kipcError(
       "KELD-IPC-007",
-      "KELD_APP_LINK Windows endpoint must be a TCP port in 1–65535",
+      "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
     );
   }
   return port;
+}
+
+/** True only for a host-minted Keld Windows named-pipe endpoint. */
+export function isWin32PipeEndpoint(endpoint: string): boolean {
+  return /^\\\\\.\\pipe\\keld-[0-9a-f]{64}$/.test(endpoint);
 }
 
 function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -501,7 +506,7 @@ export class LifecycleLink {
       },
     };
     const socket: KipcSocket =
-      process.platform === "win32"
+      process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
         ? await Bun.connect({
             hostname: "127.0.0.1",
             port: parseWin32Port(endpoint),

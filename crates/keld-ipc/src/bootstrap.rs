@@ -2,19 +2,16 @@
 //!
 //! This cold-path primitive owns a platform listener, a fresh `HELLO`
 //! possession token, and cleanup. Unix uses an owner-only socket directory.
-//! The shipping Windows constructor retains the explicitly unprivileged
-//! loopback interim until KEL-101/T3 migrates consumers; KEL-101/T2 adds the
-//! opt-in owner-DACL named-pipe bootstrap beside it. Both deliberately accept
-//! another client after an invalid handshake so an
-//! untrusted connector cannot consume the legitimate role's bootstrap.
+//! Windows uses a current-user-DACL named pipe; Unix uses an owner-only socket
+//! directory. Both deliberately accept another client after an invalid
+//! handshake so an untrusted connector cannot consume the legitimate role's
+//! bootstrap.
 
 #[cfg(windows)]
 use core::fmt::Write as _;
 #[cfg(unix)]
 use std::fs;
 use std::io;
-#[cfg(windows)]
-use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 #[cfg(unix)]
@@ -43,6 +40,7 @@ use crate::windows_named_pipe::{
     WaitOutcome, WindowsNamedPipeCanceller, WindowsNamedPipeServer, WindowsNamedPipeStream,
 };
 
+#[cfg(unix)]
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(unix)]
 static UNIQUE_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -53,7 +51,7 @@ pub type BootstrapStream = UnixStream;
 
 /// Platform-selected connected stream returned after bootstrap authentication.
 #[cfg(windows)]
-pub type BootstrapStream = TcpStream;
+pub type BootstrapStream = WindowsNamedPipeBootstrapStream;
 
 /// Host-owned listener that authenticates one role bootstrap connection.
 ///
@@ -65,16 +63,18 @@ pub struct BootstrapListener {
     #[cfg(unix)]
     listener: Mutex<Option<UnixListener>>,
     #[cfg(windows)]
-    listener: Mutex<Option<TcpListener>>,
+    listener: WindowsNamedPipeBootstrapListener,
     #[cfg(unix)]
     path: PathBuf,
     #[cfg(unix)]
     session_dir: PathBuf,
-    #[cfg(windows)]
-    port: u16,
+    #[cfg(unix)]
     token: SessionToken,
+    #[cfg(unix)]
     stopping: Arc<AtomicBool>,
+    #[cfg(unix)]
     listening: Arc<AtomicBool>,
+    #[cfg(unix)]
     active_stream: Arc<Mutex<Option<BootstrapStream>>>,
 }
 
@@ -124,9 +124,12 @@ pub struct BootstrapCancellation {
     #[cfg(unix)]
     path: PathBuf,
     #[cfg(windows)]
-    port: u16,
+    cancellation: WindowsNamedPipeBootstrapCancellation,
+    #[cfg(unix)]
     stopping: Arc<AtomicBool>,
+    #[cfg(unix)]
     listening: Arc<AtomicBool>,
+    #[cfg(unix)]
     active_stream: Arc<Mutex<Option<BootstrapStream>>>,
 }
 
@@ -138,6 +141,7 @@ impl BootstrapListener {
     /// Returns [`io::Error`] if the random source or platform listener cannot
     /// be created.
     pub fn bind() -> io::Result<Self> {
+        #[cfg(unix)]
         let token = SessionToken::random()?;
         #[cfg(unix)]
         {
@@ -163,16 +167,8 @@ impl BootstrapListener {
         }
         #[cfg(windows)]
         {
-            let listener = TcpListener::bind(("127.0.0.1", 0))?;
-            let port = listener.local_addr()?.port();
-            listener.set_nonblocking(true)?;
             Ok(Self {
-                listener: Mutex::new(Some(listener)),
-                port,
-                token,
-                stopping: Arc::new(AtomicBool::new(false)),
-                listening: Arc::new(AtomicBool::new(true)),
-                active_stream: Arc::new(Mutex::new(None)),
+                listener: WindowsNamedPipeBootstrapListener::bind()?,
             })
         }
     }
@@ -186,7 +182,7 @@ impl BootstrapListener {
         }
         #[cfg(windows)]
         {
-            format_app_link(&self.port.to_string(), &self.token)
+            self.listener.app_link()
         }
     }
 
@@ -204,9 +200,12 @@ impl BootstrapListener {
             #[cfg(unix)]
             path: self.path.clone(),
             #[cfg(windows)]
-            port: self.port,
+            cancellation: self.listener.cancellation(),
+            #[cfg(unix)]
             stopping: Arc::clone(&self.stopping),
+            #[cfg(unix)]
             listening: Arc::clone(&self.listening),
+            #[cfg(unix)]
             active_stream: Arc::clone(&self.active_stream),
         }
     }
@@ -224,10 +223,13 @@ impl BootstrapListener {
     /// by continuing to accept.
     pub fn accept_authenticated(&self) -> io::Result<Option<BootstrapStream>> {
         let observer = NoopRejectionObserver;
+        #[cfg(unix)]
         match self.accept_loop(None, APP_LINK_IO_DEADLINE, &observer)? {
             BootstrapAdmission::Authenticated(stream) => Ok(Some(stream)),
             BootstrapAdmission::Cancelled | BootstrapAdmission::DeadlineElapsed => Ok(None),
         }
+        #[cfg(windows)]
+        self.listener.accept_authenticated(&observer)
     }
 
     /// Waits until one client authenticates, this listener is cancelled, or
@@ -238,9 +240,8 @@ impl BootstrapListener {
     /// `observer`, and the listener keeps admitting the legitimate role until
     /// the generation-level deadline or cancellation wins.
     ///
-    /// On successful authentication the socket path is unlinked immediately.
-    /// The accepted stream remains live, but stale clients cannot reconnect
-    /// through the bootstrap locator.
+    /// On successful authentication the bootstrap locator is consumed. The
+    /// accepted stream remains live, but stale clients cannot reconnect.
     ///
     /// # Errors
     ///
@@ -251,26 +252,40 @@ impl BootstrapListener {
         deadline: Instant,
         observer: &dyn BootstrapRejectionObserver,
     ) -> io::Result<BootstrapAdmission> {
-        self.accept_loop(Some(deadline), APP_LINK_IO_DEADLINE, observer)
+        #[cfg(unix)]
+        {
+            self.accept_loop(Some(deadline), APP_LINK_IO_DEADLINE, observer)
+        }
+        #[cfg(windows)]
+        {
+            self.listener.accept_authenticated_until(deadline, observer)
+        }
     }
 
     /// Stops a blocked [`Self::accept_authenticated`] call.
     ///
-    /// Connecting and immediately closing a local stream wakes the blocking
-    /// `accept`; the receive-side handshake then observes the stop flag and
-    /// returns without accepting an unauthenticated client.
+    /// The platform cancellation primitive wakes the blocked accept or active
+    /// handshake, which then observes the stop flag without admitting an
+    /// unauthenticated client.
     ///
     /// # Errors
     ///
-    /// Returns [`io::Error`] if the wake-up connection cannot be made while
-    /// the listener is still live.
+    /// Returns [`io::Error`] if cancellation or endpoint close fails.
     pub fn shutdown(&self) -> io::Result<()> {
-        let cancel = self.cancellation().cancel();
-        let close = self.close_endpoint();
-        cancel.and(close)
+        #[cfg(unix)]
+        {
+            let cancel = self.cancellation().cancel();
+            let close = self.close_endpoint();
+            cancel.and(close)
+        }
+        #[cfg(windows)]
+        {
+            self.listener.shutdown()
+        }
     }
 }
 
+#[cfg(unix)]
 impl BootstrapListener {
     fn accept_loop(
         &self,
@@ -469,15 +484,15 @@ impl BootstrapCancellation {
     /// Returns [`io::Error`] if the wake connection fails while the endpoint
     /// still exists.
     pub fn cancel(&self) -> io::Result<()> {
-        self.stopping.store(true, Ordering::SeqCst);
-        if let Some(stream) = lock_or_recover(&self.active_stream).take() {
-            let _ = stream.shutdown_app_link();
-        }
-        if !self.listening.load(Ordering::Acquire) {
-            return Ok(());
-        }
         #[cfg(unix)]
         {
+            self.stopping.store(true, Ordering::SeqCst);
+            if let Some(stream) = lock_or_recover(&self.active_stream).take() {
+                let _ = stream.shutdown_app_link();
+            }
+            if !self.listening.load(Ordering::Acquire) {
+                return Ok(());
+            }
             match UnixStream::connect(&self.path) {
                 Ok(stream) => match stream.shutdown_app_link() {
                     Ok(()) => Ok(()),
@@ -498,33 +513,16 @@ impl BootstrapCancellation {
             }
         }
         #[cfg(windows)]
-        {
-            match TcpStream::connect(("127.0.0.1", self.port)) {
-                Ok(stream) => match stream.shutdown_app_link() {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
-                    Err(error) => Err(error),
-                },
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotConnected
-                            | io::ErrorKind::ConnectionRefused
-                            | io::ErrorKind::ConnectionAborted
-                    ) =>
-                {
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
-        }
+        self.cancellation.cancel()
     }
 }
 
+#[cfg(unix)]
 struct ActiveHandshake {
     active_stream: Arc<Mutex<Option<BootstrapStream>>>,
 }
 
+#[cfg(unix)]
 impl Drop for ActiveHandshake {
     fn drop(&mut self) {
         *lock_or_recover(&self.active_stream) = None;
@@ -538,6 +536,7 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+#[cfg(unix)]
 fn park_until_next_accept(deadline: Option<Instant>) {
     let timeout =
         match deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now())) {
@@ -555,12 +554,9 @@ impl Drop for BootstrapListener {
     }
 }
 
-/// Opt-in Windows owner-DACL named-pipe bootstrap added by KEL-101/T2.
+/// Windows owner-DACL named-pipe bootstrap.
 ///
-/// [`BootstrapListener::bind`] deliberately remains the live loopback-TCP
-/// constructor until T3 migrates all consumers atomically. This type owns the
-/// shared named-pipe transport and reuses the same safe HELLO and rejection
-/// state machine without making a product-LIVE claim.
+/// [`BootstrapListener`] delegates its Windows transport to this single owner.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct WindowsNamedPipeBootstrapListener {
@@ -646,6 +642,25 @@ impl WindowsNamedPipeBootstrapListener {
         }
     }
 
+    /// Waits until one client authenticates or cancellation wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns only host-side pipe, deadline-configuration, or cleanup errors.
+    /// Peer failures are classified through `observer` and do not consume the
+    /// bootstrap generation.
+    pub fn accept_authenticated(
+        &self,
+        observer: &dyn BootstrapRejectionObserver,
+    ) -> io::Result<Option<WindowsNamedPipeBootstrapStream>> {
+        let _admission = lock_or_recover(&self.admission);
+        match self.accept_loop(None, APP_LINK_IO_DEADLINE, observer)? {
+            WindowsNamedPipeBootstrapAdmission::Authenticated(stream) => Ok(Some(stream)),
+            WindowsNamedPipeBootstrapAdmission::Cancelled
+            | WindowsNamedPipeBootstrapAdmission::DeadlineElapsed => Ok(None),
+        }
+    }
+
     /// Waits until a client authenticates, cancellation wins, or the absolute
     /// generation deadline elapses.
     ///
@@ -660,7 +675,7 @@ impl WindowsNamedPipeBootstrapListener {
         observer: &dyn BootstrapRejectionObserver,
     ) -> io::Result<WindowsNamedPipeBootstrapAdmission> {
         let _admission = lock_or_recover(&self.admission);
-        self.accept_loop(deadline, APP_LINK_IO_DEADLINE, observer)
+        self.accept_loop(Some(deadline), APP_LINK_IO_DEADLINE, observer)
     }
 
     #[expect(
@@ -669,7 +684,7 @@ impl WindowsNamedPipeBootstrapListener {
     )]
     fn accept_loop(
         &self,
-        deadline: Instant,
+        deadline: Option<Instant>,
         handshake_deadline: Duration,
         observer: &dyn BootstrapRejectionObserver,
     ) -> io::Result<WindowsNamedPipeBootstrapAdmission> {
@@ -688,12 +703,12 @@ impl WindowsNamedPipeBootstrapListener {
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             }
-            match server.accept_until(Some(deadline))? {
+            match server.accept_until(deadline)? {
                 WaitOutcome::Cancelled => {
                     drop(lock_or_recover(&self.server).take());
                     return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
@@ -715,17 +730,22 @@ impl WindowsNamedPipeBootstrapListener {
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
             let handshake_started = Instant::now();
-            let Some(remaining) = deadline.checked_duration_since(handshake_started) else {
-                server.close_terminal()?;
-                drop(lock_or_recover(&self.server).take());
-                return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
+            let peer_timeout = match deadline {
+                Some(deadline) => {
+                    let Some(remaining) = deadline.checked_duration_since(handshake_started) else {
+                        server.close_terminal()?;
+                        drop(lock_or_recover(&self.server).take());
+                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
+                    };
+                    if remaining.is_zero() {
+                        server.close_terminal()?;
+                        drop(lock_or_recover(&self.server).take());
+                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
+                    }
+                    remaining.min(handshake_deadline)
+                }
+                None => handshake_deadline,
             };
-            if remaining.is_zero() {
-                server.close_terminal()?;
-                drop(lock_or_recover(&self.server).take());
-                return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
-            }
-            let peer_timeout = remaining.min(handshake_deadline);
             let Some(peer_deadline) = handshake_started.checked_add(peer_timeout) else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
@@ -753,7 +773,7 @@ impl WindowsNamedPipeBootstrapListener {
                         drop(lock_or_recover(&self.server).take());
                         return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                     }
-                    if Instant::now() >= deadline {
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                         drop(stream);
                         server.close_terminal()?;
                         drop(lock_or_recover(&self.server).take());
@@ -776,7 +796,9 @@ impl WindowsNamedPipeBootstrapListener {
                     drop(lock_or_recover(&self.server).take());
                     return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
-                Err(IpcError::Timeout) if Instant::now() >= deadline => {
+                Err(IpcError::Timeout)
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) =>
+                {
                     drop(stream);
                     server.close_terminal()?;
                     drop(lock_or_recover(&self.server).take());
@@ -819,6 +841,23 @@ impl WindowsNamedPipeBootstrapListener {
     #[cfg(test)]
     fn install_before_consume_gate(&self, gate: TestConsumeGate) {
         *lock_or_recover(&self.before_consume) = Some(gate);
+    }
+
+    /// Cancels admission and closes the pipe locator.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first cancellation or terminal-close error.
+    pub fn shutdown(&self) -> io::Result<()> {
+        let cancel_error = self.cancellation().cancel().err();
+        // CancelIoEx only requests cancellation. The admission owner keeps
+        // every stack OVERLAPPED/buffer live until it observes completion;
+        // do not close the pipe handle until that owner releases this guard.
+        let _admission = lock_or_recover(&self.admission);
+        let close_error = lock_or_recover(&self.server)
+            .take()
+            .and_then(|server| server.close_terminal().err());
+        close_error.or(cancel_error).map_or(Ok(()), Err)
     }
 }
 
@@ -878,6 +917,35 @@ impl AppLinkDeadlines for WindowsNamedPipeBootstrapStream {
 
 #[cfg(windows)]
 impl WindowsNamedPipeBootstrapStream {
+    /// Returns whether `endpoint` has the exact host-minted Keld pipe shape.
+    #[must_use]
+    pub fn is_keld_endpoint(endpoint: &str) -> bool {
+        endpoint
+            .strip_prefix(r"\\.\pipe\keld-")
+            .is_some_and(|nonce| {
+                nonce.len() == 64
+                    && nonce
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+    }
+
+    /// Opens a client handle to an exact named-pipe endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] if Windows cannot open the pipe or create the
+    /// stream's manual-reset completion events.
+    pub fn connect(endpoint: &str) -> io::Result<Self> {
+        if !Self::is_keld_endpoint(endpoint) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows app-link endpoint is not an exact Keld named pipe",
+            ));
+        }
+        WindowsNamedPipeServer::connect_client(endpoint).map(Self)
+    }
+
     /// Duplicates the Rust stream view while retaining the same owned pipe
     /// handle. Read and write deadline settings are copied, then independent.
     ///
@@ -1124,8 +1192,11 @@ socket.end();
             expected
         );
         let mut reply = [0_u8; 1];
-        assert!(
-            hostile.read(&mut reply).is_err(),
+        assert_eq!(
+            hostile
+                .read(&mut reply)
+                .expect("pre-auth rejection must produce EOF"),
+            0,
             "pre-auth rejection must close without a host frame"
         );
         drop(hostile);
@@ -1423,7 +1494,7 @@ socket.end();
         let worker_listener = Arc::clone(&listener);
         let worker = thread::spawn(move || {
             worker_listener.accept_loop(
-                Instant::now() + Duration::from_secs(3),
+                Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_millis(100),
                 &observer,
             )
@@ -1760,13 +1831,17 @@ socket.end();
             .recv_timeout(Duration::from_secs(1))
             .expect("shutdown must wake local read")
             .expect_err("pending read must not succeed without peer bytes");
-        assert!(matches!(error.raw_os_error(), Some(995 | 109 | 233)));
+        assert!(
+            error.kind() == std::io::ErrorKind::UnexpectedEof
+                || matches!(error.raw_os_error(), Some(995 | 109 | 233))
+        );
         reader.join().expect("join blocked reader");
         let mut peer_byte = [0_u8; 1];
-        let peer_error = role
-            .read(&mut peer_byte)
-            .expect_err("shutdown must also close the peer-facing connection");
-        assert!(matches!(peer_error.raw_os_error(), Some(109 | 232 | 233)));
+        assert_eq!(
+            role.read(&mut peer_byte)
+                .expect("shutdown must produce peer EOF"),
+            0
+        );
     }
 
     #[test]
@@ -1797,10 +1872,11 @@ socket.end();
         assert_eq!(shutdown_error.raw_os_error(), Some(5));
 
         let mut peer_byte = [0_u8; 1];
-        let peer_error = role
-            .read(&mut peer_byte)
-            .expect_err("disconnect must still close the peer-facing connection");
-        assert!(matches!(peer_error.raw_os_error(), Some(109 | 232 | 233)));
+        assert_eq!(
+            role.read(&mut peer_byte)
+                .expect("disconnect must still close the peer-facing connection"),
+            0
+        );
     }
 
     #[test]
@@ -1889,22 +1965,22 @@ socket.end();
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use crate::parse_app_link;
 
-    use super::{BootstrapAdmission, BootstrapListener, lock_or_recover};
+    use crate::windows_named_pipe::WindowsNamedPipeServer;
+
+    use super::{BootstrapAdmission, BootstrapListener, WindowsNamedPipeBootstrapStream};
 
     #[test]
-    fn cancellation_interrupts_active_silent_handshake_promptly() {
+    fn shipping_shutdown_waits_for_active_handshake_cancellation_observation() {
         let listener = Arc::new(BootstrapListener::bind().expect("bind Windows bootstrap"));
-        let cancellation = listener.cancellation();
         let link = listener.app_link();
         let (endpoint, _) = parse_app_link(&link).expect("Windows app link");
-        let port = endpoint.parse::<u16>().expect("Windows bootstrap port");
+        let endpoint = endpoint.to_owned();
         let acceptor = Arc::clone(&listener);
         let (result_tx, result_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -1914,10 +1990,12 @@ mod windows_tests {
             );
             let _ = result_tx.send(result);
         });
-        let silent = TcpStream::connect(("127.0.0.1", port)).expect("connect silent peer");
+        let silent = WindowsNamedPipeBootstrapStream(
+            WindowsNamedPipeServer::connect_client(&endpoint).expect("connect silent peer"),
+        );
 
         let active_deadline = Instant::now() + Duration::from_secs(2);
-        while lock_or_recover(&cancellation.active_stream).is_none() {
+        while !listener.listener.is_connected() {
             assert!(
                 Instant::now() < active_deadline,
                 "silent peer never became the active handshake"
@@ -1925,7 +2003,7 @@ mod windows_tests {
             thread::yield_now();
         }
         let cancel_started = Instant::now();
-        cancellation.cancel().expect("cancel active handshake");
+        listener.shutdown().expect("shutdown active handshake");
         let result = result_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("cancellation must beat the five-second peer deadline")
@@ -1940,18 +2018,17 @@ mod windows_tests {
     }
 
     #[test]
-    fn consumed_windows_listener_close_preserves_outcome_and_rejects_reconnect() {
+    fn shipping_windows_listener_closes_pipe_locator_without_tcp_fallback() {
         let listener = BootstrapListener::bind().expect("bind Windows bootstrap");
         let link = listener.app_link();
         let (endpoint, _) = parse_app_link(&link).expect("Windows app link");
-        let port = endpoint.parse::<u16>().expect("Windows bootstrap port");
+        assert!(endpoint.starts_with(r"\\.\pipe\keld-"));
+        assert!(endpoint.parse::<u16>().is_err(), "new host minted TCP port");
 
-        listener
-            .close_endpoint()
-            .expect("locator close cannot replace the selected admission outcome");
-        let rebound = TcpListener::bind(("127.0.0.1", port))
-            .expect("consumed listener must release its exact OS endpoint");
-        assert_eq!(rebound.local_addr().expect("rebound address").port(), port);
+        listener.shutdown().expect("close named-pipe locator");
+        let error = WindowsNamedPipeServer::connect_client(endpoint)
+            .expect_err("closed shipping pipe must reject reconnect");
+        assert!(matches!(error.raw_os_error(), Some(2 | 231)));
     }
 }
 

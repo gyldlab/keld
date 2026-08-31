@@ -77,8 +77,9 @@ remote-client rejection, and deletes an instance after its last handle closes
    `KELD-IPC-002`; an oversized envelope is `KELD-IPC-004`; and a well-formed
    non-`HELLO`/wrong-reserved-fields frame is `KELD-IPC-005`. None is `HelloAuth`.
    They receive no host frame, clean up, and re-accept while generation time remains.
-5. Given the intended Bun child and complete link, when it connects with
-   `node:net` and sends the matching v2 `HELLO`, then the host replies only after
+5. Given the intended Bun child and complete link, when it connects with the
+   existing `Bun.connect({ unix: endpoint })` path and sends the matching v2
+   `HELLO`, then the host replies only after
    verification and one echo succeeds. Header bytes, protocol version 2, and
    32-byte raw `HELLO` are unchanged.
 6. Given cancellation, host shutdown, deadline, or a silent partial `HELLO`,
@@ -265,8 +266,10 @@ KELD_APP_LINK=<endpoint>#<64 lowercase hex token>
 ```
 
 The Windows child selector accepts only an exact `\\.\pipe\keld-` endpoint or a
-decimal legacy diagnostic port. Pipe endpoints use Bun `node:net`
-`createConnection({ path: endpoint })`. New hosts produce pipe form only; they
+decimal legacy diagnostic port. Pipe endpoints use the existing Bun
+`Bun.connect({ unix: endpoint })` path; `node:net` `createConnection({ path })`
+remains the independently verified equivalent oracle. New hosts produce pipe
+form only; they
 never downgrade. Unknown forms fail locally as `KELD-IPC-007` without echoing the
 supplied string.
 
@@ -285,7 +288,7 @@ Keld's endpoint or token protocol.
 
 | Entry | Electron documentation oracle | Keld migration contract | Status and falsifiable test |
 | --- | --- | --- | --- |
-| `KEL101.electron-main-node-app-link` | [Electron Process Model: main process](https://www.electronjs.org/docs/latest/tutorial/process-model#the-main-process) says Electron's main process runs in a Node.js environment with Node APIs, while renderer code has no direct Node API access. | A migrated Electron-main entry may use its Node-capable main-process equivalent to open the host-provided `KELD_APP_LINK` through `node:net`; no renderer or preload receives the endpoint, token, or pipe handle. Electron supplies no equivalent host-issued app-link, so Keld's endpoint/token is an explicit `▲` migration contract, not an Electron behavior match. | Planned until T3. A Windows main-process migration fixture proves pipe and legacy decimal parsing from the main entry, and a renderer/preload fixture proves the link value is absent there. It fails if the test exposes `KELD_APP_LINK` outside the child main entry or calls the parser before this entry is recorded. |
+| `KEL101.electron-main-node-app-link` | [Electron Process Model: main process](https://www.electronjs.org/docs/latest/tutorial/process-model#the-main-process) says Electron's main process runs in a Node.js environment with Node APIs, while renderer code has no direct Node API access. | A migrated Electron-main entry may use its Bun/Node-capable main-process equivalent to open the host-provided `KELD_APP_LINK`; no renderer or preload receives the endpoint, token, or pipe handle. Electron supplies no equivalent host-issued app-link, so Keld's endpoint/token is an explicit `▲` migration contract, not an Electron behavior match. | T3 evidence: `keld-compat/tests/electron_lifecycle.rs` drives the real `@keld/electron` main entry over the shipping Windows pipe and a separately constructed decimal diagnostic listener. `shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage` runs the actual WebView2 renderer and fails its independent beacon oracle if `process.env.KELD_APP_LINK` or a global link is visible. Current Keld exposes no preload surface, so there is no preload recipient; adding one must preserve this absence contract. |
 
 ### Local compatibility evidence (not security proof)
 
@@ -342,7 +345,7 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
   ABI owner, foreign-user fixture, review gates, and rollback boundary.
 - [x] T2: add Windows shared bootstrap, exact DACL, overlapped state machine,
   cancellation, redacted rejection, and inheritance proof with focused tests.
-- [ ] T3: atomically migrate echo server, diagnostics, and Bun template/client;
+- [x] T3: atomically migrate echo server, diagnostics, and Bun template/client;
   retain only explicit decimal-port diagnostic consumption and prove bad-then-good HELLO.
 - [ ] T4: run different-user Windows fixture and full Windows suite; only then
   update LIVE wording. If it cannot run in PR CI, make it a required release/weekly gate.

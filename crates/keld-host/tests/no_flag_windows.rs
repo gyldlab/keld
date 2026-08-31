@@ -573,7 +573,11 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>shipping</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>shipping</p><script>\
+             const leaked=(typeof process!=='undefined'&&process.env?.KELD_APP_LINK)||globalThis.KELD_APP_LINK;\
+             const image=document.createElement('img');\
+             image.src='http://127.0.0.1:{beacon_port}/'+(leaked?'leaked':'ready')+'.png';\
+             document.body.append(image);</script>\n"
         ),
     )
     .expect("write shipping renderer");

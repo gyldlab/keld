@@ -21,8 +21,9 @@ use keld_ipc::{
 
 /// Host side of one app-link lifecycle session.
 ///
-/// After [`Self::handshake`], the caller sends `Ready` / `LastWindowClosed`
-/// explicitly — they are never implied by handshake. A 5-second I/O deadline
+/// After [`Self::handshake`] or [`Self::from_authenticated`], the caller sends
+/// `Ready` / `LastWindowClosed` explicitly — they are never implied by
+/// handshake. A 5-second I/O deadline
 /// applies to `HELLO` and to subsequent writes. The persistent reader then
 /// polls with a short `SO_RCVTIMEO` until `Quit`, EOF, or Drop so a quiet
 /// `whenReady` wait is not `KELD-IPC-006` and so Drop can join on Windows.
@@ -61,6 +62,27 @@ impl<W: Write + Send + AppLinkDeadlines + 'static> LifecycleSession<W> {
         reader.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
         writer.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
         handshake_server(&mut reader, token)?;
+        Self::start_authenticated(reader, writer)
+    }
+
+    /// Starts lifecycle handling on a stream whose host-owned bootstrap has
+    /// already verified v2 `HELLO`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IpcError`] if session deadlines cannot be configured.
+    pub fn from_authenticated<R>(reader: R, writer: W) -> Result<Self, IpcError>
+    where
+        R: Read + Write + AppLinkDeadlines + Send + 'static,
+    {
+        writer.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))?;
+        Self::start_authenticated(reader, writer)
+    }
+
+    fn start_authenticated<R>(reader: R, writer: W) -> Result<Self, IpcError>
+    where
+        R: Read + Write + AppLinkDeadlines + Send + 'static,
+    {
         // Persistent session: a quiet child waiting on Ready is expected.
         // `read_frame` cannot retry after Timeout, so the handshake recv
         // deadline must not remain on the reader. Replacing it with a short

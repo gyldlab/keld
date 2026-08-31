@@ -1235,10 +1235,22 @@ mod lifecycle_tests {
 
     #[cfg(windows)]
     fn connected_stream_pair() -> (BootstrapStream, BootstrapStream) {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("pair listener");
-        let address = listener.local_addr().expect("pair address");
-        let client = std::net::TcpStream::connect(address).expect("pair client");
-        let (server, _) = listener.accept().expect("pair server");
+        let listener = Arc::new(BootstrapListener::bind().expect("pair listener"));
+        let app_link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&app_link).expect("pair app link");
+        let endpoint = endpoint.to_owned();
+        let acceptor = Arc::clone(&listener);
+        let worker = std::thread::spawn(move || acceptor.accept_authenticated());
+        let mut client = BootstrapStream::connect(&endpoint).expect("pair client");
+        client
+            .set_app_link_deadlines(Some(keld_ipc::APP_LINK_IO_DEADLINE))
+            .expect("pair deadlines");
+        keld_ipc::link::handshake_client(&mut client, &token).expect("pair HELLO");
+        let server = worker
+            .join()
+            .expect("pair accept join")
+            .expect("pair accept")
+            .expect("authenticated pair");
         (server, client)
     }
 }

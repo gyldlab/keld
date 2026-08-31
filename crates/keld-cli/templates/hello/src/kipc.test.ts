@@ -20,7 +20,9 @@ import {
   encodeEchoRequest,
   encodeHeader,
   encodeVarint,
+  isWin32PipeEndpoint,
   parseAppLink,
+  parseWin32DiagnosticPort,
 } from "./kipc";
 
 describe("frame header", () => {
@@ -199,6 +201,23 @@ describe("parseAppLink", () => {
     const hex = "A5".repeat(32);
     const { token } = parseAppLink(`/tmp/e.sock#${hex}`);
     expect(Array.from(token)).toEqual(new Array(32).fill(0xa5));
+  });
+});
+
+describe("Windows endpoint selection", () => {
+  test("accepts the exact named-pipe shape", () => {
+    const valid = String.raw`\\.\pipe\keld-${"3c".repeat(32)}`;
+    expect(isWin32PipeEndpoint(valid)).toBe(true);
+    expect(isWin32PipeEndpoint(String.raw`\\.\pipe\keld-${"3C".repeat(32)}`)).toBe(false);
+    expect(isWin32PipeEndpoint("9000")).toBe(false);
+  });
+
+  test("retains only strict decimal diagnostic ports", () => {
+    expect(parseWin32DiagnosticPort("1")).toBe(1);
+    expect(parseWin32DiagnosticPort("65535")).toBe(65535);
+    for (const bad of ["0", "01", "65536", "9000x", "127.0.0.1:9000", ""]) {
+      expect(() => parseWin32DiagnosticPort(bad)).toThrow("KELD-IPC-007");
+    }
   });
 });
 
