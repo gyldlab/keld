@@ -941,7 +941,7 @@ mod named_pipe_tests {
     fn pipe_name_dacl_and_non_inheritance_match_exact_contract() {
         let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind named pipe");
         let link = listener.app_link();
-        let (endpoint, _) = parse_app_link(&link).expect("parse app link");
+        let (endpoint, token) = parse_app_link(&link).expect("parse app link");
         let suffix = endpoint
             .strip_prefix(r"\\.\pipe\keld-")
             .expect("canonical named-pipe prefix");
@@ -951,6 +951,11 @@ mod named_pipe_tests {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
             "pipe nonce must be lowercase hex"
+        );
+        assert_ne!(
+            suffix,
+            token.to_hex(),
+            "pipe namespace nonce must be minted independently from the HELLO token"
         );
         let facts = listener.security_facts().expect("security readback");
         assert!(facts.protected_dacl);
