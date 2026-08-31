@@ -819,9 +819,9 @@ fn assert_dev_lease_handle_isolation(
     let cli = open_process_for_census(cli_pid);
     let host = open_process_for_census(host_pid);
     let bun = open_process_for_census(bun_pid);
-    let cli_entries = raw_process_handle_census(cli_pid);
-    let host_entries = raw_process_handle_census(host_pid);
-    let bun_entries = raw_process_handle_census(bun_pid);
+    let cli_entries = census_matching_handle_count(&cli, cli_pid);
+    let host_entries = census_matching_handle_count(&host, host_pid);
+    let bun_entries = census_matching_handle_count(&bun, bun_pid);
     let current_entries = raw_process_handle_census(std::process::id());
     let known_value = known_file_handle.addr();
     let file_type_index = current_entries
@@ -829,22 +829,6 @@ fn assert_dev_lease_handle_isolation(
         .find(|entry| entry.handle_value == known_value)
         .map(|entry| entry.object_type_index)
         .expect("known controller pipe exists in the raw handle table");
-    assert_eq!(
-        cli_entries.len(),
-        process_handle_count(&cli),
-        "CLI raw handle census disagrees with GetProcessHandleCount"
-    );
-    assert_eq!(
-        host_entries.len(),
-        process_handle_count(&host),
-        "host raw handle census disagrees with GetProcessHandleCount"
-    );
-    assert_eq!(
-        bun_entries.len(),
-        process_handle_count(&bun),
-        "Bun raw handle census disagrees with GetProcessHandleCount"
-    );
-
     let lease = host_entries
         .iter()
         .find(|entry| entry.handle_value == lease_handle_value)
@@ -984,6 +968,23 @@ fn process_handle_count(process: &OwnedHandle) -> usize {
         std::io::Error::last_os_error()
     );
     usize::try_from(count).expect("process handle count fits usize")
+}
+
+fn census_matching_handle_count(process: &OwnedHandle, pid: u32) -> Vec<SystemHandleEntry> {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    loop {
+        let entries = raw_process_handle_census(pid);
+        let reported_count = process_handle_count(process);
+        if entries.len() == reported_count {
+            return entries;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "raw handle census for PID {pid} never agreed with GetProcessHandleCount: raw={}, reported={reported_count}",
+            entries.len()
+        );
+        thread::park_timeout(Duration::from_millis(20));
+    }
 }
 
 fn duplicate_process_handle(process: &OwnedHandle, value: usize) -> Option<OwnedHandle> {

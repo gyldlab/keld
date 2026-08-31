@@ -767,8 +767,8 @@ Future implementation gates:
   `OwnedHandle::from_raw_handle` to acquire the exact host object,
   `QueryFullProcessImageNameW` to verify its staged image, and
   `WaitForSingleObject` to await that object before deletion. These blocks are
-  Windows-only and carry pointer/handle-lifetime proofs; human unsafe/security
-  review is mandatory.
+  Windows-only and carry pointer/handle-lifetime proofs; mandatory human review
+  of unsafe and security-sensitive code applies.
   Named-pipe transport FFI remains KEL-101.
 
 ## 9. Performance impact

@@ -14,6 +14,10 @@ use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", windows))]
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::sync::mpsc;
+#[cfg(windows)]
+use std::thread;
 use std::time::Duration;
 
 use keld_core::{
@@ -27,6 +31,9 @@ use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
+
+#[cfg(windows)]
+const WINDOWS_STAGE_CLEANUP_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors starting a dev session.
 #[derive(Debug)]
@@ -337,28 +344,107 @@ fn start_windows_stage_cleanup_sentinel(
             "Windows dev-stage cleanup sentinel has no readiness pipe",
         ))
     })?;
-    let mut stderr = sentinel.stderr.take().ok_or_else(|| {
+    let stderr = sentinel.stderr.take().ok_or_else(|| {
         DevError::Runtime(String::from(
             "Windows dev-stage cleanup sentinel has no diagnostic pipe",
         ))
     })?;
-    let mut ready = String::new();
-    let mut stdout = BufReader::new(stdout);
-    stdout.read_line(&mut ready)?;
-    if ready.trim_end() != "KELD_WINDOWS_DEV_STAGE_CLEANUP_READY" {
-        let status = sentinel.wait()?;
-        let mut detail = String::new();
-        stderr.read_to_string(&mut detail)?;
-        return Err(DevError::Runtime(format!(
-            "Windows dev-stage cleanup sentinel failed readiness with {status}: {}",
-            detail.trim()
-        )));
+    await_windows_stage_cleanup_sentinel(
+        sentinel,
+        stdout,
+        stderr,
+        WINDOWS_STAGE_CLEANUP_READY_TIMEOUT,
+    )
+}
+
+#[cfg(windows)]
+fn await_windows_stage_cleanup_sentinel(
+    mut sentinel: std::process::Child,
+    stdout: std::process::ChildStdout,
+    mut stderr: std::process::ChildStderr,
+    timeout: Duration,
+) -> Result<WindowsStageCleanupSentinel, DevError> {
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let ready_thread = thread::Builder::new()
+        .name(String::from("keld-stage-cleanup-readiness"))
+        .spawn(move || {
+            let mut ready = String::new();
+            let result = BufReader::new(stdout).read_line(&mut ready).map(|_| ready);
+            let _ = ready_tx.send(result);
+        });
+    let ready_thread = match ready_thread {
+        Ok(thread) => thread,
+        Err(source) => {
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                &format!("could not start readiness reader: {source}"),
+            );
+        }
+    };
+    let ready = match ready_rx.recv_timeout(timeout) {
+        Ok(Ok(ready)) => ready,
+        Ok(Err(source)) => {
+            let _ = ready_thread.join();
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                &format!("readiness pipe failed: {source}"),
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = sentinel.kill();
+            let _ = ready_thread.join();
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                &format!("timed out after {timeout:?}"),
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = sentinel.kill();
+            let _ = ready_thread.join();
+            return failed_windows_stage_cleanup_readiness(
+                &mut sentinel,
+                &mut stderr,
+                "readiness reader stopped without a result",
+            );
+        }
+    };
+    if ready_thread.join().is_err() {
+        return failed_windows_stage_cleanup_readiness(
+            &mut sentinel,
+            &mut stderr,
+            "readiness reader panicked",
+        );
     }
-    drop(stdout);
+    if ready.trim_end() != "KELD_WINDOWS_DEV_STAGE_CLEANUP_READY" {
+        return failed_windows_stage_cleanup_readiness(
+            &mut sentinel,
+            &mut stderr,
+            &format!("unexpected readiness record {ready:?}"),
+        );
+    }
     Ok(WindowsStageCleanupSentinel {
         child: sentinel,
         stderr,
     })
+}
+
+#[cfg(windows)]
+fn failed_windows_stage_cleanup_readiness(
+    sentinel: &mut std::process::Child,
+    stderr: &mut std::process::ChildStderr,
+    reason: &str,
+) -> Result<WindowsStageCleanupSentinel, DevError> {
+    let _ = sentinel.kill();
+    let status = sentinel.wait()?;
+    let mut detail = String::new();
+    stderr.read_to_string(&mut detail)?;
+    Err(DevError::Runtime(format!(
+        "Windows dev-stage cleanup sentinel failed readiness ({reason}) with {status}: {}",
+        detail.trim()
+    )))
 }
 
 #[cfg(windows)]
@@ -472,11 +558,41 @@ pub fn start_dev_session(project_root: &Path) -> Result<HostOwnedHelloSession, D
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(windows)]
+    use std::time::Instant;
 
     fn window_phase_failure() -> keld_core::HelloSessionError {
         keld_core::HelloSessionError::WindowPhase {
             cause: "KELD-RUNTIME-002: child crashed 3 times within 30s".to_owned(),
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn cleanup_sentinel_readiness_has_a_deadline_and_reaps_the_child() {
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn blocked readiness fixture");
+        let stdout = child.stdout.take().expect("readiness stdout");
+        let stderr = child.stderr.take().expect("diagnostic stderr");
+        let started = Instant::now();
+        let Err(error) =
+            await_windows_stage_cleanup_sentinel(child, stdout, stderr, Duration::from_millis(100))
+        else {
+            panic!("silent sentinel must time out");
+        };
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.to_string().contains("timed out"), "{error}");
     }
 
     #[test]

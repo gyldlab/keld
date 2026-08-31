@@ -15,9 +15,9 @@
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-#[cfg(windows)]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -1100,9 +1100,9 @@ struct CaptureThreads {
     stdout: Option<JoinHandle<()>>,
     stderr: Option<JoinHandle<()>>,
     #[cfg(windows)]
-    stdout_handle: Option<usize>,
+    stdout_handle: Arc<AtomicUsize>,
     #[cfg(windows)]
-    stderr_handle: Option<usize>,
+    stderr_handle: Arc<AtomicUsize>,
     #[cfg(windows)]
     stdout_budget: Arc<AtomicU64>,
     #[cfg(windows)]
@@ -1134,19 +1134,25 @@ fn start_capture_threads(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     #[cfg(windows)]
-    let stdout_handle = stdout.as_ref().map(|reader| reader.as_raw_handle().addr());
+    let stdout_handle = Arc::new(AtomicUsize::new(
+        stdout
+            .as_ref()
+            .map_or(0, |reader| reader.as_raw_handle().addr()),
+    ));
     #[cfg(windows)]
-    let stderr_handle = stderr.as_ref().map(|reader| reader.as_raw_handle().addr());
+    let stderr_handle = Arc::new(AtomicUsize::new(
+        stderr
+            .as_ref()
+            .map_or(0, |reader| reader.as_raw_handle().addr()),
+    ));
     let stdout_thread = match stdout.map(|r| {
-        #[cfg(windows)]
-        let handle = r.as_raw_handle().addr();
         spawn_capture_thread(
             r,
             Arc::clone(output),
             "stdout",
             true,
             #[cfg(windows)]
-            handle,
+            Arc::clone(&stdout_handle),
             #[cfg(windows)]
             Arc::clone(&stdout_budget),
             #[cfg(windows)]
@@ -1155,15 +1161,20 @@ fn start_capture_threads(
     }) {
         Some(Ok(thread)) => Some(thread),
         Some(Err(source)) => {
+            #[cfg(windows)]
+            {
+                stdout_handle.store(0, Ordering::Release);
+                stderr_handle.store(0, Ordering::Release);
+            }
             return Err(CaptureStartError {
                 source,
                 threads: CaptureThreads {
                     stdout: None,
                     stderr: None,
                     #[cfg(windows)]
-                    stdout_handle,
+                    stdout_handle: Arc::clone(&stdout_handle),
                     #[cfg(windows)]
-                    stderr_handle,
+                    stderr_handle: Arc::clone(&stderr_handle),
                     #[cfg(windows)]
                     stdout_budget: Arc::clone(&stdout_budget),
                     #[cfg(windows)]
@@ -1178,15 +1189,13 @@ fn start_capture_threads(
         None => None,
     };
     let stderr_thread = match stderr.map(|r| {
-        #[cfg(windows)]
-        let handle = r.as_raw_handle().addr();
         spawn_capture_thread(
             r,
             Arc::clone(output),
             "stderr",
             false,
             #[cfg(windows)]
-            handle,
+            Arc::clone(&stderr_handle),
             #[cfg(windows)]
             Arc::clone(&stderr_budget),
             #[cfg(windows)]
@@ -1195,15 +1204,17 @@ fn start_capture_threads(
     }) {
         Some(Ok(thread)) => Some(thread),
         Some(Err(source)) => {
+            #[cfg(windows)]
+            stderr_handle.store(0, Ordering::Release);
             return Err(CaptureStartError {
                 source,
                 threads: CaptureThreads {
                     stdout: stdout_thread,
                     stderr: None,
                     #[cfg(windows)]
-                    stdout_handle,
+                    stdout_handle: Arc::clone(&stdout_handle),
                     #[cfg(windows)]
-                    stderr_handle,
+                    stderr_handle: Arc::clone(&stderr_handle),
                     #[cfg(windows)]
                     stdout_budget: Arc::clone(&stdout_budget),
                     #[cfg(windows)]
@@ -1221,9 +1232,9 @@ fn start_capture_threads(
         stdout: stdout_thread,
         stderr: stderr_thread,
         #[cfg(windows)]
-        stdout_handle,
+        stdout_handle: Arc::clone(&stdout_handle),
         #[cfg(windows)]
-        stderr_handle,
+        stderr_handle: Arc::clone(&stderr_handle),
         #[cfg(windows)]
         stdout_budget,
         #[cfg(windows)]
@@ -1255,12 +1266,12 @@ fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
         // budget. Descendant writes after this point cannot extend the join or
         // contaminate a later generation's capture ledger.
         publish_capture_drain_budget(
-            threads.stdout_handle,
+            &threads.stdout_handle,
             &threads.stdout_budget,
             &threads.stdout_lock,
         );
         publish_capture_drain_budget(
-            threads.stderr_handle,
+            &threads.stderr_handle,
             &threads.stderr_budget,
             &threads.stderr_lock,
         );
@@ -1277,15 +1288,32 @@ fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
 
 #[cfg(windows)]
 fn publish_capture_drain_budget(
-    handle: Option<usize>,
+    handle: &AtomicUsize,
     budget: &AtomicU64,
     iteration_lock: &Mutex<()>,
 ) {
     let _iteration = lock_or_recover(iteration_lock);
-    let available = handle
-        .and_then(|handle| peek_pipe_available_handle(handle).ok())
-        .unwrap_or(0);
+    let handle = handle.load(Ordering::Acquire);
+    let available = if handle == 0 {
+        0
+    } else {
+        peek_pipe_available_handle(handle).unwrap_or(0)
+    };
     budget.store(u64::from(available), Ordering::Release);
+}
+
+#[cfg(windows)]
+struct CaptureHandleRetirement {
+    handle: Arc<AtomicUsize>,
+    iteration_lock: Arc<Mutex<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for CaptureHandleRetirement {
+    fn drop(&mut self) {
+        let _iteration = lock_or_recover(&self.iteration_lock);
+        self.handle.store(0, Ordering::Release);
+    }
 }
 
 /// Polls `child` for exit, honoring `shutdown`. Returns `true` if it killed
@@ -1452,13 +1480,20 @@ fn spawn_capture_thread(
     output: Arc<Mutex<CapturedOutput>>,
     name: &'static str,
     is_stdout: bool,
-    handle: usize,
+    handle: Arc<AtomicUsize>,
     budget: Arc<AtomicU64>,
     iteration_lock: Arc<Mutex<()>>,
 ) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name(format!("keld-runtime-capture-{name}"))
         .spawn(move || {
+            // This publication retires under the same lock used by the budget
+            // snapshot, before the owned reader can close and Windows can
+            // reuse its numeric handle value.
+            let _retirement = CaptureHandleRetirement {
+                handle: Arc::clone(&handle),
+                iteration_lock: Arc::clone(&iteration_lock),
+            };
             let mut buf = [0_u8; 4096];
             loop {
                 let iteration = lock_or_recover(&iteration_lock);
@@ -1466,7 +1501,11 @@ fn spawn_capture_thread(
                 if remaining == 0 {
                     return;
                 }
-                let Ok(available) = peek_pipe_available_handle(handle) else {
+                let live_handle = handle.load(Ordering::Acquire);
+                if live_handle == 0 {
+                    return;
+                }
+                let Ok(available) = peek_pipe_available_handle(live_handle) else {
                     return;
                 };
                 if available == 0 {

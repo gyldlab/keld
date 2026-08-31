@@ -1976,11 +1976,14 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   removes the stage after the host exits. Windows staging atomically protects,
   pins and validates `.keld`/`dev` before nonce creation and pins the nonce
   before the first staged file write, rejecting or preventing junctions without
-  writing through them. CLI-death process teardown is live,
-  but Windows cannot remove its running staged executable and no surviving
-  cleanup helper is approved, so that empty-stage cleanup row remains open.
-  Abnormal host-death descendants likewise remain KEL-78/T3 Job Object work;
-  this slice makes no LPAC, named-pipe/DACL, or privileged-dispatch claim.
+  writing through them. The installed
+  `keld.windows-dev-stage-cleanup/v1` role is the approved surviving
+  post-CLI-death stage-deletion owner: it validates the exact stage and host
+  identity, waits for that host object, and removes the stage. Before the first
+  Bun spawn, the no-flag host also installs KEL-78/T3's unnamed,
+  non-breakaway, kill-on-close Job, so abnormal host death reaps Bun and its
+  enrolled descendants. This slice makes no LPAC, named-pipe/DACL, or
+  privileged-dispatch claim.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -2212,10 +2215,12 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-Two limits remain. Linux `keld dev` fails closed before creating an app resource,
-and its real T4 product rows are absent. The Windows no-flag slice does not prove
-abnormal host-death descendant cleanup, post-CLI-death stage deletion, or LPAC
-containment.
+One platform limit remains: Linux `keld dev` fails closed before creating an app
+resource, and its real T4 product rows are absent. The Windows no-flag slice
+proves abnormal host-death descendant cleanup through KEL-78/T3's host Job and
+post-CLI-death stage deletion through `keld.windows-dev-stage-cleanup/v1`.
+Strict-profile LPAC containment remains separately owned and evidenced by
+KEL-78; KEL-96 does not claim that proof as a no-flag-host responsibility.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
