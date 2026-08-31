@@ -244,9 +244,16 @@ printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'root="$(git rev-parse --show-toplevel)"' \
+    'literal_package=""' \
+    'case "$root" in' \
+    '  /*)' \
+    '    json_unix_root="${root//\\/\\\\}"' \
+    '    literal_package=",{\"name\":\"keld-literal\",\"manifest_path\":\"${json_unix_root}/crates/literal\\\\component/Cargo.toml\",\"dependencies\":[]}"' \
+    '    ;;' \
+    'esac' \
     'root="${root//\//\\}"' \
     'root="${root//\\/\\\\}"' \
-    'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[]}]}\\n" "$root" "$root" "$root" "$root" "$root" "$root"' \
+    'printf "{\\\"packages\\\":[{\\\"name\\\":\\\"keld-host\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-host/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-core\\\",\\\"path\\\":\\\"%s/crates/keld-core\\\"}]},{\\\"name\\\":\\\"keld-core\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-core/Cargo.toml\\\",\\\"dependencies\\\":[{\\\"name\\\":\\\"keld-ipc\\\",\\\"path\\\":\\\"%s/crates/keld-ipc\\\"}]},{\\\"name\\\":\\\"keld-ipc\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-ipc/Cargo.toml\\\",\\\"dependencies\\\":[]},{\\\"name\\\":\\\"keld-runtime\\\",\\\"manifest_path\\\":\\\"%s/crates/keld-runtime/Cargo.toml\\\",\\\"dependencies\\\":[]}%s]}\\n" "$root" "$root" "$root" "$root" "$root" "$root" "$literal_package"' \
     >"$temp_dir/fake-bin/cargo"
 chmod +x "$temp_dir/fake-bin/cargo"
 
@@ -269,6 +276,26 @@ fake_runtime_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\
 expect_flags "pull-request base/head classifies the actual diff" "$fake_runtime_flags" "$pr_result"
 expect_package_token "pull-request base/head selects changed package" keld-runtime "$pr_result"
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
+
+# A backslash is a legal Unix filename byte, not a path separator. On Unix,
+# prove ingestion preserves an embedded backslash while still normalizing the
+# synthetic root-relative Windows paths above. Windows cannot create this name.
+case "$(uname -s)" in
+    MINGW* | MSYS*) ;;
+    *)
+        literal_dir='crates/literal\component'
+        mkdir -p "$temp_dir/$literal_dir/src"
+        printf 'literal\n' >"$temp_dir/$literal_dir/src/lib.rs"
+        git -C "$temp_dir" add -- "$literal_dir/src/lib.rs"
+        git -C "$temp_dir" commit -qm literal-backslash
+        literal_sha="$(git -C "$temp_dir" rev-parse HEAD)"
+        literal_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$runtime_sha" KELD_CI_HEAD_SHA="$literal_sha" "$router" github)"
+        expect_flags "Unix backslash component remains one package path" "$fake_runtime_flags" "$literal_result"
+        expect_package_token "Unix backslash component selects its exact package" keld-literal "$literal_result"
+        runtime_sha=$literal_sha
+        echo "ok: Unix backslash component is not normalized as a Windows separator"
+        ;;
+esac
 
 mkdir -p "$temp_dir/docs"
 printf 'docs\n' >"$temp_dir/docs/guide.md"

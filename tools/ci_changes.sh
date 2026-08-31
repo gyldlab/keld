@@ -88,11 +88,16 @@ load_workspace_metadata() {
     workspace_metadata_cache="$(
         cargo metadata --no-deps --format-version 1 |
             jq '
+                def normalize_windows_path:
+                    if test("^[A-Za-z]:\\\\|^\\\\") then gsub("\\\\"; "/")
+                    else .
+                    end;
+
                 .packages |= map(
-                    .manifest_path |= gsub("\\\\"; "/")
+                    .manifest_path |= normalize_windows_path
                     | .dependencies |= map(
                         if .path == null then .
-                        else .path |= gsub("\\\\"; "/")
+                        else .path |= normalize_windows_path
                         end
                     )
                 )
