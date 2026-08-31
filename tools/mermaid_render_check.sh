@@ -47,18 +47,42 @@ run_with_timeout() {
 # Docker bind sources need native host paths, while container paths must remain
 # literal Linux paths. Convert the former explicitly so the docker-run subshell
 # can disable MSYS argument conversion without making host mounts ambiguous.
+running_under_msys() {
+  case "${MSYSTEM:-}" in
+    MINGW* | MSYS*) return 0 ;;
+  esac
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW* | MSYS*) return 0 ;;
+  esac
+  return 1
+}
+
 docker_host_path() {
   local path=$1
-  case "${MSYSTEM:-}" in
-    MINGW* | MSYS*)
-      command -v cygpath >/dev/null 2>&1 || {
-        echo 'KELD-DOCS006: `cygpath` is required when rendering from Git Bash. Repair Git for Windows, then rerun.' >&2
-        return 1
-      }
-      cygpath -am "$path"
-      ;;
-    *) printf '%s\n' "$path" ;;
-  esac
+  if running_under_msys; then
+    command -v cygpath >/dev/null 2>&1 || {
+      echo 'KELD-DOCS006: `cygpath` is required when rendering from Git Bash. Repair Git for Windows, then rerun.' >&2
+      return 1
+    }
+    cygpath -am "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+# Docker Desktop presents Git-Bash /tmp binds to Linux containers as root-owned
+# even when the host directory belongs to the invoking Windows user. The
+# renderer deliberately runs as the non-root Git-Bash uid/gid, so grant that
+# isolated random output directory write access on MSYS only. Unix permissions
+# remain the mktemp default; source and config mounts remain read-only.
+prepare_docker_output_dir() {
+  local path=$1
+  if running_under_msys; then
+    chmod 0777 -- "$path" || {
+      echo "KELD-DOCS006: cannot make Docker output directory writable from Git Bash: '$path'. Repair its Windows ACL, then rerun." >&2
+      return 1
+    }
+  fi
 }
 
 docker info >/dev/null 2>&1 || {
@@ -133,6 +157,7 @@ trap 'exit 130' INT TERM HUP
 
 render_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)
 readonly render_dir
+prepare_docker_output_dir "$render_dir"
 docker_render_dir=$(docker_host_path "$render_dir")
 readonly docker_render_dir
 docker_render_config=$(docker_host_path "$render_config")
