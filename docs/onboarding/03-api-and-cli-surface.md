@@ -447,7 +447,7 @@ Transport and session:
 | `write_frame` | `link` | `<S: Write>(&mut S, kind, flags, channel, corr, payload) -> Result<(), IpcError>` |
 | `handshake_client` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — writes `Hello` with the 32-byte token, then verifies the server's `Hello` |
 | `handshake_server` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — verifies the client's `Hello` **before** writing the token |
-| `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream` / `TcpStream` |
+| `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream`, diagnostic `TcpStream`, and `WindowsNamedPipeBootstrapStream`; the Windows implementation applies the same optional read/write timeout to the pipe handle |
 | `encode` / `decode` | [`codec`](../../crates/keld-ipc/src/codec.rs) | postcard, over `serde::Serialize` / `DeserializeOwned` |
 | `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write + AppLinkDeadlines>(&mut S, &SessionToken) -> Result<(), IpcError>` — 5s deadline, handshake, then loop until EOF |
 | `echo_call` | `session` | `<S: Read + Write + AppLinkDeadlines>(&mut S, &EchoRequest, &SessionToken) -> Result<EchoResponse, IpcError>` |
