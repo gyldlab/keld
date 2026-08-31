@@ -359,6 +359,7 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     );
     g2.set_read_timeout(Some(PRODUCT_DEADLINE))
         .expect("g2 control deadline");
+    let mut g2_writer = g2.try_clone().expect("g2 control acknowledgment writer");
     let mut g2_reader = BufReader::new(g2);
     let g2_hello = read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 HELLO");
     let mut g2_fields = g2_hello.split_whitespace();
@@ -371,6 +372,12 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     let g2_descendant =
         read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT");
     assert_eq!(parse_descendant_pid(&g2_descendant), 0);
+    g2_writer
+        .write_all(b"G2_WITNESSED\n")
+        .expect("acknowledge observed g2 records");
+    g2_writer
+        .flush()
+        .expect("flush g2 observation acknowledgment");
 
     let (_g3_reader, mut g3_writer, g3_pid, _g3_link) =
         accept_ready_generation(&control_listener, &mut child);

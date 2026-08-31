@@ -170,10 +170,13 @@ if (process.platform === "win32") {
   await sendControl(`DESCENDANT ${descendant.pid}`);
 }
 if (generationAttempt === 2) {
-  // `Socket.write` accepting bytes does not prove Bun flushed its user-space
-  // queue before this deliberately abrupt exit. Preserve the fast-revoke
-  // timing while making the two already-awaited control records observable.
-  control.flush();
+  // A local flush does not prove the peer observed both control records before
+  // this deliberately abrupt exit. The parent acknowledges only after reading
+  // HELLO and DESCENDANT, making the fast-revoke witness causal without sleeps.
+  const witness = await receiveCommand();
+  if (witness !== "G2_WITNESSED") {
+    throw new Error(`KEL96 unexpected g2 witness ${witness}`);
+  }
   process.exit(23);
 }
 
