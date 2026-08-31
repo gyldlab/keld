@@ -689,7 +689,7 @@ impl WindowsNamedPipeBootstrapListener {
                 drop(lock_or_recover(&self.server).take());
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             };
-            let mut stream = WindowsNamedPipeBootstrapStream(server.stream());
+            let mut stream = WindowsNamedPipeBootstrapStream(server.stream()?);
             stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
             stream.set_app_link_write_deadline(Some(peer_timeout))?;
             stream.0.set_absolute_deadline(Some(peer_deadline));
@@ -818,7 +818,7 @@ impl WindowsNamedPipeBootstrapStream {
     ///
     /// Reserved for parity with other platform streams.
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self(self.0.try_clone()))
+        self.0.try_clone().map(Self)
     }
 }
 

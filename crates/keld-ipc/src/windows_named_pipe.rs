@@ -41,7 +41,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, INFINITE, ResetEvent, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
 };
 #[cfg(test)]
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
@@ -61,6 +61,7 @@ pub(crate) enum WaitOutcome {
 struct ServerInner {
     pipe: Mutex<Option<OwnedHandle>>,
     cancel_event: OwnedHandle,
+    connect_event: OwnedEvent,
     connected: AtomicBool,
     consumed: AtomicBool,
     #[cfg(test)]
@@ -85,6 +86,8 @@ pub(crate) struct WindowsNamedPipeCanceller {
 #[derive(Debug)]
 pub(crate) struct WindowsNamedPipeStream {
     inner: Arc<ServerInner>,
+    read_event: OwnedEvent,
+    write_event: OwnedEvent,
     read_timeout: Mutex<Option<Duration>>,
     write_timeout: Mutex<Option<Duration>>,
     absolute_deadline: Mutex<Option<Instant>>,
@@ -146,11 +149,13 @@ impl WindowsNamedPipeServer {
         }
         // SAFETY: CreateEventW returned one valid owned handle, transferred once.
         let cancel_event = unsafe { OwnedHandle::from_raw_handle(raw_cancel as RawHandle) };
+        let connect_event = OwnedEvent::new()?;
 
         let server = Self {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
                 cancel_event,
+                connect_event,
                 connected: AtomicBool::new(false),
                 consumed: AtomicBool::new(false),
                 #[cfg(test)]
@@ -170,7 +175,8 @@ impl WindowsNamedPipeServer {
                 "named-pipe bootstrap already consumed",
             ));
         }
-        let operation_event = OwnedEvent::new()?;
+        let operation_event = &self.inner.connect_event;
+        operation_event.reset()?;
         let mut overlapped = operation_event.overlapped();
         // SAFETY: the pipe was created for overlapped I/O; `overlapped` and
         // its event remain live until completion is observed below.
@@ -233,13 +239,15 @@ impl WindowsNamedPipeServer {
         Ok(())
     }
 
-    pub(crate) fn stream(&self) -> WindowsNamedPipeStream {
-        WindowsNamedPipeStream {
+    pub(crate) fn stream(&self) -> io::Result<WindowsNamedPipeStream> {
+        Ok(WindowsNamedPipeStream {
             inner: Arc::clone(&self.inner),
+            read_event: OwnedEvent::new()?,
+            write_event: OwnedEvent::new()?,
             read_timeout: Mutex::new(None),
             write_timeout: Mutex::new(None),
             absolute_deadline: Mutex::new(None),
-        }
+        })
     }
 
     pub(crate) fn consume(&self) {
@@ -316,10 +324,12 @@ impl WindowsNamedPipeServer {
         }
         // SAFETY: CreateEventW returned a valid newly owned handle.
         let cancel_event = unsafe { OwnedHandle::from_raw_handle(raw_cancel as RawHandle) };
+        let connect_event = OwnedEvent::new()?;
         Ok(WindowsNamedPipeStream {
             inner: Arc::new(ServerInner {
                 pipe: Mutex::new(Some(pipe)),
                 cancel_event,
+                connect_event,
                 connected: AtomicBool::new(true),
                 consumed: AtomicBool::new(true),
                 #[cfg(test)]
@@ -327,6 +337,8 @@ impl WindowsNamedPipeServer {
                 #[cfg(test)]
                 active_stream_io: AtomicUsize::new(0),
             }),
+            read_event: OwnedEvent::new()?,
+            write_event: OwnedEvent::new()?,
             read_timeout: Mutex::new(None),
             write_timeout: Mutex::new(None),
             absolute_deadline: Mutex::new(None),
@@ -448,13 +460,15 @@ impl WindowsNamedPipeCanceller {
 }
 
 impl WindowsNamedPipeStream {
-    pub(crate) fn try_clone(&self) -> Self {
-        Self {
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
             inner: Arc::clone(&self.inner),
+            read_event: OwnedEvent::new()?,
+            write_event: OwnedEvent::new()?,
             read_timeout: Mutex::new(*lock_or_recover(&self.read_timeout)),
             write_timeout: Mutex::new(*lock_or_recover(&self.write_timeout)),
             absolute_deadline: Mutex::new(*lock_or_recover(&self.absolute_deadline)),
-        }
+        })
     }
 
     pub(crate) fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
@@ -526,6 +540,7 @@ impl Read for WindowsNamedPipeStream {
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
         overlapped_io(
+            &self.read_event,
             self.raw_pipe()?,
             timeout,
             buf.len(),
@@ -551,6 +566,7 @@ impl Write for WindowsNamedPipeStream {
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
         overlapped_io(
+            &self.write_event,
             self.raw_pipe()?,
             timeout,
             buf.len(),
@@ -569,13 +585,14 @@ impl Write for WindowsNamedPipeStream {
 }
 
 fn overlapped_io(
+    event: &OwnedEvent,
     handle: *mut core::ffi::c_void,
     timeout: Option<Duration>,
     buffer_len: usize,
     start: impl FnOnce(*mut core::ffi::c_void, *mut u8, u32, *mut OVERLAPPED) -> i32,
     bytes: *mut u8,
 ) -> io::Result<usize> {
-    let event = OwnedEvent::new()?;
+    event.reset()?;
     let mut overlapped = event.overlapped();
     let len = u32::try_from(buffer_len.min(u32::MAX as usize)).map_err(io::Error::other)?;
     let started = start(handle, bytes, len, &raw mut overlapped);
@@ -697,6 +714,7 @@ fn wait_for_operation(
     }
 }
 
+#[derive(Debug)]
 struct OwnedEvent(OwnedHandle);
 
 #[cfg(test)]
@@ -751,6 +769,14 @@ impl OwnedEvent {
 
     fn raw(&self) -> *mut core::ffi::c_void {
         self.0.as_raw_handle()
+    }
+
+    fn reset(&self) -> io::Result<()> {
+        // SAFETY: this object owns the live manual-reset event handle.
+        if unsafe { ResetEvent(self.raw()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     fn overlapped(&self) -> OVERLAPPED {
