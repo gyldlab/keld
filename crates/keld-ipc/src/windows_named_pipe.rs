@@ -297,7 +297,7 @@ impl WindowsNamedPipeServer {
             && unsafe { DisconnectNamedPipe(self.raw_pipe()?) } == 0
         {
             let error = io::Error::last_os_error();
-            if !matches!(error.raw_os_error(), Some(109 | 233)) {
+            if !matches!(error.raw_os_error(), Some(109 | 232 | 233)) {
                 return Err(error);
             }
         }
@@ -644,12 +644,7 @@ fn overlapped_io(
     // SAFETY: event remains live and belongs to the live OVERLAPPED above.
     match unsafe { WaitForSingleObject(event.raw(), wait_ms) } {
         WAIT_OBJECT_0 => observed_bytes(handle, &mut overlapped),
-        WAIT_TIMEOUT => {
-            cancel_one_and_observe(handle, &mut overlapped)?;
-            Err(io::Error::from_raw_os_error(
-                ERROR_SEM_TIMEOUT.cast_signed(),
-            ))
-        }
+        WAIT_TIMEOUT => timeout_io_result(cancel_one_and_observe(handle, &mut overlapped)?),
         WAIT_FAILED => {
             let error = io::Error::last_os_error();
             cancel_one_and_observe(handle, &mut overlapped)?;
@@ -677,28 +672,51 @@ fn observed_bytes(
     usize::try_from(transferred).map_err(io::Error::other)
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum CancelledOperation {
+    Aborted,
+    Completed(usize),
+}
+
+fn timeout_io_result(observation: CancelledOperation) -> io::Result<usize> {
+    match observation {
+        CancelledOperation::Aborted => Err(io::Error::from_raw_os_error(
+            ERROR_SEM_TIMEOUT.cast_signed(),
+        )),
+        CancelledOperation::Completed(transferred) => Ok(transferred),
+    }
+}
+
 fn cancel_one_and_observe(
     handle: *mut core::ffi::c_void,
     overlapped: &mut OVERLAPPED,
-) -> io::Result<()> {
+) -> io::Result<CancelledOperation> {
     // SAFETY: `overlapped` is the live state for this operation and will not
     // be freed until GetOverlappedResult observes completion below.
-    if unsafe { CancelIoEx(handle, overlapped) } == 0 {
+    let cancel_error = if unsafe { CancelIoEx(handle, overlapped) } == 0 {
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(1168) {
-            return Err(error);
+        if error.raw_os_error() == Some(1168) {
+            None
+        } else {
+            Some(error)
         }
-    }
+    } else {
+        None
+    };
     let mut transferred = 0;
     // SAFETY: bWait=TRUE keeps the state live until cancellation or the racing
     // normal completion is observed.
-    if unsafe { GetOverlappedResult(handle, overlapped, &raw mut transferred, 1) } == 0 {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(ERROR_OPERATION_ABORTED.cast_signed()) {
-            return Err(error);
-        }
-    }
-    Ok(())
+    let observation =
+        if unsafe { GetOverlappedResult(handle, overlapped, &raw mut transferred, 1) } == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_OPERATION_ABORTED.cast_signed()) {
+                return Err(error);
+            }
+            CancelledOperation::Aborted
+        } else {
+            CancelledOperation::Completed(usize::try_from(transferred).map_err(io::Error::other)?)
+        };
+    cancel_error.map_or(Ok(observation), Err)
 }
 
 fn wait_for_operation(
@@ -947,4 +965,23 @@ pub(crate) fn process_handle_count() -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::{CancelledOperation, timeout_io_result};
+
+    #[test]
+    fn timeout_preserves_bytes_from_a_racing_normal_completion() {
+        assert_eq!(
+            timeout_io_result(CancelledOperation::Completed(7)).expect("completed transfer"),
+            7
+        );
+        assert_eq!(
+            timeout_io_result(CancelledOperation::Aborted)
+                .expect_err("aborted transfer remains a timeout")
+                .raw_os_error(),
+            Some(121)
+        );
+    }
 }

@@ -883,7 +883,8 @@ impl WindowsNamedPipeBootstrapStream {
     ///
     /// # Errors
     ///
-    /// Reserved for parity with other platform streams.
+    /// Returns [`io::Error`] if either manual-reset event for the cloned
+    /// stream cannot be created with `CreateEventW`.
     pub fn try_clone(&self) -> io::Result<Self> {
         self.0.try_clone().map(Self)
     }
@@ -1864,6 +1865,11 @@ socket.end();
                 output.status.code(),
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("test result: ok. 1 passed; 0 failed;"),
+                "isolated census must execute exactly one test: {stdout}"
             );
             return;
         }
