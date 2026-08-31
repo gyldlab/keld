@@ -136,6 +136,86 @@ fn uncommented_line_contains(text: &str, needle: &str) -> bool {
     })
 }
 
+fn active_shell_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
+fn shell_line_position(lines: &[&str], exact: &str) -> Option<usize> {
+    lines.iter().position(|line| *line == exact)
+}
+
+fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
+    let lines = active_shell_lines(renderer);
+    let required = [
+        "running_under_msys() {",
+        "docker_host_path() {",
+        "prepare_docker_output_dir() {",
+        "render_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)",
+        "prepare_docker_output_dir \"$render_dir\"",
+        "docker_render_dir=$(docker_host_path \"$render_dir\")",
+        "export MSYS2_ARG_CONV_EXCL='*'",
+    ];
+    let [running, docker_path, prepare, render_create, prepare_call, render_path, exclusion] =
+        required.map(|line| {
+        shell_line_position(&lines, line).ok_or_else(|| {
+            format!(
+                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing executable shell line `{line}`. Restore the PowerShell-launched Git-Bash detection, host-path conversion, and writable isolated output bind."
+            )
+        })
+    });
+    let (running, docker_path, prepare, render_create, prepare_call, render_path, exclusion) = (
+        running?,
+        docker_path?,
+        prepare?,
+        render_create?,
+        prepare_call?,
+        render_path?,
+        exclusion?,
+    );
+    if !(running < docker_path
+        && docker_path < prepare
+        && prepare < render_create
+        && render_create < prepare_call
+        && prepare_call < render_path)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{MERMAID_RENDERER}` has the MSYS detector, converter, output preparation, or render-directory calls out of order. Restore definition-before-use and prepare the directory before converting/mounting it."
+        ));
+    }
+    let uname = lines
+        .iter()
+        .position(|line| line.starts_with("case \"$(uname -s "));
+    let msys_conditionals: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (*line == "if running_under_msys; then").then_some(index))
+        .collect();
+    let cygpath = shell_line_position(&lines, "cygpath -am \"$path\"");
+    let chmod = shell_line_position(&lines, "chmod 0777 -- \"$path\" || {");
+    let docker_run = lines
+        .iter()
+        .position(|line| line.starts_with("run_with_timeout 120 docker run"));
+    if !uname.is_some_and(|index| running < index && index < docker_path)
+        || !msys_conditionals
+            .iter()
+            .any(|index| docker_path < *index && *index < prepare)
+        || !msys_conditionals
+            .iter()
+            .any(|index| prepare < *index && *index < render_create)
+        || !cygpath.is_some_and(|index| docker_path < index && index < prepare)
+        || !chmod.is_some_and(|index| prepare < index && index < render_create)
+        || !docker_run.is_some_and(|index| exclusion < index)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{MERMAID_RENDERER}` has inert or reordered MSYS handling. The uname fallback and both guarded function bodies must be executable, and path-conversion exclusion must precede Docker."
+        ));
+    }
+    Ok(())
+}
+
 fn yaml_content(line: &str) -> Option<(usize, &str)> {
     let indent = line.len() - line.trim_start().len();
     let trimmed = line.trim();
@@ -1384,9 +1464,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "--jobs 2",
         ":/input/source.md:ro",
         "docker_host_path",
-        "running_under_msys",
         "MSYS2_ARG_CONV_EXCL='*'",
-        "prepare_docker_output_dir \"$render_dir\"",
         "trap cleanup EXIT",
         "/tmp/keld-mermaid-render.",
     ] {
@@ -1396,6 +1474,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
             ));
         }
     }
+    check_mermaid_msys_structure(&renderer)?;
     let config = read(root, MERMAID_CONFIG)?;
     for needle in [
         "\"securityLevel\": \"strict\"",
@@ -1677,7 +1756,7 @@ mod tests {
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
             MERMAID_RENDERER,
-            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 120 docker run\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\nrunning_under_msys\ndocker_host_path\nMSYS2_ARG_CONV_EXCL='*'\nprepare_docker_output_dir \"$render_dir\"\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\n",
+            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ndocker_host_path\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\nrunning_under_msys() {\ncase \"$(uname -s 2>/dev/null || true)\" in\n}\ndocker_host_path() {\nif running_under_msys; then\ncygpath -am \"$path\"\n}\nprepare_docker_output_dir() {\nif running_under_msys; then\nchmod 0777 -- \"$path\" || {\n}\nrender_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)\nprepare_docker_output_dir \"$render_dir\"\ndocker_render_dir=$(docker_host_path \"$render_dir\")\nexport MSYS2_ARG_CONV_EXCL='*'\nrun_with_timeout 120 docker run\n",
         );
         temp.write(
             MERMAID_CONFIG,
@@ -2670,6 +2749,37 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("MSYS output bind must remain writable");
         assert!(error.contains("prepare_docker_output_dir"), "{error}");
+    }
+
+    #[test]
+    fn inert_or_reordered_mermaid_msys_shell_text_fails() {
+        for (old, replacement) in [
+            (
+                "running_under_msys() {",
+                "echo 'running_under_msys() {'",
+            ),
+            (
+                "prepare_docker_output_dir \"$render_dir\"",
+                "echo 'prepare_docker_output_dir \"$render_dir\"'",
+            ),
+            (
+                "export MSYS2_ARG_CONV_EXCL='*'",
+                "echo \"export MSYS2_ARG_CONV_EXCL='*'\"",
+            ),
+            (
+                "prepare_docker_output_dir \"$render_dir\"\ndocker_render_dir=$(docker_host_path \"$render_dir\")",
+                "docker_render_dir=$(docker_host_path \"$render_dir\")\nprepare_docker_output_dir \"$render_dir\"",
+            ),
+        ] {
+            let temp = complete_fixture();
+            temp.write(
+                MERMAID_RENDERER,
+                &read(temp.path(), MERMAID_RENDERER)
+                    .expect("renderer fixture")
+                    .replace(old, replacement),
+            );
+            check(temp.path()).expect_err("inert or reordered MSYS shell text must fail");
+        }
     }
 
     #[test]
