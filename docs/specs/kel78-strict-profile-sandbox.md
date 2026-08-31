@@ -1,7 +1,14 @@
 # Spec: strict-profile OS sandbox and native-addon-worker proof
 
-Status: draft
-Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-08-19
+Status: approved
+Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-08-31
+
+Approval provenance: direct-session human authorization for the frozen Windows
+T3 contract is recorded in Linear comment
+`79e0c22e-6807-4a3d-a371-edbc11fd9f9b`. The approval covers the exact
+zero-capability LPAC + reviewed ACL + handle allowlist + non-breakaway Job
+Object scope below. It does not waive unsafe, public-API, permission-model,
+dependency, hostile-test, real-OS, or merge review gates.
 
 Primary sources: [`kel78-primary-sources.md`](kel78-primary-sources.md)
 Written against `origin/main` `67f39cdc898254f1e0c9cd50800f242ae7a4c493`
@@ -370,8 +377,12 @@ Required:
   experiment proves them required. Each such SID is a **permission-model
   review gate** (same class as macOS extra entitlements). A network SID
   MUST NOT be added because of a `keld-guard` net grant.
-- Handle allowlist via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Default
-  `bInheritHandles = FALSE` (ledger W6).
+- Handle allowlist via `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. A spawn with no
+  admitted handles uses `bInheritHandles = FALSE`. Win32 requires `TRUE` when
+  the explicit handle-list attribute is present, so that path MUST first mark
+  only the listed app-link/log handles inheritable, pass `TRUE`, and verify by
+  raw child-handle census that no other handle crossed the boundary (ledger
+  W6). `TRUE` without the attribute list is forbidden.
 - Job object for descendants: no `BREAKAWAY_OK` / `SILENT_BREAKAWAY_OK`;
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` for host-death cleanup (ledger W5).
   The job is **not** the authority sandbox.
@@ -602,7 +613,7 @@ Renderer sandbox is a different column.
       requires them. Enumerate `temporary-exception.*` as unexpected.
       Integrate the approved T2b guardian without duplicating lifecycle policy,
       and prove the strict child/descendant enrollment separately.
-- [ ] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
+- [x] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
 - [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
       work; mount-table change or `pivot_root`, not Landlock) +

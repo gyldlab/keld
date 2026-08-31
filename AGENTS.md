@@ -124,7 +124,7 @@ status is `docs/architecture/01-overview.md` §1.
 | keld-ipc | kipc framing/codecs; TARGET channel registry + shm; nested `AGENTS.md` |
 | keld-guard | Capabilities, manifest, scopes; nested `AGENTS.md` |
 | keld-native | Guard-checked brokers; `fs` live, rest SKELETON |
-| keld-runtime | Supervised Bun child-role runtime |
+| keld-runtime | Supervised Bun child-role runtime; nested `AGENTS.md` |
 | keld-update | SKELETON; TARGET signed manifests + delta update |
 | keld-pack | SKELETON; TARGET installers/signing/cross-compile |
 | keld-compat | Electron conformance/lifecycle oracle; TARGET host emulation; nested `AGENTS.md` |
@@ -133,7 +133,7 @@ status is `docs/architecture/01-overview.md` §1.
 | packages/ | `@keld/electron` live; other `@keld/*` upcoming |
 
 Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
-`compat`). MUST NOT add hollow agent files.
+`compat`, `runtime`). MUST NOT add hollow agent files.
 
 ## Verification floor
 

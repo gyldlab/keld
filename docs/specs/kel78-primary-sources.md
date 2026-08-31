@@ -210,11 +210,11 @@ of a sandbox, not containment.
 
 ### W6. Handle inheritance is opt-in and listed
 
-- **Source:** <https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw>
+- **Sources:** <https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw>, <https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute>
 - **Publisher:** Microsoft Learn
 - **Dated:** current Win32 API page; accessed 2026-08-19
-- **Quote:** "If this parameter is TRUE, each inheritable handle in the calling process is inherited by the new process. If the parameter is FALSE, the handles are not inherited. Note that inherited handles have the same value and access rights as the original handles." Also: "Applications can use the UpdateProcThreadAttributeList function with the PROC_THREAD_ATTRIBUTE_HANDLE_LIST parameter to provide a list of handles to be inherited by a particular process."
-- **Use:** Strict spawn uses `bInheritHandles = FALSE` except for an explicit `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` allowlist (stdio / authenticated link only). A leftover host handle in the child is a failed proof.
+- **Quote:** "If this parameter is TRUE, each inheritable handle in the calling process is inherited by the new process. If the parameter is FALSE, the handles are not inherited. Note that inherited handles have the same value and access rights as the original handles." The attribute-list contract adds: "if you use this attribute, pass in a value of TRUE for the bInheritHandles parameter of the CreateProcess function."
+- **Use:** A strict spawn with no admitted handles uses `bInheritHandles = FALSE`. An explicit `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` launch uses `TRUE` as Win32 requires, but the list contains only private inheritable duplicates of the admitted app-link/log handles; caller-owned handle flags are never toggled. `TRUE` without the list is forbidden. A raw post-spawn child-handle census rejects every non-allowlisted handle.
 
 ---
 

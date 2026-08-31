@@ -14,6 +14,9 @@ keld-ipc = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 nix = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 # KEL-77 differential harness only (test-only; no shipped API).
 # - serde_json: parse fixture observation lines and emit evidence JSON.
 # - keld-compat: reuse `keld_compat::evidence::parse_evidence` (KEL-74). Do not
