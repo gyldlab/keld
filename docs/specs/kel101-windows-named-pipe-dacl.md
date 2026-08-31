@@ -108,11 +108,11 @@ remote-client rejection, and deletes an instance after its last handle closes
 
 ### First-principles and reuse decision
 
-After KEL-75/T8, `keld_core::EchoServer` and the Windows primary-generation
-coordinator both delegate token minting, `127.0.0.1:0` lifecycle,
+Before this KEL-101 slice, `keld_core::EchoServer` and the Windows primary-generation
+coordinator both delegated token minting, `127.0.0.1:0` lifecycle,
 retry-after-bad-HELLO semantics and consumed-locator cleanup to the same
-`keld_ipc::BootstrapListener`. That live backend is still explicitly
-unprivileged loopback. This specification replaces its Windows transport with
+`keld_ipc::BootstrapListener`. That backend was explicitly unprivileged
+loopback. This specification replaces its Windows transport with
 the named-pipe/DACL backend; it does not add another bootstrap owner.
 
 `keld-ipc` owns the Windows bootstrap primitive, name/DACL construction,
@@ -331,15 +331,15 @@ SID to equal the expected foreign SID, matches the reported executable, and
 reads the bytes through the same handle. It keeps the token private,
 validates the receipt before the authorized round trip,
 rejects the consumed locator, and requires a fresh successor endpoint and token
-with its own authenticated echo. This is operator-attested real-OS evidence,
-not a self-authenticating plaintext claim. A temporary mutation that treated the live pipe as
+with its own authenticated echo. This is an operator-correlated real-OS run;
+the receipt is not a cryptographic proof that its reported PID authored it.
+A temporary mutation that treated the live pipe as
 absent failed with the exact observation `raw=Some(5) kind=PermissionDenied`.
-The final process-attested run observed probe PID `13700` owned by
-`RAMANI\KeldDaclTest`, executable SHA-256
-`4807CF6B290B52E05D6ACE91E64BEB3C1C2FE376D8739143DF3FB1B537ADDB47`,
-and receipt SDDL with protected DACL `D:PAI`, host `FR`, and foreign-user
-`FRFW` only. The server then reported authorized echo passed, stale locator
-`ERROR_FILE_NOT_FOUND (2)`, token rotation passed, and next generation passed.
+The final evidence artifact records the observed live PID/account/image and
+executable digest alongside receipt SDDL with protected DACL `D:PAI`, host
+`FR`, and foreign-user `FRFW` only. The server then reported authorized echo
+passed, stale locator `ERROR_FILE_NOT_FOUND (2)`, token rotation passed, and
+next generation passed.
 The focused `keld-ipc` suite passed 119/119 and the pre-documentation full
 Windows `just ci` gate passed 524/524 workspace tests plus format, warning-denied
 Clippy, rustdoc, hygiene, generated-doc/Mermaid checks, and cargo-deny.

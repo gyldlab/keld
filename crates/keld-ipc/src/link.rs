@@ -415,7 +415,7 @@ pub fn handshake_client<S: Read + Write>(
 ///
 /// Must not write the session token until the peer proves possession
 /// (`KELD-IPC-007` on empty, truncated, or mismatched payloads). Otherwise a
-/// Windows loopback connector learns the secret from the host's first frame.
+/// an unauthorized connector learns the secret from the host's first frame.
 ///
 /// # Errors
 ///
