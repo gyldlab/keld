@@ -38,8 +38,6 @@ use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL};
 pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
 use crate::link::{AppLinkDeadlines, handshake_server_interruptible_until};
 use crate::token::{SessionToken, format_app_link};
-#[cfg(all(windows, test))]
-use crate::windows_named_pipe::PipeSecurityFacts;
 #[cfg(windows)]
 use crate::windows_named_pipe::{
     WaitOutcome, WindowsNamedPipeCanceller, WindowsNamedPipeServer, WindowsNamedPipeStream,
@@ -82,13 +80,36 @@ pub struct BootstrapListener {
 
 /// Result of one bounded bootstrap admission attempt.
 #[derive(Debug)]
-pub enum BootstrapAdmission<S = BootstrapStream> {
+pub enum BootstrapAdmissionFor<S> {
     /// A peer proved possession of the listener's token.
     Authenticated(S),
     /// The host cancelled admission before authentication completed.
     Cancelled,
     /// The generation-wide admission deadline elapsed before authentication.
     DeadlineElapsed,
+}
+
+/// Admission result for the currently selected platform stream.
+///
+/// This concrete alias preserves the original public construction syntax,
+/// including unconstrained terminal variants such as
+/// `BootstrapAdmission::Cancelled`.
+pub type BootstrapAdmission = BootstrapAdmissionFor<BootstrapStream>;
+
+/// Admission result for the opt-in Windows named-pipe stream.
+#[cfg(windows)]
+pub type WindowsNamedPipeBootstrapAdmission =
+    BootstrapAdmissionFor<WindowsNamedPipeBootstrapStream>;
+
+#[cfg(test)]
+mod admission_type_tests {
+    use super::BootstrapAdmission;
+
+    #[test]
+    fn terminal_variant_keeps_original_unconstrained_construction() {
+        let admission = BootstrapAdmission::Cancelled;
+        assert!(matches!(admission, BootstrapAdmission::Cancelled));
+    }
 }
 
 struct NoopRejectionObserver;
@@ -626,7 +647,7 @@ impl WindowsNamedPipeBootstrapListener {
         &self,
         deadline: Instant,
         observer: &dyn BootstrapRejectionObserver,
-    ) -> io::Result<BootstrapAdmission<WindowsNamedPipeBootstrapStream>> {
+    ) -> io::Result<WindowsNamedPipeBootstrapAdmission> {
         let _admission = lock_or_recover(&self.admission);
         self.accept_loop(deadline, APP_LINK_IO_DEADLINE, observer)
     }
@@ -636,7 +657,7 @@ impl WindowsNamedPipeBootstrapListener {
         deadline: Instant,
         handshake_deadline: Duration,
         observer: &dyn BootstrapRejectionObserver,
-    ) -> io::Result<BootstrapAdmission<WindowsNamedPipeBootstrapStream>> {
+    ) -> io::Result<WindowsNamedPipeBootstrapAdmission> {
         loop {
             let server = lock_or_recover(&self.server)
                 .as_ref()
@@ -650,16 +671,21 @@ impl WindowsNamedPipeBootstrapListener {
             if self.stopping.load(Ordering::Acquire) {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
-                return Ok(BootstrapAdmission::Cancelled);
+                return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                server.close_terminal()?;
+                drop(lock_or_recover(&self.server).take());
+                return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             }
             match server.accept_until(Some(deadline))? {
                 WaitOutcome::Cancelled => {
                     drop(lock_or_recover(&self.server).take());
-                    return Ok(BootstrapAdmission::Cancelled);
+                    return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
                 WaitOutcome::DeadlineElapsed => {
                     drop(lock_or_recover(&self.server).take());
-                    return Ok(BootstrapAdmission::DeadlineElapsed);
+                    return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
                 }
                 WaitOutcome::PeerClosed => {
                     observer.rejected(BootstrapRejection::Io);
@@ -671,23 +697,23 @@ impl WindowsNamedPipeBootstrapListener {
             if self.stopping.load(Ordering::Acquire) {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
-                return Ok(BootstrapAdmission::Cancelled);
+                return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
-                return Ok(BootstrapAdmission::DeadlineElapsed);
+                return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             };
             if remaining.is_zero() {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
-                return Ok(BootstrapAdmission::DeadlineElapsed);
+                return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             }
             let peer_timeout = remaining.min(handshake_deadline);
             let Some(peer_deadline) = Instant::now().checked_add(peer_timeout) else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
-                return Ok(BootstrapAdmission::DeadlineElapsed);
+                return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             };
             let mut stream = WindowsNamedPipeBootstrapStream(server.stream()?);
             stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
@@ -703,25 +729,25 @@ impl WindowsNamedPipeBootstrapListener {
                     stream.0.set_absolute_deadline(None);
                     server.consume();
                     drop(lock_or_recover(&self.server).take());
-                    return Ok(BootstrapAdmission::Authenticated(stream));
+                    return Ok(WindowsNamedPipeBootstrapAdmission::Authenticated(stream));
                 }
                 Ok(false) => {
                     drop(stream);
                     server.close_terminal()?;
                     drop(lock_or_recover(&self.server).take());
-                    return Ok(BootstrapAdmission::Cancelled);
+                    return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
                 Err(_) if self.stopping.load(Ordering::Acquire) => {
                     drop(stream);
                     server.close_terminal()?;
                     drop(lock_or_recover(&self.server).take());
-                    return Ok(BootstrapAdmission::Cancelled);
+                    return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
                 Err(IpcError::Timeout) if Instant::now() >= deadline => {
                     drop(stream);
                     server.close_terminal()?;
                     drop(lock_or_recover(&self.server).take());
-                    return Ok(BootstrapAdmission::DeadlineElapsed);
+                    return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
                 }
                 Err(error) => {
                     observer.rejected(BootstrapRejection::classify(&error));
@@ -733,11 +759,14 @@ impl WindowsNamedPipeBootstrapListener {
     }
 
     #[cfg(test)]
-    fn security_facts(&self) -> io::Result<PipeSecurityFacts> {
+    fn inspect_pipe_handle<T>(
+        &self,
+        inspect: impl FnOnce(&std::os::windows::io::OwnedHandle) -> io::Result<T>,
+    ) -> io::Result<T> {
         lock_or_recover(&self.server)
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "bootstrap consumed"))?
-            .security_facts()
+            .inspect_owned_pipe(inspect)
     }
 
     #[cfg(test)]
@@ -820,23 +849,46 @@ impl WindowsNamedPipeBootstrapStream {
     pub fn try_clone(&self) -> io::Result<Self> {
         self.0.try_clone().map(Self)
     }
+
+    /// Waits until the peer has consumed every written byte, then disconnects.
+    ///
+    /// This is the orderly reply-before-close path. [`AppLinkDeadlines::shutdown_app_link`]
+    /// remains abortive and may discard unread pipe bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timeout if `deadline` wins; synchronous Windows flush is
+    /// cancelled and joined before the pipe is disconnected.
+    pub fn shutdown_after_drain(&self, deadline: Instant) -> io::Result<()> {
+        self.0.shutdown_after_drain(deadline)
+    }
 }
 
 #[cfg(all(test, windows))]
 mod named_pipe_tests {
+    #![allow(unsafe_code)] // test-only independent Win32 descriptor/handle oracle
+
     use std::io::{Read as _, Write as _};
-    use std::process::Command;
+    use std::os::windows::io::AsRawHandle as _;
+    use std::process::{Child, Command, Output, Stdio};
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
+    use windows_permissions::utilities::current_process_sid;
+    use windows_permissions::wrappers::GetSecurityInfo;
+    use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::System::Pipes::{GetNamedPipeInfo, PIPE_REJECT_REMOTE_CLIENTS};
+
     use crate::link::{AppLinkDeadlines, handshake_client};
+    use crate::serve_echo_requests;
     use crate::token::{SessionToken, parse_app_link};
     use crate::windows_named_pipe::{WindowsNamedPipeServer, process_handle_count};
     use crate::{ChannelId, CorrelationId, FrameHeader, FrameKind, MAX_FRAME_LEN};
 
     use super::{
-        BootstrapAdmission, BootstrapRejection, BootstrapRejectionObserver,
+        BootstrapRejection, BootstrapRejectionObserver, WindowsNamedPipeBootstrapAdmission,
         WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream, lock_or_recover,
     };
 
@@ -855,6 +907,18 @@ mod named_pipe_tests {
         }
     }
 
+    struct BlockingObserver {
+        observed: mpsc::Sender<BootstrapRejection>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl BootstrapRejectionObserver for BlockingObserver {
+        fn rejected(&self, rejection: BootstrapRejection) {
+            let _ = self.observed.send(rejection);
+            let _ = lock_or_recover(&self.release).recv();
+        }
+    }
+
     fn client(endpoint: &str) -> std::io::Result<WindowsNamedPipeBootstrapStream> {
         WindowsNamedPipeServer::connect_client_until(
             endpoint,
@@ -867,6 +931,115 @@ mod named_pipe_tests {
         let mut bytes = header.encode().to_vec();
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    const BUN_NAMED_PIPE_ECHO: &str = r##"
+import { createConnection } from "node:net";
+
+const link = process.env.KELD_APP_LINK;
+if (!link) throw new Error("missing KELD_APP_LINK");
+const split = link.lastIndexOf("#");
+if (split <= 0) throw new Error("invalid app link");
+const endpoint = link.slice(0, split);
+const token = Buffer.from(link.slice(split + 1), "hex");
+if (token.length !== 32) throw new Error("invalid token length");
+
+const socket = createConnection({ path: endpoint });
+let buffered = Buffer.alloc(0);
+const readers = [];
+let terminalError = null;
+
+function pump() {
+  while (readers.length > 0 && buffered.length >= readers[0].length) {
+    const { length, resolve } = readers.shift();
+    const value = buffered.subarray(0, length);
+    buffered = buffered.subarray(length);
+    resolve(value);
+  }
+}
+
+socket.on("data", (chunk) => {
+  buffered = Buffer.concat([buffered, Buffer.from(chunk)]);
+  pump();
+});
+socket.on("error", (error) => {
+  terminalError = error;
+  while (readers.length > 0) readers.shift().reject(error);
+});
+socket.on("close", () => {
+  if (!terminalError) terminalError = new Error("pipe closed before reply");
+  while (readers.length > 0) readers.shift().reject(terminalError);
+});
+
+function readExact(length) {
+  if (terminalError) return Promise.reject(terminalError);
+  return new Promise((resolve, reject) => {
+    readers.push({ length, resolve, reject });
+    pump();
+  });
+}
+
+function makeFrame(kind, channel, corr, payload) {
+  const header = Buffer.alloc(16);
+  header.writeUInt16LE(0x494b, 0);
+  header[2] = 2;
+  header[3] = kind;
+  header.writeUInt16LE(0, 4);
+  header.writeUInt16LE(channel, 6);
+  header.writeUInt32LE(corr, 8);
+  header.writeUInt32LE(payload.length, 12);
+  return Buffer.concat([header, payload]);
+}
+
+async function readFrame() {
+  const header = await readExact(16);
+  if (header.readUInt16LE(0) !== 0x494b || header[2] !== 2) {
+    throw new Error("invalid kipc header");
+  }
+  return {
+    kind: header[3],
+    channel: header.readUInt16LE(6),
+    corr: header.readUInt32LE(8),
+    payload: await readExact(header.readUInt32LE(12)),
+  };
+}
+
+await new Promise((resolve, reject) => {
+  socket.once("connect", resolve);
+  socket.once("error", reject);
+});
+socket.write(makeFrame(0, 0, 0, token));
+const hello = await readFrame();
+if (hello.kind !== 0 || hello.channel !== 0 || hello.corr !== 0 || !hello.payload.equals(token)) {
+  throw new Error("HELLO mismatch");
+}
+
+const message = Buffer.from("bun-pipe", "utf8");
+const echoPayload = Buffer.concat([Buffer.from([message.length]), message, Buffer.from([42])]);
+socket.write(makeFrame(1, 1, 7, echoPayload));
+const reply = await readFrame();
+if (reply.kind !== 2 || reply.channel !== 1 || reply.corr !== 7 || !reply.payload.equals(echoPayload)) {
+  throw new Error("echo reply mismatch");
+}
+console.log("KELD_BUN_PIPE_ECHO_OK");
+socket.end();
+"##;
+
+    fn wait_child_output(mut child: Child, deadline: Instant) -> std::io::Result<Output> {
+        loop {
+            if child.try_wait()?.is_some() {
+                return child.wait_with_output();
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Bun named-pipe fixture exceeded deadline",
+                ));
+            }
+            thread::yield_now();
+        }
     }
 
     #[expect(
@@ -910,7 +1083,10 @@ mod named_pipe_tests {
                 .expect("legitimate deadlines");
             handshake_client(&mut legitimate, &token).expect("legitimate HELLO");
             let outcome = worker.join().expect("join").expect("admission");
-            assert!(matches!(outcome, BootstrapAdmission::Authenticated(_)));
+            assert!(matches!(
+                outcome,
+                WindowsNamedPipeBootstrapAdmission::Authenticated(_)
+            ));
             assert_eq!(*lock_or_recover(&seen), vec![expected]);
             return;
         }
@@ -933,7 +1109,10 @@ mod named_pipe_tests {
             .expect("legitimate deadlines");
         handshake_client(&mut legitimate, &token).expect("legitimate HELLO");
         let outcome = worker.join().expect("join").expect("admission");
-        assert!(matches!(outcome, BootstrapAdmission::Authenticated(_)));
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::Authenticated(_)
+        ));
         assert_eq!(*lock_or_recover(&seen), vec![expected]);
     }
 
@@ -957,15 +1136,57 @@ mod named_pipe_tests {
             token.to_hex(),
             "pipe namespace nonce must be minted independently from the HELLO token"
         );
-        let facts = listener.security_facts().expect("security readback");
-        assert!(facts.protected_dacl);
-        assert_eq!(facts.ace_count, 1);
-        assert!(facts.one_ace_is_current_user);
-        assert_eq!(facts.one_ace_type, 0);
-        assert_eq!(facts.one_ace_flags, 0);
-        assert_eq!(facts.one_ace_mask, 0x0012_019B);
-        assert_eq!(facts.one_ace_mask & 0x4, 0);
-        assert_eq!(facts.handle_flags & 1, 0);
+        listener
+            .inspect_pipe_handle(|handle| {
+                let current_sid = current_process_sid()?;
+                let descriptor = GetSecurityInfo(
+                    handle,
+                    SeObjectType::SE_KERNEL_OBJECT,
+                    SecurityInformation::Dacl,
+                )?;
+                let sddl = descriptor.as_sddl()?;
+                assert!(sddl.to_string_lossy().contains("D:P"));
+                let dacl = descriptor
+                    .dacl()
+                    .ok_or_else(|| std::io::Error::other("test readback found no DACL"))?;
+                assert_eq!(dacl.len(), 1);
+                let ace = dacl
+                    .get_ace(0)
+                    .ok_or_else(|| std::io::Error::other("test readback found no ACE"))?;
+                assert_eq!(ace.sid(), Some(&*current_sid));
+                assert_eq!(ace.ace_type(), AceType::ACCESS_ALLOWED_ACE_TYPE);
+                assert_eq!(ace.flags(), AceFlags::empty());
+                assert_eq!(ace.mask().bits(), 0x0012_019B);
+                assert_eq!(ace.mask().bits() & 0x4, 0);
+
+                let mut handle_flags = 0;
+                // SAFETY: the borrowed server handle is live for this closure
+                // and `handle_flags` is a valid writable u32.
+                assert_ne!(
+                    unsafe { GetHandleInformation(handle.as_raw_handle(), &raw mut handle_flags) },
+                    0
+                );
+                assert_eq!(handle_flags & HANDLE_FLAG_INHERIT, 0);
+
+                let mut pipe_flags = 0;
+                // SAFETY: the borrowed server handle is live, `pipe_flags` is
+                // writable, and the remaining outputs are documented optional.
+                assert_ne!(
+                    unsafe {
+                        GetNamedPipeInfo(
+                            handle.as_raw_handle(),
+                            &raw mut pipe_flags,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )
+                    },
+                    0
+                );
+                assert_ne!(pipe_flags & PIPE_REJECT_REMOTE_CLIENTS, 0);
+                Ok(())
+            })
+            .expect("independent pipe security readback");
 
         let collision = WindowsNamedPipeServer::bind(endpoint)
             .expect_err("FILE_FLAG_FIRST_PIPE_INSTANCE must reject a second server");
@@ -996,7 +1217,10 @@ mod named_pipe_tests {
             .join()
             .expect("join accept worker")
             .expect("admission");
-        assert!(matches!(outcome, BootstrapAdmission::Cancelled));
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::Cancelled
+        ));
     }
 
     #[test]
@@ -1023,7 +1247,10 @@ mod named_pipe_tests {
         }
         cancellation.cancel().expect("cancel active HELLO");
         let outcome = worker.join().expect("join").expect("admission");
-        assert!(matches!(outcome, BootstrapAdmission::Cancelled));
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::Cancelled
+        ));
         drop(partial);
         let stale = WindowsNamedPipeServer::connect_client(&endpoint)
             .expect_err("cancelled generation must close its pipe handle");
@@ -1067,10 +1294,91 @@ mod named_pipe_tests {
             .expect("legitimate deadlines");
         handshake_client(&mut legitimate, &token).expect("matching HELLO accepted");
         let outcome = worker.join().expect("join").expect("admission");
-        assert!(matches!(outcome, BootstrapAdmission::Authenticated(_)));
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::Authenticated(_)
+        ));
         let seen = lock_or_recover(&seen);
         assert_eq!(*seen, vec![BootstrapRejection::HelloAuth]);
         assert_eq!(seen[0].code(), "KELD-IPC-007");
+    }
+
+    #[test]
+    fn rejected_peer_then_bun_node_net_child_completes_hello_and_echo() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("parse link");
+        let endpoint = endpoint.to_owned();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (notify_tx, notify_rx) = mpsc::channel();
+        let observer = RecordingObserver {
+            seen: Arc::clone(&seen),
+            notify: Some(notify_tx),
+        };
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || -> Result<(), String> {
+            let outcome = worker_listener
+                .accept_authenticated_until(Instant::now() + Duration::from_secs(10), &observer)
+                .map_err(|error| error.to_string())?;
+            let WindowsNamedPipeBootstrapAdmission::Authenticated(mut stream) = outcome else {
+                return Err("Bun child did not authenticate before terminal admission".to_owned());
+            };
+            match serve_echo_requests(&mut stream) {
+                Ok(()) => Ok(()),
+                Err(crate::IpcError::Io(error)) if error.raw_os_error() == Some(109) => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        });
+
+        let mut foreign_bytes = *token.as_bytes();
+        foreign_bytes[0] ^= 1;
+        let mut hostile = client(&endpoint).expect("open hostile client");
+        hostile
+            .set_app_link_deadlines(Some(Duration::from_millis(500)))
+            .expect("hostile deadlines");
+        let _ = handshake_client(&mut hostile, &SessionToken::from_bytes(foreign_bytes))
+            .expect_err("foreign HELLO denied");
+        drop(hostile);
+        assert_eq!(
+            notify_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("HELLO rejection record"),
+            BootstrapRejection::HelloAuth
+        );
+        let pending_deadline = Instant::now() + Duration::from_secs(1);
+        while !listener.is_accept_pending() {
+            assert!(
+                Instant::now() < pending_deadline,
+                "server did not re-enter named-pipe accept after rejection"
+            );
+            thread::yield_now();
+        }
+
+        let child = Command::new("bun")
+            .args(["-e", BUN_NAMED_PIPE_ECHO])
+            .env("KELD_APP_LINK", &link)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn Bun named-pipe fixture");
+        let output = wait_child_output(child, Instant::now() + Duration::from_secs(5))
+            .expect("bounded Bun fixture");
+        assert!(
+            output.status.success(),
+            "Bun named-pipe fixture failed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "KELD_BUN_PIPE_ECHO_OK"
+        );
+        worker
+            .join()
+            .expect("join Bun echo server")
+            .expect("serve Bun echo");
+        assert_eq!(*lock_or_recover(&seen), vec![BootstrapRejection::HelloAuth]);
     }
 
     #[test]
@@ -1110,7 +1418,10 @@ mod named_pipe_tests {
             .expect("legitimate deadlines");
         handshake_client(&mut legitimate, &token).expect("same pipe reaccepted");
         let outcome = worker.join().expect("join").expect("admission");
-        assert!(matches!(outcome, BootstrapAdmission::Authenticated(_)));
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::Authenticated(_)
+        ));
         assert_eq!(*lock_or_recover(&seen), vec![BootstrapRejection::Timeout]);
     }
 
@@ -1123,10 +1434,78 @@ mod named_pipe_tests {
                 &super::NoopRejectionObserver,
             )
             .expect("deadline admission");
-        assert!(matches!(outcome, BootstrapAdmission::DeadlineElapsed));
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::DeadlineElapsed
+        ));
         let error = WindowsNamedPipeServer::connect_client(listener.endpoint())
             .expect_err("terminal generation must not accept a late connector");
         assert!(matches!(error.raw_os_error(), Some(2 | 231)));
+    }
+
+    #[test]
+    fn already_expired_generation_never_enters_pipe_accept() {
+        let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind");
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("representable expired deadline");
+        let outcome = listener
+            .accept_authenticated_until(deadline, &super::NoopRejectionObserver)
+            .expect("expired admission");
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::DeadlineElapsed
+        ));
+        let stale = WindowsNamedPipeServer::connect_client(listener.endpoint())
+            .expect_err("expired generation must close before accepting");
+        assert_eq!(stale.raw_os_error(), Some(2));
+    }
+
+    #[test]
+    fn generation_expiry_during_rejection_blocks_reaccept() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let endpoint = listener.endpoint().to_owned();
+        let cancellation = listener.cancellation();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let observer = BlockingObserver {
+            observed: observed_tx,
+            release: Mutex::new(release_rx),
+        };
+        let worker_listener = Arc::clone(&listener);
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _ = result_tx.send(worker_listener.accept_authenticated_until(deadline, &observer));
+        });
+
+        let mut hostile = client(&endpoint).expect("open hostile client");
+        hostile.write_all(&[0_u8; 16]).expect("bad header");
+        assert_eq!(
+            observed_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("header rejection"),
+            BootstrapRejection::Header
+        );
+        while Instant::now() < deadline {
+            thread::yield_now();
+        }
+        release_tx.send(()).expect("release observer after expiry");
+
+        let outcome = match result_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(result) => result.expect("admission result"),
+            Err(error) => {
+                cancellation.cancel().expect("cancel wedged reaccept");
+                worker.join().expect("join cancelled reaccept");
+                panic!("expired rejection path re-entered an unbounded accept: {error}");
+            }
+        };
+        assert!(matches!(
+            outcome,
+            WindowsNamedPipeBootstrapAdmission::DeadlineElapsed
+        ));
+        drop(hostile);
+        worker.join().expect("join expired rejection worker");
     }
 
     #[test]
@@ -1216,7 +1595,7 @@ mod named_pipe_tests {
             .expect("deadlines");
         handshake_client(&mut role, &token).expect("authenticate");
         let outcome = worker.join().expect("join").expect("admission");
-        let BootstrapAdmission::Authenticated(mut server_stream) = outcome else {
+        let WindowsNamedPipeBootstrapAdmission::Authenticated(mut server_stream) = outcome else {
             panic!("expected authenticated named-pipe session")
         };
         stale_cancellation
@@ -1257,7 +1636,7 @@ mod named_pipe_tests {
             .expect("role deadlines");
         handshake_client(&mut role, &token).expect("authenticate");
         let outcome = worker.join().expect("join").expect("admission");
-        let BootstrapAdmission::Authenticated(mut server_stream) = outcome else {
+        let WindowsNamedPipeBootstrapAdmission::Authenticated(mut server_stream) = outcome else {
             panic!("expected authenticated named-pipe session")
         };
         server_stream
@@ -1288,7 +1667,7 @@ mod named_pipe_tests {
             .expect("role deadlines");
         handshake_client(&mut role, &token).expect("authenticate");
         let outcome = worker.join().expect("join admission").expect("admission");
-        let BootstrapAdmission::Authenticated(server_stream) = outcome else {
+        let WindowsNamedPipeBootstrapAdmission::Authenticated(server_stream) = outcome else {
             panic!("expected authenticated named-pipe session")
         };
         let mut blocked_reader = server_stream.try_clone().expect("clone server stream");
@@ -1322,6 +1701,89 @@ mod named_pipe_tests {
             .read(&mut peer_byte)
             .expect_err("shutdown must also close the peer-facing connection");
         assert!(matches!(peer_error.raw_os_error(), Some(109 | 232 | 233)));
+    }
+
+    #[test]
+    fn orderly_shutdown_waits_for_peer_read_then_preserves_bytes() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("parse link");
+        let endpoint = endpoint.to_owned();
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || {
+            worker_listener.accept_authenticated_until(
+                Instant::now() + Duration::from_secs(2),
+                &super::NoopRejectionObserver,
+            )
+        });
+        let mut role = client(&endpoint).expect("open role");
+        role.set_app_link_deadlines(Some(Duration::from_millis(500)))
+            .expect("role deadlines");
+        handshake_client(&mut role, &token).expect("authenticate");
+        let outcome = worker.join().expect("join admission").expect("admission");
+        let WindowsNamedPipeBootstrapAdmission::Authenticated(mut server_stream) = outcome else {
+            panic!("expected authenticated named-pipe session")
+        };
+        server_stream
+            .write_all(b"reply")
+            .expect("write orderly reply");
+        let drain_stream = server_stream.try_clone().expect("clone drain stream");
+        let (drain_tx, drain_rx) = mpsc::channel();
+        let drain = thread::spawn(move || {
+            let _ = drain_tx
+                .send(drain_stream.shutdown_after_drain(Instant::now() + Duration::from_secs(2)));
+        });
+        let pending_deadline = Instant::now() + Duration::from_secs(1);
+        while !server_stream.0.is_drain_pending() {
+            assert!(
+                Instant::now() < pending_deadline,
+                "orderly drain never entered FlushFileBuffers"
+            );
+            thread::yield_now();
+        }
+        assert!(
+            matches!(drain_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "drain must not complete before the peer consumes the reply"
+        );
+        let mut reply = [0_u8; 5];
+        role.read_exact(&mut reply).expect("read orderly reply");
+        assert_eq!(&reply, b"reply");
+        drain_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("drain completion")
+            .expect("orderly drain");
+        drain.join().expect("join orderly drain");
+    }
+
+    #[test]
+    fn orderly_shutdown_times_out_and_joins_for_non_reading_peer() {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        let link = listener.app_link();
+        let (endpoint, token) = parse_app_link(&link).expect("parse link");
+        let endpoint = endpoint.to_owned();
+        let worker_listener = Arc::clone(&listener);
+        let worker = thread::spawn(move || {
+            worker_listener.accept_authenticated_until(
+                Instant::now() + Duration::from_secs(2),
+                &super::NoopRejectionObserver,
+            )
+        });
+        let mut role = client(&endpoint).expect("open role");
+        role.set_app_link_deadlines(Some(Duration::from_millis(500)))
+            .expect("role deadlines");
+        handshake_client(&mut role, &token).expect("authenticate");
+        let outcome = worker.join().expect("join admission").expect("admission");
+        let WindowsNamedPipeBootstrapAdmission::Authenticated(mut server_stream) = outcome else {
+            panic!("expected authenticated named-pipe session")
+        };
+        server_stream
+            .write_all(b"reply")
+            .expect("write orderly reply");
+        let error = server_stream
+            .shutdown_after_drain(Instant::now() + Duration::from_millis(50))
+            .expect_err("non-reading peer must not wedge orderly shutdown");
+        assert_eq!(error.raw_os_error(), Some(121));
+        drop(role);
     }
 
     #[test]
@@ -1363,7 +1825,7 @@ mod named_pipe_tests {
         cancellation.cancel().expect("cancel cycle");
         assert!(matches!(
             worker.join().expect("join cycle").expect("cycle result"),
-            BootstrapAdmission::Cancelled
+            WindowsNamedPipeBootstrapAdmission::Cancelled
         ));
     }
 

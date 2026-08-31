@@ -29,12 +29,13 @@ mod windows_named_pipe;
 pub use admission::{BootstrapRejection, BootstrapRejectionObserver};
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
-    BootstrapAdmission, BootstrapCancellation, BootstrapListener, BootstrapStream,
+    BootstrapAdmission, BootstrapAdmissionFor, BootstrapCancellation, BootstrapListener,
+    BootstrapStream,
 };
 #[cfg(windows)]
 pub use bootstrap::{
-    WindowsNamedPipeBootstrapCancellation, WindowsNamedPipeBootstrapListener,
-    WindowsNamedPipeBootstrapStream,
+    WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapCancellation,
+    WindowsNamedPipeBootstrapListener, WindowsNamedPipeBootstrapStream,
 };
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};

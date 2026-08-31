@@ -15,7 +15,7 @@ use std::ptr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
@@ -31,13 +31,15 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_CREATE_PIPE_INSTANCE, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    FlushFileBuffers, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
-use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::IO::{
+    CancelIoEx, CancelSynchronousIo, GetOverlappedResult, OVERLAPPED,
+};
 #[cfg(test)]
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeInfo, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
@@ -69,6 +71,8 @@ struct ServerInner {
     accept_pending: AtomicBool,
     #[cfg(test)]
     active_stream_io: AtomicUsize,
+    #[cfg(test)]
+    drain_pending: AtomicBool,
 }
 
 /// One host-owned named-pipe instance.
@@ -104,6 +108,7 @@ pub(crate) struct PipeSecurityFacts {
     pub(crate) one_ace_flags: u8,
     pub(crate) one_ace_mask: u32,
     pub(crate) handle_flags: u32,
+    pub(crate) pipe_flags: u32,
 }
 
 impl WindowsNamedPipeServer {
@@ -164,6 +169,8 @@ impl WindowsNamedPipeServer {
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
                 active_stream_io: AtomicUsize::new(0),
+                #[cfg(test)]
+                drain_pending: AtomicBool::new(false),
             }),
         };
         server.validate_security(&current_sid)?;
@@ -342,6 +349,8 @@ impl WindowsNamedPipeServer {
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
                 active_stream_io: AtomicUsize::new(0),
+                #[cfg(test)]
+                drain_pending: AtomicBool::new(false),
             }),
             read_event: OwnedEvent::new()?,
             write_event: OwnedEvent::new()?,
@@ -399,6 +408,7 @@ impl WindowsNamedPipeServer {
             || facts.one_ace_mask != PIPE_ACCESS_MASK
             || facts.one_ace_mask & FILE_CREATE_PIPE_INSTANCE != 0
             || facts.handle_flags & HANDLE_FLAG_INHERIT != 0
+            || facts.pipe_flags & PIPE_REJECT_REMOTE_CLIENTS == 0
         {
             return Err(io::Error::other(format!(
                 "named-pipe security readback did not match the current-user-only contract: {facts:?}"
@@ -445,6 +455,15 @@ impl WindowsNamedPipeServer {
             .as_ref()
             .map(AsRawHandle::as_raw_handle)
             .ok_or_else(closed_pipe_error)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inspect_owned_pipe<T>(
+        &self,
+        inspect: impl FnOnce(&OwnedHandle) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let pipe = lock_or_recover(&self.inner.pipe);
+        inspect(pipe.as_ref().ok_or_else(closed_pipe_error)?)
     }
 
     fn raw_cancel_event(&self) -> *mut core::ffi::c_void {
@@ -522,9 +541,94 @@ impl WindowsNamedPipeStream {
         Ok(())
     }
 
+    pub(crate) fn shutdown_after_drain(&self, deadline: Instant) -> io::Result<()> {
+        // FlushFileBuffers has no overlapped form. One terminal cold-path
+        // worker makes that synchronous OS wait cancellable; ordinary
+        // reads/writes retain their allocation-free reusable events.
+        let inner = Arc::clone(&self.inner);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("keld-pipe-drain".to_owned())
+            .spawn(move || {
+                let _lifecycle = lock_or_recover(&inner.lifecycle);
+                #[cfg(test)]
+                let _pending = PendingDrain::new(&inner.drain_pending);
+                let server = WindowsNamedPipeServer {
+                    inner: Arc::clone(&inner),
+                };
+                let result = (|| {
+                    let pipe = server.raw_pipe()?;
+                    // SAFETY: the owned connected server handle stays live
+                    // under the lifecycle guard until this synchronous flush
+                    // returns or CancelSynchronousIo completes it.
+                    if unsafe { FlushFileBuffers(pipe) } == 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                })();
+                let _ = result_tx.send(result);
+            })?;
+
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        match result_rx.recv_timeout(remaining) {
+            Ok(flush_result) => {
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
+                let shutdown_result = self.shutdown();
+                flush_result.and(shutdown_result)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                loop {
+                    if worker.is_finished() {
+                        break;
+                    }
+                    // SAFETY: AsRawHandle exposes the live worker-thread
+                    // handle; the worker is joined before it can become stale.
+                    if unsafe { CancelSynchronousIo(worker.as_raw_handle()) } != 0 {
+                        break;
+                    }
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(1168) {
+                        let _ = worker.join();
+                        let _ = self.shutdown();
+                        return Err(error);
+                    }
+                    // ERROR_NOT_FOUND can mean the worker was scheduled but
+                    // has not entered FlushFileBuffers yet. Retry until the
+                    // operation exists or the worker completed normally.
+                    std::thread::yield_now();
+                }
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
+                self.shutdown()?;
+                Err(io::Error::from_raw_os_error(
+                    ERROR_SEM_TIMEOUT.cast_signed(),
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other("named-pipe drain worker panicked"))?;
+                self.shutdown()?;
+                Err(io::Error::other(
+                    "named-pipe drain worker exited without a result",
+                ))
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn has_active_io(&self) -> bool {
         self.inner.active_stream_io.load(Ordering::Acquire) != 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_drain_pending(&self) -> bool {
+        self.inner.drain_pending.load(Ordering::Acquire)
     }
 
     fn raw_pipe(&self) -> io::Result<*mut core::ffi::c_void> {
@@ -679,9 +783,12 @@ fn wait_for_operation(
     deadline: Option<Instant>,
 ) -> io::Result<WaitOutcome> {
     let handles = [cancel_event, operation_event];
-    let timeout = deadline
-        .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
-        .map_or(INFINITE, |remaining| duration_to_wait_ms(Some(remaining)));
+    let timeout = match deadline {
+        None => INFINITE,
+        Some(deadline) => deadline
+            .checked_duration_since(Instant::now())
+            .map_or(0, |remaining| duration_to_wait_ms(Some(remaining))),
+    };
     // SAFETY: both handles remain live for the wait; the array length is exact.
     let result = unsafe {
         WaitForMultipleObjects(
@@ -731,6 +838,9 @@ struct PendingAccept<'a>(&'a AtomicBool);
 struct ActiveStreamIo<'a>(&'a AtomicUsize);
 
 #[cfg(test)]
+struct PendingDrain<'a>(&'a AtomicBool);
+
+#[cfg(test)]
 impl<'a> PendingAccept<'a> {
     fn new(pending: &'a AtomicBool) -> Self {
         pending.store(true, Ordering::Release);
@@ -757,6 +867,21 @@ impl<'a> ActiveStreamIo<'a> {
 impl Drop for ActiveStreamIo<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+impl<'a> PendingDrain<'a> {
+    fn new(pending: &'a AtomicBool) -> Self {
+        pending.store(true, Ordering::Release);
+        Self(pending)
+    }
+}
+
+#[cfg(test)]
+impl Drop for PendingDrain<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -824,6 +949,7 @@ fn read_security_facts(handle: &OwnedHandle) -> io::Result<PipeSecurityFacts> {
         one_ace_flags: ace.map_or(u8::MAX, |ace| ace.flags().bits()),
         one_ace_mask: ace.map_or(0, |ace| ace.mask().bits()),
         handle_flags: handle_flags(handle)?,
+        pipe_flags: pipe_flags(handle)?,
     })
 }
 
@@ -831,6 +957,25 @@ fn handle_flags(handle: &OwnedHandle) -> io::Result<u32> {
     let mut flags = 0;
     // SAFETY: `handle` is live and `flags` is a valid writable u32.
     if unsafe { GetHandleInformation(handle.as_raw_handle(), &raw mut flags) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(flags)
+}
+
+fn pipe_flags(handle: &OwnedHandle) -> io::Result<u32> {
+    let mut flags = 0;
+    // SAFETY: `handle` is the live server-pipe handle and `flags` is a valid
+    // writable u32; omitted size/count outputs are optional null pointers.
+    if unsafe {
+        GetNamedPipeInfo(
+            handle.as_raw_handle(),
+            &raw mut flags,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     Ok(flags)
