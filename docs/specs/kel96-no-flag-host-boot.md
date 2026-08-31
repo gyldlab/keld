@@ -610,10 +610,12 @@ privileged channel. The first and only production caller in T1b is the no-flag
       implementation plus evidence, not an evidence-only task; it must not
       implement a second generation loop in `keld-core`.
       The Windows sub-row has real no-flag host/HWND/two-call/g1-to-g2/ordered
-      Quit/CLI-death evidence on RAMANI, but T4 remains unchecked: Windows
-      abnormal-host-death waits on KEL-78/T3 and the real Linux desktop rows are
-      absent. The approved Windows cleanup sentinel above owns post-CLI-death
-      stage deletion and is part of this T4 implementation/evidence slice.
+      Quit/CLI-death evidence on RAMANI. It now also consumes KEL-78/T3's
+      non-breakaway Job through the real no-flag host: killing only that host
+      reaps Bun plus a real descendant, the cleanup sentinel deletes the stage,
+      and a fresh no-flag launch succeeds. Raw CLI/host/Bun handle census and
+      post-CLI-death stage deletion also pass. T4 remains unchecked only because
+      the real interactive Linux implementation/evidence rows are absent.
       The CLI atomically protects and retains no-share-delete handles for
       `.keld` and `dev` before nonce creation (plus the canonical project
       handle), then pins and validates
@@ -696,7 +698,7 @@ Task/platform completion matrix:
 | T2 CLI delegation/second call/CLI death | lease state model and process fixtures | required before T2 passes | required by T4 | required by T4 |
 | T3 fresh generation/window continuity | generation ordering and stale-link negatives | required before T3 passes | Windows equivalent implemented/proved by T4 | real proof required by T4 |
 | Orderly shutdown/reap | state/child-process negatives | required by T1b/T3 | required by T4 | required by T4 |
-| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | named reaper plus real kill-host/child-gone/relaunch run | named reaper plus real kill-host/child-gone/relaunch run |
+| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | KEL-78 Job consumed; real host-only kill reaps Bun + descendant, deletes stage, and relaunches | named reaper plus real kill-host/child-gone/relaunch run |
 
 KEL-96 remains open while any required cell is awaiting. A platform's T4 row
 cannot pass on ownership/echo evidence while its restart or teardown cell is

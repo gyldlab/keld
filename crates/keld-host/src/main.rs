@@ -78,6 +78,12 @@ fn main() {
         process::exit(2);
     }
 
+    #[cfg(windows)]
+    if let Err(error) = keld_runtime::windows_job::install_host_death_job() {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+
     #[cfg(target_os = "macos")]
     let dev_stage_cleanup = dev_stage_cleanup_root();
     let result = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()

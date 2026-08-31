@@ -117,7 +117,7 @@ nix = { version = "=0.31.3", default-features = false, features = ["fs", "signal
 #   does not implement the frozen manual LPAC contract. License MIT OR
 #   Apache-2.0; MSRV 1.71 <= workspace 1.97. Unsafe is isolated to reviewed
 #   Windows platform modules with exact handle/pointer lifetime proofs.
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 # --- Dependency review (KEL-77 T2 / AGENTS.md gate) ---
 # Name: sha2 0.10 (RustCrypto)
 # Purpose: SHA-256 for KEL-77 test artifacts and KEL-96's cold `keld-cli`
@@ -151,10 +151,6 @@ sha2 = "0.10"
 #   last release commit is old (2021), so human dependency/security review is
 #   mandatory and this pin is intentionally exact.
 windows-permissions = "=0.2.4"
-# Already locked through the workspace Windows stack; direct target-only use
-# supplies canonical handle/filesystem constants, stdin inheritance isolation,
-# and CreateDirectoryW + SECURITY_ATTRIBUTES for atomic DACL creation.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

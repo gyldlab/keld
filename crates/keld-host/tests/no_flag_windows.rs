@@ -18,12 +18,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use windows_sys::Win32::Foundation::{
-    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE,
+    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+    WaitForSingleObject,
 };
 
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
@@ -367,10 +368,9 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
         .expect("g2 pid")
         .parse::<u32>()
         .expect("numeric g2 pid");
-    assert_eq!(
-        read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT"),
-        "DESCENDANT 0"
-    );
+    let g2_descendant =
+        read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT");
+    assert_ne!(parse_descendant_pid(&g2_descendant), 0);
 
     let (_g3_reader, mut g3_writer, g3_pid, _g3_link) =
         accept_ready_generation(&control_listener, &mut child);
@@ -698,6 +698,75 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     beacon.join().expect("lease beacon thread");
 }
 
+#[test]
+fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches() {
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("host-death control address")
+        .port();
+    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death beacon");
+    let beacon_port = beacon_listener
+        .local_addr()
+        .expect("host-death beacon address")
+        .port();
+    let (beacon_tx, beacon_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>host-death</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+        ),
+    )
+    .expect("write host-death renderer");
+    let helper = prepare_keld_dev_helper(&fixture);
+    let mut cli = Command::new(&helper)
+        .arg("keld_dev_windows_helper")
+        .arg("--exact")
+        .arg("--nocapture")
+        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch host-death keld dev helper");
+    let cli_pid = cli.id();
+    let host_pid =
+        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+    let (reader, _writer, bun_pid, _, descendant_pid) =
+        accept_ready_generation_with_descendant(&control_listener, &mut cli);
+    beacon_rx
+        .recv_timeout(PRODUCT_DEADLINE)
+        .expect("host-death renderer beacon");
+    let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+
+    let host = open_process_for_wait(host_pid, true);
+    let bun = open_process_for_wait(bun_pid, false);
+    let descendant = open_process_for_wait(descendant_pid, false);
+    terminate_test_process(&host);
+    assert_process_signaled(&host, "no-flag host");
+    assert_process_signaled(&bun, "Bun direct child");
+    assert_process_signaled(&descendant, "Bun descendant");
+    drop(host);
+    drop(reader);
+
+    let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+    assert!(!cli_status.success(), "host death became CLI success");
+    wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
+    beacon.join().expect("host-death beacon thread");
+
+    let relaunched = run_product_cycle(&fixture, "post-host-death");
+    println!(
+        "KELD_WINDOWS_HOST_DEATH cli_pid={cli_pid} host_pid={host_pid} bun_pid={bun_pid} \
+         descendant_pid={descendant_pid} sentinel_pid={cleanup_pid} stage_count=0 \
+         relaunch_host_pid={} relaunch_bun_pid={}",
+        relaunched.host_pid, relaunched.bun_pid
+    );
+}
+
 fn prepare_keld_dev_helper(fixture: &ProductFixture) -> std::path::PathBuf {
     let bin = fixture.root.path().join("bin");
     fs::create_dir(&bin).expect("helper bin directory");
@@ -825,6 +894,37 @@ fn open_process_for_census(pid: u32) -> OwnedHandle {
     unsafe { OwnedHandle::from_raw_handle(raw.cast()) }
 }
 
+fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
+    let access = PROCESS_SYNCHRONIZE | if terminate { PROCESS_TERMINATE } else { 0 };
+    // SAFETY: PID belongs to a live test-owned process. The access is wait plus
+    // optional host-only termination, and the returned handle is converted once.
+    let raw = unsafe { OpenProcess(access, 0, pid) };
+    assert!(
+        !raw.is_null(),
+        "open PID {pid} for exact wait: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: raw is the fresh non-null owning process handle returned above.
+    unsafe { OwnedHandle::from_raw_handle(raw.cast()) }
+}
+
+fn terminate_test_process(process: &OwnedHandle) {
+    // SAFETY: this is the live test-owned host handle opened with terminate access.
+    assert_ne!(
+        unsafe { TerminateProcess(process.as_raw_handle().cast(), 1) },
+        0,
+        "terminate only the no-flag host: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+fn assert_process_signaled(process: &OwnedHandle, label: &str) {
+    // SAFETY: process is a live retained handle; signaling is the kernel's
+    // exact process-termination oracle and the timeout only bounds failure.
+    let result = unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 10_000) };
+    assert_eq!(result, WAIT_OBJECT_0, "{label} survived host death");
+}
+
 fn raw_process_handle_census(pid: u32) -> Vec<SystemHandleEntry> {
     let mut bytes = 1_u32 << 20;
     loop {
@@ -935,17 +1035,25 @@ fn accept_ready_generation(
     listener: &TcpListener,
     child: &mut Child,
 ) -> (BufReader<TcpStream>, TcpStream, u32, String) {
-    let (reader, writer, pid, link, lease_handle) =
+    let (reader, writer, pid, link, _, lease_handle) =
         accept_ready_generation_inner(listener, child, false);
     assert!(lease_handle.is_none(), "unexpected lease census disclosure");
     (reader, writer, pid, link)
+}
+
+fn parse_descendant_pid(record: &str) -> u32 {
+    record
+        .strip_prefix("DESCENDANT ")
+        .expect("descendant record prefix")
+        .parse()
+        .expect("numeric descendant PID")
 }
 
 fn accept_ready_generation_with_lease(
     listener: &TcpListener,
     child: &mut Child,
 ) -> (BufReader<TcpStream>, TcpStream, u32, String, usize) {
-    let (reader, writer, pid, link, lease_handle) =
+    let (reader, writer, pid, link, _, lease_handle) =
         accept_ready_generation_inner(listener, child, true);
     (
         reader,
@@ -956,11 +1064,28 @@ fn accept_ready_generation_with_lease(
     )
 }
 
+fn accept_ready_generation_with_descendant(
+    listener: &TcpListener,
+    child: &mut Child,
+) -> (BufReader<TcpStream>, TcpStream, u32, String, u32) {
+    let (reader, writer, pid, link, descendant_pid, lease_handle) =
+        accept_ready_generation_inner(listener, child, false);
+    assert!(lease_handle.is_none(), "unexpected lease census disclosure");
+    (reader, writer, pid, link, descendant_pid)
+}
+
 fn accept_ready_generation_inner(
     listener: &TcpListener,
     child: &mut Child,
     expect_lease_handle: bool,
-) -> (BufReader<TcpStream>, TcpStream, u32, String, Option<usize>) {
+) -> (
+    BufReader<TcpStream>,
+    TcpStream,
+    u32,
+    String,
+    u32,
+    Option<usize>,
+) {
     let control =
         accept_control_or_host_failure(listener, child, Instant::now() + PRODUCT_DEADLINE);
     control
@@ -978,9 +1103,11 @@ fn accept_ready_generation_inner(
         .expect("numeric generation pid");
     let link = fields.next().expect("generation app link").to_owned();
     assert!(fields.next().is_none(), "{hello}");
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, child, "DESCENDANT"),
-        "DESCENDANT 0"
+    let descendant_record = read_control_line_or_host_failure(&mut reader, child, "DESCENDANT");
+    let descendant_pid = parse_descendant_pid(&descendant_record);
+    assert_ne!(
+        descendant_pid, 0,
+        "Windows Job proof needs a real descendant"
     );
     let lease_handle = if expect_lease_handle {
         let lease_record = read_control_line_or_host_failure(&mut reader, child, "LEASE_HANDLE");
@@ -1003,7 +1130,7 @@ fn accept_ready_generation_inner(
         read_control_line_or_host_failure(&mut reader, child, "ECHO2"),
         "ECHO2"
     );
-    (reader, writer, pid, link, lease_handle)
+    (reader, writer, pid, link, descendant_pid, lease_handle)
 }
 
 struct ProductEvidence {
@@ -1063,7 +1190,8 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         .expect("numeric Bun pid");
     let app_link = hello_fields.next().expect("HELLO app link").to_owned();
     assert!(hello_fields.next().is_none(), "{hello}");
-    assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
+    let descendant_record = read_control_line(&mut reader);
+    assert_ne!(parse_descendant_pid(&descendant_record), 0);
 
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)

@@ -149,9 +149,11 @@ for (let index = 0; index < token.length; index += 1) {
 }
 await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
 if (process.platform === "win32") {
-  // Windows descendant cleanup is a KEL-78/T3 Job Object acceptance row.
-  // T4's uncontained loopback slice must not manufacture that evidence.
-  await sendControl("DESCENDANT 0");
+  const descendant = Bun.spawn(
+    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
+    { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+  );
+  await sendControl(`DESCENDANT ${descendant.pid}`);
   const leaseHandle = process.env.KELD_TEST_WINDOWS_HOST_LEASE_HANDLE;
   if (leaseHandle) await sendControl(`LEASE_HANDLE ${leaseHandle}`);
 } else {
