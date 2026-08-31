@@ -1,62 +1,21 @@
-# Linear, worktree, and OS-acceptance playbook
+# Linear, worktree, OS, and merge coordination
 
-Load when an issue/branch/worktree is used, when acceptance names an OS/device, or when
-work is handed off. `docs/agents/workflow.md` owns the lifecycle; this file owns the
-operational templates and platform evidence boundary.
+Load for claims, worktrees, OS acceptance, or handoff.
+`docs/agents/workflow.md` owns lifecycle; review owns git.
 
 ## Worktrees and ownership
 
-- At the start of any session using worktrees, and before adding one: list worktrees,
-  map branches to open PRs, remove every merged or no-PR clean unused worktree with
-  `git worktree remove`, then prune.
-- Keep primary, open-PR, and genuinely dirty worktrees. Never force-remove real work,
-  delete main, or remove sibling repos/nested research. Do not use `rm -rf` for linked
-  worktrees.
-- Agent-claim ownership, competition, and earliest-`createdAt` mechanics remain owned by
-  `docs/agents/workflow.md` § Agent claim.
+- Before adding one, map every worktree to its PR/claim. Remove and prune only clean
+  merged or unused trees; keep primary, open-PR, unique-commit, dirty, or active trees.
+- Claim competition and earliest-`createdAt` ownership remain in the workflow.
 
 ## OS acceptance
 
-The first Linear comment records:
-
-```text
-## OS acceptance
-- Criterion:
-- Required OS/device:
-- Exact observable:
-- Availability:
-```
-
-- Classify each criterion before implementation: `CI-only`, `real OS/device`, or
-  `not applicable`. OS/device/native backend/window/installer/sandbox/user-facing product
-  behavior is real unless an approved issue/spec names CI as the acceptance fixture.
-- Real acceptance passes only on the named system with the exact observable recorded.
-  Cross-compile, emulation, another OS, or generic CI MUST NOT be presented as product
-  evidence. A failed run is recorded and remains In Progress.
-- If unavailable, leave the OS handoff below and keep In Progress while other work
-  remains, or Blocked when the system is the only dependency. Partial merge requires
-  explicit human authorization and does not close the parent.
-
-## Branch handoff
-
-```text
-## Branch handoff
-- Repo:
-- Branch:
-- Tip SHA:
-- PR: <url or none>
-- Merge: do-not-merge | merge-when-CI-green | merge-after:<deps> | human-decide
-- Depends on: <tickets/PRs/notes or none>
-- OS evidence:
-  - Acceptance: CI-only:<contract> | real:<OS/device + observable> | not-applicable
-  - Status: passed:<evidence> | failed:<evidence> | awaiting:<operator> | not-applicable
-- Reason:
-```
-
-One block per branch/repository. Every used branch gets a Linear handoff before the
-agent finishes. Research branches still obey nested research publication rules.
-
-## OS handoff
+`## OS acceptance` in the first Linear comment classifies each criterion as `CI-only`,
+`real OS/device`, or `not applicable` and records its system, observable, and
+availability. Real acceptance passes only on that system; CI, emulation, or another OS
+never substitutes. A failed/unavailable real criterion stays In Progress or Blocked and
+gets this handoff:
 
 ```text
 ## OS handoff
@@ -69,10 +28,50 @@ agent finishes. Research branches still obey nested research publication rules.
 - Ticket status: In Progress | Blocked
 ```
 
-Repeat per remaining real criterion.
+## Branch handoff
 
-## Merge authority
+Every used branch gets one Linear block before its owner finishes:
+Research branches obey `.agents/research.md`.
 
-MUST NOT auto-merge unless the user/paste explicitly authorizes it or Linear already
-records merge-when-CI-green and the governing prompt permits merge. Otherwise use
-`merge-after:<deps>` or `human-decide`; never silently abandon or guess.
+```text
+## Branch handoff
+- Repo:
+- Branch:
+- Tip SHA:
+- PR: <url or none>
+- Merge: do-not-merge | merge-when-complete | merge-after:<deps>
+- Depends on:
+- OS evidence:
+  - Acceptance: CI-only:<contract> | real:<system + observable> | not-applicable
+  - Status: passed:<evidence> | failed:<evidence> | awaiting:<operator> | not-applicable
+- Reason:
+```
+
+## Standing autonomous merge delegation
+
+The repository-owner standing delegation requires the issue agent to merge a Keld PR
+without another approval question only after every predicate below passes.
+Default eligible merge: `merge-when-complete`.
+
+- Scope, winning claim, required approval artifacts, current base, dependencies and
+  single-writer collisions are reconciled.
+- Every owned acceptance criterion, including each required real OS/device observable,
+  is passed rather than awaiting, failed or unrun.
+- `just ci` and every applicable GitHub required check pass on the final tip.
+- CodeRabbit reviewed the exact final tip or the isolated substitute passed, and every
+  valid finding and review thread is fixed, independently refuted and resolved.
+- Every applicable unsafe, public API, permission model, dependency addition and wire
+  protocol gate has named independent security or architecture evidence on the exact
+  final diff.
+- The PR is mergeable and contains only the reviewed issue scope.
+
+A narrower explicit `do-not-merge`, missing approval artifact, or proposal whose
+acceptance is the decision itself overrides this delegation.
+
+This delegation authorizes only Keld PR merge; it does not authorize scope expansion,
+deployment, release, publication, production mutation, account administration or
+another repository.
+
+After merge, fetch main, verify the landed patch or tree and ancestor relation, post the
+execution artifact, mark the issue Done, release the claim and remove the clean
+worktree.

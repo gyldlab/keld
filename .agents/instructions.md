@@ -31,7 +31,7 @@ Before editing, record:
 
 MUST NOT raise an `always` budget to make a check green. A real budget change requires a
 named Linear scope, measured semantic benefit, representative before/after eval, and
-human review. Prompt caching lowers cost, not context occupancy or discovery truncation.
+independent instruction review. Caching lowers cost, not occupancy or truncation.
 
 `.codex/config.toml` is assembly, not prompt prose. Changes justify each server/tool,
 eager/routed status, and a prompt/tool trace; config bytes do not measure schema tokens.

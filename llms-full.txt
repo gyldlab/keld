@@ -90,8 +90,9 @@ these contracts. Normative source for the protocol:
 [`docs/architecture/02-ipc.md`](../architecture/02-ipc.md).
 
 > **Review gate.** Wire-protocol changes — kipc frames, manifest schema, update feed — require
-> human sign-off, listed under a `## Review gates` heading in the PR (root
-> [`AGENTS.md`](../../AGENTS.md)). `crates/keld-ipc/AGENTS.md` adds the mechanics: a change to
+> named independent protocol/security evidence under the standing repository-owner delegation,
+> listed under `## Review gates` in the PR (root [`AGENTS.md`](../../AGENTS.md)).
+> `crates/keld-ipc/AGENTS.md` adds the mechanics: a change to
 > the frame layout, `FrameKind`, flags, or the handshake means a version bump plus the spec §2
 > edit plus the code, **in one PR**. There is no such thing as landing the code first.
 

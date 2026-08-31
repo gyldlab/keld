@@ -1,6 +1,6 @@
 # Agent development workflow
 
-How Keld is developed by parallel agents with human architectural review. Rationale
+How Keld is developed by parallel agents with independent architectural review. Rationale
 and sources: `docs/research/library/agents-tooling/07-agent-first.md`. Rules here bind agents and humans.
 Task-specific playbooks are routed from `.agents/index.md`; load only matching entries.
 Operational branch/OS templates are in `.agents/coordination.md`; PR/current-head review
@@ -105,12 +105,11 @@ is in `.agents/review.md`.
    optional sections. Strip every template HTML comment from the submitted PR
    body. Append a deduped relevant-area learning only when the root threshold applies.
    Post actual gate output, unverified conditions, commit/PR links and follow-up issue
-   IDs. Before finishing, leave a Linear `## Branch handoff` block per
-   `.agents/coordination.md` (merge intent is `do-not-merge` /
-   `merge-when-CI-green` / `merge-after:<deps>` / `human-decide` — not every branch
-   merges). Use its OS acceptance/status and `## OS handoff` rules. Move the issue to Done
-   only when every acceptance criterion is met; otherwise leave it In Progress or mark it
-   Blocked with the exact dependency.
+   IDs. Before finishing, leave the Linear branch/OS handoff owned by coordination.
+   Apply `.agents/coordination.md` § Standing autonomous merge delegation after the
+   branch handoff. When every predicate passes, merge without another approval question
+   and complete its landed-verification sequence. Otherwise use `do-not-merge` or
+   `merge-after:<deps>` and leave the issue In Progress/Blocked with the exact dependency.
 
 ## Agent claim (mandatory, before any edit)
 
@@ -169,11 +168,11 @@ after the claim — one record of availability, not two.
 ## Parallelism rules
 
 - Concurrency budget: 3–7 agents. Decompose so concurrent issues touch disjoint crates;
-  cross-crate work is sequenced by a human, not raced.
+  cross-crate work is sequenced by claims and the issue graph, not raced.
 - Shared/foundational files — workspace `Cargo.toml`, `rust-toolchain.toml`, kipc wire
   protocol, manifest schema, CI workflows, root `AGENTS.md` — are single-writer:
-  human-owned or one designated agent with human review. Everything else: first PR to
-  green wins; later PRs rebase.
+  repository-owner designated under a winning claim with independent gate evidence.
+  Everything else: first PR to green wins; later PRs rebase.
 - Assign `real OS/device` work only to an agent that has the required system. Agents on
   another OS MAY complete disjoint CI-only work, but MUST hand off the named OS acceptance
   in Linear instead of duplicating or approximating it.
@@ -183,7 +182,7 @@ after the claim — one record of availability, not two.
   iteration; if blocked >2 attempts on the same failure, stop and report — do not
   thrash the tree.
 
-## Review: CI is the arbiter, humans are the architects
+## Review: CI is the arbiter, independent evidence reviews architecture
 
 - **Hard gates (block merge, no exceptions):** every gate whose owned contract is
   affected by the diff: fmt · clippy `-D warnings` · full test suite · generated-doc
@@ -193,14 +192,13 @@ after the claim — one record of availability, not two.
   potentially affected gate. Workflow/router edits still create those jobs but must not
   duplicate live Ubuntu `apt-get update` onto clippy/MSRV (GUI smoke owns WebKitGTK apt).
   Visual inspection and the render report remain review artifacts in addition to CI.
-- **Review gates (block until a human signs off):** the five in root `AGENTS.md`
-  (unsafe, public API, permissions, dependencies, wire protocol). `.github/CODEOWNERS`
-  requests human review on `keld-guard`, `keld-ipc`, workspace manifests, and CI
-  workflows. Secret scan is the checksum-pinned `gitleaks` CLI job in
+- **Review gates:** the five in root `AGENTS.md` (unsafe, public API, permissions,
+  dependencies, wire protocol) block until named independent security/architecture
+  evidence covers the exact final diff. `.github/CODEOWNERS` requests relevant reviewers
+  but is not a human-only approval gate. Secret scan is the checksum-pinned `gitleaks` CLI job in
   `.github/workflows/ci.yml` (not the org-licensed GitHub Action).
-- **Human review is architectural:** intent, boundaries, spec conformance, API shape —
-  not line-by-line style (lints own style). A PR too large to review architecturally
-  gets split, not skimmed.
+- **Architectural review covers** intent, boundaries, spec conformance and API shape;
+  lints own style. A PR too large for independent review gets split, not skimmed.
 - Fork PRs never run with secrets. Perf-budget regressions >5% need a written waiver.
 
 ## Failure etiquette

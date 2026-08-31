@@ -11,7 +11,7 @@ current head. Coordination and handoff are in `.agents/coordination.md`.
 - PR title is the KeldBot conventional format owned by `.agents/ci.md`. Individual
   feature commits need not match it.
 - PR body uses the six required intake headings and lists the five root review gates or
-  `none`. CI/shared/root policy files require human review.
+  `none`. CI/shared/root policy files require their applicable independent gate evidence.
 - MUST NOT commit secrets or edit `.env*`. Destructive git actions need explicit user
   approval.
 
@@ -31,4 +31,5 @@ current head. Coordination and handoff are in `.agents/coordination.md`.
 ## Handoff
 
 Before finishing, use `.agents/coordination.md` for Linear branch/OS handoff and merge
-intent. MUST NOT auto-merge without explicit recorded authority.
+intent. The terminal merge decision and post-merge verification are owned by
+`.agents/coordination.md` § Standing autonomous merge delegation.
