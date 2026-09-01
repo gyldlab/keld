@@ -135,7 +135,6 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
                 })
             }
         }
-        ("primary-app-receiver", keld_ipc::FrameKind::Call) => Ok(()),
         ("echo-receiver", keld_ipc::FrameKind::Call) => {
             keld_ipc::codec::decode::<EchoRequest>(payload).map(|_| ())
         }
@@ -155,8 +154,11 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
             keld_ipc::codec::decode::<CallError>(payload).map(|_| ())
         }
         // PING carries no payload; the future privileged channel declares its
-        // codec under KEL-102/T3, not here.
-        (_, keld_ipc::FrameKind::Ping) | ("privileged-fs-receiver", _) => Ok(()),
+        // codec under KEL-102/T3; the primary session's per-channel codecs are
+        // proven by their own policies' rows.
+        (_, keld_ipc::FrameKind::Ping) | ("privileged-fs-receiver" | "primary-app-receiver", _) => {
+            Ok(())
+        }
         (base, kind) => panic!("corpus stage-two has no rule for {base}/{kind:?}"),
     }
 }
