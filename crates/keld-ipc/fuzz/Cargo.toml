@@ -1,0 +1,33 @@
+# KEL-133/T1 bounded raw-byte fuzz harness (spec section 7 row 12).
+#
+# Deliberately its own workspace so the stable, warning-denied product
+# workspace never builds or depends on the nightly-only libFuzzer runtime.
+# The campaign runs locally/nightly and is reported separately in the T1
+# artifact; every retained input is minimized into a deterministic test in
+# crates/keld-ipc/tests/raw_bytes.rs, which runs in the approved CI fixture.
+#
+# Dependency note (spec section 8 gate): libfuzzer-sys is declared here,
+# outside the product workspace, and requires the separate dependency-review
+# approval recorded in the KEL-133/T1 PR.
+[package]
+name = "keld-ipc-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+keld-ipc = { path = ".." }
+
+[[bin]]
+name = "raw_receive"
+path = "fuzz_targets/raw_receive.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
