@@ -461,14 +461,24 @@ export class AppLinkSession {
     try {
       await writeFrame(socket, drain, FrameKind.Hello, 0, 0, 0, token);
       const helloReply = await reader.readFrame();
+      // KEL-133 shared receiver rules (spec kel133 §3 criterion 4): shape —
+      // kind, flags, channel, correlation, exact 32-byte length — fails
+      // KELD-IPC-005 before the token comparison; KELD-IPC-007 is reserved
+      // for an exactly shaped foreign token.
       if (helloReply.header.kind !== FrameKind.Hello) {
-        throw kipcError("KELD-IPC-005", "expected HELLO from peer");
+        throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
       }
-      if (helloReply.header.channel !== 0 || helloReply.header.corr !== 0) {
-        throw kipcError("KELD-IPC-005", "HELLO must have reserved channel/corr 0");
+      if (helloReply.header.flags !== 0) {
+        throw kipcError("KELD-IPC-005", "FLAG_RAW is invalid for a structured session");
+      }
+      if (helloReply.header.channel !== 0) {
+        throw kipcError("KELD-IPC-005", "wrong channel for the session policy");
+      }
+      if (helloReply.header.corr !== 0) {
+        throw kipcError("KELD-IPC-005", "correlation must be 0 for this frame");
       }
       if (helloReply.payload.length !== 32) {
-        throw kipcError("KELD-IPC-007", "HELLO payload must be a 32-byte session token");
+        throw kipcError("KELD-IPC-005", "payload length does not match the declared exact shape");
       }
       if (!timingSafeEqual(helloReply.payload, token)) {
         throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
@@ -503,8 +513,12 @@ export class AppLinkSession {
     await writeFrame(this.#socket, this.#drain, FrameKind.Call, 0, ECHO_CHANNEL, corr, payload);
 
     const reply = await this.#reader.readFrame();
+    // KEL-133 shared waiter rules (spec kel133 §3 criterion 5): only the
+    // awaited REPLY — matching kind, flags 0, declared channel, exact
+    // correlation — may complete this call.
     if (
       reply.header.kind !== FrameKind.Reply ||
+      reply.header.flags !== 0 ||
       reply.header.corr !== corr ||
       reply.header.channel !== ECHO_CHANNEL
     ) {
