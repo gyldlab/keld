@@ -31,8 +31,9 @@ impl Lcg {
     }
 }
 
-fn policies() -> [ReceivePolicy; 8] {
+fn policies() -> [ReceivePolicy; 9] {
     [
+        ReceivePolicy::primary_app_receiver(),
         ReceivePolicy::server_pre_auth_hello(),
         ReceivePolicy::client_await_hello(),
         ReceivePolicy::echo_receiver(),

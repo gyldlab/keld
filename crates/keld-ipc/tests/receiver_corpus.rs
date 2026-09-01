@@ -105,6 +105,7 @@ fn policy_by_name(name: &str) -> ReceivePolicy {
         "privileged-fs-receiver" => ReceivePolicy::privileged_call_receiver(ChannelId(
             arg.expect("policy arg").parse().expect("channel id"),
         )),
+        "primary-app-receiver" => ReceivePolicy::primary_app_receiver(),
         other => panic!("unknown corpus policy: {other}"),
     }
 }
@@ -134,6 +135,7 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
                 })
             }
         }
+        ("primary-app-receiver", keld_ipc::FrameKind::Call) => Ok(()),
         ("echo-receiver", keld_ipc::FrameKind::Call) => {
             keld_ipc::codec::decode::<EchoRequest>(payload).map(|_| ())
         }

@@ -16,6 +16,7 @@ use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind, HEADER_LEN};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     let policies = [
+        ReceivePolicy::primary_app_receiver(),
         ReceivePolicy::server_pre_auth_hello(),
         ReceivePolicy::client_await_hello(),
         ReceivePolicy::echo_receiver(),

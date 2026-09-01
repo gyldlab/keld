@@ -56,6 +56,13 @@ echo-call-trailing-byte	echo-receiver	4b490201000001000700000007000000	046b69706
 echo-call-empty-payload	echo-receiver	4b490201000001000700000000000000	-	KELD-IPC-003	close	0
 echo-call-truncated-postcard	echo-receiver	4b490201000001000700000002000000	0a78	KELD-IPC-003	close	0
 lifecycle-call-garbage	lifecycle-receiver	4b490201000003000200000002000000	ffff	KELD-IPC-003	close	0
+primary-echo-call-valid	primary-app-receiver	4b490201000001000700000006000000	046b69706303	ok	admit	1
+primary-lifecycle-call-valid	primary-app-receiver	4b490201000003000200000001000000	00	ok	admit	1
+primary-ping-valid	primary-app-receiver	4b49020a000009000400000000000000	-	ok	admit	0
+primary-undeclared-channel	primary-app-receiver	4b490201000002000700000004000000	deadbeef	KELD-IPC-005	close	0
+primary-corr-zero	primary-app-receiver	4b490201000003000000000001000000	00	KELD-IPC-005	close	0
+primary-flag-raw	primary-app-receiver	4b490201010001000700000006000000	046b69706303	KELD-IPC-005	close	0
+primary-event-undeclared	primary-app-receiver	4b490204000003000000000001000000	00	KELD-IPC-005	close	0
 gen-deadline-drip-cannot-renew	trace:generation-deadline-ms=100	at0=4b4902000000;at25=000000000000;at50=200000000102;at75=030405060708;at100=090a0b0c0d0e;at125=0f1011121314;at150=15161718191a;at175=1b1c1d1e1f20	-	KELD-IPC-006	terminal	0
 gen-deadline-prompt-hello-admits	trace:generation-deadline-ms=100	at10=4b4902000000000000000000200000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20	-	ok	admit	0
 started-frame-stall	trace:generation-deadline-ms=10000	at0=4b490200	-	KELD-IPC-006	close-at-5000	0

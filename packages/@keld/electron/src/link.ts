@@ -21,8 +21,16 @@ export const FrameKind = {
   Reply: 2,
   Err: 3,
   Event: 4,
+  StreamOpen: 5,
+  StreamChunk: 6,
+  StreamClose: 7,
+  Cancel: 8,
+  Grant: 9,
   Ping: 10,
 } as const;
+
+/** Header flag mirroring `keld_ipc::frame::FLAG_RAW`. */
+export const FLAG_RAW = 1 << 0;
 
 export type LifecycleEventName = "ready" | "last-window-closed";
 
@@ -76,6 +84,9 @@ function decodeHeader(bytes: Uint8Array): {
       `unsupported kipc version: ${bytes[2]} (expected ${PROTOCOL_VERSION})`,
     );
   }
+  if (bytes[3] > 10) {
+    throw kipcError("KELD-IPC-002", `unknown kipc frame kind: ${bytes[3]} (valid kinds are 0..=10)`);
+  }
   return {
     kind: bytes[3],
     flags: view.getUint16(4, true),
@@ -83,6 +94,149 @@ function decodeHeader(bytes: Uint8Array): {
     corr: view.getUint32(8, true),
     len: view.getUint32(12, true),
   };
+}
+
+/**
+ * Mirror of `keld_ipc::receive::ReceivePolicy` (KEL-133 spec §4): the
+ * host/app-selected static semantic contract for one receiver state. The
+ * shared corpus `crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv`
+ * is the single semantic table both languages are tested against; this
+ * implementation is a consumer of that contract, not a second owner.
+ */
+export interface ReceivePolicy {
+  /** Declared channel for the structured kinds. */
+  channel: number;
+  /** Second declared channel for the one multiplexed primary session. */
+  alsoChannel?: number;
+  /** Structured frame kinds this policy admits. */
+  kinds: readonly number[];
+  /** Correlation rule: exact zero, any nonzero, or one awaited id. */
+  corr: { rule: "zero" } | { rule: "non-zero" } | { rule: "exactly"; id: number };
+  /** Exact declared payload length, if the policy pins one. */
+  exactLen?: number;
+  /** Whether the payload must be empty. */
+  emptyPayload?: boolean;
+  /** Whether the live v0 `PING` probe is admissible. */
+  allowPing?: boolean;
+}
+
+export const RECEIVE_POLICIES = {
+  serverPreAuthHello: {
+    channel: 0,
+    kinds: [FrameKind.Hello],
+    corr: { rule: "zero" },
+    exactLen: 32,
+  } as ReceivePolicy,
+  clientAwaitHello: {
+    channel: 0,
+    kinds: [FrameKind.Hello],
+    corr: { rule: "zero" },
+    exactLen: 32,
+  } as ReceivePolicy,
+  echoReceiver: {
+    channel: 1,
+    kinds: [FrameKind.Call],
+    corr: { rule: "non-zero" },
+    allowPing: true,
+  } as ReceivePolicy,
+  lifecycleReceiver: {
+    channel: LIFECYCLE_CHANNEL,
+    kinds: [FrameKind.Call],
+    corr: { rule: "non-zero" },
+    allowPing: true,
+  } as ReceivePolicy,
+  lifecycleEventReceiver: {
+    channel: LIFECYCLE_CHANNEL,
+    kinds: [FrameKind.Event],
+    corr: { rule: "zero" },
+    allowPing: true,
+  } as ReceivePolicy,
+} as const;
+
+export function echoReplyWaiter(corr: number): ReceivePolicy {
+  return { channel: 1, kinds: [FrameKind.Reply], corr: { rule: "exactly", id: corr } };
+}
+
+export function lifecycleReplyWaiter(corr: number): ReceivePolicy {
+  return {
+    channel: LIFECYCLE_CHANNEL,
+    kinds: [FrameKind.Reply, FrameKind.Err],
+    corr: { rule: "exactly", id: corr },
+  };
+}
+
+export function privilegedCallReceiver(channel: number): ReceivePolicy {
+  return { channel, kinds: [FrameKind.Call], corr: { rule: "non-zero" } };
+}
+
+export function primaryAppReceiver(): ReceivePolicy {
+  return {
+    channel: 1,
+    alsoChannel: LIFECYCLE_CHANNEL,
+    kinds: [FrameKind.Call],
+    corr: { rule: "non-zero" },
+    allowPing: true,
+  };
+}
+
+/**
+ * Mirror of `keld_ipc::receive::validate_received_header` with the same
+ * fixed check order (kind → flags → channel → correlation → declared length)
+ * and the same `KELD-IPC-005` details, so both languages produce identical
+ * corpus results. Throws; returns the header unchanged on admission.
+ *
+ * @throws Error whose message begins with `KELD-IPC-005` naming the first
+ * rule the header violates.
+ */
+export function validateReceivedHeader(
+  policy: ReceivePolicy,
+  header: { kind: number; flags: number; channel: number; corr: number; len: number },
+): { kind: number; flags: number; channel: number; corr: number; len: number } {
+  if (policy.allowPing === true && header.kind === FrameKind.Ping) {
+    if (header.flags !== 0) {
+      throw kipcError("KELD-IPC-005", "PING flags must be 0");
+    }
+    if (header.len !== 0) {
+      throw kipcError("KELD-IPC-005", "PING payload must be empty");
+    }
+    return header;
+  }
+  if (!policy.kinds.includes(header.kind)) {
+    throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
+  }
+  if ((header.flags & FLAG_RAW) !== 0) {
+    throw kipcError("KELD-IPC-005", "FLAG_RAW is invalid for a structured session");
+  }
+  if (header.flags !== 0) {
+    throw kipcError("KELD-IPC-005", "unknown flag bits are reserved");
+  }
+  if (header.channel !== policy.channel && header.channel !== policy.alsoChannel) {
+    throw kipcError("KELD-IPC-005", "wrong channel for the session policy");
+  }
+  switch (policy.corr.rule) {
+    case "zero":
+      if (header.corr !== 0) {
+        throw kipcError("KELD-IPC-005", "correlation must be 0 for this frame");
+      }
+      break;
+    case "non-zero":
+      if (header.corr === 0) {
+        throw kipcError("KELD-IPC-005", "correlation 0 is reserved");
+      }
+      break;
+    case "exactly":
+      if (header.corr !== policy.corr.id) {
+        throw kipcError("KELD-IPC-005", "correlation does not match the awaited call");
+      }
+      break;
+  }
+  if (policy.exactLen !== undefined && header.len !== policy.exactLen) {
+    throw kipcError("KELD-IPC-005", "payload length does not match the declared exact shape");
+  }
+  if (policy.emptyPayload === true && header.len !== 0) {
+    throw kipcError("KELD-IPC-005", "payload must be empty for this frame");
+  }
+  return header;
 }
 
 export interface AppLink {
@@ -521,10 +675,11 @@ export class LifecycleLink {
     try {
       await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
       const helloReply = await withIoDeadline(reader.readFrame());
-      if (helloReply.header.kind !== FrameKind.Hello) {
-        throw kipcError("KELD-IPC-005", "expected HELLO from peer");
-      }
-      if (helloReply.payload.length !== 32 || !timingSafeEqual(helloReply.payload, token)) {
+      // kel133 AC4: shape (kind/flags/channel/corr/exact 32-byte length) is
+      // the shared validator's 005; 007 stays reserved for an exactly shaped
+      // foreign token.
+      validateReceivedHeader(RECEIVE_POLICIES.clientAwaitHello, helloReply.header);
+      if (!timingSafeEqual(helloReply.payload, token)) {
         throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
       }
       session.#startLoop(handlers);
@@ -541,34 +696,11 @@ export class LifecycleLink {
     const run = async (): Promise<void> => {
       for (;;) {
         const frame = await this.#reader.readFrame();
-        if (frame.header.kind === FrameKind.Event && frame.header.channel === LIFECYCLE_CHANNEL) {
-          const event = decodeEvent(frame.payload);
-          if (event === "ready") handlers.onReady();
-          else handlers.onLastWindowClosed();
-          continue;
-        }
-        if (
-          frame.header.kind === FrameKind.Reply &&
-          frame.header.channel === LIFECYCLE_CHANNEL &&
-          this.#quitWaiter &&
-          frame.header.corr === this.#quitWaiter.corr
-        ) {
-          const waiter = this.#quitWaiter;
-          this.#quitWaiter = null;
-          waiter.resolve();
-          continue;
-        }
-        if (
-          frame.header.kind === FrameKind.Err &&
-          this.#quitWaiter &&
-          frame.header.corr === this.#quitWaiter.corr
-        ) {
-          const waiter = this.#quitWaiter;
-          this.#quitWaiter = null;
-          waiter.reject(errorFromErrFrame(frame.payload));
-          continue;
-        }
+        // kel133 AC1-AC2/AC5: every frame is admitted by the shared corpus
+        // rules before any dispatch. An undeclared frame is KELD-IPC-005 and
+        // tears the session down — the old silent fall-through is deleted.
         if (frame.header.kind === FrameKind.Ping) {
+          validateReceivedHeader(RECEIVE_POLICIES.lifecycleEventReceiver, frame.header);
           await withIoDeadline(
             this.#writes.writeFrame(
               FrameKind.Ping,
@@ -580,6 +712,28 @@ export class LifecycleLink {
           );
           continue;
         }
+        if (frame.header.kind === FrameKind.Event) {
+          validateReceivedHeader(RECEIVE_POLICIES.lifecycleEventReceiver, frame.header);
+          const event = decodeEvent(frame.payload);
+          if (event === "ready") handlers.onReady();
+          else handlers.onLastWindowClosed();
+          continue;
+        }
+        if (
+          (frame.header.kind === FrameKind.Reply || frame.header.kind === FrameKind.Err) &&
+          this.#quitWaiter !== null
+        ) {
+          const waiter = this.#quitWaiter;
+          validateReceivedHeader(lifecycleReplyWaiter(waiter.corr), frame.header);
+          this.#quitWaiter = null;
+          if (frame.header.kind === FrameKind.Reply) {
+            waiter.resolve();
+          } else {
+            waiter.reject(errorFromErrFrame(frame.payload));
+          }
+          continue;
+        }
+        throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
       }
     };
     void run().catch((err: Error) => {
