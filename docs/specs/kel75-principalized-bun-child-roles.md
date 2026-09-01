@@ -400,12 +400,14 @@ never silently weaken a strict profile.
   ordering, opaque authority revocation, PID-independent host-death evidence contract and exact
   renderer-continuity beacon. The portable executable trace oracle is contract proof,
   not a shipping implementation or real-webview pass.
-- [x] T8: Extend the one T1b generation owner to a Windows `primary` over the
-  KEL-96-D10 unprivileged loopback interim. Reuse one cross-platform
+- [x] T8: Extend the one T1b generation owner to a Windows `primary`; it
+  originally landed over the KEL-96-D10 unprivileged loopback interim. Reuse one cross-platform
   `keld-ipc::BootstrapListener`, expose the authenticated bound generation to its
   future host router, and prove real Bun g1→g2 rotation, stale authority rejection,
   revoke-before-successor, handle-owned shutdown and a clean next cycle. T8 is an
   independently promoted predecessor and does not wait for T5–T7.
+  KEL-101/T3 later migrated that shared listener and its consumers to the
+  current-user-DACL named pipe without changing this generation-owner contract.
 - [ ] T4: Add `window-bound` role lifecycle and real host-window-close integration.
   Consume T4a without adding a second restart loop or treating the event queue as the
   authority ledger. Real macOS, Windows and Linux acceptance remains here (or in an

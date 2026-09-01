@@ -389,7 +389,8 @@ fn electron_main_retains_decimal_diagnostic_compatibility() {
 ///
 /// The fixture stubs `LifecycleLink.connect` (no host handshake — that is
 /// `lifecycle.ts`). Spawn still mints a unique unused app-link the same way
-/// the READY test does (temp `0o700` dir + socket, or loopback port 0) so
+/// the READY test does (temp `0o700` dir + socket, or a named-pipe app-link
+/// on Windows) so
 /// two parallel runs do not share `/tmp/keld-kel72-unused.sock`.
 ///
 /// Oracle lines the fixture already prints on success:

@@ -33,17 +33,24 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
-**v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
-`HostOwnedHelloSession`) uses the shared `keld-ipc::BootstrapListener`: a domain
-socket inside an owner-only (`0o700`) session directory on Unix and loopback TCP
-(`127.0.0.1:0`) on Windows — not yet the named pipe this section specifies. Both
+**v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
+(`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
+`keld-ipc::BootstrapListener`: a domain socket inside an owner-only (`0o700`)
+session directory on Unix and one host-owned
+`\\.\pipe\keld-<64 lowercase hex>` instance on Windows. The Windows pipe
+rejects remote clients and has one protected allow ACE for the host's current
+`TokenUser` SID with mask `0x0012_019B`. Both transports
 require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
 `<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
 shipping `keld dev` path keeps the listener and supervised Bun live for the hello
 window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
-same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
-current-user DACL.
+same listener. Decimal loopback endpoints remain explicit client-only diagnostic
+compatibility; no shipping Windows app-link producer binds or falls back to TCP.
+Real Windows KEL-101/T4 evidence observed `ERROR_ACCESS_DENIED` from a distinct
+ordinary-user token before admission, followed by an authorized same-user echo
+and a fresh successor generation. The DACL does not exclude an administrator or
+a malicious process running as the same user; the HELLO token remains mandatory.
 
 **macOS/Windows no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -58,13 +65,12 @@ Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, stops and reaps the supervised Bun
 child, and only then wakes the platform UI loop to exit. macOS composes the
 guardian/process-group owner; Windows consumes T8's `PrimaryRoleSupervisor` over the
-explicitly unprivileged loopback interim. The locator is consumed at successful
-authentication. `keld dev` now uses the staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
+current-user-DACL named pipe.
+The locator is consumed at successful authentication. `keld dev` now uses the
+staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
 permission. Linux `keld dev` fails closed until its KEL-96/T4 no-flag row.
-Windows abnormal-host-death descendant cleanup still awaits KEL-78/T3 and no
-privileged channel may use this transport before KEL-101.
 
 ## 2. Wire protocol (control plane)
 
@@ -111,8 +117,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   coordinator. T1b/T8 add cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
   observation, and consumed-locator cleanup after bind. Multi-role dispatch, role
-  grants, privileged Windows dispatch, and Windows named-pipe/DACL bootstrap remain
-  destination work; T3 virtual ports remain a Unix library/test surface.
+  grants and privileged Windows dispatch remain destination work. The Windows
+  named-pipe/DACL bootstrap and its shipping consumers are live (KEL-101 T2-T4);
+  T3 virtual ports remain a Unix library/test surface.
   Channel-table exchange remains later work.
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately

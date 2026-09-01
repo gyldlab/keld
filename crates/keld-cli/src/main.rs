@@ -238,7 +238,7 @@ fn run_ipc_client_echo(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Runs echo server + client on a loopback app-link (KEL-30 slice).
+/// Runs echo server + client on the platform bootstrap app-link (KEL-30 slice).
 fn run_ipc_echo_demo() -> Result<(), Box<dyn std::error::Error>> {
     let (ready_tx, ready_rx) = mpsc::channel();
     let server = EchoServer::start(&ready_tx)?;

@@ -192,7 +192,7 @@ Where the tests live:
 
 | Test | File |
 |---|---|
-| kipc echo over a real app-link transport (UDS / loopback TCP) | [`crates/keld-ipc/tests/echo_link.rs`](../../crates/keld-ipc/tests/echo_link.rs) |
+| kipc echo over a real app-link transport (UDS / Windows named pipe) | [`crates/keld-ipc/tests/echo_link.rs`](../../crates/keld-ipc/tests/echo_link.rs) |
 | Bun main process performing an IPC echo end to end | [`crates/keld-cli/tests/bun_echo.rs`](../../crates/keld-cli/tests/bun_echo.rs) |
 | Frame header encode/decode, bad magic, unknown kind | `crates/keld-ipc/src/frame.rs` (colocated `mod tests`) |
 | Echo payload round-trip | `crates/keld-ipc/src/echo.rs` |
@@ -260,7 +260,8 @@ with the rationale, so you do not learn them from a review comment:
 - **Every public item is documented.** `cargo doc` runs with `-D warnings`, so a missing
   doc comment is a build failure, not a nag.
 - **Production `unsafe` lives only in sanctioned path owners**: `keld-wv` platform
-  backends and `keld-runtime` Windows modules today; future `keld-ipc` shm is reserved.
+  backends, `keld-runtime` Windows modules, and reviewed
+  `keld-ipc::windows_named_pipe` today; future `keld-ipc` shm is reserved.
   `unsafe_code = "deny"` workspace-wide, opted out with a module-scope
   `#[allow(unsafe_code)]`, `#![deny(unsafe_op_in_unsafe_fn)]`, and a `// SAFETY:` proof
   citing the platform contract. A new production path requires an issue-scoped

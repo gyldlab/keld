@@ -265,8 +265,11 @@ What this actually establishes, and what it doesn't:
 | HELLO payload | 32 raw bytes (KEL-60). Empty, truncated, or mismatched tokens are `KELD-IPC-007`. The channel table will still have to live here later |
 
 The token is minted by the host (`getrandom::fill`) and passed to the child in
-`KELD_APP_LINK` as `<endpoint>#<64 hex chars>`. Unix still also binds inside a `0o700`
-session directory; Windows is still loopback TCP (named-pipe DACL is the destination).
+`KELD_APP_LINK` as `<endpoint>#<64 hex chars>`. Unix binds inside a `0o700`
+session directory. Windows binds one host-owned
+`\\.\pipe\keld-<64 lowercase hex>` instance with a protected current-`TokenUser`
+DACL and rejects remote clients. The token remains mandatory because that DACL
+does not exclude another process running as the same user.
 
 The client writes 48 bytes (16-byte header plus 32-byte token) first; that
 fits in any socket buffer. The server does not write those bytes until the
@@ -427,16 +430,20 @@ generic over their I/O traits.
 | | Unix | Windows |
 |---|---|---|
 | **Spec** ([`02` §1](../architecture/02-ipc.md)) | Unix domain socket | **Named pipe** |
-| **Code** (`crates/keld-ipc/src/bootstrap.rs`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind(("127.0.0.1", 0))` |
-| Endpoint value | Path + `#` + 64 hex chars | Port + `#` + 64 hex chars |
+| **Code** (`crates/keld-ipc/src/bootstrap.rs`) | `UnixListener` / `UnixStream` | `WindowsNamedPipeBootstrapListener` / `WindowsNamedPipeBootstrapStream` |
+| Endpoint value | Path + `#` + 64 hex chars | `\\.\pipe\keld-<64 lowercase hex>` + `#` + 64 hex chars |
 
-**The Windows transport still diverges from the spec on the OS object.** Loopback TCP is
-not a named pipe: it is visible to any local process that can connect to the port.
-**v2 closes the empty-HELLO hole:** connecting without the session token fails
-`KELD-IPC-007` before any echo handler runs (KEL-60). A named pipe with a current-user
-DACL remains the destination Windows transport. Electrobun choosing localhost WebSockets
-is still called out in the research corpus as one of the things Keld exists to do
-better.
+**The Windows OS-object divergence is closed (KEL-101).** The pipe has exactly one
+protected allow ACE for the host's current `TokenUser` SID with mask
+`0x0012_019B`, is non-inheritable, permits one local instance, and rejects remote
+clients. A real distinct ordinary-user process observed raw
+`ERROR_ACCESS_DENIED (5)` while an absent-pipe control observed
+`ERROR_FILE_NOT_FOUND (2)`; the denial did not consume admission, and the
+intended same-user client then completed HELLO and echo. Same-user processes are
+still authenticated by the v2 token, and no protection against administrators
+or same-user malware is claimed. Decimal loopback parsing remains client-only
+diagnostic compatibility pending KEL-101/T5; new hosts never produce or fall
+back to it.
 
 On successful authentication, `BootstrapListener` removes the Unix socket and
 owner-only session directory; shutdown and `Drop` also perform best-effort endpoint
@@ -455,7 +462,8 @@ the host and passed to Bun at spawn via memfd / `shm_open` / named section with 
 inheritance. JS reads and writes through `ArrayBuffer` views over the mapping. A control frame
 carries `{ring offset, len, generation}` and the payload bytes are never re-serialized. Fallback:
 inline `FLAG_RAW` frames on the socket where shm is unavailable — containers, exotic sandboxes.
-This is the only place `unsafe` is sanctioned in `keld-ipc`, and the module does not exist yet.
+The future shm module is one sanctioned `keld-ipc` unsafe owner and does not
+exist yet; the reviewed `windows_named_pipe` module is the current other owner.
 
 **`keld://` streaming (wv-link).** Engines do not reliably expose shared memory to page JS, so bulk
 data to and from webviews rides a custom scheme instead: `keld://c/{channel}` request/response with
@@ -585,7 +593,7 @@ command
 
 | Variable | Value | Consumed by |
 |---|---|---|
-| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (both minted by `keld_ipc::BootstrapListener`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path; Windows endpoint is `\\.\pipe\keld-<64 lowercase hex>`; both are minted by `keld_ipc::BootstrapListener` | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
 | `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS and Windows hosts. macOS validates a read-only pipe and marks it non-inheritable before guardian spawn. Windows clears inheritance on the live stdin handle before primary spawn, gives Bun null stdin, and removes the variable. Both ignore bytes and treat EOF as CLI loss; Windows also preserves read/tail errors, while its raw cross-process handle-table census remains an open T4 evidence row. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the

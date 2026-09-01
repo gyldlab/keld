@@ -156,15 +156,15 @@ explaining why `deny` and not `forbid`:
 [workspace.lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"
-# `deny` rather than `forbid` so the two sanctioned locations (`keld-wv` platform
-# backends, `keld-ipc::shm`) can opt in with an explicit, reviewable module-scope
+# `deny` rather than `forbid` so sanctioned owners (`keld-wv` platform backends,
+# `keld-runtime` Windows modules, `keld-ipc::windows_named_pipe`, and future
+# `keld-ipc::shm`) can opt in with an explicit, reviewable module-scope
 # `#[allow(unsafe_code)]` + `// SAFETY:` proofs, per AGENTS.md.
 unsafe_code = "deny"
 ```
 
-Exactly one file exercises that opt-in today: `crates/keld-wv/src/wkwebview/mod.rs:17`, and it
-carries a nine-line `// SAFETY:` proof above the attribute explaining the main-thread invariant
-it depends on. The `keld-ipc::shm` module named in the comment does not exist yet.
+Every current opt-in is restricted to the sanctioned path owners above and carries local
+`// SAFETY:` proofs; `keld-ipc::shm` remains a reserved future owner and does not exist yet.
 
 The release profile is tuned for the same principle — small, fast-starting, no unwinding:
 
@@ -660,7 +660,7 @@ The summary table. "Live" means it works and a test proves it.
 | kipc frame format (16 B header, 11 kinds, flags, corr ids) | **Live** | `keld-ipc/src/frame.rs`; roundtrip test over all kinds, bad-magic and bad-kind rejection |
 | postcard codec for structured payloads | **Live** | `keld-ipc/src/codec.rs`; echo roundtrip test |
 | app-link transport (UDS on unix) | **Live** | `keld-ipc/tests/echo_link.rs`; real socket, real bytes |
-| Windows transport | **Partial / diverges** | Loopback **TCP** plus v2 HELLO token (KEL-60); named-pipe DACL is the destination (`keld-core/src/echo_link.rs`) |
+| Windows transport | **Live** | One host-owned named pipe with protected current-`TokenUser` DACL, remote-client rejection, and mandatory v2 HELLO token; real foreign-user denial and same-user echo (KEL-101) |
 | HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
 | Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
 | macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |

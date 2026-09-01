@@ -108,11 +108,11 @@ remote-client rejection, and deletes an instance after its last handle closes
 
 ### First-principles and reuse decision
 
-After KEL-75/T8, `keld_core::EchoServer` and the Windows primary-generation
-coordinator both delegate token minting, `127.0.0.1:0` lifecycle,
+Before this KEL-101 slice, `keld_core::EchoServer` and the Windows primary-generation
+coordinator both delegated token minting, `127.0.0.1:0` lifecycle,
 retry-after-bad-HELLO semantics and consumed-locator cleanup to the same
-`keld_ipc::BootstrapListener`. That live backend is still explicitly
-unprivileged loopback. This specification replaces its Windows transport with
+`keld_ipc::BootstrapListener`. That backend was explicitly unprivileged
+loopback. This specification replaces its Windows transport with
 the named-pipe/DACL backend; it does not add another bootstrap owner.
 
 `keld-ipc` owns the Windows bootstrap primitive, name/DACL construction,
@@ -307,18 +307,49 @@ This establishes why `0x0012_019B` is selected and why create-instance access
 is unnecessary for that pinned client. It does not prove foreign-user denial,
 production Rust behavior, cleanup, or a shipped Keld transport.
 
-### v0 and destination claim update plan
+### Production Windows T4 evidence and LIVE claim
 
-Until implementation plus §7 Windows evidence land, architecture 02 remains
-correct: Windows v0 is loopback TCP and named pipe/DACL is destination work. This
-draft changes no architecture wording.
+On 2026-08-31, the shipping Rust implementation ran on RAMANI Windows 11 build
+26200. The host process TokenUser SID ended in `-1001`; the pre-provisioned
+ordinary `Users` member `RAMANI\KeldDaclTest` used a distinct SID ending in
+`-1006` and was not an Administrator. Under that same foreign token, an absent
+exact-shape pipe returned raw `ERROR_FILE_NOT_FOUND (2)` / `NotFound`, while the
+live shipping pipe returned raw `ERROR_ACCESS_DENIED (5)` /
+`PermissionDenied`. No connection reached the admission observer. The current
+user then completed the unchanged v2 HELLO and echo, and a successor minted a
+fresh endpoint and completed its own authenticated echo. The credential was
+entered only into Windows `runas`; it was
+not stored in a file, process argument, log, test, CI job, or repository.
 
-The implementation PR updates `docs/architecture/02-ipc.md` §1 and
-`docs/onboarding/04-wire-formats-and-contracts.md` only after all Windows tests
-pass. Their LIVE wording must say: “Windows app-link is a host-owned
-one-instance named pipe with explicit current-user DACL, remote-client rejection,
-and mandatory v2 HELLO token,” and must retain the same-user limitation. KEL-60
-remains Done for token possession only; KEL-101 closes the OS-object divergence.
+The operator-run T4 helper records the foreign process SID and both raw OS
+results while receiving only the public pipe name. It creates the receipt with
+a protected DACL granting itself read/write and the host read-only, syncs the
+bytes, and remains alive while the operator independently queries Windows for
+that PID's account and executable path. The server opens the receipt once,
+reads its owner and exact DACL from that handle, requires the owner and receipt
+SID to equal the expected foreign SID, matches the reported executable, and
+reads the bytes through the same handle. It keeps the token private,
+validates the receipt before the authorized round trip,
+rejects the consumed locator, and requires a fresh successor endpoint and token
+with its own authenticated echo. This is an operator-correlated real-OS run;
+the receipt is not a cryptographic proof that its reported PID authored it.
+A temporary mutation that treated the live pipe as
+absent failed with the exact observation `raw=Some(5) kind=PermissionDenied`.
+The final evidence artifact records the observed live PID/account/image and
+executable digest alongside receipt SDDL with protected DACL `D:PAI`, host
+`FR`, and foreign-user `FRFW` only. The server then reported authorized echo
+passed, stale locator `ERROR_FILE_NOT_FOUND (2)`, token rotation passed, and
+next generation passed.
+The focused `keld-ipc` suite passed 119/119 and the pre-documentation full
+Windows `just ci` gate passed 524/524 workspace tests plus format, warning-denied
+Clippy, rustdoc, hygiene, generated-doc/Mermaid checks, and cargo-deny.
+
+Architecture 02 and onboarding 04 may therefore state the LIVE boundary:
+Windows app-link is a host-owned one-instance named pipe with explicit
+current-user DACL, remote-client rejection, and mandatory v2 HELLO token. The
+claim is limited to a distinct ordinary local user; it does not claim protection
+from administrators or malicious same-user processes. KEL-60 remains Done for
+token possession, and KEL-101/T4 closes the OS-object divergence.
 
 ## 5. Boundaries
 
@@ -347,7 +378,7 @@ remains Done for token possession only; KEL-101 closes the OS-object divergence.
   cancellation, redacted rejection, and inheritance proof with focused tests.
 - [x] T3: atomically migrate echo server, diagnostics, and Bun template/client;
   retain only explicit decimal-port diagnostic consumption and prove bad-then-good HELLO.
-- [ ] T4: run different-user Windows fixture and full Windows suite; only then
+- [x] T4: run different-user Windows fixture and full Windows suite; only then
   update LIVE wording. If it cannot run in PR CI, make it a required release/weekly gate.
 - [ ] T5: create a separately scoped ticket to remove decimal compatibility once
   evidence shows no supported producer remains.

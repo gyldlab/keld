@@ -168,8 +168,9 @@ The one verb that ties everything together. Sequence, from
    and CLI loss. On Windows the approved private
    `keld.windows-dev-stage-cleanup/v1` sentinel survives terminal-CLI death,
    waits the exact staged-host process object, and owns nonce deletion. Windows
-   abnormal-host-death reaping still depends on KEL-78/T3; Linux product
-   implementation and real-desktop evidence remain separate open rows.
+   installs KEL-78/T3's non-breakaway kill-on-close Job before Bun spawn, so
+   host death reaps the enrolled descendants. Linux product implementation and
+   real-desktop evidence remain separate open rows.
 
 Representative Bun output from a session in a freshly scaffolded `my-app`
 (forwarded through the host/CLI stdio chain):
@@ -294,7 +295,7 @@ KELD-WV-001: no webview backend for `freebsd` yet. Track architecture spec 05 §
 
 ### 1.9 `keld ipc-echo`
 
-A self-contained kipc demo: starts an `EchoServer` on a loopback endpoint in a worker
+A self-contained kipc demo: starts an `EchoServer` on the platform app-link endpoint in a worker
 thread, performs one `echo_call` from the main thread, joins, prints the response. No
 Bun, no window, no project needed.
 
@@ -446,7 +447,7 @@ Transport and session:
 | `write_frame` | `link` | `<S: Write>(&mut S, kind, flags, channel, corr, payload) -> Result<(), IpcError>` |
 | `handshake_client` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — writes `Hello` with the 32-byte token, then verifies the server's `Hello` |
 | `handshake_server` | `link` | `<S: Read + Write>(&mut S, &SessionToken) -> Result<(), IpcError>` — verifies the client's `Hello` **before** writing the token |
-| `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream` / `TcpStream` |
+| `AppLinkDeadlines` | `link` | `set_app_link_deadlines(&self, Option<Duration>)` on `UnixStream`, diagnostic `TcpStream`, and `WindowsNamedPipeBootstrapStream`; the Windows implementation applies the same optional read/write timeout to the pipe handle |
 | `encode` / `decode` | [`codec`](../../crates/keld-ipc/src/codec.rs) | postcard, over `serde::Serialize` / `DeserializeOwned` |
 | `serve_echo_session` | [`session`](../../crates/keld-ipc/src/session.rs) | `<S: Read + Write + AppLinkDeadlines>(&mut S, &SessionToken) -> Result<(), IpcError>` — 5s deadline, handshake, then loop until EOF |
 | `echo_call` | `session` | `<S: Read + Write + AppLinkDeadlines>(&mut S, &EchoRequest, &SessionToken) -> Result<EchoResponse, IpcError>` |
@@ -525,8 +526,8 @@ backends) and `run_hello_window(title: &str, html: &str)`.
 
 `unsafe_code` is `deny` workspace-wide; `wkwebview/mod.rs` and `webview2/mod.rs` carry
 module-scope `#![allow(unsafe_code)]` with SAFETY comments citing the platform threading
-contracts. keld-wv platform backends are one of the two sanctioned locations in the
-whole repo (the other is `keld-ipc` shm).
+contracts. Other sanctioned owners are `keld-runtime` Windows modules,
+`keld-ipc::windows_named_pipe`, and the reserved future `keld-ipc` shm module.
 
 ### 3.3 `keld_core` — the host runtime
 
@@ -565,7 +566,7 @@ subcommands can call in. Selected modules:
 | `boot` | `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole owner-private stage producer |
 | `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
-| `echo_link` | Windows-only compatibility `EchoEndpoint::Tcp(u16)`, `EchoServer::{start -> io::Result, link, join, shutdown}`, `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
+| `echo_link` | `EchoServer::{start -> io::Result, link, join, shutdown}` uses the shared platform listener; Windows retains client-only decimal diagnostic compatibility as `EchoEndpoint::Tcp(u16)`; `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
 
 `EchoServer` serves one authenticated session by design: it binds the shared platform

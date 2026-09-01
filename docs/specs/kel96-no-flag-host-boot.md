@@ -354,15 +354,15 @@ Recovery is armed only after the initial `Ready` write succeeds. A concurrent
 successor request waits for that decision; a failed write or earlier crash
 rejects successor preparation and remains startup failure.
 
-KEL-75/T8 extends the landed generation coordinator to Windows over D10's
-explicitly unprivileged loopback interim. Its real-Windows predecessor proof owns
+KEL-75/T8 originally extended the landed generation coordinator to Windows over
+D10's explicitly unprivileged loopback interim. Its real-Windows predecessor proof owns
 fresh provision/bind/revoke/restart and the authenticated bound-stream handoff
 without duplicating policy in `keld-core`. KEL-96/T4 consumes the landed T8
 artifact and does not implement another Windows generation or transport loop.
-T8 does not select the named pipe, so KEL-101 is not this lifecycle predecessor;
-it remains mandatory before privileged Windows dispatch can claim the
-named-pipe/current-user-DACL boundary. Windows still needs its own no-flag host,
-window/router, CLI-death and applicable host-death product evidence under T4.
+T8 did not select the named pipe at landing; KEL-101/T3 later migrated the shared
+listener and current consumers to that current-user-DACL boundary without
+changing KEL-96's lifecycle ownership. KEL-101/T4 independently owns the real
+foreign-user denial and LIVE transport evidence.
 
 One private `keld-core` logical app-session router owns at most one accepted
 generation stream. Each generation performs one HELLO and has one reader plus

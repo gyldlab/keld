@@ -48,7 +48,7 @@
   The host independently reads back the protected one-ACE DACL, validates the
   same closed boot/policy contract before resources, and consumes T8's one
   `PrimaryRoleSupervisor` with a pre-Ready recovery gate. One logical router
-  spans fresh loopback generations while the same WebView2 HWND remains live;
+  spans fresh authenticated app-link generations while the same WebView2 HWND remains live;
   `NavigationCompleted` drives `Ready` through tao's UI-thread
   `EventLoopProxy`. Revoked-attempt tombstones prevent a separately queued
   bound stream from being installed after its revocation. A link-only failure requests revoke/kill/reap/restart from
@@ -78,8 +78,8 @@
   identity, waits for that host object, and removes the stage. Before the first
   Bun spawn, the no-flag host also installs KEL-78/T3's unnamed,
   non-breakaway, kill-on-close Job, so abnormal host death reaps Bun and its
-  enrolled descendants. This slice makes no LPAC, named-pipe/DACL, or
-  privileged-dispatch claim.
+  enrolled descendants. KEL-101 separately owns the named-pipe/DACL boundary;
+  this KEL-96 slice makes no LPAC or privileged-dispatch claim.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -145,10 +145,9 @@ supervisor independently. A primary restart does not revoke or stop the app-boun
 role. It does not implement window-bound lifecycle, role-specific grants, or
 strict OS sandboxing. KEL-75 T3 adds bounded host-owned virtual ports between
 authenticated role generations in the Unix `VirtualPortRegistry`. T8 proves a real
-Windows Bun primary g1→g2 over the unprivileged loopback interim and exposes the
-authenticated stream to a future host router; it does not implement KEL-96/T4's
-no-flag Windows host/window path or privileged dispatch. Windows named-pipe/DACL
-bootstrap remains KEL-101 work.
+Windows Bun primary g1→g2 over the current-user-DACL named pipe; KEL-96/T4
+consumes that authenticated stream in the no-flag Windows host/router and
+composes KEL-78's Windows Job/LPAC owner. Privileged dispatch remains later work.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.

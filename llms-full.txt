@@ -337,8 +337,11 @@ What this actually establishes, and what it doesn't:
 | HELLO payload | 32 raw bytes (KEL-60). Empty, truncated, or mismatched tokens are `KELD-IPC-007`. The channel table will still have to live here later |
 
 The token is minted by the host (`getrandom::fill`) and passed to the child in
-`KELD_APP_LINK` as `<endpoint>#<64 hex chars>`. Unix still also binds inside a `0o700`
-session directory; Windows is still loopback TCP (named-pipe DACL is the destination).
+`KELD_APP_LINK` as `<endpoint>#<64 hex chars>`. Unix binds inside a `0o700`
+session directory. Windows binds one host-owned
+`\\.\pipe\keld-<64 lowercase hex>` instance with a protected current-`TokenUser`
+DACL and rejects remote clients. The token remains mandatory because that DACL
+does not exclude another process running as the same user.
 
 The client writes 48 bytes (16-byte header plus 32-byte token) first; that
 fits in any socket buffer. The server does not write those bytes until the
@@ -499,16 +502,20 @@ generic over their I/O traits.
 | | Unix | Windows |
 |---|---|---|
 | **Spec** ([`02` §1](../architecture/02-ipc.md)) | Unix domain socket | **Named pipe** |
-| **Code** (`crates/keld-ipc/src/bootstrap.rs`) | `UnixListener` / `UnixStream` | **Loopback TCP** — `TcpListener::bind(("127.0.0.1", 0))` |
-| Endpoint value | Path + `#` + 64 hex chars | Port + `#` + 64 hex chars |
+| **Code** (`crates/keld-ipc/src/bootstrap.rs`) | `UnixListener` / `UnixStream` | `WindowsNamedPipeBootstrapListener` / `WindowsNamedPipeBootstrapStream` |
+| Endpoint value | Path + `#` + 64 hex chars | `\\.\pipe\keld-<64 lowercase hex>` + `#` + 64 hex chars |
 
-**The Windows transport still diverges from the spec on the OS object.** Loopback TCP is
-not a named pipe: it is visible to any local process that can connect to the port.
-**v2 closes the empty-HELLO hole:** connecting without the session token fails
-`KELD-IPC-007` before any echo handler runs (KEL-60). A named pipe with a current-user
-DACL remains the destination Windows transport. Electrobun choosing localhost WebSockets
-is still called out in the research corpus as one of the things Keld exists to do
-better.
+**The Windows OS-object divergence is closed (KEL-101).** The pipe has exactly one
+protected allow ACE for the host's current `TokenUser` SID with mask
+`0x0012_019B`, is non-inheritable, permits one local instance, and rejects remote
+clients. A real distinct ordinary-user process observed raw
+`ERROR_ACCESS_DENIED (5)` while an absent-pipe control observed
+`ERROR_FILE_NOT_FOUND (2)`; the denial did not consume admission, and the
+intended same-user client then completed HELLO and echo. Same-user processes are
+still authenticated by the v2 token, and no protection against administrators
+or same-user malware is claimed. Decimal loopback parsing remains client-only
+diagnostic compatibility pending KEL-101/T5; new hosts never produce or fall
+back to it.
 
 On successful authentication, `BootstrapListener` removes the Unix socket and
 owner-only session directory; shutdown and `Drop` also perform best-effort endpoint
@@ -527,7 +534,8 @@ the host and passed to Bun at spawn via memfd / `shm_open` / named section with 
 inheritance. JS reads and writes through `ArrayBuffer` views over the mapping. A control frame
 carries `{ring offset, len, generation}` and the payload bytes are never re-serialized. Fallback:
 inline `FLAG_RAW` frames on the socket where shm is unavailable — containers, exotic sandboxes.
-This is the only place `unsafe` is sanctioned in `keld-ipc`, and the module does not exist yet.
+The future shm module is one sanctioned `keld-ipc` unsafe owner and does not
+exist yet; the reviewed `windows_named_pipe` module is the current other owner.
 
 **`keld://` streaming (wv-link).** Engines do not reliably expose shared memory to page JS, so bulk
 data to and from webviews rides a custom scheme instead: `keld://c/{channel}` request/response with
@@ -657,7 +665,7 @@ command
 
 | Variable | Value | Consumed by |
 |---|---|---|
-| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path, Windows endpoint is the loopback port (both minted by `keld_ipc::BootstrapListener`) | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path; Windows endpoint is `\\.\pipe\keld-<64 lowercase hex>`; both are minted by `keld_ipc::BootstrapListener` | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
 | `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS and Windows hosts. macOS validates a read-only pipe and marks it non-inheritable before guardian spawn. Windows clears inheritance on the live stdin handle before primary spawn, gives Bun null stdin, and removes the variable. Both ignore bytes and treat EOF as CLI loss; Windows also preserves read/tail errors, while its raw cross-process handle-table census remains an open T4 evidence row. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
@@ -941,7 +949,7 @@ implemented. The per-crate status legend is the §1 diagram above.
 | `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
 | `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
 | `keld-guard` | capability engine: manifest parsing/evaluation plus single-handle SHA-256-verified startup loading; TARGET complete generated scopes, per-window/per-principal grants and audit log | sha2 |
-| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian composes that supervisor with KEL-75 fresh primary generations for KEL-96's same-window recovery; KEL-75/T8 exposes the same primary-generation owner on Windows over the unprivileged loopback interim; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
+| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian and Windows Job/LPAC owner compose KEL-75 fresh primary generations for KEL-96 recovery; Windows uses the current-user-DACL named pipe; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
 | `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
 | `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
 | `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
@@ -963,9 +971,10 @@ npm packages (TypeScript, in `packages/`):
 `@keld/api` is still absent. Other packages in this table are not in tree.
 
 Rules: crates never depend "upward"; `keld-wv`/`keld-ipc`/`keld-guard` are host-agnostic
-and unit-testable headless; every public item documented; `#![forbid(unsafe_code)]`
-everywhere except `keld-wv` backends today, and the shm module of `keld-ipc` once that
-module exists, where each `unsafe` block carries a `// SAFETY:` proof.
+and unit-testable headless; every public item documented. Production `unsafe` is
+limited to the sanctioned `keld-wv` backends, `keld-runtime` Windows modules,
+`keld-ipc::windows_named_pipe`, and the future `keld-ipc` shm owner; every block
+carries a local `// SAFETY:` proof.
 
 ## 4. Process & thread model
 
@@ -993,10 +1002,10 @@ module exists, where each `unsafe` block carries a `// SAFETY:` proof.
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
   independent `app-bound` role, and KEL-75 T3 bounded host-owned virtual ports
   between authenticated role generations. KEL-96's Windows slice consumes T8 for
-  same-HWND recovery over the unprivileged loopback interim; it does not add privileged
-  dispatch or abnormal-host-death reaping. Window-bound roles, role grants, strict
-  sandbox admission, the Windows Job Object reaper, and named-pipe/DACL bootstrap remain
-  later KEL-75/KEL-78/KEL-101 slices.
+  same-HWND recovery over the current-user-DACL named pipe and composes KEL-78's
+  Windows Job/LPAC owner for abnormal-host-death reaping. It does not add
+  privileged dispatch. Window-bound roles, complete role grants, and complete
+  cross-platform strict sandbox admission remain later KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.
@@ -1085,17 +1094,24 @@ Revocation invalidates grants, routed virtual-port capabilities and optional map
 handles before successor provisioning. `KELD_APP_LINK` carries only endpoint plus
 possession secret; it never carries role or principal identity.
 
-**v0 app-link (KEL-60/KEL-70/KEL-30):** one host-owned primary link (`keld-core::EchoServer` /
-`HostOwnedHelloSession`) uses the shared `keld-ipc::BootstrapListener`: a domain
-socket inside an owner-only (`0o700`) session directory on Unix and loopback TCP
-(`127.0.0.1:0`) on Windows — not yet the named pipe this section specifies. Both
+**v0 app-link (KEL-60/KEL-70/KEL-30/KEL-101):** one host-owned primary link
+(`keld-core::EchoServer` / `HostOwnedHelloSession`) uses the shared
+`keld-ipc::BootstrapListener`: a domain socket inside an owner-only (`0o700`)
+session directory on Unix and one host-owned
+`\\.\pipe\keld-<64 lowercase hex>` instance on Windows. The Windows pipe
+rejects remote clients and has one protected allow ACE for the host's current
+`TokenUser` SID with mask `0x0012_019B`. Both transports
 require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
 `<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
 shipping `keld dev` path keeps the listener and supervised Bun live for the hello
 window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
-same listener. Destination Windows transport remains `\\.\pipe\keld-<random>` with a
-current-user DACL.
+same listener. Decimal loopback endpoints remain explicit client-only diagnostic
+compatibility; no shipping Windows app-link producer binds or falls back to TCP.
+Real Windows KEL-101/T4 evidence observed `ERROR_ACCESS_DENIED` from a distinct
+ordinary-user token before admission, followed by an authorized same-user echo
+and a fresh successor generation. The DACL does not exclude an administrator or
+a malicious process running as the same user; the HELLO token remains mandatory.
 
 **macOS/Windows no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
@@ -1110,13 +1126,12 @@ Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, stops and reaps the supervised Bun
 child, and only then wakes the platform UI loop to exit. macOS composes the
 guardian/process-group owner; Windows consumes T8's `PrimaryRoleSupervisor` over the
-explicitly unprivileged loopback interim. The locator is consumed at successful
-authentication. `keld dev` now uses the staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
+current-user-DACL named pipe.
+The locator is consumed at successful authentication. `keld dev` now uses the
+staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
 permission. Linux `keld dev` fails closed until its KEL-96/T4 no-flag row.
-Windows abnormal-host-death descendant cleanup still awaits KEL-78/T3 and no
-privileged channel may use this transport before KEL-101.
 
 ## 2. Wire protocol (control plane)
 
@@ -1163,8 +1178,9 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   coordinator. T1b/T8 add cancellable admission,
   generation-wide deadline handling, host-only redacted `KELD-IPC-007` rejection
   observation, and consumed-locator cleanup after bind. Multi-role dispatch, role
-  grants, privileged Windows dispatch, and Windows named-pipe/DACL bootstrap remain
-  destination work; T3 virtual ports remain a Unix library/test surface.
+  grants and privileged Windows dispatch remain destination work. The Windows
+  named-pipe/DACL bootstrap and its shipping consumers are live (KEL-101 T2-T4);
+  T3 virtual ports remain a Unix library/test surface.
   Channel-table exchange remains later work.
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
@@ -1953,7 +1969,7 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   The host independently reads back the protected one-ACE DACL, validates the
   same closed boot/policy contract before resources, and consumes T8's one
   `PrimaryRoleSupervisor` with a pre-Ready recovery gate. One logical router
-  spans fresh loopback generations while the same WebView2 HWND remains live;
+  spans fresh authenticated app-link generations while the same WebView2 HWND remains live;
   `NavigationCompleted` drives `Ready` through tao's UI-thread
   `EventLoopProxy`. Revoked-attempt tombstones prevent a separately queued
   bound stream from being installed after its revocation. A link-only failure requests revoke/kill/reap/restart from
@@ -1983,8 +1999,8 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   identity, waits for that host object, and removes the stage. Before the first
   Bun spawn, the no-flag host also installs KEL-78/T3's unnamed,
   non-breakaway, kill-on-close Job, so abnormal host death reaps Bun and its
-  enrolled descendants. This slice makes no LPAC, named-pipe/DACL, or
-  privileged-dispatch claim.
+  enrolled descendants. KEL-101 separately owns the named-pipe/DACL boundary;
+  this KEL-96 slice makes no LPAC or privileged-dispatch claim.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -2050,10 +2066,9 @@ supervisor independently. A primary restart does not revoke or stop the app-boun
 role. It does not implement window-bound lifecycle, role-specific grants, or
 strict OS sandboxing. KEL-75 T3 adds bounded host-owned virtual ports between
 authenticated role generations in the Unix `VirtualPortRegistry`. T8 proves a real
-Windows Bun primary g1→g2 over the unprivileged loopback interim and exposes the
-authenticated stream to a future host router; it does not implement KEL-96/T4's
-no-flag Windows host/window path or privileged dispatch. Windows named-pipe/DACL
-bootstrap remains KEL-101 work.
+Windows Bun primary g1→g2 over the current-user-DACL named pipe; KEL-96/T4
+consumes that authenticated stream in the no-flag Windows host/router and
+composes KEL-78's Windows Job/LPAC owner. Privileged dispatch remains later work.
 
 The ordered destination flow below is KEL-75's source of truth for spawn, port routing,
 window close and restart. KEL-78 separately owns real-OS sandbox admission proof.
