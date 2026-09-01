@@ -17,6 +17,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::{cell::RefCell, sync::mpsc};
 
 use windows_permissions::constants::{AceFlags, AceType, SeObjectType, SecurityInformation};
 use windows_permissions::utilities::current_process_sid;
@@ -33,7 +35,6 @@ use windows_sys::Win32::Storage::FileSystem::{
     PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-#[cfg(test)]
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeInfo, PIPE_READMODE_BYTE,
@@ -47,6 +48,11 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleC
 
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 const PIPE_ACCESS_MASK: u32 = 0x0012_019B;
+
+#[cfg(test)]
+thread_local! {
+    static CONNECT_BUSY_WITNESS: RefCell<Option<mpsc::Sender<()>>> = const { RefCell::new(None) };
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum WaitOutcome {
@@ -366,32 +372,55 @@ impl WindowsNamedPipeServer {
         self.inner.accept_pending.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
     pub(crate) fn connect_client_until(
         endpoint: &str,
         deadline: Instant,
     ) -> io::Result<WindowsNamedPipeStream> {
         let endpoint_wide = wide(endpoint);
         loop {
+            if Instant::now() >= deadline {
+                return Err(connect_deadline_error());
+            }
             match Self::connect_client(endpoint) {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    if Instant::now() >= deadline {
+                        drop(stream);
+                        return Err(connect_deadline_error());
+                    }
+                    return Ok(stream);
+                }
                 Err(error) if error.raw_os_error() == Some(231) => {
+                    #[cfg(test)]
+                    CONNECT_BUSY_WITNESS.with(|witness| {
+                        if let Some(witness) = witness.borrow_mut().take() {
+                            let _ = witness.send(());
+                        }
+                    });
                     let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                        return Err(io::Error::from_raw_os_error(231));
+                        return Err(connect_deadline_error());
                     };
                     let wait_ms = duration_to_wait_ms(Some(remaining));
                     // SAFETY: `endpoint_wide` is a live NUL-terminated path;
                     // the bounded wait does not retain its pointer.
                     if unsafe { WaitNamedPipeW(endpoint_wide.as_ptr(), wait_ms) } == 0 {
                         let wait_error = io::Error::last_os_error();
-                        if wait_error.raw_os_error() != Some(ERROR_SEM_TIMEOUT.cast_signed()) {
-                            return Err(wait_error);
+                        if wait_error.raw_os_error() == Some(ERROR_SEM_TIMEOUT.cast_signed()) {
+                            if Instant::now() < deadline {
+                                continue;
+                            }
+                            return Err(connect_deadline_error());
                         }
+                        return Err(wait_error);
                     }
                 }
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_connect_busy_witness(witness: mpsc::Sender<()>) {
+        CONNECT_BUSY_WITNESS.with(|slot| *slot.borrow_mut() = Some(witness));
     }
 
     fn validate_security(&self, current_sid: &Sid) -> io::Result<()> {
@@ -915,6 +944,10 @@ fn duration_to_wait_ms(timeout: Option<Duration>) -> u32 {
     };
     let millis = timeout.as_millis().max(1).min(u128::from(INFINITE - 1));
     u32::try_from(millis).unwrap_or(INFINITE - 1)
+}
+
+fn connect_deadline_error() -> io::Error {
+    io::Error::from_raw_os_error(ERROR_SEM_TIMEOUT.cast_signed())
 }
 
 fn validate_timeout(timeout: Option<Duration>) -> io::Result<()> {
