@@ -260,7 +260,8 @@ with the rationale, so you do not learn them from a review comment:
 - **Every public item is documented.** `cargo doc` runs with `-D warnings`, so a missing
   doc comment is a build failure, not a nag.
 - **Production `unsafe` lives only in sanctioned path owners**: `keld-wv` platform
-  backends and `keld-runtime` Windows modules today; future `keld-ipc` shm is reserved.
+  backends, `keld-runtime` Windows modules, and reviewed
+  `keld-ipc::windows_named_pipe` today; future `keld-ipc` shm is reserved.
   `unsafe_code = "deny"` workspace-wide, opted out with a module-scope
   `#[allow(unsafe_code)]`, `#![deny(unsafe_op_in_unsafe_fn)]`, and a `// SAFETY:` proof
   citing the platform contract. A new production path requires an issue-scoped

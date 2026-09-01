@@ -526,8 +526,8 @@ backends) and `run_hello_window(title: &str, html: &str)`.
 
 `unsafe_code` is `deny` workspace-wide; `wkwebview/mod.rs` and `webview2/mod.rs` carry
 module-scope `#![allow(unsafe_code)]` with SAFETY comments citing the platform threading
-contracts. keld-wv platform backends are one of the two sanctioned locations in the
-whole repo (the other is `keld-ipc` shm).
+contracts. Other sanctioned owners are `keld-runtime` Windows modules,
+`keld-ipc::windows_named_pipe`, and the reserved future `keld-ipc` shm module.
 
 ### 3.3 `keld_core` — the host runtime
 
