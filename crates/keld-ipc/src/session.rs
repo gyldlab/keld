@@ -37,7 +37,7 @@ pub fn serve_echo_session<S: Read + Write + AppLinkDeadlines>(
 ///
 /// The HELLO handshake uses [`APP_LINK_IO_DEADLINE`]. After it succeeds, the
 /// reader uses [`APP_LINK_READER_POLL`] and
-/// [`read_frame_interruptible`] so a quiet persistent session is not a
+/// [`read_validated_frame_interruptible`] so a quiet persistent session is not a
 /// timeout. The writer keeps its five-second deadline. A partial frame that
 /// stalls still returns [`IpcError::Timeout`].
 ///
