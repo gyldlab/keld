@@ -61,11 +61,18 @@ changes the public engine-construction boundary.
   the engine's required UDF access must not be removed by a hand-written restrictive ACL.
 - Microsoft, [Known folder identifiers](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid):
   `FOLDERID_LocalAppData` is a per-user known folder.
+- Microsoft, [`WinVerifyTrust`](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust):
+  Windows T2 validates the packaged object under Authenticode policy before extracting
+  its signer scope and signed app manifest.
 - Apple, [`WKWebsiteDataStore`](https://developer.apple.com/documentation/webkit/wkwebsitedatastore):
   default is persistent, nonpersistent is memory-only, and identifier-addressed stores
   provide persistent profiles.
 - Apple, [identified-store removal](https://developer.apple.com/documentation/webkit/wkwebsitedatastore/remove%28foridentifier%3Acompletionhandler%3A%29):
   release every using `WKWebView` before removal.
+- Apple, [code-signing information keys](https://developer.apple.com/documentation/security/signing-information-dictionary-keys)
+  and [`SecCodeCopySigningInformation`](https://developer.apple.com/documentation/security/seccodecopysigninginformation%28_%3A_%3A_%3A%29):
+  macOS T3 first validates code, then consumes the Team Identifier and signed identifier;
+  copying signing information without validity checking is insufficient.
 - WebKit, [profiles with identified data stores](https://webkit.org/blog/14423/building-profiles-with-new-webkit-api/):
   identifier-addressed persistent stores are a macOS 14 addition.
 - WebKitGTK, [`WebKitWebsiteDataManager`](https://webkitgtk.org/reference/webkit2gtk/unstable/class.WebsiteDataManager.html)
@@ -74,6 +81,13 @@ changes the public engine-construction boundary.
 - freedesktop.org, [XDG Base Directory Specification 0.8](https://specifications.freedesktop.org/basedir-spec/latest/):
   user data and cache have separate absolute roots and a relative environment value is
   invalid.
+- Linux kernel, [`boot_id`](https://www.kernel.org/doc/html/v6.12/admin-guide/sysctl/kernel.html):
+  the kernel-generated UUID is unvarying within one boot.
+- Apple, [`sysctlbyname`](https://developer.apple.com/documentation/kernel/1387446-sysctlbyname)
+  and WebKit's primary
+  [`bootSessionUUIDString`](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/UUID.cpp)
+  implementation: macOS exposes `kern.bootsessionuuid` as the boot-scoped UUID that
+  WebKit itself uses for boot-specific cache validity.
 - pinned wry 0.56.1 `WebContext`/Darwin extension source: Linux's convenience context
   uses one path for data and cache, while macOS identified stores require
   `with_data_store_identifier` and macOS 14 or later. These are evaluated upstream
@@ -90,9 +104,8 @@ changes the public engine-construction boundary.
    profile selection runs, then the selected persistent identity and relative namespace
    remain unchanged. Linux's absolute data/cache roots are the separately validated
    boot-time XDG inputs. Changing a valid absolute XDG root between launches selects the
-   same relative identity under a new location and preserves the old roots; Keld cannot
-   infer or migrate the old location unless an explicit user-approved operation supplies
-   and validates both old roots.
+   same relative identity under a new location and preserves the old roots; v1 neither
+   infers nor migrates the undiscoverable old location.
 3. Given the current unsigned dev stage or any release boot missing authenticated app
    identity, when engine startup requests a profile, then dev receives an explicitly
    ephemeral host-minted profile and release fails as `KELD-WV-009`; neither path uses a
@@ -133,23 +146,28 @@ changes the public engine-construction boundary.
    for the identity and one engine-owned `WebKitWebContext` is shared by its views.
    Relative XDG values are ignored per the XDG contract; default/implicit contexts and a
    single conflated data/cache path are forbidden.
-10. Given two host processes for the same user and `ProfileIdentity`, when both attempt
-    persistent startup, then one atomic exclusive profile lease wins and the other fails
+10. Given two host processes for the same user, `ProfileIdentity`, and validated platform
+    namespace roots, when both attempt persistent startup, then one atomic exclusive
+    profile lease wins and the other fails
     as `KELD-WV-009` (or a later separately approved activation UX contacts the owner).
     It never creates a suffix, default, temp, or second store. On Windows a successor
     controller also remains rejected until the old WebView2 browser collection releases
     the UDF after host crash. Different identities acquire different leases and stores.
-11. Given Bun generation rotation, host restart, display-name/executable relocation, a
-    compatible app update, or rollback, when the authenticated profile identity is
-    unchanged, then the same store is reused. A changed identity selects a different
-    store unless a separately signed, crash-safe migration names both identities. A
+11. Given Bun generation rotation, graceful host restart, display-name/executable
+    relocation, a compatible app update, or rollback, when the authenticated profile
+    identity is unchanged, then the same store is reused. After host death with a
+    non-idle durable engine state, Windows may recover only through its exclusive-UDF
+    release oracle; macOS/Linux mark the profile quarantined and fail same-boot persistent
+    restart. Death after durable `idle` is safe. A changed identity selects a different store and
+    preserves the old store; v1 performs no cross-identity data migration. A
     changed validated Linux XDG root is not automatically discoverable: normal startup
     may create a new store at the new roots and must leave old roots untouched; an
-    explicit migration requires validated old+new roots and exclusive ownership.
+    future migration is separately specified; v1 accepts no old-root input.
 12. Given ordinary uninstall, when packaging removes app bytes, then profile data is
     preserved by default. An explicit user-requested purge is packaging-owned, requires
-    the exact validated identity and exclusive lease, waits for every browser/webview
-    process to release the store, persists a resumable purge intent before deletion,
+    the exact validated identity and exclusive lease, waits for the platform's named
+    engine release or async-clear barrier, persists a resumable purge intent before
+    destructive change,
     rejects link/reparse substitution, and deletes no other identity. Startup encountering
     purge intent resumes or fails closed before normal lookup; it never recreates the
     store. Test cleanup follows the same ownership rule under a test-only root.
@@ -166,7 +184,7 @@ changes the public engine-construction boundary.
     root and hostile same-user native processes are outside this claim.
 15. Given a temporary mutation that removes identity consumption, aliases A/B namespace
     keys, enables default fallback, skips actual-path/marker validation, removes the
-    exclusive lease, or performs deletion before engine-process exit, then the one
+    exclusive lease, or performs purge before its platform release/clear barrier, then the one
     corresponding identity, platform, concurrency, or lifecycle test fails.
 
 ## 4. Design
@@ -179,14 +197,14 @@ wire, capability, or Bun-principal ownership.
 
 | Atom | Owner and boundary | Input → output | Failure and direct observable | Independence |
 |---|---|---|---|---|
-| Release identity | future signed package verifier, consumed by `keld-core` | publisher scope + canonical signed `app.id` → private validated identity input | unsigned/config/page/Bun value → no persistent identity | does not choose a platform path |
-| Profile identity | `keld-core` | validated publisher/app tuple → opaque 32-byte `ProfileIdentity` | noncanonical tuple or substitution → `KELD-WV-009` before engine | not filesystem containment |
+| Release identity | platform package verifier in `keld-core` | validated platform publisher scope + canonical signed `app.id` → private identity input | unsigned/config/page/Bun value → no persistent identity | does not choose a platform path |
+| Profile identity | host-agnostic `keld-wv::profile` policy called only after core verification | validated publisher-scope/app-id bytes → opaque 32-byte `ProfileIdentity` | noncanonical tuple or substitution → `KELD-WV-009` before engine | not filesystem containment; preserves `keld-core → keld-wv` dependency direction |
 | Dev mode | host boot | current unsigned dev stage + OS randomness → per-launch ephemeral selection | any persistent fallback → startup failure | makes no release identity claim |
-| Namespace | shared profile owner in `keld-core` | profile identity + platform root → exact key/path or Apple UUID | collision/marker mismatch/link escape → `KELD-WV-009` | backend does not mint identity |
+| Namespace | shared owner in `keld-wv::profile` | profile identity + platform root → exact key/path or Apple UUID | collision/marker mismatch/link escape → `KELD-WV-009` | backend does not mint identity |
 | Store consumption | `keld-wv` platform backend | validated profile selection → WebView2 UDF / WK store / WebKit manager+context | default/actual-path mismatch → no first navigation | does not define origin policy |
 | Containment | platform filesystem owner | retained root/leaf handles + current OS user → verified store boundary | foreign/broad access or link substitution → fail closed | same-user native threat remains outside claim |
-| Concurrency | host-owned profile lease | user + profile identity + process lifetime → one exclusive owner | second owner → deterministic `KELD-WV-009` | not browser process-pool policy |
-| Lifecycle | packaging/update owner plus host teardown | stable identity + lifecycle event → retain/migrate/preserve/purge | early/wrong-identity delete → typed failure and untouched store | Bun generation never owns data |
+| Concurrency | host-owned profile lease | user + profile identity + validated namespace roots + process lifetime → one exclusive owner | second owner or same-boot macOS/Linux predecessor left in `starting`/`running`/`stopping` → deterministic `KELD-WV-009` | not browser process-pool policy |
+| Lifecycle | packaging/update owner plus host teardown | stable identity + lifecycle event → retain/isolate/preserve/purge | early/wrong-identity delete → typed failure and untouched store | Bun generation never owns data |
 | Evidence | per-platform implementation task | real engine/OS effect → isolated/persistent result | mock/source string/other OS → no pass | KEL-79 remains separate |
 
 The live state proves why the identity input cannot be inferred:
@@ -226,17 +244,26 @@ there is no persistent global fallback. No performance claim is made.
 
 ### Identity and selection shape
 
-Names may be refined during public-API review, but ownership must remain:
+Names may be refined during public-API review, but dependency direction and ownership
+must remain. `keld-core` depends on `keld-wv`; `keld-wv` never names a core type:
 
 ```rust
-/// Package-verifier output; fields and constructors remain private.
-pub struct ValidatedAppIdentity {
+/// keld-core-private package-verifier output.
+struct ValidatedAppIdentity {
     publisher_scope: [u8; 32],
     app_id: CanonicalAppId,
 }
 
-/// Opaque profile namespace minted by keld-core only.
+/// Opaque host-agnostic namespace owned by keld-wv::profile.
 pub struct ProfileIdentity([u8; 32]);
+
+impl ProfileIdentity {
+    /// Called by trusted host code only after package signature verification.
+    pub fn from_host_verified_parts(
+        publisher_scope: [u8; 32],
+        canonical_app_id: &str,
+    ) -> Result<Self, ProfileError>;
+}
 
 pub enum WebProfileSelection {
     Persistent(ProfileLease),
@@ -250,9 +277,26 @@ pub struct ProfileLease {
 }
 ```
 
-`ValidatedAppIdentity` is the package verifier's sole output and already contains the
-validated publisher scope; there is no second public `ValidatedPublisherScope`
-constructor or competing identity boundary.
+`ValidatedAppIdentity` is core's private package-verifier output. Core calls the
+host-agnostic lower-crate constructor only after verification and passes the resulting
+`keld-wv` type back into `WebProfileSelection`. The Rust library API is part of the
+trusted host TCB, not a sandbox: it cannot make a public cross-crate function callable
+only by core. The security oracle is that no page, Bun process, renderer input, config
+string before signature verification, IPC message, or generated client can reach this
+Rust construction path. This shape avoids both a dependency cycle and raw path/UUID
+inputs at backend constructors.
+
+Each platform verifier produces the same 32-byte interface only after authenticating the
+container and the app id it covers:
+
+- Windows: `SHA-256("keld.publisher.windows/v1\0" || leaf_signer_spki_der)` after
+  Authenticode/chain policy succeeds and the app id is read from the authenticated
+  package relationship;
+- macOS: `SHA-256("keld.publisher.macos/v1\0" || team_identifier_ascii)` after code
+  validity succeeds and the app id is the signed code/bundle identifier;
+- Linux: `SHA-256("keld.publisher.linux/v1\0" || ed25519_public_key)` after a detached
+  Ed25519 signature verifies the literal package-manifest bytes containing `app.id`
+  against the installer-pinned key.
 
 `ProfileIdentity` is SHA-256 over the exact length-delimited byte sequence
 `"keld.profile.identity/v1\0" || publisher_scope || u16be(app_id.len) || app_id`.
@@ -262,20 +306,30 @@ rejects noncanonical input rather than lowercasing or Unicode-normalizing it. Th
 and publisher scope are public identity material, not secrets; logs may name the app id
 but must not expose filesystem paths, handles, cookies, or browser data.
 
-The package verifier owns the stability rule: the tuple is identical across compatible
-updates, rollback and signing-key rotation, and distinct across publishers/apps. T1
-cannot implement persistent release mode until an approved signed-container predecessor
-provides that exact guarantee. The current dev compiler supplies no substitute.
+The platform verifier owns the stability rule: its scope plus canonical app id is
+identical across compatible updates/rollback and distinct across publisher scopes/apps.
+A scope change deliberately changes identity and v1 preserves the old store without
+copying it. T1 implements no package verifier and cannot claim a release identity;
+T2/T3/T4 own their exact platform producer and real signed-container evidence. The
+current dev compiler supplies no substitute.
 
 Filesystem directory names use the full 64-lowerhex `ProfileIdentity`. The macOS store
 UUID is deterministic UUIDv8 material made from the first 16 bytes of
 `SHA-256("keld.wk-store/v1\0" || ProfileIdentity)`, with RFC variant and version bits
 set. Because this intentionally compresses 256 identity bits into a UUID, fixed vectors
-alone are insufficient: the Keld metadata registry atomically creates
-`identities/<full-identity>/profile.owner.v1` and
-`store-uuids/<uuid>/profile.owner.v1`, both containing the full identity and UUID. Both
-records must agree before lookup, reuse or purge; an existing mismatch is
-`KELD-WV-009`. Before Apple removal, T5 atomically commits a `purging` intent containing
+alone are insufficient. Creation first durably writes and fsyncs one `binding` intent
+containing the full identity and UUID. Recovery resumes these idempotent phases: acquire
+the registry lock; verify neither path is bound to another tuple; atomically create-new
+without replacement and fsync `store-uuids/<uuid>/profile.owner.v1` first; then
+create-new/fsync `identities/<full-identity>/profile.owner.v1`; enumerate identifiers;
+construct the Apple store
+only when no active store has previously been recorded; verify its identifier and
+persistence; mark the binding `active`; then clear the intent. A crash after any phase
+resumes it. An `active` binding whose Apple identifier is absent is corruption and fails
+without silently creating an empty store. Both records contain the full identity and UUID
+and must agree before lookup, reuse or purge; a mismatch is `KELD-WV-009`.
+
+Before Apple removal, the lifecycle owner atomically commits a `purging` intent containing
 the full identity and UUID. Normal lookup is forbidden while it exists. Recovery checks
 identifier enumeration, treats an already absent Apple store as successful idempotent
 removal, removes the reverse record and identity record in that order, then clears the
@@ -287,9 +341,9 @@ one-sided binding.
 | Platform | Persistent owner | Ephemeral dev | Required read-back / limit |
 |---|---|---|---|
 | Windows | `FOLDERID_LocalAppData/Keld/profiles/v1/<identity>/webview2`; direct WebView2 environment receives the retained validated path | unique owner-private per-launch disk UDF removed only after browser exit | local volume; environment-reported UDF equals validated final path; exclusive-UDF option; no reparse escape; preserve/read back engine-required access; distinct ordinary user denied |
-| macOS 14+ | identifier-addressed `WKWebsiteDataStore` using deterministic UUID plus Keld-owned Application Support identity/UUID records and lease; Apple owns physical store layout | one engine-owned `nonPersistent` store shared by every view in that host | both registry directions, configuration store identifier and persistence state before first view; no Apple physical-path claim |
+| macOS 14+ | identifier-addressed `WKWebsiteDataStore` using deterministic UUID plus Keld-owned Application Support identity/UUID records and lease; Apple owns physical store layout | one engine-owned `nonPersistent` store shared by every view in that host | both registry directions, configuration store identifier and persistence state before first view; non-idle host death quarantines persistence for that boot; no Apple physical-path claim |
 | macOS <14 | persistent mode unsupported and typed `KELD-WV-009` | `nonPersistent` store | prove no default persistent fallback |
-| Linux | explicit `WebKitWebsiteDataManager` with `$XDG_DATA_HOME/Keld/profiles/v1/<identity>/webkit` and `$XDG_CACHE_HOME/Keld/profiles/v1/<identity>/webkit`, then one engine-owned context | one engine-owned ephemeral manager/context shared by every view | live-WebView context→manager identity, exact data/cache getters and artifacts, `is-ephemeral`, current UID, owner-only modes and pre-existing-link containment |
+| Linux | explicit `WebKitWebsiteDataManager` with `$XDG_DATA_HOME/Keld/profiles/v1/<identity>/webkit` and `$XDG_CACHE_HOME/Keld/profiles/v1/<identity>/webkit`, then one engine-owned context | one engine-owned ephemeral manager/context shared by every view | live-WebView context→manager identity, exact data/cache getters and artifacts, `is-ephemeral`, current UID, owner-only modes and pre-existing-link containment; non-idle host death quarantines persistence for that boot |
 
 macOS resolves the current user's Application Support directory through Foundation and
 owns `Keld/profiles/v1/` metadata there. The full-identity record owns the exclusive
@@ -308,18 +362,41 @@ volume and sets WebView2 exclusive UDF access. After host crash, `ERROR_INVALID_
 or equivalent controller failure remains required until `BrowserProcessExited` proves
 the old collection released the UDF; a process-local Keld lease alone cannot pass.
 
+The Windows identity parent, outside its `webview2` child, retains the ownership marker,
+exclusive lease and durable `purging` intent. Purge commits/fsyncs intent first, closes
+controllers, waits for browser-process release, clears/deletes only the validated UDF,
+records completion, and clears intent last. Every interrupted phase resumes or fails
+closed before environment creation; normal lookup cannot recreate a partial store.
+
+Windows dev-ephemeral UDFs live at a unique owner-private
+`FOLDERID_LocalAppData/Keld/ephemeral/v1/<launch-nonce>` leaf with a durable schema
+marker and exclusive lease; they are never selected by a later app session. Graceful
+exit waits for `BrowserProcessExited` before guarded deletion. After host crash, the next
+host performs bounded marker-validated scavenging; a still-busy leaf remains quarantined
+for a later pass and is never reused. Here `ephemeral` means nonpersistent session
+selection, not a false guarantee that a crashed WebView2 process leaves zero disk bytes
+immediately.
+
 Linux follows the XDG rule that relative environment values are invalid. The host
 resolves/defaults the absolute data and cache bases once before GTK/WebKit
-initialization. The data leaf is authoritative and owns a `root_role=data` marker; the
-cache leaf has a separate `root_role=cache` marker. The exclusive lease lives outside
-both deletable trees at owner-only
-`$XDG_RUNTIME_DIR/keld/profile-leases/v1/<identity>.lock`. A missing, relative,
-wrong-owner or non-`0700` runtime directory fails persistent startup; no shared-temp
-lease fallback exists. Data is created/validated first, cache second. An absent empty
-cache leaf may be recreated only while the authoritative data marker and runtime lease
-match; a nonempty unmarked cache leaf fails. Purge retains the runtime lease, validates
-both roots, removes cache first (absence is allowed), then data, and releases the lease
-only after the deleted paths can no longer be recreated by a concurrent Keld host.
+initialization. The persistent control leaf
+`$XDG_DATA_HOME/Keld/profile-control/v1/<identity>` is never deleted by browser-data
+purge and owns the full-identity marker, durable intents and an exclusive close-on-exec
+OFD lock. T4 must probe that the resolved data volume is local and supports the selected
+lock primitive; unsupported locking fails persistent startup. The data leaf has a
+`root_role=data` marker and the cache leaf a separate `root_role=cache` marker. Data is
+created/validated first, cache second. An absent empty cache leaf may be recreated only
+while the control marker and lease match; a nonempty unmarked cache leaf fails.
+
+Linux purge retains the nondeletable control lease and intent. It destroys every live
+view, then uses the WebKitWebsiteDataManager asynchronous clear operation and waits for
+its completion rather than treating raw unlink as a helper-process exit oracle. It
+verifies the live manager reports no remaining website data and that the browser state
+is absent on a fresh context. The durable phases are `prepared`, `clearing`, `cleared`,
+and `verified`; a crash in `clearing` reissues the idempotent manager clear, and intent is
+removed only after fresh-context verification. Cache/data directories may remain empty;
+no raw recursive deletion is required. Startup cannot recreate state while the control
+intent is active.
 
 Each Keld-owned component is `0700` and wrong-owner, group/world-writable, pre-existing
 link, or final-path mismatch fails. WebKitGTK ultimately consumes path strings, so
@@ -327,26 +404,60 @@ retained handles do not prove protection from a concurrent hostile same-user swa
 threat is explicitly outside AC14. The negative oracle covers links/substitution present
 before manager construction and other-user mutation, not an unprovable same-user race.
 
-Pinned wry 0.56.1 cannot construct a context with separate data/cache roots. T4 must
-first land/reuse an upstream wry API and reviewed release that accepts an explicit
-WebsiteDataManager (or separate roots). A local fork and a parallel Keld WebKit builder
-are forbidden by this contract. That dependency/API slice is part of T4 and its review
-gate; T4 is blocked if the upstream facility remains unavailable.
+Pinned wry 0.56.1 cannot construct a context with separate data/cache roots or retain one
+shared explicit ephemeral context. T4 must first land/reuse an upstream wry API and
+reviewed release that accepts an explicit persistent/ephemeral WebsiteDataManager,
+separate roots, live-WebView context read-back, and async clear completion. A local fork
+and a parallel Keld WebKit builder are forbidden by this contract. That dependency/API
+slice is part of T4 and its review gate; T4 is blocked if the upstream facility remains
+unavailable.
+
+macOS and Linux persist engine-lifetime state in their nondeletable Keld control record.
+Linux boot identity is the strict UUID read from `/proc/sys/kernel/random/boot_id`;
+macOS boot identity is the strict UUID returned by
+`sysctlbyname("kern.bootsessionuuid")`. An unavailable, malformed, wrong-sized,
+environment-derived, wall-clock-derived, or caller-substituted value fails persistent
+startup as `KELD-WV-009`; it never clears quarantine. Same-boot reads must be
+byte-identical and each real reboot acceptance must observe a changed value.
+
+Under the profile lease, startup writes/fsyncs `starting { host_pid, process_birth }`
+plus that OS boot identity before constructing any engine object and advances it to `running` only after the selected
+store/context is attached. Clean teardown writes `stopping`, completes the platform
+release/clear barrier, writes `idle`, and only then releases the lease. A successor that
+acquires the lease and finds `starting`, `running`, or `stopping` whose exact process
+identity is no longer live atomically writes `quarantined` and returns `KELD-WV-009`
+before store lookup. Same-boot elapsed time or a free process-local lock is insufficient.
+After a real OS reboot, a changed boot identity proves the old engine processes cannot
+survive; the next host revalidates registry/markers, returns `quarantined` to `idle`, and
+reuses the same store. A leftover `idle` record is already admissible. Crash tests
+terminate the host after each non-idle durable phase, require same-boot quarantine, and
+require real reboot recovery; death after `idle` must remain restartable.
 
 ### Concurrency and lifecycle matrix
 
+Lock order is global and never inverted: (1) packaging/update lifecycle lock for the
+validated app generation, shared by ordinary startup and exclusive for
+update/rollback/uninstall/purge; (2) platform registry lock when a reverse
+namespace index is touched; (3) profile-identity control lease; (4) platform
+engine/store operation and durable intent. Profile code never calls the updater
+while holding its lease. An exclusive lifecycle operation blocks relaunch/publication,
+and startup encountering an intent cannot bypass it. CI state-machine tests and each
+real-platform lifecycle task race update/rollback/start against purge and fail any
+reversed acquisition, deadlock, republish or fallback.
+
 | Event | Identity/lease owner | Required result |
 |---|---|---|
-| second same-app host | profile manager | first owner retains exclusive lease; second gets `KELD-WV-009`; Windows also requires engine-exclusive UDF release; no fallback store |
+| second same-app host with equal validated namespace roots | profile manager | first owner retains exclusive lease; second gets `KELD-WV-009`; Windows also requires engine-exclusive UDF release; no fallback store |
 | second different app | independent profile manager | distinct identity, lease and store |
 | Bun generation restart | existing host | retain same lease/store; Bun never receives selection authority |
-| host restart | new validated host | reacquire same identity/store after prior owner and engine processes exit |
+| graceful host restart | new validated host | reacquire same identity/store after clean engine teardown |
+| death in `starting`/`running`/`stopping` | platform profile manager | Windows waits for exclusive-UDF release; macOS/Linux persist same-boot quarantine and recover only after changed real boot identity; death after `idle` remains admissible |
 | display-name, cwd, executable or renderer change | none | no identity/store change |
 | compatible update or rollback | signed package verifier | same tuple and store; profile schema must remain backward-compatible |
-| authenticated identity change | package migration owner | distinct store unless a signed two-identity migration completes atomically |
-| validated Linux XDG root change | profile manager; explicit migration only when old+new roots are supplied | normal startup uses the new location and preserves the undiscoverable old roots; explicit migration is exclusive and crash-safe |
+| authenticated identity change | profile manager | distinct store; preserve old store; no v1 cross-identity migration |
+| validated Linux XDG root change | profile manager | use the new location and preserve the undiscoverable old roots; no v1 old-root inference or migration |
 | ordinary uninstall | packaging | preserve profile by default |
-| explicit purge | packaging + profile manager | exact identity, exclusive lease, all views/processes exited, validate every platform binding/root, delete only owned store; macOS store removal precedes UUID-binding removal |
+| explicit purge | packaging + profile manager | durable intent, exact identity, package lock then profile lease, all platform release/clear barriers, and idempotent recovery; affect only owned state; macOS store removal precedes UUID-binding removal |
 | test cleanup | test-owned root + profile manager | same purge protocol; no production user directory |
 
 `KELD-WV-009` is the reserved profile-selection failure. Its detail distinguishes
@@ -360,11 +471,18 @@ T0 implements only this file and generated documentation if the source is allowl
 
 Future implementation ownership:
 
-- `keld-core`: private validated identity, derivation, mode selection and lease lifetime;
-- signed package/boot verifier (`keld-pack` plus the approved KEL-103 successor): stable
-  publisher/app tuple, update/rollback continuity and purge authority;
-- `keld-wv`: consume a sealed selection in platform constructors and expose only
-  read-only evidence needed by tests/doctor;
+- `keld-core`: verify signed package identity, choose persistent versus dev-ephemeral
+  mode, and call the lower `keld-wv` identity/profile API without exposing it to a child;
+- `keld-pack`/the approved signing contract: produce authenticated package/container
+  facts and signed app id; Linux also produces the detached Ed25519 manifest;
+- `keld-core` platform verifier adapters in T2/T3/T4: validate Authenticode, macOS code
+  signing, or Linux Ed25519 facts and mint `ValidatedAppIdentity`; these are identity
+  gates as well as distribution gates;
+- `keld-update`/packaging lifecycle: update/rollback continuity, package lock and purge
+  authority;
+- `keld-wv::profile`: host-agnostic identity derivation, namespace/registry state,
+  profile selection and lease types consumed by platform constructors, plus read-only
+  evidence needed by tests/doctor;
 - platform backend modules: WebView2 actual-UDF/ACL/handle evidence, WK identified
   store, WebKitGTK manager/context;
 - `keld-host`: carry the validated selection through app-session startup/teardown;
@@ -376,39 +494,66 @@ agent instructions.
 
 ## 6. Tasks (each one scoped PR/artifact)
 
-- [ ] **T0 — contract freeze** (`node_id=webview-profile-identity-contract`): land this
-  approved contract and a passed `keld.execution-artifact/v1`; no product/OS pass.
-- [ ] **T1 — identity, derivation, ephemeral mode and lease**
-  (`node_id=webview-profile-identity-foundation`): after an approved signed package/app
-  identity predecessor, add the private core/host selection boundary, fixed vectors,
-  ownership marker, exclusive lease, `KELD-WV-009`, and explicit dev-ephemeral mode.
-  Artifact owns CI-only identity/substitution/collision/concurrency-state tests; it owns
-  no platform store pass.
-- [ ] **T2 — Windows WebView2 UDF** (`node_id=webview-profile-windows`): consume T1 in
-  the direct COM backend, resolve the known folder without trusting environment, validate
-  handles/reparse containment, local-volume status and actual UDF, enable exclusive UDF
-  access, validate (not replace) the engine-required ACL, and run real Windows App A/B,
-  distinct-user, crash-release, concurrency, restart and deletion controls.
-- [ ] **T3 — macOS identified store** (`node_id=webview-profile-macos`): consume T1 via
-  the Darwin builder/configuration, require macOS 14+ for persistent mode, prove UUID
-  registry/store selection and one shared nonpersistent dev store, and run real macOS
-  App A/B, two-user state isolation, concurrency, restart, removal and older-OS
-  fail-closed controls. Direct physical store ACL/path proof remains unverified.
-- [ ] **T4 — Linux explicit context** (`node_id=webview-profile-linux`): consume T1 via
-  a reviewed upstream wry API/release for one engine-owned explicit
-  WebsiteDataManager/WebContext, separate XDG data/cache roots and two-role markers;
-  hold the exclusive lease outside those roots under validated `XDG_RUNTIME_DIR`;
-  enforce owner/mode/pre-existing-link containment; prove every live WebView reaches the
-  exact shared manager; and run real Linux App A/B, distinct-user, purge/start race,
-  concurrency, restart and two-root deletion controls. No local wry fork or parallel
-  builder is allowed.
-- [ ] **T5 — package/update/uninstall lifecycle**
-  (`node_id=webview-profile-package-lifecycle`): bind the signed package tuple and
-  update/rollback continuity, preserve on ordinary uninstall, implement explicit purge
-  after platform teardown, including durable idempotent macOS purge intent, and run
-  migration/identity-change/crash-recovery tests for every platform whose T2–T4 artifact
-  passed.
+Every task artifact is `keld.execution-artifact/v1` and must contain exact
+`issue_id=KEL-135`, the task/node ids below, this spec path plus approved blob SHA and
+Linear approval-comment id, a landed `head_sha` that is an ancestor of fetched main,
+and an acceptance array whose stable row ids carry class and `passed` status. A generic
+passed artifact, wrong task, unlanded SHA, missing approval provenance, or `awaiting`
+required row cannot satisfy an edge.
 
+- [ ] **T0 — contract freeze** (`task_id=KEL-135/T0`,
+  `node_id=webview-profile-identity-contract`): after explicit human approval changes
+  `Status` to approved, land only this contract and its passed artifact; acceptance row
+  `KEL-135/T0-contract` is `not-applicable` for OS evidence.
+- [ ] **T1 — common identity/profile foundation**
+  (`task_id=KEL-135/T1`, `node_id=webview-profile-identity-foundation`): requires the
+  exact passed T0 artifact. Add the feasible `keld-core → keld-wv` verified-parts API,
+  publisher-scope/app-id derivation vectors, common marker/registry/intent state
+  machines, exclusive lease abstraction, `KELD-WV-009`, package/profile lock-order model,
+  and explicit dev-ephemeral mode. It accepts only synthetic verifier output in tests;
+  no release profile can start until a platform task lands its producer.
+  Rows `identity-vectors`, `substitution`, `registry-recovery`, `lock-order`, and
+  `dev-mode-state` are CI-only. It owns no engine/store product pass.
+- [ ] **T2 — Windows WebView2 vertical slice** (`task_id=KEL-135/T2`,
+  `node_id=webview-profile-windows`): requires exact passed T1. Consume the common
+  manager after WinVerifyTrust/chain verification of publisher scope plus authenticated
+  app id; in direct COM validate known-folder handles/reparse/local-volume/actual UDF,
+  enable exclusive UDF, validate rather than replace the engine ACL, implement durable
+  persistent and ephemeral cleanup intents, and pass real Windows rows `windows-app-ab`,
+  `windows-package-identity`, `windows-dev-ephemeral`, `windows-second-user`,
+  `windows-profile-containment-acl`, `windows-concurrency`, `windows-crash-release`, and
+  `windows-purge-recovery`.
+- [ ] **T3 — macOS identified-store vertical slice** (`task_id=KEL-135/T3`,
+  `node_id=webview-profile-macos`): requires exact passed T1. Consume the common manager,
+  validate code and extract Team Identifier plus signed identifier, require macOS 14+ for
+  persistence, implement crash-recoverable bidirectional UUID
+  binding and purge intents plus one engine-owned nonpersistent dev store, and pass real
+  macOS rows `macos-app-ab`, `macos-second-user-state`, `macos-concurrency`,
+  `macos-package-identity`, `macos-dev-ephemeral`, `macos-binding-recovery`,
+  `macos-crash-quarantine-reboot-recovery`, `macos-purge-recovery`, and
+  `macos-older-fail-closed`. Direct Apple physical-store path/ACL proof remains
+  unverified.
+- [ ] **T4 — Linux explicit-context vertical slice** (`task_id=KEL-135/T4`,
+  `node_id=webview-profile-linux`): requires exact passed T1 and a reviewed upstream wry
+  artifact/release that supplies explicit persistent+ephemeral managers, separate roots,
+  live-context read-back and async clear completion. Use a nondeletable profile-control
+  lease/intent leaf, prove every live WebView reaches the shared manager, verify the
+  installer-pinned Ed25519 key and literal signed manifest/app id, then pass real
+  Linux rows `linux-app-ab`, `linux-package-identity`, `linux-dev-ephemeral`,
+  `linux-second-user`, `linux-context-manager-containment`, `linux-concurrency`,
+  `linux-crash-quarantine-reboot-recovery`, `linux-purge-start-race`,
+  `linux-clear-recovery`, and `linux-xdg-relocation`. The T4
+  artifact must also record exact `wry_version`, crates.io checksum, upstream source
+  commit, API symbols and dependency-review evidence. No local wry fork or parallel
+  builder is allowed.
+- [ ] **T5 — package/update/uninstall orchestration** (`task_id=KEL-135/T5`,
+  `node_id=webview-profile-package-lifecycle`): requires all three exact passed T2, T3
+  and T4 artifacts—an empty or partial set fails the edge. Implement only the common
+  package lifecycle lock ordering, same-identity update/rollback reuse, preserve-on-
+  ordinary-uninstall, and delegation to the already-landed per-platform purge primitives.
+  Pass CI rows `package-lock-order`/`lifecycle-routing` and three distinct real rows
+  `windows-update-rollback-purge-race`, `macos-update-rollback-purge-race`, and
+  `linux-update-rollback-purge-race`.
 No later task is frontier-ready merely because T0 lands. Each requires the named landed
 predecessor, issue/claim authority, applicable platform availability, and a fresh
 frontier artifact when its prompt requires one.
@@ -417,15 +562,22 @@ frontier artifact when its prompt requires one.
 
 | AC | Future owner | Class and independent oracle | Required negative control |
 |---|---|---|---|
-| 1–4 | T1 | CI-only fixed identity/UUID vectors, strict parser and sealed-constructor compile/API tests | accept display/config/Bun input or alias two tuples |
+| 1–2 | T1 | CI-only synthetic publisher-scope/app-id vectors, strict parser and dependency-direction/API tests | accept noncanonical/display/config/Bun input or introduce `keld-wv → keld-core` |
+| 1 | T2/T3/T4 | real platform signature/container verification and exact publisher-scope/app-id read-back | accept unsigned/tampered package facts or another publisher with the same app id |
+| 3 | T1 | CI-only persistent-versus-dev mode state model; no engine pass | map missing identity to persistent/default state |
+| 3 | T2/T3/T4 | real backend proof of unique nonreused Windows ephemeral UDF, one shared macOS nonpersistent store, and one shared Linux ephemeral manager | default persistent fallback, cross-launch reuse, or per-view ephemeral context |
+| 4 | T1 | CI-only identity/UUID vectors plus crash-recoverable binding registry state model | alias two tuples or crash after each initial binding phase |
+| 4 | T3 | real identifier enumeration/binding creation and active-binding missing-store failure | silently recreate an absent active Apple store |
 | 5 | T1 | CI-only marker/registry state model; no platform containment pass | mismatched/nonempty unmarked logical leaf or UUID binding |
 | 5 | T2/T3/T4 | separate real platform binding/root read-back; macOS reads Keld registry plus public store identifier, not Apple path | pre-existing link/marker/binding mismatch for that platform |
 | 6–7 | T2 | real Windows environment UDF, local volume, final path, descriptor, exclusive crash-release, App A/B and second user | hostile loader override, remote volume, reparse ancestor, broad foreign-user grant, missing exclusive option |
 | 8 | T3 | real macOS 14+ two-way UUID binding, identifier/persistence read-back, shared ephemeral store and same-origin App A/B | remove binding/identifier or run below 14 and require default fallback to fail |
 | 9 | T4 | real live-WebView→context→manager identity, separate getters/artifacts, UID/mode and same-origin App A/B | default/parallel context, relative or post-selection root substitution, conflated roots, pre-existing symlink, one missing marker |
-| 10 | T2/T3/T4 | real two-process exclusive lease and different-app parallel success; Linux lease is outside deletable roots | delete lease, put it in a deleted leaf, race startup against purge, or add suffix/temp fallback |
-| 11 | T1 + T5/platform rows | deterministic lifecycle state model plus real restart/update/rollback; Linux root change creates a new location while preserving old unless explicit migration supplies both | derive from display name, stage nonce or executable path; silently delete/infer an old XDG root |
-| 12 | T5 | real engine-process exit + exact-identity preserve/purge observation; macOS next-start resumes each interrupted purge phase | purge while live, after link substitution, with B identity, without intent, or crash after each Apple/binding deletion step |
+| 10 | T2/T3/T4 | real two-process exclusive lease for equal validated roots and different-app parallel success; a deliberate Linux XDG-root change is a separately selected location | delete lease, put it in a deleted leaf, race startup against purge, or add suffix/temp fallback |
+| 11 | T1 + T5 platform rows | deterministic lifecycle state model plus real graceful restart/update/rollback; identity or Linux root change selects a new location and preserves old state | derive from display name, stage nonce or executable path; silently copy/delete/infer old state |
+| 11 | T2/T3/T4 | real Windows crash-release or macOS/Linux same-boot quarantine after death in each non-idle phase plus changed-boot recovery; death after `idle` restarts | let a free process-local lease admit a successor with unproved lifetime, quarantine `idle`, or clear quarantine without reboot |
+| 12 | T2/T3/T4 | each real platform's engine release/async-clear barrier plus durable exact-identity purge recovery | purge while live, after link substitution, with B identity, without intent, or crash after each platform phase |
+| 11–12 | T5 | CI package/profile lock-order and routing plus real update/rollback/uninstall raced with each landed platform purge | reverse locks, relaunch/republish during intent, or treat a partial platform set as complete |
 | 13 | T2/T3/T4 | real same-origin cookie/localStorage/IndexedDB/CacheStorage/service-worker effect | force A/B same key; different origins are not accepted as proof |
 | 14 | T2/T4 | real second ordinary OS user, state isolation and filesystem access result | loosen owner boundary; never substitute CI/emulation |
 | 14 | T3 | real second macOS user and same-origin state isolation; physical path/ACL is explicitly unverified | alias user/store UUID or accept shared state |
@@ -441,14 +593,15 @@ T0 review gates:
 
 - unsafe: none in the T0 diff; T2/T3 and any direct platform FFI require exact-final-diff
   unsafe review under the existing `keld-wv` owner;
-- public API: applies — future engine construction and sealed identity/selection shapes;
+- public API: applies — future engine construction and host-TCB identity/selection shapes;
 - permission model: applies — per-user filesystem ownership, engine-required access and
   purge authority;
 - dependency addition: none in T0; every later addition is separately reviewed;
 - wire protocol: none; no kipc bytes, HELLO, app-link, channel or error frame changes.
 
-Packaging/signing review also applies to T1/T5 because authenticated identity and purge
-authority cross that boundary. KEL-79 security/origin review remains separate.
+Packaging/signing review also applies to T2/T3/T4/T5 because authenticated platform
+identity and lifecycle ordering cross that boundary. KEL-79 security/origin review
+remains separate.
 
 ## 9. Perf impact
 
@@ -462,11 +615,19 @@ cross-process engine sharing; this is a correctness decision, not a performance 
 
 None inside this draft's proposed contract. Human approval must explicitly accept:
 
-1. persistent release mode is blocked until a package verifier supplies the stable
-   validated publisher/app tuple;
+1. persistent release identity consumes the platform mappings above—Windows trusted
+   signer SPKI, macOS validated Team Identifier, or Linux installer-pinned Ed25519 key—
+   plus the authenticated canonical app id; publisher-scope change selects a new store
+   and preserves the old one in v1;
 2. unsigned current dev sessions are ephemeral rather than sharing persistent state;
-3. same-app concurrent host processes are exclusive in v1; and
-4. persistent macOS profile support begins at macOS 14, with no default-store fallback.
+3. same-app concurrent host processes with equal validated namespace roots are exclusive
+   in v1, while an explicit Linux XDG data-root change selects a new preserved location;
+4. persistent macOS profile support begins at macOS 14, with no default-store fallback;
+   and
+5. T5 cannot run until Windows, macOS and Linux vertical artifacts all pass; Linux T4
+   additionally waits for the named upstream wry manager/context facility; and
+6. after non-idle macOS/Linux host death, persistent state remains quarantined for the
+   rest of that OS boot and is recovered only after a real reboot proves helper death.
 
 Until approval, status remains `draft`, no implementation task is authorized, and none
 of the platform rows is passed.
