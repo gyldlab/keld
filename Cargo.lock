@@ -1338,6 +1338,7 @@ dependencies = [
  "keld-guard",
  "postcard",
  "serde",
+ "sha2",
  "windows-permissions",
  "windows-sys 0.61.2",
 ]

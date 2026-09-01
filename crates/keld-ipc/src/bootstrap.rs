@@ -1789,7 +1789,7 @@ socket.end();
             },
             &[],
         );
-        run_rejection_then_authenticate(Some(&empty_hello), BootstrapRejection::HelloAuth);
+        run_rejection_then_authenticate(Some(&empty_hello), BootstrapRejection::Protocol);
 
         let short_hello = frame(
             FrameHeader {
@@ -1801,7 +1801,22 @@ socket.end();
             },
             &[0xA5; 31],
         );
-        run_rejection_then_authenticate(Some(&short_hello), BootstrapRejection::HelloAuth);
+        run_rejection_then_authenticate(Some(&short_hello), BootstrapRejection::Protocol);
+
+        // kel133 AC4 split: the same foreign bytes in an exactly shaped HELLO
+        // are the one remaining HelloAuth class — shape failures above must
+        // never collapse into it, and this row must never collapse into 005.
+        let foreign_hello = frame(
+            FrameHeader {
+                kind: FrameKind::Hello,
+                flags: 0,
+                channel: ChannelId(0),
+                corr: CorrelationId(0),
+                len: 32,
+            },
+            &[0xA5; 32],
+        );
+        run_rejection_then_authenticate(Some(&foreign_hello), BootstrapRejection::HelloAuth);
 
         let reserved_hello = frame(
             FrameHeader {

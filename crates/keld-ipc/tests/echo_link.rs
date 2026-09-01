@@ -282,7 +282,9 @@ fn empty_hello_is_rejected_before_echo_dispatch() {
         .expect("server thread")
         .expect_err("empty HELLO must not reach echo");
     let msg = err.to_string();
-    assert!(msg.contains("KELD-IPC-007"), "{msg}");
+    // kel133 AC4: empty HELLO is a 005 shape failure; 007 stays reserved for
+    // an exactly shaped foreign token. Disclosure rules are unchanged.
+    assert!(msg.contains("KELD-IPC-005"), "{msg}");
     assert!(
         !msg.contains("a5"),
         "must not leak the session token: {msg}"

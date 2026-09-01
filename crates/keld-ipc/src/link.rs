@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
+use crate::receive::{ReceivePolicy, ValidatedFrameHeader, validate_received_header};
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
 
@@ -166,6 +167,37 @@ pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), Ipc
     Ok((header, payload))
 }
 
+/// Reads one kipc frame admissible for `policy` (spec kel133 §3 criteria 1–5).
+///
+/// Stage order is the contract: header syntax (`KELD-IPC-002`), envelope cap
+/// (`KELD-IPC-004`), then the shared semantic validator (`KELD-IPC-005`) —
+/// all **before** the payload buffer is allocated or read. On a semantic
+/// rejection the payload bytes remain unconsumed; the failure action for
+/// every `005` row is closing the link, so nothing may read them afterwards.
+///
+/// After any error the stream is unusable: close the link; do not retry.
+///
+/// # Errors
+///
+/// Returns [`IpcError`] on I/O failure, bad header, oversized payload,
+/// semantic rejection, or deadline expiry mapped by the stream's timeout.
+pub fn read_validated_frame<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
+) -> Result<(ValidatedFrameHeader, Vec<u8>), IpcError> {
+    let mut header_bytes = [0u8; HEADER_LEN];
+    stream.read_exact(&mut header_bytes)?;
+    let header = FrameHeader::decode(&header_bytes)?;
+    let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
+    ensure_payload_len(len)?;
+    let validated = validate_received_header(policy, header)?;
+    let mut payload = vec![0u8; len];
+    if !payload.is_empty() {
+        stream.read_exact(&mut payload)?;
+    }
+    Ok((validated, payload))
+}
+
 /// Reads one kipc frame, retrying idle `SO_RCVTIMEO` until `stop` is set.
 ///
 /// Unlike [`read_frame`], an idle timeout (`WouldBlock` / `TimedOut` with
@@ -208,7 +240,7 @@ pub fn read_frame_interruptible<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_limits(stream, stop, None, APP_LINK_IO_DEADLINE)
+    read_frame_interruptible_with_limits(stream, stop, None, APP_LINK_IO_DEADLINE, None)
 }
 
 #[cfg(test)]
@@ -217,15 +249,67 @@ fn read_frame_interruptible_with_stall<S: Read>(
     stop: &AtomicBool,
     stall_limit: Duration,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_limits(stream, stop, None, stall_limit)
+    read_frame_interruptible_with_limits(stream, stop, None, stall_limit, None)
 }
 
-pub(crate) fn read_frame_interruptible_until<S: Read>(
+/// Interruptible [`read_validated_frame`]: idle polls observe `stop`, a
+/// started frame keeps the stall clock, and the shared validator rejects a
+/// semantically invalid header before the payload is allocated or read.
+///
+/// # Errors
+///
+/// As [`read_validated_frame`], plus [`IpcError::Timeout`] when a started
+/// frame stalls past [`APP_LINK_IO_DEADLINE`].
+pub fn read_validated_frame_interruptible<S: Read>(
     stream: &mut S,
+    policy: &ReceivePolicy,
+    stop: &AtomicBool,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    mint_validated(
+        policy,
+        read_frame_interruptible_with_limits(
+            stream,
+            stop,
+            None,
+            APP_LINK_IO_DEADLINE,
+            Some(policy),
+        )?,
+    )
+}
+
+/// [`read_validated_frame_interruptible`] additionally capped by an absolute
+/// admission/session deadline that byte trickle cannot renew (spec kel133 §4
+/// deadline model).
+pub(crate) fn read_validated_frame_interruptible_until<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
     stop: &AtomicBool,
     deadline: Instant,
-) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_limits(stream, stop, Some(deadline), APP_LINK_IO_DEADLINE)
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    mint_validated(
+        policy,
+        read_frame_interruptible_with_limits(
+            stream,
+            stop,
+            Some(deadline),
+            APP_LINK_IO_DEADLINE,
+            Some(policy),
+        )?,
+    )
+}
+
+/// Re-mints the typed header for a frame the policy-aware reader already
+/// validated pre-payload. The second validation is a handful of fixed-value
+/// compares and cannot fail; it exists so [`ValidatedFrameHeader`]'s only
+/// constructor stays [`validate_received_header`].
+fn mint_validated(
+    policy: &ReceivePolicy,
+    frame: Option<(FrameHeader, Vec<u8>)>,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    match frame {
+        None => Ok(None),
+        Some((header, payload)) => Ok(Some((validate_received_header(policy, header)?, payload))),
+    }
 }
 
 fn read_frame_interruptible_with_limits<S: Read>(
@@ -233,6 +317,7 @@ fn read_frame_interruptible_with_limits<S: Read>(
     stop: &AtomicBool,
     deadline: Option<Instant>,
     stall_limit: Duration,
+    policy: Option<&ReceivePolicy>,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
     let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];
@@ -249,6 +334,10 @@ fn read_frame_interruptible_with_limits<S: Read>(
     let header = FrameHeader::decode(&header_bytes)?;
     let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
     ensure_payload_len(len)?;
+    if let Some(policy) = policy {
+        // Semantic admission decision before payload allocation (kel133 AC1).
+        validate_received_header(policy, header)?;
+    }
     let mut payload = vec![0u8; len];
     if !payload.is_empty()
         && !read_exact_interruptible(
@@ -368,22 +457,23 @@ fn write_hello<S: Write>(stream: &mut S, token: &SessionToken) -> Result<(), Ipc
     )
 }
 
-fn read_and_verify_hello<S: Read>(stream: &mut S, token: &SessionToken) -> Result<(), IpcError> {
-    let (header, payload) = read_frame(stream)?;
-    verify_hello(header, &payload, token)
+fn read_and_verify_hello<S: Read>(
+    stream: &mut S,
+    token: &SessionToken,
+    policy: &ReceivePolicy,
+) -> Result<(), IpcError> {
+    let (_validated, payload) = read_validated_frame(stream, policy)?;
+    verify_hello_token(&payload, token)
 }
 
-fn verify_hello(header: FrameHeader, payload: &[u8], token: &SessionToken) -> Result<(), IpcError> {
-    if header.kind != FrameKind::Hello {
-        return Err(IpcError::Protocol {
-            detail: "expected HELLO from peer",
-        });
-    }
-    if header.channel != ChannelId(0) || header.corr != CorrelationId(0) {
-        return Err(IpcError::Protocol {
-            detail: "HELLO must have reserved channel/corr 0",
-        });
-    }
+/// Compares an exactly shaped `HELLO` payload against the host token.
+///
+/// Shape (kind, flags, channel, correlation, exact 32-byte length) is the
+/// shared validator's job and fails `KELD-IPC-005` *before* this runs
+/// (spec kel133 §3 criterion 4); this function owns only the constant-time
+/// token comparison, so `KELD-IPC-007` is reserved for an exactly shaped
+/// foreign token and never discloses the token or link string.
+fn verify_hello_token(payload: &[u8], token: &SessionToken) -> Result<(), IpcError> {
     let peer = SessionToken::try_from_slice(payload)?;
     if peer != *token {
         return Err(IpcError::HelloAuth {
@@ -408,25 +498,28 @@ pub fn handshake_client<S: Read + Write>(
     token: &SessionToken,
 ) -> Result<(), IpcError> {
     write_hello(stream, token)?;
-    read_and_verify_hello(stream, token)
+    read_and_verify_hello(stream, token, &ReceivePolicy::client_await_hello())
 }
 
 /// Server `HELLO`: read and verify the client's `HELLO`, then write `token`.
 ///
-/// Must not write the session token until the peer proves possession
-/// (`KELD-IPC-007` on empty, truncated, or mismatched payloads). Otherwise an
-/// unauthorized connector learns the secret from the host's first frame.
+/// Must not write the session token until the peer proves possession.
+/// A `HELLO` whose shape is wrong — non-zero flags/channel/correlation or a
+/// payload that is not exactly 32 bytes — is `KELD-IPC-005` from the shared
+/// validator; `KELD-IPC-007` is reserved for an exactly shaped foreign token
+/// (spec kel133 §3 criterion 4). Either way an unauthorized connector never
+/// learns the secret from the host's first frame.
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`,
-/// [`IpcError::HelloAuth`] if the token is missing or wrong, or
+/// Returns [`IpcError::Protocol`] on a wrong frame or `HELLO` shape,
+/// [`IpcError::HelloAuth`] on an exactly shaped foreign token, or
 /// [`IpcError::Timeout`] if the peer stays silent past the stream deadline.
 pub fn handshake_server<S: Read + Write>(
     stream: &mut S,
     token: &SessionToken,
 ) -> Result<(), IpcError> {
-    read_and_verify_hello(stream, token)?;
+    read_and_verify_hello(stream, token, &ReceivePolicy::server_pre_auth_hello())?;
     write_hello(stream, token)
 }
 
@@ -436,7 +529,10 @@ pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
     stop: &AtomicBool,
     deadline: Instant,
 ) -> Result<bool, IpcError> {
-    let Some((header, payload)) = read_frame_interruptible_until(stream, stop, deadline)? else {
+    let policy = ReceivePolicy::server_pre_auth_hello();
+    let Some((_validated, payload)) =
+        read_validated_frame_interruptible_until(stream, &policy, stop, deadline)?
+    else {
         return Ok(false);
     };
     if stop.load(Ordering::Acquire) {
@@ -445,7 +541,7 @@ pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
     if Instant::now() >= deadline {
         return Err(IpcError::Timeout);
     }
-    verify_hello(header, &payload, token)?;
+    verify_hello_token(&payload, token)?;
     write_hello(stream, token)?;
     Ok(true)
 }
@@ -651,7 +747,7 @@ mod tests {
         let err =
             handshake_client(&mut client, &test_token()).expect_err("ping must not satisfy HELLO");
         assert!(
-            matches!(err, IpcError::Protocol { detail } if detail.contains("HELLO")),
+            matches!(err, IpcError::Protocol { detail } if detail.contains("not declared")),
             "got {err}"
         );
         assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
@@ -670,12 +766,15 @@ mod tests {
         )
         .expect("peer writes empty HELLO");
         let err = handshake_client(&mut client, &test_token()).expect_err("empty HELLO must fail");
+        // kel133 AC4: a wrong-length HELLO is a shape failure (005), never
+        // authentication (007) — collapsing shape into 007 must fail here.
         assert!(
-            matches!(err, IpcError::HelloAuth { detail } if detail.contains("32-byte")),
+            matches!(err, IpcError::Protocol { detail } if detail.contains("exact shape")),
             "got {err}"
         );
         let msg = err.to_string();
-        assert!(msg.contains("KELD-IPC-007"), "{msg}");
+        assert!(msg.contains("KELD-IPC-005"), "{msg}");
+        assert!(!msg.contains("KELD-IPC-007"), "{msg}");
         assert!(
             !msg.contains("a5"),
             "must not leak the expected token: {msg}"
@@ -696,8 +795,9 @@ mod tests {
         .expect("peer writes 31-byte HELLO");
         let err =
             handshake_client(&mut client, &test_token()).expect_err("31-byte HELLO must fail");
-        assert!(matches!(err, IpcError::HelloAuth { .. }), "got {err}");
-        assert!(err.to_string().contains("KELD-IPC-007"), "{err}");
+        // kel133 AC4: 31 bytes is a shape failure, not an auth failure.
+        assert!(matches!(err, IpcError::Protocol { .. }), "got {err}");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
     }
 
     #[test]
@@ -773,7 +873,7 @@ mod tests {
         )
         .expect("attacker writes empty HELLO");
         let err = handshake_server(&mut server, &test_token()).expect_err("empty HELLO");
-        assert!(err.to_string().contains("KELD-IPC-007"), "{err}");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
         drop(server);
         let leaked = match read_frame(&mut attacker) {
             Ok((_, payload)) => payload == TEST_TOKEN_BYTES,
@@ -1234,5 +1334,99 @@ mod tests {
         );
         assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
         drop(writer);
+    }
+}
+
+#[cfg(test)]
+mod validated_read_tests {
+    use super::*;
+    use crate::receive::ReceivePolicy;
+
+    fn frame_bytes(
+        kind: FrameKind,
+        flags: u16,
+        channel: u16,
+        corr: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let header = FrameHeader {
+            kind,
+            flags,
+            channel: ChannelId(channel),
+            corr: CorrelationId(corr),
+            len: u32::try_from(payload.len()).expect("test payload fits"),
+        };
+        let mut bytes = header.encode().to_vec();
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// Spec kel133 §3 criterion 1: the semantic validator rejects before the
+    /// payload buffer is allocated or read. The cursor position is the
+    /// falsifiable oracle — validating after the payload read would consume
+    /// the payload bytes and move the cursor past `HEADER_LEN`.
+    #[test]
+    fn semantic_rejection_happens_before_the_payload_is_read() {
+        let policy = ReceivePolicy::echo_receiver();
+        let hostile = frame_bytes(FrameKind::Call, 0, 1, 0, &[0xAA; 64]); // corr 0
+        let mut cursor = std::io::Cursor::new(hostile);
+        let err =
+            read_validated_frame(&mut cursor, &policy).expect_err("CALL corr 0 must not admit");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
+        assert_eq!(
+            cursor.position(),
+            HEADER_LEN as u64,
+            "payload bytes must remain unread on semantic rejection"
+        );
+    }
+
+    /// Criterion order: the envelope cap (`KELD-IPC-004`) fires before the
+    /// semantic validator even when the header is also semantically invalid.
+    #[test]
+    fn envelope_cap_precedes_semantic_validation() {
+        let policy = ReceivePolicy::echo_receiver();
+        let mut header = FrameHeader {
+            kind: FrameKind::Call,
+            flags: crate::frame::FLAG_RAW, // also semantically invalid
+            channel: ChannelId(9),         // also wrong channel
+            corr: CorrelationId(0),        // also reserved correlation
+            len: u32::try_from(MAX_FRAME_LEN).expect("cap fits u32") + 1,
+        }
+        .encode()
+        .to_vec();
+        header.extend_from_slice(&[0u8; 4]);
+        let mut cursor = std::io::Cursor::new(header);
+        let err = read_validated_frame(&mut cursor, &policy)
+            .expect_err("oversized envelope must not admit");
+        assert!(err.to_string().contains("KELD-IPC-004"), "{err}");
+    }
+
+    /// The valid structured CALL still admits and returns its exact payload.
+    #[test]
+    fn valid_call_admits_with_payload() {
+        let policy = ReceivePolicy::echo_receiver();
+        let payload = crate::codec::encode(&crate::EchoRequest {
+            message: "kipc".to_owned(),
+            count: 2,
+        })
+        .expect("encode");
+        let bytes = frame_bytes(FrameKind::Call, 0, 1, 7, &payload);
+        let mut cursor = std::io::Cursor::new(bytes);
+        let (validated, got) =
+            read_validated_frame(&mut cursor, &policy).expect("valid CALL admits");
+        assert_eq!(validated.kind(), FrameKind::Call);
+        assert_eq!(validated.corr(), CorrelationId(7));
+        assert_eq!(got, payload);
+    }
+
+    /// Syntax stays first: a bad header byte is `KELD-IPC-002`, not 005.
+    #[test]
+    fn header_syntax_precedes_semantic_validation() {
+        let policy = ReceivePolicy::echo_receiver();
+        let mut bytes = frame_bytes(FrameKind::Call, 0, 1, 7, &[]);
+        bytes[0] = b'X'; // bad magic
+        let mut cursor = std::io::Cursor::new(bytes);
+        let err = read_validated_frame(&mut cursor, &policy).expect_err("bad magic must not admit");
+        assert!(err.to_string().contains("KELD-IPC-002"), "{err}");
     }
 }
