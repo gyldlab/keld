@@ -1,6 +1,6 @@
 # Spec: kipc receiver semantics and absolute admission deadlines
 Status: approved
-Linear: KEL-133 · Owner: GYLDLAB · Updated: 2026-08-30
+Linear: KEL-133 · Owner: GYLDLAB · Updated: 2026-09-01
 
 ## 1. Goal & non-goals
 
@@ -101,6 +101,31 @@ It does not deviate from the architecture. The implementation PR updates archite
     within the harness bound without panic, unbounded allocation, handler effect, or
     credential disclosure. Every retained fuzz failure is minimized and also becomes a
     deterministic semantic regression.
+
+### Approved CI acceptance fixture for criteria 6–8 and 12
+
+The exact merge-acceptance fixture for criteria 6–8 and the deterministic raw-byte
+termination/replay portion of criterion 12 is `.github/workflows/ci.yml` job `check`,
+displayed as `clippy + test (${{ matrix.os }})`, on each of these matrix rows:
+
+- `ubuntu-latest`;
+- `macos-latest`;
+- `windows-latest`.
+
+Each row runs warning-denied Clippy for the changed package closure and
+`cargo nextest run -p <selected-package> --profile ci --no-tests=pass`. T1 must place
+the causal socket/deadline/process regressions and fast retained raw-byte regressions in
+the selected `keld-ipc` package or an owning selected consumer so deleting the guarded
+behavior fails the named matrix fixture. The bounded `cargo-fuzz` target and replay
+remain an additional T1 gate; retained failures must also run as deterministic tests in
+the matrix.
+
+This is the approved exact-CI-job exception for these portable KEL-133 semantics. It
+classifies the rows as CI-only and requires all three hosted OS rows to pass; it does
+not claim interactive or shipping-product OS acceptance. It cannot satisfy KEL-130's
+separate real macOS/Windows/Linux retained-handle, symlink-race, special-file, or
+bounded-filesystem-I/O evidence, KEL-102/T3's authenticated product vertical, or any
+desktop/window acceptance.
 
 ## 4. Design
 
@@ -291,6 +316,10 @@ shared boundary. Positive legacy vectors prove the accepted v0 byte set is uncha
   `TimedOut`. Both map to the same clock result after remaining-time evaluation.
 - KEL-101 named pipes consume this contract; DACL and overlapped-I/O ownership
   remain with KEL-101's transport boundary.
+- Criteria 6–8 and the deterministic portion of criterion 12 use the exact three-row
+  `check` CI fixture named in §3. A platform adapter may still have additional
+  real-device acceptance under its owning issue, but KEL-133 does not acquire or
+  discharge that separate product evidence.
 
 ## 5. Boundaries
 
@@ -348,11 +377,11 @@ and one landed artifact. A partial merge cannot unlock KEL-130, KEL-102/T3, or K
 | 1–3 | Unit table over exact headers plus an integration receiver effect counter. Mutating header validation to unconditional success fails zero-correlation, RAW, unknown-flag, and wrong-channel cases. A separate malformed/trailing-payload mutation bypasses or weakens the postcard decode boundary and must fail exact `KELD-IPC-003` plus zero-handler-effect assertions; payload-codec proof is not attributed to the header validator. |
 | 4 | Existing real HELLO link plus raw clients for reserved fields, 0/31/32/33-byte payloads and foreign token. Host observer code and absence of any reply/token bytes are the oracle. Collapsing shape failure into `007` fails. |
 | 5 | Reply/event waiter fixtures send wrong kind/channel/correlation and assert the intended waiter never completes before the typed session rejection. Removing exact-correlation matching fails. |
-| 6 | Real listener with a 100 ms generation deadline and a byte-drip child; elapsed monotonic bound, terminal state, joined child, removed locator, and next fresh-generation success are asserted. Resetting the deadline on accept/read/retry must make the named test exceed its bound and fail. |
-| 7–8 | Existing interruptible-reader tests are generalized: idle polls remain live; partial header and payload expire from first byte. Resetting the started-frame clock per read fails while the idle case remains independent. |
+| 6 | Real listener with a 100 ms generation deadline and a byte-drip child; elapsed monotonic bound, terminal state, joined child, removed locator, and next fresh-generation success are asserted. Resetting the deadline on accept/read/retry must make the named test exceed its bound and fail in every named `check` matrix row. |
+| 7–8 | Existing interruptible-reader tests are generalized: idle polls remain live; partial header and payload expire from first byte. Resetting the started-frame clock per read fails while the idle case remains independent. The exact `ubuntu-latest`, `macos-latest`, and `windows-latest` `check` rows are the acceptance fixture. |
 | 9 | One table row per `001/002/003/004/005/006/007` asserts host code, peer result, close/reaccept decision, redaction, and next allowed operation. Mapping all pre-auth errors to `007` fails the non-authentication rows. |
 | 10–11 | Rust and Bun load the same TSV path, print the same fixture digest, and compare exact results. Positive legacy frame bytes are golden oracles. Copying/changing one consumer rule without changing the corpus fails that consumer. |
-| 12 | `cargo-fuzz` raw header/session target with retained corpus; every discovered input becomes a fast deterministic test. Removing max-length or kind validation must be caught by deterministic and fuzz replay tests. |
+| 12 | `cargo-fuzz` raw header/session target with retained corpus; every discovered input becomes a fast deterministic test. Removing max-length or kind validation must be caught by deterministic and fuzz replay tests. Fast retained raw-byte regressions run in all three named `check` rows; the bounded `cargo-fuzz` target/replay is reported separately in the T1 artifact. |
 
 Boundary cases: zero and nonzero correlation; flags `0`, `FLAG_RAW`, each other single
 bit, and all bits; channel `0`, declared, and wrong; payload `0`, exact, maximum,
@@ -362,7 +391,9 @@ wrong token; retry before generation expiry; expiry; and a clean next session.
 Anti-flake rules: bind port `0`, use owner-created temporary directories, await explicit
 listener/byte/close/join conditions, and use timeouts only as kill switches. Drip and
 crash actors run in child processes and report status/signal/cleanup. No test sleeps to
-synchronize. Platform code is claimed only on the real platform where it ran.
+synchronize. For criteria 6–8 and 12, the three hosted OS rows are the approved CI-only
+fixture and no separate product-device handoff is required. Other platform or product
+claims still require their owning issue's real-device evidence.
 
 T0 documentary negative controls use a checked query over this spec: removing the sole
 owner, zero-correlation/RAW/unknown-flags ruling, absolute-deadline non-renewal,
@@ -378,7 +409,8 @@ query fail. These checks validate contract completeness only, not T1 behavior.
 - permission model: none;
 - dependency addition: none expected; any addition requires separate approval;
 - wire protocol: **wire-behavior review required** for the reserved-invalid rejection
-  boundary; no layout/version change is approved.
+  boundary; no layout/version change is approved. Naming the CI fixture does not
+  discharge that T1 review and does not authorize a new accepted byte sequence.
 
 ## 9. Perf impact
 
