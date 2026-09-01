@@ -7,9 +7,10 @@ use crate::codec::{decode, encode};
 use crate::echo::{ECHO_CHANNEL, EchoRequest, EchoResponse, handle_echo};
 use crate::frame::{CorrelationId, FrameKind};
 use crate::link::{
-    AppLinkDeadlines, handshake_client, handshake_server, read_frame, read_frame_interruptible,
-    write_frame,
+    AppLinkDeadlines, handshake_client, handshake_server, read_validated_frame,
+    read_validated_frame_interruptible, write_frame,
 };
+use crate::receive::{ReceivePolicy, ValidatedFrameHeader};
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, IpcError};
 
@@ -64,8 +65,9 @@ pub fn serve_echo_session_until_stopped<S: Read + Write + AppLinkDeadlines>(
 ///
 /// Returns [`IpcError`] on I/O, protocol, handler, or deadline failures.
 pub fn serve_echo_requests<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
+    let policy = ReceivePolicy::echo_receiver();
     loop {
-        let (header, payload) = match read_frame(stream) {
+        let (header, payload) = match read_validated_frame(stream, &policy) {
             Ok(frame) => frame,
             Err(IpcError::Io(error)) if is_peer_eof(&error) => break,
             Err(e) => return Err(e),
@@ -89,8 +91,9 @@ pub fn serve_echo_requests_until_stopped<S: Read + Write + AppLinkDeadlines>(
     stop: &AtomicBool,
 ) -> Result<(), IpcError> {
     stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL))?;
+    let policy = ReceivePolicy::echo_receiver();
     loop {
-        let (header, payload) = match read_frame_interruptible(stream, stop) {
+        let (header, payload) = match read_validated_frame_interruptible(stream, &policy, stop) {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
             Err(IpcError::Io(error)) if is_peer_eof(&error) => break,
@@ -115,27 +118,39 @@ fn is_peer_eof(error: &std::io::Error) -> bool {
     }
 }
 
+/// Dispatches one *admitted* echo-session frame. Semantic admission already
+/// happened in the shared validator (kel133 AC1–AC2): only the policy's
+/// declared kinds can reach this, so the dispatch is total over them and the
+/// old ad-hoc kind/channel matching is deleted rather than duplicated.
 fn serve_echo_frame<S: Write>(
     stream: &mut S,
-    header: crate::FrameHeader,
+    header: ValidatedFrameHeader,
     payload: &[u8],
 ) -> Result<(), IpcError> {
-    match header.kind {
-        FrameKind::Call if header.channel == ECHO_CHANNEL => {
+    match header.kind() {
+        FrameKind::Call => {
             let reply = handle_echo(payload)?;
             write_frame(
                 stream,
                 FrameKind::Reply,
                 0,
                 ECHO_CHANNEL,
-                header.corr,
+                header.corr(),
                 &reply,
             )?;
         }
         FrameKind::Ping => {
-            write_frame(stream, FrameKind::Ping, 0, header.channel, header.corr, &[])?;
+            write_frame(
+                stream,
+                FrameKind::Ping,
+                0,
+                header.channel(),
+                header.corr(),
+                &[],
+            )?;
         }
-        _ => {
+        other => {
+            debug_assert!(false, "validator admitted an undeclared kind: {other:?}");
             return Err(IpcError::Protocol {
                 detail: "unexpected frame kind in echo session",
             });
@@ -166,12 +181,9 @@ pub fn echo_invoke<S: Read + Write>(
     }
     let payload = encode(request)?;
     write_frame(stream, FrameKind::Call, 0, ECHO_CHANNEL, corr, &payload)?;
-    let (header, payload) = read_frame(stream)?;
-    if header.kind != FrameKind::Reply || header.corr != corr || header.channel != ECHO_CHANNEL {
-        return Err(IpcError::Protocol {
-            detail: "expected REPLY for echo CALL",
-        });
-    }
+    // kel133 AC5: the shared waiter policy admits only the awaited REPLY —
+    // matching kind, flags 0, declared channel, exact correlation.
+    let (_reply, payload) = read_validated_frame(stream, &ReceivePolicy::echo_reply_waiter(corr))?;
     decode(&payload)
 }
 

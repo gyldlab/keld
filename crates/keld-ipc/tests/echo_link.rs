@@ -494,3 +494,91 @@ fn second_echo_call_on_same_stream_client_001_server_005() {
         "server must reject a second HELLO as protocol, not serve it: {server_msg}"
     );
 }
+
+/// kel133 AC2 over a live authenticated session: each reserved combination on
+/// the echo channel closes the link with host-visible `KELD-IPC-005`, the
+/// peer receives no handler reply, and no echo side effect occurs. The
+/// absence of any reply bytes before EOF is the zero-handler-effect oracle —
+/// a server that dispatched the hostile CALL would have written a REPLY frame.
+#[test]
+fn hostile_authenticated_frames_close_with_005_and_zero_reply_bytes() {
+    let hostile_headers: [(&str, FrameKind, u16, u16, u32); 4] = [
+        ("corr zero", FrameKind::Call, 0, 1, 0),
+        ("flag raw", FrameKind::Call, keld_ipc::frame::FLAG_RAW, 1, 7),
+        ("unknown flag", FrameKind::Call, 1 << 3, 1, 7),
+        ("wrong channel", FrameKind::Call, 0, 2, 7),
+    ];
+    for (case, kind, flags, channel, corr) in hostile_headers {
+        let (mut client, server) = connected_pair();
+        let handle = spawn_echo_server(server);
+        handshake_client(&mut client, &test_token()).expect("authenticate");
+
+        let payload = encode(&EchoRequest {
+            message: "hostile".to_owned(),
+            count: 1,
+        })
+        .expect("encode");
+        write_frame(
+            &mut client,
+            kind,
+            flags,
+            ChannelId(channel),
+            CorrelationId(corr),
+            &payload,
+        )
+        .expect("client writes hostile frame");
+
+        let err = handle
+            .join()
+            .expect("server thread")
+            .expect_err("hostile frame must tear the session down");
+        assert!(
+            err.to_string().contains("KELD-IPC-005"),
+            "{case}: expected 005, got {err}"
+        );
+
+        // Zero handler effect: the peer observes no REPLY frame, only close.
+        let leaked_reply = match read_frame(&mut client) {
+            Ok((header, _)) => header.kind == FrameKind::Reply,
+            Err(_) => false,
+        };
+        assert!(!leaked_reply, "{case}: hostile CALL must never be answered");
+    }
+}
+
+/// kel133 AC2 codec half over a live session: valid header semantics but
+/// malformed/trailing payload bytes stay `KELD-IPC-003` with the same
+/// zero-effect close.
+#[test]
+fn trailing_payload_bytes_close_with_003_and_zero_reply_bytes() {
+    let (mut client, server) = connected_pair();
+    let handle = spawn_echo_server(server);
+    handshake_client(&mut client, &test_token()).expect("authenticate");
+
+    let mut payload = encode(&EchoRequest {
+        message: "kipc".to_owned(),
+        count: 3,
+    })
+    .expect("encode");
+    payload.push(0x00); // trailing byte: postcard must reject leftovers
+    write_frame(
+        &mut client,
+        FrameKind::Call,
+        0,
+        ChannelId(1),
+        CorrelationId(9),
+        &payload,
+    )
+    .expect("client writes trailing-byte call");
+
+    let err = handle
+        .join()
+        .expect("server thread")
+        .expect_err("trailing bytes must tear the session down");
+    assert!(err.to_string().contains("KELD-IPC-003"), "{err}");
+    let leaked_reply = match read_frame(&mut client) {
+        Ok((header, _)) => header.kind == FrameKind::Reply,
+        Err(_) => false,
+    };
+    assert!(!leaked_reply, "malformed CALL must never be answered");
+}

@@ -128,6 +128,11 @@ pub struct ReceivePolicy {
     pub kinds: AllowedKinds,
     /// Whether the v0 `PING` liveness probe is admissible on this session.
     pub allow_ping: bool,
+    /// Second declared channel for the one live multiplexed session (the
+    /// primary app link carries spec-table rows 3 and 5 — echo and lifecycle
+    /// `CALL`s — on a single stream). `None` everywhere else; a third channel
+    /// is a new spec row, not a longer list.
+    pub also_channel: Option<ChannelId>,
 }
 
 /// [`crate::token::SESSION_TOKEN_LEN`] as the wire `u32` declared length.
@@ -165,6 +170,7 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::Zero,
             kinds: AllowedKinds::only(FrameKind::Hello),
             allow_ping: false,
+            also_channel: None,
         }
     }
 
@@ -180,6 +186,7 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::NonZero,
             kinds: AllowedKinds::only(FrameKind::Call),
             allow_ping: true,
+            also_channel: None,
         }
     }
 
@@ -197,6 +204,7 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::Exactly(corr),
             kinds: AllowedKinds::only(FrameKind::Reply),
             allow_ping: false,
+            also_channel: None,
         }
     }
 
@@ -212,6 +220,26 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::NonZero,
             kinds: AllowedKinds::only(FrameKind::Call),
             allow_ping: true,
+            also_channel: None,
+        }
+    }
+
+    /// The live primary app-link receiver: the one v0 session that
+    /// multiplexes spec-table rows 3 and 5 — authenticated echo and
+    /// lifecycle `CALL`s — plus the `PING` probe on a single stream.
+    /// Both channels share the structured rules; payload codecs stay
+    /// per-channel in the consumer.
+    #[must_use]
+    pub const fn primary_app_receiver() -> Self {
+        Self {
+            direction: Direction::FromClient,
+            phase: SessionPhase::Authenticated,
+            channel: crate::echo::ECHO_CHANNEL,
+            payload: PayloadMode::Codec,
+            expected_corr: ExpectedCorrelation::NonZero,
+            kinds: AllowedKinds::only(FrameKind::Call),
+            allow_ping: true,
+            also_channel: Some(crate::lifecycle::LIFECYCLE_CHANNEL),
         }
     }
 
@@ -227,6 +255,7 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::Zero,
             kinds: AllowedKinds::only(FrameKind::Event),
             allow_ping: true,
+            also_channel: None,
         }
     }
 
@@ -251,6 +280,7 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::NonZero,
             kinds: AllowedKinds::only(FrameKind::Call),
             allow_ping: false,
+            also_channel: None,
         }
     }
 
@@ -263,6 +293,7 @@ impl ReceivePolicy {
             expected_corr: ExpectedCorrelation::Exactly(corr),
             kinds: AllowedKinds::only(FrameKind::Reply).with(FrameKind::Err),
             allow_ping: false,
+            also_channel: None,
         }
     }
 }
@@ -363,7 +394,11 @@ pub fn validate_received_header(
         });
     }
 
-    if header.channel != policy.channel {
+    let channel_declared = header.channel == policy.channel
+        || policy
+            .also_channel
+            .is_some_and(|also| header.channel == also);
+    if !channel_declared {
         return Err(IpcError::Protocol {
             detail: "wrong channel for the session policy",
         });
@@ -777,6 +812,40 @@ mod tests {
         let err = validate_received_header(&hello, header(FrameKind::Hello, 0, 0, 5, 31))
             .expect_err("correlation is checked before length");
         assert_eq!(detail_of(err), "correlation must be 0 for this frame");
+    }
+
+    /// The one multiplexed v0 session: the primary app receiver declares
+    /// exactly the echo and lifecycle channels (spec rows 3 and 5) and
+    /// nothing else.
+    #[test]
+    fn primary_app_receiver_declares_exactly_echo_and_lifecycle_channels() {
+        let policy = ReceivePolicy::primary_app_receiver();
+        for channel in [1u16, 3] {
+            validate_received_header(&policy, header(FrameKind::Call, 0, channel, 7, 4))
+                .expect("declared channel admits");
+        }
+        validate_received_header(&policy, header(FrameKind::Ping, 0, 9, 0, 0))
+            .expect("live PING admits");
+        for channel in [0u16, 2, 4, 9, u16::MAX] {
+            let err = validate_received_header(&policy, header(FrameKind::Call, 0, channel, 7, 4))
+                .expect_err("undeclared channel must not admit");
+            assert_eq!(detail_of(err), "wrong channel for the session policy");
+        }
+        let err = validate_received_header(&policy, header(FrameKind::Call, 0, 1, 0, 4))
+            .expect_err("correlation 0 stays reserved on the primary session");
+        assert_eq!(detail_of(err), "correlation 0 is reserved");
+        let err = validate_received_header(&policy, header(FrameKind::Call, FLAG_RAW, 3, 7, 4))
+            .expect_err("FLAG_RAW stays invalid on the primary session");
+        assert_eq!(
+            detail_of(err),
+            "FLAG_RAW is invalid for a structured session"
+        );
+        let err = validate_received_header(&policy, header(FrameKind::Event, 0, 3, 0, 1))
+            .expect_err("EVENT is host-to-app only; the receiver does not declare it");
+        assert_eq!(
+            detail_of(err),
+            "frame kind is not declared by the session policy"
+        );
     }
 
     #[test]
