@@ -462,7 +462,8 @@ the host and passed to Bun at spawn via memfd / `shm_open` / named section with 
 inheritance. JS reads and writes through `ArrayBuffer` views over the mapping. A control frame
 carries `{ring offset, len, generation}` and the payload bytes are never re-serialized. Fallback:
 inline `FLAG_RAW` frames on the socket where shm is unavailable — containers, exotic sandboxes.
-This is the only place `unsafe` is sanctioned in `keld-ipc`, and the module does not exist yet.
+The future shm module is one sanctioned `keld-ipc` unsafe owner and does not
+exist yet; the reviewed `windows_named_pipe` module is the current other owner.
 
 **`keld://` streaming (wv-link).** Engines do not reliably expose shared memory to page JS, so bulk
 data to and from webviews rides a custom scheme instead: `keld://c/{channel}` request/response with
