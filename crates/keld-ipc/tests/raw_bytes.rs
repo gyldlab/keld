@@ -60,8 +60,35 @@ fn assert_policy_invariants(policy: &ReceivePolicy, bytes: &[u8]) {
     } else {
         assert!(policy.kinds.contains(validated.kind()));
         assert_eq!(validated.flags(), 0, "v0 structured flags mask is zero");
-        assert_eq!(validated.channel(), policy.channel);
+        assert!(
+            validated.channel() == policy.channel
+                || policy.also_channel == Some(validated.channel()),
+            "admitted channel outside the declared set"
+        );
     }
+}
+
+/// Retained cargo-fuzz finding (Linux campaign, artifact
+/// crash-8fe8c168279a25e30accd57ae4319851a47e28f0): a valid lifecycle CALL on
+/// the multiplexed primary session crashed the *harness* invariant, which
+/// checked only the primary declared channel and not `also_channel`. The
+/// product admission was correct; this pins both the admission and the fixed
+/// invariant.
+#[test]
+fn retained_fuzz_input_valid_lifecycle_call_admits_on_the_primary_session() {
+    let input: [u8; 17] = [
+        0x4B, 0x49, 0x02, 0x01, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+    let policy = ReceivePolicy::primary_app_receiver();
+    let mut cursor = Cursor::new(input.to_vec());
+    let (validated, payload) =
+        read_validated_frame(&mut cursor, &policy).expect("valid lifecycle CALL admits");
+    assert_eq!(validated.kind(), FrameKind::Call);
+    assert_eq!(validated.channel(), ChannelId(3));
+    assert_eq!(validated.corr(), CorrelationId(2));
+    assert_eq!(payload, [0x00]);
+    assert_policy_invariants(&policy, &input);
 }
 
 /// Every kind byte 0..=255 with otherwise-valid fields: decode admits only

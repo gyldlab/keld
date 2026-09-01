@@ -17,8 +17,10 @@
 //! criterion 4: EOF or non-timeout I/O is `KELD-IPC-001`, a started partial
 //! frame that reaches the app-link I/O deadline is `KELD-IPC-006`, a malformed
 //! header is `KELD-IPC-002`, an oversized envelope is `KELD-IPC-004`, and a
-//! well-formed non-`HELLO` or wrong-reserved-fields frame is `KELD-IPC-005`.
-//! None of them is `HelloAuth`; that code is reserved for token failure alone.
+//! well-formed non-`HELLO` or wrong-shape frame — including nonzero flags or a
+//! payload length that is not exactly 32 bytes (kel133 criterion 4) — is
+//! `KELD-IPC-005`. None of them is `HelloAuth`; that code is reserved for an
+//! exactly shaped foreign token alone.
 
 use crate::IpcError;
 
@@ -47,7 +49,9 @@ pub enum BootstrapRejection {
     /// disconnects that peer and keeps accepting. The generation-wide deadline
     /// is terminal and is not a rejection — it ends admission entirely.
     Timeout,
-    /// The peer sent a missing, malformed, or foreign `HELLO` session token.
+    /// The peer sent an exactly shaped `HELLO` whose 32-byte token is
+    /// foreign. Wrong lengths are [`Self::Protocol`] shape failures (kel133
+    /// criterion 4), never authentication.
     HelloAuth,
 }
 

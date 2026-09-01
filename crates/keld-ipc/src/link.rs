@@ -185,17 +185,94 @@ pub fn read_validated_frame<S: Read>(
     stream: &mut S,
     policy: &ReceivePolicy,
 ) -> Result<(ValidatedFrameHeader, Vec<u8>), IpcError> {
+    // One stall clock across header and payload: the first byte starts it and
+    // partial reads cannot renew it (spec kel133 §3 criterion 7). `read_exact`
+    // alone would let a byte-drip peer renew the per-receive `SO_RCVTIMEO`
+    // forever — the ordinary-reader gap architecture 02 §7 recorded.
+    let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];
-    stream.read_exact(&mut header_bytes)?;
+    read_exact_stalled(stream, &mut header_bytes, &mut stall_deadline)?;
     let header = FrameHeader::decode(&header_bytes)?;
     let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
     ensure_payload_len(len)?;
     let validated = validate_received_header(policy, header)?;
     let mut payload = vec![0u8; len];
     if !payload.is_empty() {
-        stream.read_exact(&mut payload)?;
+        read_exact_stalled(stream, &mut payload, &mut stall_deadline)?;
     }
     Ok((validated, payload))
+}
+
+#[cfg(test)]
+fn read_validated_frame_with_stall<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
+    stall_limit: Duration,
+) -> Result<(ValidatedFrameHeader, Vec<u8>), IpcError> {
+    let mut stall_deadline = None;
+    let mut header_bytes = [0u8; HEADER_LEN];
+    read_exact_stalled_with(stream, &mut header_bytes, &mut stall_deadline, stall_limit)?;
+    let header = FrameHeader::decode(&header_bytes)?;
+    let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
+    ensure_payload_len(len)?;
+    let validated = validate_received_header(policy, header)?;
+    let mut payload = vec![0u8; len];
+    if !payload.is_empty() {
+        read_exact_stalled_with(stream, &mut payload, &mut stall_deadline, stall_limit)?;
+    }
+    Ok((validated, payload))
+}
+
+/// Fills `buf`, sharing one started-frame stall clock across calls.
+///
+/// Each blocking wait is individually bounded by the stream's own read
+/// deadline (`SO_RCVTIMEO`); this adds the frame-wide bound: once the first
+/// byte arrives, later partial reads that land past
+/// `first_byte + APP_LINK_IO_DEADLINE` are `KELD-IPC-006` instead of renewing
+/// the per-receive clock. Exact-instant expiry needs the pollable
+/// interruptible reader; this bound is stall-checked between partial reads,
+/// so a drip peer is closed within one receive deadline past the stall limit.
+fn read_exact_stalled<S: Read>(
+    stream: &mut S,
+    buf: &mut [u8],
+    stall_deadline: &mut Option<Instant>,
+) -> Result<(), IpcError> {
+    read_exact_stalled_with(stream, buf, stall_deadline, APP_LINK_IO_DEADLINE)
+}
+
+fn read_exact_stalled_with<S: Read>(
+    stream: &mut S,
+    buf: &mut [u8],
+    stall_deadline: &mut Option<Instant>,
+    stall_limit: Duration,
+) -> Result<(), IpcError> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(IpcError::Timeout);
+        }
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                )
+                .into());
+            }
+            Ok(n) => {
+                if stall_deadline.is_none() {
+                    match Instant::now().checked_add(stall_limit) {
+                        Some(deadline) => *stall_deadline = Some(deadline),
+                        None => return Err(IpcError::Timeout),
+                    }
+                }
+                filled += n;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Reads one kipc frame, retrying idle `SO_RCVTIMEO` until `stop` is set.
@@ -1628,6 +1705,62 @@ mod deadline_contract_tests {
             (2..=40).contains(&attempts),
             "poll cadence out of bounds: {attempts} read attempts in {elapsed:?}"
         );
+    }
+
+    /// The ordinary-reader byte-trickle gap (architecture 02 §7) is closed:
+    /// a peer dripping one byte per 20 ms — always inside the per-receive
+    /// deadline, which `read_exact` alone would renew forever — hits the
+    /// frame-wide stall clock on the plain validated read path.
+    #[test]
+    fn plain_validated_read_closes_the_byte_trickle_gap() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(100)))
+            .expect("read deadline");
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        let drip = thread::spawn(move || {
+            let bytes = FrameHeader {
+                kind: FrameKind::Hello,
+                flags: 0,
+                channel: ChannelId(0),
+                corr: CorrelationId(0),
+                len: 32,
+            }
+            .encode();
+            for byte in bytes {
+                if stop_rx.try_recv().is_ok() {
+                    return;
+                }
+                if writer
+                    .write_all(&[byte])
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            let _ = stop_rx.recv();
+        });
+
+        let policy = ReceivePolicy::server_pre_auth_hello();
+        let stall = Duration::from_millis(150);
+        let started = Instant::now();
+        let err = read_validated_frame_with_stall(&mut reader, &policy, stall)
+            .expect_err("a dripping frame must expire at the stall clock");
+        let elapsed = started.elapsed();
+
+        assert!(err.to_string().starts_with("KELD-IPC-006"), "{err}");
+        assert!(
+            elapsed >= stall,
+            "expired before the frame-wide stall clock: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "drip renewed the plain read path: {elapsed:?}"
+        );
+        drop(stop_tx);
+        drip.join().expect("drip thread");
     }
 
     /// AC8 shutdown half: an idle wait observes `stop` promptly — it returns

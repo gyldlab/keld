@@ -242,8 +242,15 @@ failure classes:
 | Started partial header/payload remains open until the shorter handshake deadline expires | `Timeout` / `KELD-IPC-006` | close without reply; a subsequent client read is local `KELD-IPC-001` |
 | Bad magic, version, or kind in the frame header | `Header` / `KELD-IPC-002` | close without reply; a subsequent client read is local `KELD-IPC-001` |
 | Decoded envelope length exceeds `MAX_FRAME_LEN` | `PayloadTooLarge` / `KELD-IPC-004` | close without reply; a subsequent client read is local `KELD-IPC-001` |
-| Valid envelope but non-`HELLO`, or `HELLO` with nonzero reserved channel/correlation | `Protocol` / `KELD-IPC-005` | close without reply; a subsequent client read is local `KELD-IPC-001` |
-| Empty, wrong-length, or foreign 32-byte `HELLO` token | `HelloAuth` / `KELD-IPC-007` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Valid envelope but non-`HELLO`, or `HELLO` with nonzero flags/reserved channel/correlation, or a payload length that is not exactly 32 bytes | `Protocol` / `KELD-IPC-005` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| An exactly shaped `HELLO` whose 32-byte token is foreign | `HelloAuth` / `KELD-IPC-007` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+
+The `005`/`007` split above follows the approved
+`docs/specs/kel133-kipc-receiver-semantics.md` criterion 4: shape — including the
+exact 32-byte payload length — is semantic validation (`005`) and fails before any
+token comparison; `007` is reserved for an exactly shaped foreign token. The
+original revision of this table classified empty/wrong-length tokens as `007`;
+KEL-133/T1 landed the shared validator and amended both specs in the same change.
 
 For each non-terminal result, the adapter completes or calls `CancelIoEx` on every
 pending overlapped read/write and observes each completion with `GetOverlappedResult`

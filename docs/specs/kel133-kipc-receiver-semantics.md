@@ -351,18 +351,18 @@ Must not touch:
 - [x] **T0 — contract freeze:** approve this spec, the exact owner partition, v0
   semantic table, deadline model, vector format, failure actions, and review gates. No
   product code or OS acceptance.
-- [ ] **T1a — deterministic validator and corpus:** land failure-first Rust tests,
+- [x] **T1a — deterministic validator and corpus:** land failure-first Rust tests,
   shared allocation-free semantic validator, canonical TSV corpus, exact positive
   compatibility vectors, and raw-byte fuzz target/regressions. No consumer may retain a
   second semantic table.
-- [ ] **T1b — absolute admission/frame/call clocks:** extend the existing reader and
+- [x] **T1b — absolute admission/frame/call clocks:** extend the existing reader and
   bootstrap owners so one monotonic deadline survives byte drip and bad-peer retries;
   prove with real sockets, child processes where needed, and no sleeps.
-- [ ] **T1c — consumer convergence:** migrate echo, lifecycle, guarded receiver,
+- [x] **T1c — consumer convergence:** migrate echo, lifecycle, guarded receiver,
   `@keld/electron`, and hello scaffold to the shared contract; run the same corpus in
   Rust and Bun; delete duplicated checks; prove zero handler effects for hostile
   authenticated frames.
-- [ ] **T1d — artifact and architecture update:** run full gates/fuzz replay, obtain
+- [x] **T1d — artifact and architecture update:** run full gates/fuzz replay, obtain
   wire-behavior and any triggered public-API review, update architecture 02's live
   claims, and publish one passed `keld.execution-artifact/v1` for `KEL-133/T1` whose
   landed head includes T1a–T1c.

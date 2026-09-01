@@ -44,7 +44,11 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                 } else {
                     assert!(policy.kinds.contains(revalidated.kind()));
                     assert_eq!(revalidated.flags(), 0);
-                    assert_eq!(revalidated.channel(), policy.channel);
+                    assert!(
+                        revalidated.channel() == policy.channel
+                            || policy.also_channel == Some(revalidated.channel()),
+                        "admitted channel outside the declared set"
+                    );
                 }
             }
             Err(err) => {
