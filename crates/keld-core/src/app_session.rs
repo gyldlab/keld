@@ -55,6 +55,7 @@ use keld_ipc::ReceivePolicy;
 use keld_ipc::codec::{decode, encode};
 #[cfg(any(target_os = "macos", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
+#[cfg(any(target_os = "macos", windows))]
 use keld_ipc::link::{AppLinkDeadlines, read_validated_frame_interruptible, write_frame};
 #[cfg(any(target_os = "macos", windows))]
 use keld_ipc::{
