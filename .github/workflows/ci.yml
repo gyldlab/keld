@@ -114,6 +114,7 @@ jobs:
           cache-on-failure: true
       - name: Product status Windows path contracts
         if: matrix.os == 'windows-latest'
+        shell: bash
         run: |
           mkdir -p target/product-status
           rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test

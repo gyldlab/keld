@@ -1125,69 +1125,87 @@ fn strip_inline_code(line: &str) -> String {
     output
 }
 
-fn links_to_product_status(root: &Path, consumer: &str, contents: &str) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+struct VisibleLinkTarget {
+    target: String,
+    slash_normalized: String,
+    image: bool,
+}
+
+fn visible_link_targets(contents: &str) -> Option<Vec<VisibleLinkTarget>> {
     let visible = visible_markdown(contents);
-    let consumer_parent = Path::new(consumer)
-        .parent()
-        .unwrap_or_else(|| Path::new(""));
-    let Ok(expected) = fs::canonicalize(root.join(OUTPUT_REL)) else {
-        return false;
-    };
     let mut rest = visible.as_str();
+    let mut targets = Vec::new();
     while let Some(start) = rest.find("](") {
         let after = &rest[start + 2..];
-        let Some(end) = after.find(')') else {
-            return false;
+        let end = after.find(')')?;
+        let raw_target = after[..end].trim();
+        let target = if let Some(angled) = raw_target.strip_prefix('<') {
+            let (target, tail) = angled.split_once('>')?;
+            if tail
+                .chars()
+                .next()
+                .is_some_and(|character| !character.is_whitespace())
+            {
+                return None;
+            }
+            target
+        } else {
+            raw_target.split_whitespace().next().unwrap_or_default()
         };
-        let mut target = after[..end].trim();
-        if target.starts_with('<') && target.ends_with('>') {
-            target = &target[1..target.len() - 1];
-        }
-        target = target.split_whitespace().next().unwrap_or_default();
-        target = target.split('#').next().unwrap_or_default();
+        let target = target.split('#').next().unwrap_or_default();
         let image = rest[..start]
             .rfind('[')
             .is_some_and(|open| open > 0 && rest.as_bytes()[open - 1] == b'!');
-        if !image
-            && !target.contains("://")
-            && fs::canonicalize(root.join(consumer_parent).join(target))
-                .is_ok_and(|candidate| candidate == expected)
-        {
-            return true;
-        }
+        targets.push(VisibleLinkTarget {
+            target: target.to_owned(),
+            slash_normalized: target.replace('\\', "/"),
+            image,
+        });
         rest = &after[end + 1..];
     }
-    false
+    Some(targets)
+}
+
+fn links_to_repository_path(
+    root: &Path,
+    consumer: &str,
+    contents: &str,
+    expected_relative: &str,
+) -> bool {
+    let consumer_parent = Path::new(consumer)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let Ok(expected) = fs::canonicalize(root.join(expected_relative)) else {
+        return false;
+    };
+    visible_link_targets(contents).is_some_and(|targets| {
+        targets.iter().any(|link| {
+            !link.image
+                && !link.target.contains("://")
+                && fs::canonicalize(root.join(consumer_parent).join(&link.target))
+                    .is_ok_and(|candidate| candidate == expected)
+        })
+    })
+}
+
+fn links_to_product_status(root: &Path, consumer: &str, contents: &str) -> bool {
+    links_to_repository_path(root, consumer, contents, OUTPUT_REL)
+}
+
+fn links_to_status_ledger(root: &Path, consumer: &str, contents: &str) -> bool {
+    links_to_repository_path(root, consumer, contents, LEDGER_REL)
 }
 
 fn links_to_roadmap(contents: &str) -> bool {
-    let visible = visible_markdown(contents);
-    let mut rest = visible.as_str();
-    while let Some(start) = rest.find("](") {
-        let after = &rest[start + 2..];
-        let Some(end) = after.find(')') else {
-            return false;
-        };
-        let target = after[..end]
-            .trim()
-            .trim_matches(['<', '>'])
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .split('#')
-            .next()
-            .unwrap_or_default()
-            .replace('\\', "/");
-        if target
+    visible_link_targets(contents).is_some_and(|targets| {
+        targets.iter().any(|link| {
+            link.slash_normalized
             .rsplit('/')
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case("ROADMAP.md"))
-        {
-            return true;
-        }
-        rest = &after[end + 1..];
-    }
-    false
+        })
+    })
 }
 
 fn skip_json_whitespace(bytes: &[u8], index: &mut usize) {
@@ -1478,8 +1496,11 @@ fn workspace_crate_names_with_cargo_home(
 
 fn check_root_repo_map(root: &Path, records: &[Record]) -> Result<(), String> {
     let agents = read_required(root, "AGENTS.md")?;
+    if !links_to_status_ledger(root, "AGENTS.md", &agents) {
+        return Err("KELD-DOCS004: AGENTS.md must link directly to the canonical product-status source ledger. Reconcile that root consumer under its instruction key.".to_owned());
+    }
     if !links_to_product_status(root, "AGENTS.md", &agents) {
-        return Err("KELD-DOCS004: AGENTS.md must link directly to the canonical product-status ledger. Reconcile that root consumer under its instruction key.".to_owned());
+        return Err("KELD-DOCS004: AGENTS.md must link directly to the generated view of product status while naming the TSV as its source ledger. Reconcile that root consumer under its instruction key.".to_owned());
     }
     let ledger = records
         .iter()
@@ -1743,7 +1764,7 @@ mod tests {
         );
         temp.write(
             "AGENTS.md",
-            "# Agents\n\n[Product status](docs/engineering/product-status.md).\n",
+            "# Agents\n\n[Product status source ledger](docs/engineering/product-status.tsv); [generated status view](docs/engineering/product-status.md).\n",
         );
         for relative in REQUIRED_CONSUMERS {
             let link = if *relative == "README.md" {
@@ -2341,10 +2362,45 @@ mod tests {
         generate(temp.path()).expect("generate fixture");
         temp.replace(
             "AGENTS.md",
+            "docs/engineering/product-status.tsv",
+            "docs/architecture/01-overview.md",
+        );
+        expect_check_error(&temp, "source ledger");
+    }
+
+    #[test]
+    fn root_repo_map_must_link_to_generated_view() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.replace(
+            "AGENTS.md",
             "docs/engineering/product-status.md",
             "docs/architecture/01-overview.md",
         );
-        expect_check_error(&temp, "must link directly");
+        expect_check_error(&temp, "generated view");
+    }
+
+    #[test]
+    fn visible_link_targets_share_scanning_and_normalization() {
+        let targets = visible_link_targets(concat!(
+            "[status](<docs/engineering/product-status.md#current> \"view\") ",
+            "![image](assets/status.svg) ",
+            "[old](..\\..\\ROADMAP.md#phase)\n",
+        ))
+        .expect("well-formed visible links");
+
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0].target, "docs/engineering/product-status.md");
+        assert_eq!(targets[0].slash_normalized, targets[0].target);
+        assert!(!targets[0].image);
+        assert_eq!(targets[1].target, "assets/status.svg");
+        assert!(targets[1].image);
+        assert_eq!(targets[2].target, "..\\..\\ROADMAP.md");
+        assert_eq!(targets[2].slash_normalized, "../../ROADMAP.md");
+        assert!(
+            visible_link_targets("[bad](<docs/engineering/product-status.md>suffix)").is_none(),
+            "non-whitespace text after an angled target is not a valid title"
+        );
     }
 
     #[test]

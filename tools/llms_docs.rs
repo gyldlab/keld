@@ -242,10 +242,10 @@ fn render_index(loaded: &[LoadedSource]) -> String {
         output.push('\n');
     }
     output.push_str(
-        "\n## Corpus policy\n\n\
+         "\n## Corpus policy\n\n\
          `llms-full.txt` contains exactly the sources listed above, in this order. \
-         Exploratory research, local-only material, generated outputs, and every \
-         unlisted document are excluded.\n",
+         Exploratory research, local-only material, generated outputs not explicitly \
+         listed above, and every unlisted document are excluded.\n",
     );
     output
 }
@@ -443,6 +443,21 @@ mod tests {
             .find("](docs/engineering/second.md)")
             .expect("second index link");
         assert!(first_link < second_link);
+    }
+
+    #[test]
+    fn corpus_policy_allows_only_explicitly_listed_generated_sources() {
+        let temp = fixture();
+        let (index, _) = render(temp.path(), FIXTURE_SOURCES).expect("render fixtures");
+
+        assert!(
+            index.contains("generated outputs not explicitly listed above"),
+            "the policy must distinguish an allowlisted generated source from other generated output"
+        );
+        assert!(
+            !index.contains("local-only material, generated outputs, and every"),
+            "the policy must not claim that all generated outputs are excluded"
+        );
     }
 
     #[test]

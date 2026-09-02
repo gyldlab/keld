@@ -492,6 +492,14 @@ fn workflow_direct_named_step_block(text: &str, step_name: &str) -> Option<Strin
     found.then_some(block)
 }
 
+fn workflow_direct_named_step_count(text: &str, step_name: &str) -> usize {
+    let expected_name = format!("- name: {step_name}");
+    text.lines()
+        .filter_map(yaml_content)
+        .filter(|(indent, content)| *indent == 6 && *content == expected_name)
+        .count()
+}
+
 fn workflow_job_sequence_values(block: &str, key: &str) -> Option<Vec<String>> {
     let expected_key = format!("{key}:");
     let mut sequence_indent = None;
@@ -658,6 +666,34 @@ fn workflow_named_step_direct_keys(text: &str, step_name: &str) -> Option<Vec<St
         }
     }
     step_indent.map(|_| keys)
+}
+
+fn workflow_named_step_direct_value(text: &str, step_name: &str, key: &str) -> Option<String> {
+    let expected_name = format!("- name: {step_name}");
+    let mut step_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if step_indent.is_none() {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
+            continue;
+        }
+        let step = step_indent?;
+        if indent <= step {
+            break;
+        }
+        if indent == step + 2 {
+            let (candidate, value) = yaml_mapping_key(content)?;
+            if candidate == key {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn workflow_job_level_if(block: &str) -> Option<String> {
@@ -1014,12 +1050,7 @@ fn check_product_status_step(text: &str) -> Result<(), String> {
         ));
     };
     let step = "Product status contract";
-    let expected_name = format!("- name: {step}");
-    let count = changes
-        .lines()
-        .filter_map(yaml_content)
-        .filter(|(indent, content)| *indent == 6 && *content == expected_name)
-        .count();
+    let count = workflow_direct_named_step_count(&changes, step);
     if count != 1 {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `changes` must contain exactly one unconditional `{step}` step; found {count}."
@@ -1057,15 +1088,31 @@ fn check_product_status_windows_step(text: &str) -> Result<(), String> {
         ));
     };
     let step = "Product status Windows path contracts";
+    let count = workflow_direct_named_step_count(&check_job, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
     let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
     })?;
-    let expected_keys = ["if".to_owned(), "run".to_owned()];
-    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice())
-        || !uncommented_line_contains(&block, "if: matrix.os == 'windows-latest'")
+    let expected_keys = ["if".to_owned(), "shell".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: bash`, and `run` keys."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "if").as_deref()
+        != Some("matrix.os == 'windows-latest'")
     {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run only on windows-latest and may contain only if/run keys."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `matrix.os == 'windows-latest'`."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("bash") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must set `shell: bash`; its commands use POSIX syntax and must remain idempotent on a warm Windows cache."
         ));
     }
     let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
@@ -1697,6 +1744,7 @@ mod tests {
             "        run: cargo nextest run -p fixture --profile ci --no-tests=pass",
             "      - name: Product status Windows path contracts",
             "        if: matrix.os == 'windows-latest'",
+            "        shell: bash",
             "        run: |",
             "          mkdir -p target/product-status",
             "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
@@ -2828,12 +2876,46 @@ mod tests {
     fn missing_product_status_windows_step_fails() {
         let temp = complete_fixture();
         let workflow = valid_workflow().replace(
-            "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n",
+            "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n",
             "",
         );
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("missing Windows status step must fail");
         assert!(error.contains("Windows path contracts"), "{error}");
+    }
+
+    #[test]
+    fn product_status_windows_step_requires_bash() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |",
+            "        if: matrix.os == 'windows-latest'\n        run: |",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("the POSIX command block requires Bash");
+        assert!(error.contains("shell: bash"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_product_status_windows_step_fails() {
+        let temp = complete_fixture();
+        let step = "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n";
+        let workflow = valid_workflow().replace(step, &format!("{step}{step}"));
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("duplicate Windows status steps must fail");
+        assert!(error.contains("exactly one"), "{error}");
+    }
+
+    #[test]
+    fn broadened_product_status_windows_condition_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "if: matrix.os == 'windows-latest'",
+            "if: matrix.os == 'windows-latest' || true",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("broadened Windows condition must fail");
+        assert!(error.contains("exact condition"), "{error}");
     }
 
     #[test]

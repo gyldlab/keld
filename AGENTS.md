@@ -115,8 +115,10 @@ distinction would otherwise be ambiguous.
 ## Repo map
 
 Repository Current/Target/Evidence status is owned by the tracked
-[`product-status.md`](docs/engineering/product-status.md) ledger. Workspace membership
-is owned by `Cargo.toml`; package roles and public contracts remain path-local.
+[`product-status.tsv`](docs/engineering/product-status.tsv) source ledger; the
+[`product-status.md`](docs/engineering/product-status.md) file is its generated view.
+Workspace membership is owned by `Cargo.toml`; package roles and public contracts remain
+path-local.
 
 Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 `compat`, `runtime`, `core`, `host`, `cli`). MUST NOT add hollow agent files.
