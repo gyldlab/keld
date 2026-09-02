@@ -1,6 +1,7 @@
 # Spec: host-owned persistent webview profile identity
-Status: draft
-Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-09-01
+Status: approved
+Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-09-02
+Approval: Linear comment `75d75f6e-76e9-4fd1-a130-9d57548d0372` · decision SHA-256 `b9f48f14a5d6fefe4cd0f94b1a97b14292cead5ba0202facbd81c6b6a1a44040`
 
 ## 1. Goal & non-goals
 
@@ -613,7 +614,7 @@ cross-process engine sharing; this is a correctness decision, not a performance 
 
 ## 10. Open questions
 
-None inside this draft's proposed contract. Human approval must explicitly accept:
+None for T0. The approval recorded in the header explicitly accepts:
 
 1. persistent release identity consumes the platform mappings above—Windows trusted
    signer SPKI, macOS validated Team Identifier, or Linux installer-pinned Ed25519 key—
@@ -629,5 +630,6 @@ None inside this draft's proposed contract. Human approval must explicitly accep
 6. after non-idle macOS/Linux host death, persistent state remains quarantined for the
    rest of that OS boot and is recovered only after a real reboot proves helper death.
 
-Until approval, status remains `draft`, no implementation task is authorized, and none
-of the platform rows is passed.
+That approval makes this contract `approved`; it does not make a later implementation
+task frontier-ready or pass any platform row. T1–T5 still require their exact landed
+artifacts, claims, review gates and OS evidence.
