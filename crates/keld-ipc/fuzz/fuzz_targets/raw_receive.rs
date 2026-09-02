@@ -11,7 +11,7 @@
 use std::io::Cursor;
 
 use keld_ipc::link::read_validated_frame;
-use keld_ipc::receive::{validate_received_header, ReceivePolicy};
+use keld_ipc::receive::{ReceivePolicy, validate_received_header};
 use keld_ipc::{ChannelId, CorrelationId, FrameHeader, FrameKind, HEADER_LEN};
 
 libfuzzer_sys::fuzz_target!(|data: &[u8]| {
@@ -31,8 +31,9 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         match read_validated_frame(&mut cursor, policy) {
             Ok((_admitted, payload)) => {
                 // Admission implies policy conformance, re-derived from bytes.
-                let header_bytes: &[u8; HEADER_LEN] =
-                    &data[..HEADER_LEN].try_into().expect("admitted implies a full header");
+                let header_bytes: &[u8; HEADER_LEN] = &data[..HEADER_LEN]
+                    .try_into()
+                    .expect("admitted implies a full header");
                 let header = FrameHeader::decode(header_bytes).expect("admitted implies syntax");
                 let revalidated =
                     validate_received_header(policy, header).expect("admitted implies semantics");
