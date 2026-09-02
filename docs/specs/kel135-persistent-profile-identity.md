@@ -375,10 +375,18 @@ After non-idle Windows host death, the control record is durably `quarantined`. 
 successor may run only a recovery probe against the same validated actual UDF with
 exclusive-UDF access and no app navigation/content. `ERROR_INVALID_STATE` retains
 quarantine. The first successful exclusive controller proves the old browser collection
-released the UDF; the host verifies the environment-reported path, atomically/fsyncs
-`quarantined → idle`, then begins the normal `starting → running` transition while
-reusing that recovery environment. No suffix/new/default store is created, and normal
-store lookup/navigation cannot precede the durable `idle` transition.
+released the UDF; the host verifies the environment-reported path, closes the recovery
+webview/controller after registering `BrowserProcessExited` on
+`ICoreWebView2Environment5`, retains that environment object until the event, then
+releases it. Only after the event does it atomically/fsync `quarantined → idle` and begin a fresh normal
+`starting → running` startup. A crash before durable `idle` leaves quarantine intact; a
+crash after `idle` has no live recovery collection. No suffix/new/default store is
+created, and normal store lookup/navigation cannot precede durable `idle`.
+
+Windows normal startup uses the same durable `starting`, `running`, `stopping`, and
+`idle` phases as the other platforms, stored in the nondeletable identity parent. Its
+crash tests terminate after every phase plus each recovery-probe boundary; only `idle`
+is admissible without the exclusive-UDF recovery sequence.
 
 Windows dev-ephemeral UDFs live at a unique owner-private
 `FOLDERID_LocalAppData/Keld/ephemeral/v1/<launch-nonce>` leaf with a durable schema
