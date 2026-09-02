@@ -111,9 +111,6 @@ while IFS= read -r -d '' file; do
   files+=("$file")
 done < <(git -C "$workspace" grep -Ilzi 'mermaid' -- '*.md' || true)
 
-if [[ -f "$workspace/ROADMAP.md" ]]; then
-  files+=("ROADMAP.md")
-fi
 if git -C "$workspace/docs/research" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   while IFS= read -r -d '' file; do
     files+=("docs/research/$file")

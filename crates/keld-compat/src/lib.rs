@@ -1,19 +1,14 @@
-//! keld-compat — host-side Electron emulation.
+//! keld-compat — compatibility evidence and Electron lifecycle oracle.
 //!
-//! Layer 1–2 (KEL-72): the TypeScript shim lives in `packages/@keld/electron`
-//! and maps `app.whenReady` / `app.quit` / `window-all-closed` onto the
-//! generic host-lifecycle kipc channel (`keld_ipc::LIFECYCLE_CHANNEL`,
-//! served by `keld_core::LifecycleSession`). Electron names stay out of
-//! `keld-core` / `keld-ipc`.
-//!
-//! This crate still owns the semantics JS cannot fake later: custom
-//! `protocol` schemes, `session` cookie/proxy subsets, `webContents`
-//! routing identity, window parenting/modals, `nativeImage` codecs.
-//! Normative spec: `docs/architecture/04-electron-compat.md` §3.
+//! The TypeScript facade lives in `packages/@keld/electron`; Electron names stay out of
+//! `keld-core` and `keld-ipc`. Architecture assigns future host-side semantics such as
+//! custom `protocol` schemes, session policy, and `webContents` routing to this crate.
+//! Normative target spec: `docs/architecture/04-electron-compat.md` §3.
 //!
 //! Generic compatibility evidence (KEL-74) lives in [`evidence`]: a versioned
 //! record + committed-denominator scorer. That module is not an Electron shim
-//! and does not encode VS Code or package names.
+//! and does not encode VS Code or package names. Repository maturity and evidence live
+//! in `docs/engineering/product-status.tsv`.
 
 pub mod evidence;
 

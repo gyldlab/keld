@@ -11,7 +11,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test mermaid-test mermaid-check mermaid-render-check llms-test llms-check hygiene fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -88,6 +88,24 @@ agent-context:
     rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
     target/agent-context/agent-context check .
 
+# Generate the canonical Current/Target/Evidence status view.
+product-status:
+    mkdir -p target/product-status
+    rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status
+    target/product-status/product-status generate .
+
+# Contract tests for schema closure, mutation detection, and deterministic rendering.
+product-status-test:
+    mkdir -p target/product-status
+    rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
+    target/product-status/product-status-test
+
+# CI gate: ledger semantics and every checked consumer must agree.
+product-status-check:
+    mkdir -p target/product-status
+    rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status
+    target/product-status/product-status check .
+
 # Generate the checked-in agent-readable docs index and full corpus.
 llms:
     mkdir -p target/llms-docs
@@ -113,9 +131,6 @@ mermaid-check:
     mkdir -p target/mermaid-docs
     rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
     target/mermaid-docs/mermaid-docs check .
-    if [[ -f ROADMAP.md ]]; then
-        target/mermaid-docs/mermaid-docs check-file ROADMAP.md
-    fi
     if git -C docs/research rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         target/mermaid-docs/mermaid-docs check docs/research
     fi

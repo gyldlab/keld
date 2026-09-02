@@ -1,11 +1,8 @@
-//! keld-host — the shipping host binary (pre-alpha).
+//! keld-host — the shipping host binary.
 //!
-//! Destination (spec 01/06): app developers never compile this; `@keld/cli`
-//! resolves a signed platform build that boots from the compiled form of
-//! `keld.config.ts` and owns every OS resource for the app's lifetime.
-//! `--hello` remains an unprivileged diagnostic. A no-flag launch consumes the
-//! private validated stage beside this executable and owns the application
-//! session until ordered shutdown.
+//! The host owns framework-controlled OS resources and dispatches into validated
+//! library owners. Normative boundaries are in architecture 01/06; repository maturity
+//! and evidence live in `docs/engineering/product-status.tsv`.
 
 use std::env;
 #[cfg(target_os = "macos")]

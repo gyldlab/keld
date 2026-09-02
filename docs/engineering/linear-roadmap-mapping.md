@@ -1,8 +1,9 @@
-# ROADMAP ↔ Linear Phase Mapping
+# Product phases ↔ Linear project mapping
 
-Linear projects use different phase numbers than `ROADMAP.md`. Use these tables when
-linking issues to roadmap milestones. A Linear project describes scheduling/ownership;
-it does not turn a research result or future spec into implemented behavior.
+Linear projects describe scheduling and ownership; product phases classify target scope.
+Use these tables when linking issues to product phases. Neither placement turns a
+research result or future spec into implemented behavior. The generated
+[Current/Target/Evidence ledger](product-status.md#phases) owns phase status.
 
 Keld is framework-first. The VS Code work is a north-star lane consuming general Keld
 contracts; it does not define the framework phase or justify application-specific core
@@ -10,19 +11,20 @@ APIs.
 
 ## Project mapping
 
-| Linear project | ROADMAP equivalent |
+| Linear project | Product-phase relationship |
 |----------------|-------------------|
 | Phase 0 — Research & Competitive Analysis | Pre-foundation research, source surveillance and external evidence intake |
 | Phase 1 — Architecture & Specs | Spec/RFC work and review-gated changes to process, permissions, wire or public API |
-| Phase 2 — Foundation Scaffolding | ROADMAP Phase 0 evidence/foundation + Phase 1 window/primary-role slices + carefully selected Phase 2 prerequisites |
+| Phase 2 — Foundation Scaffolding | Phase 0 evidence/foundation + Phase 1 window/primary-role slices + carefully selected Phase 2 prerequisites |
 | Meta — Program & Process | Cross-project coordination, surveillance and agent/process health; never a product feature lane |
-| *(not projectized yet)* | ROADMAP Phase 3 distribution/strict proof and Phase 4 compatibility/showcase execution |
+| *(not projectized yet)* | Phase 3 distribution/strict proof and Phase 4 compatibility/showcase execution |
 
 Backlog placement in Phase 2 does not mean “implement now.” The issue's spec gate,
 dependencies, current active PRs and roadmap exit order still control sequencing.
 
-The selection flow below shows ownership and gating, not dates. `ROADMAP.md` and the
-approved issue specs remain the source of truth.
+The selection flow below shows ownership and gating, not dates. The status ledger owns
+phase classification, approved issue specs own scoped acceptance, and Linear owns live
+execution state.
 
 ```mermaid
 flowchart TD
@@ -52,7 +54,7 @@ flowchart TD
 
 ## Maximum-compatibility workstreams
 
-| Linear issue | Framework scope | ROADMAP lane | Scheduling rule |
+| Linear issue | Framework scope | Product phase | Scheduling rule |
 |---|---|---|---|
 | KEL-51 | VS Code north-star research record | research/showcase | Research execution done; raw P-report claims remain non-normative pending direct source ledgers |
 | KEL-68 | Runtime/engine surveillance | standing track | Keep moving snapshots out of phase scope churn |
@@ -83,6 +85,6 @@ The following remain framework-wide:
 - resource/origin profiles and native IME/a11y/clipboard/DnD quality gates;
 - sandbox, packaging, update, recovery and benchmark validity contracts.
 
-ROADMAP Phase 3 and Phase 4 should become separate Linear projects only after their
+Product Phase 3 and Phase 4 should become separate Linear projects only after their
 entry specs and owners are approved. Do not create implementation tickets for a
 clean-room browser, native GPU core, mandatory shared memory or an extension mirror.

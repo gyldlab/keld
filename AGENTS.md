@@ -114,23 +114,11 @@ distinction would otherwise be ambiguous.
 
 ## Repo map
 
-`TARGET` is specified destination scope; `SKELETON` is a name-only surface. Current
-status is `docs/architecture/01-overview.md` §1.
-
-| Crate | Current role / destination |
-|---|---|
-| keld-core | Hello window + lifecycle session; TARGET event loop/window registry; nested `AGENTS.md` |
-| keld-wv | System WebEngine backends; TARGET CEF; nested `AGENTS.md` |
-| keld-ipc | kipc framing/codecs; TARGET channel registry + shm; nested `AGENTS.md` |
-| keld-guard | Capabilities, manifest, scopes; nested `AGENTS.md` |
-| keld-native | Guard-checked brokers; `fs` live, rest SKELETON |
-| keld-runtime | Supervised Bun child-role runtime; nested `AGENTS.md` |
-| keld-update | SKELETON; TARGET signed manifests + delta update |
-| keld-pack | SKELETON; TARGET installers/signing/cross-compile |
-| keld-compat | Electron conformance/lifecycle oracle; TARGET host emulation; nested `AGENTS.md` |
-| keld-host | Shipping host binary; nested `AGENTS.md` |
-| keld-cli | create/dev/doctor/mcp live; build/migrate/gen/ext reserved; nested `AGENTS.md` |
-| packages/ | `@keld/electron` live; other `@keld/*` upcoming |
+Repository Current/Target/Evidence status is owned by the tracked
+[`product-status.tsv`](docs/engineering/product-status.tsv) source ledger; the
+[`product-status.md`](docs/engineering/product-status.md) file is its generated view.
+Workspace membership is owned by `Cargo.toml`; package roles and public contracts remain
+path-local.
 
 Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 `compat`, `runtime`, `core`, `host`, `cli`). MUST NOT add hollow agent files.

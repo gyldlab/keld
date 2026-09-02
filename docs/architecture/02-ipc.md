@@ -14,6 +14,9 @@ host ⇄ app role_i      "app-link[i]"   UDS/named pipe (control) + optional mea
 webview_j ⇄ app role_i                routed via host (both link classes), never direct
 ```
 
+The generated [Current/Target/Evidence ledger](../engineering/product-status.md) owns
+implementation status and evidence; this document owns the protocol and trust contract.
+
 The host mediates everything. That's what makes capability checks, auditing, crash
 isolation, and Electron-compat routing possible. Binary framing removes avoidable
 serialization overhead; shared memory is added only to an attributed bulk bottleneck.

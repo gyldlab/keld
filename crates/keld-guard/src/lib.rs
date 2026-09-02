@@ -2,29 +2,19 @@
 //!
 //! Normative spec: `docs/architecture/03-security.md`.
 //!
-//! **Destination:** every privileged host operation passes through this crate's
-//! `(principal, capability, args) -> Decision` check before the handler runs.
-//!
-//! **v0 live owners:** the shipping macOS host loads one digest-verified policy
-//! snapshot before app resources; webview media capture (`web.camera` / `web.microphone`)
-//! on the three `keld-wv` backends, and host `fs.read` / `fs.write` via
-//! `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69 / KEL-71). Those
-//! media paths still pass [`PermissionsManifest::default()`] (empty grants →
-//! default-deny), not that snapshot. `keld-core` retains the verified snapshot
-//! but does not yet call [`evaluate`]. Echo and host-lifecycle session control
-//! stay ungated on purpose.
-//!
-//! v0 engine surface: parse `keld.permissions.jsonc` and default-deny
+//! The engine parses `keld.permissions.jsonc` and default-denies through
 //! [`evaluate`] for dotted capabilities (`fs.read`) against path/host scopes.
 //! [`evaluate`] requires a [`Principal`] and denies anything other than
 //! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
-//! or plugin by omitting identity. Webview-originated media capture must
+//! principal. Strict-profile admission is exposed through [`admit`]. Repository
+//! maturity and evidence live in `docs/engineering/product-status.tsv`.
+//! A caller cannot authorize a webview or plugin by omitting identity.
+//! Webview-originated media capture must
 //! present a minted [`Principal::Webview`]; missing identity and
 //! [`Principal::AppProcess`] are [`DenyReason::MediaPrincipalRequired`]
-//! (`KELD-GUARD007`). `$VARS` resolution, symlink/`..` canonicalization
-//! beyond rejecting a `..` segment, and channel grants are not in this slice.
+//! (`KELD-GUARD007`).
 //!
-//! KEL-78 T1 adds [`admit`]: Strict is fail-closed without a complete
+//! [`admit`] keeps Strict fail-closed without a complete
 //! OS-containment catalog, matching profile digest, and observed §4
 //! primitives. [`HostFacts::observe_uncontained`] reports every primitive
 //! missing. That is not an OS-containment claim.

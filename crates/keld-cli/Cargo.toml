@@ -1,6 +1,6 @@
 [package]
 name = "keld-cli"
-description = "keld: the developer entrypoint (create, dev, doctor, mcp live; build/migrate reserved)"
+description = "Keld developer entrypoint and project-tooling orchestration"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

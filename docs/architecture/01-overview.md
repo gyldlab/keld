@@ -6,62 +6,9 @@
 
 ## 1. Process and trust topology
 
-```mermaid
-flowchart LR
-    accTitle: Keld process and trust topology
-    accDescr {
-      The trusted Rust host owns privileged resources and mediates webview and Bun-role
-      requests. The live v0 slice has three webview backends, a guard evaluator, a
-      host-owned token-authenticated echo link co-lived with the hello window (KEL-30),
-      the macOS and Windows no-flag validated host/window/primary-session slices (KEL-96)
-      with KEL-102/T2's verified immutable startup policy snapshot,
-      KEL-70/KEL-116 supervision, and guard-checked scoped filesystem access (KEL-71).
-      Full role-bound app-link identity, guarded role
-      dispatch, the remaining native services, and an optional sandboxed native-addon
-      worker remain destination behavior.
-    }
-
-    subgraph Host["Trusted authority process: keld-host / keld-core"]
-        Core["PARTIAL LIVE<br/>hello + macOS/Windows no-flag app window/session<br/>TARGET window registry"]
-        Link["PARTIAL LIVE<br/>hello echo + macOS/Windows primary app-link<br/>TARGET role-bound"]
-        Guard["PARTIAL LIVE<br/>verified startup snapshot + evaluator<br/>TARGET guard-before-handler"]
-        Native["PARTIAL LIVE<br/>fs scoped + guard-checked<br/>TARGET remaining native services"]
-        Runtime["PARTIAL LIVE<br/>Bun supervisor + platform generations<br/>macOS guardian; TARGET role identity"]
-    end
-
-    subgraph Prototype["Current diagnostic process: keld-cli"]
-        CliDiag["LIVE diagnostic<br/>ipc-echo / ipc-client"]
-    end
-
-    subgraph UI["Untrusted UI principals"]
-        Webview["LIVE v0<br/>three webview backends<br/>TARGET per-navigation principal"]
-    end
-
-    subgraph JS["Semi-trusted and untrusted code processes"]
-        App["PARTIAL LIVE<br/>supervised Bun primary<br/>macOS/Windows no-flag + hello slices<br/>TARGET named roles"]
-        Addon["FUTURE OPTIONAL<br/>sandboxed native-addon worker"]
-    end
-
-    Runtime -->|LIVE v0 supervise, restart and capture logs| App
-    App -->|LIVE v0 HELLO and echo CALL| Link
-    CliDiag -.->|diagnostic only| Link
-    Link -->|TARGET bind principal before dispatch| Guard
-    Webview -->|engine bridge: TARGET guarded calls| Guard
-    Addon -->|typed broker requests only| Guard
-    Guard -->|allow only| Core
-    Guard -->|allow only| Native
-    Core -->|window and navigation control| Webview
-
-    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px;
-    classDef target fill:#dbeafe,stroke:#1d4ed8,color:#172554,stroke-width:2px;
-    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px;
-    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px;
-
-    class Native target;
-    class Core,Link,Runtime,Guard gate;
-    class CliDiag,Webview,App current;
-    class Addon external;
-```
+The generated [Current/Target/Evidence ledger](../engineering/product-status.md) owns
+repository maturity and evidence. This section describes process and trust relationships
+only; Linear continues to own execution state.
 
 Three principal classes, with host-minted instances inside each class:
 1. **keld-host** (Rust): the authority root for every framework-controlled privileged
@@ -125,23 +72,24 @@ Why this shape (each competitor fails differently — see `docs/research/library
 
 ## 3. Crate & package topology
 
-Cargo workspace (all crates `keld-*`, lib names `keld_*`). Role and `Depends on` state
-what each crate **is** today; `TARGET` marks specified destination scope that is not
-implemented. The per-crate status legend is the §1 diagram above.
+Cargo workspace (all crates `keld-*`, lib names `keld_*`). This table owns normative
+roles and dependency direction, not implementation status. The generated
+[Current/Target/Evidence ledger](../engineering/product-status.md) is the sole status
+view and links each claim to tracked evidence.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `keld-core` | host runtime: lifecycle session, hello window, and macOS/Windows no-flag boot/primary app sessions with verified immutable policy preflight; TARGET complete Linux event-loop integration, window registry, plugin host and privileged routing | wv, ipc, guard, runtime (TARGET: native) |
-| `keld-wv` | webview abstraction: live `wkwebview`/`webview2`/`webkitgtk` backends; CEF is a planned opt-in candidate, not a current feature | guard |
-| `keld-ipc` | kipc protocol: framing, codecs, token/HELLO, guard-before-dispatch for privileged calls (echo/lifecycle intentionally ungated); TARGET channel registry, shm rings, schema runtime | guard |
-| `keld-native` | native APIs: `fs` scoped + guard-checked (live); TARGET menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell, secure storage | ipc, guard |
-| `keld-guard` | capability engine: manifest parsing/evaluation plus single-handle SHA-256-verified startup loading; TARGET complete generated scopes, per-window/per-principal grants and audit log | sha2 |
-| `keld-runtime` | app-process supervisor: generic single-child spawn, stdio capture, restart policy + crash ledger; macOS host-death guardian and Windows Job/LPAC owner compose KEL-75 fresh primary generations for KEL-96 recovery; Windows uses the current-user-DACL named pipe; RoleRegistry + bounded virtual ports remain a Unix library/test surface only (KEL-75 T3, not wired into privileged product dispatch); TARGET Bun discovery/pinning, complete named-role spawn, per-role grants/lifecycle | ipc |
-| `keld-update` | updater: manifest polling, bsdiff/zstd patches, signature verification, rollback | — |
-| `keld-pack` | packaging library: .app/dmg, MSI/NSIS, deb/rpm/AppImage, signing/notarization drivers, pure-Rust where possible (Deno lesson) | — |
-| `keld-compat` | Electron conformance evidence schema + scorer (KEL-74) and lifecycle oracle; TARGET host-side emulation (session/protocol/webContents) | core |
-| `keld-cli` | `keld` binary: `create`/`dev`/`doctor`/`mcp` live; on macOS and Windows `dev` compiles an owner-private stage, launches its no-flag host, forwards stdio and retains only the host handle plus liveness writer; Linux `dev` fails closed until its KEL-96/T4 no-flag row; `build`/`migrate`/`gen` reserved (`KELD-CLI-045`); TARGET pinned host+Bun download, bundling delegated to the app's tool | core, ipc, guard, runtime |
-| `keld-host` | thin bin crate assembling core+backends into the shipping host executable | core |
+| `keld-core` | Host runtime, lifecycle, window registry, session orchestration, plugin host and privileged routing | wv, ipc, guard, runtime, native |
+| `keld-wv` | Webview abstraction and per-platform engine policy, including optional pinned-engine tiers | guard |
+| `keld-ipc` | kipc framing, authentication, channel registry, backpressure, schema runtime and measured optional bulk lanes | guard |
+| `keld-native` | Guarded native services: filesystem, menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell and secure storage | ipc, guard |
+| `keld-guard` | Capability manifest, generated scopes, principal/window grants, evaluation and audit | sha2 |
+| `keld-runtime` | Supervised Bun process family, role identities, lifecycle policy, grants and virtual ports | ipc |
+| `keld-update` | Signed update manifests, delta application, rollback and feeds | — |
+| `keld-pack` | Installer assembly, signing/notarization and cross-target packaging | — |
+| `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
+| `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
+| `keld-host` | Shipping host executable that assembles the core and platform backends | core |
 
 npm packages (TypeScript, in `packages/`):
 
@@ -154,8 +102,8 @@ npm packages (TypeScript, in `packages/`):
 | `create-keld` | scaffolding (`bun create keld` / `npm create keld`) |
 | `@keld/schema` | channel/contract definition + codegen (TS types ↔ Rust types) |
 
-**v0 (KEL-72):** `@keld/electron` exists and speaks kipc directly (`LIFECYCLE_CHANNEL`);
-`@keld/api` is still absent. Other packages in this table are not in tree.
+Package implementation status and absence are generated from the same ledger rather
+than repeated beside this normative package topology.
 
 Rules: crates never depend "upward"; `keld-wv`/`keld-ipc`/`keld-guard` are host-agnostic
 and unit-testable headless; every public item documented. Production `unsafe` is

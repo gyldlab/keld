@@ -1,17 +1,9 @@
 //! keld-runtime — the app-process supervisor.
 //!
-//! Spawns the developer's JS/TS main under the caller-provided Bun, supervises
-//! it (exponential backoff, crash-loop breaker), and hands it the kipc link at
-//! spawn. KEL-96/T3 and T4 exercise macOS/Windows native-window survival across
-//! a primary generation restart, while KEL-75/T4 still owns document-nonce plus
-//! post-restart renderer-beacon continuity on every claimed backend. Normative
-//! spec: `docs/architecture/06-runtime-and-tooling.md` §1.
-//!
-//! v0 scope (KEL-70): spawn + capture + restart-on-crash + crash-loop
-//! breaker. Out of scope here: OS sandbox on the child, Bun
-//! pinning/download, `--inspect` passthrough, Bun watch hot-restart, and the
-//! destination `KELD_LINK`/`KELD_SHM`/`KELD_CONTRACT` env contract (v0 keeps
-//! whatever env the caller's command factory sets, e.g. `KELD_APP_LINK`).
+//! Owns child spawn/capture, restart policy, process guardians, role generations, and
+//! bounded virtual-port primitives. Normative spec:
+//! `docs/architecture/06-runtime-and-tooling.md` §1. Repository maturity and evidence
+//! live in `docs/engineering/product-status.tsv`.
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};

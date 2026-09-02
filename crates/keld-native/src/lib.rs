@@ -1,13 +1,10 @@
 //! keld-native — native OS API modules.
 //!
-//! Destination rule: a shipping module has all three platform implementations (or an
-//! explicit documented gap), passes through `keld-guard`, and is exposed to TypeScript
-//! as a typed kipc channel. This crate is currently a registry skeleton with no module
-//! implementation. Normative spec:
-//! `docs/architecture/05-webview-and-native.md` §3.
-//!
-//! `fs` is live (KEL-71): see [`fs`] for host-owned, guard-checked
-//! `fs.read`/`fs.write`. Every other module below is still name-only.
+//! The destination native-service contract routes privileged operations through
+//! `keld-guard` and exposes them as typed kipc channels. See [`fs`] for the implemented
+//! filesystem broker, [`MODULES`] for the declared surface, and
+//! `docs/engineering/product-status.tsv` for current coverage and evidence. Normative
+//! spec: `docs/architecture/05-webview-and-native.md` §3.
 
 pub mod fs;
 

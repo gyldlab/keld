@@ -60,6 +60,9 @@ const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
     "toolchain: 1.97.1",
+    "--test tools/product_status.rs",
+    "product-status check .",
+    "--test tools/llms_docs.rs",
     "tools/llms_docs.rs",
     "llms-docs check",
 ];
@@ -84,6 +87,20 @@ const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "target/agent-context/agent-context-test",
     "rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
     "target/agent-context/agent-context check .",
+];
+
+const PRODUCT_STATUS_COMMANDS: &[&str] = &[
+    "mkdir -p target/product-status",
+    "rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
+    "target/product-status/product-status-test",
+    "rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
+    "target/product-status/product-status check .",
+];
+
+const PRODUCT_STATUS_WINDOWS_COMMANDS: &[&str] = &[
+    "mkdir -p target/product-status",
+    "rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
+    "target/product-status/product-status-test",
 ];
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
@@ -475,6 +492,14 @@ fn workflow_direct_named_step_block(text: &str, step_name: &str) -> Option<Strin
     found.then_some(block)
 }
 
+fn workflow_direct_named_step_count(text: &str, step_name: &str) -> usize {
+    let expected_name = format!("- name: {step_name}");
+    text.lines()
+        .filter_map(yaml_content)
+        .filter(|(indent, content)| *indent == 6 && *content == expected_name)
+        .count()
+}
+
 fn workflow_job_sequence_values(block: &str, key: &str) -> Option<Vec<String>> {
     let expected_key = format!("{key}:");
     let mut sequence_indent = None;
@@ -641,6 +666,34 @@ fn workflow_named_step_direct_keys(text: &str, step_name: &str) -> Option<Vec<St
         }
     }
     step_indent.map(|_| keys)
+}
+
+fn workflow_named_step_direct_value(text: &str, step_name: &str, key: &str) -> Option<String> {
+    let expected_name = format!("- name: {step_name}");
+    let mut step_indent = None;
+
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if step_indent.is_none() {
+            if content == expected_name {
+                step_indent = Some(indent);
+            }
+            continue;
+        }
+        let step = step_indent?;
+        if indent <= step {
+            break;
+        }
+        if indent == step + 2 {
+            let (candidate, value) = yaml_mapping_key(content)?;
+            if candidate == key {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn workflow_job_level_if(block: &str) -> Option<String> {
@@ -988,6 +1041,93 @@ fn check_agent_context_step(text: &str) -> Result<(), String> {
         "Agent instruction context budget",
         AGENT_CONTEXT_COMMANDS,
     )
+}
+
+fn check_product_status_step(text: &str) -> Result<(), String> {
+    let Some(changes) = workflow_job_block(text, "changes") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no always-created `changes` job for product status."
+        ));
+    };
+    let step = "Product status contract";
+    let count = workflow_direct_named_step_count(&changes, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` must contain exactly one unconditional `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&changes, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `changes.steps`.")
+    })?;
+    if workflow_named_step_direct_keys(&block, step).as_deref()
+        != Some(["run".to_owned()].as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its run key; conditions and wrappers can skip canonical evidence validation."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(PRODUCT_STATUS_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the exact product-status tests and real-checkout check without echo, wrappers, or suppression."
+        ));
+    }
+    Ok(())
+}
+
+fn check_product_status_windows_step(text: &str) -> Result<(), String> {
+    let Some(check_job) = workflow_job_block(text, "check") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for Windows status paths."
+        ));
+    };
+    let step = "Product status Windows path contracts";
+    let count = workflow_direct_named_step_count(&check_job, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+    })?;
+    let expected_keys = ["if".to_owned(), "shell".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: bash`, and `run` keys."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "if").as_deref()
+        != Some("matrix.os == 'windows-latest'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact condition `matrix.os == 'windows-latest'`."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("bash") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must set `shell: bash`; its commands use POSIX syntax and must remain idempotent on a warm Windows cache."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(PRODUCT_STATUS_WINDOWS_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the exact Windows path mutation suite."
+        ));
+    }
+    Ok(())
 }
 
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
@@ -1423,6 +1563,8 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
     check_required_job(&text)?;
+    check_product_status_step(&text)?;
+    check_product_status_windows_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_agent_context_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
@@ -1585,6 +1727,13 @@ mod tests {
             "        run: tools/ci_changes_test.sh",
             "      - name: Classify changed-path ownership",
             "        run: tools/ci_changes.sh github",
+            "      - name: Product status contract",
+            "        run: |",
+            "          mkdir -p target/product-status",
+            "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
+            "          target/product-status/product-status-test",
+            "          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
+            "          target/product-status/product-status check .",
             "  check:",
             "    steps:",
             "      - name: clippy (warnings deny)",
@@ -1593,6 +1742,13 @@ mod tests {
             "      - name: test",
             "        shell: bash",
             "        run: cargo nextest run -p fixture --profile ci --no-tests=pass",
+            "      - name: Product status Windows path contracts",
+            "        if: matrix.os == 'windows-latest'",
+            "        shell: bash",
+            "        run: |",
+            "          mkdir -p target/product-status",
+            "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
+            "          target/product-status/product-status-test",
             "  bun-test:",
             "    if: needs.changes.outputs.ts == 'true'",
             "    steps:",
@@ -1637,6 +1793,9 @@ mod tests {
             "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
             "          target/agent-context/agent-context check .",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
+            "      - run: rustc --edition=2024 --test tools/product_status.rs",
+            "      - run: product-status check .",
+            "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
             "      - run: rustc --edition=2024 --test tools/mermaid_docs.rs",
@@ -2663,6 +2822,7 @@ mod tests {
     fn missing_llms_docs_check_fails() {
         let temp = complete_fixture();
         let workflow = valid_workflow()
+            .replace("--test tools/llms_docs.rs", "")
             .replace("tools/llms_docs.rs", "")
             .replace("llms-docs check .", "");
         temp.write(WORKFLOW, &workflow);
@@ -2671,6 +2831,91 @@ mod tests {
             error.contains("tools/llms_docs.rs") || error.contains("llms-docs check"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn missing_product_status_check_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow()
+            .replace("--test tools/product_status.rs", "")
+            .replace("product-status check .", "");
+        temp.write(WORKFLOW, &workflow);
+        let error =
+            check(temp.path()).expect_err("workflow without product-status check must fail");
+        assert!(
+            error.contains("tools/product_status.rs") || error.contains("product-status check"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn conditional_product_status_step_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "      - name: Product status contract\n        run: |",
+            "      - name: Product status contract\n        if: ${{ false }}\n        run: |",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("conditional product status must fail");
+        assert!(error.contains("Product status contract"), "{error}");
+    }
+
+    #[test]
+    fn echoed_product_status_command_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "          target/product-status/product-status check .",
+            "          echo 'target/product-status/product-status check .'",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("echoed product status must fail");
+        assert!(error.contains("Product status contract"), "{error}");
+    }
+
+    #[test]
+    fn missing_product_status_windows_step_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n",
+            "",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("missing Windows status step must fail");
+        assert!(error.contains("Windows path contracts"), "{error}");
+    }
+
+    #[test]
+    fn product_status_windows_step_requires_bash() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |",
+            "        if: matrix.os == 'windows-latest'\n        run: |",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("the POSIX command block requires Bash");
+        assert!(error.contains("shell: bash"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_product_status_windows_step_fails() {
+        let temp = complete_fixture();
+        let step = "      - name: Product status Windows path contracts\n        if: matrix.os == 'windows-latest'\n        shell: bash\n        run: |\n          mkdir -p target/product-status\n          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test\n          target/product-status/product-status-test\n";
+        let workflow = valid_workflow().replace(step, &format!("{step}{step}"));
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("duplicate Windows status steps must fail");
+        assert!(error.contains("exactly one"), "{error}");
+    }
+
+    #[test]
+    fn broadened_product_status_windows_condition_fails() {
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replace(
+            "if: matrix.os == 'windows-latest'",
+            "if: matrix.os == 'windows-latest' || true",
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("broadened Windows condition must fail");
+        assert!(error.contains("exact condition"), "{error}");
     }
 
     #[test]
@@ -2754,10 +2999,7 @@ mod tests {
     #[test]
     fn inert_or_reordered_mermaid_msys_shell_text_fails() {
         for (old, replacement) in [
-            (
-                "running_under_msys() {",
-                "echo 'running_under_msys() {'",
-            ),
+            ("running_under_msys() {", "echo 'running_under_msys() {'"),
             (
                 "prepare_docker_output_dir \"$render_dir\"",
                 "echo 'prepare_docker_output_dir \"$render_dir\"'",

@@ -2,7 +2,7 @@
   "name": "@keld/electron",
   "version": "0.0.1",
   "type": "module",
-  "description": "Electron API shim over kipc (Tier 1 slice 1: app lifecycle)",
+  "description": "Electron API compatibility facade over kipc",
   "exports": {
     ".": "./src/index.ts"
   },
