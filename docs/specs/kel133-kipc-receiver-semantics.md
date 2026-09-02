@@ -174,12 +174,21 @@ T1 may refine names, but it must preserve this ownership shape:
 
 ```rust
 /// Static semantic contract selected by the host for one receiver state.
+/// T1 refined this shape without changing ownership: `kinds` is the declared
+/// structured kind set (a waiter admits `REPLY` and its declared `ERR`),
+/// `allow_ping` admits the live v0 liveness probe where it is a positive
+/// vector, and `also_channel` exists only for the one multiplexed primary
+/// session (rows 3+5 below). Construction outside `keld-ipc` goes through
+/// named constructors (`#[non_exhaustive]`).
 pub struct ReceivePolicy {
     pub direction: Direction,
     pub phase: SessionPhase,
     pub channel: ChannelId,
     pub payload: PayloadMode,
     pub expected_corr: ExpectedCorrelation,
+    pub kinds: AllowedKinds,
+    pub allow_ping: bool,
+    pub also_channel: Option<ChannelId>,
 }
 
 /// Header whose reserved fields are valid for the selected policy.
@@ -221,9 +230,14 @@ work; `FLAG_RAW` is invalid for every row below.
 | app lifecycle event receiver | `EVENT` | `0` | `3` | `0` | exact `LifecycleEvent` | `005`; close |
 | app lifecycle reply waiter | `REPLY` or `ERR` | `0` | `3` | exact outstanding id | exact response or `CallError` | `005`; close; waiter fails |
 | privileged FS receiver (future T3 consumer) | `CALL` | `0` | host-declared FS channel | nonzero | exact request, no trailing bytes | `005`; close; zero guard/broker effect |
+| host primary app receiver (the live multiplexed link: rows 3 and 5 on one stream) | `CALL` | `0` | `ECHO_CHANNEL=1` or `LIFECYCLE_CHANNEL=3` | nonzero | per-channel codec | `005`; close; zero handler effect |
+| v0 `PING` liveness probe (rows 3, 5, 6 and the primary session only; never pre-auth, waiters, or the privileged receiver) | `PING` | `0` | any (echoed) | any (echoed) | exactly empty | `005` for flags or payload; close |
 
-`PING`, stream, cancel, grant, event, reply, and error combinations not declared by the
-selected policy are invalid even though their kind byte is syntactically known. Future
+`PING` is admissible only where the table declares it (it is a positive pre-KEL-133
+vector on the echo, lifecycle, and primary sessions; criterion 11 forbids changing
+accepted valid bytes), and only with flags `0` and an empty payload. Stream, cancel,
+grant, event, reply, and error combinations not declared by the selected policy are
+invalid even though their kind byte is syntactically known. Future
 live session classes extend the table through the same owner and review; handlers must
 not accept a kind merely because `FrameKind::from_u8` recognizes it.
 

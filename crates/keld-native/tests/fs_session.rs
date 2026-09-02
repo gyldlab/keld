@@ -87,6 +87,63 @@ fn call_fs(
     }
 }
 
+/// kel133 AC2 on the privileged receiver: a hostile *authenticated* CALL
+/// (correlation 0, `FLAG_RAW`, an unknown flag bit, or the echo channel) with
+/// an otherwise in-scope write request closes the session with
+/// `KELD-IPC-005` and touches no file — the absent file is the OS-visible
+/// zero-effect oracle, independent of the guard and of the reply path.
+#[test]
+fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
+    let cases: [(&str, u16, u16, u32); 4] = [
+        ("corr zero", 0, FS_CHANNEL.0, 0),
+        ("flag raw", keld_ipc::frame::FLAG_RAW, FS_CHANNEL.0, 5),
+        ("unknown flag", 1 << 2, FS_CHANNEL.0, 5),
+        ("echo channel", 0, 1, 5),
+    ];
+    for (case, flags, channel, corr) in cases {
+        let dir = temp_dir(&format!(
+            "hostile-{}",
+            corr + u32::from(flags) + u32::from(channel)
+        ));
+        let file = scope_path(&dir.join("must-not-exist.txt"));
+        let manifest = manifest_for(&dir);
+        let (mut client, mut server) = connected_pair();
+        let handle = thread::spawn(move || {
+            serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        });
+
+        handshake_client(&mut client, &test_token()).expect("authenticate");
+        let payload = keld_ipc::codec::encode(&FsRequest::Write {
+            path: file.clone(),
+            bytes: b"hostile".to_vec(),
+        })
+        .expect("encode");
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            flags,
+            keld_ipc::ChannelId(channel),
+            CorrelationId(corr),
+            &payload,
+        )
+        .expect("client writes hostile CALL");
+
+        let err = handle
+            .join()
+            .expect("server thread")
+            .expect_err("hostile CALL must tear the fs session down");
+        assert!(
+            err.to_string().contains("KELD-IPC-005"),
+            "{case}: expected 005, got {err}"
+        );
+        assert!(
+            !std::path::Path::new(&file).exists(),
+            "{case}: hostile CALL must never reach the broker"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn allow_write_then_read_over_a_real_kipc_session() {
     let dir = temp_dir("allow");

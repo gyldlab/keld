@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
-use crate::receive::{ReceivePolicy, ValidatedFrameHeader, validate_received_header};
+use crate::receive::{
+    AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_received_header,
+};
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
 
@@ -230,8 +232,12 @@ fn read_validated_frame_with_stall<S: Read>(
 /// byte arrives, later partial reads that land past
 /// `first_byte + APP_LINK_IO_DEADLINE` are `KELD-IPC-006` instead of renewing
 /// the per-receive clock. Exact-instant expiry needs the pollable
-/// interruptible reader; this bound is stall-checked between partial reads,
-/// so a drip peer is closed within one receive deadline past the stall limit.
+/// interruptible reader (tolerance one `APP_LINK_READER_POLL`). This generic
+/// reader cannot shrink the socket timeout and consults the stall clock only
+/// between partial reads, so its exact bound is
+/// `first_byte + APP_LINK_IO_DEADLINE + one SO_RCVTIMEO` — 10 s with the
+/// default 5 s + 5 s — and with no socket timeout the stall clock is only
+/// observed when a byte arrives.
 fn read_exact_stalled<S: Read>(
     stream: &mut S,
     buf: &mut [u8],
@@ -361,14 +367,14 @@ pub(crate) fn read_validated_frame_interruptible_until<S: Read>(
     stream: &mut S,
     policy: &ReceivePolicy,
     stop: &AtomicBool,
-    deadline: Instant,
+    deadline: AbsoluteDeadline,
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
     mint_validated(
         policy,
         read_frame_interruptible_with_limits(
             stream,
             stop,
-            Some(deadline),
+            Some(deadline.instant()),
             APP_LINK_IO_DEADLINE,
             Some(policy),
         )?,
@@ -604,7 +610,7 @@ pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
     stream: &mut S,
     token: &SessionToken,
     stop: &AtomicBool,
-    deadline: Instant,
+    deadline: AbsoluteDeadline,
 ) -> Result<bool, IpcError> {
     let policy = ReceivePolicy::server_pre_auth_hello();
     let Some((_validated, payload)) =
@@ -615,7 +621,7 @@ pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
     if stop.load(Ordering::Acquire) {
         return Ok(false);
     }
-    if Instant::now() >= deadline {
+    if deadline.expired() {
         return Err(IpcError::Timeout);
     }
     verify_hello_token(&payload, token)?;
@@ -1532,14 +1538,15 @@ mod deadline_contract_tests {
         std::os::unix::net::UnixStream::pair().expect("unix pair")
     }
 
+    /// The windows-latest acceptance row (spec kel133 §7 row 8) proves the
+    /// shipped named-pipe reader clock, not loopback TCP. The reader is the
+    /// server end, as in production.
     #[cfg(windows)]
-    fn connected_pair() -> (std::net::TcpStream, std::net::TcpStream) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let accept = std::thread::spawn(move || listener.accept().expect("accept").0);
-        let client = std::net::TcpStream::connect(addr).expect("connect");
-        let server = accept.join().expect("accept thread");
-        (client, server)
+    fn connected_pair() -> (
+        crate::bootstrap::WindowsNamedPipeBootstrapStream,
+        crate::bootstrap::WindowsNamedPipeBootstrapStream,
+    ) {
+        crate::bootstrap::connected_named_pipe_pair().expect("named-pipe pair")
     }
 
     fn hello_header_prefix() -> [u8; 4] {
@@ -1581,7 +1588,7 @@ mod deadline_contract_tests {
             &mut reader,
             &policy,
             &stop,
-            started + session_deadline,
+            AbsoluteDeadline::at(started + session_deadline),
         )
         .expect_err("a stalled frame must expire at the session deadline");
         let elapsed = started.elapsed();
@@ -1684,7 +1691,7 @@ mod deadline_contract_tests {
             &mut counting,
             &policy,
             &stop,
-            started + session_deadline,
+            AbsoluteDeadline::at(started + session_deadline),
         )
         .expect_err("an idle session must terminate at its declared deadline");
         let elapsed = started.elapsed();
@@ -1724,17 +1731,23 @@ mod deadline_contract_tests {
         // treats a pre-first-byte idle expiry as the per-receive deadline).
         let (first_tx, first_rx) = mpsc::channel::<()>();
         let drip = thread::spawn(move || {
-            let bytes = FrameHeader {
+            let mut bytes = FrameHeader {
                 kind: FrameKind::Hello,
                 flags: 0,
                 channel: ChannelId(0),
                 corr: CorrelationId(0),
                 len: 32,
             }
-            .encode();
+            .encode()
+            .to_vec();
+            // A complete, valid HELLO (header + 32 token bytes): without the
+            // frame-wide stall clock the reader would eventually ADMIT it
+            // (~960 ms at 20 ms per byte), so the oracle is admit-vs-006, not
+            // elapsed time alone.
+            bytes.extend_from_slice(&[0xA5; 32]);
             for (index, byte) in bytes.into_iter().enumerate() {
-                if stop_rx.try_recv().is_ok() {
-                    return;
+                if !matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                    return; // stopped, or the test side is gone
                 }
                 if writer
                     .write_all(&[byte])
@@ -1768,6 +1781,12 @@ mod deadline_contract_tests {
             elapsed < Duration::from_secs(2),
             "drip renewed the plain read path: {elapsed:?}"
         );
+        // Plain-path bound: stall limit plus at most one per-receive deadline
+        // (100 ms here), with slack for scheduling.
+        assert!(
+            elapsed < stall + Duration::from_millis(100) + Duration::from_millis(400),
+            "plain-path bound is stall + one receive deadline: {elapsed:?}"
+        );
         drop(stop_tx);
         drip.join().expect("drip thread");
     }
@@ -1790,7 +1809,7 @@ mod deadline_contract_tests {
             &mut reader,
             &policy,
             &stop,
-            started + Duration::from_secs(10),
+            AbsoluteDeadline::at(started + Duration::from_secs(10)),
         )
         .expect("shutdown is not an error");
         let elapsed = started.elapsed();

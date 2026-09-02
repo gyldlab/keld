@@ -10,8 +10,9 @@
 
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use keld_ipc::{
@@ -53,7 +54,49 @@ impl ObservedChild {
                 started.elapsed() < bound,
                 "drip child did not exit within {bound:?}"
             );
-            std::thread::yield_now();
+            // Coarse parked poll: never competes for the child's CPU.
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+
+    /// Forwards the child's stdout lines over a channel so the parent can
+    /// block on an exact observable (`CONNECTED`) instead of a timer.
+    fn stdout_lines(&mut self) -> mpsc::Receiver<String> {
+        let stdout = self
+            .0
+            .as_mut()
+            .expect("child present")
+            .stdout
+            .take()
+            .expect("piped stdout");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        rx
+    }
+}
+
+/// Blocks until a line starting with `prefix` arrives; `kill_switch` bounds
+/// the wait and is never used to synchronize.
+fn await_line(rx: &mpsc::Receiver<String>, prefix: &str, kill_switch: Duration) -> Vec<String> {
+    let started = Instant::now();
+    let mut seen = Vec::new();
+    loop {
+        let remaining = kill_switch
+            .checked_sub(started.elapsed())
+            .unwrap_or_else(|| panic!("child never printed {prefix:?}; saw {seen:?}"));
+        let line = rx
+            .recv_timeout(remaining)
+            .unwrap_or_else(|_| panic!("child never printed {prefix:?}; saw {seen:?}"));
+        let hit = line.starts_with(prefix);
+        seen.push(line);
+        if hit {
+            return seen;
         }
     }
 }
@@ -82,20 +125,6 @@ fn spawn_child(app_link: &str, mode: &str) -> ObservedChild {
     ObservedChild(Some(child))
 }
 
-fn child_stdout(child: &mut ObservedChild) -> String {
-    let mut out = String::new();
-    child
-        .0
-        .as_mut()
-        .expect("child present")
-        .stdout
-        .take()
-        .expect("piped stdout")
-        .read_to_string(&mut out)
-        .expect("read child stdout");
-    out
-}
-
 /// The named criterion-6 test: a 100 ms generation deadline, a byte-drip
 /// child, an elapsed monotonic bound, terminal state, a joined child, a dead
 /// locator, and next fresh-generation success — in that order.
@@ -108,6 +137,12 @@ fn a_byte_drip_child_cannot_renew_a_100ms_generation_deadline() {
     let observer = CountingObserver::default();
 
     let mut child = spawn_child(&app_link, "drip");
+    let lines = child.stdout_lines();
+    // The generation clock starts only once the child has observably
+    // connected (its first stdout line): the deadline measures the drip, not
+    // process spawn latency on a loaded runner. The connect itself is held by
+    // the listener backlog / pipe instance until accept.
+    let mut transcript = await_line(&lines, "CONNECTED", Duration::from_secs(10));
     let deadline = Duration::from_millis(100);
     let started = Instant::now();
     let admission = listener
@@ -145,11 +180,18 @@ fn a_byte_drip_child_cannot_renew_a_100ms_generation_deadline() {
         again_started.elapsed()
     );
 
+    // Expiry is terminal, not a rejection: the observer must record nothing.
+    assert_eq!(
+        observer.0.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "generation expiry is not a peer rejection"
+    );
+
     // Joined child with status and observed drip progress.
     let status = child.wait_bounded(Duration::from_secs(10));
     assert!(status.success(), "drip child must exit cleanly: {status:?}");
-    let out = child_stdout(&mut child);
-    assert!(out.contains("CONNECTED"), "child never connected: {out}");
+    transcript.extend(lines.try_iter());
+    let out = transcript.join("\n");
     assert!(
         out.matches("CHUNK ").count() >= 2,
         "child never actually dripped: {out}"

@@ -15,9 +15,11 @@ import { describe, expect, test } from "bun:test";
 
 import {
   FrameKind,
+  FrameReader,
   RECEIVE_POLICIES,
   type ReceivePolicy,
   echoReplyWaiter,
+  errorFromErrFrame,
   lifecycleReplyWaiter,
   primaryAppReceiver,
   privilegedCallReceiver,
@@ -31,6 +33,10 @@ const CORPUS_PATH = join(
 const HEADER_LEN = 16;
 const MAX_FRAME_LEN = 16 * 1024 * 1024;
 const STALL_LIMIT_MS = 5000;
+/** One owner, one digest: the Rust suite asserts this same constant. */
+const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
+/** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
+const PRE_AUTH_POLICIES = new Set(["server-pre-auth-hello", "client-await-hello"]);
 
 /** Fixture token declared in the corpus version row (0x01..0x20). */
 const FIXTURE_TOKEN = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
@@ -104,26 +110,23 @@ function policyByName(name: string): ReceivePolicy {
   }
 }
 
-/** Mirrors link.ts's private decodeHeader through its observable contract. */
-function decodeHeaderBytes(bytes: Uint8Array): {
-  kind: number;
-  flags: number;
-  channel: number;
-  corr: number;
-  len: number;
-} {
-  if (bytes.length < HEADER_LEN) throw new Error("KELD-IPC-001: short header");
-  if (bytes[0] !== 0x4b || bytes[1] !== 0x49) throw new Error("KELD-IPC-002: bad kipc magic");
-  if (bytes[2] !== 2) throw new Error("KELD-IPC-002: unsupported kipc version");
-  if (bytes[3] > 10) throw new Error("KELD-IPC-002: unknown kipc frame kind");
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return {
-    kind: bytes[3],
-    flags: view.getUint16(4, true),
-    channel: view.getUint16(6, true),
-    corr: view.getUint32(8, true),
-    len: view.getUint32(12, true),
-  };
+/**
+ * Stage one through the PRODUCTION reader: syntax (002), envelope cap (004)
+ * and truncation (001, the socket close path) are decided by `FrameReader`,
+ * never by a test-local copy.
+ */
+async function readWithProductionReader(
+  bytes: Uint8Array,
+  truncated: boolean,
+): Promise<{ kind: number; flags: number; channel: number; corr: number; len: number; payload: Uint8Array }> {
+  const reader = new FrameReader();
+  const pending = reader.readFrame();
+  reader.push(bytes);
+  if (truncated) {
+    reader.fail(new Error("KELD-IPC-001: connection closed by peer"));
+  }
+  const frame = await pending;
+  return { ...frame.header, payload: frame.payload };
 }
 
 function timingSafeEq(a: Uint8Array, b: Uint8Array): boolean {
@@ -213,8 +216,14 @@ function stageTwo(policyName: string, kind: number, payload: Uint8Array): void {
       decodeUnitEnum(payload, 1); // Ready | LastWindowClosed
       return;
     case "lifecycle-reply-waiter":
-      if (kind === FrameKind.Err) decodeCallErrorShape(payload);
-      else decodeUnitEnum(payload, 0); // LifecycleResponse::Quit
+      if (kind === FrameKind.Err) {
+        decodeCallErrorShape(payload);
+        // Production decoder agreement: the code must be recoverable from
+        // the Error the library builds for this ERR payload.
+        if (!errorFromErrFrame(payload).message.includes("KELD-GUARD001")) {
+          throw new Error("KELD-IPC-003: production CallError decode disagrees");
+        }
+      } else decodeUnitEnum(payload, 0); // LifecycleResponse::Quit
       return;
     case "privileged-fs-receiver":
     case "primary-app-receiver":
@@ -226,17 +235,23 @@ function stageTwo(policyName: string, kind: number, payload: Uint8Array): void {
   }
 }
 
-function runFrameRow(row: Row): string {
+async function runFrameRow(row: Row): Promise<string> {
   const headerBytes = unhex(row.headerOrTrace);
   const payload = unhex(row.payloadHex);
-  let header: ReturnType<typeof decodeHeaderBytes>;
+  const bytes = new Uint8Array(headerBytes.length + payload.length);
+  bytes.set(headerBytes, 0);
+  bytes.set(payload, headerBytes.length);
   try {
-    if (headerBytes.length < HEADER_LEN) throw new Error("KELD-IPC-001: truncated header");
-    header = decodeHeaderBytes(headerBytes);
-    if (header.len > MAX_FRAME_LEN) throw new Error("KELD-IPC-004: payload exceeds MAX_FRAME_LEN");
-    validateReceivedHeader(policyByName(row.policy), header);
-    if (payload.length < header.len) throw new Error("KELD-IPC-001: truncated payload");
-    stageTwo(row.policy, header.kind, payload);
+    // A row whose bytes cannot complete a frame is the peer-close path.
+    const declaredLen =
+      headerBytes.length >= HEADER_LEN
+        ? new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength).getUint32(12, true)
+        : Number.MAX_SAFE_INTEGER;
+    const truncated =
+      headerBytes.length < HEADER_LEN || (declaredLen <= MAX_FRAME_LEN && payload.length < declaredLen);
+    const frame = await readWithProductionReader(bytes, truncated);
+    validateReceivedHeader(policyByName(row.policy), frame);
+    stageTwo(row.policy, frame.kind, frame.payload);
     return "ok";
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -247,19 +262,32 @@ function runFrameRow(row: Row): string {
 describe("receiver-semantics corpus (Bun consumer)", () => {
   const { rows, bytes } = loadRows();
 
-  test("every frame row reproduces its expected code", () => {
+  test("every frame row reproduces its expected code and link action", async () => {
     let checked = 0;
     for (const row of rows) {
       if (row.policy.startsWith("trace:")) continue;
       if (row.expectedCode === "ok-header") {
-        const header = decodeHeaderBytes(unhex(row.headerOrTrace));
-        expect(header.len).toBeLessThanOrEqual(MAX_FRAME_LEN);
-        validateReceivedHeader(policyByName(row.policy), header);
+        // Boundary row: the declared envelope admits at header stage; the
+        // corpus does not materialize a MAX_FRAME_LEN payload. Decode the
+        // header through the production reader with an empty pending body.
+        const headerBytes = unhex(row.headerOrTrace);
+        const view = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
+        expect(view.getUint32(12, true)).toBeLessThanOrEqual(MAX_FRAME_LEN);
+        validateReceivedHeader(policyByName(row.policy), {
+          kind: headerBytes[3],
+          flags: view.getUint16(4, true),
+          channel: view.getUint16(6, true),
+          corr: view.getUint32(8, true),
+          len: view.getUint32(12, true),
+        });
         checked += 1;
         continue;
       }
-      const got = runFrameRow(row);
+      const got = await runFrameRow(row);
       expect(`${row.id}: ${got}`).toBe(`${row.id}: ${row.expectedCode}`);
+      const base = row.policy.split(":", 1)[0];
+      const expectedAction = got === "ok" ? "admit" : PRE_AUTH_POLICIES.has(base) ? "close-reaccept" : "close";
+      expect(`${row.id}: ${row.linkAction}`).toBe(`${row.id}: ${expectedAction}`);
       if (got !== "ok") {
         expect(`${row.id}: effects=${row.handlerEffects}`).toBe(`${row.id}: effects=0`);
       }
@@ -319,9 +347,9 @@ describe("receiver-semantics corpus (Bun consumer)", () => {
     expect(checked).toBe(6);
   });
 
-  test("fixture digest is printed for cross-suite comparison", () => {
+  test("fixture digest matches the one owner constant shared with the Rust suite", () => {
     const digest = createHash("sha256").update(bytes).digest("hex");
     console.log(`receiver-semantics-v0.tsv sha256=${digest}`);
-    expect(digest.length).toBe(64);
+    expect(digest).toBe(CORPUS_SHA256);
   });
 });

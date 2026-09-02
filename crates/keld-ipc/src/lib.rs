@@ -43,10 +43,7 @@ pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
 pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
 pub use link::AppLinkDeadlines;
-pub use receive::{
-    AbsoluteDeadline, AllowedKinds, Direction, ExpectedCorrelation, PayloadMode, ReceivePolicy,
-    SessionPhase, ValidatedFrameHeader, validate_received_header,
-};
+pub use receive::{AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader};
 pub use session::{
     echo_call, echo_invoke, serve_echo_requests, serve_echo_requests_until_stopped,
     serve_echo_session, serve_echo_session_until_stopped,

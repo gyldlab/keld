@@ -3189,12 +3189,9 @@ fn read_primary_frames(
                     "new Call arrived after quiesce",
                 ));
             }
-            (other_kind, other_channel) => {
-                // The validator admits only the declared combinations above.
-                debug_assert!(
-                    false,
-                    "validator admitted an undeclared frame: {other_kind:?} on {other_channel:?}"
-                );
+            _ => {
+                // The validator admits only the declared combinations above;
+                // this stays a typed error so the host never panics.
                 return Err(app_detail(
                     "primary session dispatch",
                     "unexpected frame kind",

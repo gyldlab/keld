@@ -290,7 +290,10 @@ compromised keeps the host's threat model uniform).
   partial reads cannot renew it, so a byte-trickling peer expires with
   `KELD-IPC-006` instead of holding the session open (the gap research 115
   recorded is closed; the legacy `read_frame` helper stays per-receive-bounded
-  for raw test fixtures only). Bootstrap admission additionally carries the
+  for raw test fixtures only). Exactness is per reader: the pollable
+  interruptible reader observes an absolute deadline within one
+  `APP_LINK_READER_POLL`; the plain validated reader cannot shrink the socket
+  timeout, so its bound is the stall limit plus one `SO_RCVTIMEO`. Bootstrap admission additionally carries the
   host-minted generation deadline across accept, bad-peer reaccept, and every
   handshake read — byte drip cannot renew it, and it is enforced at connect
   wait, per-peer window, and post-authentication check independently.

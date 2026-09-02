@@ -15,10 +15,11 @@
 use std::io::{self, ErrorKind, Read, Write};
 
 use keld_guard::{DenyReason, PermissionsManifest, Principal};
+use keld_ipc::ReceivePolicy;
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{ChannelId, FrameKind};
 use keld_ipc::guard_dispatch::dispatch_privileged;
-use keld_ipc::link::{handshake_server, read_frame, write_frame};
+use keld_ipc::link::{handshake_server, read_validated_frame, write_frame};
 use keld_ipc::{IpcError, SessionToken};
 use serde::{Deserialize, Serialize};
 
@@ -191,14 +192,20 @@ pub fn serve_fs_session<S: Read + Write>(
     principal: Principal,
 ) -> Result<(), IpcError> {
     handshake_server(stream, token)?;
+    // kel133 AC1-AC2 (spec table row 8): the shared validator admits only a
+    // structured CALL on the declared privileged channel with a nonzero
+    // correlation and zero flags, before payload allocation and before the
+    // guard can observe anything; the old per-consumer kind/channel arm is
+    // deleted rather than duplicated.
+    let policy = ReceivePolicy::privileged_call_receiver(FS_CHANNEL);
     loop {
-        let (header, payload) = match read_frame(stream) {
+        let (header, payload) = match read_validated_frame(stream, &policy) {
             Ok(frame) => frame,
             Err(IpcError::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e),
         };
-        match header.kind {
-            FrameKind::Call if header.channel == FS_CHANNEL => {
+        match header.kind() {
+            FrameKind::Call => {
                 let req: FsRequest = decode(&payload)?;
                 let result = match req {
                     FsRequest::Read { path } => {
@@ -211,11 +218,18 @@ pub fn serve_fs_session<S: Read + Write>(
                 match result {
                     Ok(resp) => {
                         let bytes = encode(&resp)?;
-                        write_frame(stream, FrameKind::Reply, 0, FS_CHANNEL, header.corr, &bytes)?;
+                        write_frame(
+                            stream,
+                            FrameKind::Reply,
+                            0,
+                            FS_CHANNEL,
+                            header.corr(),
+                            &bytes,
+                        )?;
                     }
                     Err(err) => {
                         let call_error = keld_ipc::CallError::from(&err);
-                        keld_ipc::write_call_error(stream, FS_CHANNEL, header.corr, &call_error)?;
+                        keld_ipc::write_call_error(stream, FS_CHANNEL, header.corr(), &call_error)?;
                     }
                 }
             }

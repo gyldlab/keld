@@ -733,6 +733,9 @@ export class LifecycleLink {
           }
           continue;
         }
+        // Anything else is adjudicated by the shared validator against the
+        // session's event policy so the rejection detail has one owner.
+        validateReceivedHeader(RECEIVE_POLICIES.lifecycleEventReceiver, frame.header);
         throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
       }
     };

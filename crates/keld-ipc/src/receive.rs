@@ -113,6 +113,7 @@ impl AllowedKinds {
 /// positive pre-KEL-133 vector on the echo, lifecycle, and primary sessions
 /// and criterion 11 forbids changing accepted valid bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive] // consumers select a named constructor; ad-hoc policies are the drift this owner deletes
 pub struct ReceivePolicy {
     /// Which peer frames are expected from.
     pub direction: Direction,

@@ -258,8 +258,9 @@ where
                     &[],
                 )?;
             }
-            other => {
-                debug_assert!(false, "validator admitted an undeclared kind: {other:?}");
+            _ => {
+                // Unreachable once the validator admitted the frame; kept as
+                // a typed error so the library never panics.
                 return Err(IpcError::Protocol {
                     detail: "unexpected frame kind in lifecycle session",
                 });

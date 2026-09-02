@@ -34,6 +34,7 @@ use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL};
 // preserve that path. Moving the owner must not break the published one.
 pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
 use crate::link::{AppLinkDeadlines, handshake_server_interruptible_until};
+use crate::receive::AbsoluteDeadline;
 use crate::token::{SessionToken, format_app_link};
 #[cfg(windows)]
 use crate::windows_named_pipe::{
@@ -319,7 +320,10 @@ impl BootstrapListener {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             }
-            let Some(peer_deadline) = Instant::now().checked_add(timeout) else {
+            let Some(peer_deadline) = Instant::now()
+                .checked_add(timeout)
+                .map(AbsoluteDeadline::at)
+            else {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             };
@@ -589,6 +593,64 @@ pub struct WindowsNamedPipeBootstrapCancellation {
     stopping: Arc<AtomicBool>,
 }
 
+/// One owner for the unguessable per-generation pipe name (32 random bytes,
+/// hex) shared by the production listener and the test-only connected pair.
+#[cfg(windows)]
+fn random_pipe_endpoint() -> io::Result<String> {
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce).map_err(io::Error::other)?;
+    let mut endpoint = String::from(r"\\.\pipe\keld-");
+    for byte in nonce {
+        write!(&mut endpoint, "{byte:02x}").map_err(io::Error::other)?;
+    }
+    Ok(endpoint)
+}
+
+/// Test-only connected server/client pair on the shipped Windows transport,
+/// with no HELLO exchanged: reader-clock contract tests (kel133 AC7/AC8,
+/// windows-latest row) must prove the overlapped-wait + absolute-clamp clock
+/// Keld ships, not loopback TCP's `SO_RCVTIMEO`. Ownership mirrors the
+/// production accept loop: the server instance is consumed once its stream
+/// exists, and the stream keeps the pipe alive through its shared inner.
+///
+/// # Errors
+///
+/// Returns the first I/O error from bind, accept, stream creation, or the
+/// client connect.
+#[cfg(all(test, windows))]
+pub(crate) fn connected_named_pipe_pair() -> io::Result<(
+    WindowsNamedPipeBootstrapStream,
+    WindowsNamedPipeBootstrapStream,
+)> {
+    let endpoint = random_pipe_endpoint()?;
+    let server = WindowsNamedPipeServer::bind(&endpoint)?;
+    let connect_deadline = Instant::now() + Duration::from_secs(2);
+    let client = std::thread::spawn(move || {
+        WindowsNamedPipeServer::connect_client_until(&endpoint, connect_deadline)
+    });
+    match server.accept_until(Some(connect_deadline))? {
+        WaitOutcome::Ready => {}
+        WaitOutcome::PeerClosed => return Err(io::Error::other("pair accept: peer closed")),
+        WaitOutcome::Cancelled => return Err(io::Error::other("pair accept: cancelled")),
+        WaitOutcome::DeadlineElapsed => {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pair accept: deadline",
+            ));
+        }
+    }
+    let server_stream = server.stream()?;
+    server.consume();
+    drop(server);
+    let client_stream = client
+        .join()
+        .map_err(|_| io::Error::other("pair connect thread panicked"))??;
+    Ok((
+        WindowsNamedPipeBootstrapStream(server_stream),
+        WindowsNamedPipeBootstrapStream(client_stream),
+    ))
+}
+
 #[cfg(windows)]
 impl WindowsNamedPipeBootstrapListener {
     /// Creates one first-instance, remote-rejecting named pipe protected by an
@@ -600,12 +662,7 @@ impl WindowsNamedPipeBootstrapListener {
     /// creation, handle validation, or descriptor readback fails.
     pub fn bind() -> io::Result<Self> {
         let token = SessionToken::random()?;
-        let mut nonce = [0_u8; 32];
-        getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-        let mut endpoint = String::from(r"\\.\pipe\keld-");
-        for byte in nonce {
-            write!(&mut endpoint, "{byte:02x}").map_err(io::Error::other)?;
-        }
+        let endpoint = random_pipe_endpoint()?;
         let server = WindowsNamedPipeServer::bind(&endpoint)?;
         Ok(Self {
             server: Mutex::new(Some(server)),
@@ -746,7 +803,10 @@ impl WindowsNamedPipeBootstrapListener {
                 }
                 None => handshake_deadline,
             };
-            let Some(peer_deadline) = handshake_started.checked_add(peer_timeout) else {
+            let Some(peer_deadline) = handshake_started
+                .checked_add(peer_timeout)
+                .map(AbsoluteDeadline::at)
+            else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
@@ -754,7 +814,9 @@ impl WindowsNamedPipeBootstrapListener {
             let mut stream = WindowsNamedPipeBootstrapStream(server.stream()?);
             stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
             stream.set_app_link_write_deadline(Some(peer_timeout))?;
-            stream.0.set_absolute_deadline(Some(peer_deadline));
+            stream
+                .0
+                .set_absolute_deadline(Some(peer_deadline.instant()));
             match handshake_server_interruptible_until(
                 &mut stream,
                 &self.token,

@@ -8,22 +8,24 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import {
   APP_LINK_IO_DEADLINE_MS,
+  decodeCallError,
   DrainSignal,
+  encodeHeader,
+  errorFromErrFrame,
+  FLAG_RAW,
   FrameKind,
   FrameReader,
+  isCallError,
+  isWin32PipeEndpoint,
+  type KeldCallError,
   LIFECYCLE_CHANNEL,
   LifecycleLink,
-  WriteQueue,
-  encodeHeader,
   parseWin32Port,
-  isWin32PipeEndpoint,
   withIoDeadline,
-  decodeCallError,
-  errorFromErrFrame,
-  isCallError,
-  type KeldCallError,
+  WriteQueue,
 } from "./link";
 
 const TOKEN_HEX = "72".repeat(32);
@@ -487,6 +489,158 @@ describe("LifecycleLink write deadlines", () => {
     },
     15_000,
   );
+});
+
+describe("LifecycleLink shared receiver rules (kel133)", () => {
+  const originalConnect = Bun.connect;
+
+  function install(): { handlers: Record<string, (...args: never[]) => void>; writes: Uint8Array[] } {
+    const captured: { handlers: Record<string, (...args: never[]) => void>; writes: Uint8Array[] } = {
+      handlers: {},
+      writes: [],
+    };
+    Bun.connect = (async (opts: { socket?: Record<string, (...args: never[]) => void> }) => {
+      captured.handlers = opts.socket ?? {};
+      return {
+        write(data: Uint8Array): number {
+          captured.writes.push(data);
+          return data.length;
+        },
+        end(): void {},
+      };
+    }) as typeof Bun.connect;
+    return captured;
+  }
+
+  function mockLink(): string {
+    return process.platform === "win32" ? `9000#${TOKEN_HEX}` : `/tmp/keld-kel133-rules.sock#${TOKEN_HEX}`;
+  }
+
+  async function untilHelloWritten(captured: { writes: Uint8Array[] }): Promise<void> {
+    const kill = Date.now() + 2_000;
+    while (captured.writes.length < 1) {
+      if (Date.now() > kill) throw new Error("HELLO write never reached the mock socket");
+      await Promise.resolve();
+    }
+  }
+
+  function headerWithFlags(kind: number, flags: number, channel: number, corr: number, payload: Uint8Array): Uint8Array {
+    const header = encodeHeader(kind, flags, channel, corr, payload.length);
+    const frame = new Uint8Array(header.length + payload.length);
+    frame.set(header, 0);
+    frame.set(payload, header.length);
+    return frame;
+  }
+
+  afterAll(() => {
+    Bun.connect = originalConnect;
+  });
+
+  async function connectedSession(): Promise<{
+    data: (socket: unknown, chunk: Uint8Array) => void;
+    session: LifecycleLink;
+    died: Promise<Error>;
+  }> {
+    const captured = install();
+    let resolveDead: (err: Error) => void = () => undefined;
+    const died = new Promise<Error>((resolve) => {
+      resolveDead = resolve;
+    });
+    const connectP = LifecycleLink.connect(mockLink(), {
+      onReady(): void {},
+      onLastWindowClosed(): void {},
+      onLinkDead(err: Error): void {
+        resolveDead(err);
+      },
+    });
+    await untilHelloWritten(captured);
+    const data = captured.handlers.data as (socket: unknown, chunk: Uint8Array) => void;
+    data(undefined, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+    const session = await connectP;
+    return { data, session, died };
+  }
+
+  test("an undeclared kind after HELLO tears the session down with KELD-IPC-005", async () => {
+    try {
+      const { data, died } = await connectedSession();
+      data(undefined, encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()));
+      const dead = await rejectWithin(5_000, died, "undeclared kind was silently ignored");
+      expect(dead.message).toContain("KELD-IPC-005");
+      expect(dead.message).toContain("not declared");
+    } finally {
+      Bun.connect = originalConnect;
+    }
+  });
+
+  test("an EVENT with a nonzero correlation is KELD-IPC-005, not dispatched", async () => {
+    try {
+      const { data, died } = await connectedSession();
+      data(undefined, encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 4, new Uint8Array([0x00])));
+      const dead = await rejectWithin(5_000, died, "correlated EVENT was dispatched");
+      expect(dead.message).toContain("KELD-IPC-005");
+      expect(dead.message).toContain("correlation must be 0");
+    } finally {
+      Bun.connect = originalConnect;
+    }
+  });
+
+  test("a REPLY with the wrong correlation cannot complete a pending quit", async () => {
+    try {
+      const { data, session, died } = await connectedSession();
+      const quit = session.quit();
+      // The quit CALL uses corr 1; answer corr 2 on the right channel.
+      data(undefined, encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, 2, new Uint8Array([0x00])));
+      const dead = await rejectWithin(5_000, died, "wrong-corr REPLY completed the waiter");
+      expect(dead.message).toContain("KELD-IPC-005");
+      await expect(quit).rejects.toThrow("KELD-IPC-005");
+    } finally {
+      Bun.connect = originalConnect;
+    }
+  });
+
+  test("a HELLO reply of 31 bytes is a KELD-IPC-005 shape failure, never 007", async () => {
+    const captured = install();
+    try {
+      const connectP = LifecycleLink.connect(mockLink(), {
+        onReady(): void {},
+        onLastWindowClosed(): void {},
+        onLinkDead(): void {},
+      });
+      await untilHelloWritten(captured);
+      const data = captured.handlers.data as (socket: unknown, chunk: Uint8Array) => void;
+      data(undefined, encodeFrame(FrameKind.Hello, 0, 0, TOKEN.slice(0, 31)));
+      const err = await connectP.then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toContain("KELD-IPC-005");
+      expect(err?.message).not.toContain("KELD-IPC-007");
+    } finally {
+      Bun.connect = originalConnect;
+    }
+  });
+
+  test("a HELLO reply carrying FLAG_RAW is KELD-IPC-005", async () => {
+    const captured = install();
+    try {
+      const connectP = LifecycleLink.connect(mockLink(), {
+        onReady(): void {},
+        onLastWindowClosed(): void {},
+        onLinkDead(): void {},
+      });
+      await untilHelloWritten(captured);
+      const data = captured.handlers.data as (socket: unknown, chunk: Uint8Array) => void;
+      data(undefined, headerWithFlags(FrameKind.Hello, FLAG_RAW, 0, 0, TOKEN));
+      const err = await connectP.then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toContain("KELD-IPC-005");
+      expect(err?.message).toContain("FLAG_RAW");
+    } finally {
+      Bun.connect = originalConnect;
+    }
+  });
 });
 
 describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", () => {

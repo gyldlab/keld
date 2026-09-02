@@ -13,9 +13,10 @@
 
 use std::io::Cursor;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use keld_ipc::link::{read_frame, read_validated_frame};
-use keld_ipc::receive::{ReceivePolicy, validate_received_header};
+use keld_ipc::receive::{AbsoluteDeadline, ReceivePolicy, validate_received_header};
 use keld_ipc::{
     CallError, ChannelId, CorrelationId, EchoRequest, EchoResponse, FrameHeader, HEADER_LEN,
     IpcError, LifecycleEvent, LifecycleRequest, LifecycleResponse, SessionToken,
@@ -23,6 +24,9 @@ use keld_ipc::{
 
 const CORPUS: &str = include_str!("fixtures/receiver-semantics-v0.tsv");
 const CORPUS_PATH: &str = "tests/fixtures/receiver-semantics-v0.tsv";
+/// One owner, one digest: the Bun suite asserts this same constant, so a
+/// corpus edit is an explicit, reviewed change to both consumers.
+const CORPUS_SHA256: &str = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
 
 /// Fixture token declared in the corpus version row (`0x01..0x20`). Not a
 /// secret: the corpus must never contain one (spec §4).
@@ -219,6 +223,19 @@ fn every_frame_row_reproduces_its_expected_code() {
                 .map_err(|e| code_of(&e))
             });
 
+        // The link_action column is derived from the policy phase and the
+        // outcome, never free text: admit iff ok; pre-auth rejections may
+        // reaccept; authenticated rejections close.
+        let expected_action = match (&outcome, policy.phase) {
+            (Ok(()), _) => "admit",
+            (Err(_), keld_ipc::receive::SessionPhase::PreAuth) => "close-reaccept",
+            (Err(_), keld_ipc::receive::SessionPhase::Authenticated) => "close",
+        };
+        assert_eq!(
+            row.link_action, expected_action,
+            "{}: link_action must follow the policy phase and outcome",
+            row.id
+        );
         match (row.expected_code, outcome) {
             ("ok", Ok(())) => {}
             (expected, Err(code)) if expected == code => {
@@ -245,12 +262,19 @@ fn every_frame_row_reproduces_its_expected_code() {
     );
 }
 
-/// Deadline-trace rows: the virtual-clock model of spec §4's deadline rules.
-/// `real` socket integration proves the same outcomes; this model is what Bun
-/// consumers replicate so both agree on expiry arithmetic.
+/// Deadline-trace rows pin the cross-consumer expiry *arithmetic* of spec §4
+/// on a virtual clock: the enclosing deadline never renews, the first byte
+/// starts the stall clock, idle polls start nothing. The instants are minted
+/// and combined by the production owner (`AbsoluteDeadline::at` /
+/// `earliest`), so the shared arithmetic is exercised; the behavioural proof
+/// that a real reader closes at that instant is the real-socket coverage in
+/// `link.rs` (`deadline_contract_tests`) and `tests/admission_deadline.rs`.
+/// Bun replicates this virtual model so both consumers agree row for row.
 #[test]
 fn every_trace_row_reproduces_its_expiry() {
     const STALL_LIMIT_MS: u64 = 5000; // app_link_io_deadline_ms in the version row
+    let epoch = Instant::now(); // virtual t=0; only differences are observed
+    let at_ms = |ms: u64| AbsoluteDeadline::at(epoch + Duration::from_millis(ms));
     let mut checked = 0usize;
     for row in rows() {
         let Some(params) = row.policy.strip_prefix("trace:") else {
@@ -272,13 +296,17 @@ fn every_trace_row_reproduces_its_expiry() {
             }
         }
 
-        // Spec deadline model: the enclosing absolute deadline never renews;
-        // the first byte starts the started-frame stall clock; idle polls
-        // start nothing. Expiry is the earliest applicable absolute instant.
-        let expiry = match arrivals.first() {
-            Some((first_byte_at, _)) => deadline_ms.min(first_byte_at + STALL_LIMIT_MS),
-            None => deadline_ms,
+        // Spec deadline model through the production owner: the enclosing
+        // absolute deadline never renews; the first byte starts the
+        // started-frame stall clock; idle polls start nothing. Expiry is the
+        // earliest applicable absolute instant.
+        let enclosing = at_ms(deadline_ms);
+        let expiry_instant = match arrivals.first() {
+            Some((first_byte_at, _)) => enclosing.earliest(at_ms(first_byte_at + STALL_LIMIT_MS)),
+            None => enclosing,
         };
+        let expiry = u64::try_from(expiry_instant.instant().duration_since(epoch).as_millis())
+            .expect("virtual ms fits u64");
         let needed: usize = HEADER_LEN + 32; // every v1 trace is a HELLO admission
         let mut got = 0usize;
         let mut completed_at = None;
@@ -377,6 +405,10 @@ fn corpus_digest_is_printed_and_disk_matches_embedded() {
         CORPUS.as_bytes(),
         "on-disk fixture must match the embedded corpus"
     );
-    let digest = Sha256::digest(&disk);
-    println!("receiver-semantics-v0.tsv sha256={digest:x}");
+    let digest = format!("{:x}", Sha256::digest(&disk));
+    println!("receiver-semantics-v0.tsv sha256={digest}");
+    assert_eq!(
+        digest, CORPUS_SHA256,
+        "corpus changed: update CORPUS_SHA256 here and in packages/@keld/electron/src/corpus.test.ts"
+    );
 }
