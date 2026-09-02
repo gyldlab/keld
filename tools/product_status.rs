@@ -605,6 +605,20 @@ fn read_git_file_at(root: &Path, sha: &str, relative: &str, line: usize) -> Resu
         .map_err(|error| invalid(line, format!("evidence blob is not UTF-8: {error}")))
 }
 
+fn simple_rust_char_literal_len(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'\'') {
+        return None;
+    }
+    let body_start = start + 1;
+    let body_end = if bytes.get(body_start) == Some(&b'\\') {
+        body_start + 2
+    } else {
+        let rest = std::str::from_utf8(bytes.get(body_start..)?).ok()?;
+        body_start + rest.chars().next()?.len_utf8()
+    };
+    (bytes.get(body_end) == Some(&b'\'')).then_some(body_end + 1 - start)
+}
+
 fn without_c_style_comments(contents: &str) -> String {
     #[derive(Clone, Copy)]
     enum Scan {
@@ -641,6 +655,9 @@ fn without_c_style_comments(contents: &str) -> String {
                         output.push(bytes[index]);
                         index += 1;
                     }
+                } else if let Some(length) = simple_rust_char_literal_len(bytes, index) {
+                    output.extend_from_slice(&bytes[index..index + length]);
+                    index += length;
                 } else if matches!(bytes[index], b'"' | b'`') {
                     scan = Scan::Quoted(bytes[index]);
                     index += 1;
@@ -2151,6 +2168,19 @@ mod tests {
         );
         generate(temp.path()).expect("generate lifetime fixture");
         check(&temp.path).expect("Rust lifetimes must not hide a real test marker");
+    }
+
+    #[test]
+    fn rust_quote_char_literals_do_not_hide_following_test_markers() {
+        for literal in [r#"'"'"#, r#"'\"'"#] {
+            assert!(
+                has_declared_test(
+                    "tests/live.rs",
+                    &format!("const QUOTE: char = {literal};\n#[test]\nfn live() {{}}\n"),
+                ),
+                "char literal {literal} hid the following test marker"
+            );
+        }
     }
 
     #[test]

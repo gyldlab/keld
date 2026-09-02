@@ -1,9 +1,10 @@
 //! keld-native — native OS API modules.
 //!
-//! Native services pass through `keld-guard` and are exposed as typed kipc channels.
-//! See [`fs`] for the filesystem broker and [`MODULES`] for the declared surface.
-//! Normative spec: `docs/architecture/05-webview-and-native.md` §3. Repository
-//! maturity and evidence live in `docs/engineering/product-status.tsv`.
+//! The destination native-service contract routes privileged operations through
+//! `keld-guard` and exposes them as typed kipc channels. See [`fs`] for the implemented
+//! filesystem broker, [`MODULES`] for the declared surface, and
+//! `docs/engineering/product-status.tsv` for current coverage and evidence. Normative
+//! spec: `docs/architecture/05-webview-and-native.md` §3.
 
 pub mod fs;
 
