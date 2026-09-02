@@ -2,11 +2,14 @@
 //! CI-fixture half).
 //!
 //! These run in every named `check` matrix row. The bounded `cargo-fuzz`
-//! campaign is an additional T1 gate reported separately in the T1 artifact;
-//! every input it retains must be minimized into a named test here. The
-//! properties are criterion 12's: header/session decode terminates, never
-//! panics, admits nothing the selected policy does not declare, and cannot be
-//! forced into an unbounded allocation by a forged length.
+//! campaign is an additional T1 gate reported separately in the T1 artifact.
+//! Every crash- or invariant-finding input that campaign retains must be
+//! minimized into a named test here (one so far); the committed coverage
+//! corpus under `fuzz/corpus/` only seeds future campaigns and is not
+//! duplicated as tests. The properties are criterion 12's: header/session
+//! decode terminates, never panics, admits nothing the selected policy does
+//! not declare, and cannot be forced into an unbounded allocation by a forged
+//! length.
 
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
