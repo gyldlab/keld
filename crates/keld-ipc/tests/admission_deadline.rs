@@ -6,7 +6,12 @@
 //! The drip child writes a *valid* HELLO frame — only its timing is hostile —
 //! so the assertion isolates the clock: eight 25 ms-spaced writes must not
 //! stretch a 100 ms admission window toward ~800 ms. The child's pacing
-//! sleeps are the hostile stimulus under test, not synchronization.
+//! sleeps are the hostile stimulus under test, not synchronization — which
+//! holds only because the parent starts its clock and *then* releases the
+//! child over stdin. Without that release the child drips from its own
+//! `CONNECTED` print, and any observation latency above ~75 ms lets all 48
+//! bytes arrive inside the 100 ms window, authenticating the peer and failing
+//! the assertion with no product defect behind it.
 
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
@@ -57,6 +62,22 @@ impl ObservedChild {
             // Coarse parked poll: never competes for the child's CPU.
             std::thread::park_timeout(Duration::from_millis(10));
         }
+    }
+
+    /// Releases a `drip` child that is blocked before its first chunk, so
+    /// the drip provably starts after the parent's generation clock. This is
+    /// the fixture's only parent->child synchronization; the 25 ms pacing
+    /// stays the hostile stimulus.
+    fn release(&mut self) {
+        let stdin = self
+            .0
+            .as_mut()
+            .expect("child present")
+            .stdin
+            .as_mut()
+            .expect("piped stdin");
+        stdin.write_all(b"GO\n").expect("release the drip child");
+        stdin.flush().expect("flush the release");
     }
 
     /// Forwards the child's stdout lines over a channel so the parent can
@@ -118,6 +139,7 @@ fn spawn_child(app_link: &str, mode: &str) -> ObservedChild {
         .args(["--exact", CHILD_ENTRY, "--ignored", "--nocapture"])
         .env(ENDPOINT_ENV, app_link)
         .env(MODE_ENV, mode)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -145,6 +167,11 @@ fn a_byte_drip_child_cannot_renew_a_100ms_generation_deadline() {
     let mut transcript = await_line(&lines, "CONNECTED", Duration::from_secs(10));
     let deadline = Duration::from_millis(100);
     let started = Instant::now();
+    // Order matters: the clock starts, *then* the child is allowed to drip.
+    // The eight chunks span 7 x 25 ms = 175 ms of sleeps, so the frame cannot
+    // complete inside `deadline` no matter how late the child wakes — a late
+    // wake only delivers fewer bytes, never more.
+    child.release();
     let admission = listener
         .accept_authenticated_until(started + deadline, &observer)
         .expect("host-side listener must not fail");
@@ -264,6 +291,15 @@ fn drip_child_entry() {
 
     match mode.as_str() {
         "drip" => {
+            // Wait for the parent's release so the drip starts after its
+            // generation clock. Synchronization, not stimulus: without it the
+            // first chunk races the parent's `Instant::now()`.
+            let mut go = String::new();
+            std::io::stdin()
+                .read_line(&mut go)
+                .expect("child reads the parent's release line");
+            assert_eq!(go.trim(), "GO", "unexpected release line from the parent");
+
             // The hostile stimulus: valid bytes, hostile pacing.
             for (index, chunk) in frame.chunks(6).enumerate() {
                 match stream.write_all(chunk).and_then(|()| stream.flush()) {
