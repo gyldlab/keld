@@ -1720,9 +1720,20 @@ mod deadline_contract_tests {
     /// frame-wide stall clock on the plain validated read path.
     #[test]
     fn plain_validated_read_closes_the_byte_trickle_gap() {
+        // The per-receive deadline is deliberately LONGER than the stall limit.
+        // `IpcError::from` folds `WouldBlock`/`TimedOut` into `Timeout`
+        // (lib.rs), so a bare `SO_RCVTIMEO` expiry and a frame-wide stall
+        // expiry are the same `KELD-IPC-006` at this level. With a receive
+        // deadline shorter than the stall limit, a single missed drip window
+        // makes the socket time out first and the test would credit the stall
+        // clock for a per-receive expiry (observed on a loaded macOS runner:
+        // 006 at 108 ms against a 150 ms stall limit). Ordering them this way
+        // makes the stall clock the only thing that can fire, so the assertion
+        // below tests the property instead of the scheduler.
+        const RECEIVE_DEADLINE: Duration = Duration::from_millis(400);
         let (mut reader, mut writer) = connected_pair();
         reader
-            .set_app_link_read_deadline(Some(Duration::from_millis(100)))
+            .set_app_link_read_deadline(Some(RECEIVE_DEADLINE))
             .expect("read deadline");
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         // Observable start condition, not a sleep: the drip thread signals
@@ -1781,10 +1792,10 @@ mod deadline_contract_tests {
             elapsed < Duration::from_secs(2),
             "drip renewed the plain read path: {elapsed:?}"
         );
-        // Plain-path bound: stall limit plus at most one per-receive deadline
-        // (100 ms here), with slack for scheduling.
+        // Plain-path bound: the stall clock is only consulted between partial
+        // reads, so expiry lands within one receive deadline of it.
         assert!(
-            elapsed < stall + Duration::from_millis(100) + Duration::from_millis(400),
+            elapsed < stall + RECEIVE_DEADLINE + Duration::from_millis(400),
             "plain-path bound is stall + one receive deadline: {elapsed:?}"
         );
         drop(stop_tx);
