@@ -1718,6 +1718,11 @@ mod deadline_contract_tests {
             .set_app_link_read_deadline(Some(Duration::from_millis(100)))
             .expect("read deadline");
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        // Observable start condition, not a sleep: the drip thread signals
+        // after its first byte is written, so the reader never begins with an
+        // idle poll that could expire before any byte exists (the plain path
+        // treats a pre-first-byte idle expiry as the per-receive deadline).
+        let (first_tx, first_rx) = mpsc::channel::<()>();
         let drip = thread::spawn(move || {
             let bytes = FrameHeader {
                 kind: FrameKind::Hello,
@@ -1727,7 +1732,7 @@ mod deadline_contract_tests {
                 len: 32,
             }
             .encode();
-            for byte in bytes {
+            for (index, byte) in bytes.into_iter().enumerate() {
                 if stop_rx.try_recv().is_ok() {
                     return;
                 }
@@ -1738,10 +1743,14 @@ mod deadline_contract_tests {
                 {
                     return;
                 }
+                if index == 0 {
+                    let _ = first_tx.send(());
+                }
                 thread::sleep(Duration::from_millis(20));
             }
             let _ = stop_rx.recv();
         });
+        first_rx.recv().expect("first dripped byte is in flight");
 
         let policy = ReceivePolicy::server_pre_auth_hello();
         let stall = Duration::from_millis(150);
