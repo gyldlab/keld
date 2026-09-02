@@ -77,6 +77,10 @@ pub struct BootstrapListener {
     listening: Arc<AtomicBool>,
     #[cfg(unix)]
     active_stream: Arc<Mutex<Option<BootstrapStream>>>,
+    #[cfg(all(test, unix))]
+    handshake_witness: Mutex<Option<TestHandshakeWitness>>,
+    #[cfg(all(test, unix))]
+    before_consume: Mutex<Option<TestConsumeGate>>,
 }
 
 /// Result of one bounded bootstrap admission attempt.
@@ -103,6 +107,50 @@ pub type WindowsNamedPipeBootstrapAdmission =
     BootstrapAdmissionFor<WindowsNamedPipeBootstrapStream>;
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct TestHandshakeEntry {
+    entered_at: Instant,
+    generation_deadline: Option<Instant>,
+    peer_deadline: Instant,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestHandshakeWitness {
+    entered: std::sync::mpsc::SyncSender<TestHandshakeEntry>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestConsumeGate {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn report_test_handshake_entry(
+    witness: &Mutex<Option<TestHandshakeWitness>>,
+    generation_deadline: Option<Instant>,
+    peer_deadline: Instant,
+) {
+    if let Some(witness) = lock_or_recover(witness).take() {
+        let _ = witness.entered.send(TestHandshakeEntry {
+            entered_at: Instant::now(),
+            generation_deadline,
+            peer_deadline,
+        });
+    }
+}
+
+#[cfg(test)]
+fn wait_at_test_consume_gate(gate: &Mutex<Option<TestConsumeGate>>) {
+    if let Some(gate) = lock_or_recover(gate).take() {
+        let _ = gate.entered.send(());
+        let _ = gate.release.recv();
+    }
+}
+
+#[cfg(test)]
 mod admission_type_tests {
     use super::BootstrapAdmission;
 
@@ -113,10 +161,59 @@ mod admission_type_tests {
     }
 }
 
+#[cfg(test)]
+mod peer_handshake_window_tests {
+    use std::time::{Duration, Instant};
+
+    use super::peer_handshake_window;
+
+    #[test]
+    fn generation_and_handshake_limits_share_one_start_in_both_orderings() {
+        let started = Instant::now();
+        let generation = started + Duration::from_millis(100);
+        let (timeout, deadline) =
+            peer_handshake_window(started, Some(generation), Duration::from_secs(5))
+                .expect("generation window");
+        assert_eq!(timeout, Duration::from_millis(100));
+        assert_eq!(deadline.instant(), generation);
+
+        let handshake_limit = Duration::from_millis(40);
+        let (timeout, deadline) = peer_handshake_window(started, Some(generation), handshake_limit)
+            .expect("handshake window");
+        assert_eq!(timeout, handshake_limit);
+        assert_eq!(deadline.instant(), started + handshake_limit);
+
+        assert!(
+            peer_handshake_window(started, Some(started), Duration::from_secs(5)).is_none(),
+            "an expired generation must not mint a peer window"
+        );
+    }
+}
+
+#[cfg(test)]
+mod admission_deadline_tests;
+
 struct NoopRejectionObserver;
 
 impl BootstrapRejectionObserver for NoopRejectionObserver {
     fn rejected(&self, _rejection: BootstrapRejection) {}
+}
+
+fn peer_handshake_window(
+    started: Instant,
+    generation_deadline: Option<Instant>,
+    handshake_limit: Duration,
+) -> Option<(Duration, AbsoluteDeadline)> {
+    let timeout = match generation_deadline {
+        Some(deadline) => deadline
+            .checked_duration_since(started)?
+            .min(handshake_limit),
+        None => handshake_limit,
+    };
+    if timeout.is_zero() {
+        return None;
+    }
+    Some((timeout, AbsoluteDeadline::at(started.checked_add(timeout)?)))
 }
 
 /// Cancellation handle for a blocked bootstrap admission worker.
@@ -164,6 +261,10 @@ impl BootstrapListener {
                 stopping: Arc::new(AtomicBool::new(false)),
                 listening: Arc::new(AtomicBool::new(true)),
                 active_stream: Arc::new(Mutex::new(None)),
+                #[cfg(test)]
+                handshake_witness: Mutex::new(None),
+                #[cfg(test)]
+                before_consume: Mutex::new(None),
             })
         }
         #[cfg(windows)]
@@ -209,6 +310,23 @@ impl BootstrapListener {
             #[cfg(unix)]
             active_stream: Arc::clone(&self.active_stream),
         }
+    }
+
+    #[cfg(test)]
+    fn install_handshake_witness(&self, witness: TestHandshakeWitness) {
+        #[cfg(unix)]
+        {
+            let replaced = lock_or_recover(&self.handshake_witness).replace(witness);
+            assert!(replaced.is_none(), "handshake witness already installed");
+        }
+        #[cfg(windows)]
+        self.listener.install_handshake_witness(witness);
+    }
+
+    #[cfg(all(test, unix))]
+    fn install_before_consume_gate(&self, gate: TestConsumeGate) {
+        let replaced = lock_or_recover(&self.before_consume).replace(gate);
+        assert!(replaced.is_none(), "before-consume gate already installed");
     }
 
     /// Waits until one client proves possession of this listener's token.
@@ -311,18 +429,9 @@ impl BootstrapListener {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::Cancelled);
             }
-            let timeout = deadline
-                .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
-                .map_or(handshake_deadline, |remaining| {
-                    remaining.min(handshake_deadline)
-                });
-            if timeout.is_zero() {
-                self.close_endpoint()?;
-                return Ok(BootstrapAdmission::DeadlineElapsed);
-            }
-            let Some(peer_deadline) = Instant::now()
-                .checked_add(timeout)
-                .map(AbsoluteDeadline::at)
+            let handshake_started = Instant::now();
+            let Some((timeout, peer_deadline)) =
+                peer_handshake_window(handshake_started, deadline, handshake_deadline)
             else {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
@@ -361,6 +470,8 @@ impl BootstrapListener {
             let _active = ActiveHandshake {
                 active_stream: Arc::clone(&self.active_stream),
             };
+            #[cfg(test)]
+            report_test_handshake_entry(&self.handshake_witness, deadline, peer_deadline.instant());
             match handshake_server_interruptible_until(
                 &mut stream,
                 &self.token,
@@ -368,6 +479,18 @@ impl BootstrapListener {
                 peer_deadline,
             ) {
                 Ok(true) => {
+                    #[cfg(test)]
+                    wait_at_test_consume_gate(&self.before_consume);
+                    if self.stopping.load(Ordering::SeqCst) {
+                        drop(stream);
+                        self.close_endpoint()?;
+                        return Ok(BootstrapAdmission::Cancelled);
+                    }
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        drop(stream);
+                        self.close_endpoint()?;
+                        return Ok(BootstrapAdmission::DeadlineElapsed);
+                    }
                     self.close_endpoint()?;
                     return Ok(BootstrapAdmission::Authenticated(stream));
                 }
@@ -571,13 +694,8 @@ pub struct WindowsNamedPipeBootstrapListener {
     stopping: Arc<AtomicBool>,
     #[cfg(test)]
     before_consume: Mutex<Option<TestConsumeGate>>,
-}
-
-#[cfg(all(test, windows))]
-#[derive(Debug)]
-struct TestConsumeGate {
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::mpsc::Receiver<()>,
+    #[cfg(test)]
+    handshake_witness: Mutex<Option<TestHandshakeWitness>>,
 }
 
 /// Connected authenticated stream from [`WindowsNamedPipeBootstrapListener`].
@@ -672,6 +790,8 @@ impl WindowsNamedPipeBootstrapListener {
             stopping: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             before_consume: Mutex::new(None),
+            #[cfg(test)]
+            handshake_witness: Mutex::new(None),
         })
     }
 
@@ -787,25 +907,8 @@ impl WindowsNamedPipeBootstrapListener {
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
             let handshake_started = Instant::now();
-            let peer_timeout = match deadline {
-                Some(deadline) => {
-                    let Some(remaining) = deadline.checked_duration_since(handshake_started) else {
-                        server.close_terminal()?;
-                        drop(lock_or_recover(&self.server).take());
-                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
-                    };
-                    if remaining.is_zero() {
-                        server.close_terminal()?;
-                        drop(lock_or_recover(&self.server).take());
-                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
-                    }
-                    remaining.min(handshake_deadline)
-                }
-                None => handshake_deadline,
-            };
-            let Some(peer_deadline) = handshake_started
-                .checked_add(peer_timeout)
-                .map(AbsoluteDeadline::at)
+            let Some((peer_timeout, peer_deadline)) =
+                peer_handshake_window(handshake_started, deadline, handshake_deadline)
             else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
@@ -817,6 +920,8 @@ impl WindowsNamedPipeBootstrapListener {
             stream
                 .0
                 .set_absolute_deadline(Some(peer_deadline.instant()));
+            #[cfg(test)]
+            report_test_handshake_entry(&self.handshake_witness, deadline, peer_deadline.instant());
             match handshake_server_interruptible_until(
                 &mut stream,
                 &self.token,
@@ -825,10 +930,7 @@ impl WindowsNamedPipeBootstrapListener {
             ) {
                 Ok(true) => {
                     #[cfg(test)]
-                    if let Some(gate) = lock_or_recover(&self.before_consume).as_ref() {
-                        let _ = gate.entered.send(());
-                        let _ = gate.release.recv();
-                    }
+                    wait_at_test_consume_gate(&self.before_consume);
                     if self.stopping.load(Ordering::Acquire) {
                         drop(stream);
                         server.close_terminal()?;
@@ -903,6 +1005,12 @@ impl WindowsNamedPipeBootstrapListener {
     #[cfg(test)]
     fn install_before_consume_gate(&self, gate: TestConsumeGate) {
         *lock_or_recover(&self.before_consume) = Some(gate);
+    }
+
+    #[cfg(test)]
+    fn install_handshake_witness(&self, witness: TestHandshakeWitness) {
+        let replaced = lock_or_recover(&self.handshake_witness).replace(witness);
+        assert!(replaced.is_none(), "handshake witness already installed");
     }
 
     /// Cancels admission and closes the pipe locator.

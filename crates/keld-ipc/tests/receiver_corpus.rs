@@ -268,7 +268,8 @@ fn every_frame_row_reproduces_its_expected_code() {
 /// and combined by the production owner (`AbsoluteDeadline::at` /
 /// `earliest`), so the shared arithmetic is exercised; the behavioural proof
 /// that a real reader closes at that instant is the real-socket coverage in
-/// `link.rs` (`deadline_contract_tests`) and `tests/admission_deadline.rs`.
+/// `link.rs` (`deadline_contract_tests`) and
+/// `bootstrap::admission_deadline_tests`.
 /// Bun replicates this virtual model so both consumers agree row for row.
 #[test]
 fn every_trace_row_reproduces_its_expiry() {

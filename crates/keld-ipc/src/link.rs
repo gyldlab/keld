@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +15,26 @@ use crate::receive::{
 };
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
+
+#[cfg(test)]
+thread_local! {
+    static TEST_READ_ENTRY_WITNESS: RefCell<Option<std::sync::mpsc::Sender<Instant>>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_read_entry_witness(witness: Option<std::sync::mpsc::Sender<Instant>>) {
+    TEST_READ_ENTRY_WITNESS.with(|slot| *slot.borrow_mut() = witness);
+}
+
+#[cfg(test)]
+fn report_test_read_entry() {
+    TEST_READ_ENTRY_WITNESS.with(|slot| {
+        if let Some(witness) = slot.borrow().as_ref() {
+            let _ = witness.send(Instant::now());
+        }
+    });
+}
 
 /// Connected app-link streams that can bound a blocking read or write.
 ///
@@ -463,6 +485,8 @@ fn read_exact_interruptible<S: Read>(
         if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(IpcError::Timeout);
         }
+        #[cfg(test)]
+        report_test_read_entry();
         match stream.read(&mut buf[filled..]) {
             Ok(0) => {
                 return Err(io::Error::new(
