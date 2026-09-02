@@ -173,10 +173,12 @@ changes the public engine-construction boundary.
     purge intent resumes or fails closed before normal lookup; it never recreates the
     store. Test cleanup follows the same ownership rule under a test-only root.
 13. Given independently packaged App A and App B under one OS user and the same exact
-    origin, when A writes cookie, localStorage, IndexedDB/CacheStorage and service-worker
-    nonce state, then B observes none of it and A observes it after restart. The row runs
-    separately on every OS claimed and cannot pass through a mock, source-string search,
-    or different origin.
+    origin, when the host verifies their package facts, then evidence first records two
+    present, distinct authenticated `ProfileIdentity` values. When A then writes cookie,
+    localStorage, IndexedDB/CacheStorage and service-worker nonce state, B observes none
+    of it and A observes it after restart. A missing/equal identity fails before browser
+    state is accepted as evidence. The row runs separately on every OS claimed and cannot
+    pass through a mock, source-string search, or different origin.
 14. Given a second ordinary OS user, when that user launches the same app identity, then
     their store is distinct and cannot observe the first user's same-origin browser
     state. Windows/Linux additionally prove the first user's Keld-owned roots are not
@@ -368,6 +370,15 @@ exclusive lease and durable `purging` intent. Purge commits/fsyncs intent first,
 controllers, waits for browser-process release, clears/deletes only the validated UDF,
 records completion, and clears intent last. Every interrupted phase resumes or fails
 closed before environment creation; normal lookup cannot recreate a partial store.
+
+After non-idle Windows host death, the control record is durably `quarantined`. A
+successor may run only a recovery probe against the same validated actual UDF with
+exclusive-UDF access and no app navigation/content. `ERROR_INVALID_STATE` retains
+quarantine. The first successful exclusive controller proves the old browser collection
+released the UDF; the host verifies the environment-reported path, atomically/fsyncs
+`quarantined → idle`, then begins the normal `starting → running` transition while
+reusing that recovery environment. No suffix/new/default store is created, and normal
+store lookup/navigation cannot precede the durable `idle` transition.
 
 Windows dev-ephemeral UDFs live at a unique owner-private
 `FOLDERID_LocalAppData/Keld/ephemeral/v1/<launch-nonce>` leaf with a durable schema
