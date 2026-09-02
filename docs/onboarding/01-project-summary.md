@@ -18,10 +18,8 @@ tooling generates from your code. Electron compatibility is delivered as a shim
 Sources: [`README.md`](../../README.md), [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §1.
 
 **Read this next, before you believe any of it:** [Current state](#current-state--what-exists-vs-what-is-specified).
-Keld today is a heavily-researched, lightly-implemented project. The specs describe a
-finished framework. The code is roughly 2,300 lines of Rust that opens one window and
-echoes one IPC message. Both facts are true at the same time, and holding them together
-is the single most important thing to understand about this repo.
+The specs describe target behavior; the generated status ledger distinguishes that target
+from evidence-backed implementation without freezing source counts or branch history.
 
 | Fact | Value | Source |
 |---|---|---|
@@ -29,10 +27,7 @@ is the single most important thing to understand about this repo.
 | License | MIT OR Apache-2.0 | [`Cargo.toml`](../../Cargo.toml), [`deny.toml`](../../deny.toml) |
 | Language / edition | Rust, edition 2024, MSRV 1.97 | [`Cargo.toml`](../../Cargo.toml) |
 | Toolchain | pinned `1.97.1` + rustfmt + clippy | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
-| Workspace | 11 crates; `packages/@keld/electron` live (KEL-72) | [`Cargo.toml`](../../Cargo.toml) `members`, `packages/@keld/electron/` |
-| Rust in tree | 2,339 lines across `crates/**/*.rs` | `find crates -name '*.rs' \| xargs wc -l` (2026-08-10) |
-| Test suite | 17 tests, all passing | `cargo nextest run --workspace --profile ci` (2026-08-10) |
-| Last commit | `6d642c4` "feat: Keld workspace scaffold and macOS hello window" (2026-07-08) | `git log -1` |
+| Workspace status | Current crates, packages, phases, platform slices, and evidence | [`product-status.md`](../engineering/product-status.md) |
 
 ## The problem Keld exists to solve
 
@@ -205,101 +200,19 @@ secure boot).
 
 ## Current state — what exists vs. what is specified
 
-**Two structural facts a newcomer must have before reading any spec.**
+The generated [Current/Target/Evidence ledger](../engineering/product-status.md) is the
+single repository-status owner. It covers crates, packages, product phases, and
+platform-scoped slices, and links every current claim to tracked code/test/CI evidence
+plus the immutable commit at which that evidence was verified.
 
-**Fact one: the specs are aspirational documents, and they say so.** The seven
-architecture docs are normative for v0.x — they bind design, and changing them requires
-a design PR — but "normative" means "this is the agreed target," not "this is
-implemented." Roughly 2,300 lines of Rust exist against a specification set describing a
-complete desktop framework with an updater, a packager, an Electron emulation layer, and
-an MCP server.
+The seven architecture documents remain normative target design; they do not imply
+implementation. Linear remains the owner of live issue status, assignees, dependencies,
+and claims. The status-table check compares ledger crate records with Cargo workspace
+metadata without making documentation consistency a product or real-OS completion claim.
 
-**Fact two: most of the code is uncommitted working-tree state.** As of 2026-08-10, HEAD
-is a single substantive commit from 2026-07-08. Of the Rust on disk, 911 lines are in
-tracked files and 1,428 lines are in files git has never seen — the whole
-`keld-cli create/dev/doctor/echo_link/template` surface, `keld-ipc codec/echo/link/session`,
-and `keld-wv engine/wkwebview/webview2/webkitgtk`. If you `git stash` or clone fresh, most
-of what this document describes as "working today" disappears. Check `git status` before
-concluding anything about the state of the tree.
-
-### What actually runs today
-
-Verified on macOS (2026-08-29) and Windows (2026-08-31):
-
-| Command | What it really does |
-|---|---|
-| `just hello` / `cargo run -p keld-host -- --hello` | Opens a `WKWebView`/`WebView2`/`WebKitGTK` window with static HTML (macOS/Windows/Linux, KEL-28) |
-| `keld create <name>` | Writes a 6-file hello template (`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`) with `{{name}}` substituted; rejects empty/uppercase names; extra tokens including `--template` are `KELD-CLI-044` |
-| `keld doctor` | Bun on PATH, hello-template layout (`keld.config.ts` + `src/main.ts`), configured renderer HTML (default `index.html`, `KELD-CLI-035`), plus a webview line on macOS, Windows, and Linux |
-| `keld dev` | Runs doctor. On macOS and Windows it compiles an owner-private stage, launches the staged `keld-host` with no Keld argument, forwards stdio, and retains only the host handle plus a private stdin-v1 liveness writer; the host owns the window, app link and Bun supervisor. Linux fails closed until its KEL-96/T4 no-flag work. Extra tokens including `--watch` are `KELD-CLI-044`. |
-| `keld ipc-echo` | Server + client kipc echo round trip in one process |
-| `cargo nextest run --workspace --profile ci` | Runs the current workspace CI suite |
-
-`keld dev` is still a slice, not the destination architecture. On macOS and Windows the
-CLI now delegates application ownership to a staged no-flag `keld-host`; on
-Linux the command fails closed until KEL-96/T4. There is still
-no `@keld/api`, dev permission recorder, Bun-watch recovery, or complete
-host-wired guarded app API. The guard-checked `keld_native::fs` broker exists,
-but the shipping host does not yet route app calls to that broader native
-dispatch surface. Bun *is* supervised — `keld_runtime::Supervisor` spawns
-`bun run src/main.ts` (KEL-70) instead of a bare `Command::new("bun")` wait. The
-template's `src/main.ts` proves the link by speaking kipc itself, through
-`src/kipc.ts` — a hand-written, wire-exact v0 client (KEL-30); schema-driven codegen
-(`keld gen`, `@keld/schema`) is a later slice. It is an honest vertical slice,
-deliberately built end-to-end rather than stubbed —
-[`AGENTS.md`](../../AGENTS.md) forbids `todo!()`/`unimplemented!()` on main — but it
-is a slice, not the system.
-
-### Per-subsystem ledger
-
-| Crate | Governing spec | On disk today | Not yet built |
-|---|---|---|---|
-| `keld-ipc` | [02-ipc](../architecture/02-ipc.md) | 16-byte little-endian frame header, 11 `FrameKind`s, `HELLO` handshake, postcard codec, blocking framed read/write, one hardcoded `echo` channel | shm bulk lane, credit-window backpressure, streams/cancel, schema-driven channel registry, codegen, fuzzing |
-| `keld-wv` | [05-webview-and-native](../architecture/05-webview-and-native.md) | `WebEngine` trait + per-platform extension traits; all three backends implemented — macOS + Linux on tao + wry as **interim scaffolding** (macOS to be replaced by direct objc2 bindings, Linux by webkit6/gtk4), Windows on direct `webview2-com` since KEL-65; Linux GPU-stack probe (NVIDIA+Wayland safe-mode) built in, `detect`/`apply` split for side-effect-free reads. Linux: build+225-test-green on real Ubuntu, `Xvfb`+`xdotool` finds a real titled window; macOS/Windows watched on a real desktop, Linux not yet | `keld://` scheme, `window.keld` bridge, CEF, `keld doctor` line for GPU safe-mode, watching the Linux window render on real hardware/VM |
-| `keld-core` + `keld-host` | [01-overview](../architecture/01-overview.md) §4 | `run_hello_window()`; `LifecycleSession` (KEL-72); `keld-host --hello` diagnostic; macOS and Windows no-flag strict `keld.boot.json` consumers with real native windows, authenticated echo/lifecycle sessions, supervised fresh-link same-window recovery, ordered Quit, CLI-lease-loss teardown, and Windows Job-based abnormal-host-death reaping | Linux no-flag integration, full window registry, release-signed boot container, guarded policy load |
-| `keld-guard` | [03-security](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for `app.<group>.<action>` path scopes; `Principal`, `Decision`, `DenyReason`; `dispatch_privileged` (KEL-69); `keld_native::fs` uses it (KEL-71) | `$VARS`/symlink canonicalization, channel grants, recorder, audit log |
-| `keld-runtime` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §1 | `Supervisor`: spawn, stdout/stderr capture, restart/backoff and crash ledger; the macOS guardian and Windows primary/Job/LPAC owners compose it inside their no-flag hosts, while retained diagnostics use it directly | Bun discovery/pinning/download, `--inspect` passthrough, Bun-watch hot-restart, complete cross-platform strict-profile admission and named-role wiring |
-| `keld-cli` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §2 | `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`; macOS and Windows `dev` own staging/logs/host-handle/lease only | `build`, `migrate`, `gen`, `ext`; `--json` on every verb; stable exit codes 0/1/2/3; delegated app dev server and recorder |
-| `keld-native` | [05-webview-and-native](../architecture/05-webview-and-native.md) §3 | A `MODULES` constant naming the 15 planned modules; `fs` is live (KEL-71) — `fs_read`/`fs_write` and a real `serve_fs_session` kipc channel, both gated through `keld_ipc::guard_dispatch::dispatch_privileged` before any OS call; cross-platform by construction (`std::fs`), no per-platform code needed | every other module; `fs.watch`, drag-out, recent docs (`fs+`'s remaining destination scope) |
-| `keld-compat` | [04-electron-compat](../architecture/04-electron-compat.md) | `Tier` enum; KEL-72 conformance tests for `@keld/electron` lifecycle | `protocol` / `session` / `webContents` host emulation; remaining Tier 1 APIs |
-| `keld-pack` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §3 | A `Format` enum (app/dmg/nsis/msi/deb/rpm/AppImage) | all packaging and signing |
-| `keld-update` | [06-runtime-and-tooling](../architecture/06-runtime-and-tooling.md) §4 | A `Channel` enum (stable/beta/canary) | bsdiff+zstd, signatures, rollback, feeds |
-| `packages/` | [01-overview](../architecture/01-overview.md) §3 | `@keld/electron` (KEL-72: `app.whenReady` / `quit` / `window-all-closed`) | `@keld/api`, `@keld/web`, `@keld/cli`, `@keld/schema`, `create-keld` |
-
-`examples/` is also empty, and there is no `bench/` and no `docs/specs/` yet (the latter
-is where [`docs/agents/spec-template.md`](../agents/spec-template.md) says approved specs
-should land).
-
-### The CI situation, precisely
-
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) exists and is tracked
-(KEL-39): rustfmt, clippy + nextest + rustdoc across
-`ubuntu-latest`/`macos-latest`/`windows-latest`, plus MSRV, `cargo-deny`, checksum-pinned
-gitleaks, and a CODEOWNERS/template hygiene job. `.github/` is **not** gitignored.
-Local `ROADMAP.md` remains gitignored; the tracked map is
-[`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md).
-A `bench/` harness is still absent (YAGNI until a live microbench).
-
-[`justfile`](../../justfile) owns the exact local gate inventory and order; run `just ci`
-to execute the current list. Gitleaks stays GitHub-only.
-
-## The roadmap in plain terms
-
-Phases gate on **exit criteria, not dates** ([`ROADMAP.md`](../../ROADMAP.md)).
-
-| Phase | Theme | What gates it (exit criterion) | Where it stands |
-|---|---|---|---|
-| **0 — Foundation** | Know the field, fix the architecture, make the repo buildable and agent-safe | `cargo test --workspace` green on 3 OSes **in CI** | Research, architecture v0, workspace, and the agent system are done. Open: CI on real runners with agent-PR gates, and a `bench/` harness with a first IPC microbenchmark |
-| **1 — Window on screen (v0.1)** | A real host binary that boots a config and shows a window driven by a supervised Bun process | hello-world app (Bun main + Vite renderer) runs on macOS **and** Windows via `bunx keld dev`; killing the app process leaves the renderer alive and auto-reconnects | Partially done on macOS and Windows: both have no-flag staged host ownership and same-window Bun recovery; Windows abnormal-host-death reaping is live. Linux product rows, `@keld/api`, and the full config schema remain open |
-| **2 — The plane and the guard (v0.2)** | The IPC bulk lane, schema codegen, permission enforcement, native APIs, Electron compat Tier 1, the MCP server | `electron-quick-start` runs unmodified via `keld migrate && keld dev` on macOS+Windows; IPC RTT p99 ≤ 100 µs on bench hardware | Partial: MCP v1 (`keld mcp serve`) and guard `evaluate` exist; bulk lane, native APIs, and Electron compat are not started |
-| **3 — Ship it (v0.3)** | Installers, signing, delta updates, Linux hardening, OS sandbox v1, templates | a real app ships to beta users on all 3 OSes with ≤ 50 KB delta updates | Not started |
-| **4 — Compat depth & pinned engine (v0.4–0.6)** | Electron Tier 2, public compat scoreboard from a 20-app corpus, CEF backend, stable-ABI plugins | ≥ 80% median call-site compat across the corpus, and one production Electron app migrated with config-only changes — **the thesis test** | Not started |
-
-Alongside the phases run **standing tracks**: perf CI, per-phase security reviews, Bun
-version pinning cadence, the web-baseline matrix refresh per OS release, upstream watch
-(Bun's Rust port, WebKitGTK releases, Verso embedding, Deno Desktop), and the AX loop —
-agent-eval transcripts triaged on the principle that *a repeated agent failure is a docs,
-error-message, or API bug*.
+Run `just product-status-check` for semantic consistency and `just llms-check` for
+generated-corpus byte freshness. `just ci` remains the exact local gate inventory;
+gitleaks remains GitHub-only.
 
 ## How work is tracked
 
@@ -308,10 +221,9 @@ error-message, or API bug*.
   `KEL-28` head the Windows and Linux `keld-wv` backend modules, `KEL-29`/`KEL-30`
   head the CLI and IPC modules. Grepping a KEL number is a fast way to find every file
   that participates in a work item.
-- **Linear's project numbering does not match `ROADMAP.md`'s phase numbering.** Use
-  [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md)
-  to translate; getting this wrong is a known source of confusion (it was flagged in the
-  2026-07-08 alignment audit).
+- Linear project placement and product-phase classification are distinct. Use the
+  tracked [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) for
+  that translation and the generated status ledger for current product facts.
 - Historical execution evidence lives in Linear issue comments and dated engineering
   audits such as [`alignment-audit-2026-07-08.md`](../engineering/alignment-audit-2026-07-08.md).
   Read those as point-in-time records, never as a live to-do list.
@@ -337,7 +249,7 @@ error-message, or API bug*.
 
 ## Sources used in this document
 
-`README.md` · `AGENTS.md` · `ROADMAP.md` · `docs/engineering/alignment-audit-2026-07-08.md` · `Cargo.toml` · `rust-toolchain.toml` ·
+`README.md` · `AGENTS.md` · `docs/engineering/product-status.tsv` · `docs/engineering/alignment-audit-2026-07-08.md` · `Cargo.toml` · `rust-toolchain.toml` ·
 `justfile` · `.gitignore` · `.github/workflows/ci.yml` ·
 `docs/architecture/01-overview.md` (§1, §2, §5, §6) · `docs/architecture/03-security.md` §6 ·
 `docs/architecture/04-electron-compat.md` §2 · `docs/architecture/06-runtime-and-tooling.md` §2 ·

@@ -28,9 +28,9 @@ contracts that this one only summarizes.
 | **Skeleton** | Types/constants compile, but nothing calls them and they do no work |
 | **Specified, not implemented** | Described in a normative spec. No code. Do not assume it exists |
 
-Evidence baseline for every claim below: `cargo test --workspace` on macOS at commit `6d642c4`
-plus the uncommitted working tree — 17 tests, all passing, distributed as keld-ipc 6,
-keld-wv 5, keld-cli 4, keld-guard 2, and zero in the other seven crates.
+These labels and their tracked evidence are owned by the generated
+[Current/Target/Evidence ledger](../engineering/product-status.md). This guide explains
+architecture; it does not maintain a second status snapshot.
 
 ---
 
@@ -324,8 +324,8 @@ spawns real Bun against a real socket). It is just not the architecture yet.
 
 ## 5. Crate by crate
 
-Eleven crates, all present as workspace members (`Cargo.toml:3-15`), nine libraries and two
-binaries. Line counts are `src/` totals including doc comments and inline `#[cfg(test)]` modules.
+Eleven crates are workspace members (`Cargo.toml`). Source counts are deliberately not
+frozen here; the status ledger owns classifications and Cargo owns membership.
 
 ### Actual dependency graph
 
@@ -335,30 +335,29 @@ files today, which is a subset of the specified one:
 
 ```mermaid
 flowchart TD
-    accTitle: Current Keld crate dependency graph
+    accTitle: Declared Keld crate dependency graph
     accDescr {
-      The diagram shows current declared workspace dependencies. Green current nodes
-      have live behavior, blue target nodes remain skeletons or are not yet reached by
-      the host; the graph is an onboarding map, not a product-completeness claim.
+      The diagram shows declared workspace dependency direction. It does not encode
+      maturity or product completion; those classifications live in the status ledger.
     }
 
-    cli["CURRENT keld-cli · bin"] --> core
+    cli["keld-cli · bin"] --> core
     cli --> ipc
     cli --> runtime
-    cli --> pack["TARGET keld-pack"]
-    cli --> update["TARGET keld-update"]
-    host["CURRENT PARTIAL keld-host · hello + macOS/Windows no-flag app owner"] --> core
+    cli --> pack["keld-pack"]
+    cli --> update["keld-update"]
+    host["keld-host · bin"] --> core
     host --> runtime
-    compat["CURRENT keld-compat · lifecycle slice"] --> core
-    core["CURRENT keld-core · host boot/session owner"] --> ipc["CURRENT keld-ipc"]
-    core --> guard["CURRENT keld-guard"]
+    compat["keld-compat"] --> core
+    core["keld-core"] --> ipc["keld-ipc"]
+    core --> guard["keld-guard"]
     core --> runtime
-    core --> wv["CURRENT keld-wv"]
-    native["CURRENT keld-native · scoped fs"] --> guard
+    core --> wv["keld-wv"]
+    native["keld-native"] --> guard
     native --> ipc
-    runtime["CURRENT keld-runtime · supervisor + macOS guardian"] --> ipc
+    runtime["keld-runtime"] --> ipc
     wv --> guard
-    wv -.->|macOS current backend| ext["EXTERNAL tao 0.35.3<br/>wry 0.56.1"]
+    wv -.-> ext["EXTERNAL platform webview dependencies"]
     ipc -.-> pc["EXTERNAL postcard · serde"]
 
     classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
@@ -367,84 +366,13 @@ flowchart TD
     classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
     classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
     classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
-    class cli,compat,core,ipc,guard,wv,native,runtime,host current
-    class pack,update target
     class ext,pc external
 ```
 
-Green = current implementation, including explicitly partial nodes. Blue = target or
-skeleton scope; grey = external dependency. One specified edge is missing today:
-`keld-core → keld-native`; the host does not yet reach the guarded native API layer.
-`keld-core::app_session` now owns the strict macOS boot/session ordering and reaches
-`keld-runtime` for the guardian-composed Bun supervisor (KEL-96 T1a/T1b/T2), while
-`keld-wv::wkwebview` owns the concrete AppKit event loop, native handles, navigation
-callback, and `EventLoopProxy` wake. The broader
-named-role registry, shipping guarded-native route, and the Linux no-flag owner remain later work.
-`keld_ipc::guard_dispatch::dispatch_privileged` already drives the isolated/test
-`keld_native::fs` broker; the remaining guarded-dispatch gap is specifically the
-shipping `keld-core` to `keld-native` route plus the broader named-role registry.
-
-### The two crates that carry real weight
-
-**`keld-ipc` — 502 lines, Live.** Governed by [`02-ipc.md`](../architecture/02-ipc.md); crate
-rules in `crates/keld-ipc/AGENTS.md`. Owns the wire protocol. What exists: the 16-byte frame
-header with encode/decode and roundtrip tests over all 11 frame kinds (`frame.rs`), postcard
-encode/decode helpers (`codec.rs`), blocking framed read/write plus a v0 HELLO exchange
-(`link.rs`), a blocking echo server/client session (`session.rs`), and the echo channel contract
-(`echo.rs`). Its own crate rules say the readers must be allocation-free state machines — the
-current `link.rs` is a blocking, `Vec`-per-frame implementation explicitly labeled "app-link
-control plane v0", so treat it as scaffolding with the right *format* and the wrong *mechanics*.
-Full byte-level detail: [`04-wire-formats-and-contracts.md`](./04-wire-formats-and-contracts.md).
-
-**`keld-wv` — 704 lines, Partial.** Governed by
-[`05-webview-and-native.md`](../architecture/05-webview-and-native.md); crate rules in
-`crates/keld-wv/AGENTS.md`. Defines the `WebEngine` trait (`engine.rs`) and implements it once,
-for macOS, over tao + wry (`wkwebview/mod.rs`). The Windows and Linux backend modules exist but
-contain only an `unavailable()` function returning a typed error — deliberately, so that
-workspace-wide clippy sees the module layout on every platform and so the failure mode is a
-message naming the tracking issue rather than a panic or a fake implementation. `error.rs` is
-worth reading as the reference implementation of the framework's error standard (§9).
-
-The `engine.rs` module doc is the single most useful thing in the crate for a newcomer: it
-enumerates, with reasons, every place the shipped trait deviates from the sketch in
-[`05` §1](../architecture/05-webview-and-native.md). Abbreviated:
-
-| Spec sketch | v0 reality | Why |
-|---|---|---|
-| `post(id, ControlFrame)` | Absent | `ControlFrame` doesn't exist; returns with the kipc integration milestone |
-| `register_scheme(scheme, handler)` | Absent | wry custom protocols are builder-time options; a post-creation registration cannot be honored by the interim scaffolding |
-| `eval(id, ScriptRef, EvalCallback)` | `eval(id, &str) -> Result` | Callback plumbing belongs to the command-queue design `keld-core` will own |
-| `create(spec, HostHooks)` / `set_bounds(.., Anchor)` | No hooks, no anchor | Both depend on multi-webview composition; v0 is one window-filling webview per window |
-| `trait WebEngine: Send` | No `Send` supertrait | Backends hold UI-thread-only platform handles; the bound returns with the command-queue design review |
-| `set_bounds`/`devtools`/`destroy` return `()` | All return `Result` | A stale `WebviewId` must surface as a typed error, never a panic |
-
-That table is the model for how spec drift is supposed to be handled in this repo: not silently,
-but written down next to the code with the reason and the milestone that closes it.
-
-### Everything else
-
-| Crate | Lines | Status | Role | Spec | What's actually in it |
-|---|---|---|---|---|---|
-| `keld-core` | ~3,700 | Partial | Host boot/session ordering, lifecycle and dispatch; TARGET complete window registry | [`01`](../architecture/01-overview.md) | `app_session` owns strict macOS/Windows no-flag boot, the single echo/lifecycle router, platform supervision and ordered cleanup; hello/diagnostic sessions remain. `keld-wv` owns the concrete AppKit/WebView2 event loops and handles |
-| `keld-guard` | ~500 | Partial | Capability engine: `(principal, capability, args) → Decision` | [`03`](../architecture/03-security.md) | `parse_manifest` / `load_manifest` / `evaluate` for dotted `app` grants. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call it. Proven wiring, no real capability uses it yet (host `fs.read`/`fs.write` is KEL-71). `$VARS`/symlink resolution is not in this slice. |
-| `keld-native` | ~345 | Partial | Native OS APIs, all guard-checked | [`05` §3](../architecture/05-webview-and-native.md) | A `MODULES: &[&str]` array naming the 15 planned modules. `fs` is live (KEL-71): `fs_read`/`fs_write` (capability ids `fs.read`/`fs.write`), a real `serve_fs_session` kipc channel, every call routed through `keld_ipc::guard_dispatch::dispatch_privileged` before touching disk. The other 14 modules are still names only |
-| `keld-runtime` | ~7,300 | Partial | Bun supervisor, platform primary generations, Unix role registry, and macOS host-death guardian | [`06` §1](../architecture/06-runtime-and-tooling.md) | `Supervisor` owns spawn/capture/restart ledger; macOS composes it through the guardian and Windows through the T8 primary owner plus KEL-96 recovery gate. Unix `RoleRegistry`/virtual ports remain library/test surfaces; Bun discovery/pinning, `--inspect`, watch restart and shipping named roles are not built |
-| `keld-update` | 19 | Skeleton | Delta updates: bsdiff+zstd, ed25519 manifests, rollback | [`06` §4](../architecture/06-runtime-and-tooling.md) | A `Channel` enum (`Stable`/`Beta`/`Canary`) |
-| `keld-pack` | 25 | Skeleton | Packaging, signing, cross-compilation | [`06` §3](../architecture/06-runtime-and-tooling.md) | A `Format` enum (`App`, `Dmg`, `Nsis`, `Msi`, `Deb`, `Rpm`, `AppImage`) |
-| `keld-compat` | 18 | Skeleton | Host-side Electron emulation (what JS can't fake) | [`04` §3](../architecture/04-electron-compat.md) | A `Tier` enum (`One`/`Two`/`Three`) |
-| `keld-host` | 25 | Partial | The shipping host binary | [`01`](../architecture/01-overview.md) | `main()` keeps `--hello` diagnostic-only; on macOS and Windows, no arguments consume the strict owner-private KEL-96 boot stage and own the native window, authenticated primary session, supervised Bun lifetime, and ordered Quit cleanup. Linux no-flag remains fail-closed pending T4 |
-| `keld-cli` | — | Partial | `keld` developer binary | [`06` §2](../architecture/06-runtime-and-tooling.md) | Real: `create`, `dev`, `doctor` (including `--json`), `mcp serve`, `hello`, `ipc-echo`, `ipc-client`. Absent: `build`, `migrate`, `gen`, `ext`, and `--json` on every verb |
-
-Each skeleton crate's `lib.rs` opens with a module doc naming its spec section. Those docs are
-accurate about intent and say nothing about status — which is why this table exists.
-
-### The npm side is partial
-
-`packages/@keld/electron` exists (KEL-72): `app.whenReady` / `app.quit` /
-`window-all-closed` over `LIFECYCLE_CHANNEL`. `examples/` is still empty.
-**None** of `@keld/api`, `@keld/web`, `@keld/cli`, `@keld/schema`, or
-`create-keld` has any code. Spec passages that name those remaining packages
-are still forward references.
+The graph is derived from crate manifests and intentionally says nothing about maturity.
+For crate/package implementation, absent surfaces, platform scope, and evidence, use the
+generated [product-status ledger](../engineering/product-status.md). Architecture 01 §3
+continues to own the normative crate and package roles.
 
 ---
 
@@ -653,41 +581,9 @@ Full code inventory: [`04-wire-formats-and-contracts.md` §9](./04-wire-formats-
 
 ## 10. What's real today vs. what's on paper
 
-The summary table. "Live" means it works and a test proves it.
-
-| Area | Status | Evidence / where it stops |
-|---|---|---|
-| kipc frame format (16 B header, 11 kinds, flags, corr ids) | **Live** | `keld-ipc/src/frame.rs`; roundtrip test over all kinds, bad-magic and bad-kind rejection |
-| postcard codec for structured payloads | **Live** | `keld-ipc/src/codec.rs`; echo roundtrip test |
-| app-link transport (UDS on unix) | **Live** | `keld-ipc/tests/echo_link.rs`; real socket, real bytes |
-| Windows transport | **Live** | One host-owned named pipe with protected current-`TokenUser` DACL, remote-client rejection, and mandatory v2 HELLO token; real foreign-user denial and same-user echo (KEL-101) |
-| HELLO handshake | **Partial** | Version equality + 32-byte session token; client writes first, server verifies before sending. No channel-table exchange, no negotiation |
-| Echo channel vertical slice, Bun → host | **Live** | `keld-cli/tests/bun_echo.rs` spawns real Bun |
-| macOS window + WKWebView | **Live** | `keld-wv/src/wkwebview/`, via tao + wry; `keld dev` / `just hello` |
-| Windows window + WebView2 | **Live** | `keld-wv/src/webview2/`, direct `webview2-com` COM since KEL-65 (wry not linked on Windows); tao for window + event loop; `KELD-WV-008` probe |
-| `WebEngine` trait (create/navigate/eval/set_bounds/devtools/destroy) | **Live** (three backends) | `keld-wv/src/engine.rs`; deviations from spec documented in the module doc |
-| Linux webview backend | **Implemented + build-tested (KEL-28); window unverified on a real desktop** | `keld-wv/src/webkitgtk/`, wry interim (GTK3 + WebKit2GTK 4.1, `build_gtk` for Wayland) mirroring how macOS/Windows started; GPU-stack probe (NVIDIA+Wayland safe-mode) built in. Compiles/clippy/225-test-green on real Ubuntu; `Xvfb`+`xdotool` finds a real correctly-titled window; nobody has watched pixels render yet |
-| Error standard (code + fix text, tested) | **Live** in wv and cli | `keld-wv/src/error.rs`, `keld-cli/src/{create,dev}.rs` |
-| `keld create` / `dev` / `doctor` | **Partial** | Real but minimal; macOS and Windows `dev` stage and launch the no-flag host with a CLI-death lease; Linux fails closed until T4 |
-| `keld-guard` types + evaluate | **Partial** | `parse_manifest` / `evaluate` live; MCP `keld_permissions_explain`, all three webview media-capture handlers, and the isolated/test `keld_native::fs` broker (KEL-71, via `dispatch_privileged`, KEL-69) call them. The shipping host has no `keld-core → keld-native` route; echo dispatch deliberately does not call the guard. |
-| Capability enforcement, manifest, scopes, recorder | **Partial** | `parse_manifest` / `evaluate` exist; webview camera/mic is host-reachable and default-deny, while `fs.read`/`fs.write` enforcement is live only through the isolated/test broker session. Shipping app-process filesystem dispatch and the recorder are absent. `$VARS` matched literally in v0. |
-| Command queue / UI-thread marshalling | **Specified, not implemented** | Event loop lives in `keld-wv`, not `keld-core` |
-| shm bulk lane, `keld://` streaming, backpressure, cancellation | **Specified, not implemented** | `GRANT`/`Cancel`/`StreamOpen` are defined frame *kinds* with no senders or handlers |
-| Bun supervision (restart, backoff, crash ledger) | **Implemented (KEL-70/KEL-116)** | `keld_runtime::Supervisor`; macOS and Windows `keld dev` reach it through their host-owned primary owners, retained diagnostics call it directly |
-| `keld-native` modules (window, menu, tray, dialog, …) | **Partial** | The guard-checked `fs.read`/`fs.write` broker and real isolated kipc session are implemented (KEL-71), but no shipping host depends on or routes to `keld-native`; the other 14 modules are still names only. |
-| Electron compat (`@keld/electron`, tiers, conformance suite) | **Partial (KEL-72)** | `packages/@keld/electron`: `app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`. Other Tier 1 APIs and `keld migrate` are later. Bun 1.3.14 remaps `electron` via `tsconfig.json` paths, not bunfig `[alias]`. |
-| `@keld/api`, `@keld/web`, `@keld/schema`, `create-keld` | **Specified, not implemented** | Only `@keld/electron` exists under `packages/` |
-| `keld build` / `migrate` / `gen` / `ext` | **Specified, not implemented** | Not in `keld-cli/src/main.rs` |
-| `keld mcp serve`, `keld doctor --json`, error registry | **Live** | `crates/keld-cli/src/mcp/`, `doctor --json`, `docs/engineering/keld-error-codes.md` |
-| Packaging, signing, delta updates | **Specified, not implemented** | Two enums |
-| Perf budgets in CI | **Specified, not implemented** | `bench/` does not exist; ROADMAP Phase 0 open item |
-| CI: fmt + clippy + nextest on 3 OSes, cargo-deny, MSRV | **Live** | `.github/workflows/ci.yml`; mirrored locally by `just ci` |
-| `llms.txt` + `llms-full.txt` | **Live** | Deterministically generated from an ordered allowlist by `tools/llms_docs.rs`; `just llms-check` rejects stale output |
-
-Roughly: **the wire format, the macOS window, an isolated/test guard-checked
-`fs.read`/`fs.write` broker, and a partial `@keld/electron` lifecycle shim are
-real. The shipping host-to-native route, remaining native modules, bulk lanes,
-and the other `@keld/*` TypeScript packages are not.**
+The generated [Current/Target/Evidence ledger](../engineering/product-status.md) is the
+summary table. It separates all-platform crate/package/phase facts from platform-scoped
+surfaces and pins each row to tracked evidence. This guide does not mirror those rows.
 
 ---
 
@@ -714,8 +610,7 @@ delegation and must be listed under `## Review gates` in the PR (root `AGENTS.md
 `unsafe`; public API; permission model; dependency addition; and wire-protocol change. Write
 "none" when none apply. `.agents/coordination.md` owns the final merge predicate.
 
-**Phasing** is in [`ROADMAP.md`](../../ROADMAP.md) and gates on exit criteria rather than dates.
-Phase 1 ("window on screen") is in progress; its exit criterion — a hello-world app running on
-macOS and Windows from `bunx keld dev`, with an app-process kill leaving the renderer alive and
-auto-reconnecting — is a good one-sentence summary of what "done" means for the current milestone,
-and a good measure of the distance still to cover.
+**Phasing** is tracked in the generated
+[product-status ledger](../engineering/product-status.md); Linear owns live scheduling,
+dependencies, and claims. Phase classification never substitutes for a named product or
+real-OS acceptance result.

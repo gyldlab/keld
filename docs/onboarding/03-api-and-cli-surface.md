@@ -1,13 +1,10 @@
 # 03 — API and CLI surface
 
-Keld has no HTTP API and no server. Its "API" is four surfaces:
-
-| Surface | Status | Where it lives |
-|---|---|---|
-| The `keld` CLI | Real: 7 verbs + `--version` | [`crates/keld-cli/src/`](../../crates/keld-cli/src/) |
-| Public Rust crate APIs | Real for `keld-ipc`, `keld-wv`, `keld-core`, `keld-cli`; type-only elsewhere | [`crates/`](../../crates/) |
-| The template app contract (what an app developer writes) | Real, one template | [`crates/keld-cli/templates/hello/`](../../crates/keld-cli/templates/hello/) |
-| `@keld/*` TypeScript packages | **Partial (KEL-72).** [`packages/@keld/electron`](../../packages/@keld/electron/) implements `app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`; the rest of `@keld/*` is unbuilt | [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §3 |
+Keld has no HTTP API and no server. Its API surfaces are the CLI, public Rust crates,
+the template app contract, and `@keld/*` packages. Their implementation and evidence
+classifications come from the generated
+[Current/Target/Evidence ledger](../engineering/product-status.md); this document owns
+API shape and usage rather than a second status table.
 
 Everything below was verified by reading the source and running the commands on macOS
 (aarch64, `rustc 1.93.0`, `bun 1.4.0`) in August 2026. Where output is quoted, it is
@@ -375,31 +372,11 @@ if you change that wording, the test is the contract.
 
 ## 2. What the README advertises that does not exist yet
 
-[`README.md`](../../README.md) opens with a three-line pitch:
-
-```bash
-cd my-electron-app
-bunx keld migrate   # analyzes your app, generates config, aliases electron → @keld/electron
-bunx keld dev       # target: no bundled Chromium/Node executable; exact gaps reported
-bunx keld build     # signed installers + kilobyte-scale delta updates
-```
-
-Only one of those three verbs exists, and none of them are reachable via `bunx`. This is
-the honest mapping:
-
-| README claim | Reality in this repo | Where it is planned |
-|---|---|---|
-| `keld migrate` | **`KELD-CLI-045`** (exit 2) — reserved, names KEL-17; no analyzer code | ROADMAP **Phase 2** exit criterion ("electron-quick-start runs unmodified via `keld migrate && keld dev`"); spec [`04-electron-compat.md`](../architecture/04-electron-compat.md), [`06-runtime-and-tooling.md`](../architecture/06-runtime-and-tooling.md) §2 |
-| `keld build` | **`KELD-CLI-045`** (exit 2) — reserved, names KEL-19; `keld-pack` is an enum of installer formats with no code behind it | ROADMAP **Phase 3** (`keld-pack` + `keld-update`); spec `06-runtime-and-tooling.md` §2–3 |
-| `bunx keld …` | No npm package resolves a `keld` binary. `@keld/cli` does not exist; only `@keld/electron` is under [`packages/`](../../packages/) | `@keld/cli` with per-platform `optionalDependencies`; spec `06-runtime-and-tooling.md` §2, ROADMAP **Phase 1** exit ("runs on macOS+Windows from `bunx keld dev`") |
-| `@keld/electron` aliasing | **Partial (KEL-72):** `packages/@keld/electron` (`app.whenReady` / `app.quit` / `window-all-closed` over `LIFECYCLE_CHANNEL`). Other Tier 1 APIs and `keld migrate` are later. Bun 1.3.14 remaps `electron` via `tsconfig.json` paths, not bunfig `[alias]`. `keld-compat` is still a `Tier` enum | ROADMAP **Phase 2** (Tier 1) / **Phase 4** (Tier 2) |
-| Delta updates, signed installers | `keld-update` is a `Channel` enum; `keld-pack` is a `Format` enum | ROADMAP **Phase 3** |
-| `keld dev` | **Exists**: Bun echo round-trip, then the project renderer HTML (`index.html` or `renderer` in `keld.config.ts`) in the hello window. `--watch` / `--inspect-ipc` are `KELD-CLI-044`. | Phase 1 in progress |
-| `keld gen`, `keld ext` | **`KELD-CLI-045`** (exit 2) — reserved, not live | `06-runtime-and-tooling.md` §2 |
-
-The README's workspace-layout block does label the npm packages `(upcoming)`; the
-three-line pitch does not carry the same caveat. Treat the pitch as the product
-statement, not as documentation of the current binary.
+The README's `migrate → dev → build` sequence is explicitly target product flow. The
+generated [product-status ledger](../engineering/product-status.md) is the checked
+mapping from those target surfaces to current implementation, evidence, and phase. CLI
+dispatch remains the behavioral owner of reserved-command failures such as
+`KELD-CLI-045`.
 
 ---
 
@@ -600,24 +577,11 @@ says "Deny text is API — test it", and it is tested.
 
 ## 4. The `@keld/*` TypeScript packages
 
-`packages/@keld/electron` exists (KEL-72): `app.whenReady` / `app.quit` /
-`window-all-closed` over `LIFECYCLE_CHANNEL`. **None** of `@keld/api`, `@keld/web`,
-`@keld/cli`, `@keld/schema`, or `create-keld` has any code. Spec passages that
-name those remaining packages are still forward references
-([`docs/architecture/01-overview.md`](../architecture/01-overview.md) §3):
-
-| Package | Intended role | Earliest phase (ROADMAP) |
-|---|---|---|
-| `@keld/api` | The real typed SDK for the app process — windows, native APIs, channels | Phase 1 (minimal: `createWindow`, `invoke`/`on`) |
-| `@keld/electron` | Electron compat shim implementing `electron`'s module surface on top of `@keld/api`; never imports Electron at runtime | **Partial (KEL-72)** — lifecycle only; remaining Tier 1 is Phase 2 |
-| `@keld/web` | Renderer-side bridge (`window.keld`) and polyfill-pack loader | Phase 2 |
-| `@keld/cli` | npm wrapper resolving the per-platform `keld` binary via `optionalDependencies` — what makes `bunx keld` work | Phase 1 |
-| `@keld/schema` | Channel/contract definitions and TS↔Rust codegen; generated output is never hand-edited | Phase 2 |
-| `create-keld` | `bun create keld` / `npm create keld` scaffolding, richer than today's single embedded template | Phase 3 |
-
-When the remaining packages land they inherit the TypeScript rules already written down in
-[`AGENTS.md`](../../AGENTS.md): strict mode, no `any` in public API, generated code never
-hand-edited. `@keld/electron` already follows those rules.
+Architecture 01 §3 owns intended package roles. The generated
+[package status table](../engineering/product-status.md#packages) owns which packages
+are tracked, partial, or specified-only and links the evidence. All packages inherit the
+TypeScript rules in [`AGENTS.md`](../../AGENTS.md): strict mode, no `any` in public APIs,
+and no hand edits to generated code.
 
 ---
 
@@ -780,9 +744,9 @@ windowless diagnostic contract.
 | Which document binds you, and in what order to read them | [`06-documentation-map.md`](./06-documentation-map.md) |
 | The normative specs behind everything marked "planned" here | [`docs/architecture/`](../architecture/) |
 | Engineering rules and review gates | [`AGENTS.md`](../../AGENTS.md) plus the per-crate `AGENTS.md` files |
-| Phase ordering for what does not exist yet | [`ROADMAP.md`](../../ROADMAP.md) |
+| Current/target phase classification | [`product-status.md`](../engineering/product-status.md#phases) |
 
 Tracked documentation includes `docs/`, `llms.txt`, and `llms-full.txt`. The generated
 files contain only the authoritative allowlist defined by `tools/llms_docs.rs`;
-`ROADMAP.md`, `competitors/`, and `.claude/` remain local-only under
-[`.gitignore`](../../.gitignore). `.github/` is tracked (KEL-39).
+Local-only material is excluded from the generated corpus and cannot be status evidence.
+`.github/` is tracked (KEL-39).

@@ -32,8 +32,8 @@ Two rules that follow directly from that table, both from
 Keld tracks its architecture, agent, engineering, onboarding, and feature-contract
 documentation plus generated `llms.txt` and `llms-full.txt`. `docs/research/` is a
 separate nested checkout tracked by `0monish/keld-research` and ignored by the Keld
-monorepo. [`.gitignore`](../../.gitignore) also keeps `/competitors/`, `/ROADMAP.md`,
-and `/.claude/` local-only. `.github/` is tracked (KEL-39). The
+monorepo. Local-only paths are never repository-status or execution authority.
+`.github/` is tracked (KEL-39). The
 generated corpus is narrower than the tracked docs tree: its ordered allowlist excludes
 research and all unlisted documents. The engineering decision log is on that allowlist;
 numbered research is not.
@@ -44,7 +44,8 @@ numbered research is not.
 |---|---|---|
 | [`AGENTS.md`](../../AGENTS.md) | **The compact binding invariant floor.** Ground truth, atomic/engineering rules, crate map, verification floor, language/security constraints, review gates, and universal working invariants. [`.agents/index.md`](../../.agents/index.md) routes conditional process, CI, docs, research, and PR details. | Read the root before work, then load only index rows matching the task. |
 | [`README.md`](../../README.md) | The 30-second pitch, the intended `migrate → dev → build` flow, the workspace layout, and the two commands that work today. | First five minutes. |
-| [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Tracked phase map between Linear project numbers and the local `ROADMAP.md` (gitignored). Use this, not an untracked file, as required reading for “what is in scope now.” | When you want to know whether the thing you're about to build is in scope *now*. |
+| [`docs/engineering/product-status.md`](../engineering/product-status.md) | Generated Current/Target/Evidence tables for crates, packages, phases, and platform slices. | When you need repository status rather than normative design or live Linear execution state. |
+| [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Tracked translation between Linear project placement and product phases. | When linking an issue to a product phase without confusing scheduling with implementation. |
 | [`llms.txt`](../../llms.txt) · [`llms-full.txt`](../../llms-full.txt) | Generated agent-readable documentation: a compact curated index and the corresponding concatenated corpus. `tools/llms_docs.rs` fixes source order and excludes research/local-only paths; `just llms-check` rejects drift. | When wiring up agent tooling, bulk-ingesting the authoritative docs corpus, or checking what the official MCP docs search embeds. |
 | [`justfile`](../../justfile) · [`Cargo.toml`](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml) · [`deny.toml`](../../deny.toml) · [`rustfmt.toml`](../../rustfmt.toml) · [`rust-toolchain.toml`](../../rust-toolchain.toml) · [`.config/nextest.toml`](../../.config/nextest.toml) | Not prose, but they are the enforcement layer behind `AGENTS.md`. `just ci` runs every gate CI would run. Workspace lints (pedantic clippy, `missing_docs`, `unsafe_code = "deny"`) live in `Cargo.toml`, with comments explaining each choice. | When a lint fails and you want to know whether it's negotiable (it usually isn't). |
 
@@ -112,7 +113,7 @@ This directory is **not** required onboarding; the why-pointer is
 
 | Doc | Subject |
 |---|---|
-| [`08-competitor-source-audit.md`](../research/library/compatibility-competitors/08-competitor-source-audit.md) | Ground-truth survey of the vendored clones in `competitors/`: pinned commit inventory, per-repo layout/CI/core-machinery/steal-or-avoid notes, a consolidated adopt/adapt/avoid list, an **implementer reading order** into competitor source, stated limitations, and a 2026-08-08 refresh log of what changed upstream. Read before you go looking in `competitors/`. |
+| [`08-competitor-source-audit.md`](../research/library/compatibility-competitors/08-competitor-source-audit.md) | Optional dated survey of vendored competitor clones: pinned inventory, layout/CI/core machinery, and adopt/adapt/avoid leads. It is exploratory evidence, never implementation authority. |
 | [`09-tooling-context7-audit.md`](../research/library/agents-tooling/09-tooling-context7-audit.md) | Per-tool best-practice analysis for Keld's stack, recommended toolchain versions, CI pipeline recommendation, tools to adopt and to skip. |
 | [`14-phase0-synthesis.md`](../research/library/execution-governance/14-phase0-synthesis.md) | **The capstone.** Market gap statement, ranked ~10× opportunities, ranked risks with mitigations, one-paragraph guidance per Phase 1 RFC, the frozen benchmark baseline table, and the Phase 0 exit checklist. If you read only two research docs, read `00` and this. |
 | [`20-vscode-on-keld.md`](../research/campaigns/vscode/reports/20-vscode-on-keld.md) | VS Code north-star feasibility and local Bun/native probes. It is a demanding showcase, not Keld's product denominator. |
@@ -204,7 +205,7 @@ audits.
 | [`budget-scoreboard.md`](../engineering/budget-scoreboard.md) | Measured hello disk, idle RSS, and untraced double-rAF proxy vs architecture 01 §5. Latency and memory are separate tables. Win-conditions and byte autopsy. No `bench/` CI yet. | When recording or citing installer size, host bytes, idle RSS, or first-paint proxy. |
 | [`decisions.md`](../engineering/decisions.md) | Decision log for humans: four uniques, wry vs spec 05, `KELD-*` errors, verification/CI, cargo-deny, nested `AGENTS.md`, `llms.txt` corpus, MCP/`$VARS`, review gates, the external-only memory boundary, the reuse-first maximum-compatibility program, and what is explicitly not next. | When you need “why we chose this” without treating research as a spec. Day-one why-pointer. |
 | [`alignment-audit-2026-07-08.md`](../engineering/alignment-audit-2026-07-08.md) | A read-only audit across vision, research, architecture, `AGENTS.md`, roadmap, tooling/CI, Linear, crates, and `competitors/` hygiene. Verdict: "MOSTLY ALIGNED" — the technical story is coherent end to end; drift is concentrated in program tracking. Contains a scorecard, contradictions with suggested fixes, gaps, Linear drift, verification output, and prioritized actions. | When something feels inconsistent between docs, check whether the audit already named it. |
-| [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | The translation table between Linear's project numbering and `ROADMAP.md`'s phase numbering — they do not match. | Every time you link an issue to a roadmap milestone. |
+| [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) | Translation between Linear project placement and the ledger's product phases. | Every time you link an issue to a product phase. |
 | [`tooling-audit.md`](../engineering/tooling-audit.md) | Senior-engineer review of the toolchain: what was thin at audit start, findings on the workspace and each config file, CI compared against competitors, changes applied, recommendations to adopt later, verification, and open questions. Explains *why* each lint and config choice exists. | Before changing anything in `Cargo.toml` lints, `clippy.toml`, `deny.toml`, or CI. |
 
 ## `competitors/` — vendored source as reference and oracle
@@ -251,45 +252,9 @@ binaries).
 
 ## Per-crate `AGENTS.md` — required reading before you edit
 
-[`AGENTS.md`](../../AGENTS.md) says plainly: "Read crate `AGENTS.md` before editing that
-crate." Four crates have one today; each adds invariants on top of the root rules rather
-than repeating them.
-
-| Crate doc | The invariants it adds |
-|---|---|
-| [`crates/keld-ipc/AGENTS.md`](../../crates/keld-ipc/AGENTS.md) | The wire is a versioned protocol — any frame-layout/`FrameKind`/flag/handshake change means a version bump plus the wire review gate plus a spec §2 update, in one PR. Test wire constants as facts (`HEADER_LEN == 16`), not struct layout. State-machine readers/writers, no async, no steady-state allocation. Credit-window backpressure, no unbounded queues. `unsafe` is limited to reviewed `windows_named_pipe` and the future `shm` owner. postcard on the hot path; JSON only for `--inspect-ipc`. Fuzz the decode paths — malformed webview input is expected, not a bug. |
-| [`crates/keld-wv/AGENTS.md`](../../crates/keld-wv/AGENTS.md) | `unsafe` is allowed here, in platform backends only, with `deny(unsafe_op_in_unsafe_fn)` and a `// SAFETY:` comment citing the platform contract. All engine/window mutations on the UI thread via the command queue; never platform handles from I/O or pool threads. `WebEngine` trait changes are a design review. Platform quirks need OS + version + source link, or they get reverted. Linux: probe the GPU stack and apply safe mode before init — never tell users to export env vars. |
-| [`crates/keld-guard/AGENTS.md`](../../crates/keld-guard/AGENTS.md) | This is *the* security boundary. Default-deny: unknown capability, channel, or scope, or a missing manifest → `Deny`, with no interim allow. Principals are host-minted and unforgeable; webview principals rotate on navigation. Deny text is API — every `DenyReason` names the capability/scope and the fix, and that text is tested. Destination matching resolves `$VARS`, symlinks, and `..` before matching; **v0** matches `$VARS` as literals and rejects `..` (not an Allow). No dev-mode special case inside the engine. No allocation on the `Allow` path. |
-| [`crates/keld-compat/AGENTS.md`](../../crates/keld-compat/AGENTS.md) | Electron's documented behavior is the oracle; the conformance entry citing a doc or fixture comes *before* implementation. Divergence must be explicit — a `keld.compat.ts` quirks flag or a scoreboard mark, chosen in the PR. Event **ordering** is tested as sequences, not just outcomes. No Electron-isms leak into `keld-core`/`keld-ipc`. A corpus score drop is a P1 regression. |
-
-The other seven crates (`keld-core`, `keld-native`, `keld-runtime`, `keld-update`,
-`keld-pack`, `keld-host`, `keld-cli`) have no crate-level `AGENTS.md` yet; their module
-docs carry a "Normative spec:" line pointing at the governing architecture section
-instead, and that pointer is the current substitute.
-
-## `.claude/` — the agent workflow system (untracked, local)
-
-A portable Claude Code setup dropped into this repo. It is **not** Keld's own agent
-system — `AGENTS.md` and `docs/agents/` are — and it is untracked, so it may differ
-machine to machine. It is not calibrated to this repo yet: there is no root `CLAUDE.md`,
-no `PROJECT_MEMORY.md`, no `project-calibration.json`, and `skills/stack/` is still empty
-(all four are outputs the `project-calibrator` skill would generate).
-
-| Path | What it is |
-|---|---|
-| [`.claude/GUIDE.md`](../../.claude/GUIDE.md) | Step-by-step usage walkthrough — the "start here" file for the workflow, organized by what you're trying to do. |
-| [`.claude/README.md`](../../.claude/README.md) | Internal design reference for the system's structure and file layout. |
-| [`.claude/DEFINITION_OF_DONE.md`](../../.claude/DEFINITION_OF_DONE.md) | One canonical "done" bar every command's final READY check runs against — feature works and is demonstrated, existing behavior intact, build/type-check/lint pass, tests updated, docs updated, minimal scoped diff. Explicitly excludes committing, pushing, and opening PRs from the definition of done. |
-| [`.claude/LESSONS.md`](../../.claude/LESSONS.md) | Accumulated lessons from real work in this system (distinct from `docs/agents/learnings.md`, which is Keld's own binding log). |
-| `.claude/agents/` | 12 role agents (backend, frontend, database, devops, QA, security-reviewer, solutions-architect, technical-writer, bug-fixer, business-analyst, domain-expert, git-pr-agent). |
-| `.claude/commands/` | 17 workflow entry points (`/feature-builder`, `/bug-fix`, `/refactor`, `/code-review`, `/onboard-project`, `/architecture-review`, `/estimate`, `/gitpush`, …). |
-| `.claude/skills/` | `project-calibrator`, `scope-router`, `brainstorm`, an empty generated `stack/`, and `standards/` — 10 situational standards (coding, api-design, database-design, testing, security, performance, caching, authentication, accessibility, documentation). |
-| `.claude/templates/` | 5 document templates (architecture doc, PRD, bug report, test plan, UI spec). |
-| `.claude/plans/`, `.claude/settings.local.json`, `.claude/local-env.example.json` | Working plans and local machine configuration. |
-
-Where the two systems disagree about Keld, **`AGENTS.md` and `docs/agents/` win** —
-`.claude/skills/standards/` states its own precedence rule that the repo's established
-conventions override its baseline.
+The root [`AGENTS.md`](../../AGENTS.md) owns the binding repository floor. Always load
+the nearest nested `AGENTS.md` before editing that path. Do not mirror a count or list
+here: `just agents-md` validates the tracked allowlist and required unsafe owners.
 
 ## `docs/onboarding/` — this directory
 
@@ -316,8 +281,9 @@ the optional external KEL-67 memory pilot should also read
    engineering looks like this (four uniques, wry scaffolding, errors, CI, what is
    not next). Narrative, not a new rule layer; [`AGENTS.md`](../../AGENTS.md) still
    binds.
-6. [`docs/engineering/linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md)
-   — Linear vs local `ROADMAP.md` numbering; the gitignored file is not required reading.
+6. [`docs/engineering/product-status.md`](../engineering/product-status.md) and
+   [`linear-roadmap-mapping.md`](../engineering/linear-roadmap-mapping.md) — repository
+   status and the separate Linear-project/product-phase translation.
 7. Query the relevant area in [`docs/agents/learnings.md`](../agents/learnings.md); it is
    load-bearing evidence, not a default full-file read.
 8. Run it: `cargo nextest run --workspace --profile ci`, then `just hello` on the target

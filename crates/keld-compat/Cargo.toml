@@ -1,6 +1,6 @@
 [package]
 name = "keld-compat"
-description = "Electron conformance evidence + lifecycle oracle (KEL-74); destination: host-side protocol/session/webContents emulation"
+description = "Compatibility evidence types and Electron lifecycle oracle"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

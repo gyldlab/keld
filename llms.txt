@@ -28,6 +28,8 @@ This file is generated from tracked authoritative Markdown by `tools/llms_docs.r
 
 ## Engineering
 
+- [Current/target/evidence product status](docs/engineering/product-status.md): Generated repository status ledger; architecture remains normative design and Linear remains live execution state.
+
 - [Decision log](docs/engineering/decisions.md): What we chose, why, what we rejected, and what is not next.
 
 ## Reference

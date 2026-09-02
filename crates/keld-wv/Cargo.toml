@@ -1,6 +1,6 @@
 [package]
 name = "keld-wv"
-description = "Keld's webview engine layer: WKWebView / WebView2 / WebKitGTK behind one trait (pinned engines are a destination option)"
+description = "Keld webview engine abstraction and platform backends"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

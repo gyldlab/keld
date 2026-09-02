@@ -430,7 +430,7 @@ reach for them:
 | What has already bitten someone? | [`docs/agents/learnings.md`](../agents/learnings.md) |
 | What is the system supposed to be? | [`docs/architecture/01..07-*.md`](../architecture/) |
 | Why did we choose this? | [`docs/engineering/decisions.md`](../engineering/decisions.md) (engineering narrative, not RFC 2119). [`AGENTS.md`](../../AGENTS.md) still binds. Canonical categorized `docs/research/library/` is exploratory evidence, not required reading. |
-| When does feature X land? | [`ROADMAP.md`](../../ROADMAP.md) |
+| What is Current versus Target? | Generated [`product-status.md`](../engineering/product-status.md); Linear owns live scheduling |
 | Which of these actually binds me? | [`06-documentation-map.md`](./06-documentation-map.md) |
 
 There is no `.claude/project-calibration.json` and no `project-conventions` skill in this
@@ -440,8 +440,8 @@ repo — if something points you at one, it is describing a different project.
 > engineering docs plus generated `llms.txt` and `llms-full.txt`. `docs/research/` is
 > tracked by its separate nested `0monish/keld-research` checkout and ignored by the
 > Keld monorepo. The generated corpus deliberately excludes research and every
-> unlisted source. `/competitors/`, `/ROADMAP.md`, and `/.claude/` remain
-> local-only under [`.gitignore`](../../.gitignore). `.github/` is tracked (KEL-39).
+> unlisted source. Local-only material cannot be repository-status evidence.
+> `.github/` is tracked (KEL-39).
 
 ---
 

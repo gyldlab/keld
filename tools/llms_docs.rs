@@ -1,9 +1,14 @@
 //! Deterministic generator for Keld's agent-readable documentation corpus.
 
+#[path = "repo_path_contract.rs"]
+mod repo_path_contract;
+
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+
+use repo_path_contract::escapes_public_repo;
 
 const INDEX_OUTPUT: &str = "llms.txt";
 const FULL_OUTPUT: &str = "llms-full.txt";
@@ -73,6 +78,12 @@ const SOURCES: &[Source] = &[
     },
     Source {
         section: "Engineering",
+        title: "Current/target/evidence product status",
+        path: "docs/engineering/product-status.md",
+        description: "Generated repository status ledger; architecture remains normative design and Linear remains live execution state.",
+    },
+    Source {
+        section: "Engineering",
         title: "Decision log",
         path: "docs/engineering/decisions.md",
         description: "What we chose, why, what we rejected, and what is not next.",
@@ -104,18 +115,7 @@ struct LoadedSource {
 }
 
 fn path_escapes_corpus(candidate: &Path) -> bool {
-    let forbidden = [
-        Path::new("docs/research"),
-        Path::new("competitors"),
-        Path::new(".claude"),
-        Path::new("private"),
-        Path::new(".private"),
-    ];
-    candidate.is_absolute()
-        || candidate
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-        || forbidden.iter().any(|prefix| candidate.starts_with(prefix))
+    escapes_public_repo(candidate)
 }
 
 fn docs003(path: &str) -> String {
@@ -463,12 +463,14 @@ mod tests {
         temp.write("docs/research/secret.md", "RESEARCH_SENTINEL");
         temp.write("competitors/private.md", "COMPETITOR_SENTINEL");
         temp.write(".claude/private.md", "PRIVATE_SENTINEL");
+        temp.write("ROADMAP.md", "ROADMAP_SENTINEL");
 
         let (index, full) = render(temp.path(), FIXTURE_SOURCES).expect("render allowlist");
         for sentinel in [
             "RESEARCH_SENTINEL",
             "COMPETITOR_SENTINEL",
             "PRIVATE_SENTINEL",
+            "ROADMAP_SENTINEL",
         ] {
             assert!(!index.contains(sentinel), "{sentinel} leaked into index");
             assert!(!full.contains(sentinel), "{sentinel} leaked into corpus");
@@ -483,6 +485,16 @@ mod tests {
         let error = render(temp.path(), &forbidden).expect_err("forbidden path must fail");
         assert!(error.contains("KELD-DOCS003"), "{error}");
         assert!(error.contains("authoritative docs corpus"), "{error}");
+
+        let roadmap = [Source {
+            section: "Bad",
+            title: "Roadmap",
+            path: "ROADMAP.md",
+            description: "Must be rejected.",
+        }];
+        let error = render(temp.path(), &roadmap).expect_err("gitignored roadmap must fail");
+        assert!(error.contains("KELD-DOCS003"), "{error}");
+        assert!(error.contains("ROADMAP.md"), "{error}");
     }
 
     #[cfg(unix)]
@@ -511,8 +523,9 @@ mod tests {
         std::os::unix::fs::symlink(temp.path().join("docs/research/secret.md"), &link)
             .expect("symlink into forbidden dir");
 
-        let error = render(temp.path(), FIXTURE_SOURCES)
-            .expect_err("symlink into docs/research must fail even though the allowlist path looks safe");
+        let error = render(temp.path(), FIXTURE_SOURCES).expect_err(
+            "symlink into docs/research must fail even though the allowlist path looks safe",
+        );
         assert!(error.contains("KELD-DOCS003"), "{error}");
         assert!(error.contains(FIXTURE_SOURCES[0].path), "{error}");
     }

@@ -58,6 +58,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
+      - name: Product status contract
+        run: |
+          mkdir -p target/product-status
+          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
+          target/product-status/product-status-test
+          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status
+          target/product-status/product-status check .
       - name: Router contract tests
         run: tools/ci_changes_test.sh
       - name: Classify changed-path ownership
@@ -105,6 +112,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
+      - name: Product status Windows path contracts
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir -p target/product-status
+          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test
+          target/product-status/product-status-test
       - name: Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true'
         run: |
@@ -384,10 +397,12 @@ jobs:
         run: |
           rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
           target/ci-hygiene/ci-hygiene check .
-      - name: llms-docs check
+      - name: llms contracts
         if: needs.changes.outputs.docs == 'true'
         run: |
           mkdir -p target/llms-docs
+          rustc --edition=2024 -D warnings --test tools/llms_docs.rs -o target/llms-docs/llms-docs-test
+          target/llms-docs/llms-docs-test
           rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
           target/llms-docs/llms-docs check .
       - name: Mermaid docs contract tests and check

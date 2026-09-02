@@ -5,7 +5,9 @@ Rust core · Bun-powered JS/TS main process · system webviews · security by de
 By [GYLDLAB](https://github.com/gyldlab).
 
 > Status: **pre-alpha** — this checkout contains implementation and tracked architecture
-> specs; private research is maintained in the separate nested research repository.
+> specs. The generated [Current/Target/Evidence ledger](docs/engineering/product-status.md)
+> is the canonical repository-status view; private research is optional evidence in a
+> separate nested repository.
 
 ## The idea in 30 seconds
 
@@ -39,17 +41,17 @@ The target architecture replaces Electron's architecture, not its API:
 - **Delta updates (bsdiff+zstd, signed)** and cross-target-assembled installers;
   signing/notarization remains an exercised per-platform credential flow.
 
-The current implementation is a vertical slice: the CLI can scaffold and diagnose a
-hello project, run an authenticated Bun-to-Rust kipc echo, and open the project HTML in
-the platform webview. Bun supervision, the TypeScript packages, general native brokers,
-packaging, migration, updates, and strict-profile containment remain roadmap work.
+The current implementation is a vertical slice, not the target product. See the
+generated [product-status ledger](docs/engineering/product-status.md) for the exact
+crate, package, phase, platform, and evidence split. Architecture documents continue to
+own target design; Linear owns live execution state.
 
 ## Workspace layout
 
 ```
 crates/   keld-core · keld-wv · keld-ipc · keld-guard · keld-native · keld-runtime
           keld-update · keld-pack · keld-compat · keld-host (bin) · keld-cli (bin)
-packages/ @keld/electron (KEL-72) · @keld/api · @keld/web · @keld/cli · @keld/schema · create-keld (others upcoming)
+packages/ @keld/electron; planned package surfaces are classified in the status ledger
 ```
 
 ## Development
@@ -58,7 +60,7 @@ See [`AGENTS.md`](AGENTS.md) for engineering rules and verification gates.
 
 ```bash
 cargo nextest run --workspace --profile ci
-just hello    # launch the current platform hello backend (Phase 1 slice)
+just hello    # launch the diagnostic hello backend for the current platform
 ```
 
 ## License

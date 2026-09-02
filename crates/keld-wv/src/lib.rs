@@ -1,11 +1,11 @@
 //! keld-wv — the webview engine layer.
 //!
-//! One [`WebEngine`] trait. Live backends: `wkwebview` (macOS), `webview2`
-//! (Windows, KEL-27), `webkitgtk` (Linux, KEL-28). `cef` later behind a
-//! feature flag. Platform extension traits ([`WkWebViewEngineExt`],
+//! One [`WebEngine`] trait with platform backends for `WKWebView`, `WebView2`, and
+//! `WebKitGTK`. Platform extension traits ([`WkWebViewEngineExt`],
 //! [`WebView2EngineExt`], [`WebKitGtkEngineExt`]) are platform-neutral
 //! definitions compiled everywhere. Normative spec:
-//! `docs/architecture/05-webview-and-native.md`. v0 methods: `src/engine.rs`.
+//! `docs/architecture/05-webview-and-native.md`. Methods: `src/engine.rs`.
+//! Repository maturity and evidence live in `docs/engineering/product-status.tsv`.
 //!
 //! Platform backends may use `unsafe` (see crate `AGENTS.md`).
 
