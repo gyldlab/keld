@@ -7,23 +7,6 @@
 //! so the assertion isolates the clock: eight 25 ms-spaced writes must not
 //! stretch a 100 ms admission window toward ~800 ms. The child's pacing
 //! sleeps are the hostile stimulus under test, not synchronization.
-//!
-//! The fixture has two oracles and each is anchored so no scheduler can move
-//! it. `DeadlineElapsed` proves the clock is absolute: the child holds its
-//! last six chunks behind a release line the parent writes *after* starting
-//! the clock, so those chunks need 6 x 25 ms = 150 ms and the 48-byte frame
-//! can never complete inside the 100 ms window, however late the child wakes.
-//! `CHUNK >= 2` proves the child really dripped rather than failing to
-//! connect: its two chunks are written *before* the release and awaited by
-//! the parent before the clock starts, so a slow wake cannot starve them.
-//!
-//! Anchoring only one of the two is not enough, and both directions have been
-//! wrong here. Originally the child dripped from its own `CONNECTED` print,
-//! so any observation latency above ~75 ms let all 48 bytes arrive inside the
-//! window and the peer authenticated. Gating the whole drip behind the
-//! release fixed that and broke the other end: a wake slower than ~100 ms
-//! meant the host closed first and the child produced too few `CHUNK` lines.
-//! Twelve of forty-eight bytes before the clock satisfies both.
 
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
@@ -74,22 +57,6 @@ impl ObservedChild {
             // Coarse parked poll: never competes for the child's CPU.
             std::thread::park_timeout(Duration::from_millis(10));
         }
-    }
-
-    /// Releases a `drip` child that is blocked partway through its drip, so
-    /// the remaining chunks provably land after the parent's generation
-    /// clock. This is the fixture's only parent->child synchronization; the
-    /// 25 ms pacing stays the hostile stimulus.
-    fn release(&mut self) {
-        let stdin = self
-            .0
-            .as_mut()
-            .expect("child present")
-            .stdin
-            .as_mut()
-            .expect("piped stdin");
-        stdin.write_all(b"GO\n").expect("release the drip child");
-        stdin.flush().expect("flush the release");
     }
 
     /// Forwards the child's stdout lines over a channel so the parent can
@@ -151,7 +118,6 @@ fn spawn_child(app_link: &str, mode: &str) -> ObservedChild {
         .args(["--exact", CHILD_ENTRY, "--ignored", "--nocapture"])
         .env(ENDPOINT_ENV, app_link)
         .env(MODE_ENV, mode)
-        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -177,19 +143,8 @@ fn a_byte_drip_child_cannot_renew_a_100ms_generation_deadline() {
     // process spawn latency on a loaded runner. The connect itself is held by
     // the listener backlog / pipe instance until accept.
     let mut transcript = await_line(&lines, "CONNECTED", Duration::from_secs(10));
-    // Drip evidence first: the child writes two chunks unprompted, and the
-    // `CHUNK >= 2` assertion at the end reads them out of this transcript.
-    // Collecting them before the clock is what keeps that assertion immune to
-    // the child's wake latency. Twelve of forty-eight bytes can never
-    // complete the frame, so the peer still cannot authenticate.
-    transcript.extend(await_line(&lines, "CHUNK 1", Duration::from_secs(10)));
     let deadline = Duration::from_millis(100);
     let started = Instant::now();
-    // Order matters: the clock starts, *then* the child is released for its
-    // remaining six chunks. Those need 6 x 25 ms = 150 ms, so the frame
-    // cannot complete inside `deadline` however late the child wakes, and a
-    // late wake now costs only margin on an assertion already satisfied.
-    child.release();
     let admission = listener
         .accept_authenticated_until(started + deadline, &observer)
         .expect("host-side listener must not fail");
@@ -309,22 +264,8 @@ fn drip_child_entry() {
 
     match mode.as_str() {
         "drip" => {
-            // The hostile stimulus: valid bytes, hostile pacing. The first
-            // `PRE_RELEASE_CHUNKS` go out unprompted so the parent can await
-            // them and start its clock on observed progress; the rest wait
-            // for the release so they provably fall inside the window.
-            const PRE_RELEASE_CHUNKS: usize = 2;
+            // The hostile stimulus: valid bytes, hostile pacing.
             for (index, chunk) in frame.chunks(6).enumerate() {
-                if index == PRE_RELEASE_CHUNKS {
-                    let mut go = String::new();
-                    std::io::stdin()
-                        .read_line(&mut go)
-                        .expect("child reads the parent's release line");
-                    assert_eq!(go.trim(), "GO", "unexpected release line from the parent");
-                }
-                if index >= PRE_RELEASE_CHUNKS {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
                 match stream.write_all(chunk).and_then(|()| stream.flush()) {
                     Ok(()) => println!("CHUNK {index}"),
                     Err(err) => {
@@ -334,9 +275,7 @@ fn drip_child_entry() {
                         return;
                     }
                 }
-                if index + 1 < PRE_RELEASE_CHUNKS {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
+                std::thread::sleep(Duration::from_millis(25));
             }
             println!("DRIP_COMPLETE");
             // Drain until the host closes; it must never authenticate us.
