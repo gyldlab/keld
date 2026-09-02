@@ -242,7 +242,7 @@ fn render_index(loaded: &[LoadedSource]) -> String {
         output.push('\n');
     }
     output.push_str(
-         "\n## Corpus policy\n\n\
+        "\n## Corpus policy\n\n\
          `llms-full.txt` contains exactly the sources listed above, in this order. \
          Exploratory research, local-only material, generated outputs not explicitly \
          listed above, and every unlisted document are excluded.\n",

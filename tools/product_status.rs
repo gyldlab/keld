@@ -1214,15 +1214,17 @@ fn links_to_status_ledger(root: &Path, consumer: &str, contents: &str) -> bool {
     links_to_repository_path(root, consumer, contents, LEDGER_REL)
 }
 
-fn links_to_roadmap(contents: &str) -> bool {
-    visible_link_targets(contents).is_some_and(|targets| {
-        targets.iter().any(|link| {
-            link.slash_normalized
-            .rsplit('/')
-            .next()
-            .is_some_and(|name| name.eq_ignore_ascii_case("ROADMAP.md"))
+fn links_to_roadmap(contents: &str) -> Result<bool, ()> {
+    visible_link_targets(contents)
+        .map(|targets| {
+            targets.iter().any(|link| {
+                link.slash_normalized
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("ROADMAP.md"))
+            })
         })
-    })
+        .ok_or(())
 }
 
 fn skip_json_whitespace(bytes: &[u8], index: &mut usize) {
@@ -1505,8 +1507,9 @@ fn workspace_crate_names_with_cargo_home(
     }
     let names = package_names_from_metadata(&metadata.stdout)?;
     if names.is_empty() {
-        return Err("KELD-DOCS004: Cargo.toml workspace has no explicit `crates/*` members."
-            .to_owned());
+        return Err(
+            "KELD-DOCS004: Cargo.toml workspace has no explicit `crates/*` members.".to_owned(),
+        );
     }
     Ok(names)
 }
@@ -1521,12 +1524,7 @@ fn check_root_repo_map(root: &Path, records: &[Record]) -> Result<(), String> {
     }
     let ledger = records
         .iter()
-        .filter_map(|record| {
-            record
-                .id
-                .strip_prefix("crate.")
-                .map(ToOwned::to_owned)
-        })
+        .filter_map(|record| record.id.strip_prefix("crate.").map(ToOwned::to_owned))
         .collect::<BTreeSet<_>>();
     let workspace = workspace_crate_names(root)?;
     if ledger != workspace {
@@ -1568,10 +1566,18 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
     }
     for relative in ROADMAP_AUTHORITY_CONSUMERS {
         let contents = read_required(root, relative)?;
-        if links_to_roadmap(&contents) {
-            return Err(format!(
-                "KELD-DOCS005: `{relative}` still links gitignored ROADMAP.md from an authority-bearing status surface. Point it at `{OUTPUT_REL}`."
-            ));
+        match links_to_roadmap(&contents) {
+            Ok(true) => {
+                return Err(format!(
+                    "KELD-DOCS005: `{relative}` still links gitignored ROADMAP.md from an authority-bearing status surface. Point it at `{OUTPUT_REL}`."
+                ));
+            }
+            Ok(false) => {}
+            Err(()) => {
+                return Err(format!(
+                    "KELD-DOCS005: `{relative}` contains visible Markdown links that the status checker cannot parse. Fix the malformed link before validating ROADMAP authority."
+                ));
+            }
         }
     }
     let doc_map = read_required(root, "docs/onboarding/06-documentation-map.md")?;
@@ -2549,6 +2555,17 @@ mod tests {
             "# Development\n\n[status](../engineering/product-status.md)\n\n[old status](../../ROADMAP.md)\n",
         );
         expect_check_error(&temp, "still links gitignored ROADMAP.md");
+    }
+
+    #[test]
+    fn malformed_link_cannot_hide_later_roadmap_authority() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[bad](<status.md>suffix)\n[old status](../../ROADMAP.md)\n",
+        );
+        expect_check_error(&temp, "cannot parse");
     }
 
     #[test]
