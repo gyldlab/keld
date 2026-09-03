@@ -1416,6 +1416,31 @@ fn renderer_beacon_reports_its_absolute_deadline_instead_of_disconnect() {
 }
 
 #[test]
+fn renderer_beacon_empty_preconnect_does_not_renew_the_deadline() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind preconnect deadline listener");
+    let address = listener.local_addr().expect("preconnect deadline address");
+    drop(TcpStream::connect(address).expect("queue empty preconnect before deadline"));
+
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        observed_tx
+            .send(result)
+            .expect("publish preconnect deadline result");
+    });
+
+    let result = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("empty preconnect retained the original absolute deadline");
+    assert_eq!(
+        result,
+        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+    );
+    beacon.join().expect("preconnect deadline thread");
+}
+
+#[test]
 fn renderer_beacon_ignores_only_a_reset_before_request_bytes() {
     let empty = read_renderer_request_line(|_| {
         Err(std::io::Error::new(
