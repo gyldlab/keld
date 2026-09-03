@@ -269,9 +269,9 @@ ts_package_consumer_packages() {
     done < <(grep -rlF --exclude-dir=target -- "$package_dir" "$repo_root/crates" 2>/dev/null || true)
 }
 
-# A Bun suite root is a package.json directory that owns at least one file
-# `bun test` would actually run. The fixtures package owns none: it is spawned
-# by the Rust conformance test, not by `bun test`.
+# Print every file below a package directory that `bun test` would actually
+# run. Keeping this discovery in one helper lets both suite selection and
+# cross-tree fixture consumers follow the same pinned Bun contract.
 #
 # The shapes below mirror bun 1.4.0's own discovery, measured rather than read
 # off its error text (which understates the set). Of 21 planted filenames it
@@ -286,17 +286,10 @@ ts_package_consumer_packages() {
 # Bun's side cannot fail it — re-measure when the pinned version moves. KEL-115's
 # receipt — the lane reporting which suites it actually ran — removes the
 # duplication entirely and is the real fix.
-ts_test_package_dirs() {
-    local repo_root
-    repo_root="$(git rev-parse --show-toplevel)"
-    [[ -d "$repo_root/packages" ]] || return 0
-    local manifest
-    local dir
-    while IFS= read -r manifest; do
-        [[ -z "$manifest" ]] && continue
-        dir="${manifest%/package.json}"
-        if [[ -n "$(find "$dir" -name node_modules -prune -o \
-            \( -iname '*.test.ts' -o -iname '*.test.tsx' -o -iname '*.test.js' \
+ts_test_files_in_dir() {
+    local dir="$1"
+    find "$dir" -name node_modules -prune -o \
+        \( -iname '*.test.ts' -o -iname '*.test.tsx' -o -iname '*.test.js' \
             -o -iname '*.test.jsx' -o -iname '*.test.mts' -o -iname '*.test.cts' \
             -o -iname '*.test.mjs' -o -iname '*.test.cjs' \
             -o -iname '*.spec.ts' -o -iname '*.spec.tsx' -o -iname '*.spec.js' \
@@ -307,10 +300,67 @@ ts_test_package_dirs() {
             -o -iname '*_test.mjs' -o -iname '*_test.cjs' \
             -o -iname '*_spec.ts' -o -iname '*_spec.tsx' -o -iname '*_spec.js' \
             -o -iname '*_spec.jsx' -o -iname '*_spec.mts' -o -iname '*_spec.cts' \
-            -o -iname '*_spec.mjs' -o -iname '*_spec.cjs' \) -print -quit)" ]]; then
+            -o -iname '*_spec.mjs' -o -iname '*_spec.cjs' \) -print0
+}
+
+# A Bun suite root is a package.json directory that owns at least one test
+# file. The fixtures package owns none: it is spawned by the Rust conformance
+# test, not by `bun test`.
+ts_test_package_dirs() {
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel)"
+    [[ -d "$repo_root/packages" ]] || return 0
+    local manifest
+    local dir
+    local test_file
+    while IFS= read -r manifest; do
+        [[ -z "$manifest" ]] && continue
+        dir="${manifest%/package.json}"
+        if IFS= read -r -d '' test_file < <(ts_test_files_in_dir "$dir"); then
             printf '%s\n' "${dir#"$repo_root"/}"
         fi
     done < <(find "$repo_root/packages" -name package.json -not -path '*/node_modules/*' -print)
+}
+
+# A crate fixture can also be an input to Bun tests. Cargo metadata cannot
+# express this crate-fixture -> npm-package edge, so derive it from actual Bun
+# test files that name the changed path. Searching only suite roots preserves
+# the existing no-empty-selection contract and excludes source-only mentions.
+ts_fixture_consumer_package_dirs() {
+    local changed_file="$1"
+    local repo_root
+    repo_root="$(git rev-parse --show-toplevel)"
+    local package_dir
+    local test_file
+    local grep_status
+    while IFS= read -r package_dir; do
+        [[ -z "$package_dir" ]] && continue
+        while IFS= read -r -d '' test_file; do
+            if grep -Fq -- "$changed_file" "$test_file"; then
+                printf '%s\n' "$package_dir"
+                break
+            else
+                grep_status=$?
+                if [[ "$grep_status" -gt 1 ]]; then
+                    return 1
+                fi
+            fi
+        done < <(ts_test_files_in_dir "$repo_root/$package_dir")
+    done < <(ts_test_package_dirs)
+}
+
+resolve_crate_fixture_consumers() {
+    local changed_file="$1"
+    local consumers
+    local package_dir
+    if ! consumers="$(ts_fixture_consumer_package_dirs "$changed_file")"; then
+        mark_unknown
+        return
+    fi
+    for package_dir in $consumers; do
+        ts="$TRUE"
+        add_changed_ts_package_dir "$package_dir"
+    done
 }
 
 # Runs before the Rust selection so a derived crate consumer joins the same
@@ -469,6 +519,9 @@ classify_path() {
 
         crates/*)
             rust="$TRUE"
+            case "$changed_file" in
+                crates/*/tests/fixtures/*) resolve_crate_fixture_consumers "$changed_file" ;;
+            esac
             local package_name
             if ! package_name="$(package_for_path "$changed_file")"; then
                 mark_unknown

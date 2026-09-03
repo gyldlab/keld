@@ -95,6 +95,7 @@ hygiene_only=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny
 docs_hygiene=$'rust=false\ndocs=true\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=false\nwebkitgtk=false'
 host_dependency=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 compat_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
+ipc_fixture_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=true\nwebkitgtk=true'
 # A TypeScript package change owns the Bun lane and the crates that read that
 # package directory (keld-compat spawns the @keld/electron fixtures). It cannot
 # change rustc, the workspace dependency policy, or the host window, so MSRV,
@@ -152,6 +153,10 @@ expect_package_token "compat-only change includes its owner package" keld-compat
 compat_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
 expect_flags "Rust-only change does not select the TypeScript lane" "$compat_flags" "$compat_test_classification"
 expect_empty_output "Rust-only change selects no Bun suite" ts_packages "$compat_test_classification"
+
+ipc_fixture_classification="$(result_for_paths crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv)"
+expect_flags "shared IPC fixture change runs the Bun lane" "$ipc_fixture_flags" "$ipc_fixture_classification"
+expect_output_package_token "shared IPC fixture change selects its consuming Bun suite" ts_packages packages/@keld/electron "$ipc_fixture_classification"
 
 ts_classification="$(result_for_paths packages/@keld/electron/src/link.ts)"
 expect_flags "TypeScript package change runs the Bun lane and its Rust consumer only" "$ts_flags" "$ts_classification"
@@ -404,11 +409,20 @@ for shape in plain.ts test.ts tests.ts; do
 done
 echo "ok: router suite discovery matches bun 1.4.0 across all 32 patterns, 4 case variants and 3 skipped shapes"
 
+# A crate fixture with no Bun test consumer must not select the TypeScript
+# lane merely because it lives under tests/fixtures. The matching case below
+# then proves the edge is derived from the checked-out test reference.
+fixture_path='crates/keld-ipc/tests/fixtures/shared.tsv'
+fixture_without_consumer="$(cd "$temp_dir" && printf '%s\0' "$fixture_path" | PATH="$temp_dir/fake-bin:$PATH" "$router" classify)"
+fake_fixture_without_consumer=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=false'
+expect_flags "unreferenced crate fixture does not invent a Bun consumer" "$fake_fixture_without_consumer" "$fixture_without_consumer"
+expect_empty_output "unreferenced crate fixture selects no Bun suite" ts_packages "$fixture_without_consumer"
+
 # A Bun suite the Keld workspace does not own: this fixture proves the lane is
 # derived from the checked-out packages/ tree, not from a hard-coded path.
 mkdir -p "$temp_dir/packages/@fake/pkg/src"
 printf '{"name":"@fake/pkg","type":"module"}\n' >"$temp_dir/packages/@fake/pkg/package.json"
-printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/pkg/src/unit.test.ts"
+printf 'import { test } from "bun:test"; // %s\n' "$fixture_path" >"$temp_dir/packages/@fake/pkg/src/unit.test.ts"
 git -C "$temp_dir" add packages
 git -C "$temp_dir" commit -qm packages
 ts_sha="$(git -C "$temp_dir" rev-parse HEAD)"
@@ -417,6 +431,11 @@ fake_ts_flags=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\nde
 expect_flags "pull-request TypeScript-only diff runs the Bun lane with no Rust consumer" "$fake_ts_flags" "$ts_pr_result"
 expect_output_package_token "pull-request TypeScript-only diff selects the changed Bun suite" ts_packages 'packages/@fake/pkg' "$ts_pr_result"
 expect_empty_packages "pull-request TypeScript-only diff selects no workspace package" "$ts_pr_result"
+
+fixture_with_consumer="$(cd "$temp_dir" && printf '%s\0' "$fixture_path" | PATH="$temp_dir/fake-bin:$PATH" "$router" classify)"
+fake_fixture_with_consumer=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=true\nwebkitgtk=false'
+expect_flags "crate fixture discovers a checked-out Bun test consumer" "$fake_fixture_with_consumer" "$fixture_with_consumer"
+expect_output_package_token "crate fixture selects the discovered Bun suite" ts_packages 'packages/@fake/pkg' "$fixture_with_consumer"
 
 ts_push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$untested_sha" GITHUB_SHA="$ts_sha" "$router" github)"
 expect_flags "push TypeScript-only diff runs the Bun lane" "$fake_ts_flags" "$ts_push_result"
