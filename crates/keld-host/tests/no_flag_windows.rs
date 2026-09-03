@@ -30,7 +30,7 @@ use windows_sys::Win32::System::Threading::{
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
-const RENDERER_PRECONNECT_IDLE_LIMIT: Duration = Duration::from_millis(250);
+const RENDERER_CONNECTION_LIMIT: usize = 16;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
@@ -1239,10 +1239,23 @@ fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<Result<
     let _ = observed.send(result);
 }
 
+struct PendingRendererRequest {
+    stream: TcpStream,
+    request: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RendererRequestRead {
+    Pending,
+    Empty,
+    Complete(Vec<u8>),
+}
+
 fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
+    let mut pending = Vec::<PendingRendererRequest>::new();
 
     loop {
         let remaining = deadline
@@ -1251,66 +1264,81 @@ fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Res
             .ok_or_else(|| {
                 "renderer beacon deadline elapsed before the exact request".to_owned()
             })?;
-        let (mut stream, _) = match listener.accept() {
-            Ok(accepted) => accepted,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                // This only backs off the nonblocking kernel poll; the socket
-                // readiness and absolute deadline remain the observables.
-                thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
-                continue;
+
+        loop {
+            let (stream, _) = match listener.accept() {
+                Ok(accepted) => accepted,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(format!("accept renderer beacon: {error}")),
+            };
+            if pending.len() == RENDERER_CONNECTION_LIMIT {
+                return Err(format!(
+                    "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+                ));
             }
-            Err(error) => return Err(format!("accept renderer beacon: {error}")),
-        };
-        stream
-            .set_nonblocking(false)
-            .map_err(|error| format!("set renderer beacon stream blocking: {error}"))?;
-
-        let Some(request) = read_renderer_request_line(|buffer| {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "renderer beacon absolute deadline elapsed",
-                    )
-                })?;
-            stream.set_read_timeout(Some(remaining.min(RENDERER_PRECONNECT_IDLE_LIMIT)))?;
-            stream.read(buffer)
-        })?
-        else {
-            // WebView2 may preconnect and close without an HTTP request. That
-            // connection carries no renderer evidence, so keep the same
-            // absolute deadline and await the actual request.
-            continue;
-        };
-
-        if !request.starts_with(b"GET /ready.png ") {
-            return Err(format!(
-                "renderer requested an unexpected beacon: {}",
-                String::from_utf8_lossy(&request)
-            ));
+            stream
+                .set_nonblocking(true)
+                .map_err(|error| format!("set renderer beacon stream nonblocking: {error}"))?;
+            pending.push(PendingRendererRequest {
+                stream,
+                request: Vec::new(),
+            });
         }
 
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| "renderer beacon deadline elapsed before the HTTP reply".to_owned())?;
-        stream
-            .set_write_timeout(Some(remaining))
-            .map_err(|error| format!("set renderer beacon write deadline: {error}"))?;
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .map_err(|error| format!("reply renderer beacon: {error}"))?;
-        return Ok(());
+        let mut index = 0;
+        while index < pending.len() {
+            let request = {
+                let PendingRendererRequest { stream, request } = &mut pending[index];
+                read_renderer_request_line(request, |buffer| stream.read(buffer))
+            }?;
+            match request {
+                RendererRequestRead::Pending => index += 1,
+                RendererRequestRead::Empty => {
+                    pending.swap_remove(index);
+                }
+                RendererRequestRead::Complete(request) => {
+                    let mut matched = pending.swap_remove(index);
+                    if !request.starts_with(b"GET /ready.png ") {
+                        return Err(format!(
+                            "renderer requested an unexpected beacon: {}",
+                            String::from_utf8_lossy(&request)
+                        ));
+                    }
+                    let remaining = deadline
+                        .checked_duration_since(Instant::now())
+                        .filter(|remaining| !remaining.is_zero())
+                        .ok_or_else(|| {
+                            "renderer beacon deadline elapsed before the HTTP reply".to_owned()
+                        })?;
+                    matched.stream.set_nonblocking(false).map_err(|error| {
+                        format!("set renderer beacon reply stream blocking: {error}")
+                    })?;
+                    matched
+                        .stream
+                        .set_write_timeout(Some(remaining))
+                        .map_err(|error| format!("set renderer beacon write deadline: {error}"))?;
+                    matched
+                        .stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .map_err(|error| format!("reply renderer beacon: {error}"))?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // This only backs off the nonblocking kernel poll; socket readiness
+        // and the single absolute deadline remain the observables.
+        thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
     }
 }
 
 fn read_renderer_request_line(
+    request: &mut Vec<u8>,
     mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<RendererRequestRead, String> {
     const REQUEST_LINE_LIMIT: usize = 2048;
-    let mut request = Vec::new();
     loop {
         if request.len() == REQUEST_LINE_LIMIT {
             return Err(format!(
@@ -1321,17 +1349,20 @@ fn read_renderer_request_line(
         let available = (REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
         let read = match read_chunk(&mut chunk[..available]) {
             Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(RendererRequestRead::Pending);
+            }
+            Err(error) if request.is_empty() && error.kind() == std::io::ErrorKind::TimedOut => {
+                return Ok(RendererRequestRead::Pending);
+            }
             Err(error)
                 if request.is_empty()
                     && matches!(
                         error.kind(),
-                        std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::ConnectionAborted
-                            | std::io::ErrorKind::TimedOut
-                            | std::io::ErrorKind::WouldBlock
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
                     ) =>
             {
-                return Ok(None);
+                return Ok(RendererRequestRead::Empty);
             }
             Err(error)
                 if matches!(
@@ -1348,18 +1379,19 @@ fn read_renderer_request_line(
         };
         if read == 0 {
             return if request.is_empty() {
-                Ok(None)
+                Ok(RendererRequestRead::Empty)
             } else {
                 Err(format!(
                     "renderer beacon request ended before CRLF: {}",
-                    String::from_utf8_lossy(&request)
+                    String::from_utf8_lossy(request)
                 ))
             };
         }
         request.extend_from_slice(&chunk[..read]);
         if let Some(line_end) = request.windows(2).position(|bytes| bytes == b"\r\n") {
-            request.truncate(line_end);
-            return Ok(Some(request));
+            let mut complete = std::mem::take(request);
+            complete.truncate(line_end);
+            return Ok(RendererRequestRead::Complete(complete));
         }
     }
 }
@@ -1372,15 +1404,18 @@ fn renderer_beacon_accumulates_a_fragmented_request_line() {
         b"\nHost: 127.0.0.1\r\n\r\n".as_slice(),
     ]
     .into_iter();
-    let request = read_renderer_request_line(|buffer| {
+    let mut request = Vec::new();
+    let result = read_renderer_request_line(&mut request, |buffer| {
         let chunk = chunks.next().unwrap_or_default();
         buffer[..chunk.len()].copy_from_slice(chunk);
         Ok(chunk.len())
     })
-    .expect("read fragmented renderer request")
-    .expect("fragmented request is not empty");
+    .expect("read fragmented renderer request");
 
-    assert_eq!(request, b"GET /ready.png HTTP/1.1");
+    assert_eq!(
+        result,
+        RendererRequestRead::Complete(b"GET /ready.png HTTP/1.1".to_vec())
+    );
 }
 
 #[test]
@@ -1404,20 +1439,28 @@ fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
 }
 
 #[test]
-fn renderer_beacon_does_not_let_an_idle_preconnect_block_the_exact_request() {
+fn renderer_beacon_does_not_serialize_idle_preconnects_before_the_exact_request() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind idle-preconnect listener");
     let address = listener.local_addr().expect("idle-preconnect address");
-    let idle = TcpStream::connect(address).expect("queue idle preconnect");
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let beacon = thread::spawn(move || serve_renderer_beacon_until(&listener, deadline));
+    let idle = (0..5)
+        .map(|_| TcpStream::connect(address).expect("queue idle preconnect"))
+        .collect::<Vec<_>>();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        let _ = observed_tx.send(result);
+    });
 
     let mut target = TcpStream::connect(address).expect("connect exact request behind idle peer");
     target
         .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .expect("write exact request behind idle peer");
 
-    let result = beacon.join().expect("idle-preconnect beacon thread");
+    let observed = observed_rx.recv_timeout(Duration::from_secs(1));
     drop(idle);
+    beacon.join().expect("idle-preconnect beacon thread");
+    let result = observed.expect("idle peers serialized ahead of the exact request");
     assert_eq!(result, Ok(()));
 }
 
@@ -1473,18 +1516,26 @@ fn renderer_beacon_ignores_only_idle_or_reset_before_request_bytes() {
     for kind in [
         std::io::ErrorKind::ConnectionReset,
         std::io::ErrorKind::ConnectionAborted,
-        std::io::ErrorKind::TimedOut,
-        std::io::ErrorKind::WouldBlock,
     ] {
-        let empty = read_renderer_request_line(|_| {
+        let mut request = Vec::new();
+        let empty = read_renderer_request_line(&mut request, |_| {
             Err(std::io::Error::new(kind, "empty preconnect ended"))
         })
-        .expect("pre-request close or idle is an empty preconnect");
-        assert_eq!(empty, None);
+        .expect("pre-request close is an empty preconnect");
+        assert_eq!(empty, RendererRequestRead::Empty);
+    }
+    for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::WouldBlock] {
+        let mut request = Vec::new();
+        let idle = read_renderer_request_line(&mut request, |_| {
+            Err(std::io::Error::new(kind, "empty preconnect ended"))
+        })
+        .expect("pre-request idle remains pending");
+        assert_eq!(idle, RendererRequestRead::Pending);
     }
 
     let mut first = true;
-    let partial = read_renderer_request_line(|buffer| {
+    let mut request = Vec::new();
+    let partial = read_renderer_request_line(&mut request, |buffer| {
         if first {
             first = false;
             buffer[..3].copy_from_slice(b"GET");
