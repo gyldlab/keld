@@ -645,6 +645,10 @@ Renderer sandbox is a different column.
       hostile passes, host-only death of a four-process enrolled tree plus
       relaunch, and Bun 1.4.0 artifact
       `sha256:33d56b070be6a9e3da0ab013038b43d1645d0534ca811ecdba4472599117eb4b`.
+      GitHub's Ubuntu 24.04 runner also follows upstream Bubblewrap commit
+      `f97804f5171f9416daa37a83e07ea5c264ffc383` by explicitly enabling
+      unprivileged user namespaces; without it the retained negative run fails
+      at `RTM_NEWADDR` before readiness instead of retrying or skipping T4.
       The x86_64 synthetic artifact/profile pair is
       `sha256:ab22905265b58872b623db895326f853beb9e3d02aa2ed39677071f07aaa3247` /
       `sha256:9aeadfa21b677cef63167f7445548bff9e8299ea432e70aaa208ae6d40de7b2c`.

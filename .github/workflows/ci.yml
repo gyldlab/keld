@@ -126,6 +126,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev pkg-config build-essential
+      # Ubuntu 24.04's AppArmor sysctl can admit the user namespace but deny
+      # Bubblewrap's network-namespace loopback setup. Upstream Bubblewrap uses
+      # this exact CI prerequisite for its own Ubuntu 24.04 smoke tests (#728).
+      - name: Enable unprivileged user namespaces for Linux strict tests
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # Exact pin (KEL-77): Bun 1.4.0 fixed kill-after-exit. Do not float `latest`.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
