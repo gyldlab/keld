@@ -45,7 +45,9 @@ rejects remote clients and has one protected allow ACE for the host's current
 `TokenUser` SID with mask `0x0012_019B`. Both transports
 require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
-`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
+`<endpoint>#<64 hex chars>`. Invalid endpoint/token text is `KELD-IPC-007`
+before connect. On the wire, a wrong `HELLO` shape is `KELD-IPC-005`, while
+`KELD-IPC-007` is reserved for an exactly shaped foreign token (§2). The
 shipping `keld dev` path keeps the listener and supervised Bun live for the hello
 window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
 same listener. Decimal loopback endpoints remain explicit client-only diagnostic
@@ -109,11 +111,16 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   (`crates/keld-cli/templates/hello/src/kipc.ts`) speaks only the ungated echo
   channel and does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
-  (KEL-60). It is raw bytes, not postcard. Empty, truncated, or mismatched tokens
-  are `KELD-IPC-007`. The client writes `HELLO` first. The server reads and
-  verifies before writing its own `HELLO`, so a connector that does not already
-  possess the token never learns it from the wire. This proves possession of the
-  session token; it is not a principal id (peers still do not self-identify). KEL-75's
+  (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
+  requires `kind=HELLO`, zero flags/channel/correlation, and declared payload
+  length 32. A shape mismatch is `KELD-IPC-005`; `KELD-IPC-007` is reserved for
+  an exactly shaped `HELLO` carrying a foreign token. A peer that declares 32
+  bytes but closes or stalls before sending them fails as I/O (`KELD-IPC-001`)
+  or deadline (`KELD-IPC-006`), not semantic shape or token identity. The client
+  writes `HELLO` first. The server reads and verifies before writing its own
+  `HELLO`, so a connector that does not already possess the token never learns
+  it from the wire. This proves possession of the session token; it is not a
+  principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
   deadline. Its platform `BootstrapListener` primitive is live and used by the host-owned
   echo server (`keld-core`) plus the T1b Unix and T8 Windows primary-generation

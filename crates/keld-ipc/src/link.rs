@@ -597,8 +597,8 @@ fn verify_hello_token(payload: &[u8], token: &SessionToken) -> Result<(), IpcErr
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`,
-/// [`IpcError::HelloAuth`] if the token is missing or wrong, or
+/// Returns [`IpcError::Protocol`] if the peer sends a wrong frame or `HELLO`
+/// shape, [`IpcError::HelloAuth`] for an exactly shaped foreign token, or
 /// [`IpcError::Timeout`] if the peer stays silent past the stream deadline.
 pub fn handshake_client<S: Read + Write>(
     stream: &mut S,

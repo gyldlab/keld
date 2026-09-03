@@ -67,10 +67,12 @@ remote-client rejection, and deletes an instance after its last handle closes
    the client mask, then Windows returns `ERROR_ACCESS_DENIED`; no host session
    is accepted, and the intended child can subsequently authenticate.
 4. Given a same-user client with pipe name but no token, when it sends a complete
-   empty, wrong-length, or foreign `HELLO`, then it receives no host `HELLO`, `ERR`,
-   or echo reply; the host records exactly one redacted `HelloAuth`/
-   `KELD-IPC-007` record, disconnects that client, and continues accepting until the
-   legitimate child succeeds or admission expires. Every other pre-authentication
+   empty or wrong-length `HELLO`, or an exactly shaped `HELLO` carrying a foreign
+   token, then it receives no host `HELLO`, `ERR`, or echo reply; the host records
+   exactly one redacted `Protocol`/`KELD-IPC-005` record for the malformed shape,
+   or `HelloAuth`/`KELD-IPC-007` only for the exactly shaped foreign token,
+   disconnects that client, and continues accepting until the legitimate child
+   succeeds or admission expires. Every other pre-authentication
    failure has the exact existing-code host record in §4's admission mapping: EOF or
    non-timeout I/O is `KELD-IPC-001`; a started partial frame that reaches
    `APP_LINK_IO_DEADLINE` is `KELD-IPC-006`; a malformed header is
@@ -100,9 +102,11 @@ remote-client rejection, and deletes an instance after its last handle closes
    client consumes it during migration, then it remains an explicit compatibility
    path only. A new Windows host never mints a port or falls back to TCP; an
    unrecognized endpoint is `KELD-IPC-007`.
-10. Given a transport open failure, deadline, or token failure, then it maps to
-    `KELD-IPC-001`, `KELD-IPC-006`, or `KELD-IPC-007` respectively. No new wire
-    error exists and no error echoes a token or the full `KELD_APP_LINK` string.
+10. Given a transport open failure, deadline, invalid endpoint/token text before
+    connect, `HELLO` semantic-shape failure, or exactly shaped foreign token, then
+    it maps to `KELD-IPC-001`, `KELD-IPC-006`, `KELD-IPC-007`, `KELD-IPC-005`, or
+    `KELD-IPC-007` respectively. No new wire error exists and no error echoes a
+    token or the full `KELD_APP_LINK` string.
 
 ## 4. Design
 
@@ -284,7 +288,7 @@ supplied string.
 | --- | --- | --- |
 | `CreateNamedPipeW`/`CreateFileW`/close error, including DACL denial | `KELD-IPC-001` | Never token or full link |
 | Connect, HELLO, started-read, or started-write deadline | `KELD-IPC-006` | Never token/raw prefix |
-| Invalid token | Peer sees close/`KELD-IPC-001`; host observer sees `KELD-IPC-007` | Host does not send HELLO first |
+| Exactly shaped foreign `HELLO` token | Peer sees close/`KELD-IPC-001`; host observer sees `KELD-IPC-007` | Host does not send HELLO first |
 | Invalid endpoint/token text before connect | `KELD-IPC-007` | State syntax only |
 
 ### Required Electron migration conformance entry

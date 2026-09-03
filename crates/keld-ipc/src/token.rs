@@ -103,6 +103,9 @@ impl SessionToken {
     /// # Errors
     ///
     /// Returns [`IpcError::HelloAuth`] if `bytes` is not exactly 32 bytes.
+    /// Live handshake receivers validate the declared `HELLO` shape before
+    /// calling this constructor; a wrong declared length is therefore
+    /// [`IpcError::Protocol`], not this constructor's authentication error.
     pub fn try_from_slice(bytes: &[u8]) -> Result<Self, IpcError> {
         let Ok(arr) = <[u8; SESSION_TOKEN_LEN]>::try_from(bytes) else {
             return Err(IpcError::HelloAuth {

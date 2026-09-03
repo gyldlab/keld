@@ -262,7 +262,7 @@ What this actually establishes, and what it doesn't:
 |---|---|
 | "Handshake: version + channel table exchange" | Version + **session token**. **No channel table** — both sides hardcode channel `0`, `ECHO_CHANNEL`, `FS_CHANNEL`, and `LIFECYCLE_CHANNEL` |
 | "versioned at handshake" | Strict equality: a peer on any version other than `2` is rejected by `decode` before `handshake_client` / `handshake_server` even inspects the frame. No negotiation, no range, no downgrade |
-| HELLO payload | 32 raw bytes (KEL-60). Empty, truncated, or mismatched tokens are `KELD-IPC-007`. The channel table will still have to live here later |
+| HELLO payload | 32 raw bytes (KEL-60). Shape is checked before token comparison: `kind=HELLO`, zero flags/channel/correlation, and declared length 32; a mismatch is `KELD-IPC-005`, while only an exactly shaped foreign token is `KELD-IPC-007`. The channel table will still have to live here later |
 
 The token is minted by the host (`getrandom::fill`) and passed to the child in
 `KELD_APP_LINK` as `<endpoint>#<64 hex chars>`. Unix binds inside a `0o700`

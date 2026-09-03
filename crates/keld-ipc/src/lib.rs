@@ -101,7 +101,8 @@ pub enum IpcError {
         /// Short explanation for logs/tests.
         detail: &'static str,
     },
-    /// `HELLO` session token missing, malformed, or mismatched.
+    /// Bootstrap-token parsing/construction failure, or an exactly shaped
+    /// foreign `HELLO` token.
     HelloAuth {
         /// Short explanation for logs/tests. Must not contain the token.
         detail: &'static str,
@@ -142,8 +143,10 @@ impl core::fmt::Display for IpcError {
                 f,
                 "KELD-IPC-007: HELLO session token rejected — {detail}. \
                  Mint the token with the host (`keld dev`) into KELD_APP_LINK \
-                 as `<endpoint>#<64 hex chars>` and send those 32 bytes as the \
-                 HELLO payload; empty or foreign tokens are rejected."
+                 as `<endpoint>#<64 hex chars>` and send those exact 32 bytes as \
+                 the HELLO payload. A wrong HELLO semantic shape is KELD-IPC-005; \
+                 KELD-IPC-007 is reserved for invalid bootstrap token text or an \
+                 exactly shaped foreign token."
             ),
             Self::Timeout => write!(
                 f,
@@ -318,12 +321,15 @@ mod tests {
             "KELD-IPC-005",
             "session contract",
         );
-        assert_code_and_fix(
-            &IpcError::HelloAuth {
-                detail: "HELLO session token mismatch",
-            },
-            "KELD-IPC-007",
-            "KELD_APP_LINK",
+        let hello_auth = IpcError::HelloAuth {
+            detail: "HELLO session token mismatch",
+        };
+        assert_code_and_fix(&hello_auth, "KELD-IPC-007", "KELD_APP_LINK");
+        let hello_auth_message = hello_auth.to_string();
+        assert!(
+            hello_auth_message.contains("wrong HELLO semantic shape is KELD-IPC-005")
+                && hello_auth_message.contains("exactly shaped foreign token"),
+            "HELLO auth guidance must distinguish shape from token identity: {hello_auth_message}"
         );
         assert_code_and_fix(&IpcError::Timeout, "KELD-IPC-006", "deadline");
         assert_code_and_fix(
