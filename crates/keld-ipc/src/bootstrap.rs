@@ -207,7 +207,7 @@ fn peer_handshake_window(
     let timeout = match generation_deadline {
         Some(deadline) => deadline
             .checked_duration_since(started)?
-            .max(handshake_limit),
+            .min(handshake_limit),
         None => handshake_limit,
     };
     if timeout.is_zero() {
