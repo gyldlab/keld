@@ -246,6 +246,16 @@ mod tests {
         assert!(main.contains("KELD-CLI-010"), "{main}");
         assert!(main.contains("KELD_APP_LINK"), "{main}");
         assert!(main.contains("AppLinkSession"), "{main}");
+        assert!(main.contains("export class AppLinkSession"), "{main}");
+        assert!(
+            main.contains("export async function echoRoundtrip"),
+            "{main}"
+        );
+        assert!(main.contains("Bun.connect"), "{main}");
+        assert!(
+            !main.contains("from \"./kipc\""),
+            "the configured entry must be self-contained after staging: {main}"
+        );
         assert!(
             !main.contains("ipc-client"),
             "KEL-30: template must speak kipc directly, not shell out: {main}"
@@ -260,13 +270,12 @@ mod tests {
         );
         assert!(!main.contains("{{name}}"), "{main}");
 
-        let kipc = fs::read_to_string(root.join("src/kipc.ts")).expect("kipc");
-        assert!(kipc.contains("export class AppLinkSession"), "{kipc}");
+        let kipc = fs::read_to_string(root.join("src/kipc.ts")).expect("kipc facade");
+        assert_eq!(kipc, "export * from \"./main\";\n");
         assert!(
-            kipc.contains("export async function echoRoundtrip"),
-            "{kipc}"
+            !kipc.contains("class AppLinkSession") && !kipc.contains("Bun.connect"),
+            "the compatibility facade must not duplicate the wire client: {kipc}"
         );
-        assert!(kipc.contains("Bun.connect"), "{kipc}");
 
         let gitignore = fs::read_to_string(root.join(".gitignore")).expect("gitignore");
         assert!(gitignore.contains("node_modules/"), "{gitignore}");

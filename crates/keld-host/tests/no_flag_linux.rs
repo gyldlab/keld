@@ -68,6 +68,36 @@ fn linux_stage_is_owner_private_new_inode_and_byte_consistent() {
 }
 
 #[test]
+fn linux_stock_create_entry_is_self_contained_after_staging() {
+    let root = tempfile::tempdir().expect("stock create root");
+    let project = keld_cli::create::create_project(root.path(), "stock-app")
+        .expect("create untouched stock app");
+    let stage =
+        keld_cli::boot::stage_dev_boot(&project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
+            .expect("stage untouched stock app");
+
+    let output = Command::new("bun")
+        .arg(stage.root().join("src/main.ts"))
+        .current_dir(stage.root())
+        .env_remove("KELD_APP_LINK")
+        .output()
+        .expect("run the staged stock entry with Bun");
+    assert!(
+        !output.status.success(),
+        "missing app link must fail closed"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stock entry stderr UTF-8");
+    assert!(
+        stderr.contains("KELD-CLI-010: KELD_APP_LINK is unset"),
+        "the staged entry must parse and reach its own missing-link guard: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Cannot find module"),
+        "the stock entry must not depend on an unstaged source module: {stderr}"
+    );
+}
+
+#[test]
 fn linux_invalid_boot_and_lease_fail_before_app_resources() {
     let fixture = StageFixture::new();
     let stage = keld_cli::boot::stage_dev_boot(
@@ -494,8 +524,8 @@ impl ProductFixture {
         let root = tempfile::tempdir().expect("product fixture root");
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
             .expect("owner-private product fixture root");
-        let project = root.path().join("project");
-        fs::create_dir_all(project.join("src")).expect("product project src");
+        let project = keld_cli::create::create_project(root.path(), "product")
+            .expect("create product fixture through the stock scaffold owner");
         fs::write(
             project.join("keld.config.ts"),
             format!(

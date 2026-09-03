@@ -297,8 +297,9 @@ fn run_dev_echo_recovers_from_one_real_bun_crash() {
     let root = create_project(dir.path(), &name).expect("create");
     fs::write(
         root.join("src/main.ts"),
-        r#"
-import { echoRoundtrip } from "./kipc";
+        concat!(
+            include_str!("../templates/hello/src/kipc.ts"),
+            r#"
 import { existsSync, writeFileSync } from "node:fs";
 
 const marker = "./.crash-once";
@@ -316,7 +317,8 @@ if (!link) {
 const response = await echoRoundtrip(link, { message: "keld", count: 1 });
 console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
 console.log("recovered-after-crash");
-"#,
+"#
+        ),
     )
     .expect("overwrite main with a once-crashing script");
 
@@ -342,8 +344,9 @@ fn run_dev_echo_does_not_hide_post_ready_crash_behind_final_zero() {
     let root = create_project(dir.path(), &name).expect("create");
     fs::write(
         root.join("src/main.ts"),
-        r#"
-import { echoRoundtrip } from "./kipc";
+        concat!(
+            include_str!("../templates/hello/src/kipc.ts"),
+            r#"
 import { existsSync, writeFileSync } from "node:fs";
 
 const marker = "./.post-ready-crash";
@@ -361,7 +364,8 @@ const response = await echoRoundtrip(link, { message: "keld", count: 1 });
 console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
 console.error("post-ready-crash-seven");
 process.exit(7);
-"#,
+"#
+        ),
     )
     .expect("overwrite main with mixed-exit script");
 

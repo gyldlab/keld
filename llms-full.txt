@@ -583,12 +583,13 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes six files (`crates/keld-cli/src/template.rs:13-40`):
-`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, `.gitignore`.
-`src/kipc.ts` is the hand-written kipc v2 client `main.ts` imports (§12 below) — the sixth file is
-new as of KEL-30; `HELLO_TEMPLATE` is an explicit allow-list, not a directory glob, so
-`src/kipc.test.ts` (the golden-vector tests living beside it) is deliberately not embedded. The
-config is this, in full, with `{{name}}` substituted at scaffold time:
+`keld create <name>` writes six files (`crates/keld-cli/src/template.rs`):
+`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, and `.gitignore`.
+The generated `src/main.ts` is self-contained: `template.rs` composes the hand-written,
+golden-vector-tested client source with `src/main-body.ts`. The generated `src/kipc.ts` is a tiny
+compatibility re-export from `src/main.ts`, not a second wire implementation. The repository's
+`src/kipc.test.ts` is deliberately not emitted. The config is this, in full, with `{{name}}`
+substituted at scaffold time:
 
 ```ts
 /** Keld app config — compiled by the CLI at dev/build time. */
@@ -665,18 +666,18 @@ command
 
 | Variable | Value | Consumed by |
 |---|---|---|
-| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path; Windows endpoint is `\\.\pipe\keld-<64 lowercase hex>`; both are minted by `keld_ipc::BootstrapListener` | The template's `main.ts:6`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
+| `KELD_APP_LINK` | `<endpoint>#<64 hex chars>` — Unix endpoint is the UDS path; Windows endpoint is `\\.\pipe\keld-<64 lowercase hex>`; both are minted by `keld_ipc::BootstrapListener` | The generated `main.ts`; absence is a hard error; missing `#token` is `KELD-IPC-007` |
 | `KELD_DEV_LEASE` | Exact private value `stdin-v1`; the data stream is stdin and carries no authority | The staged macOS and Windows hosts. macOS validates a read-only pipe and marks it non-inheritable before guardian spawn. Windows clears inheritance on the live stdin handle before primary spawn, gives Bun null stdin, and removes the variable. Both ignore bytes and treat EOF as CLI loss; Windows also preserves read/tail errors, while its raw cross-process handle-table census remains an open T4 evidence row. |
 
 `KELD_BIN` (`std::env::current_exe()`, the path to the running `keld` binary) existed only so the
 Bun child could shell out to `keld ipc-client` — it was removed in KEL-30 once `main.ts` started
-speaking kipc itself via `src/kipc.ts`, so `run_dev_echo` no longer takes a `keld_bin` parameter at
+speaking kipc itself via its embedded client, so `run_dev_echo` no longer takes a `keld_bin` parameter at
 all. `keld ipc-client echo` still exists as a standalone CLI utility; nothing spawns it anymore.
 
 The child's half of the contract is to refuse to run outside it:
 
 ```ts
-// crates/keld-cli/templates/hello/src/main.ts:6-12
+// generated src/main.ts (body source: templates/hello/src/main-body.ts)
 const link = process.env.KELD_APP_LINK;
 if (!link) {
   console.error(
@@ -693,7 +694,7 @@ and gives the exact command to use instead.
 
 `KELD_APP_LINK` is the sole Bun bootstrap contract. `KELD_DEV_LEASE` is a
 separate CLI-to-host liveness classification and is deliberately absent from
-Bun. `KELD_BIN` disappeared when `src/kipc.ts` landed. `KELD_LINK`,
+Bun. `KELD_BIN` disappeared when the direct kipc client landed. `KELD_LINK`,
 `KELD_SHM`, `KELD_CONTRACT`, `KELD_IPC_FD`, and `keld.app.json` are not live
 contracts; optional measured bulk handles and generated channel metadata remain
 future reviewed work rather than parallel environment aliases.
@@ -725,7 +726,7 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-WV-005` | Navigation failed | `error.rs:49` |
 | `KELD-WV-006` | Script evaluation failed | `error.rs:54` |
 | `KELD-WV-007` | Unknown webview id | `error.rs:59` |
-| `KELD-CLI-010` | `KELD_APP_LINK` unset in the app process | `templates/hello/src/main.ts:9` |
+| `KELD-CLI-010` | `KELD_APP_LINK` unset in the app process | `templates/hello/src/main-body.ts` |
 | `KELD-CLI-020` | Invalid project name | `keld-cli/src/create.rs:28` |
 | `KELD-CLI-021` | Target directory already exists | `create.rs:34` |
 | `KELD-CLI-022` | Failed to write template | `create.rs:38` |
@@ -1124,7 +1125,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   fails deterministically rather than mis-reporting: `KELD-IPC-003` from
   `keld_ipc::codec::decode`, surfaced by `@keld/electron` as `KELD-IPC-005`
   ("not a CallError"). The generated hello scaffold
-  (`crates/keld-cli/templates/hello/src/kipc.ts`) speaks only the ungated echo
+  (`crates/keld-cli/templates/hello/src/kipc.ts`, embedded into the generated
+  self-contained `src/main.ts` entry) speaks only the ungated echo
   channel and does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
@@ -2261,9 +2263,10 @@ parent-death coupling: the Bun leader and descendant disappear, the live CLI
 removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
 strict-profile admission matrix remain separately owned and evidenced by
 KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
-The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
-hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
-connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
+The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is the
+hand-written, wire-exact v0 client embedded into the generated self-contained
+`src/main.ts` entry (postcard framing, one `HELLO` per connection, then N
+`CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
 `@keld/schema` codegen (KEL-13) is not built, so this is the actual
 "Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,

@@ -294,7 +294,7 @@ sequenceDiagram
 
 The honest reading of that diagram:
 
-- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template speaks kipc from `src/kipc.ts`, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
+- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template embeds its wire-tested kipc client into the self-contained `src/main.ts` entry, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
 - **The macOS, Windows, and Linux windows/IPC sessions are concurrent and host-owned.** One
   authenticated stream carries Ready, two echo calls and Quit while the
   native window is live; a fresh stream replaces it after a recoverable crash
