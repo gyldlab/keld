@@ -31,6 +31,7 @@ const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
 const RENDERER_CONNECTION_LIMIT: usize = 16;
+const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
@@ -1378,15 +1379,14 @@ fn read_renderer_request_line(
     request: &mut Vec<u8>,
     mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
 ) -> Result<RendererRequestRead, String> {
-    const REQUEST_LINE_LIMIT: usize = 2048;
     loop {
-        if request.len() == REQUEST_LINE_LIMIT {
+        if request.len() == RENDERER_REQUEST_LINE_LIMIT {
             return Err(format!(
-                "renderer beacon request line exceeded {REQUEST_LINE_LIMIT} bytes"
+                "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
             ));
         }
         let mut chunk = [0_u8; 256];
-        let available = (REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
+        let available = (RENDERER_REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
         let read = match read_chunk(&mut chunk[..available]) {
             Ok(read) => read,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1459,6 +1459,29 @@ fn renderer_beacon_accumulates_a_fragmented_request_line() {
 }
 
 #[test]
+fn renderer_beacon_request_line_enforces_exact_maximum_and_maximum_plus_one() {
+    let exact = vec![b'a'; RENDERER_REQUEST_LINE_LIMIT - 2];
+    let mut exact_wire = exact.clone();
+    exact_wire.extend_from_slice(b"\r\n");
+    let mut exact_cursor = std::io::Cursor::new(exact_wire);
+    let mut request = Vec::new();
+    let result = read_renderer_request_line(&mut request, |buffer| exact_cursor.read(buffer))
+        .expect("exact-limit request line");
+    assert_eq!(result, RendererRequestRead::Complete(exact));
+
+    let mut oversized_wire = vec![b'b'; RENDERER_REQUEST_LINE_LIMIT - 1];
+    oversized_wire.extend_from_slice(b"\r\n");
+    let mut oversized_cursor = std::io::Cursor::new(oversized_wire);
+    let mut request = Vec::new();
+    let error = read_renderer_request_line(&mut request, |buffer| oversized_cursor.read(buffer))
+        .expect_err("maximum-plus-one request line must fail");
+    assert_eq!(
+        error,
+        format!("renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes")
+    );
+}
+
+#[test]
 fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon regression listener");
     let address = listener.local_addr().expect("beacon regression address");
@@ -1505,7 +1528,7 @@ fn renderer_beacon_serves_before_the_parent_activates_its_wait_deadline() {
 fn renderer_beacon_does_not_serialize_idle_preconnects_before_the_exact_request() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind idle-preconnect listener");
     let address = listener.local_addr().expect("idle-preconnect address");
-    let idle = (0..5)
+    let idle = (0..(RENDERER_CONNECTION_LIMIT - 1))
         .map(|_| TcpStream::connect(address).expect("queue idle preconnect"))
         .collect::<Vec<_>>();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -1525,6 +1548,24 @@ fn renderer_beacon_does_not_serialize_idle_preconnects_before_the_exact_request(
     beacon.join().expect("idle-preconnect beacon thread");
     let result = observed.expect("idle peers serialized ahead of the exact request");
     assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn renderer_beacon_rejects_maximum_plus_one_pending_connections() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind connection-limit listener");
+    let address = listener.local_addr().expect("connection-limit address");
+    let pending = (0..=RENDERER_CONNECTION_LIMIT)
+        .map(|_| TcpStream::connect(address).expect("queue pending connection"))
+        .collect::<Vec<_>>();
+    let result = serve_renderer_beacon_until(&listener, Instant::now() + Duration::from_secs(1));
+    drop(pending);
+
+    assert_eq!(
+        result,
+        Err(format!(
+            "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+        ))
+    );
 }
 
 #[test]
