@@ -716,8 +716,11 @@ fn validate_launcher(path: &Path) -> Result<PathBuf, LinuxStrictError> {
         ));
     }
     reject_file_capabilities(path, "strict launcher file capabilities")?;
-    path.canonicalize()
-        .map_err(|source| LinuxStrictError::new("strict launcher path", source.to_string()))
+    let path = path
+        .canonicalize()
+        .map_err(|source| LinuxStrictError::new("strict launcher path", source.to_string()))?;
+    validate_trusted_ancestors(&path, current_uid, "strict launcher ancestor")?;
+    Ok(path)
 }
 
 fn validate_bubblewrap(path: &Path) -> Result<PathBuf, LinuxStrictError> {
@@ -740,8 +743,41 @@ fn validate_bubblewrap(path: &Path) -> Result<PathBuf, LinuxStrictError> {
         ));
     }
     reject_file_capabilities(path, "Bubblewrap file capabilities")?;
-    path.canonicalize()
-        .map_err(|source| LinuxStrictError::new("Bubblewrap path", source.to_string()))
+    let path = path
+        .canonicalize()
+        .map_err(|source| LinuxStrictError::new("Bubblewrap path", source.to_string()))?;
+    validate_trusted_ancestors(&path, current_effective_uid()?, "Bubblewrap ancestor")?;
+    Ok(path)
+}
+
+fn validate_trusted_ancestors(
+    path: &Path,
+    current_uid: u32,
+    phase: &'static str,
+) -> Result<(), LinuxStrictError> {
+    for ancestor in path.ancestors().skip(1) {
+        let metadata = fs::symlink_metadata(ancestor)
+            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
+        let mode = metadata.permissions().mode() & 0o7777;
+        let trusted_owner = metadata.uid() == 0 || metadata.uid() == current_uid;
+        let writable_by_other_principal = mode & 0o022 != 0;
+        let sticky_entry_protection = mode & 0o1000 != 0;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || !trusted_owner
+            || (writable_by_other_principal && !sticky_entry_protection)
+        {
+            return Err(LinuxStrictError::new(
+                phase,
+                format!(
+                    "{} must be a root/current-user-owned directory that other principals cannot replace entries in; uid={} expected_uid={current_uid} mode=0o{mode:o}",
+                    ancestor.display(),
+                    metadata.uid()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn reject_file_capabilities(path: &Path, phase: &'static str) -> Result<(), LinuxStrictError> {

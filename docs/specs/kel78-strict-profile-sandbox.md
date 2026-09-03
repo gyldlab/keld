@@ -448,7 +448,8 @@ probe (ledger L5), not an `admit()` primitive.
 
 T4 implements this policy with the unprivileged Bubblewrap facility recorded
 in ledger L10, not a custom post-fork namespace runtime. The host validates a
-root-owned executable with no setuid/setgid bits or file capabilities, supplies
+root-owned executable with no setuid/setgid bits or file capabilities, validates
+the Bubblewrap and Keld-launcher ancestor chains against other-principal entry replacement, supplies
 the exact namespace and empty-root mount arguments, and passes two Keld-owned
 seccomp programs through fixed child-private FDs. The current program is
 x86_64-only and every other architecture fails command construction. A minimal read-only Keld

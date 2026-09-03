@@ -217,6 +217,7 @@ fn strict_profile_rejects_untrusted_inputs_and_setup_failure_runs_no_target() {
         error.to_string().contains("strict launcher metadata"),
         "{error}"
     );
+    assert_mutable_launcher_ancestor_rejected(&role);
 
     fs::set_permissions(&role, fs::Permissions::from_mode(0o755)).expect("widen role mode");
     let error = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), strict_launcher(), &role)
@@ -622,6 +623,19 @@ fn strict_launcher() -> &'static Path {
         (root, launcher)
     });
     launcher
+}
+
+fn assert_mutable_launcher_ancestor_rejected(role: &Path) {
+    let mutable_ancestor = tempfile::tempdir().expect("mutable launcher ancestor");
+    fs::set_permissions(mutable_ancestor.path(), fs::Permissions::from_mode(0o770))
+        .expect("mutable ancestor mode");
+    let nested_launcher = mutable_ancestor.path().join("launcher");
+    fs::copy(strict_launcher(), &nested_launcher).expect("copy nested launcher");
+    fs::set_permissions(&nested_launcher, fs::Permissions::from_mode(0o500))
+        .expect("nested launcher mode");
+    let error = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), &nested_launcher, role)
+        .expect_err("mutable launcher ancestor must fail");
+    assert!(error.to_string().contains("launcher ancestor"), "{error}");
 }
 
 fn namespace_environment(kind: &str) -> (OsString, OsString) {
