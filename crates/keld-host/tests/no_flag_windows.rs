@@ -443,6 +443,7 @@ fn run_same_window_recovery(failure_command: &str) {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -466,10 +467,7 @@ fn run_same_window_recovery(failure_command: &str) {
 
     let (mut g1_reader, mut g1_writer, g1_pid, g1_link) =
         accept_ready_generation(&control_listener, &mut child);
-    expect_renderer_beacon(
-        spawn_renderer_beacon(beacon_listener),
-        "initial renderer beacon",
-    );
+    expect_renderer_beacon(beacon, "initial renderer beacon");
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
@@ -568,6 +566,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind shipping beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -594,10 +593,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     let host_pid =
         wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
-    expect_renderer_beacon(
-        spawn_renderer_beacon(beacon_listener),
-        "shipping renderer beacon",
-    );
+    expect_renderer_beacon(beacon, "shipping renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
     writer.write_all(b"QUIT\n").expect("shipping Quit");
@@ -641,6 +637,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lease beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -666,10 +663,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _, lease_handle) =
         accept_ready_generation_with_lease(&control_listener, &mut cli);
-    expect_renderer_beacon(
-        spawn_renderer_beacon(beacon_listener),
-        "lease renderer beacon",
-    );
+    expect_renderer_beacon(beacon, "lease renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     let controller_pipe = cli
         .stdout
@@ -718,6 +712,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .local_addr()
         .expect("host-death beacon address")
         .port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -743,10 +738,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (reader, _writer, bun_pid, _, descendant_pid) =
         accept_ready_generation_with_descendant(&control_listener, &mut cli);
-    expect_renderer_beacon(
-        spawn_renderer_beacon(beacon_listener),
-        "host-death renderer beacon",
-    );
+    expect_renderer_beacon(beacon, "host-death renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
 
     let host = open_process_for_wait(host_pid, true);
@@ -1154,6 +1146,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon listener");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -1198,10 +1191,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    expect_renderer_beacon(
-        spawn_renderer_beacon(beacon_listener),
-        "WebView2 renderer requested the exact beacon",
-    );
+    expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -1230,20 +1220,20 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
 struct RendererBeacon {
     observed: mpsc::Receiver<Result<(), String>>,
     worker: thread::JoinHandle<()>,
-    deadline: Instant,
+    activate_deadline: mpsc::Sender<Instant>,
 }
 
 fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
-    let deadline = Instant::now() + PRODUCT_DEADLINE;
     let (observed_tx, observed) = mpsc::channel();
+    let (activate_deadline, deadline_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let result = serve_renderer_beacon_until(&listener, deadline);
+        let result = serve_renderer_beacon_loop(&listener, &deadline_rx);
         let _ = observed_tx.send(result);
     });
     RendererBeacon {
         observed,
         worker,
-        deadline,
+        activate_deadline,
     }
 }
 
@@ -1251,8 +1241,10 @@ fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
     let RendererBeacon {
         observed,
         worker,
-        deadline,
+        activate_deadline,
     } = beacon;
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let _ = activate_deadline.send(deadline);
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or_default();
@@ -1278,18 +1270,43 @@ enum RendererRequestRead {
 }
 
 fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Result<(), String> {
+    let (deadline_tx, deadline_rx) = mpsc::channel();
+    deadline_tx
+        .send(deadline)
+        .expect("activate fixed renderer beacon deadline");
+    serve_renderer_beacon_loop(listener, &deadline_rx)
+}
+
+fn serve_renderer_beacon_loop(
+    listener: &TcpListener,
+    deadline_rx: &mpsc::Receiver<Instant>,
+) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
     let mut pending = Vec::<PendingRendererRequest>::new();
+    let mut deadline = None;
 
     loop {
+        if deadline.is_none() {
+            match deadline_rx.try_recv() {
+                Ok(activated) => deadline = Some(activated),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("renderer beacon deadline owner ended before awaiting".to_owned());
+                }
+            }
+        }
         let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or_else(|| {
-                "renderer beacon deadline elapsed before the exact request".to_owned()
-            })?;
+            .map(|deadline| {
+                deadline
+                    .checked_duration_since(Instant::now())
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or_else(|| {
+                        "renderer beacon deadline elapsed before the exact request".to_owned()
+                    })
+            })
+            .transpose()?;
 
         loop {
             let (stream, _) = match listener.accept() {
@@ -1330,18 +1347,13 @@ fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Res
                             String::from_utf8_lossy(&request)
                         ));
                     }
-                    let remaining = deadline
-                        .checked_duration_since(Instant::now())
-                        .filter(|remaining| !remaining.is_zero())
-                        .ok_or_else(|| {
-                            "renderer beacon deadline elapsed before the HTTP reply".to_owned()
-                        })?;
+                    let write_timeout = remaining.unwrap_or(PRODUCT_DEADLINE);
                     matched.stream.set_nonblocking(false).map_err(|error| {
                         format!("set renderer beacon reply stream blocking: {error}")
                     })?;
                     matched
                         .stream
-                        .set_write_timeout(Some(remaining))
+                        .set_write_timeout(Some(write_timeout))
                         .map_err(|error| format!("set renderer beacon write deadline: {error}"))?;
                     matched
                         .stream
@@ -1355,8 +1367,10 @@ fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Res
         }
 
         // This only backs off the nonblocking kernel poll; socket readiness
-        // and the single absolute deadline remain the observables.
-        thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
+        // and the parent-activated absolute deadline remain the observables.
+        thread::park_timeout(remaining.map_or(RENDERER_ACCEPT_POLL, |remaining| {
+            remaining.min(RENDERER_ACCEPT_POLL)
+        }));
     }
 }
 
@@ -1460,6 +1474,31 @@ fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
         beacon,
         "exact renderer request observed after empty preconnect",
     );
+}
+
+#[test]
+fn renderer_beacon_serves_before_the_parent_activates_its_wait_deadline() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind early beacon listener");
+    let address = listener.local_addr().expect("early beacon address");
+    let beacon = spawn_renderer_beacon(listener);
+    let mut target = TcpStream::connect(address).expect("connect early renderer request");
+    target
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("early response kill switch");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write early renderer request");
+    let mut response = [0_u8; 128];
+    let read = target
+        .read(&mut response)
+        .expect("worker replied before parent await");
+    assert!(
+        response[..read].starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "{}",
+        String::from_utf8_lossy(&response[..read])
+    );
+
+    expect_renderer_beacon(beacon, "early renderer request");
 }
 
 #[test]
