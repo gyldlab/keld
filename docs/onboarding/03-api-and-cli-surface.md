@@ -604,11 +604,13 @@ my-app/
    └─ kipc.ts        compatibility re-export from main.ts; no second client copy
 ```
 
-The repository keeps the wire client in `src/kipc.ts`, its golden-vector tests in
-`src/kipc.test.ts`, and the app body in `src/main-body.ts`. `template.rs` composes the first and
-third byte-for-byte into the generated `src/main.ts`; the generated `src/kipc.ts` only re-exports
-that module for source compatibility. This preserves one tested wire implementation while keeping
-the strict dev stage's configured entry self-contained.
+The repository template keeps the wire client in
+[`templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts), its golden-vector
+tests in `templates/hello/src/kipc.test.ts`, and the app body in
+`templates/hello/src/main-body.ts`. `template.rs` composes the client and body byte-for-byte into the
+generated `src/main.ts`; generated `src/kipc.ts` only re-exports that module for source
+compatibility. This preserves one tested wire implementation while keeping the strict dev stage's
+configured entry self-contained.
 
 ### 5.1 `src/main.ts` — the main process
 
@@ -726,19 +728,19 @@ sequenceDiagram
     Host-->>Bun: HELLO
     Host->>Win: create window + initial navigation
     Host-->>Bun: Ready
-    Bun->>Host: two echo CALLs
-    Host-->>Bun: two REPLY frames
+    Bun->>Host: one stock echo CALL
+    Host-->>Bun: one stock REPLY frame
     Bun->>Host: Quit CALL after close or app.quit()
     Host-->>Bun: correlated Quit REPLY, then link EOF
     Host-->>CLI: exit after guardian/Bun reap and UI teardown
 ```
 
-The real-macOS integration test
+The real-macOS integration test's acceptance observer
 [`crates/keld-host/tests/no_flag_macos.rs`](../../crates/keld-host/tests/no_flag_macos.rs)
-exercises the shipping CLI-to-host chain, exact renderer, two calls, descriptor
-ownership, CLI-only death cleanup, and a fresh orderly relaunch against the real
-TypeScript client. `crates/keld-cli/tests/bun_echo.rs` remains the faster
-windowless diagnostic contract.
+exercises the shipping CLI-to-host chain, exact renderer, and a second call on the same
+authenticated stream, plus descriptor ownership, CLI-only death cleanup, and a fresh orderly
+relaunch. The stock entry makes the single call shown above; `crates/keld-cli/tests/bun_echo.rs`
+remains the faster windowless diagnostic contract.
 
 ---
 
