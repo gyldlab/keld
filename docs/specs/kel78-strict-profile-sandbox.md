@@ -1,7 +1,7 @@
 # Spec: strict-profile OS sandbox and native-addon-worker proof
 
 Status: approved
-Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-08-31
+Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-09-03
 
 Approval provenance: direct-session human authorization for the frozen Windows
 T3 contract is recorded in Linear comment
@@ -630,12 +630,24 @@ Renderer sandbox is a different column.
       and prove the strict child/descendant enrollment separately.
 - [x] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
-- [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
+- [x] T4: Linux namespace + explicit host-path deny (role-private paths still
       work; mount-table change or `pivot_root`, not Landlock) +
       `no_new_privs` + cap drop + seccomp that denies `clone3` / `setns` /
       `unshare`+`CLONE_NEWUSER` (+ Landlock **stack only** when present)
       and unavailable-userns fail-closed proof. `SCM_RIGHTS` is a T4
       runtime probe, not an admit primitive.
+      Implementation head `51c52f6772b3587b8fe1b1023e492e419f5e242c`
+      has real Ubuntu kernel `7.0.0-30-generic` evidence: Bubblewrap 0.11.1
+      (`sha256:0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`),
+      post-Landlock launcher readiness, mount/Landlock/seccomp/FD/namespace
+      hostile passes, host-only death of a four-process enrolled tree plus
+      relaunch, and Bun 1.4.0 artifact
+      `sha256:33d56b070be6a9e3da0ab013038b43d1645d0534ca811ecdba4472599117eb4b`.
+      The x86_64 synthetic artifact/profile pair is
+      `sha256:acfc5d3f76b6f2983b2cfd78679c07ab0d2391f7b234a2abc95386b5e68476f8` /
+      `sha256:98c9ac02afb51694e87e6ccaf01340b48dc0e146ad1e46b0e98e1e8e1d705557`.
+      Product-role consumption remains KEL-96/KEL-75 work; T4 proves the
+      reusable runtime mechanism and does not mark an unconsumed role Strict.
 - [ ] T5: Crash/hang/OOM cleanup and updater-boundary probes on each OS
       that passed T2–T4.
 - [ ] T6: Doctor / build / release metadata surfaces. Then KEL-75 T6 may
@@ -720,6 +732,14 @@ for the host-path deny.
   accepted-Quit byte; unmarked EOF remains host death. This is not a
   Strict-containment claim. Human
   delegation is recorded on KEL-78/KEL-96.
+- T4 unsafe: **yes** — `linux_strict.rs` uses only child-side `fcntl(F_DUPFD)`,
+  `dup3`, and `close_range(CLOSE_RANGE_CLOEXEC)` in the pre-exec closure; the
+  real inheritable-host-FD negative control fails without it.
+- T4 public API / permission model / dependency: **yes** — the Linux-only
+  profile/command/launcher API implements the approved strict boundary;
+  unprivileged Bubblewrap is an external TCB input and workspace-pinned
+  `seccompiler` 0.5.0, `rustix` 1.1.4, and `landlock` 0.4.7 are the reviewed
+  target-only Rust dependencies. T4 changes no public kipc wire bytes.
 
 Removal / rollback: delete the admission gate and keep KEL-70 unsandboxed
 supervision; every surface returns to `unverified`. Do not keep a half-applied
@@ -738,8 +758,9 @@ waiver for a different product result.
 
 ## 10. Open questions
 
-1. If unprivileged user namespaces are unavailable, may a reviewed privileged
-   launcher join the TCB, or is `legacy` / refuse the only option?
+1. Resolved for T4: unavailable unprivileged user namespaces fail closed. No
+   privileged/setuid launcher or automatic legacy fallback joins the TCB. A
+   future alternative requires a separately approved contract and proof.
 2. What is the minimum experimentally required Bun JIT entitlement set on
    each OS? Recorded Bun-start failures decide; do not pre-grant.
 3. After approval, who updates architecture 03 §4.2 to replace the
