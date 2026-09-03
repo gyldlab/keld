@@ -638,7 +638,7 @@ Renderer sandbox is a different column.
       `unshare`+`CLONE_NEWUSER` (+ Landlock **stack only** when present)
       and unavailable-userns fail-closed proof. `SCM_RIGHTS` is a T4
       runtime probe, not an admit primitive.
-      Implementation head `4d11ee14fdcee226af147456ee6cf41ac6f40afd`
+      Implementation head `522b27b7c78caa52cedc7e001d8059e37b93aa7a`
       has real Ubuntu kernel `7.0.0-30-generic` evidence: Bubblewrap 0.11.1
       (`sha256:0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`),
       trusted post-Landlock launcher readiness, mount/Landlock/seccomp/FD/namespace
@@ -650,7 +650,7 @@ Renderer sandbox is a different column.
       unprivileged user namespaces; without it the retained negative run fails
       at `RTM_NEWADDR` before readiness instead of retrying or skipping T4.
       The x86_64 synthetic artifact/profile pair is
-      `sha256:ab22905265b58872b623db895326f853beb9e3d02aa2ed39677071f07aaa3247` /
+      `sha256:5a6b9caa8a719e7ad335ff62ac41917b786444acf7769c6043c577739b895633` /
       `sha256:9aeadfa21b677cef63167f7445548bff9e8299ea432e70aaa208ae6d40de7b2c`.
       Product-role consumption remains KEL-96/KEL-75 work; T4 proves the
       reusable runtime mechanism and does not mark an unconsumed role Strict.
