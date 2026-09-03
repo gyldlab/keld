@@ -615,7 +615,7 @@ privileged channel. The first and only production caller in T1b is the no-flag
       reaps Bun plus a real descendant, the cleanup sentinel deletes the stage,
       and a fresh no-flag launch succeeds. Raw CLI/host/Bun handle census and
       post-CLI-death stage deletion also pass. Linux implementation head
-      `cfb8a238d6ff8b61c27cf825dd31ee3b2d30f126` stages a dedicated minimal
+      `3d9e5c78db273f550c47f1a6b4655712de2723a0` stages a dedicated minimal
       strict launcher and consumes KEL-78/T4 inside the existing primary
       supervisor. On native Ubuntu GNOME Wayland, all eight product tests pass:
       fresh no-flag host/Bun/descendant identities, two calls, ordered Quit,
