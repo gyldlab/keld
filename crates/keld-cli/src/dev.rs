@@ -311,6 +311,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     let status = host.wait()?;
     drop(lease_writer);
     drop(stage);
+    #[cfg(target_os = "linux")]
+    cleanup_linux_dev_stage(&stage_root)?;
     #[cfg(windows)]
     cleanup_sentinel.wait(&stage_root)?;
     if status.success() {
@@ -320,6 +322,19 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
             "KELD-CLI-048: staged no-flag host exited with {status}. \
              Fix the preceding host diagnostic, then re-run `keld dev`."
         )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_linux_dev_stage(stage_root: &Path) -> Result<(), DevError> {
+    match fs::remove_dir_all(stage_root) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(DevError::Doctor(format!(
+            "KELD-CLI-047: Linux dev-stage cleanup failed for `{}` after host exit: {source}. \
+             Confirm no staged process remains, remove that exact nonce directory, and retry.",
+            stage_root.display()
+        ))),
     }
 }
 

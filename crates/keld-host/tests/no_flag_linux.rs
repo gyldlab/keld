@@ -1,8 +1,10 @@
 //! Real-Linux KEL-96/T4 no-flag host acceptance.
 
 #![cfg(target_os = "linux")]
+#![allow(unsafe_code)] // external controller sends SIGKILL to one identity-checked host PID
 #![allow(clippy::expect_used, clippy::panic)] // process and filesystem observations are assertion oracles
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpListener;
@@ -16,6 +18,10 @@ use std::time::{Duration, Instant};
 
 const PRODUCT_TITLE: &str = "KEL96 T4 Linux Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
+
+unsafe extern "C" {
+    fn kill(pid: std::os::raw::c_int, signal: std::os::raw::c_int) -> std::os::raw::c_int;
+}
 
 #[test]
 fn keld_dev_linux_helper() {
@@ -117,17 +123,23 @@ fn linux_no_flag_host_owns_window_two_calls_ordered_quit_and_relaunch() {
 
     assert_ne!(first.host_pid, second.host_pid, "relaunch needs a new host");
     assert_ne!(first.bun_pid, second.bun_pid, "relaunch needs a new Bun");
+    assert_ne!(
+        first.descendant_pid, second.descendant_pid,
+        "relaunch needs a new descendant"
+    );
     assert_ne!(first.app_link, second.app_link, "authority must be fresh");
     eprintln!(
-        "KEL96_T4_LINUX_EVIDENCE session={} display={} first_host={} first_bun={} second_host={} second_bun={}",
+        "KEL96_T4_LINUX_EVIDENCE session={} display={} first_host={} first_bun={} first_descendant={} second_host={} second_bun={} second_descendant={}",
         std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| String::from("unknown")),
         std::env::var("WAYLAND_DISPLAY")
             .or_else(|_| std::env::var("DISPLAY"))
             .unwrap_or_else(|_| String::from("unavailable")),
         first.host_pid,
         first.bun_pid,
+        first.descendant_pid,
         second.host_pid,
         second.bun_pid,
+        second.descendant_pid,
     );
 }
 
@@ -162,13 +174,12 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
     let mut host = Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_T1B_CONTROL", &control_path)
-        .env("KELD_T4_SKIP_DESCENDANT", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch recovery host");
     let host_pid = host.id();
-    let (mut g1_reader, mut g1_writer, g1_pid, g1_link) = accept_generation(&listener, &mut host);
+    let (mut g1_reader, mut g1_writer, g1, g1_link) = accept_generation(&listener, &mut host);
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
         .expect("initial renderer beacon");
@@ -178,10 +189,15 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
         .expect("crash generation one");
     g1_writer.flush().expect("flush generation-one crash");
     drop((g1_reader, g1_writer));
+    wait_process_identity_gone(&g1.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&g1.descendant, Instant::now() + PRODUCT_DEADLINE);
 
-    let (mut g2_reader, mut g2_writer, g2_pid, g2_link) = accept_generation(&listener, &mut host);
+    let (mut g2_reader, mut g2_writer, g2, g2_link) = accept_generation(&listener, &mut host);
     expect_ready_and_echoes(&mut g2_reader);
-    assert_ne!(g1_pid, g2_pid, "recovery must spawn a fresh Bun process");
+    assert_ne!(
+        g1.bun.pid, g2.bun.pid,
+        "recovery must spawn a fresh Bun process"
+    );
     assert_ne!(g1_link, g2_link, "recovery must mint fresh authority");
     assert_eq!(host.id(), host_pid, "recovery cannot replace the host");
     beacon_probe
@@ -201,8 +217,8 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
     assert_eq!(read_control_line(&mut g2_reader), "LINK_EOF");
     let status = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
     assert!(status.success(), "recovery host exited with {status}");
-    wait_process_gone(g1_pid, Instant::now() + PRODUCT_DEADLINE);
-    wait_process_gone(g2_pid, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&g2.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&g2.descendant, Instant::now() + PRODUCT_DEADLINE);
     beacon.join().expect("recovery beacon thread");
 }
 
@@ -235,7 +251,6 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
         .current_dir(&fixture.project)
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", &control_path)
-        .env("KELD_T4_SKIP_DESCENDANT", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -251,19 +266,24 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
     let hello = read_control_line(&mut reader);
     let mut fields = hello.split_whitespace();
     assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let bun_pid = fields
+    let inner_bun_pid = fields
         .next()
         .expect("dev Bun pid")
         .parse::<u32>()
         .expect("numeric dev Bun pid");
-    let host_pid = parent_pid(bun_pid);
+    assert_ne!(inner_bun_pid, 0);
+    let host = wait_for_direct_host(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+    let generation = wait_for_strict_generation(host.pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(
-        parent_pid(host_pid),
-        cli_pid,
+        process_stat(host.pid).map(|(parent, _)| parent),
+        Some(cli_pid),
         "CLI must launch only the host"
     );
-    assert_ne!(host_pid, cli_pid, "CLI cannot own the Bun process");
-    assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
+    assert_ne!(
+        generation.bun.pid, cli_pid,
+        "CLI cannot own the Bun process"
+    );
+    assert_nonzero_descendant(&read_control_line(&mut reader));
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
         .expect("shipping renderer beacon");
@@ -284,8 +304,9 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
         forwarded.contains("KEL96_T2_FORWARDED_LOG"),
         "shipping CLI lost the host-owned Bun log: {forwarded}"
     );
-    wait_process_gone(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&host, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
     beacon.join().expect("dev beacon thread");
 }
@@ -315,7 +336,6 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
         .current_dir(&fixture.project)
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", &control_path)
-        .env("KELD_T4_SKIP_DESCENDANT", "1")
         .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -330,13 +350,15 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
     let hello = read_control_line(&mut reader);
     let mut fields = hello.split_whitespace();
     assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let bun_pid = fields
+    let inner_bun_pid = fields
         .next()
         .expect("death Bun pid")
         .parse::<u32>()
         .expect("numeric death Bun pid");
-    let host_pid = parent_pid(bun_pid);
-    assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
+    assert_ne!(inner_bun_pid, 0);
+    let host = wait_for_direct_host(cli.id(), Instant::now() + PRODUCT_DEADLINE);
+    let generation = wait_for_strict_generation(host.pid, Instant::now() + PRODUCT_DEADLINE);
+    assert_nonzero_descendant(&read_control_line(&mut reader));
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
         .expect("death renderer beacon");
@@ -349,10 +371,89 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
     let status = cli.wait().expect("wait killed CLI");
     assert!(!status.success(), "killed CLI exited successfully");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    wait_process_gone(host_pid, Instant::now() + PRODUCT_DEADLINE);
-    wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&host, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
     beacon.join().expect("death beacon thread");
+}
+
+#[test]
+fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
+    let fixture = ProductFixture::new();
+    let helper = prepare_keld_dev_helper(&fixture);
+    let control_path = fixture.root.path().join("host-death-control.sock");
+    let listener = UnixListener::bind(&control_path).expect("bind host-death control");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking host-death control");
+    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death beacon");
+    let beacon_port = beacon_listener
+        .local_addr()
+        .expect("host-death beacon")
+        .port();
+    let (beacon_tx, beacon_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+        ),
+    )
+    .expect("host-death renderer");
+    let mut cli = Command::new(&helper)
+        .args(["--exact", "keld_dev_linux_helper", "--nocapture"])
+        .current_dir(&fixture.project)
+        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
+        .env("KELD_T1B_CONTROL", &control_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch host-death helper");
+    let cli_pid = cli.id();
+    let control =
+        accept_control_or_host_failure(&listener, &mut cli, Instant::now() + PRODUCT_DEADLINE);
+    control
+        .set_read_timeout(Some(PRODUCT_DEADLINE))
+        .expect("host-death control deadline");
+    let mut reader = BufReader::new(control);
+    let hello = read_control_line(&mut reader);
+    assert!(hello.starts_with("HELLO "), "{hello}");
+    assert_nonzero_descendant(&read_control_line(&mut reader));
+    let host = wait_for_direct_host(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+    let generation = wait_for_strict_generation(host.pid, Instant::now() + PRODUCT_DEADLINE);
+    let tree = descendant_identities(host.pid);
+    assert!(tree.len() >= 4, "incomplete strict product tree: {tree:?}");
+    beacon_rx
+        .recv_timeout(PRODUCT_DEADLINE)
+        .expect("host-death renderer beacon");
+    expect_ready_and_echoes(&mut reader);
+    assert_eq!(dev_stage_count(&fixture.project), 1);
+
+    sigkill_identity(&host);
+    for process in &tree {
+        wait_process_identity_gone(process, Instant::now() + PRODUCT_DEADLINE);
+    }
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
+    let output = wait_child_output(cli, Instant::now() + PRODUCT_DEADLINE);
+    assert!(!output.status.success(), "host kill must fail keld dev");
+    let mut diagnostic = String::from_utf8(output.stdout).expect("host-death stdout UTF-8");
+    diagnostic.push_str(&String::from_utf8(output.stderr).expect("host-death stderr UTF-8"));
+    assert!(diagnostic.contains("KELD-CLI-048"), "{diagnostic}");
+    wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+    beacon.join().expect("host-death beacon thread");
+
+    let relaunched = run_product_cycle(&fixture, "after-host-death");
+    assert_ne!(relaunched.host_pid, host.pid);
+    eprintln!(
+        "KEL96_T4_LINUX_HOST_DEATH host={} bun={} descendant={} reaped={} relaunch_host={}",
+        host.pid,
+        generation.bun.pid,
+        generation.descendant.pid,
+        tree.len(),
+        relaunched.host_pid
+    );
 }
 
 struct StageFixture {
@@ -391,6 +492,8 @@ struct ProductFixture {
 impl ProductFixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("product fixture root");
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+            .expect("owner-private product fixture root");
         let project = root.path().join("project");
         fs::create_dir_all(project.join("src")).expect("product project src");
         fs::write(
@@ -423,17 +526,38 @@ fn prepare_keld_dev_helper(fixture: &ProductFixture) -> std::path::PathBuf {
     let developer_host = helper_dir.join("keld-host");
     fs::copy(env!("CARGO_BIN_EXE_keld-host"), &developer_host).expect("copy sibling host");
     fs::set_permissions(&developer_host, fs::Permissions::from_mode(0o500)).expect("host mode");
+    let developer_launcher = helper_dir.join("keld-role-launcher");
+    fs::copy(
+        env!("CARGO_BIN_EXE_keld-role-launcher"),
+        &developer_launcher,
+    )
+    .expect("copy sibling role launcher");
+    fs::set_permissions(&developer_launcher, fs::Permissions::from_mode(0o500))
+        .expect("role launcher mode");
     helper
 }
 
 struct ProductEvidence {
     host_pid: u32,
     bun_pid: u32,
+    descendant_pid: u32,
     app_link: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProcessIdentity {
+    pid: u32,
+    start_time: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StrictGeneration {
+    bun: ProcessIdentity,
+    descendant: ProcessIdentity,
+}
+
 fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
-    let control_path = fixture.project.join(format!("control-{label}.sock"));
+    let control_path = fixture.root.path().join(format!("control-{label}.sock"));
     let control_listener = UnixListener::bind(&control_path).expect("bind control listener");
     control_listener
         .set_nonblocking(true)
@@ -457,9 +581,6 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let mut child = Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_T1B_CONTROL", &control_path)
-        // Descendant ownership is the separate KEL-78 Linux artifact. This
-        // KEL-96 row proves only its specified orderly direct-child contract.
-        .env("KELD_T4_SKIP_DESCENDANT", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -479,14 +600,16 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let hello = read_control_line(&mut reader);
     let mut fields = hello.split_whitespace();
     assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let bun_pid = fields
+    let inner_bun_pid = fields
         .next()
         .expect("Bun pid")
         .parse::<u32>()
         .expect("numeric Bun pid");
+    assert_ne!(inner_bun_pid, 0);
     let app_link = fields.next().expect("app link").to_owned();
     assert!(fields.next().is_none(), "{hello}");
-    assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
+    assert_nonzero_descendant(&read_control_line(&mut reader));
+    let generation = wait_for_strict_generation(host_pid, Instant::now() + PRODUCT_DEADLINE);
     beacon_rx
         .recv_timeout(PRODUCT_DEADLINE)
         .expect("WebKitGTK renderer requested the exact beacon");
@@ -509,13 +632,15 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
             .expect("read host stderr");
         panic!("host exited with {status}: {stderr}");
     }
-    wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
     beacon.join().expect("renderer beacon thread");
     drop(stage);
 
     ProductEvidence {
         host_pid,
-        bun_pid,
+        bun_pid: generation.bun.pid,
+        descendant_pid: generation.descendant.pid,
         app_link,
     }
 }
@@ -526,9 +651,10 @@ fn accept_generation(
 ) -> (
     BufReader<std::os::unix::net::UnixStream>,
     std::os::unix::net::UnixStream,
-    u32,
+    StrictGeneration,
     String,
 ) {
+    let host_pid = host.id();
     let control = accept_control_or_host_failure(listener, host, Instant::now() + PRODUCT_DEADLINE);
     control
         .set_read_timeout(Some(PRODUCT_DEADLINE))
@@ -538,15 +664,17 @@ fn accept_generation(
     let hello = read_control_line(&mut reader);
     let mut fields = hello.split_whitespace();
     assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let pid = fields
+    let inner_pid = fields
         .next()
         .expect("generation pid")
         .parse::<u32>()
         .expect("numeric generation pid");
+    assert_ne!(inner_pid, 0);
     let link = fields.next().expect("generation app link").to_owned();
     assert!(fields.next().is_none(), "{hello}");
-    assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
-    (reader, writer, pid, link)
+    assert_nonzero_descendant(&read_control_line(&mut reader));
+    let generation = wait_for_strict_generation(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    (reader, writer, generation, link)
 }
 
 fn expect_ready_and_echoes(reader: &mut BufReader<std::os::unix::net::UnixStream>) {
@@ -603,6 +731,129 @@ fn read_control_line(reader: &mut BufReader<std::os::unix::net::UnixStream>) -> 
     line
 }
 
+fn assert_nonzero_descendant(line: &str) {
+    let mut fields = line.split_whitespace();
+    assert_eq!(fields.next(), Some("DESCENDANT"), "{line}");
+    let inner_pid = fields
+        .next()
+        .expect("descendant pid")
+        .parse::<u32>()
+        .expect("numeric descendant pid");
+    assert_ne!(inner_pid, 0, "{line}");
+    assert!(fields.next().is_none(), "{line}");
+}
+
+fn wait_for_direct_host(root: u32, deadline: Instant) -> ProcessIdentity {
+    loop {
+        if let Some(host) = descendant_identities(root).into_iter().find(|process| {
+            process_stat(process.pid).is_some_and(|(parent, _)| parent == root)
+                && process_executable_name(process.pid).as_deref() == Some("keld-host")
+        }) {
+            return host;
+        }
+        assert!(Instant::now() < deadline, "host child did not appear");
+        thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_strict_generation(host: u32, deadline: Instant) -> StrictGeneration {
+    loop {
+        let mut bun = None;
+        let mut descendant = None;
+        for process in descendant_identities(host) {
+            let command = fs::read(format!("/proc/{}/cmdline", process.pid)).unwrap_or_default();
+            if command.split(|byte| *byte == 0).next() != Some(b"/runtime/program".as_slice()) {
+                continue;
+            }
+            if command
+                .windows(b"/code/main.ts".len())
+                .any(|part| part == b"/code/main.ts")
+            {
+                bun = Some(process);
+            } else if command
+                .windows(b"await new Promise".len())
+                .any(|part| part == b"await new Promise")
+            {
+                descendant = Some(process);
+            }
+        }
+        if let (Some(bun), Some(descendant)) = (bun, descendant) {
+            return StrictGeneration { bun, descendant };
+        }
+        assert!(
+            Instant::now() < deadline,
+            "strict Bun generation did not become observable"
+        );
+        thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
+fn descendant_identities(root: u32) -> Vec<ProcessIdentity> {
+    let mut parents = BTreeSet::from([root]);
+    let mut found = BTreeMap::new();
+    loop {
+        let before = found.len();
+        for entry in fs::read_dir("/proc").expect("process census") {
+            let Ok(entry) = entry else { continue };
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Some((parent, start_time)) = process_stat(pid) else {
+                continue;
+            };
+            if parents.contains(&parent) && pid != root {
+                parents.insert(pid);
+                found.insert(pid, ProcessIdentity { pid, start_time });
+            }
+        }
+        if found.len() == before {
+            return found.into_values().collect();
+        }
+    }
+}
+
+fn process_stat(pid: u32) -> Option<(u32, u64)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(") ")?;
+    let fields = fields.split_whitespace().collect::<Vec<_>>();
+    let parent = fields.get(1)?.parse().ok()?;
+    let start_time = fields.get(19)?.parse().ok()?;
+    Some((parent, start_time))
+}
+
+fn process_executable_name(pid: u32) -> Option<String> {
+    fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()?
+        .file_name()?
+        .to_str()
+        .map(str::to_owned)
+}
+
+fn wait_process_identity_gone(process: &ProcessIdentity, deadline: Instant) {
+    loop {
+        if process_stat(process.pid).is_none_or(|(_, start)| start != process.start_time) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "process survived teardown: {process:?}"
+        );
+        thread::park_timeout(Duration::from_millis(10));
+    }
+}
+
+fn sigkill_identity(process: &ProcessIdentity) {
+    assert_eq!(
+        process_stat(process.pid).map(|(_, start)| start),
+        Some(process.start_time),
+        "host identity changed before SIGKILL"
+    );
+    let pid = i32::try_from(process.pid).expect("host PID fits pid_t");
+    // SAFETY: the PID and start time were revalidated immediately above. The
+    // test controller owns this exact staged host and sends only SIGKILL.
+    assert_eq!(unsafe { kill(pid, 9) }, 0, "SIGKILL staged host");
+}
+
 fn wait_child(child: &mut Child, deadline: Instant) -> ExitStatus {
     loop {
         if let Some(status) = child.try_wait().expect("observe host exit") {
@@ -636,17 +887,6 @@ fn wait_child_output(mut child: Child, deadline: Instant) -> std::process::Outpu
     }
 }
 
-fn parent_pid(pid: u32) -> u32 {
-    let status = fs::read_to_string(format!("/proc/{pid}/status")).expect("process status");
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("PPid:\t"))
-        .expect("PPid line")
-        .trim()
-        .parse()
-        .expect("numeric parent pid")
-}
-
 fn dev_stage_count(project: &Path) -> usize {
     fs::read_dir(project.join(".keld/dev"))
         .map_or(0, |entries| entries.filter_map(Result::ok).count())
@@ -661,16 +901,6 @@ fn wait_for_dev_stage_count(project: &Path, expected: usize, deadline: Instant) 
         assert!(
             Instant::now() < deadline,
             "expected {expected} dev stages, observed {observed}"
-        );
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn wait_process_gone(pid: u32, deadline: Instant) {
-    while Path::new(&format!("/proc/{pid}")).exists() {
-        assert!(
-            Instant::now() < deadline,
-            "process {pid} survived host exit"
         );
         thread::park_timeout(Duration::from_millis(10));
     }

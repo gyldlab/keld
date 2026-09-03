@@ -415,9 +415,21 @@ pub(crate) trait GenerationLease: Send + 'static {
 /// Fresh command and host-owned authority for one supervisor attempt.
 pub(crate) struct PreparedChild<L> {
     /// Command to spawn with captured stdout/stderr.
-    pub(crate) command: Command,
+    pub(crate) command: PreparedCommand,
     /// Authority lease revoked on every terminal attempt path.
     pub(crate) lease: L,
+}
+
+pub(crate) enum PreparedCommand {
+    Direct(Command),
+    #[cfg(target_os = "linux")]
+    LinuxStrict(crate::linux_strict::LinuxStrictCommand),
+}
+
+impl From<Command> for PreparedCommand {
+    fn from(command: Command) -> Self {
+        Self::Direct(command)
+    }
 }
 
 /// Creates a fresh prepared child before each OS spawn attempt.
@@ -460,7 +472,7 @@ where
 
     fn prepare(&mut self, _attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
         Ok(PreparedChild {
-            command: (self.factory)(),
+            command: (self.factory)().into(),
             lease: NoLease,
         })
     }
@@ -792,13 +804,26 @@ fn spawn_prepared<L>(prepared: PreparedChild<L>) -> Result<(Child, L), RuntimeEr
 where
     L: GenerationLease,
 {
-    let PreparedChild { mut command, lease } = prepared;
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    match command.spawn() {
+    let PreparedChild { command, lease } = prepared;
+    let spawned = match command {
+        PreparedCommand::Direct(mut command) => {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            command.spawn().map_err(RuntimeError::Spawn)
+        }
+        #[cfg(target_os = "linux")]
+        PreparedCommand::LinuxStrict(command) => command
+            .spawn()
+            .map(crate::linux_strict::LinuxStrictChild::into_child)
+            .map_err(|source| RuntimeError::Lifecycle {
+                phase: "Linux strict role spawn",
+                source: std::io::Error::other(source),
+            }),
+    };
+    match spawned {
         Ok(child) => Ok((child, lease)),
-        Err(source) => {
+        Err(error) => {
             lease.revoke(RevocationCause::SpawnFailed)?;
-            Err(RuntimeError::Spawn(source))
+            Err(error)
         }
     }
 }
@@ -1657,7 +1682,7 @@ mod tests {
             lock_or_recover(&self.record).push(format!("prepare:{attempt}"));
             let command = self.commands.remove(0);
             Ok(PreparedChild {
-                command,
+                command: command.into(),
                 lease: RecordingLease {
                     attempt,
                     record: Arc::clone(&self.record),
@@ -1714,7 +1739,7 @@ mod tests {
                 source: std::io::Error::other("missing shutdown-exit command"),
             })?;
             Ok(PreparedChild {
-                command,
+                command: command.into(),
                 lease: ShutdownExitLease {
                     exit_on_revoke: self.exit_on_revoke.clone(),
                     pid: None,
@@ -1732,7 +1757,7 @@ mod tests {
                 source: std::io::Error::other("missing test command"),
             })?;
             Ok(PreparedChild {
-                command,
+                command: command.into(),
                 lease: FailingRevokeLease,
             })
         }

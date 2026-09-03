@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::fmt;
-#[cfg(windows)]
+#[cfg(any(target_os = "linux", windows))]
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::fs::File;
@@ -15,6 +15,8 @@ use std::fs::File;
 use std::io::{self, Read, Write as _};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt as _;
 #[cfg(windows)]
@@ -62,6 +64,8 @@ use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
     LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
+#[cfg(target_os = "linux")]
+use keld_runtime::linux_strict::LinuxStrictProfile;
 #[cfg(target_os = "macos")]
 use keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate, GuardianBootstrap};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1474,6 +1478,9 @@ fn run_app_direct(
     // concurrently read the process environment.
     #[cfg(target_os = "linux")]
     let direct_engine = WebKitGtkEngine::new();
+    #[cfg(target_os = "linux")]
+    let config = linux_strict_primary_config(&root, &entry_path)?;
+    #[cfg(windows)]
     let config = PrimaryRoleConfig::new("bun")
         .arg("run")
         .arg(root.join(&entry_path))
@@ -1676,6 +1683,119 @@ fn run_app_direct(
             owner_result,
         ]),
     }
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_BUN_ENTRY: &str = "/code/main.ts";
+#[cfg(target_os = "linux")]
+// Deliberate Ubuntu/Debian x86_64 runtime manifest for the currently proved
+// Linux product profile. KEL-28 owns non-Debian evidence; target-driven `ldd`
+// execution here would run untrusted loader metadata outside containment.
+#[cfg(target_os = "linux")]
+const LINUX_UBUNTU_X86_RUNTIME: [(&str, &str, bool); 6] = [
+    (
+        "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        true,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+        "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+        false,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+        "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+        false,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libm.so.6",
+        "/usr/lib/x86_64-linux-gnu/libm.so.6",
+        false,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+        "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+        true,
+    ),
+    (
+        "/usr/lib64/ld-linux-x86-64.so.2",
+        "/lib64/ld-linux-x86-64.so.2",
+        true,
+    ),
+];
+
+#[cfg(target_os = "linux")]
+fn linux_strict_primary_config(
+    root: &Path,
+    entry_path: &Path,
+) -> Result<PrimaryRoleConfig, HostAppError> {
+    let bun = resolve_linux_bun()?;
+    let launcher = root.join("keld-role-launcher");
+    let role_root = root.join(".keld-primary");
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(&role_root)
+        .map_err(|source| app_io("strict role root", &source))?;
+    let mut profile = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), &launcher, &role_root)
+        .map_err(|source| app_detail("Linux strict profile", source.to_string()))?;
+    for (source, destination, required) in LINUX_UBUNTU_X86_RUNTIME {
+        if !required && !Path::new(source).exists() {
+            continue;
+        }
+        profile = profile
+            .readonly_runtime(Path::new(source), Path::new(destination))
+            .map_err(|source| app_detail("Linux strict runtime", source.to_string()))?;
+    }
+    profile = profile
+        .readonly_runtime(&root.join(entry_path), Path::new(LINUX_BUN_ENTRY))
+        .map_err(|source| app_detail("Linux strict entry", source.to_string()))?;
+
+    let mut config = PrimaryRoleConfig::new(bun)
+        .arg("run")
+        .arg(LINUX_BUN_ENTRY)
+        .env("HOME", "/app")
+        .env("TMPDIR", "/tmp")
+        .env_remove(DEV_LEASE_ENV);
+    #[cfg(debug_assertions)]
+    {
+        if let Some(control) = std::env::var_os("KELD_T1B_CONTROL") {
+            let control = PathBuf::from(control)
+                .canonicalize()
+                .map_err(|source| app_io("Linux strict test control", &source))?;
+            profile = profile
+                .debug_readonly_socket(&control)
+                .map_err(|source| app_detail("Linux strict test control", source.to_string()))?;
+            config = config.env("KELD_T1B_CONTROL", control);
+        }
+        if let Some(value) = std::env::var_os("KELD_T2_EXIT_ON_LINK_EOF") {
+            config = config.env("KELD_T2_EXIT_ON_LINK_EOF", value);
+        }
+        config = config.env("KELD_T4_LINUX_STRICT", "1");
+    }
+    Ok(config.linux_strict(profile))
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_bun() -> Result<PathBuf, HostAppError> {
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| app_detail("Linux Bun resolution", "PATH is unset"))?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join("bun");
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+            return candidate
+                .canonicalize()
+                .map_err(|source| app_io("Linux Bun resolution", &source));
+        }
+    }
+    Err(app_detail(
+        "Linux Bun resolution",
+        "no executable `bun` exists on PATH",
+    ))
 }
 
 #[cfg(any(target_os = "linux", windows))]

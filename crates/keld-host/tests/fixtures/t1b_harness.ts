@@ -178,8 +178,16 @@ if (process.platform === "win32") {
   if (process.env.KELD_T4_SKIP_DESCENDANT === "1") {
     await sendControl("DESCENDANT 0");
   } else {
-    // Real-Unix acceptance pins the system tool instead of trusting a caller-controlled PATH.
-    const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {
+    // Linux strict has an empty root, so reuse the exact mounted Bun artifact.
+    // Other Unix rows retain the pinned system tool used by their own proof.
+    const strictProgram =
+      process.env.KELD_T4_LINUX_STRICT === "1" &&
+      (await Bun.file("/runtime/program").exists());
+    const descendantCommand =
+      strictProgram
+        ? ["/runtime/program", "-e", "await new Promise(() => {})"]
+        : ["/usr/bin/tail", "-f", "/dev/null"];
+    const descendant = Bun.spawn(descendantCommand, {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",

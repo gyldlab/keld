@@ -14,7 +14,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::fd::AsRawFd as _;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -41,6 +41,9 @@ const BUBBLEWRAP_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const LAUNCHER_READY_FULL: &[u8] = b"KLS1 landlock=fully-enforced\n";
 const LAUNCHER_READY_PARTIAL: &[u8] = b"KLS1 landlock=partially-enforced\n";
 const LAUNCHER_READY_UNAVAILABLE: &[u8] = b"KLS1 landlock=not-implemented\n";
+
+/// Private argv discriminator for the in-sandbox Keld launcher role.
+pub const LINUX_STRICT_LAUNCHER_ARG: &str = "--keld-linux-strict-launcher-v1";
 
 /// Failure to construct or launch the Linux strict boundary.
 #[derive(Debug)]
@@ -94,6 +97,8 @@ pub struct LinuxStrictProfile {
     launcher: PathBuf,
     role_root: PathBuf,
     runtime_mounts: Vec<LinuxReadonlyMount>,
+    #[cfg(debug_assertions)]
+    debug_sockets: Vec<LinuxSocketMount>,
 }
 
 impl LinuxStrictProfile {
@@ -121,6 +126,8 @@ impl LinuxStrictProfile {
             launcher,
             role_root,
             runtime_mounts: Vec::new(),
+            #[cfg(debug_assertions)]
+            debug_sockets: Vec::new(),
         })
     }
 
@@ -155,6 +162,32 @@ impl LinuxStrictProfile {
         Ok(self)
     }
 
+    /// Adds one exact debug-only Unix socket to the otherwise empty root.
+    ///
+    /// This exists only in debug builds for real process-boundary fixtures. It
+    /// is absent from release builds and must not carry application authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinuxStrictError`] unless `endpoint` is a current-user-owned
+    /// socket inside an owner-private, replacement-safe directory chain.
+    #[cfg(debug_assertions)]
+    pub fn debug_readonly_socket(mut self, endpoint: &Path) -> Result<Self, LinuxStrictError> {
+        let socket = LinuxSocketMount::new(endpoint, "debug socket")?;
+        if self
+            .debug_sockets
+            .iter()
+            .any(|existing| existing.destination == socket.destination)
+        {
+            return Err(LinuxStrictError::new(
+                "debug socket",
+                format!("duplicate endpoint {}", socket.destination.display()),
+            ));
+        }
+        self.debug_sockets.push(socket);
+        Ok(self)
+    }
+
     /// Builds one fail-closed strict command with an exact environment.
     ///
     /// The target is mounted read-only as `/runtime/program`; the only
@@ -171,6 +204,35 @@ impl LinuxStrictProfile {
         program: &Path,
         args: &[OsString],
         environment: &[(OsString, OsString)],
+    ) -> Result<LinuxStrictCommand, LinuxStrictError> {
+        self.command_inner(program, args, environment, &[])
+    }
+
+    pub(crate) fn command_for_app_link(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        environment: &[(OsString, OsString)],
+        app_link_endpoint: &Path,
+    ) -> Result<LinuxStrictCommand, LinuxStrictError> {
+        let app_link = LinuxSocketMount::new(app_link_endpoint, "authenticated app-link")?;
+        #[cfg(debug_assertions)]
+        let sockets = {
+            let mut sockets = self.debug_sockets.clone();
+            sockets.push(app_link);
+            sockets
+        };
+        #[cfg(not(debug_assertions))]
+        let sockets = [app_link];
+        self.command_inner(program, args, environment, &sockets)
+    }
+
+    fn command_inner(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        environment: &[(OsString, OsString)],
+        sockets: &[LinuxSocketMount],
     ) -> Result<LinuxStrictCommand, LinuxStrictError> {
         let program = validate_program(program)?;
         validate_environment(environment)?;
@@ -199,8 +261,15 @@ impl LinuxStrictProfile {
             &self.launcher,
             &self.role_root,
             &self.runtime_mounts,
+            sockets,
         );
-        append_strict_launch(&mut command, &self.runtime_mounts, environment, args);
+        append_strict_launch(
+            &mut command,
+            &self.runtime_mounts,
+            sockets,
+            environment,
+            args,
+        );
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -229,6 +298,7 @@ fn append_bubblewrap_mounts(
     launcher: &Path,
     role_root: &Path,
     runtime_mounts: &[LinuxReadonlyMount],
+    sockets: &[LinuxSocketMount],
 ) {
     command.args([
         "--unshare-user",
@@ -269,6 +339,16 @@ fn append_bubblewrap_mounts(
                 .map(Path::to_path_buf),
         );
     }
+    for socket in sockets {
+        if let Some(parent) = socket.destination.parent() {
+            directories.extend(
+                parent
+                    .ancestors()
+                    .filter(|path| ![Path::new("/"), Path::new("/tmp")].contains(path))
+                    .map(Path::to_path_buf),
+            );
+        }
+    }
     for directory in directories {
         command.arg("--dir").arg(directory);
     }
@@ -278,12 +358,19 @@ fn append_bubblewrap_mounts(
             .arg(&mount.source)
             .arg(&mount.destination);
     }
+    for socket in sockets {
+        command
+            .arg("--ro-bind")
+            .arg(&socket.source)
+            .arg(&socket.destination);
+    }
     command.arg("--bind").arg(role_root).arg(SANDBOX_ROLE_ROOT);
 }
 
 fn append_strict_launch(
     command: &mut Command,
     runtime_mounts: &[LinuxReadonlyMount],
+    sockets: &[LinuxSocketMount],
     environment: &[(OsString, OsString)],
     args: &[OsString],
 ) {
@@ -297,7 +384,7 @@ fn append_strict_launch(
     command
         .arg("--")
         .arg(SANDBOX_LAUNCHER)
-        .arg("--keld-linux-strict-launcher-v1")
+        .arg(LINUX_STRICT_LAUNCHER_ARG)
         .arg("--ro")
         .arg(SANDBOX_PROGRAM)
         .arg("--ro")
@@ -305,7 +392,20 @@ fn append_strict_launch(
         .arg("--ro")
         .arg("/proc");
     for mount in runtime_mounts {
+        for parent in mount
+            .destination
+            .ancestors()
+            .skip(1)
+            .filter(|path| *path != Path::new("/"))
+        {
+            command.arg("--ro").arg(parent);
+        }
         command.arg("--ro").arg(&mount.destination);
+    }
+    for socket in sockets {
+        if let Some(parent) = socket.destination.parent() {
+            command.arg("--ro").arg(parent);
+        }
     }
     for path in [SANDBOX_ROLE_ROOT, "/tmp", "/dev"] {
         command.arg("--rw").arg(path);
@@ -317,6 +417,56 @@ fn append_strict_launch(
 struct LinuxReadonlyMount {
     source: PathBuf,
     destination: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct LinuxSocketMount {
+    source: PathBuf,
+    destination: PathBuf,
+}
+
+impl LinuxSocketMount {
+    fn new(endpoint: &Path, phase: &'static str) -> Result<Self, LinuxStrictError> {
+        let metadata = fs::symlink_metadata(endpoint)
+            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
+        let current_uid = current_effective_uid()?;
+        let mode = metadata.permissions().mode() & 0o7777;
+        if metadata.file_type().is_symlink()
+            || !metadata.file_type().is_socket()
+            || metadata.uid() != current_uid
+        {
+            return Err(LinuxStrictError::new(
+                phase,
+                format!(
+                    "endpoint must be a current-user-owned non-symlink socket; uid={} expected_uid={current_uid} mode=0o{mode:o}",
+                    metadata.uid()
+                ),
+            ));
+        }
+        let source = endpoint
+            .canonicalize()
+            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
+        let parent = source.parent().ok_or_else(|| {
+            LinuxStrictError::new(phase, "socket endpoint has no parent directory")
+        })?;
+        let parent_metadata = fs::symlink_metadata(parent)
+            .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
+        let parent_mode = parent_metadata.permissions().mode() & 0o7777;
+        if parent_metadata.uid() != current_uid || parent_mode != 0o700 {
+            return Err(LinuxStrictError::new(
+                phase,
+                format!(
+                    "socket parent must be current-user-owned mode 0o700; uid={} expected_uid={current_uid} mode=0o{parent_mode:o}",
+                    parent_metadata.uid()
+                ),
+            ));
+        }
+        validate_trusted_ancestors(&source, current_uid, phase)?;
+        Ok(Self {
+            destination: source.clone(),
+            source,
+        })
+    }
 }
 
 impl LinuxReadonlyMount {
@@ -617,7 +767,7 @@ fn parse_launcher_args(
 ) -> Result<LauncherArgs, LinuxStrictError> {
     let mut args = args.into_iter();
     let _program_name = args.next();
-    if args.next().as_deref() != Some(OsStr::new("--keld-linux-strict-launcher-v1")) {
+    if args.next().as_deref() != Some(OsStr::new(LINUX_STRICT_LAUNCHER_ARG)) {
         return Err(LinuxStrictError::new(
             "launcher arguments",
             "missing private discriminator",
@@ -755,6 +905,7 @@ fn validate_trusted_ancestors(
     current_uid: u32,
     phase: &'static str,
 ) -> Result<(), LinuxStrictError> {
+    let mut replaceable = None;
     for ancestor in path.ancestors().skip(1) {
         let metadata = fs::symlink_metadata(ancestor)
             .map_err(|source| LinuxStrictError::new(phase, source.to_string()))?;
@@ -762,20 +913,33 @@ fn validate_trusted_ancestors(
         let trusted_owner = metadata.uid() == 0 || metadata.uid() == current_uid;
         let writable_by_other_principal = mode & 0o022 != 0;
         let sticky_entry_protection = mode & 0o1000 != 0;
-        if metadata.file_type().is_symlink()
-            || !metadata.is_dir()
-            || !trusted_owner
-            || (writable_by_other_principal && !sticky_entry_protection)
-        {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() || !trusted_owner {
             return Err(LinuxStrictError::new(
                 phase,
                 format!(
-                    "{} must be a root/current-user-owned directory that other principals cannot replace entries in; uid={} expected_uid={current_uid} mode=0o{mode:o}",
+                    "{} must be a root/current-user-owned non-symlink directory; uid={} expected_uid={current_uid} mode=0o{mode:o}",
                     ancestor.display(),
                     metadata.uid()
                 ),
             ));
         }
+        let owner_private_barrier = mode.trailing_zeros() >= 6;
+        if owner_private_barrier {
+            replaceable = None;
+            continue;
+        }
+        if writable_by_other_principal && !sticky_entry_protection && replaceable.is_none() {
+            replaceable = Some((ancestor.to_owned(), metadata.uid(), mode));
+        }
+    }
+    if let Some((ancestor, uid, mode)) = replaceable {
+        return Err(LinuxStrictError::new(
+            phase,
+            format!(
+                "{} lets another principal replace descendant entries before any owner-private barrier; uid={uid} expected_uid={current_uid} mode=0o{mode:o}",
+                ancestor.display()
+            ),
+        ));
     }
     Ok(())
 }
