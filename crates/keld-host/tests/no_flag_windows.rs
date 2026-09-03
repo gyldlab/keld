@@ -1240,14 +1240,65 @@ fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<()>) {
     stream
         .set_read_timeout(Some(PRODUCT_DEADLINE))
         .expect("beacon read deadline");
-    let mut request = [0_u8; 2048];
-    let read = stream.read(&mut request).expect("read renderer beacon");
-    let request = String::from_utf8_lossy(&request[..read]);
+    let request = read_renderer_request_line(|buffer| stream.read(buffer))
+        .expect("read renderer beacon")
+        .unwrap_or_default();
+    let request = String::from_utf8_lossy(&request);
     assert!(request.starts_with("GET /ready.png "), "{request}");
     stream
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
         .expect("reply renderer beacon");
     observed.send(()).expect("publish renderer beacon");
+}
+
+fn read_renderer_request_line(
+    mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+) -> Result<Option<Vec<u8>>, String> {
+    let mut request = [0_u8; 2048];
+    let read = read_chunk(&mut request).map_err(|error| error.to_string())?;
+    if read == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(request[..read].to_vec()))
+    }
+}
+
+#[test]
+fn renderer_beacon_accumulates_a_fragmented_request_line() {
+    let mut chunks = [
+        b"G".as_slice(),
+        b"ET /ready.png HTTP/1.1\r".as_slice(),
+        b"\nHost: 127.0.0.1\r\n\r\n".as_slice(),
+    ]
+    .into_iter();
+    let request = read_renderer_request_line(|buffer| {
+        let chunk = chunks.next().unwrap_or_default();
+        buffer[..chunk.len()].copy_from_slice(chunk);
+        Ok(chunk.len())
+    })
+    .expect("read fragmented renderer request")
+    .expect("fragmented request is not empty");
+
+    assert_eq!(request, b"GET /ready.png HTTP/1.1");
+}
+
+#[test]
+fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon regression listener");
+    let address = listener.local_addr().expect("beacon regression address");
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || serve_renderer_beacon(&listener, &observed_tx));
+
+    drop(TcpStream::connect(address).expect("connect empty preconnect"));
+    let mut target = TcpStream::connect(address).expect("connect target renderer request");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write target renderer request");
+
+    observed_rx
+        .recv_timeout(PRODUCT_DEADLINE)
+        .expect("exact renderer request observed after empty preconnect");
+    beacon.join().expect("beacon regression thread");
 }
 
 fn accept_control_or_host_failure(
