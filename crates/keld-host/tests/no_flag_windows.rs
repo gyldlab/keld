@@ -1309,26 +1309,6 @@ fn serve_renderer_beacon_loop(
             })
             .transpose()?;
 
-        loop {
-            let (stream, _) = match listener.accept() {
-                Ok(accepted) => accepted,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) => return Err(format!("accept renderer beacon: {error}")),
-            };
-            if pending.len() == RENDERER_CONNECTION_LIMIT {
-                return Err(format!(
-                    "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
-                ));
-            }
-            stream
-                .set_nonblocking(true)
-                .map_err(|error| format!("set renderer beacon stream nonblocking: {error}"))?;
-            pending.push(PendingRendererRequest {
-                stream,
-                request: Vec::new(),
-            });
-        }
-
         let mut index = 0;
         while index < pending.len() {
             let request = {
@@ -1365,6 +1345,26 @@ fn serve_renderer_beacon_loop(
                     return Ok(());
                 }
             }
+        }
+
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if pending.len() == RENDERER_CONNECTION_LIMIT {
+                    return Err(format!(
+                        "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+                    ));
+                }
+                stream
+                    .set_nonblocking(true)
+                    .map_err(|error| format!("set renderer beacon stream nonblocking: {error}"))?;
+                pending.push(PendingRendererRequest {
+                    stream,
+                    request: Vec::new(),
+                });
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(format!("accept renderer beacon: {error}")),
         }
 
         // This only backs off the nonblocking kernel poll; socket readiness
@@ -1548,6 +1548,35 @@ fn renderer_beacon_does_not_serialize_idle_preconnects_before_the_exact_request(
     beacon.join().expect("idle-preconnect beacon thread");
     let result = observed.expect("idle peers serialized ahead of the exact request");
     assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn renderer_beacon_reaps_closed_pending_connections_before_applying_the_live_cap() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale-pending listener");
+    let address = listener.local_addr().expect("stale-pending address");
+    let stale = (0..RENDERER_CONNECTION_LIMIT)
+        .map(|_| TcpStream::connect(address).expect("queue stale pending connection"))
+        .collect::<Vec<_>>();
+    drop(stale);
+
+    let mut target = TcpStream::connect(address).expect("connect behind stale pending peers");
+    target
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("stale-pending response kill switch");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write exact request behind stale pending peers");
+
+    let result = serve_renderer_beacon_until(&listener, Instant::now() + Duration::from_secs(1));
+    assert_eq!(result, Ok(()));
+    let mut response = Vec::new();
+    target
+        .read_to_end(&mut response)
+        .expect("read exact response behind stale pending peers");
+    assert_eq!(
+        response,
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
 }
 
 #[test]
