@@ -1249,13 +1249,32 @@ fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
     let remaining = deadline
         .checked_duration_since(Instant::now())
         .unwrap_or_default();
-    let result = observed.recv_timeout(remaining);
+    let initial_result = observed.recv_timeout(remaining);
+    finish_renderer_beacon(&observed, worker, initial_result, context)
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+fn finish_renderer_beacon(
+    observed: &mpsc::Receiver<Result<(), String>>,
+    worker: thread::JoinHandle<()>,
+    initial_result: Result<Result<(), String>, mpsc::RecvTimeoutError>,
+    context: &str,
+) -> Result<(), String> {
     worker
         .join()
-        .unwrap_or_else(|_| panic!("{context}: beacon worker panicked"));
-    let result =
-        result.unwrap_or_else(|error| panic!("{context}: beacon worker did not report: {error}"));
-    result.unwrap_or_else(|error| panic!("{context}: {error}"));
+        .map_err(|_| format!("{context}: beacon worker panicked"))?;
+    let result = match initial_result {
+        Ok(result) => result,
+        Err(receive_error) => match observed.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
+                return Err(format!(
+                    "{context}: beacon worker did not report: {receive_error}"
+                ));
+            }
+        },
+    };
+    result.map_err(|error| format!("{context}: {error}"))
 }
 
 struct PendingRendererRequest {
@@ -1455,6 +1474,56 @@ fn renderer_beacon_accumulates_a_fragmented_request_line() {
     assert_eq!(
         result,
         RendererRequestRead::Complete(b"GET /ready.png HTTP/1.1".to_vec())
+    );
+}
+
+#[test]
+fn renderer_beacon_prefers_worker_error_published_after_initial_receive_timeout() {
+    let (observed_tx, observed) = mpsc::channel();
+    let (publish_tx, publish_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        publish_rx
+            .recv()
+            .expect("release late renderer beacon publication");
+        observed_tx
+            .send(Err("precise worker failure".to_owned()))
+            .expect("publish precise renderer beacon failure");
+    });
+    let initial_result = observed.recv_timeout(Duration::from_millis(1));
+    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
+    publish_tx
+        .send(())
+        .expect("release worker after initial receive timeout");
+
+    let result = finish_renderer_beacon(&observed, worker, initial_result, "late publication");
+    assert_eq!(
+        result,
+        Err("late publication: precise worker failure".to_owned())
+    );
+}
+
+#[test]
+fn renderer_beacon_preserves_initial_timeout_when_worker_publishes_nothing() {
+    let (observed_tx, observed) = mpsc::channel::<Result<(), String>>();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        release_rx
+            .recv()
+            .expect("release renderer beacon worker without publication");
+        drop(observed_tx);
+    });
+    let initial_result = observed.recv_timeout(Duration::from_millis(1));
+    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
+    release_tx
+        .send(())
+        .expect("release non-publishing worker after initial timeout");
+
+    let result = finish_renderer_beacon(&observed, worker, initial_result, "no publication");
+    assert_eq!(
+        result,
+        Err(
+            "no publication: beacon worker did not report: timed out waiting on channel".to_owned()
+        )
     );
 }
 
