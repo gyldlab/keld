@@ -25,7 +25,7 @@ Three principal classes, with host-minted instances inside each class:
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
    host-owned supervised primary-child echo slice with restart/backoff/output capture
-   co-lived with the hello window (KEL-30), plus KEL-96's macOS and Windows no-flag
+   co-lived with the hello window (KEL-30), plus KEL-96's macOS, Windows, and Linux no-flag
    `keld-host` owner with a strict staged boot descriptor, one multiplexed
    echo/lifecycle link, native window, ordered Quit cleanup, and a shipping
    `keld dev` launcher that owns only staging, logs, the host process handle,
@@ -130,8 +130,8 @@ carries a local `// SAFETY:` proof.
   generation—not a PID, token or socket name—and old authority is revoked before a
   successor is provisioned.   Current implementation has KEL-70's generic one-child
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
-  macOS and Windows no-flag validated boot plus one-link echo/lifecycle sessions and live
-  event-loop wake, and KEL-96/T2/T4's macOS/Windows CLI-to-host delegation with
+  macOS, Windows, and Linux no-flag validated boot plus one-link echo/lifecycle sessions and live
+  event-loop wake, and KEL-96/T2/T4's cross-platform CLI-to-host delegation with
   lease-loss ordered teardown, KEL-75 T1b/T8's platform primary-generation
   coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
@@ -139,8 +139,12 @@ carries a local `// SAFETY:` proof.
   between authenticated role generations. KEL-96's Windows slice consumes T8 for
   same-HWND recovery over the current-user-DACL named pipe and composes KEL-78's
   Windows Job/LPAC owner for abnormal-host-death reaping. It does not add
-  privileged dispatch. Window-bound roles, complete role grants, and complete
-  cross-platform strict sandbox admission remain later KEL-75/KEL-78 slices.
+  privileged dispatch. The current Ubuntu/Debian x86_64 Linux slice uses the same primary supervisor through
+  KEL-78's strict Bubblewrap/empty-root/seccomp/Landlock mechanism, with an exact
+  staged launcher and app-link socket mount; host-only death reaps its Bun
+  descendant tree before relaunch. Window-bound roles, complete role grants,
+  non-primary product admission, and the remaining OS strict profiles remain
+  later KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.

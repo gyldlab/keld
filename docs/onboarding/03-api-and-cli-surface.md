@@ -43,7 +43,7 @@ from `std::env::args()`.
 | `keld --version` / `keld -V` | `main.rs` | prints `keld <CARGO_PKG_VERSION>` |
 | `keld` (no args) | `main.rs::print_usage` | usage on **stderr**, exit 0 |
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
-| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS and Windows stages and launches the no-flag host with a private liveness lease; Linux fails closed until its KEL-96/T4 no-flag row |
+| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile stages and launches the no-flag host with a private liveness lease; Linux also stages the strict-role launcher. Native GNOME Wayland is proved; X11 product and non-Debian rows remain unverified |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
 | `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
@@ -146,28 +146,31 @@ The one verb that ties everything together. Sequence, from
    error message, not the search.
 2. **Run the doctor checks.** Any failure aborts with `KELD-CLI-032` and the full check
    list, before any process is spawned.
-3. **On macOS and Windows, compile one fresh stage.** `stage_dev_boot` reads the reviewed
+3. **On macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile, compile one fresh stage.** `stage_dev_boot` reads the reviewed
    project fields, copies the sibling developer `keld-host`,
    writes the strict boot descriptor and explicit permissions fixture, and
-   returns the owner-private launch root. macOS verifies exact `0o700`; Windows
+   returns the owner-private launch root. macOS verifies exact `0o700`; Linux
+   also makes `.keld`, `dev`, and the nonce owner-private and copies the minimal
+   strict-role launcher; Windows
    installs and reads back one protected current-TokenUser full-control DACL.
 4. **Launch the staged host with no Keld argument.** The CLI inherits its
    stdout/stderr and retains the child handle plus the write end of a private
    stdin-v1 lease. The host validates its sibling descriptor and owns the app
    link, platform supervisor, Bun, and native window. macOS uses the guardian
-   process group; Windows consumes T8's primary supervisor. Bun receives only
+   process group; Windows consumes T8's primary supervisor; the proved Linux profile uses that
+   primary owner through KEL-78's strict empty-root profile. Bun receives only
    `KELD_APP_LINK`; it receives null stdin and no lease variable.
 5. **Wait for the host.** Lifecycle Ready follows initial navigation, and the
    same authenticated session remains live for multiple calls and Quit. If the
    CLI exits, EOF on the sole lease writer makes the host quiesce, close the
-   link, reap Bun, close the window, and exit. Linux fails closed before this
-   sequence until its no-flag owner lands. macOS removes its validated nonce stage on normal Quit
+   link, reap Bun, close the window, and exit. macOS and Linux remove their validated nonce stage on normal Quit
    and CLI loss. On Windows the approved private
    `keld.windows-dev-stage-cleanup/v1` sentinel survives terminal-CLI death,
    waits the exact staged-host process object, and owns nonce deletion. Windows
    installs KEL-78/T3's non-breakaway kill-on-close Job before Bun spawn, so
-   host death reaps the enrolled descendants. Linux product implementation and
-   real-desktop evidence remain separate open rows.
+   host death reaps the enrolled descendants. Linux's PID namespace and
+   parent-death coupling provide the corresponding tree reap; a surviving CLI
+   removes the exact nonce after abnormal host exit.
 
 Representative Bun output from a session in a freshly scaffolded `my-app`
 (forwarded through the host/CLI stdio chain):
@@ -203,11 +206,11 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **On macOS and Windows the host, not the CLI, owns close and Quit.** The live
-  WKWebView/WebView2 paths use event-loop wake commands; `LastWindowClosed`
+- **On macOS, Windows, and proved Ubuntu GNOME Wayland the host, not the CLI, owns close and Quit.** The live
+  WKWebView/WebView2/WebKitGTK paths use event-loop wake commands; `LastWindowClosed`
   stays on the same link, and the correlated Quit reply precedes link close
-  and supervisor reap. The Linux hello backend remains its T4 input, but
-  shipping Linux `keld dev` fails closed until that host-owned path lands.
+  and supervisor reap. Linux additionally confines each Bun generation and its
+  descendants with KEL-78's strict profile.
 - **Linux has a live backend too, as of KEL-28.** `run_hello_window_html` is the
   same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
   `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
@@ -495,7 +498,7 @@ Backends:
 |---|---|---|
 | `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. `probe_gpu_stack()` applies NVIDIA+Wayland safe-mode before any GTK/WebKit call — split from the pure `detect_gpu_safe_mode()` so `keld doctor` can read it side-effect-free. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms a real X11 window opens with the right title — not yet watched on a real desktop. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. `probe_gpu_stack()` applies NVIDIA+Wayland safe-mode before any GTK/WebKit call — split from the pure `detect_gpu_safe_mode()` so `keld doctor` can read it side-effect-free. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms the X11 backend, and KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. A real X11 product run remains open. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live

@@ -87,9 +87,10 @@ cd /tmp && "$KELD" create my-app && cd my-app
 
 which prints `ipc-echo ok: …` and `my-app: main process ready (IPC echo ok)` and opens
 the window. Close the window (or Ctrl-C the terminal) to end the session. Confirmed on
-macOS and Windows with a real display; on Linux confirmed at the X11 level under Xvfb +
-a window manager (`xdotool search --name Keld` finds a real, correctly-titled window —
-KEL-28), but not yet watched on a real desktop with eyes on the screen.
+macOS and Windows with a real display. Linux now has both the X11 Xvfb/window-manager
+smoke (`xdotool search --name Keld`) and native Ubuntu GNOME Wayland no-flag product
+evidence for rendered navigation, two calls, recovery, ordered teardown, strict
+descendant reaping, stage cleanup, and relaunch. A real X11 product run remains open.
 
 ---
 

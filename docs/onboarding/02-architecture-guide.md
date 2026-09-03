@@ -250,24 +250,25 @@ Five things to notice, because they are each a deliberate decision rather than a
 
 ### 4b. What actually happens today when you run `keld dev`
 
-On macOS and Windows, read `crates/keld-cli/src/dev.rs` together with
-`crates/keld-core/src/app_session.rs`. Linux `keld dev` fails closed until its
-KEL-96/T4 no-flag row.
+On macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile, read
+`crates/keld-cli/src/dev.rs` together with `crates/keld-core/src/app_session.rs`.
+Linux has native GNOME Wayland product evidence; X11 product and non-Debian
+runtime-manifest rows remain unverified.
 
 ```mermaid
 sequenceDiagram
-    accTitle: Current macOS and Windows keld dev delegated host flow
+    accTitle: Current cross-platform keld dev delegated host flow
     accDescr {
-      The live macOS and Windows CLI compiles an owner-private stage and launches a no-flag host.
+      The live macOS, Windows, and Linux CLI compiles an owner-private stage and launches a no-flag host.
       The host owns the authenticated app link, platform-supervised Bun child and native
       window. CLI lease loss and lifecycle Quit converge on the host's ordered teardown.
     }
     autonumber
     participant CLI as keld dev<br/>(keld-cli)
     participant Host as staged keld-host<br/>+ keld-core app session
-    participant Owner as platform primary owner<br/>macOS guardian / Windows supervisor
+    participant Owner as platform primary owner<br/>macOS guardian / Windows+Linux supervisor
     participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30)
-    participant Win as native window<br/>WKWebView / WebView2
+    participant Win as native window<br/>WKWebView / WebView2 / WebKitGTK
 
     CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts?<br/>renderer HTML present and project-relative?
     CLI->>CLI: stage_dev_boot() — fresh 0o700 / protected-DACL layout
@@ -294,11 +295,12 @@ sequenceDiagram
 The honest reading of that diagram:
 
 - **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template speaks kipc from `src/kipc.ts`, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
-- **The macOS and Windows windows/IPC sessions are concurrent and host-owned.** One
+- **The macOS, Windows, and Linux windows/IPC sessions are concurrent and host-owned.** One
   authenticated stream carries Ready, two echo calls and Quit while the
   native window is live; a fresh stream replaces it after a recoverable crash
   without changing that window. The CLI retains no listener, token, stream,
-  window, or Bun supervisor. Linux fails closed until T4.
+  window, or Bun supervisor. Linux runs each generation inside the strict
+  empty-root profile and reaps its descendant tree on host death.
 - **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
   (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
   echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic
@@ -382,9 +384,9 @@ From [`01` §4](../architecture/01-overview.md). Four kinds of execution context
 
 | Context | Rule | Today |
 |---|---|---|
-| **Host main thread** | Is the platform UI thread (AppKit and GTK require it; Win32 tolerates it). *All* webview and window mutations happen here, delivered via a lock-free MPSC command queue into the event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add` | The macOS and Windows no-flag paths have a private `mpsc` + tao `EventLoopProxy` wake for Quit/Fatal; the complete multi-window registry remains target work. Partial |
-| **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | The macOS/Windows app session has one reader and one mutex-serialized writer per current generation; diagnostics retain the blocking echo-session thread. The complete pool/channel router is absent. Partial |
-| **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | On macOS the staged guardian composes `Supervisor`; on Windows the host consumes T8's primary supervisor. Both preserve one native window across fresh authenticated generations. Linux `keld dev` fails closed. Partial |
+| **Host main thread** | Is the platform UI thread (AppKit and GTK require it; Win32 tolerates it). *All* webview and window mutations happen here, delivered via a lock-free MPSC command queue into the event loop's wakeup primitive — `CFRunLoopSource`, `PostMessage`, `g_idle_add` | All three no-flag paths have a private `mpsc` + platform event-loop wake for Quit/Fatal; the complete multi-window registry remains target work. Partial |
+| **IPC I/O threads** | One reader + one writer per app-process link; readiness-driven state machines. Messages hop to the main thread only if they touch UI; everything else finishes on pool threads | The cross-platform app session has one reader and one mutex-serialized writer per current generation; diagnostics retain the blocking echo-session thread. The complete pool/channel router is absent. Partial |
+| **App process** | Plain Bun, spawned with the link and shared-memory handles. Supervisor applies exponential-backoff restart, a crash-loop breaker, `--inspect` passthrough in dev | On macOS the staged guardian composes `Supervisor`; Windows uses T8's primary supervisor; Linux uses that same owner through KEL-78's strict profile. All preserve one native window across fresh authenticated generations. Partial |
 | **Webview content processes** | Whatever the engine does — WKWebView WebContent, WebView2 helpers, WebKitGTK web process, CEF subprocesses. "We never fight the engine's model" | Inherited from WKWebView via wry on macOS. Live by delegation |
 
 The UI-thread rule is the one that will bite you first. `keld-wv`'s crate `AGENTS.md` states it
