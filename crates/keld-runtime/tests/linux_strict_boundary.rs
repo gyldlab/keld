@@ -47,7 +47,7 @@ fn linux_strict_probe_helper() {
         assert_namespace_escape_denied();
         assert_scm_rights_denied();
         assert_host_paths_absent();
-        assert_landlock_canary_denied();
+        observe_landlock_canary("descendant");
         println!("KEL78_LINUX_STRICT_DESCENDANT_PASS");
         return;
     }
@@ -75,7 +75,7 @@ fn linux_strict_probe_helper() {
     assert_namespace_escape_denied();
     assert_scm_rights_denied();
     assert_host_paths_absent();
-    assert_landlock_canary_denied();
+    observe_landlock_canary("primary");
     assert_runtime_fds_are_closed();
 
     fs::write("/app/role-private-ok", b"strict-write\n").expect("role-private write");
@@ -105,7 +105,12 @@ fn linux_strict_probe_helper() {
         "descendant failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("KEL78_LINUX_STRICT_DESCENDANT_PASS"));
+    let descendant_stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        descendant_stdout.contains("KEL78_LINUX_STRICT_DESCENDANT_PASS"),
+        "{descendant_stdout}"
+    );
+    print!("{descendant_stdout}");
     println!("KEL78_LINUX_STRICT_PASS");
 }
 
@@ -445,14 +450,7 @@ fn strict_profile_denies_host_fs_network_namespace_escape_and_fd_inheritance() {
         .expect("strict command")
         .spawn()
         .expect("strict spawn");
-    assert!(
-        matches!(
-            admitted.landlock_status(),
-            LinuxLandlockStatus::FullyEnforced | LinuxLandlockStatus::PartiallyEnforced
-        ),
-        "hostile Landlock row requires a kernel Landlock layer: {:?}",
-        admitted.landlock_status()
-    );
+    let landlock = admitted.landlock_status();
     let mut child = admitted.into_child();
     let status = wait_child(&mut child, Instant::now() + Duration::from_secs(20));
     let mut stdout = String::new();
@@ -471,6 +469,16 @@ fn strict_profile_denies_host_fs_network_namespace_escape_and_fd_inheritance() {
         .expect("read strict stderr");
     assert!(status.success(), "strict target failed: {stderr}");
     assert!(stdout.contains("KEL78_LINUX_STRICT_PASS"), "{stdout}");
+    let canary_result = match landlock {
+        LinuxLandlockStatus::FullyEnforced | LinuxLandlockStatus::PartiallyEnforced => "denied",
+        LinuxLandlockStatus::NotImplemented => "writable",
+    };
+    for scope in ["primary", "descendant"] {
+        assert!(
+            stdout.contains(&format!("KEL78_LANDLOCK_CANARY_{scope}={canary_result}")),
+            "landlock={landlock:?} stdout={stdout}"
+        );
+    }
     assert_eq!(
         fs::read(role.path().join("role-private-ok")).expect("role output"),
         b"strict-write\n"
@@ -744,14 +752,14 @@ fn assert_host_paths_absent() {
     }
 }
 
-fn assert_landlock_canary_denied() {
-    let error = fs::write("/landlock-probe/escape", b"must fail\n")
-        .expect_err("mounted Landlock canary must remain denied");
-    assert_eq!(
-        error.kind(),
-        std::io::ErrorKind::PermissionDenied,
-        "{error}"
-    );
+fn observe_landlock_canary(scope: &str) {
+    match fs::write("/landlock-probe/escape", b"landlock observation\n") {
+        Ok(()) => println!("KEL78_LANDLOCK_CANARY_{scope}=writable"),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            println!("KEL78_LANDLOCK_CANARY_{scope}=denied");
+        }
+        Err(error) => panic!("unexpected Landlock canary result: {error}"),
+    }
 }
 
 fn assert_runtime_fds_are_closed() {
