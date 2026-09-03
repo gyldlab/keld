@@ -118,15 +118,28 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
             bytes: b"hostile".to_vec(),
         })
         .expect("encode");
-        write_frame(
+        let write = write_frame(
             &mut client,
             FrameKind::Call,
             flags,
             keld_ipc::ChannelId(channel),
             CorrelationId(corr),
             &payload,
-        )
-        .expect("client writes hostile CALL");
+        );
+        if let Err(error) = write {
+            assert!(
+                matches!(
+                    &error,
+                    IpcError::Io(source)
+                        if matches!(
+                            source.kind(),
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionReset
+                        )
+                ),
+                "{case}: hostile header write failed unexpectedly: {error}"
+            );
+        }
 
         let err = handle
             .join()
