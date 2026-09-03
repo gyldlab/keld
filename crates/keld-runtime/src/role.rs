@@ -570,16 +570,16 @@ impl RoleSupervisor {
         self.supervisor.shutdown();
     }
 
-    /// Stops crash-successor admission without killing the current Windows
+    /// Stops crash-successor admission without killing the current direct
     /// generation before its accepted Quit reply is written.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn accept_shutdown(&self) {
         self.supervisor.accept_shutdown();
     }
 
-    /// Revokes, kills/reaps, and restart-policies the named Windows generation
+    /// Revokes, kills/reaps, and restart-policies the named direct generation
     /// after its authenticated app link fails while the process is still live.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn restart_generation(&self, attempt: u32) {
         self.supervisor.restart_generation(attempt);
     }

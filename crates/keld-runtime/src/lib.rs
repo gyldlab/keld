@@ -495,10 +495,10 @@ pub struct Supervisor {
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
     crashes: Arc<Mutex<CrashLedger>>,
     terminal_error: Arc<Mutex<Option<RuntimeError>>>,
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     accepted_shutdown: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     restart_attempt: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
 }
@@ -628,10 +628,10 @@ impl Supervisor {
             crash_loop_error,
             crashes,
             terminal_error,
-            #[cfg(any(target_os = "macos", windows))]
+            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             accepted_shutdown,
             shutdown,
-            #[cfg(windows)]
+            #[cfg(any(target_os = "linux", windows))]
             restart_attempt,
             thread: Some(thread),
         })
@@ -755,7 +755,7 @@ impl Supervisor {
     /// Marks a caller-accepted shutdown before its reply can make the child
     /// terminate cooperatively. This changes attribution only; [`Self::shutdown`]
     /// remains the sole signal that initiates kill/reap.
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     pub(crate) fn accept_shutdown(&self) {
         self.accepted_shutdown.store(true, Ordering::Release);
     }
@@ -773,7 +773,7 @@ impl Supervisor {
     /// consumes a matching signal at its existing wait boundary and applies
     /// the same crash-loop policy before successor preparation. A stale
     /// request cannot restart a later attempt.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) fn restart_generation(&self, attempt: u32) {
         self.restart_attempt.store(attempt, Ordering::Release);
     }

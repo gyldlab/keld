@@ -212,7 +212,7 @@ fn keld_doctor_fails_when_bun_missing_from_path() {
 }
 
 #[test]
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn keld_dev_without_config_is_cli_032() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = keld()
@@ -228,7 +228,7 @@ fn keld_dev_without_config_is_cli_032() {
 }
 
 #[test]
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn keld_dev_fails_closed_before_project_checks_without_a_no_flag_host() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = keld()

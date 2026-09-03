@@ -5,7 +5,7 @@
 //! and evidence live in `docs/engineering/product-status.tsv`.
 
 use std::env;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::fs;
 #[cfg(target_os = "macos")]
 use std::fs::File;
@@ -14,8 +14,10 @@ use std::io;
 #[cfg(any(target_os = "macos", windows))]
 use std::io::Write as _;
 #[cfg(target_os = "macos")]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-#[cfg(any(target_os = "macos", windows))]
+use std::os::unix::fs::MetadataExt;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::path::PathBuf;
 use std::process;
 #[cfg(target_os = "macos")]
@@ -81,7 +83,7 @@ fn main() {
         process::exit(1);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let dev_stage_cleanup = dev_stage_cleanup_root();
     let result = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
         .and_then(keld_core::app_session::run_guarded);
@@ -90,7 +92,7 @@ fn main() {
         eprintln!("{error}");
         failed = true;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     if let Some(root) = dev_stage_cleanup
         && let Err(source) = fs::remove_dir_all(&root)
     {
@@ -129,14 +131,14 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
     cleanup.wait_and_delete().map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn dev_stage_cleanup_root() -> Option<PathBuf> {
     let executable = env::current_exe().ok()?;
     let lease = env::var_os("KELD_DEV_LEASE");
     dev_stage_cleanup_root_for(&executable, lease.as_deref())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn dev_stage_cleanup_root_for(
     executable: &std::path::Path,
     lease: Option<&std::ffi::OsStr>,
