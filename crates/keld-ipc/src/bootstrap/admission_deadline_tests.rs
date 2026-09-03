@@ -31,6 +31,10 @@ use super::{BootstrapListener as Listener, TestHandshakeWitness};
 
 const ENDPOINT_ENV: &str = "KELD133_DRIP_APP_LINK";
 const MODE_ENV: &str = "KELD133_DRIP_MODE";
+const MODE_DRIP_WITNESS: &str = "drip-witness";
+const MODE_DEADLINE_DRIP: &str = "deadline-drip";
+const MODE_PROMPT: &str = "prompt";
+const MODE_REQUIRED: &str = "KELD133_DRIP_MODE must be set by spawn_child";
 const CHILD_ENTRY: &str = "bootstrap::admission_deadline_tests::drip_child_entry";
 const TOKEN_CHUNK_BYTES: usize = 1;
 const TOKEN_INTERVAL: Duration = Duration::from_millis(10);
@@ -235,11 +239,17 @@ impl Drop for ObservedChild {
     }
 }
 
-fn spawn_child(app_link: &str, mode: &str) -> ObservedChild {
+fn child_command(app_link: &str) -> Command {
     let exe = std::env::current_exe().expect("test binary path");
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .args(["--exact", CHILD_ENTRY, "--ignored", "--nocapture"])
-        .env(ENDPOINT_ENV, app_link)
+        .env(ENDPOINT_ENV, app_link);
+    command
+}
+
+fn spawn_child(app_link: &str, mode: &str) -> ObservedChild {
+    let mut child = child_command(app_link)
         .env(MODE_ENV, mode)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -265,7 +275,7 @@ fn prove_successful_post_clock_drip() {
     let app_link = listener.app_link();
     let (endpoint, _token) = parse_app_link(&app_link).expect("parse witness app link");
     let endpoint = endpoint.to_owned();
-    let mut child = spawn_child(&app_link, "drip-witness");
+    let mut child = spawn_child(&app_link, MODE_DRIP_WITNESS);
     let lines = child.stdout_lines();
     let mut transcript = await_line(&lines.receiver, "READY", KILL_SWITCH);
 
@@ -364,7 +374,7 @@ fn prove_fresh_generation(
         fresh_token != expired_token,
         "fresh generation must mint a different redacted token"
     );
-    let mut prompt = spawn_child(&fresh_link, "prompt");
+    let mut prompt = spawn_child(&fresh_link, MODE_PROMPT);
     let lines = prompt.stdout_lines();
     let transcript = await_line(&lines.receiver, "CONNECTED", KILL_SWITCH);
     let fresh_started = Instant::now();
@@ -401,7 +411,7 @@ fn a_byte_drip_child_cannot_renew_a_100ms_generation_deadline() {
     let (endpoint, token) = parse_app_link(&app_link).expect("parse deadline app link");
     let endpoint = endpoint.to_owned();
     let observer = CountingObserver::default();
-    let mut child = spawn_child(&app_link, "deadline-drip");
+    let mut child = spawn_child(&app_link, MODE_DEADLINE_DRIP);
     let lines = child.stdout_lines();
     let transcript = await_line(&lines.receiver, "READY", KILL_SWITCH);
 
@@ -515,7 +525,7 @@ fn unix_generation_expiry_at_final_auth_boundary_is_terminal() {
     let app_link = listener.app_link();
     let (endpoint, _token) = parse_app_link(&app_link).expect("parse final-boundary link");
     let endpoint = endpoint.to_owned();
-    let mut child = spawn_child(&app_link, "prompt");
+    let mut child = spawn_child(&app_link, MODE_PROMPT);
     let lines = child.stdout_lines();
     let transcript = await_line(&lines.receiver, "CONNECTED", KILL_SWITCH);
     let (entered_tx, entered_rx) = mpsc::sync_channel(1);
@@ -612,17 +622,39 @@ fn write_drip_chunk(stream: &mut impl Write, index: usize, chunk: &[u8]) -> bool
     }
 }
 
-/// Private subprocess entry point: connects to the listener under
-/// `KELD133_DRIP_APP_LINK` and either drips a valid HELLO in 6-byte chunks
-/// with an adversarial schedule (`drip`) or sends it whole and completes the
-/// handshake (`prompt`). Prints a line protocol for the parent's assertions.
+#[test]
+fn drip_child_requires_an_explicit_mode() {
+    let output = child_command("unparsed-without-an-explicit-mode")
+        .env_remove(MODE_ENV)
+        .output()
+        .expect("run drip child without a mode");
+    let transcript = format!(
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.status.success(),
+        "a child with no explicit mode must fail: {transcript}"
+    );
+    assert!(
+        transcript.contains(MODE_REQUIRED),
+        "missing mode failed through the wrong boundary: {transcript}"
+    );
+}
+
+/// Private subprocess entry point selected by `KELD133_DRIP_MODE`.
+/// `MODE_DRIP_WITNESS` and `MODE_DEADLINE_DRIP` write a complete HELLO header,
+/// then token chunks governed by `TOKEN_CHUNK_BYTES` and `TOKEN_INTERVAL`;
+/// `MODE_PROMPT` sends the complete HELLO and finishes the handshake. Every
+/// mode prints a line protocol for the parent's assertions.
 #[test]
 #[ignore = "private subprocess entry point"]
 fn drip_child_entry() {
     let Ok(app_link) = std::env::var(ENDPOINT_ENV) else {
         return; // not invoked as a child
     };
-    let mode = std::env::var(MODE_ENV).unwrap_or_else(|_| "drip".to_owned());
+    let mode = std::env::var(MODE_ENV).expect(MODE_REQUIRED);
     let (endpoint, token) = parse_app_link(&app_link).expect("child parses app link");
 
     let mut stream = raw_connect(endpoint).expect("child connects");
@@ -640,7 +672,7 @@ fn drip_child_entry() {
     frame.extend_from_slice(token.as_bytes());
 
     match mode.as_str() {
-        "drip-witness" | "deadline-drip" => {
+        MODE_DRIP_WITNESS | MODE_DEADLINE_DRIP => {
             println!("READY");
             std::io::stdout().flush().expect("flush drip readiness");
             let mut go = String::new();
@@ -671,7 +703,7 @@ fn drip_child_entry() {
             }
             println!("CLOSED");
         }
-        "prompt" => {
+        MODE_PROMPT => {
             stream.write_all(&frame).expect("prompt hello");
             stream.flush().expect("flush");
             let mut reply = vec![0u8; HEADER_LEN + SESSION_TOKEN_LEN];
