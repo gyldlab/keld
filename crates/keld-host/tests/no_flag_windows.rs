@@ -1266,8 +1266,8 @@ fn finish_renderer_beacon(
     let result = match initial_result {
         Ok(result) => result,
         Err(receive_error) => match observed.try_recv() {
-            Ok(result) => result,
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) | Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
                 return Err(format!(
                     "{context}: beacon worker did not report: {receive_error}"
                 ));
@@ -1301,6 +1301,14 @@ fn serve_renderer_beacon_loop(
     listener: &TcpListener,
     deadline_rx: &mpsc::Receiver<Instant>,
 ) -> Result<(), String> {
+    serve_renderer_beacon_loop_with_clock(listener, deadline_rx, Instant::now)
+}
+
+fn serve_renderer_beacon_loop_with_clock(
+    listener: &TcpListener,
+    deadline_rx: &mpsc::Receiver<Instant>,
+    mut now: impl FnMut() -> Instant,
+) -> Result<(), String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
@@ -1318,14 +1326,7 @@ fn serve_renderer_beacon_loop(
             }
         }
         let remaining = deadline
-            .map(|deadline| {
-                deadline
-                    .checked_duration_since(Instant::now())
-                    .filter(|remaining| !remaining.is_zero())
-                    .ok_or_else(|| {
-                        "renderer beacon deadline elapsed before the exact request".to_owned()
-                    })
-            })
+            .map(|deadline| renderer_beacon_remaining(deadline, now()))
             .transpose()?;
 
         let mut index = 0;
@@ -1347,10 +1348,13 @@ fn serve_renderer_beacon_loop(
                             String::from_utf8_lossy(&request)
                         ));
                     }
-                    let write_timeout = remaining.unwrap_or(PRODUCT_DEADLINE);
                     matched.stream.set_nonblocking(false).map_err(|error| {
                         format!("set renderer beacon reply stream blocking: {error}")
                     })?;
+                    let write_timeout = deadline
+                        .map(|deadline| renderer_beacon_remaining(deadline, now()))
+                        .transpose()?
+                        .unwrap_or(PRODUCT_DEADLINE);
                     matched
                         .stream
                         .set_write_timeout(Some(write_timeout))
@@ -1392,6 +1396,13 @@ fn serve_renderer_beacon_loop(
             remaining.min(RENDERER_ACCEPT_POLL)
         }));
     }
+}
+
+fn renderer_beacon_remaining(deadline: Instant, now: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "renderer beacon deadline elapsed before the exact request".to_owned())
 }
 
 fn read_renderer_request_line(
@@ -1503,6 +1514,31 @@ fn renderer_beacon_prefers_worker_error_published_after_initial_receive_timeout(
 }
 
 #[test]
+fn renderer_beacon_rejects_worker_success_published_after_initial_receive_timeout() {
+    let (observed_tx, observed) = mpsc::channel();
+    let (publish_tx, publish_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        publish_rx
+            .recv()
+            .expect("release late renderer beacon success");
+        observed_tx
+            .send(Ok(()))
+            .expect("publish late renderer beacon success");
+    });
+    let initial_result = observed.recv_timeout(Duration::from_millis(1));
+    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
+    publish_tx
+        .send(())
+        .expect("release success after initial receive timeout");
+
+    let result = finish_renderer_beacon(&observed, worker, initial_result, "late success");
+    assert_eq!(
+        result,
+        Err("late success: beacon worker did not report: timed out waiting on channel".to_owned())
+    );
+}
+
+#[test]
 fn renderer_beacon_preserves_initial_timeout_when_worker_publishes_nothing() {
     let (observed_tx, observed) = mpsc::channel::<Result<(), String>>();
     let (release_tx, release_rx) = mpsc::channel();
@@ -1548,6 +1584,47 @@ fn renderer_beacon_request_line_enforces_exact_maximum_and_maximum_plus_one() {
         error,
         format!("renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes")
     );
+}
+
+#[test]
+fn renderer_beacon_rechecks_the_absolute_deadline_before_replying() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind reply-deadline listener");
+    let address = listener.local_addr().expect("reply-deadline address");
+    let mut target = TcpStream::connect(address).expect("connect reply-deadline request");
+    target
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("reply-deadline response kill switch");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write reply-deadline request");
+
+    let before = Instant::now();
+    let deadline = before + Duration::from_secs(1);
+    let after = deadline + Duration::from_nanos(1);
+    let (deadline_tx, deadline_rx) = mpsc::channel();
+    deadline_tx
+        .send(deadline)
+        .expect("activate injected reply deadline");
+    let mut observations = [before, before, after].into_iter();
+    let result = serve_renderer_beacon_loop_with_clock(&listener, &deadline_rx, || {
+        observations
+            .next()
+            .expect("renderer beacon sampled the clock beyond the reply boundary")
+    });
+
+    assert_eq!(
+        result,
+        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+    );
+    assert!(
+        observations.next().is_none(),
+        "the reply boundary did not consume its fresh clock observation"
+    );
+    let mut response = Vec::new();
+    target
+        .read_to_end(&mut response)
+        .expect("read reply-deadline response");
+    assert!(response.is_empty(), "late response escaped: {response:?}");
 }
 
 #[test]
