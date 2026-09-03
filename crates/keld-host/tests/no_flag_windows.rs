@@ -29,6 +29,8 @@ use windows_sys::Win32::System::Threading::{
 
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
+const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
+const RENDERER_PRECONNECT_IDLE_LIMIT: Duration = Duration::from_millis(250);
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
@@ -1243,13 +1245,18 @@ fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Res
         .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
 
     loop {
-        if Instant::now() >= deadline {
-            return Err("renderer beacon deadline elapsed before the exact request".to_owned());
-        }
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                "renderer beacon deadline elapsed before the exact request".to_owned()
+            })?;
         let (mut stream, _) = match listener.accept() {
             Ok(accepted) => accepted,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::yield_now();
+                // This only backs off the nonblocking kernel poll; the socket
+                // readiness and absolute deadline remain the observables.
+                thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
                 continue;
             }
             Err(error) => return Err(format!("accept renderer beacon: {error}")),
@@ -1268,7 +1275,7 @@ fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Res
                         "renderer beacon absolute deadline elapsed",
                     )
                 })?;
-            stream.set_read_timeout(Some(remaining))?;
+            stream.set_read_timeout(Some(remaining.min(RENDERER_PRECONNECT_IDLE_LIMIT)))?;
             stream.read(buffer)
         })?
         else {
@@ -1318,7 +1325,10 @@ fn read_renderer_request_line(
                 if request.is_empty()
                     && matches!(
                         error.kind(),
-                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::WouldBlock
                     ) =>
             {
                 return Ok(None);
@@ -1394,6 +1404,24 @@ fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
 }
 
 #[test]
+fn renderer_beacon_does_not_let_an_idle_preconnect_block_the_exact_request() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind idle-preconnect listener");
+    let address = listener.local_addr().expect("idle-preconnect address");
+    let idle = TcpStream::connect(address).expect("queue idle preconnect");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let beacon = thread::spawn(move || serve_renderer_beacon_until(&listener, deadline));
+
+    let mut target = TcpStream::connect(address).expect("connect exact request behind idle peer");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write exact request behind idle peer");
+
+    let result = beacon.join().expect("idle-preconnect beacon thread");
+    drop(idle);
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
 fn renderer_beacon_reports_its_absolute_deadline_instead_of_disconnect() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon deadline listener");
     let deadline = Instant::now() + Duration::from_millis(50);
@@ -1441,15 +1469,19 @@ fn renderer_beacon_empty_preconnect_does_not_renew_the_deadline() {
 }
 
 #[test]
-fn renderer_beacon_ignores_only_a_reset_before_request_bytes() {
-    let empty = read_renderer_request_line(|_| {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionReset,
-            "empty preconnect reset",
-        ))
-    })
-    .expect("pre-request reset is an empty preconnect");
-    assert_eq!(empty, None);
+fn renderer_beacon_ignores_only_idle_or_reset_before_request_bytes() {
+    for kind in [
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::ConnectionAborted,
+        std::io::ErrorKind::TimedOut,
+        std::io::ErrorKind::WouldBlock,
+    ] {
+        let empty = read_renderer_request_line(|_| {
+            Err(std::io::Error::new(kind, "empty preconnect ended"))
+        })
+        .expect("pre-request close or idle is an empty preconnect");
+        assert_eq!(empty, None);
+    }
 
     let mut first = true;
     let partial = read_renderer_request_line(|buffer| {
