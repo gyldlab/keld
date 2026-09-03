@@ -45,7 +45,9 @@ rejects remote clients and has one protected allow ACE for the host's current
 `TokenUser` SID with mask `0x0012_019B`. Both transports
 require a 32-byte session token in the v2 `HELLO` payload,
 minted by the host and passed to the child in `KELD_APP_LINK` as
-`<endpoint>#<64 hex chars>`. Empty or mismatched tokens are `KELD-IPC-007`. The
+`<endpoint>#<64 hex chars>`. Invalid endpoint/token text is `KELD-IPC-007`
+before connect. On the wire, a wrong `HELLO` shape is `KELD-IPC-005`, while
+`KELD-IPC-007` is reserved for an exactly shaped foreign token (§2). The
 shipping `keld dev` path keeps the listener and supervised Bun live for the hello
 window duration; `keld-cli` diagnostics (`ipc-echo` / `ipc-client`) re-export the
 same listener. Decimal loopback endpoints remain explicit client-only diagnostic
@@ -109,11 +111,16 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   (`crates/keld-cli/templates/hello/src/kipc.ts`) speaks only the ungated echo
   channel and does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
-  (KEL-60). It is raw bytes, not postcard. Empty, truncated, or mismatched tokens
-  are `KELD-IPC-007`. The client writes `HELLO` first. The server reads and
-  verifies before writing its own `HELLO`, so a connector that does not already
-  possess the token never learns it from the wire. This proves possession of the
-  session token; it is not a principal id (peers still do not self-identify). KEL-75's
+  (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
+  requires `kind=HELLO`, zero flags/channel/correlation, and declared payload
+  length 32. A shape mismatch is `KELD-IPC-005`; `KELD-IPC-007` is reserved for
+  an exactly shaped `HELLO` carrying a foreign token. A peer that declares 32
+  bytes but closes or stalls before sending them fails as I/O (`KELD-IPC-001`)
+  or deadline (`KELD-IPC-006`), not semantic shape or token identity. The client
+  writes `HELLO` first. The server reads and verifies before writing its own
+  `HELLO`, so a connector that does not already possess the token never learns
+  it from the wire. This proves possession of the session token; it is not a
+  principal id (peers still do not self-identify). KEL-75's
   reusable listener continues accepting after an invalid `HELLO` until its bounded
   deadline. Its platform `BootstrapListener` primitive is live and used by the host-owned
   echo server (`keld-core`) plus the T1b Unix and T8 Windows primary-generation
@@ -172,6 +179,16 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   never sit on the hot path.
 - **Correlation ids** give request/reply without per-call allocations; channels are
   u16 handles resolved at handshake from schema names (string names never travel per-call).
+- **Receiver semantics (KEL-133, live):** one `keld-ipc` validator owns which
+  kind/flags/channel/correlation/declared-length combination each session state
+  admits. The host selects a static `ReceivePolicy` (no frame chooses its
+  policy); reserved combinations — structured `CALL` with correlation `0`,
+  `FLAG_RAW`, unknown flag bits, wrong channels, wrong `HELLO` shapes — fail
+  `KELD-IPC-005` before payload allocation, with `KELD-IPC-007` reserved for an
+  exactly shaped foreign token. Every live Rust receiver, `@keld/electron`, and
+  the hello scaffold consume the same rules; Rust and Bun replay one canonical
+  hostile-vector corpus (`crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv`,
+  one owner, one digest).
 - **Cancellation**: `STREAM_CANCEL`/`CALL_CANCEL` carry corr id; handlers observe an
   `AbortSignal` in JS, a `CancelToken` in Rust.
 - **Backpressure (destination):** per-channel credit windows granted in `GRANT`
@@ -274,10 +291,19 @@ compromised keeps the host's threat model uniform).
   live until the host application session stops.
 - Webview navigation: principal generation rotates; pending replies to the old principal
   drop; guard re-evaluates capabilities using origin/resource policy context.
-- Every individual I/O wait on either peer carries a deadline; that bounds each wait, not
-  a whole frame. Known v0 gap: on the ordinary `read_frame` path the per-receive deadline
-  renews whenever bytes arrive, so a byte-trickling peer can keep a session open
-  indefinitely — only the lifecycle reader has a frame-wide stall clock (research 115).
+- Every individual I/O wait on either peer carries a deadline, and every live
+  production receiver reads through the shared KEL-133 validated path, which
+  carries one frame-wide stall clock: the first byte of a frame starts it and
+  partial reads cannot renew it, so a byte-trickling peer expires with
+  `KELD-IPC-006` instead of holding the session open (the gap research 115
+  recorded is closed; the legacy `read_frame` helper stays per-receive-bounded
+  for raw test fixtures only). Exactness is per reader: the pollable
+  interruptible reader observes an absolute deadline within one
+  `APP_LINK_READER_POLL`; the plain validated reader cannot shrink the socket
+  timeout, so its bound is the stall limit plus one `SO_RCVTIMEO`. Bootstrap admission additionally carries the
+  host-minted generation deadline across accept, bad-peer reaccept, and every
+  handshake read — byte drip cannot renew it, and it is enforced at connect
+  wait, per-peer window, and post-authentication check independently.
   v0 app-link
   applies `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`) during
   authentication and on writes; expiry is `KELD-IPC-006`. That is an OS socket

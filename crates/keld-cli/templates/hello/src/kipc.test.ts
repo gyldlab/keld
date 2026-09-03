@@ -11,8 +11,14 @@
  * these, not just an internal roundtrip.
  */
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
+  CLIENT_AWAIT_HELLO,
+  FLAG_RAW,
   FrameKind,
+  echoReplyWaiter,
+  validateReceivedHeader,
   FrameReader,
   decodeEchoResponse,
   decodeHeader,
@@ -264,5 +270,73 @@ describe("FrameReader — untrusted peer bytes", () => {
     const reader = new FrameReader();
     reader.fail(new Error("KELD-IPC-001: connection closed by peer"));
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
+  });
+});
+
+describe("shared receiver rules (KEL-133)", () => {
+  test("HELLO shape failures are KELD-IPC-005 and foreign length never 007", () => {
+    const good = { kind: FrameKind.Hello, flags: 0, channel: 0, corr: 0, len: 32 };
+    expect(validateReceivedHeader(CLIENT_AWAIT_HELLO, good)).toEqual(good);
+    for (const [bad, detail] of [
+      [{ ...good, len: 31 }, "declared exact shape"],
+      [{ ...good, flags: FLAG_RAW }, "FLAG_RAW"],
+      [{ ...good, flags: 2 }, "unknown flag bits"],
+      [{ ...good, channel: 1 }, "wrong channel"],
+      [{ ...good, corr: 1 }, "correlation must be 0"],
+      [{ ...good, kind: FrameKind.Ping }, "not declared"],
+    ] as const) {
+      expect(() => validateReceivedHeader(CLIENT_AWAIT_HELLO, bad)).toThrow(detail);
+      expect(() => validateReceivedHeader(CLIENT_AWAIT_HELLO, bad)).toThrow("KELD-IPC-005");
+    }
+  });
+
+  test("only the awaited echo REPLY completes the waiter", () => {
+    const waiter = echoReplyWaiter(7);
+    const good = { kind: FrameKind.Reply, flags: 0, channel: 1, corr: 7, len: 6 };
+    expect(validateReceivedHeader(waiter, good)).toEqual(good);
+    expect(() => validateReceivedHeader(waiter, { ...good, corr: 8 })).toThrow("does not match the awaited call");
+    expect(() => validateReceivedHeader(waiter, { ...good, kind: FrameKind.Err })).toThrow("not declared");
+    expect(() => validateReceivedHeader(waiter, { ...good, channel: 3 })).toThrow("wrong channel");
+    expect(() => validateReceivedHeader(waiter, { ...good, flags: FLAG_RAW })).toThrow("FLAG_RAW");
+  });
+
+  // In the Keld repository the canonical corpus is reachable relative to the
+  // template; a generated app has no fixture and skips (its rules are pinned
+  // above and by the @keld/electron corpus runner).
+  const corpusPath = join(import.meta.dir, "../../../../keld-ipc/tests/fixtures/receiver-semantics-v0.tsv");
+  test.skipIf(!existsSync(corpusPath))("agrees with the canonical corpus for its two policies", () => {
+    const lines = readFileSync(corpusPath, "utf8").split("\n").filter((l) => l.length > 0);
+    expect(lines[0].startsWith("receiver-semantics-v0\tv1\t")).toBe(true);
+    let checked = 0;
+    for (const line of lines.slice(1)) {
+      const [id, policyName, headerHex, , expectedCode] = line.split("\t");
+      const base = policyName.split(":", 1)[0];
+      if (base !== "client-await-hello" && base !== "echo-reply-waiter") continue;
+      if (headerHex.length !== 32) continue; // truncated-header rows belong to the reader, not the validator
+      const bytes = Uint8Array.from(headerHex.match(/../g)!.map((h) => Number.parseInt(h, 16)));
+      const view = new DataView(bytes.buffer);
+      const header = {
+        kind: bytes[3] as never,
+        flags: view.getUint16(4, true),
+        channel: view.getUint16(6, true),
+        corr: view.getUint32(8, true),
+        len: view.getUint32(12, true),
+      };
+      const policy =
+        base === "client-await-hello" ? CLIENT_AWAIT_HELLO : echoReplyWaiter(Number(policyName.split(":")[1]));
+      let got: string;
+      try {
+        validateReceivedHeader(policy, header);
+        got = "ok";
+      } catch (err) {
+        got = (err as Error).message.slice(0, 12);
+      }
+      // Rows that reject at the header stage must agree exactly; rows the
+      // header admits continue to token/codec stages this test does not run.
+      if (expectedCode === "KELD-IPC-005") expect(`${id}: ${got}`).toBe(`${id}: KELD-IPC-005`);
+      else expect(`${id}: ${got}`).toBe(`${id}: ok`);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThanOrEqual(6);
   });
 });

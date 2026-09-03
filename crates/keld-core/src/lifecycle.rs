@@ -11,9 +11,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use keld_ipc::ReceivePolicy;
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{CorrelationId, FrameKind};
-use keld_ipc::link::{AppLinkDeadlines, handshake_server, read_frame_interruptible, write_frame};
+use keld_ipc::link::{
+    AppLinkDeadlines, handshake_server, read_validated_frame_interruptible, write_frame,
+};
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, IpcError, LIFECYCLE_CHANNEL, LifecycleEvent,
     LifecycleRequest, LifecycleResponse, SessionToken,
@@ -209,15 +212,20 @@ where
     R: Read,
     W: Write,
 {
+    // kel133 AC1-AC2: the shared validator owns kind/flags/channel/correlation
+    // admission; only declared lifecycle frames reach the dispatch below, and
+    // the old ad-hoc channel/kind arms are deleted rather than duplicated.
+    let policy = ReceivePolicy::lifecycle_receiver();
     loop {
-        let (header, payload) = match read_frame_interruptible(&mut reader, stop) {
+        let (header, payload) = match read_validated_frame_interruptible(&mut reader, &policy, stop)
+        {
             Ok(Some(frame)) => frame,
             Ok(None) => return Ok(()),
             Err(IpcError::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
             Err(e) => return Err(e),
         };
-        match header.kind {
-            FrameKind::Call if header.channel == LIFECYCLE_CHANNEL => {
+        match header.kind() {
+            FrameKind::Call => {
                 let req: LifecycleRequest = decode(&payload)?;
                 match req {
                     LifecycleRequest::Quit => {
@@ -230,17 +238,12 @@ where
                             FrameKind::Reply,
                             0,
                             LIFECYCLE_CHANNEL,
-                            header.corr,
+                            header.corr(),
                             &bytes,
                         )?;
                         return Ok(());
                     }
                 }
-            }
-            FrameKind::Call => {
-                return Err(IpcError::Protocol {
-                    detail: "lifecycle Call on a non-lifecycle channel",
-                });
             }
             FrameKind::Ping => {
                 let mut guard = writer.lock().map_err(|_| IpcError::Protocol {
@@ -250,12 +253,14 @@ where
                     &mut *guard,
                     FrameKind::Ping,
                     0,
-                    header.channel,
-                    header.corr,
+                    header.channel(),
+                    header.corr(),
                     &[],
                 )?;
             }
             _ => {
+                // Unreachable once the validator admitted the frame; kept as
+                // a typed error so the library never panics.
                 return Err(IpcError::Protocol {
                     detail: "unexpected frame kind in lifecycle session",
                 });
@@ -417,8 +422,11 @@ mod tests {
         assert!(
             matches!(
                 err,
+                // kel133 T1c: the shared validator owns this rejection now,
+                // so the detail is its wrong-channel rule, not a per-consumer
+                // string. The class stays KELD-IPC-005 with zero effects.
                 IpcError::Protocol { detail }
-                    if detail.contains("lifecycle Call on a non-lifecycle channel")
+                    if detail.contains("wrong channel for the session policy")
             ),
             "Call on a non-lifecycle channel must not be 'unexpected frame kind': {err}"
         );

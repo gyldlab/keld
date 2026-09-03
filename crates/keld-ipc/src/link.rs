@@ -2,14 +2,39 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
+use crate::receive::{
+    AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_received_header,
+};
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
+
+#[cfg(test)]
+thread_local! {
+    static TEST_READ_ENTRY_WITNESS: RefCell<Option<std::sync::mpsc::Sender<Instant>>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_read_entry_witness(witness: Option<std::sync::mpsc::Sender<Instant>>) {
+    TEST_READ_ENTRY_WITNESS.with(|slot| *slot.borrow_mut() = witness);
+}
+
+#[cfg(test)]
+fn report_test_read_entry() {
+    TEST_READ_ENTRY_WITNESS.with(|slot| {
+        if let Some(witness) = slot.borrow().as_ref() {
+            let _ = witness.send(Instant::now());
+        }
+    });
+}
 
 /// Connected app-link streams that can bound a blocking read or write.
 ///
@@ -166,6 +191,118 @@ pub fn read_frame<S: Read>(stream: &mut S) -> Result<(FrameHeader, Vec<u8>), Ipc
     Ok((header, payload))
 }
 
+/// Reads one kipc frame admissible for `policy` (spec kel133 §3 criteria 1–5).
+///
+/// Stage order is the contract: header syntax (`KELD-IPC-002`), envelope cap
+/// (`KELD-IPC-004`), then the shared semantic validator (`KELD-IPC-005`) —
+/// all **before** the payload buffer is allocated or read. On a semantic
+/// rejection the payload bytes remain unconsumed; the failure action for
+/// every `005` row is closing the link, so nothing may read them afterwards.
+///
+/// After any error the stream is unusable: close the link; do not retry.
+///
+/// # Errors
+///
+/// Returns [`IpcError`] on I/O failure, bad header, oversized payload,
+/// semantic rejection, or deadline expiry mapped by the stream's timeout.
+pub fn read_validated_frame<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
+) -> Result<(ValidatedFrameHeader, Vec<u8>), IpcError> {
+    // One stall clock across header and payload: the first byte starts it and
+    // partial reads cannot renew it (spec kel133 §3 criterion 7). `read_exact`
+    // alone would let a byte-drip peer renew the per-receive `SO_RCVTIMEO`
+    // forever — the ordinary-reader gap architecture 02 §7 recorded.
+    let mut stall_deadline = None;
+    let mut header_bytes = [0u8; HEADER_LEN];
+    read_exact_stalled(stream, &mut header_bytes, &mut stall_deadline)?;
+    let header = FrameHeader::decode(&header_bytes)?;
+    let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
+    ensure_payload_len(len)?;
+    let validated = validate_received_header(policy, header)?;
+    let mut payload = vec![0u8; len];
+    if !payload.is_empty() {
+        read_exact_stalled(stream, &mut payload, &mut stall_deadline)?;
+    }
+    Ok((validated, payload))
+}
+
+#[cfg(test)]
+fn read_validated_frame_with_stall<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
+    stall_limit: Duration,
+) -> Result<(ValidatedFrameHeader, Vec<u8>), IpcError> {
+    let mut stall_deadline = None;
+    let mut header_bytes = [0u8; HEADER_LEN];
+    read_exact_stalled_with(stream, &mut header_bytes, &mut stall_deadline, stall_limit)?;
+    let header = FrameHeader::decode(&header_bytes)?;
+    let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
+    ensure_payload_len(len)?;
+    let validated = validate_received_header(policy, header)?;
+    let mut payload = vec![0u8; len];
+    if !payload.is_empty() {
+        read_exact_stalled_with(stream, &mut payload, &mut stall_deadline, stall_limit)?;
+    }
+    Ok((validated, payload))
+}
+
+/// Fills `buf`, sharing one started-frame stall clock across calls.
+///
+/// Each blocking wait is individually bounded by the stream's own read
+/// deadline (`SO_RCVTIMEO`); this adds the frame-wide bound: once the first
+/// byte arrives, later partial reads that land past
+/// `first_byte + APP_LINK_IO_DEADLINE` are `KELD-IPC-006` instead of renewing
+/// the per-receive clock. Exact-instant expiry needs the pollable
+/// interruptible reader (tolerance one `APP_LINK_READER_POLL`). This generic
+/// reader cannot shrink the socket timeout and consults the stall clock only
+/// between partial reads, so its exact bound is
+/// `first_byte + APP_LINK_IO_DEADLINE + one SO_RCVTIMEO` — 10 s with the
+/// default 5 s + 5 s — and with no socket timeout the stall clock is only
+/// observed when a byte arrives.
+fn read_exact_stalled<S: Read>(
+    stream: &mut S,
+    buf: &mut [u8],
+    stall_deadline: &mut Option<Instant>,
+) -> Result<(), IpcError> {
+    read_exact_stalled_with(stream, buf, stall_deadline, APP_LINK_IO_DEADLINE)
+}
+
+fn read_exact_stalled_with<S: Read>(
+    stream: &mut S,
+    buf: &mut [u8],
+    stall_deadline: &mut Option<Instant>,
+    stall_limit: Duration,
+) -> Result<(), IpcError> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(IpcError::Timeout);
+        }
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "failed to fill whole buffer",
+                )
+                .into());
+            }
+            Ok(n) => {
+                if stall_deadline.is_none() {
+                    match Instant::now().checked_add(stall_limit) {
+                        Some(deadline) => *stall_deadline = Some(deadline),
+                        None => return Err(IpcError::Timeout),
+                    }
+                }
+                filled += n;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 /// Reads one kipc frame, retrying idle `SO_RCVTIMEO` until `stop` is set.
 ///
 /// Unlike [`read_frame`], an idle timeout (`WouldBlock` / `TimedOut` with
@@ -208,7 +345,7 @@ pub fn read_frame_interruptible<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_limits(stream, stop, None, APP_LINK_IO_DEADLINE)
+    read_frame_interruptible_with_limits(stream, stop, None, APP_LINK_IO_DEADLINE, None)
 }
 
 #[cfg(test)]
@@ -217,15 +354,67 @@ fn read_frame_interruptible_with_stall<S: Read>(
     stop: &AtomicBool,
     stall_limit: Duration,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_limits(stream, stop, None, stall_limit)
+    read_frame_interruptible_with_limits(stream, stop, None, stall_limit, None)
 }
 
-pub(crate) fn read_frame_interruptible_until<S: Read>(
+/// Interruptible [`read_validated_frame`]: idle polls observe `stop`, a
+/// started frame keeps the stall clock, and the shared validator rejects a
+/// semantically invalid header before the payload is allocated or read.
+///
+/// # Errors
+///
+/// As [`read_validated_frame`], plus [`IpcError::Timeout`] when a started
+/// frame stalls past [`APP_LINK_IO_DEADLINE`].
+pub fn read_validated_frame_interruptible<S: Read>(
     stream: &mut S,
+    policy: &ReceivePolicy,
     stop: &AtomicBool,
-    deadline: Instant,
-) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
-    read_frame_interruptible_with_limits(stream, stop, Some(deadline), APP_LINK_IO_DEADLINE)
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    mint_validated(
+        policy,
+        read_frame_interruptible_with_limits(
+            stream,
+            stop,
+            None,
+            APP_LINK_IO_DEADLINE,
+            Some(policy),
+        )?,
+    )
+}
+
+/// [`read_validated_frame_interruptible`] additionally capped by an absolute
+/// admission/session deadline that byte trickle cannot renew (spec kel133 §4
+/// deadline model).
+pub(crate) fn read_validated_frame_interruptible_until<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
+    stop: &AtomicBool,
+    deadline: AbsoluteDeadline,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    mint_validated(
+        policy,
+        read_frame_interruptible_with_limits(
+            stream,
+            stop,
+            Some(deadline.instant()),
+            APP_LINK_IO_DEADLINE,
+            Some(policy),
+        )?,
+    )
+}
+
+/// Re-mints the typed header for a frame the policy-aware reader already
+/// validated pre-payload. The second validation is a handful of fixed-value
+/// compares and cannot fail; it exists so [`ValidatedFrameHeader`]'s only
+/// constructor stays [`validate_received_header`].
+fn mint_validated(
+    policy: &ReceivePolicy,
+    frame: Option<(FrameHeader, Vec<u8>)>,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    match frame {
+        None => Ok(None),
+        Some((header, payload)) => Ok(Some((validate_received_header(policy, header)?, payload))),
+    }
 }
 
 fn read_frame_interruptible_with_limits<S: Read>(
@@ -233,6 +422,7 @@ fn read_frame_interruptible_with_limits<S: Read>(
     stop: &AtomicBool,
     deadline: Option<Instant>,
     stall_limit: Duration,
+    policy: Option<&ReceivePolicy>,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
     let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];
@@ -249,6 +439,10 @@ fn read_frame_interruptible_with_limits<S: Read>(
     let header = FrameHeader::decode(&header_bytes)?;
     let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
     ensure_payload_len(len)?;
+    if let Some(policy) = policy {
+        // Semantic admission decision before payload allocation (kel133 AC1).
+        validate_received_header(policy, header)?;
+    }
     let mut payload = vec![0u8; len];
     if !payload.is_empty()
         && !read_exact_interruptible(
@@ -291,6 +485,8 @@ fn read_exact_interruptible<S: Read>(
         if stall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(IpcError::Timeout);
         }
+        #[cfg(test)]
+        report_test_read_entry();
         match stream.read(&mut buf[filled..]) {
             Ok(0) => {
                 return Err(io::Error::new(
@@ -368,22 +564,23 @@ fn write_hello<S: Write>(stream: &mut S, token: &SessionToken) -> Result<(), Ipc
     )
 }
 
-fn read_and_verify_hello<S: Read>(stream: &mut S, token: &SessionToken) -> Result<(), IpcError> {
-    let (header, payload) = read_frame(stream)?;
-    verify_hello(header, &payload, token)
+fn read_and_verify_hello<S: Read>(
+    stream: &mut S,
+    token: &SessionToken,
+    policy: &ReceivePolicy,
+) -> Result<(), IpcError> {
+    let (_validated, payload) = read_validated_frame(stream, policy)?;
+    verify_hello_token(&payload, token)
 }
 
-fn verify_hello(header: FrameHeader, payload: &[u8], token: &SessionToken) -> Result<(), IpcError> {
-    if header.kind != FrameKind::Hello {
-        return Err(IpcError::Protocol {
-            detail: "expected HELLO from peer",
-        });
-    }
-    if header.channel != ChannelId(0) || header.corr != CorrelationId(0) {
-        return Err(IpcError::Protocol {
-            detail: "HELLO must have reserved channel/corr 0",
-        });
-    }
+/// Compares an exactly shaped `HELLO` payload against the host token.
+///
+/// Shape (kind, flags, channel, correlation, exact 32-byte length) is the
+/// shared validator's job and fails `KELD-IPC-005` *before* this runs
+/// (spec kel133 §3 criterion 4); this function owns only the constant-time
+/// token comparison, so `KELD-IPC-007` is reserved for an exactly shaped
+/// foreign token and never discloses the token or link string.
+fn verify_hello_token(payload: &[u8], token: &SessionToken) -> Result<(), IpcError> {
     let peer = SessionToken::try_from_slice(payload)?;
     if peer != *token {
         return Err(IpcError::HelloAuth {
@@ -400,33 +597,36 @@ fn verify_hello(header: FrameHeader, payload: &[u8], token: &SessionToken) -> Re
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`,
-/// [`IpcError::HelloAuth`] if the token is missing or wrong, or
+/// Returns [`IpcError::Protocol`] if the peer sends a wrong frame or `HELLO`
+/// shape, [`IpcError::HelloAuth`] for an exactly shaped foreign token, or
 /// [`IpcError::Timeout`] if the peer stays silent past the stream deadline.
 pub fn handshake_client<S: Read + Write>(
     stream: &mut S,
     token: &SessionToken,
 ) -> Result<(), IpcError> {
     write_hello(stream, token)?;
-    read_and_verify_hello(stream, token)
+    read_and_verify_hello(stream, token, &ReceivePolicy::client_await_hello())
 }
 
 /// Server `HELLO`: read and verify the client's `HELLO`, then write `token`.
 ///
-/// Must not write the session token until the peer proves possession
-/// (`KELD-IPC-007` on empty, truncated, or mismatched payloads). Otherwise an
-/// unauthorized connector learns the secret from the host's first frame.
+/// Must not write the session token until the peer proves possession.
+/// A `HELLO` whose shape is wrong — non-zero flags/channel/correlation or a
+/// payload that is not exactly 32 bytes — is `KELD-IPC-005` from the shared
+/// validator; `KELD-IPC-007` is reserved for an exactly shaped foreign token
+/// (spec kel133 §3 criterion 4). Either way an unauthorized connector never
+/// learns the secret from the host's first frame.
 ///
 /// # Errors
 ///
-/// Returns [`IpcError::Protocol`] if the peer does not send `Hello`,
-/// [`IpcError::HelloAuth`] if the token is missing or wrong, or
+/// Returns [`IpcError::Protocol`] on a wrong frame or `HELLO` shape,
+/// [`IpcError::HelloAuth`] on an exactly shaped foreign token, or
 /// [`IpcError::Timeout`] if the peer stays silent past the stream deadline.
 pub fn handshake_server<S: Read + Write>(
     stream: &mut S,
     token: &SessionToken,
 ) -> Result<(), IpcError> {
-    read_and_verify_hello(stream, token)?;
+    read_and_verify_hello(stream, token, &ReceivePolicy::server_pre_auth_hello())?;
     write_hello(stream, token)
 }
 
@@ -434,18 +634,21 @@ pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
     stream: &mut S,
     token: &SessionToken,
     stop: &AtomicBool,
-    deadline: Instant,
+    deadline: AbsoluteDeadline,
 ) -> Result<bool, IpcError> {
-    let Some((header, payload)) = read_frame_interruptible_until(stream, stop, deadline)? else {
+    let policy = ReceivePolicy::server_pre_auth_hello();
+    let Some((_validated, payload)) =
+        read_validated_frame_interruptible_until(stream, &policy, stop, deadline)?
+    else {
         return Ok(false);
     };
     if stop.load(Ordering::Acquire) {
         return Ok(false);
     }
-    if Instant::now() >= deadline {
+    if deadline.expired() {
         return Err(IpcError::Timeout);
     }
-    verify_hello(header, &payload, token)?;
+    verify_hello_token(&payload, token)?;
     write_hello(stream, token)?;
     Ok(true)
 }
@@ -651,7 +854,7 @@ mod tests {
         let err =
             handshake_client(&mut client, &test_token()).expect_err("ping must not satisfy HELLO");
         assert!(
-            matches!(err, IpcError::Protocol { detail } if detail.contains("HELLO")),
+            matches!(err, IpcError::Protocol { detail } if detail.contains("not declared")),
             "got {err}"
         );
         assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
@@ -670,12 +873,15 @@ mod tests {
         )
         .expect("peer writes empty HELLO");
         let err = handshake_client(&mut client, &test_token()).expect_err("empty HELLO must fail");
+        // kel133 AC4: a wrong-length HELLO is a shape failure (005), never
+        // authentication (007) — collapsing shape into 007 must fail here.
         assert!(
-            matches!(err, IpcError::HelloAuth { detail } if detail.contains("32-byte")),
+            matches!(err, IpcError::Protocol { detail } if detail.contains("exact shape")),
             "got {err}"
         );
         let msg = err.to_string();
-        assert!(msg.contains("KELD-IPC-007"), "{msg}");
+        assert!(msg.contains("KELD-IPC-005"), "{msg}");
+        assert!(!msg.contains("KELD-IPC-007"), "{msg}");
         assert!(
             !msg.contains("a5"),
             "must not leak the expected token: {msg}"
@@ -696,8 +902,9 @@ mod tests {
         .expect("peer writes 31-byte HELLO");
         let err =
             handshake_client(&mut client, &test_token()).expect_err("31-byte HELLO must fail");
-        assert!(matches!(err, IpcError::HelloAuth { .. }), "got {err}");
-        assert!(err.to_string().contains("KELD-IPC-007"), "{err}");
+        // kel133 AC4: 31 bytes is a shape failure, not an auth failure.
+        assert!(matches!(err, IpcError::Protocol { .. }), "got {err}");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
     }
 
     #[test]
@@ -773,7 +980,7 @@ mod tests {
         )
         .expect("attacker writes empty HELLO");
         let err = handshake_server(&mut server, &test_token()).expect_err("empty HELLO");
-        assert!(err.to_string().contains("KELD-IPC-007"), "{err}");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
         drop(server);
         let leaked = match read_frame(&mut attacker) {
             Ok((_, payload)) => payload == TEST_TOKEN_BYTES,
@@ -1234,5 +1441,418 @@ mod tests {
         );
         assert!(err.to_string().contains("KELD-IPC-006"), "{err}");
         drop(writer);
+    }
+}
+
+#[cfg(test)]
+mod validated_read_tests {
+    use super::*;
+    use crate::receive::ReceivePolicy;
+
+    fn frame_bytes(
+        kind: FrameKind,
+        flags: u16,
+        channel: u16,
+        corr: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let header = FrameHeader {
+            kind,
+            flags,
+            channel: ChannelId(channel),
+            corr: CorrelationId(corr),
+            len: u32::try_from(payload.len()).expect("test payload fits"),
+        };
+        let mut bytes = header.encode().to_vec();
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// Spec kel133 §3 criterion 1: the semantic validator rejects before the
+    /// payload buffer is allocated or read. The cursor position is the
+    /// falsifiable oracle — validating after the payload read would consume
+    /// the payload bytes and move the cursor past `HEADER_LEN`.
+    #[test]
+    fn semantic_rejection_happens_before_the_payload_is_read() {
+        let policy = ReceivePolicy::echo_receiver();
+        let hostile = frame_bytes(FrameKind::Call, 0, 1, 0, &[0xAA; 64]); // corr 0
+        let mut cursor = std::io::Cursor::new(hostile);
+        let err =
+            read_validated_frame(&mut cursor, &policy).expect_err("CALL corr 0 must not admit");
+        assert!(err.to_string().contains("KELD-IPC-005"), "{err}");
+        assert_eq!(
+            cursor.position(),
+            HEADER_LEN as u64,
+            "payload bytes must remain unread on semantic rejection"
+        );
+    }
+
+    /// Criterion order: the envelope cap (`KELD-IPC-004`) fires before the
+    /// semantic validator even when the header is also semantically invalid.
+    #[test]
+    fn envelope_cap_precedes_semantic_validation() {
+        let policy = ReceivePolicy::echo_receiver();
+        let mut header = FrameHeader {
+            kind: FrameKind::Call,
+            flags: crate::frame::FLAG_RAW, // also semantically invalid
+            channel: ChannelId(9),         // also wrong channel
+            corr: CorrelationId(0),        // also reserved correlation
+            len: u32::try_from(MAX_FRAME_LEN).expect("cap fits u32") + 1,
+        }
+        .encode()
+        .to_vec();
+        header.extend_from_slice(&[0u8; 4]);
+        let mut cursor = std::io::Cursor::new(header);
+        let err = read_validated_frame(&mut cursor, &policy)
+            .expect_err("oversized envelope must not admit");
+        assert!(err.to_string().contains("KELD-IPC-004"), "{err}");
+    }
+
+    /// The valid structured CALL still admits and returns its exact payload.
+    #[test]
+    fn valid_call_admits_with_payload() {
+        let policy = ReceivePolicy::echo_receiver();
+        let payload = crate::codec::encode(&crate::EchoRequest {
+            message: "kipc".to_owned(),
+            count: 2,
+        })
+        .expect("encode");
+        let bytes = frame_bytes(FrameKind::Call, 0, 1, 7, &payload);
+        let mut cursor = std::io::Cursor::new(bytes);
+        let (validated, got) =
+            read_validated_frame(&mut cursor, &policy).expect("valid CALL admits");
+        assert_eq!(validated.kind(), FrameKind::Call);
+        assert_eq!(validated.corr(), CorrelationId(7));
+        assert_eq!(got, payload);
+    }
+
+    /// Syntax stays first: a bad header byte is `KELD-IPC-002`, not 005.
+    #[test]
+    fn header_syntax_precedes_semantic_validation() {
+        let policy = ReceivePolicy::echo_receiver();
+        let mut bytes = frame_bytes(FrameKind::Call, 0, 1, 7, &[]);
+        bytes[0] = b'X'; // bad magic
+        let mut cursor = std::io::Cursor::new(bytes);
+        let err = read_validated_frame(&mut cursor, &policy).expect_err("bad magic must not admit");
+        assert!(err.to_string().contains("KELD-IPC-002"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod deadline_contract_tests {
+    //! Spec kel133 §3 criteria 7–8 over real sockets: a started frame expires
+    //! at the earlier of the enclosing session/call deadline and the stall
+    //! limit (both orderings), an idle session terminates at its separately
+    //! declared deadline with a bounded poll cadence, and shutdown stays
+    //! promptly cancellable. Timeout assertions are lower bounds plus generous
+    //! upper kill-switch bounds — never sleeps for synchronization.
+
+    use std::sync::atomic::AtomicU32;
+    use std::sync::mpsc;
+    use std::thread;
+
+    use super::*;
+    use crate::receive::ReceivePolicy;
+
+    #[cfg(unix)]
+    fn connected_pair() -> (
+        std::os::unix::net::UnixStream,
+        std::os::unix::net::UnixStream,
+    ) {
+        std::os::unix::net::UnixStream::pair().expect("unix pair")
+    }
+
+    /// The windows-latest acceptance row (spec kel133 §7 row 8) proves the
+    /// shipped named-pipe reader clock, not loopback TCP. The reader is the
+    /// server end, as in production.
+    #[cfg(windows)]
+    fn connected_pair() -> (
+        crate::bootstrap::WindowsNamedPipeBootstrapStream,
+        crate::bootstrap::WindowsNamedPipeBootstrapStream,
+    ) {
+        crate::bootstrap::connected_named_pipe_pair().expect("named-pipe pair")
+    }
+
+    fn hello_header_prefix() -> [u8; 4] {
+        let bytes = FrameHeader {
+            kind: FrameKind::Hello,
+            flags: 0,
+            channel: ChannelId(0),
+            corr: CorrelationId(0),
+            len: 32,
+        }
+        .encode();
+        [bytes[0], bytes[1], bytes[2], bytes[3]]
+    }
+
+    /// AC7 ordering A: the enclosing session/call deadline is earlier than
+    /// `first_byte + APP_LINK_IO_DEADLINE`; the frame expires at the session
+    /// deadline with exact `KELD-IPC-006`. Ignoring the enclosing deadline
+    /// would run to the 5 s stall limit and fail the upper bound.
+    #[test]
+    fn started_frame_expires_at_the_earlier_enclosing_deadline() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(20)))
+            .expect("read poll");
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let peer = thread::spawn(move || {
+            writer
+                .write_all(&hello_header_prefix())
+                .expect("write partial header");
+            writer.flush().expect("flush");
+            let _ = release_rx.recv(); // hold the socket open; released on exit
+        });
+
+        let stop = AtomicBool::new(false);
+        let policy = ReceivePolicy::server_pre_auth_hello();
+        let session_deadline = Duration::from_millis(200);
+        let started = Instant::now();
+        let err = read_validated_frame_interruptible_until(
+            &mut reader,
+            &policy,
+            &stop,
+            AbsoluteDeadline::at(started + session_deadline),
+        )
+        .expect_err("a stalled frame must expire at the session deadline");
+        let elapsed = started.elapsed();
+
+        assert!(err.to_string().starts_with("KELD-IPC-006"), "{err}");
+        assert!(
+            elapsed >= session_deadline,
+            "expired before the absolute session deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the earlier session deadline must govern, not the 5 s stall limit: {elapsed:?}"
+        );
+        drop(release_tx);
+        peer.join().expect("peer thread");
+    }
+
+    /// AC7 ordering B: the stall limit is earlier than the enclosing
+    /// deadline; the frame expires at `first_byte + stall` with exact
+    /// `KELD-IPC-006`. Resetting the stall clock per read would push expiry
+    /// toward the 10 s enclosing deadline and fail the upper bound.
+    #[test]
+    fn started_frame_expires_at_the_earlier_stall_limit() {
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(20)))
+            .expect("read poll");
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let peer = thread::spawn(move || {
+            writer
+                .write_all(&hello_header_prefix())
+                .expect("write partial header");
+            writer.flush().expect("flush");
+            let _ = release_rx.recv();
+        });
+
+        let stop = AtomicBool::new(false);
+        let policy = ReceivePolicy::server_pre_auth_hello();
+        let stall = Duration::from_millis(150);
+        let started = Instant::now();
+        let err = read_frame_interruptible_with_limits(
+            &mut reader,
+            &stop,
+            Some(started + Duration::from_secs(10)),
+            stall,
+            Some(&policy),
+        )
+        .expect_err("a stalled frame must expire at the stall limit");
+        let elapsed = started.elapsed();
+
+        assert!(err.to_string().starts_with("KELD-IPC-006"), "{err}");
+        assert!(
+            elapsed >= stall,
+            "expired before the started-frame stall limit: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the earlier stall limit must govern, not the 10 s enclosing deadline: {elapsed:?}"
+        );
+        drop(release_tx);
+        peer.join().expect("peer thread");
+    }
+
+    struct CountingReader<S> {
+        inner: S,
+        reads: std::sync::Arc<AtomicU32>,
+    }
+
+    impl<S: Read> Read for CountingReader<S> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.read(buf)
+        }
+    }
+
+    /// AC8: an idle session with no frame byte crosses multiple bounded
+    /// reader polls without starting a frame clock, then terminates at its
+    /// separately declared session deadline with exact `KELD-IPC-006`. The
+    /// read-attempt counter is the cadence observable: a tight `WouldBlock`
+    /// retry loop produces orders of magnitude more attempts and fails the
+    /// upper bound; a blocking read that never rearms produces too few and
+    /// fails the lower bound (or hangs into the kill switch).
+    #[test]
+    fn idle_session_terminates_at_its_declared_deadline_with_bounded_cadence() {
+        let (reader, _writer_keepalive) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("read poll");
+        let reads = std::sync::Arc::new(AtomicU32::new(0));
+        let mut counting = CountingReader {
+            inner: reader,
+            reads: std::sync::Arc::clone(&reads),
+        };
+
+        let stop = AtomicBool::new(false);
+        let policy = ReceivePolicy::echo_receiver();
+        let session_deadline = Duration::from_millis(400);
+        let started = Instant::now();
+        let err = read_validated_frame_interruptible_until(
+            &mut counting,
+            &policy,
+            &stop,
+            AbsoluteDeadline::at(started + session_deadline),
+        )
+        .expect_err("an idle session must terminate at its declared deadline");
+        let elapsed = started.elapsed();
+        let attempts = reads.load(Ordering::Relaxed);
+
+        assert!(err.to_string().starts_with("KELD-IPC-006"), "{err}");
+        assert!(
+            elapsed >= session_deadline,
+            "terminated before the declared session deadline: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "idle termination must not wait for the stall limit: {elapsed:?}"
+        );
+        // ~8 polls at 50 ms over 400 ms; generous slack for scheduler jitter,
+        // hard bound against busy-spin (a tight retry loop yields thousands).
+        assert!(
+            (2..=40).contains(&attempts),
+            "poll cadence out of bounds: {attempts} read attempts in {elapsed:?}"
+        );
+    }
+
+    /// The ordinary-reader byte-trickle gap (architecture 02 §7) is closed:
+    /// a peer dripping one byte per 20 ms — always inside the per-receive
+    /// deadline, which `read_exact` alone would renew forever — hits the
+    /// frame-wide stall clock on the plain validated read path.
+    #[test]
+    fn plain_validated_read_closes_the_byte_trickle_gap() {
+        // The per-receive deadline is deliberately LONGER than the stall limit.
+        // `IpcError::from` folds `WouldBlock`/`TimedOut` into `Timeout`
+        // (lib.rs), so a bare `SO_RCVTIMEO` expiry and a frame-wide stall
+        // expiry are the same `KELD-IPC-006` at this level. With a receive
+        // deadline shorter than the stall limit, a single missed drip window
+        // makes the socket time out first and the test would credit the stall
+        // clock for a per-receive expiry (observed on a loaded macOS runner:
+        // 006 at 108 ms against a 150 ms stall limit). Ordering them this way
+        // makes the stall clock the only thing that can fire, so the assertion
+        // below tests the property instead of the scheduler.
+        const RECEIVE_DEADLINE: Duration = Duration::from_millis(400);
+        let (mut reader, mut writer) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(RECEIVE_DEADLINE))
+            .expect("read deadline");
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+        // Observable start condition, not a sleep: the drip thread signals
+        // after its first byte is written, so the reader never begins with an
+        // idle poll that could expire before any byte exists (the plain path
+        // treats a pre-first-byte idle expiry as the per-receive deadline).
+        let (first_tx, first_rx) = mpsc::channel::<()>();
+        let drip = thread::spawn(move || {
+            let mut bytes = FrameHeader {
+                kind: FrameKind::Hello,
+                flags: 0,
+                channel: ChannelId(0),
+                corr: CorrelationId(0),
+                len: 32,
+            }
+            .encode()
+            .to_vec();
+            // A complete, valid HELLO (header + 32 token bytes): without the
+            // frame-wide stall clock the reader would eventually ADMIT it
+            // (~960 ms at 20 ms per byte), so the oracle is admit-vs-006, not
+            // elapsed time alone.
+            bytes.extend_from_slice(&[0xA5; 32]);
+            for (index, byte) in bytes.into_iter().enumerate() {
+                if !matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty)) {
+                    return; // stopped, or the test side is gone
+                }
+                if writer
+                    .write_all(&[byte])
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    return;
+                }
+                if index == 0 {
+                    let _ = first_tx.send(());
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            let _ = stop_rx.recv();
+        });
+        first_rx.recv().expect("first dripped byte is in flight");
+
+        let policy = ReceivePolicy::server_pre_auth_hello();
+        let stall = Duration::from_millis(150);
+        let started = Instant::now();
+        let err = read_validated_frame_with_stall(&mut reader, &policy, stall)
+            .expect_err("a dripping frame must expire at the stall clock");
+        let elapsed = started.elapsed();
+
+        assert!(err.to_string().starts_with("KELD-IPC-006"), "{err}");
+        assert!(
+            elapsed >= stall,
+            "expired before the frame-wide stall clock: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "drip renewed the plain read path: {elapsed:?}"
+        );
+        // Plain-path bound: the stall clock is only consulted between partial
+        // reads, so expiry lands within one receive deadline of it.
+        assert!(
+            elapsed < stall + RECEIVE_DEADLINE + Duration::from_millis(400),
+            "plain-path bound is stall + one receive deadline: {elapsed:?}"
+        );
+        drop(stop_tx);
+        drip.join().expect("drip thread");
+    }
+
+    /// AC8 shutdown half: an idle wait observes `stop` promptly — it returns
+    /// `Ok(None)` long before its 10 s session deadline instead of consuming
+    /// a poll budget.
+    #[test]
+    fn idle_session_shutdown_is_promptly_cancellable() {
+        let (reader, _writer_keepalive) = connected_pair();
+        reader
+            .set_app_link_read_deadline(Some(Duration::from_millis(50)))
+            .expect("read poll");
+        let mut reader = reader;
+
+        let stop = AtomicBool::new(true); // shutdown already requested
+        let policy = ReceivePolicy::echo_receiver();
+        let started = Instant::now();
+        let outcome = read_validated_frame_interruptible_until(
+            &mut reader,
+            &policy,
+            &stop,
+            AbsoluteDeadline::at(started + Duration::from_secs(10)),
+        )
+        .expect("shutdown is not an error");
+        let elapsed = started.elapsed();
+
+        assert!(outcome.is_none(), "stop must yield Ok(None)");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown must be observed promptly: {elapsed:?}"
+        );
     }
 }

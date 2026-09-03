@@ -50,11 +50,13 @@ use keld_guard::verified_manifest::VerifiedManifest;
 #[cfg(any(target_os = "macos", windows))]
 use keld_guard::verified_manifest::load_verified_manifest;
 #[cfg(any(target_os = "macos", windows))]
+use keld_ipc::ReceivePolicy;
+#[cfg(any(target_os = "macos", windows))]
 use keld_ipc::codec::{decode, encode};
 #[cfg(any(target_os = "macos", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
 #[cfg(any(target_os = "macos", windows))]
-use keld_ipc::link::{AppLinkDeadlines, read_frame_interruptible, write_frame};
+use keld_ipc::link::{AppLinkDeadlines, read_validated_frame_interruptible, write_frame};
 #[cfg(any(target_os = "macos", windows))]
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
@@ -3085,46 +3087,51 @@ fn read_primary_frames(
             handle.cli_lease_lost()?;
             return Ok(());
         }
-        let (header, payload) = match read_frame_interruptible(reader, &handle.shutdown.reader_stop)
-        {
-            Ok(Some(frame)) => frame,
-            Ok(None) => {
-                if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
-                    handle.cli_lease_lost()?;
-                }
-                return Ok(());
-            }
-            Err(IpcError::Io(source))
-                if matches!(
-                    source.kind(),
-                    io::ErrorKind::UnexpectedEof
-                        | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::ConnectionAborted
-                ) =>
+        // kel133 AC1-AC2: the shared validator admits only the primary
+        // session's declared frames (echo/lifecycle CALLs and PING); the old
+        // unknown-channel and unexpected-kind arms below it are deleted.
+        let policy = ReceivePolicy::primary_app_receiver();
+        let (header, payload) =
+            match read_validated_frame_interruptible(reader, &policy, &handle.shutdown.reader_stop)
             {
-                if !handle.is_current(attempt) {
+                Ok(Some(frame)) => frame,
+                Ok(None) => {
+                    if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
+                        handle.cli_lease_lost()?;
+                    }
                     return Ok(());
                 }
-                if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
-                    // The KEL-75/KEL-78 owner decides whether this generation
-                    // is recoverable. Its Revoked update retires this writer
-                    // before a successor is installed; only its terminal
-                    // outcome may close the already-ready window.
-                    handle.link_failed(attempt)?;
-                    return Ok(());
+                Err(IpcError::Io(source))
+                    if matches!(
+                        source.kind(),
+                        io::ErrorKind::UnexpectedEof
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    if !handle.is_current(attempt) {
+                        return Ok(());
+                    }
+                    if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
+                        // The KEL-75/KEL-78 owner decides whether this generation
+                        // is recoverable. Its Revoked update retires this writer
+                        // before a successor is installed; only its terminal
+                        // outcome may close the already-ready window.
+                        handle.link_failed(attempt)?;
+                        return Ok(());
+                    }
+                    return Err(app_detail(
+                        "primary session reader",
+                        "Bun closed the app link",
+                    ));
                 }
-                return Err(app_detail(
-                    "primary session reader",
-                    "Bun closed the app link",
-                ));
-            }
-            Err(source) => return Err(app_ipc("primary session reader", &source)),
-        };
+                Err(source) => return Err(app_ipc("primary session reader", &source)),
+            };
         if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
             handle.cli_lease_lost()?;
             return Ok(());
         }
-        match (header.kind, header.channel) {
+        match (header.kind(), header.channel()) {
             (FrameKind::Call, ECHO_CHANNEL) if handle.shutdown.is_running() => {
                 let reply = keld_ipc::echo::handle_echo(&payload)
                     .map_err(|source| app_ipc("echo dispatch", &source))?;
@@ -3133,7 +3140,7 @@ fn read_primary_frames(
                     &handle.shutdown,
                     attempt,
                     ECHO_CHANNEL,
-                    header.corr,
+                    header.corr(),
                     &reply,
                 )?;
             }
@@ -3145,9 +3152,9 @@ fn read_primary_frames(
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
                         #[cfg(windows)]
-                        handle.lifecycle_quit(attempt, header.corr, &reply, reader)?;
+                        handle.lifecycle_quit(attempt, header.corr(), &reply, reader)?;
                         #[cfg(target_os = "macos")]
-                        handle.lifecycle_quit(attempt, header.corr, &reply)?;
+                        handle.lifecycle_quit(attempt, header.corr(), &reply)?;
                         return Ok(());
                     }
                 }
@@ -3170,8 +3177,8 @@ fn read_primary_frames(
                     &mut active.writer,
                     FrameKind::Ping,
                     0,
-                    header.channel,
-                    header.corr,
+                    header.channel(),
+                    header.corr(),
                     &[],
                 )
                 .map_err(|source| app_ipc("primary session Ping", &source))?;
@@ -3182,13 +3189,9 @@ fn read_primary_frames(
                     "new Call arrived after quiesce",
                 ));
             }
-            (FrameKind::Call, _) => {
-                return Err(app_detail(
-                    "primary session dispatch",
-                    "unknown Call channel",
-                ));
-            }
             _ => {
+                // The validator admits only the declared combinations above;
+                // this stays a typed error so the host never panics.
                 return Err(app_detail(
                     "primary session dispatch",
                     "unexpected frame kind",

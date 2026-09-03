@@ -86,6 +86,63 @@ export function encodeHeader(h: FrameHeader): Uint8Array {
   return out;
 }
 
+/** Header flag mirroring `keld_ipc::frame::FLAG_RAW`. */
+export const FLAG_RAW = 1 << 0;
+
+/**
+ * Mirror of `keld_ipc::receive::ReceivePolicy` (KEL-133 spec §4) for the two
+ * receiver states this scaffold has: awaiting the server HELLO, and awaiting
+ * one echo REPLY. Same fixed check order and `KELD-IPC-005` details as the
+ * Rust validator and `@keld/electron`; the shared corpus is the semantic
+ * table, this is a consumer of it.
+ */
+export interface ReceivePolicy {
+  channel: number;
+  kinds: readonly number[];
+  corr: { rule: "zero" } | { rule: "exactly"; id: number };
+  exactLen?: number;
+}
+
+export const CLIENT_AWAIT_HELLO: ReceivePolicy = {
+  channel: 0,
+  kinds: [FrameKind.Hello],
+  corr: { rule: "zero" },
+  exactLen: 32,
+};
+
+export function echoReplyWaiter(corr: number): ReceivePolicy {
+  return { channel: ECHO_CHANNEL, kinds: [FrameKind.Reply], corr: { rule: "exactly", id: corr } };
+}
+
+/**
+ * Admits a decoded header for `policy` or throws `KELD-IPC-005` naming the
+ * first violated rule (kind → flags → channel → correlation → declared length).
+ */
+export function validateReceivedHeader(policy: ReceivePolicy, header: FrameHeader): FrameHeader {
+  if (!policy.kinds.includes(header.kind)) {
+    throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
+  }
+  if ((header.flags & FLAG_RAW) !== 0) {
+    throw kipcError("KELD-IPC-005", "FLAG_RAW is invalid for a structured session");
+  }
+  if (header.flags !== 0) {
+    throw kipcError("KELD-IPC-005", "unknown flag bits are reserved");
+  }
+  if (header.channel !== policy.channel) {
+    throw kipcError("KELD-IPC-005", "wrong channel for the session policy");
+  }
+  if (policy.corr.rule === "zero" && header.corr !== 0) {
+    throw kipcError("KELD-IPC-005", "correlation must be 0 for this frame");
+  }
+  if (policy.corr.rule === "exactly" && header.corr !== policy.corr.id) {
+    throw kipcError("KELD-IPC-005", "correlation does not match the awaited call");
+  }
+  if (policy.exactLen !== undefined && header.len !== policy.exactLen) {
+    throw kipcError("KELD-IPC-005", "payload length does not match the declared exact shape");
+  }
+  return header;
+}
+
 export function decodeHeader(bytes: Uint8Array): FrameHeader {
   if (bytes.length < HEADER_LEN) {
     throw kipcError(
@@ -461,15 +518,10 @@ export class AppLinkSession {
     try {
       await writeFrame(socket, drain, FrameKind.Hello, 0, 0, 0, token);
       const helloReply = await reader.readFrame();
-      if (helloReply.header.kind !== FrameKind.Hello) {
-        throw kipcError("KELD-IPC-005", "expected HELLO from peer");
-      }
-      if (helloReply.header.channel !== 0 || helloReply.header.corr !== 0) {
-        throw kipcError("KELD-IPC-005", "HELLO must have reserved channel/corr 0");
-      }
-      if (helloReply.payload.length !== 32) {
-        throw kipcError("KELD-IPC-007", "HELLO payload must be a 32-byte session token");
-      }
+      // KEL-133 shared receiver rules (spec kel133 §3 criterion 4): shape
+      // fails KELD-IPC-005 before the token comparison; KELD-IPC-007 is
+      // reserved for an exactly shaped foreign token.
+      validateReceivedHeader(CLIENT_AWAIT_HELLO, helloReply.header);
       if (!timingSafeEqual(helloReply.payload, token)) {
         throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
       }
@@ -503,13 +555,9 @@ export class AppLinkSession {
     await writeFrame(this.#socket, this.#drain, FrameKind.Call, 0, ECHO_CHANNEL, corr, payload);
 
     const reply = await this.#reader.readFrame();
-    if (
-      reply.header.kind !== FrameKind.Reply ||
-      reply.header.corr !== corr ||
-      reply.header.channel !== ECHO_CHANNEL
-    ) {
-      throw kipcError("KELD-IPC-005", "expected REPLY for echo CALL");
-    }
+    // KEL-133 shared waiter rules (spec kel133 §3 criterion 5): only the
+    // awaited REPLY may complete this call.
+    validateReceivedHeader(echoReplyWaiter(corr), reply.header);
     return decodeEchoResponse(reply.payload);
   }
 

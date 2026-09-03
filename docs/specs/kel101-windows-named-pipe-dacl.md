@@ -67,10 +67,12 @@ remote-client rejection, and deletes an instance after its last handle closes
    the client mask, then Windows returns `ERROR_ACCESS_DENIED`; no host session
    is accepted, and the intended child can subsequently authenticate.
 4. Given a same-user client with pipe name but no token, when it sends a complete
-   empty, wrong-length, or foreign `HELLO`, then it receives no host `HELLO`, `ERR`,
-   or echo reply; the host records exactly one redacted `HelloAuth`/
-   `KELD-IPC-007` record, disconnects that client, and continues accepting until the
-   legitimate child succeeds or admission expires. Every other pre-authentication
+   empty or wrong-length `HELLO`, or an exactly shaped `HELLO` carrying a foreign
+   token, then it receives no host `HELLO`, `ERR`, or echo reply; the host records
+   exactly one redacted `Protocol`/`KELD-IPC-005` record for the malformed shape,
+   or `HelloAuth`/`KELD-IPC-007` only for the exactly shaped foreign token,
+   disconnects that client, and continues accepting until the legitimate child
+   succeeds or admission expires. Every other pre-authentication
    failure has the exact existing-code host record in §4's admission mapping: EOF or
    non-timeout I/O is `KELD-IPC-001`; a started partial frame that reaches
    `APP_LINK_IO_DEADLINE` is `KELD-IPC-006`; a malformed header is
@@ -100,9 +102,11 @@ remote-client rejection, and deletes an instance after its last handle closes
    client consumes it during migration, then it remains an explicit compatibility
    path only. A new Windows host never mints a port or falls back to TCP; an
    unrecognized endpoint is `KELD-IPC-007`.
-10. Given a transport open failure, deadline, or token failure, then it maps to
-    `KELD-IPC-001`, `KELD-IPC-006`, or `KELD-IPC-007` respectively. No new wire
-    error exists and no error echoes a token or the full `KELD_APP_LINK` string.
+10. Given a transport open failure, deadline, invalid endpoint/token text before
+    connect, `HELLO` semantic-shape failure, or exactly shaped foreign token, then
+    it maps to `KELD-IPC-001`, `KELD-IPC-006`, `KELD-IPC-007`, `KELD-IPC-005`, or
+    `KELD-IPC-007` respectively. No new wire error exists and no error echoes a
+    token or the full `KELD_APP_LINK` string.
 
 ## 4. Design
 
@@ -242,8 +246,15 @@ failure classes:
 | Started partial header/payload remains open until the shorter handshake deadline expires | `Timeout` / `KELD-IPC-006` | close without reply; a subsequent client read is local `KELD-IPC-001` |
 | Bad magic, version, or kind in the frame header | `Header` / `KELD-IPC-002` | close without reply; a subsequent client read is local `KELD-IPC-001` |
 | Decoded envelope length exceeds `MAX_FRAME_LEN` | `PayloadTooLarge` / `KELD-IPC-004` | close without reply; a subsequent client read is local `KELD-IPC-001` |
-| Valid envelope but non-`HELLO`, or `HELLO` with nonzero reserved channel/correlation | `Protocol` / `KELD-IPC-005` | close without reply; a subsequent client read is local `KELD-IPC-001` |
-| Empty, wrong-length, or foreign 32-byte `HELLO` token | `HelloAuth` / `KELD-IPC-007` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| Valid envelope but non-`HELLO`, or `HELLO` with nonzero flags/reserved channel/correlation, or a payload length that is not exactly 32 bytes | `Protocol` / `KELD-IPC-005` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+| An exactly shaped `HELLO` whose 32-byte token is foreign | `HelloAuth` / `KELD-IPC-007` | close without reply; a subsequent client read is local `KELD-IPC-001` |
+
+The `005`/`007` split above follows the approved
+`docs/specs/kel133-kipc-receiver-semantics.md` criterion 4: shape — including the
+exact 32-byte payload length — is semantic validation (`005`) and fails before any
+token comparison; `007` is reserved for an exactly shaped foreign token. The
+original revision of this table classified empty/wrong-length tokens as `007`;
+KEL-133/T1 landed the shared validator and amended both specs in the same change.
 
 For each non-terminal result, the adapter completes or calls `CancelIoEx` on every
 pending overlapped read/write and observes each completion with `GetOverlappedResult`
@@ -277,7 +288,7 @@ supplied string.
 | --- | --- | --- |
 | `CreateNamedPipeW`/`CreateFileW`/close error, including DACL denial | `KELD-IPC-001` | Never token or full link |
 | Connect, HELLO, started-read, or started-write deadline | `KELD-IPC-006` | Never token/raw prefix |
-| Invalid token | Peer sees close/`KELD-IPC-001`; host observer sees `KELD-IPC-007` | Host does not send HELLO first |
+| Exactly shaped foreign `HELLO` token | Peer sees close/`KELD-IPC-001`; host observer sees `KELD-IPC-007` | Host does not send HELLO first |
 | Invalid endpoint/token text before connect | `KELD-IPC-007` | State syntax only |
 
 ### Required Electron migration conformance entry

@@ -65,7 +65,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: HELLO session token rejected
-- fix: Mint the token with the host (`keld dev`) into KELD_APP_LINK as `<endpoint>#<64 hex chars>` and send those 32 bytes as the HELLO payload; empty or foreign tokens are rejected.
+- fix: Mint the token with the host (`keld dev`) into KELD_APP_LINK as `<endpoint>#<64 hex chars>` and send those exact 32 bytes as the HELLO payload. A wrong HELLO semantic shape is `KELD-IPC-005`; `KELD-IPC-007` is reserved for invalid bootstrap token text or an exactly shaped foreign token.
 
 ## KELD-WV-001
 

@@ -18,5 +18,11 @@ getrandom = { workspace = true }
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true, features = ["Win32_System_IO"] }
 
+[dev-dependencies]
+# Corpus digest only (KEL-133 spec §4: "The fixture's SHA-256 is printed by
+# both test suites"). Reuses the workspace-pinned sha2 already used by
+# keld-cli and keld-guard; dev-only, never on the hot path.
+sha2 = { workspace = true }
+
 [lints]
 workspace = true

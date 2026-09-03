@@ -34,6 +34,7 @@ use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL};
 // preserve that path. Moving the owner must not break the published one.
 pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
 use crate::link::{AppLinkDeadlines, handshake_server_interruptible_until};
+use crate::receive::AbsoluteDeadline;
 use crate::token::{SessionToken, format_app_link};
 #[cfg(windows)]
 use crate::windows_named_pipe::{
@@ -76,6 +77,10 @@ pub struct BootstrapListener {
     listening: Arc<AtomicBool>,
     #[cfg(unix)]
     active_stream: Arc<Mutex<Option<BootstrapStream>>>,
+    #[cfg(all(test, unix))]
+    handshake_witness: Mutex<Option<TestHandshakeWitness>>,
+    #[cfg(all(test, unix))]
+    before_consume: Mutex<Option<TestConsumeGate>>,
 }
 
 /// Result of one bounded bootstrap admission attempt.
@@ -102,6 +107,50 @@ pub type WindowsNamedPipeBootstrapAdmission =
     BootstrapAdmissionFor<WindowsNamedPipeBootstrapStream>;
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct TestHandshakeEntry {
+    entered_at: Instant,
+    generation_deadline: Option<Instant>,
+    peer_deadline: Instant,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestHandshakeWitness {
+    entered: std::sync::mpsc::SyncSender<TestHandshakeEntry>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestConsumeGate {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+fn report_test_handshake_entry(
+    witness: &Mutex<Option<TestHandshakeWitness>>,
+    generation_deadline: Option<Instant>,
+    peer_deadline: Instant,
+) {
+    if let Some(witness) = lock_or_recover(witness).take() {
+        let _ = witness.entered.send(TestHandshakeEntry {
+            entered_at: Instant::now(),
+            generation_deadline,
+            peer_deadline,
+        });
+    }
+}
+
+#[cfg(test)]
+fn wait_at_test_consume_gate(gate: &Mutex<Option<TestConsumeGate>>) {
+    if let Some(gate) = lock_or_recover(gate).take() {
+        let _ = gate.entered.send(());
+        let _ = gate.release.recv();
+    }
+}
+
+#[cfg(test)]
 mod admission_type_tests {
     use super::BootstrapAdmission;
 
@@ -112,10 +161,59 @@ mod admission_type_tests {
     }
 }
 
+#[cfg(test)]
+mod peer_handshake_window_tests {
+    use std::time::{Duration, Instant};
+
+    use super::peer_handshake_window;
+
+    #[test]
+    fn generation_and_handshake_limits_share_one_start_in_both_orderings() {
+        let started = Instant::now();
+        let generation = started + Duration::from_millis(100);
+        let (timeout, deadline) =
+            peer_handshake_window(started, Some(generation), Duration::from_secs(5))
+                .expect("generation window");
+        assert_eq!(timeout, Duration::from_millis(100));
+        assert_eq!(deadline.instant(), generation);
+
+        let handshake_limit = Duration::from_millis(40);
+        let (timeout, deadline) = peer_handshake_window(started, Some(generation), handshake_limit)
+            .expect("handshake window");
+        assert_eq!(timeout, handshake_limit);
+        assert_eq!(deadline.instant(), started + handshake_limit);
+
+        assert!(
+            peer_handshake_window(started, Some(started), Duration::from_secs(5)).is_none(),
+            "an expired generation must not mint a peer window"
+        );
+    }
+}
+
+#[cfg(test)]
+mod admission_deadline_tests;
+
 struct NoopRejectionObserver;
 
 impl BootstrapRejectionObserver for NoopRejectionObserver {
     fn rejected(&self, _rejection: BootstrapRejection) {}
+}
+
+fn peer_handshake_window(
+    started: Instant,
+    generation_deadline: Option<Instant>,
+    handshake_limit: Duration,
+) -> Option<(Duration, AbsoluteDeadline)> {
+    let timeout = match generation_deadline {
+        Some(deadline) => deadline
+            .checked_duration_since(started)?
+            .min(handshake_limit),
+        None => handshake_limit,
+    };
+    if timeout.is_zero() {
+        return None;
+    }
+    Some((timeout, AbsoluteDeadline::at(started.checked_add(timeout)?)))
 }
 
 /// Cancellation handle for a blocked bootstrap admission worker.
@@ -163,6 +261,10 @@ impl BootstrapListener {
                 stopping: Arc::new(AtomicBool::new(false)),
                 listening: Arc::new(AtomicBool::new(true)),
                 active_stream: Arc::new(Mutex::new(None)),
+                #[cfg(test)]
+                handshake_witness: Mutex::new(None),
+                #[cfg(test)]
+                before_consume: Mutex::new(None),
             })
         }
         #[cfg(windows)]
@@ -208,6 +310,23 @@ impl BootstrapListener {
             #[cfg(unix)]
             active_stream: Arc::clone(&self.active_stream),
         }
+    }
+
+    #[cfg(test)]
+    fn install_handshake_witness(&self, witness: TestHandshakeWitness) {
+        #[cfg(unix)]
+        {
+            let replaced = lock_or_recover(&self.handshake_witness).replace(witness);
+            assert!(replaced.is_none(), "handshake witness already installed");
+        }
+        #[cfg(windows)]
+        self.listener.install_handshake_witness(witness);
+    }
+
+    #[cfg(all(test, unix))]
+    fn install_before_consume_gate(&self, gate: TestConsumeGate) {
+        let replaced = lock_or_recover(&self.before_consume).replace(gate);
+        assert!(replaced.is_none(), "before-consume gate already installed");
     }
 
     /// Waits until one client proves possession of this listener's token.
@@ -310,16 +429,10 @@ impl BootstrapListener {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::Cancelled);
             }
-            let timeout = deadline
-                .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
-                .map_or(handshake_deadline, |remaining| {
-                    remaining.min(handshake_deadline)
-                });
-            if timeout.is_zero() {
-                self.close_endpoint()?;
-                return Ok(BootstrapAdmission::DeadlineElapsed);
-            }
-            let Some(peer_deadline) = Instant::now().checked_add(timeout) else {
+            let handshake_started = Instant::now();
+            let Some((timeout, peer_deadline)) =
+                peer_handshake_window(handshake_started, deadline, handshake_deadline)
+            else {
                 self.close_endpoint()?;
                 return Ok(BootstrapAdmission::DeadlineElapsed);
             };
@@ -357,6 +470,8 @@ impl BootstrapListener {
             let _active = ActiveHandshake {
                 active_stream: Arc::clone(&self.active_stream),
             };
+            #[cfg(test)]
+            report_test_handshake_entry(&self.handshake_witness, deadline, peer_deadline.instant());
             match handshake_server_interruptible_until(
                 &mut stream,
                 &self.token,
@@ -364,6 +479,18 @@ impl BootstrapListener {
                 peer_deadline,
             ) {
                 Ok(true) => {
+                    #[cfg(test)]
+                    wait_at_test_consume_gate(&self.before_consume);
+                    if self.stopping.load(Ordering::SeqCst) {
+                        drop(stream);
+                        self.close_endpoint()?;
+                        return Ok(BootstrapAdmission::Cancelled);
+                    }
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        drop(stream);
+                        self.close_endpoint()?;
+                        return Ok(BootstrapAdmission::DeadlineElapsed);
+                    }
                     self.close_endpoint()?;
                     return Ok(BootstrapAdmission::Authenticated(stream));
                 }
@@ -567,13 +694,8 @@ pub struct WindowsNamedPipeBootstrapListener {
     stopping: Arc<AtomicBool>,
     #[cfg(test)]
     before_consume: Mutex<Option<TestConsumeGate>>,
-}
-
-#[cfg(all(test, windows))]
-#[derive(Debug)]
-struct TestConsumeGate {
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::mpsc::Receiver<()>,
+    #[cfg(test)]
+    handshake_witness: Mutex<Option<TestHandshakeWitness>>,
 }
 
 /// Connected authenticated stream from [`WindowsNamedPipeBootstrapListener`].
@@ -589,6 +711,64 @@ pub struct WindowsNamedPipeBootstrapCancellation {
     stopping: Arc<AtomicBool>,
 }
 
+/// One owner for the unguessable per-generation pipe name (32 random bytes,
+/// hex) shared by the production listener and the test-only connected pair.
+#[cfg(windows)]
+fn random_pipe_endpoint() -> io::Result<String> {
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce).map_err(io::Error::other)?;
+    let mut endpoint = String::from(r"\\.\pipe\keld-");
+    for byte in nonce {
+        write!(&mut endpoint, "{byte:02x}").map_err(io::Error::other)?;
+    }
+    Ok(endpoint)
+}
+
+/// Test-only connected server/client pair on the shipped Windows transport,
+/// with no HELLO exchanged: reader-clock contract tests (kel133 AC7/AC8,
+/// windows-latest row) must prove the overlapped-wait + absolute-clamp clock
+/// Keld ships, not loopback TCP's `SO_RCVTIMEO`. Ownership mirrors the
+/// production accept loop: the server instance is consumed once its stream
+/// exists, and the stream keeps the pipe alive through its shared inner.
+///
+/// # Errors
+///
+/// Returns the first I/O error from bind, accept, stream creation, or the
+/// client connect.
+#[cfg(all(test, windows))]
+pub(crate) fn connected_named_pipe_pair() -> io::Result<(
+    WindowsNamedPipeBootstrapStream,
+    WindowsNamedPipeBootstrapStream,
+)> {
+    let endpoint = random_pipe_endpoint()?;
+    let server = WindowsNamedPipeServer::bind(&endpoint)?;
+    let connect_deadline = Instant::now() + Duration::from_secs(2);
+    let client = std::thread::spawn(move || {
+        WindowsNamedPipeServer::connect_client_until(&endpoint, connect_deadline)
+    });
+    match server.accept_until(Some(connect_deadline))? {
+        WaitOutcome::Ready => {}
+        WaitOutcome::PeerClosed => return Err(io::Error::other("pair accept: peer closed")),
+        WaitOutcome::Cancelled => return Err(io::Error::other("pair accept: cancelled")),
+        WaitOutcome::DeadlineElapsed => {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pair accept: deadline",
+            ));
+        }
+    }
+    let server_stream = server.stream()?;
+    server.consume();
+    drop(server);
+    let client_stream = client
+        .join()
+        .map_err(|_| io::Error::other("pair connect thread panicked"))??;
+    Ok((
+        WindowsNamedPipeBootstrapStream(server_stream),
+        WindowsNamedPipeBootstrapStream(client_stream),
+    ))
+}
+
 #[cfg(windows)]
 impl WindowsNamedPipeBootstrapListener {
     /// Creates one first-instance, remote-rejecting named pipe protected by an
@@ -600,12 +780,7 @@ impl WindowsNamedPipeBootstrapListener {
     /// creation, handle validation, or descriptor readback fails.
     pub fn bind() -> io::Result<Self> {
         let token = SessionToken::random()?;
-        let mut nonce = [0_u8; 32];
-        getrandom::fill(&mut nonce).map_err(io::Error::other)?;
-        let mut endpoint = String::from(r"\\.\pipe\keld-");
-        for byte in nonce {
-            write!(&mut endpoint, "{byte:02x}").map_err(io::Error::other)?;
-        }
+        let endpoint = random_pipe_endpoint()?;
         let server = WindowsNamedPipeServer::bind(&endpoint)?;
         Ok(Self {
             server: Mutex::new(Some(server)),
@@ -615,6 +790,8 @@ impl WindowsNamedPipeBootstrapListener {
             stopping: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             before_consume: Mutex::new(None),
+            #[cfg(test)]
+            handshake_witness: Mutex::new(None),
         })
     }
 
@@ -730,23 +907,9 @@ impl WindowsNamedPipeBootstrapListener {
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
             let handshake_started = Instant::now();
-            let peer_timeout = match deadline {
-                Some(deadline) => {
-                    let Some(remaining) = deadline.checked_duration_since(handshake_started) else {
-                        server.close_terminal()?;
-                        drop(lock_or_recover(&self.server).take());
-                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
-                    };
-                    if remaining.is_zero() {
-                        server.close_terminal()?;
-                        drop(lock_or_recover(&self.server).take());
-                        return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
-                    }
-                    remaining.min(handshake_deadline)
-                }
-                None => handshake_deadline,
-            };
-            let Some(peer_deadline) = handshake_started.checked_add(peer_timeout) else {
+            let Some((peer_timeout, peer_deadline)) =
+                peer_handshake_window(handshake_started, deadline, handshake_deadline)
+            else {
                 server.close_terminal()?;
                 drop(lock_or_recover(&self.server).take());
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
@@ -754,7 +917,11 @@ impl WindowsNamedPipeBootstrapListener {
             let mut stream = WindowsNamedPipeBootstrapStream(server.stream()?);
             stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL.min(peer_timeout)))?;
             stream.set_app_link_write_deadline(Some(peer_timeout))?;
-            stream.0.set_absolute_deadline(Some(peer_deadline));
+            stream
+                .0
+                .set_absolute_deadline(Some(peer_deadline.instant()));
+            #[cfg(test)]
+            report_test_handshake_entry(&self.handshake_witness, deadline, peer_deadline.instant());
             match handshake_server_interruptible_until(
                 &mut stream,
                 &self.token,
@@ -763,10 +930,7 @@ impl WindowsNamedPipeBootstrapListener {
             ) {
                 Ok(true) => {
                     #[cfg(test)]
-                    if let Some(gate) = lock_or_recover(&self.before_consume).as_ref() {
-                        let _ = gate.entered.send(());
-                        let _ = gate.release.recv();
-                    }
+                    wait_at_test_consume_gate(&self.before_consume);
                     if self.stopping.load(Ordering::Acquire) {
                         drop(stream);
                         server.close_terminal()?;
@@ -841,6 +1005,12 @@ impl WindowsNamedPipeBootstrapListener {
     #[cfg(test)]
     fn install_before_consume_gate(&self, gate: TestConsumeGate) {
         *lock_or_recover(&self.before_consume) = Some(gate);
+    }
+
+    #[cfg(test)]
+    fn install_handshake_witness(&self, witness: TestHandshakeWitness) {
+        let replaced = lock_or_recover(&self.handshake_witness).replace(witness);
+        assert!(replaced.is_none(), "handshake witness already installed");
     }
 
     /// Cancels admission and closes the pipe locator.
@@ -1789,7 +1959,7 @@ socket.end();
             },
             &[],
         );
-        run_rejection_then_authenticate(Some(&empty_hello), BootstrapRejection::HelloAuth);
+        run_rejection_then_authenticate(Some(&empty_hello), BootstrapRejection::Protocol);
 
         let short_hello = frame(
             FrameHeader {
@@ -1801,7 +1971,22 @@ socket.end();
             },
             &[0xA5; 31],
         );
-        run_rejection_then_authenticate(Some(&short_hello), BootstrapRejection::HelloAuth);
+        run_rejection_then_authenticate(Some(&short_hello), BootstrapRejection::Protocol);
+
+        // kel133 AC4 split: the same foreign bytes in an exactly shaped HELLO
+        // are the one remaining HelloAuth class — shape failures above must
+        // never collapse into it, and this row must never collapse into 005.
+        let foreign_hello = frame(
+            FrameHeader {
+                kind: FrameKind::Hello,
+                flags: 0,
+                channel: ChannelId(0),
+                corr: CorrelationId(0),
+                len: 32,
+            },
+            &[0xA5; 32],
+        );
+        run_rejection_then_authenticate(Some(&foreign_hello), BootstrapRejection::HelloAuth);
 
         let reserved_hello = frame(
             FrameHeader {
