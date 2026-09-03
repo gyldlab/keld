@@ -518,15 +518,29 @@ fn hostile_authenticated_frames_close_with_005_and_zero_reply_bytes() {
             count: 1,
         })
         .expect("encode");
-        write_frame(
+        let write = write_frame(
             &mut client,
             kind,
             flags,
             ChannelId(channel),
             CorrelationId(corr),
             &payload,
-        )
-        .expect("client writes hostile frame");
+        );
+        if let Err(error) = write {
+            assert!(
+                matches!(
+                    &error,
+                    IpcError::Io(source)
+                        if matches!(
+                            source.kind(),
+                            std::io::ErrorKind::BrokenPipe
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::NotConnected
+                        )
+                ),
+                "{case}: hostile header write failed unexpectedly: {error}"
+            );
+        }
 
         let err = handle
             .join()
