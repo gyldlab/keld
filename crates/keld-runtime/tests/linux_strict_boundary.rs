@@ -1,6 +1,6 @@
 //! Real-Linux KEL-78/T4 strict-profile acceptance.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #![allow(unsafe_code)] // hostile test invokes denied Linux syscalls directly
 #![allow(clippy::expect_used, clippy::panic)] // OS/process observations are assertion oracles
 #![allow(clippy::zombie_processes)] // host-death fixture deliberately leaves its enrolled descendant live for the external reaper
@@ -16,11 +16,12 @@ use std::os::linux::net::SocketAddrExt as _;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use keld_runtime::linux_strict::LinuxStrictProfile;
+use keld_runtime::linux_strict::{LinuxLandlockStatus, LinuxStrictProfile};
 use sha2::{Digest as _, Sha256};
 
 const CLONE_NEWUSER: i32 = 0x1000_0000;
@@ -174,7 +175,8 @@ fn linux_strict_host_helper() {
         )
         .expect("host strict command")
         .spawn()
-        .expect("host strict spawn");
+        .expect("host strict spawn")
+        .into_child();
     let status = child.wait().expect("wait strict process tree");
     assert!(status.success(), "strict process tree exited {status}");
 }
@@ -325,6 +327,7 @@ fn unavailable_nested_user_namespace_fails_closed_before_target() {
         .expect("userns negative-control command")
         .spawn()
         .expect("outer strict spawn")
+        .into_child()
         .wait_with_output()
         .expect("userns negative-control output");
     assert!(
@@ -364,6 +367,7 @@ fn pinned_bun_starts_and_writes_only_inside_the_strict_role_root() {
         .expect("strict Bun command")
         .spawn()
         .expect("strict Bun spawn")
+        .into_child()
         .wait_with_output()
         .expect("strict Bun output");
     assert!(
@@ -426,7 +430,7 @@ fn strict_profile_denies_host_fs_network_namespace_escape_and_fd_inheritance() {
         namespace_environment("PID"),
         namespace_environment("NET"),
     ];
-    let mut child = profile
+    let admitted = profile
         .command(
             &std::env::current_exe().expect("test executable"),
             &[
@@ -440,6 +444,15 @@ fn strict_profile_denies_host_fs_network_namespace_escape_and_fd_inheritance() {
         .expect("strict command")
         .spawn()
         .expect("strict spawn");
+    assert!(
+        matches!(
+            admitted.landlock_status(),
+            LinuxLandlockStatus::FullyEnforced | LinuxLandlockStatus::PartiallyEnforced
+        ),
+        "hostile Landlock row requires a kernel Landlock layer: {:?}",
+        admitted.landlock_status()
+    );
+    let mut child = admitted.into_child();
     let status = wait_child(&mut child, Instant::now() + Duration::from_secs(20));
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -595,9 +608,19 @@ fn runtime_dependencies(program: &Path) -> Vec<(std::path::PathBuf, std::path::P
 }
 
 fn strict_launcher() -> &'static Path {
-    let launcher = Path::new(env!("CARGO_BIN_EXE_keld-linux-strict-launcher"));
-    fs::set_permissions(launcher, fs::Permissions::from_mode(0o500))
-        .expect("owner-executable strict launcher fixture");
+    static FIXTURE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    let (_, launcher) = FIXTURE.get_or_init(|| {
+        let root = owner_private_tempdir();
+        let launcher = root.path().join("keld-linux-strict-launcher");
+        fs::copy(
+            Path::new(env!("CARGO_BIN_EXE_keld-linux-strict-launcher")),
+            &launcher,
+        )
+        .expect("stage strict launcher fixture");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o500))
+            .expect("owner-executable strict launcher fixture");
+        (root, launcher)
+    });
     launcher
 }
 
@@ -870,6 +893,7 @@ fn run_strict_probe(
         .expect("relaunch strict command")
         .spawn()
         .expect("relaunch strict spawn")
+        .into_child()
         .wait_with_output()
         .expect("relaunch strict output")
 }

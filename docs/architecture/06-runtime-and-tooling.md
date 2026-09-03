@@ -120,8 +120,13 @@
   an async-signal-safe pre-exec step duplicates those FDs and marks every
   higher descriptor close-on-exec without mutating caller-owned flags. The
   read-only launcher stacks the highest supported Landlock filesystem/network
-  ABI, records a kernel without Landlock, fails on disabled/broken enforcement,
-  emits readiness after that decision, and replaces itself with the exact target.
+  ABI, records `NotImplemented` when the kernel lacks Landlock, fails on a
+  disabled or broken available implementation, emits the exact observed state
+  after that decision through a parent-controlled pipe that is closed before
+  target exec, and replaces itself with the target. The writable role cannot
+  forge this state or inherit the channel. `NotImplemented` does not waive the
+  independently required namespace, empty-root mount, capability, descriptor,
+  or seccomp layers and never selects `legacy`.
   Real Linux tests prove exact runtime-file/code mounts, writable role-private
   paths, host/update/device absence, AF_INET and namespace-escape denial,
   ancillary-FD denial, ambient-FD closure, equally contained descendants,

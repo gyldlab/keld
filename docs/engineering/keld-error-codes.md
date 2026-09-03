@@ -503,7 +503,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-runtime
 - message: Linux strict-profile construction, namespace, mount, seccomp, Landlock, FD isolation, readiness, or target exec failed
-- fix: Do not start an uncontained replacement. Install the reviewed unprivileged Bubblewrap and Keld launcher artifacts, repair the exact runtime-file/mount/seccomp/Landlock profile, then refresh the hostile proof.
+- fix: Do not start an uncontained replacement. For an unsupported architecture or unavailable unprivileged user namespaces, move the workload to a supported x86_64 host with unprivileged user namespaces. Otherwise install or repair the reviewed Bubblewrap and Keld launcher artifacts and the exact runtime-file, mount, seccomp, enabled-Landlock, readiness-channel, or target configuration, then refresh the hostile proof. A kernel without Landlock is recorded rather than treated as this error; `legacy` remains an explicit policy choice that forfeits the zero-authority claim and is never selected automatically.
 
 ## KELD-NATIVE-001
 

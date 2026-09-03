@@ -291,11 +291,11 @@ of a sandbox, not containment.
 
 ### L10. Bubblewrap constructs policy-defined unprivileged namespace roots and owns PID-1 reaping
 
-- **Sources:** <https://github.com/containers/bubblewrap/blob/main/README.md> and <https://github.com/containers/bubblewrap/blob/main/bubblewrap.c>
+- **Sources:** <https://github.com/containers/bubblewrap/blob/124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe/README.md> and <https://github.com/containers/bubblewrap/blob/124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe/bubblewrap.c>
 - **Publisher:** containers/bubblewrap maintainers
-- **Dated:** upstream `main` inspected 2026-09-03; real Ubuntu package `0.11.1`, `/usr/bin/bwrap` SHA-256 `0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`
+- **Dated:** upstream `v0.11.1` commit `124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe` inspected 2026-09-03; real Ubuntu package `0.11.1`, `/usr/bin/bwrap` SHA-256 `0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`
 - **Evidence:** upstream documents an initially empty tmpfs root, caller-selected visible mounts, user/PID/network namespaces, a PID-1 reaper, passed-in seccomp filters, `no_new_privs`, and parent-death killing. Current source rejects setuid and unexpected file capabilities and closes descriptors outside the explicit extra-FD list.
-- **Use:** T4 reuses a root-owned, non-setuid/non-setgid, capability-free Bubblewrap executable. Keld still owns every argument, the exact read-only runtime-file list, the writable role root, seccomp policy, stacked Landlock launcher, readiness, and hostile evidence. `--unshare-user-try` and `--not-a-security-boundary` are forbidden. Missing/unprivileged-userns failure starts no target; there is no privileged or legacy fallback.
+- **Use:** T4 reuses a root-owned, non-setuid/non-setgid, capability-free Bubblewrap executable. Keld still owns every argument, the exact read-only runtime-file list, the writable role root, seccomp policy, stacked Landlock launcher, parent-controlled readiness pipe, and hostile evidence. The launcher closes the pipe before target exec. `--unshare-user-try` and `--not-a-security-boundary` are forbidden. Missing/unprivileged-userns failure starts no target; there is no privileged or legacy fallback.
 
 ---
 

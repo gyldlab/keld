@@ -454,8 +454,9 @@ seccomp programs through fixed child-private FDs. The current program is
 x86_64-only and every other architecture fails command construction. A minimal read-only Keld
 launcher inside that root applies the highest kernel-supported Landlock
 filesystem/network ABI, records a kernel with no Landlock, fails when Landlock
-is built but disabled or enforcement errors, writes a unique owner-private
-readiness record, and `exec`s the target. Only regular runtime
+is built but disabled or enforcement errors, writes the exact observed state
+through a parent-controlled pipe closed before target exec, and `exec`s the
+target. The writable role cannot forge the state or inherit that channel. Only regular runtime
 files may be allowlisted; directory-wide library mounts, userns-try,
 `--not-a-security-boundary`, privileged/setuid fallback, and ambient FDs are
 rejected. Bubblewrap owns PID-namespace reaping and parent-death coupling;
@@ -639,7 +640,7 @@ Renderer sandbox is a different column.
       Implementation head `51c52f6772b3587b8fe1b1023e492e419f5e242c`
       has real Ubuntu kernel `7.0.0-30-generic` evidence: Bubblewrap 0.11.1
       (`sha256:0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`),
-      post-Landlock launcher readiness, mount/Landlock/seccomp/FD/namespace
+      trusted post-Landlock launcher readiness, mount/Landlock/seccomp/FD/namespace
       hostile passes, host-only death of a four-process enrolled tree plus
       relaunch, and Bun 1.4.0 artifact
       `sha256:33d56b070be6a9e3da0ab013038b43d1645d0534ca811ecdba4472599117eb4b`.
