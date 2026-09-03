@@ -277,8 +277,9 @@ exactly `0o700` after staging,
 and selects the literal sibling `keld.boot.json`. It does not consult cwd,
 environment, argv data, a child, or a request. That canonical parent is the
 fixture app root. Windows protected-current-user-only DACL creation/read-back
-and Linux exact-`0o700` staging are T4 platform work; their compiler/no-flag paths remain
-fail-closed under `KELD-CORE-034` until implemented and proved.
+and Linux exact-`0o700` staging are T4 platform work. Both are now implemented:
+Linux also stages the dedicated strict-role launcher and validates the complete
+replacement-safe ancestor chain before any app resource.
 
 T1a has no release entry path or caller-selectable `Fixture`/`Release` boolean.
 This dev rule is not a universal release layout: a shared cached host can serve
@@ -457,12 +458,11 @@ close KEL-101 or authorize a privileged Windows channel. KEL-101's own approved
 scope remains the authority for the named-pipe/current-user-DACL gate.
 
 The atomic T1b head initially enabled no-flag startup only on macOS. The T4
-Windows slice now removes that guard only after protected staging/readback,
-strict boot/policy validation, one T8-owned supervisor, the live WebView2
-command/event loop and real process/window/restart/teardown evidence pass.
-Linux still fails before boot-file read or any application resource with
-`KELD-CORE-034`: no-flag host support is unavailable on this platform; complete
-the named KEL-96/T4 platform slice. No unsupported platform may fall through to
+Windows and Linux slices remove that guard only after protected staging/readback,
+strict boot/policy validation, one T8-owned supervisor, the live Windows WebView2
+or Linux WebKitGTK command/event loop, and real process/window/restart/teardown evidence pass.
+Linux consumes the landed KEL-78/T4 strict mechanism through the shared primary
+supervisor and its real Wayland product rows. No unsupported platform may fall through to
 the pre-alpha banner, `--hello`, CLI-owned session, or a partially installed
 app-link.
 
@@ -603,7 +603,7 @@ privileged channel. The first and only production caller in T1b is the no-flag
 - [x] T3: After KEL-116 records all self-termination, integrate fresh KEL-75
       link generation and prove same-window macOS recovery; retain the qualified
       KEL-105 SURFACE behavior until this passes.
-- [ ] T4: Integrate the landed KEL-75/T8 Windows generation/recovery coordinator
+- [x] T4: Integrate the landed KEL-75/T8 Windows generation/recovery coordinator
       into the no-flag host, complete the remaining per-backend host lifecycle
       integration, run the real Windows and Linux product rows, and consume the
       applicable KEL-75/KEL-78 host-death reaper artifacts. This is
@@ -614,8 +614,18 @@ privileged channel. The first and only production caller in T1b is the no-flag
       non-breakaway Job through the real no-flag host: killing only that host
       reaps Bun plus a real descendant, the cleanup sentinel deletes the stage,
       and a fresh no-flag launch succeeds. Raw CLI/host/Bun handle census and
-      post-CLI-death stage deletion also pass. T4 remains unchecked only because
-      the real interactive Linux implementation/evidence rows are absent.
+      post-CLI-death stage deletion also pass. Linux implementation head
+      `3d9e5c78db273f550c47f1a6b4655712de2723a0` stages a dedicated minimal
+      strict launcher and consumes KEL-78/T4 inside the existing primary
+      supervisor. On native Ubuntu GNOME Wayland, all eight product tests pass:
+      fresh no-flag host/Bun/descendant identities, two calls, ordered Quit,
+      same-window recovery, CLI-death cleanup, exact stage deletion, invalid
+      boot/lease pre-resource failure, and host-only SIGKILL of a four-process
+      strict tree followed by fresh relaunch. Removing only
+      `--die-with-parent` makes the host-death row fail on a surviving recorded
+      process identity; no retry, external tree kill, or second supervisor is
+      used. The current runtime-file manifest is explicitly Ubuntu/Debian
+      x86_64; X11 and non-Debian evidence remain separate KEL-28 follow-up.
       The CLI atomically protects and retains no-share-delete handles for
       `.keld` and `dev` before nonce creation (plus the canonical project
       handle), then pins and validates
@@ -628,7 +638,7 @@ privileged channel. The first and only production caller in T1b is the no-flag
       accepted shutdown closes successor admission before the reply tail, and
       revoked-attempt tombstones reject a bound stream observed after its
       revocation.
-- [ ] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
+- [x] T5: Update architecture 01/02/06 LIVE/TARGET labels only to the behavior
       actually proved by landed T1a–T4 work.
 
 KEL-102 dependency mapping:
@@ -695,12 +705,13 @@ Task/platform completion matrix:
 |---|---|---|---|---|
 | T1a descriptor/fixture | strict schema, artifact digest, substitution and mutation negatives | not applicable | not applicable | not applicable |
 | T1b no-flag owner/session/shutdown | state model, same-stream echo+lifecycle, cleanup negatives | required on atomic first head | implemented/proved by T4 | implemented/proved by T4 |
-| T2 CLI delegation/second call/CLI death | lease state model and process fixtures | required before T2 passes | required by T4 | required by T4 |
-| T3 fresh generation/window continuity | generation ordering and stale-link negatives | required before T3 passes | Windows equivalent implemented/proved by T4 | real proof required by T4 |
-| Orderly shutdown/reap | state/child-process negatives | required by T1b/T3 | required by T4 | required by T4 |
-| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | KEL-78 Job consumed; real host-only kill reaps Bun + descendant, deletes stage, and relaunches | named reaper plus real kill-host/child-gone/relaunch run |
+| T2 CLI delegation/second call/CLI death | lease state model and process fixtures | required before T2 passes | required by T4 | implemented/proved by T4 |
+| T3 fresh generation/window continuity | generation ordering and stale-link negatives | required before T3 passes | Windows equivalent implemented/proved by T4 | implemented/proved by T4 |
+| Orderly shutdown/reap | state/child-process negatives | required by T1b/T3 | required by T4 | implemented/proved by T4 |
+| Abnormal host death | consume KEL-75/KEL-78 artifact, never a mock | named reaper plus real kill-host/child-gone/relaunch run; currently awaiting mechanism | KEL-78 Job consumed; real host-only kill reaps Bun + descendant, deletes stage, and relaunches | KEL-78/T4 consumed; real host-only kill reaps Bun + descendant, deletes stage, and relaunches |
 
-KEL-96 remains open while any required cell is awaiting. A platform's T4 row
+KEL-96 remains open while any required cell is awaiting; Linux has no remaining
+cell in this matrix, while macOS abnormal host death still awaits its named mechanism. A platform's T4 row
 cannot pass on ownership/echo evidence while its restart or teardown cell is
 missing.
 

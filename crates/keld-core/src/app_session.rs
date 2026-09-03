@@ -1,80 +1,90 @@
 //! Validated no-flag application boot and host-owned primary session (KEL-96).
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::collections::HashMap;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::ffi::OsStr;
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::fmt;
-#[cfg(windows)]
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), windows))]
 use std::fs;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::fs::File;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", windows))]
+use std::io::Write as _;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::io::{self, Read};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt as _;
 #[cfg(windows)]
 use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::ExitStatus;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::{Arc, Mutex};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::thread::{self, JoinHandle};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 use serde::Deserialize;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use nix::sys::stat::{SFlag, fstat};
 
 use keld_guard::ManifestError;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::VerifiedManifest;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::load_verified_manifest;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::ReceivePolicy;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::codec::{decode, encode};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::link::{AppLinkDeadlines, read_validated_frame_interruptible, write_frame};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
     LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use keld_runtime::linux_strict::LinuxStrictProfile;
 #[cfg(target_os = "macos")]
 use keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate, GuardianBootstrap};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent};
 #[cfg(windows)]
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
+#[cfg(target_os = "linux")]
+use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
+#[cfg(target_os = "linux")]
+use keld_wv::webkitgtk::WebKitGtkEngine;
 #[cfg(windows)]
 use keld_wv::webview2::WebView2Engine;
 #[cfg(target_os = "macos")]
 use keld_wv::wkwebview::{AppWindowCommand, AppWindowEvent, WkWebViewEngine};
-#[cfg(windows)]
+#[cfg(any(target_os = "linux", windows))]
 use keld_wv::{AppWindowCommand, AppWindowEvent};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
 #[cfg(windows)]
 use windows_permissions::constants::{
@@ -103,46 +113,46 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// Maximum accepted `keld.boot.json` size.
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const MAX_BOOT_BYTES: usize = 64 * 1024;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const BOOT_FILE: &str = "keld.boot.json";
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 const DIGEST_PREFIX: &str = "sha256:";
 #[cfg(target_os = "macos")]
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
 #[cfg(windows)]
 const WINDOWS_DEV_STAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const WINDOWS_SHARING_VIOLATION: i32 = 32;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_STDIN_V1: &str = "stdin-v1";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const DEV_LEASE_DRAIN_READS: usize = 64;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const SESSION_RUNNING: u8 = 0;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const SESSION_LIFECYCLE_QUIT: u8 = 1;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const SESSION_CLI_LEASE_LOST: u8 = 2;
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 static LISTENER_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 static CHILD_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 static WINDOW_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 struct DevHostLease {
     input: io::Stdin,
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone)]
 struct SessionShutdownState {
     cause: Arc<AtomicU8>,
@@ -152,20 +162,20 @@ struct SessionShutdownState {
 }
 /// Opaque host-owned selection minted only from the staged executable layout.
 pub struct ValidatedBootSelection {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     app: AppBootSelection,
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     permissions_file: File,
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     permissions_digest: [u8; 32],
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 impl Drop for ValidatedBootSelection {
     fn drop(&mut self) {}
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct AppBootSelection {
     root: PathBuf,
     name: String,
@@ -210,7 +220,7 @@ impl ValidatedBootSelection {
     /// Returns [`HostAppError`] for unsupported platforms, invalid descriptor
     /// bytes, an unsafe staged root, or a missing/escaping/non-regular target.
     pub fn from_current_exe_unprivileged() -> Result<Self, HostAppError> {
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
             Err(HostAppError::new(
                 "KELD-CORE-034",
@@ -219,7 +229,7 @@ impl ValidatedBootSelection {
                 "Complete and prove the named KEL-96/T4 platform slice before launching the host.",
             ))
         }
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
             let executable = std::env::current_exe().map_err(|source| {
                 HostAppError::io(
@@ -257,7 +267,7 @@ pub struct HostAppError {
     detail: String,
     fix: &'static str,
     resources: StartupResourceSnapshot,
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     manifest_source: Option<Box<ManifestError>>,
 }
 
@@ -281,12 +291,12 @@ impl HostAppError {
             detail: detail.into(),
             fix,
             resources: startup_resource_snapshot(),
-            #[cfg(any(target_os = "macos", windows))]
+            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             manifest_source: None,
         }
     }
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn manifest(source: ManifestError) -> Self {
         let code = source.code();
         let detail = source.to_string();
@@ -300,7 +310,7 @@ impl HostAppError {
         }
     }
 
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn io(code: &'static str, phase: &'static str, source: &io::Error, fix: &'static str) -> Self {
         Self::new(code, phase, source.to_string(), fix)
     }
@@ -337,11 +347,11 @@ impl fmt::Debug for HostAppError {
             .field("detail", &self.detail)
             .field("resources", &self.resources)
             .field("manifest_source", &{
-                #[cfg(any(target_os = "macos", windows))]
+                #[cfg(any(target_os = "macos", target_os = "linux", windows))]
                 {
                     self.manifest_source.as_ref()
                 }
-                #[cfg(not(any(target_os = "macos", windows)))]
+                #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
                 {
                     Option::<&ManifestError>::None
                 }
@@ -352,13 +362,13 @@ impl fmt::Debug for HostAppError {
 
 impl std::error::Error for HostAppError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        #[cfg(any(target_os = "macos", windows))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
             self.manifest_source
                 .as_ref()
                 .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
         }
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
             None
         }
@@ -366,7 +376,7 @@ impl std::error::Error for HostAppError {
 }
 
 fn startup_resource_snapshot() -> StartupResourceSnapshot {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         StartupResourceSnapshot {
             listener: LISTENER_ATTEMPTS.load(Ordering::Acquire),
@@ -374,13 +384,13 @@ fn startup_resource_snapshot() -> StartupResourceSnapshot {
             window: WINDOW_ATTEMPTS.load(Ordering::Acquire),
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         StartupResourceSnapshot::default()
     }
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootDocument {
@@ -391,7 +401,7 @@ struct BootDocument {
     permissions: PermissionsDocument,
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PermissionsDocument {
@@ -399,7 +409,7 @@ struct PermissionsDocument {
     content_sha256: String,
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 struct ParsedBoot {
     name: String,
     entry: PathBuf,
@@ -407,7 +417,7 @@ struct ParsedBoot {
     permissions_digest: [u8; 32],
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
     if bytes.len() > MAX_BOOT_BYTES {
         return Err(boot_error(
@@ -459,12 +469,12 @@ fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
     })
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn boot_error(detail: impl Into<String>, fix: &'static str) -> HostAppError {
     HostAppError::new("KELD-CORE-035", "boot descriptor validation", detail, fix)
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn target_error(kind: &'static str, detail: impl Into<String>) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-036",
@@ -474,7 +484,7 @@ fn target_error(kind: &'static str, detail: impl Into<String>) -> HostAppError {
     )
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn validate_relative_path(kind: &'static str, value: &str) -> Result<PathBuf, HostAppError> {
     if value.is_empty()
         || value.contains('\\')
@@ -500,7 +510,7 @@ fn validate_relative_path(kind: &'static str, value: &str) -> Result<PathBuf, Ho
     Ok(path.to_path_buf())
 }
 
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
     let Some(hex) = value.strip_prefix(DIGEST_PREFIX) else {
         return Err(boot_error(
@@ -537,7 +547,7 @@ fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
     Ok(digest)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppError> {
     use nix::sys::stat::fstat;
 
@@ -947,7 +957,7 @@ fn open_relative_file_windows(
     Ok(file)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn open_root(path: &Path) -> Result<std::os::fd::OwnedFd, HostAppError> {
     use nix::fcntl::{OFlag, open};
     use nix::sys::stat::Mode;
@@ -960,7 +970,7 @@ fn open_root(path: &Path) -> Result<std::os::fd::OwnedFd, HostAppError> {
     .map_err(|source| target_error("app root", source.to_string()))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn open_relative_file(
     root: &impl std::os::fd::AsFd,
     path: &Path,
@@ -1013,7 +1023,7 @@ fn open_relative_file(
     Ok(file)
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn read_bounded(mut file: File, limit: usize, kind: &'static str) -> Result<Vec<u8>, HostAppError> {
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
@@ -1033,7 +1043,7 @@ fn read_bounded(mut file: File, limit: usize, kind: &'static str) -> Result<Vec<
     Ok(bytes)
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppError> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -1048,7 +1058,7 @@ fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppErr
 /// Returns [`HostAppError`] for startup, authenticated session, window,
 /// guardian, Bun self-termination, or ordered-shutdown failure.
 pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         drop(boot);
         Err(HostAppError::new(
@@ -1078,7 +1088,17 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
             permissions_digest,
         } = boot;
         drop((permissions_file, permissions_digest));
-        run_app_windows(app, None)
+        run_app_direct(app, None)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = boot;
+        drop((permissions_file, permissions_digest));
+        run_app_direct(app, None)
     }
 }
 
@@ -1092,7 +1112,7 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
 /// Returns [`HostAppError`] for a typed manifest preflight failure or any
 /// existing no-flag startup, session, window, guardian, Bun, or shutdown error.
 pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         drop(boot);
         Err(HostAppError::new(
@@ -1112,7 +1132,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
-        run_app_windows(app, Some(&verified))
+        run_app_direct(app, Some(&verified))
     }
     #[cfg(target_os = "macos")]
     {
@@ -1134,9 +1154,21 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
         // so it cannot destroy the verified session policy early.
         run_app(app, Some(&guard_snapshot))
     }
+    #[cfg(target_os = "linux")]
+    {
+        let ValidatedBootSelection {
+            app,
+            permissions_file,
+            permissions_digest,
+        } = boot;
+        let display_path = app.root.join(PERMISSIONS_FILE);
+        let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
+            .map_err(HostAppError::manifest)?;
+        run_app_direct(app, Some(&verified))
+    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl DevHostLease {
     fn from_environment() -> Result<Option<Self>, HostAppError> {
         let Some(value) = std::env::var_os(DEV_LEASE_ENV) else {
@@ -1163,7 +1195,7 @@ impl DevHostLease {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn poll_dev_lease_reader(reader: &mut impl Read) -> Result<bool, HostAppError> {
     let mut bytes = [0_u8; 8 * 1024];
     for _ in 0..DEV_LEASE_DRAIN_READS {
@@ -1178,7 +1210,7 @@ fn poll_dev_lease_reader(reader: &mut impl Read) -> Result<bool, HostAppError> {
     Ok(false)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn configure_dev_lease_fd(fd: &impl std::os::fd::AsFd) -> Result<(), HostAppError> {
     let status =
         fstat(fd).map_err(|source| app_detail("dev-host lease metadata", source.to_string()))?;
@@ -1210,7 +1242,7 @@ fn configure_dev_lease_fd(fd: &impl std::os::fd::AsFd) -> Result<(), HostAppErro
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl SessionShutdownState {
     fn new() -> Self {
         Self {
@@ -1234,12 +1266,12 @@ impl SessionShutdownState {
         self.claim(SESSION_LIFECYCLE_QUIT)
     }
 
-    #[cfg(any(target_os = "macos", all(test, windows)))]
+    #[cfg(any(unix, all(test, windows)))]
     fn claim_cli_lease_lost(&self) -> bool {
         self.claim(SESSION_CLI_LEASE_LOST)
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "linux", test))]
     fn claim(&self, cause: u8) -> bool {
         let _transition = self.transition_guard();
         self.claim_guarded(cause)
@@ -1400,9 +1432,9 @@ fn run_app(
     })
 }
 
-#[cfg(windows)]
-#[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned Windows handle transition contiguous
-fn run_app_windows(
+#[cfg(any(target_os = "linux", windows))]
+#[allow(clippy::too_many_lines)] // one shared direct-owner state machine keeps Linux/Windows lifecycle transitions identical
+fn run_app_direct(
     boot: AppBootSelection,
     guard_snapshot: Option<&VerifiedManifest>,
 ) -> Result<(), HostAppError> {
@@ -1423,13 +1455,40 @@ fn run_app_windows(
         )
     })?;
     drop(entry_file);
+    #[cfg(windows)]
     let dev_lease = prepare_windows_dev_lease(&shutdown)?;
+    #[cfg(target_os = "linux")]
+    let mut dev_lease = DevHostLease::from_environment()?;
+    #[cfg(target_os = "linux")]
+    if let Some(lease) = dev_lease.as_mut()
+        && lease.poll_lost()?
+    {
+        return Ok(());
+    }
+    let prestart_lease_result = || {
+        #[cfg(windows)]
+        {
+            take_direct_prestart_lease_result(dev_lease.as_ref())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Ok(())
+        }
+    };
+    // `WebKitGtkEngine::new` owns the Linux GPU safe-mode env mutation. It
+    // must run before the primary supervisor or any other session thread can
+    // concurrently read the process environment.
+    #[cfg(target_os = "linux")]
+    let direct_engine = WebKitGtkEngine::new();
+    #[cfg(target_os = "linux")]
+    let config = linux_strict_primary_config(&root, &entry_path)?;
+    #[cfg(windows)]
     let config = PrimaryRoleConfig::new("bun")
         .arg("run")
         .arg(root.join(&entry_path))
         .current_dir(&root)
         .env_remove(DEV_LEASE_ENV);
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, windows))]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
         == Some(std::ffi::OsStr::new("1"))
     {
@@ -1450,15 +1509,15 @@ fn run_app_windows(
     };
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let supervisor = run_windows_startup_if_session_running(&shutdown, || {
+    let supervisor = run_direct_startup_if_session_running(&shutdown, || {
         PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
-            .map_err(|source| app_runtime("Windows primary startup", &source))
+            .map_err(|source| app_runtime("direct primary startup", &source))
     });
     let Some(supervisor) = supervisor else {
-        return take_windows_prestart_lease_result(dev_lease.as_ref());
+        return prestart_lease_result();
     };
     let (supervisor, recovery) = supervisor?;
-    let initial = match await_windows_bound_generation(
+    let initial = match await_direct_bound_generation(
         &supervisor,
         &recovery,
         &shutdown,
@@ -1473,17 +1532,14 @@ fn run_app_windows(
                     keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                     keld_runtime::SupervisorOutcome::CrashLoop(error)
                     | keld_runtime::SupervisorOutcome::Failed(error) => {
-                        Err(app_runtime("Windows primary startup cleanup", &error))
+                        Err(app_runtime("direct primary startup cleanup", &error))
                     }
                 };
-                return collapse_app_results([
-                    take_windows_prestart_lease_result(dev_lease.as_ref()),
-                    cleanup,
-                ]);
+                return collapse_app_results([prestart_lease_result(), cleanup]);
             }
             let output = supervisor.output();
             let primary = app_detail(
-                "initial Windows primary startup",
+                "initial direct primary startup",
                 format!(
                     "{primary}; captured stdout: {}; captured stderr: {}",
                     output.stdout, output.stderr
@@ -1494,7 +1550,7 @@ fn run_app_windows(
                 keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                 keld_runtime::SupervisorOutcome::CrashLoop(error)
                 | keld_runtime::SupervisorOutcome::Failed(error) => {
-                    Err(app_runtime("Windows primary startup cleanup", &error))
+                    Err(app_runtime("direct primary startup cleanup", &error))
                 }
             };
             return Err(collapse_app_failures(&primary, [cleanup]));
@@ -1508,17 +1564,14 @@ fn run_app_windows(
             keld_runtime::SupervisorOutcome::Stopped => Ok(()),
             keld_runtime::SupervisorOutcome::CrashLoop(error)
             | keld_runtime::SupervisorOutcome::Failed(error) => {
-                Err(app_runtime("Windows primary startup cleanup", &error))
+                Err(app_runtime("direct primary startup cleanup", &error))
             }
         };
-        return collapse_app_results([
-            take_windows_prestart_lease_result(dev_lease.as_ref()),
-            cleanup,
-        ]);
+        return collapse_app_results([prestart_lease_result(), cleanup]);
     }
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let primary_owner = WindowsPrimaryOwner::start(
+    let primary_owner = DirectPrimaryOwner::start(
         supervisor,
         recovery,
         window_commands_tx.clone(),
@@ -1531,40 +1584,41 @@ fn run_app_windows(
         shutdown.clone(),
     )?;
     primary_owner.attach_router(router.handle())?;
-    let lease_errors = start_windows_dev_lease_tail(dev_lease, router.handle())?;
+    let lease_errors = start_direct_dev_lease_tail(dev_lease, router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
     let event_coordinator = thread::Builder::new()
-        .name("keld-core-windows-app-window-events".to_owned())
+        .name("keld-core-direct-app-window-events".to_owned())
         .spawn(move || {
             coordinate_window_events(&window_events_rx, &router_handle, &commands_for_events)
         })
-        .map_err(|source| app_io("Windows window event coordinator", &source))?;
+        .map_err(|source| app_io("direct window event coordinator", &source))?;
 
     let spec = WebviewSpec {
         title: name,
         initial: NavTarget::Html(html),
         ..WebviewSpec::default()
     };
-    let engine = run_windows_startup_if_session_running(&shutdown, || {
-        WebView2Engine::new()
-            .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))
-            .and_then(|mut engine| {
-                WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-                engine
-                    .create_app(&spec, window_events_tx.clone())
-                    .map_err(|source| app_detail("initial Windows window", source.to_string()))?;
-                Ok(engine)
-            })
+    let engine = run_direct_startup_if_session_running(&shutdown, || {
+        #[cfg(windows)]
+        let mut direct_engine = WebView2Engine::new()
+            .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
+        #[cfg(target_os = "linux")]
+        let mut direct_engine = direct_engine;
+        WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+        direct_engine
+            .create_app(&spec, window_events_tx.clone())
+            .map_err(|source| app_detail("initial direct window", source.to_string()))?;
+        Ok(direct_engine)
     });
     let Some(engine) = engine else {
         drop(window_events_tx);
         let event_result = event_coordinator
             .join()
-            .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
+            .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
             .and_then(std::convert::identity);
-        let lease_result = take_windows_lease_error(lease_errors.as_ref());
+        let lease_result = take_direct_lease_error(lease_errors.as_ref());
         let router_result = router.shutdown();
         let owner_result = primary_owner.shutdown();
         let _retained_digest = guard_snapshot.map(VerifiedManifest::verified_sha256);
@@ -1576,9 +1630,9 @@ fn run_app_windows(
             drop(window_events_tx);
             let event_result = event_coordinator
                 .join()
-                .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
+                .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
                 .and_then(std::convert::identity);
-            let lease_result = take_windows_lease_error(lease_errors.as_ref());
+            let lease_result = take_direct_lease_error(lease_errors.as_ref());
             let router_result = router.shutdown();
             let owner_result = primary_owner.shutdown();
             let _retained_digest = guard_snapshot.map(VerifiedManifest::verified_sha256);
@@ -1592,9 +1646,9 @@ fn run_app_windows(
     drop(window_commands_tx);
     let event_result = event_coordinator
         .join()
-        .map_err(|_| app_detail("Windows window event coordinator", "thread panicked"))
+        .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
         .and_then(std::convert::identity);
-    let lease_result = take_windows_lease_error(lease_errors.as_ref());
+    let lease_result = take_direct_lease_error(lease_errors.as_ref());
     let router_result = router.shutdown();
     let owner_result = primary_owner.shutdown();
     let _retained_digest = guard_snapshot.map(VerifiedManifest::verified_sha256);
@@ -1606,7 +1660,7 @@ fn run_app_windows(
                 [
                     lease_result,
                     window_result
-                        .map_err(|source| app_detail("Windows app window", source.to_string())),
+                        .map_err(|source| app_detail("direct app window", source.to_string())),
                     event_result,
                     router_result,
                 ],
@@ -1617,7 +1671,7 @@ fn run_app_windows(
 
     match window_result {
         Err(source @ WvError::Navigate(_)) => {
-            let primary = app_detail("initial Windows navigation", source.to_string());
+            let primary = app_detail("initial direct navigation", source.to_string());
             Err(collapse_app_failures(
                 &primary,
                 [lease_result, owner_result, router_result, event_result],
@@ -1625,7 +1679,7 @@ fn run_app_windows(
         }
         result => collapse_app_results([
             lease_result,
-            result.map_err(|source| app_detail("Windows app window", source.to_string())),
+            result.map_err(|source| app_detail("direct app window", source.to_string())),
             event_result,
             router_result,
             owner_result,
@@ -1633,8 +1687,139 @@ fn run_app_windows(
     }
 }
 
-#[cfg(windows)]
-fn run_windows_startup_if_session_running<T>(
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const LINUX_BUN_ENTRY: &str = "/code/main.ts";
+// Deliberate Ubuntu/Debian x86_64 runtime manifest for the currently proved
+// Linux product profile. KEL-28 owns non-Debian evidence; target-driven `ldd`
+// execution here would run untrusted loader metadata outside containment.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const LINUX_UBUNTU_X86_RUNTIME: [(&str, &str, bool); 6] = [
+    (
+        "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        "/usr/lib/x86_64-linux-gnu/libc.so.6",
+        true,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+        "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+        false,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+        "/usr/lib/x86_64-linux-gnu/libdl.so.2",
+        false,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libm.so.6",
+        "/usr/lib/x86_64-linux-gnu/libm.so.6",
+        false,
+    ),
+    (
+        "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+        "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+        true,
+    ),
+    (
+        "/usr/lib64/ld-linux-x86-64.so.2",
+        "/lib64/ld-linux-x86-64.so.2",
+        true,
+    ),
+];
+
+#[cfg(target_os = "linux")]
+fn linux_strict_primary_config(
+    root: &Path,
+    entry_path: &Path,
+) -> Result<PrimaryRoleConfig, HostAppError> {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (root, entry_path);
+        return Err(app_detail(
+            "Linux strict runtime architecture",
+            "the proved Ubuntu/Debian strict runtime manifest supports x86_64 only",
+        ));
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        linux_strict_primary_config_x86(root, entry_path)
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn linux_strict_primary_config_x86(
+    root: &Path,
+    entry_path: &Path,
+) -> Result<PrimaryRoleConfig, HostAppError> {
+    let bun = resolve_linux_bun()?;
+    let launcher = root.join("keld-role-launcher");
+    let role_root = root.join(".keld-primary");
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(&role_root)
+        .map_err(|source| app_io("strict role root", &source))?;
+    let mut profile = LinuxStrictProfile::new(Path::new("/usr/bin/bwrap"), &launcher, &role_root)
+        .map_err(|source| app_detail("Linux strict profile", source.to_string()))?;
+    for (source, destination, required) in LINUX_UBUNTU_X86_RUNTIME {
+        if !required && !Path::new(source).exists() {
+            continue;
+        }
+        profile = profile
+            .readonly_runtime(Path::new(source), Path::new(destination))
+            .map_err(|source| app_detail("Linux strict runtime", source.to_string()))?;
+    }
+    profile = profile
+        .readonly_runtime(&root.join(entry_path), Path::new(LINUX_BUN_ENTRY))
+        .map_err(|source| app_detail("Linux strict entry", source.to_string()))?;
+
+    let mut config = PrimaryRoleConfig::new(bun)
+        .arg("run")
+        .arg(LINUX_BUN_ENTRY)
+        .env("HOME", "/app")
+        .env("TMPDIR", "/tmp")
+        .env_remove(DEV_LEASE_ENV);
+    #[cfg(debug_assertions)]
+    {
+        if let Some(control) = std::env::var_os("KELD_T1B_CONTROL") {
+            let control = PathBuf::from(control)
+                .canonicalize()
+                .map_err(|source| app_io("Linux strict test control", &source))?;
+            profile = profile
+                .debug_readonly_socket(&control)
+                .map_err(|source| app_detail("Linux strict test control", source.to_string()))?;
+            config = config.env("KELD_T1B_CONTROL", control);
+        }
+        if let Some(value) = std::env::var_os("KELD_T2_EXIT_ON_LINK_EOF") {
+            config = config.env("KELD_T2_EXIT_ON_LINK_EOF", value);
+        }
+        config = config.env("KELD_T4_LINUX_STRICT", "1");
+    }
+    Ok(config.linux_strict(profile))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn resolve_linux_bun() -> Result<PathBuf, HostAppError> {
+    let path = std::env::var_os("PATH")
+        .ok_or_else(|| app_detail("Linux Bun resolution", "PATH is unset"))?;
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join("bun");
+        let Ok(metadata) = fs::metadata(&candidate) else {
+            continue;
+        };
+        if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+            return candidate
+                .canonicalize()
+                .map_err(|source| app_io("Linux Bun resolution", &source));
+        }
+    }
+    Err(app_detail(
+        "Linux Bun resolution",
+        "no executable `bun` exists on PATH",
+    ))
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn run_direct_startup_if_session_running<T>(
     shutdown: &SessionShutdownState,
     startup: impl FnOnce() -> T,
 ) -> Option<T> {
@@ -1794,8 +1979,58 @@ fn clear_windows_handle_inheritance(handle: HANDLE) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn start_direct_dev_lease_tail(
+    lease: Option<DevHostLease>,
+    router: PrimaryRouterHandle,
+) -> Result<Option<Receiver<HostAppError>>, HostAppError> {
+    let Some(mut lease) = lease else {
+        return Ok(None);
+    };
+    let (error_tx, error_rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("keld-core-linux-dev-lease".to_owned())
+        .spawn(move || {
+            loop {
+                match lease.poll_lost() {
+                    Ok(false) => thread::park_timeout(Duration::from_millis(10)),
+                    Ok(true) => {
+                        if router.shutdown.claim_cli_lease_lost()
+                            && let Err(error) = router.cli_lease_lost()
+                        {
+                            let _ = error_tx.send(error);
+                            let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                        }
+                        return;
+                    }
+                    Err(primary) => {
+                        if !router.shutdown.claim_cli_lease_lost() {
+                            return;
+                        }
+                        let error = match router.cli_lease_lost() {
+                            Ok(()) => primary,
+                            Err(cleanup) => collapse_app_failures(&primary, [Err(cleanup)]),
+                        };
+                        let _ = error_tx.send(error);
+                        let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|source| app_io("Linux dev-host lease owner", &source))?;
+    Ok(Some(error_rx))
+}
+
+#[cfg(target_os = "linux")]
+fn take_direct_lease_error(errors: Option<&Receiver<HostAppError>>) -> Result<(), HostAppError> {
+    errors
+        .and_then(|errors| errors.try_recv().ok())
+        .map_or(Ok(()), Err)
+}
+
 #[cfg(windows)]
-fn start_windows_dev_lease_tail(
+fn start_direct_dev_lease_tail(
     monitor: Option<WindowsDevLeaseMonitor>,
     router: PrimaryRouterHandle,
 ) -> Result<Option<Receiver<HostAppError>>, HostAppError> {
@@ -1843,14 +2078,14 @@ fn publish_windows_lease_result(
 }
 
 #[cfg(windows)]
-fn take_windows_lease_error(errors: Option<&Receiver<HostAppError>>) -> Result<(), HostAppError> {
+fn take_direct_lease_error(errors: Option<&Receiver<HostAppError>>) -> Result<(), HostAppError> {
     errors
         .and_then(|errors| errors.try_recv().ok())
         .map_or(Ok(()), Err)
 }
 
 #[cfg(windows)]
-fn take_windows_prestart_lease_result(
+fn take_direct_prestart_lease_result(
     monitor: Option<&WindowsDevLeaseMonitor>,
 ) -> Result<(), HostAppError> {
     match monitor.and_then(|monitor| monitor.observations.try_recv().ok()) {
@@ -1859,8 +2094,8 @@ fn take_windows_prestart_lease_result(
     }
 }
 
-#[cfg(windows)]
-fn await_windows_bound_generation(
+#[cfg(any(target_os = "linux", windows))]
+fn await_direct_bound_generation(
     supervisor: &PrimaryRoleSupervisor,
     recovery: &PrimaryRecoveryGate,
     shutdown: &SessionShutdownState,
@@ -1870,7 +2105,7 @@ fn await_windows_bound_generation(
         if !shutdown.is_running() {
             let _ = recovery.deny();
             return Err(app_detail(
-                "initial Windows app-link authentication",
+                "initial direct app-link authentication",
                 "startup was cancelled by CLI lease loss",
             ));
         }
@@ -1881,7 +2116,7 @@ fn await_windows_bound_generation(
             if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
                 let _ = recovery.deny();
                 return Err(app_detail(
-                    "initial Windows app-link authentication",
+                    "initial direct app-link authentication",
                     "Bun terminated before its initial authenticated generation bound",
                 ));
             }
@@ -1890,19 +2125,19 @@ fn await_windows_bound_generation(
             let _ = recovery.deny();
             return Err(match outcome {
                 keld_runtime::SupervisorOutcome::Stopped => app_detail(
-                    "initial Windows app-link authentication",
+                    "initial direct app-link authentication",
                     "Bun stopped before its initial authenticated generation bound",
                 ),
                 keld_runtime::SupervisorOutcome::CrashLoop(error)
                 | keld_runtime::SupervisorOutcome::Failed(error) => {
-                    app_runtime("initial Windows app-link authentication", &error)
+                    app_runtime("initial direct app-link authentication", &error)
                 }
             });
         }
         if Instant::now() >= deadline {
             let _ = recovery.deny();
             return Err(app_detail(
-                "initial Windows app-link authentication",
+                "initial direct app-link authentication",
                 "Bun did not authenticate before the generation deadline",
             ));
         }
@@ -1958,7 +2193,7 @@ fn await_bound_generation(
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn coordinate_window_events(
     events: &Receiver<AppWindowEvent>,
     router: &PrimaryRouterHandle,
@@ -2307,18 +2542,18 @@ impl GuardianOwnerHandle {
     }
 }
 
-#[cfg(windows)]
-const WINDOWS_PRIMARY_OWNER_POLL: Duration = Duration::from_millis(10);
-#[cfg(windows)]
-const WINDOWS_PRIMARY_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
+#[cfg(any(target_os = "linux", windows))]
+const DIRECT_PRIMARY_OWNER_POLL: Duration = Duration::from_millis(10);
+#[cfg(any(target_os = "linux", windows))]
+const DIRECT_PRIMARY_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
 
-#[cfg(windows)]
-struct WindowsPrimaryOwnerHandle {
-    command_tx: Sender<WindowsPrimaryOwnerCommand>,
+#[cfg(any(target_os = "linux", windows))]
+struct DirectPrimaryOwnerHandle {
+    command_tx: Sender<DirectPrimaryOwnerCommand>,
 }
 
-#[cfg(windows)]
-impl Clone for WindowsPrimaryOwnerHandle {
+#[cfg(any(target_os = "linux", windows))]
+impl Clone for DirectPrimaryOwnerHandle {
     fn clone(&self) -> Self {
         Self {
             command_tx: self.command_tx.clone(),
@@ -2326,8 +2561,8 @@ impl Clone for WindowsPrimaryOwnerHandle {
     }
 }
 
-#[cfg(windows)]
-enum WindowsPrimaryOwnerCommand {
+#[cfg(any(target_os = "linux", windows))]
+enum DirectPrimaryOwnerCommand {
     AttachRouter(PrimaryRouterHandle, mpsc::SyncSender<Result<(), String>>),
     ArmRecovery(mpsc::SyncSender<Result<(), String>>),
     DenyRecovery,
@@ -2336,14 +2571,14 @@ enum WindowsPrimaryOwnerCommand {
     Shutdown(mpsc::SyncSender<Result<(), String>>),
 }
 
-#[cfg(windows)]
-struct WindowsPrimaryOwner {
-    command_tx: Sender<WindowsPrimaryOwnerCommand>,
+#[cfg(any(target_os = "linux", windows))]
+struct DirectPrimaryOwner {
+    command_tx: Sender<DirectPrimaryOwnerCommand>,
     handle: Option<JoinHandle<Result<(), HostAppError>>>,
 }
 
-#[cfg(windows)]
-impl WindowsPrimaryOwner {
+#[cfg(any(target_os = "linux", windows))]
+impl DirectPrimaryOwner {
     #[allow(clippy::too_many_lines)] // one owner loop keeps event/bound fan-in, recovery decisions, shutdown and terminal outcome causally ordered
     fn start(
         supervisor: PrimaryRoleSupervisor,
@@ -2353,7 +2588,7 @@ impl WindowsPrimaryOwner {
     ) -> Result<Self, HostAppError> {
         let (command_tx, command_rx) = mpsc::channel();
         let handle = thread::Builder::new()
-            .name("keld-core-windows-primary-owner".to_owned())
+            .name("keld-core-direct-primary-owner".to_owned())
             .spawn(move || {
                 let mut router: Option<PrimaryRouterHandle> = None;
                 loop {
@@ -2361,9 +2596,9 @@ impl WindowsPrimaryOwner {
                     // owner's causal order explicitly at the fan-in: revoke
                     // authority before installing a queued successor stream.
                     if let Err(error) =
-                        drain_windows_primary_role_events(&supervisor, router.as_ref())
+                        drain_direct_primary_role_events(&supervisor, router.as_ref())
                     {
-                        return Err(terminate_windows_primary_owner(
+                        return Err(terminate_direct_primary_owner(
                             error,
                             &recovery,
                             &supervisor,
@@ -2376,9 +2611,9 @@ impl WindowsPrimaryOwner {
                         // Re-drain after receiving Bound so a scheduler gap
                         // between the outer drains cannot invert that edge.
                         if let Err(error) =
-                            drain_windows_primary_role_events(&supervisor, router.as_ref())
+                            drain_direct_primary_role_events(&supervisor, router.as_ref())
                         {
-                            return Err(terminate_windows_primary_owner(
+                            return Err(terminate_direct_primary_owner(
                                 error,
                                 &recovery,
                                 &supervisor,
@@ -2387,10 +2622,10 @@ impl WindowsPrimaryOwner {
                         }
                         let Some(router) = router.as_ref() else {
                             let error = app_detail(
-                                "Windows primary owner",
+                                "direct primary owner",
                                 "successor bound before the app router was attached",
                             );
-                            return Err(terminate_windows_primary_owner(
+                            return Err(terminate_direct_primary_owner(
                                 error,
                                 &recovery,
                                 &supervisor,
@@ -2419,13 +2654,14 @@ impl WindowsPrimaryOwner {
                         if session_running {
                             let _ = window_commands.send(AppWindowCommand::Fatal);
                         }
+                        forward_direct_primary_output(&supervisor)?;
                         return match outcome {
                             keld_runtime::SupervisorOutcome::Stopped if session_running => {
                                 let ledger = supervisor.crash_ledger();
                                 ledger.last_self_termination.map_or_else(
                                     || {
                                         Err(app_detail(
-                                            "Windows primary self-termination",
+                                            "primary self-termination",
                                             "the primary process stopped without a retained termination record",
                                         ))
                                     },
@@ -2435,12 +2671,12 @@ impl WindowsPrimaryOwner {
                             keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                             keld_runtime::SupervisorOutcome::CrashLoop(error)
                             | keld_runtime::SupervisorOutcome::Failed(error) => {
-                                Err(app_runtime_fatal("Windows primary supervisor", &error))
+                                Err(app_runtime_fatal("primary supervisor", &error))
                             }
                         };
                     }
-                    match command_rx.recv_timeout(WINDOWS_PRIMARY_OWNER_POLL) {
-                        Ok(WindowsPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
+                    match command_rx.recv_timeout(DIRECT_PRIMARY_OWNER_POLL) {
+                        Ok(DirectPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
                             let result = if router.is_some() {
                                 Err(String::from("primary router was already attached"))
                             } else {
@@ -2449,17 +2685,17 @@ impl WindowsPrimaryOwner {
                             };
                             let _ = reply.send(result);
                         }
-                        Ok(WindowsPrimaryOwnerCommand::ArmRecovery(reply)) => {
+                        Ok(DirectPrimaryOwnerCommand::ArmRecovery(reply)) => {
                             let result = recovery
                                 .arm()
                                 .then_some(())
                                 .ok_or_else(|| String::from("recovery was already denied"));
                             let _ = reply.send(result);
                         }
-                        Ok(WindowsPrimaryOwnerCommand::DenyRecovery) => {
+                        Ok(DirectPrimaryOwnerCommand::DenyRecovery) => {
                             let _ = recovery.deny();
                         }
-                        Ok(WindowsPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
+                        Ok(DirectPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
                             // The Supervisor is the sole process/restart owner.
                             // Reject a reader's stale request after a natural
                             // exit installed a successor; the worker also
@@ -2473,12 +2709,12 @@ impl WindowsPrimaryOwner {
                             }
                             let _ = reply.send(Ok(()));
                         }
-                        Ok(WindowsPrimaryOwnerCommand::PrepareAcceptedShutdown(reply)) => {
+                        Ok(DirectPrimaryOwnerCommand::PrepareAcceptedShutdown(reply)) => {
                             let _ = recovery.deny();
                             supervisor.accept_shutdown();
                             let _ = reply.send(Ok(()));
                         }
-                        Ok(WindowsPrimaryOwnerCommand::Shutdown(reply)) => {
+                        Ok(DirectPrimaryOwnerCommand::Shutdown(reply)) => {
                             let _ = recovery.deny();
                             supervisor.shutdown();
                             let result = match supervisor.wait_for_outcome() {
@@ -2488,34 +2724,39 @@ impl WindowsPrimaryOwner {
                                     Err(error.to_string())
                                 }
                             };
+                            let result = result.and_then(|()| {
+                                forward_direct_primary_output(&supervisor)
+                                    .map_err(|error| error.to_string())
+                            });
                             let _ = reply.send(result.clone());
                             return result
-                                .map_err(|detail| app_detail("Windows primary shutdown", detail));
+                                .map_err(|detail| app_detail("primary shutdown", detail));
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => {
                             let _ = recovery.deny();
                             supervisor.shutdown();
-                            return match supervisor.wait_for_outcome() {
+                            let result = match supervisor.wait_for_outcome() {
                                 keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                                 keld_runtime::SupervisorOutcome::CrashLoop(error)
                                 | keld_runtime::SupervisorOutcome::Failed(error) => {
-                                    Err(app_runtime("Windows primary owner", &error))
+                                    Err(app_runtime("direct primary owner", &error))
                                 }
                             };
+                            return result.and_then(|()| forward_direct_primary_output(&supervisor));
                         }
                     }
                 }
             })
-            .map_err(|source| app_io("Windows primary owner", &source))?;
+            .map_err(|source| app_io("direct primary owner", &source))?;
         Ok(Self {
             command_tx,
             handle: Some(handle),
         })
     }
 
-    fn handle(&self) -> WindowsPrimaryOwnerHandle {
-        WindowsPrimaryOwnerHandle {
+    fn handle(&self) -> DirectPrimaryOwnerHandle {
+        DirectPrimaryOwnerHandle {
             command_tx: self.command_tx.clone(),
         }
     }
@@ -2523,9 +2764,9 @@ impl WindowsPrimaryOwner {
     fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
-            .send(WindowsPrimaryOwnerCommand::AttachRouter(router, reply_tx))
-            .map_err(|_| app_detail("Windows primary router attachment", "owner stopped"))?;
-        receive_windows_owner_reply(&reply_rx, "Windows primary router attachment", false)
+            .send(DirectPrimaryOwnerCommand::AttachRouter(router, reply_tx))
+            .map_err(|_| app_detail("primary router attachment", "owner stopped"))?;
+        receive_direct_owner_reply(&reply_rx, "primary router attachment", false)
     }
 
     fn shutdown(mut self) -> Result<(), HostAppError> {
@@ -2538,13 +2779,24 @@ impl WindowsPrimaryOwner {
         self.handle.take().map_or(Ok(()), |handle| {
             handle
                 .join()
-                .map_err(|_| app_detail("Windows primary owner", "thread panicked"))?
+                .map_err(|_| app_detail("direct primary owner", "thread panicked"))?
         })
     }
 }
 
-#[cfg(windows)]
-fn drain_windows_primary_role_events(
+#[cfg(any(target_os = "linux", windows))]
+fn forward_direct_primary_output(supervisor: &PrimaryRoleSupervisor) -> Result<(), HostAppError> {
+    let output = supervisor.output();
+    io::stdout()
+        .write_all(output.stdout.as_bytes())
+        .map_err(|source| app_io("primary stdout forwarding", &source))?;
+    io::stderr()
+        .write_all(output.stderr.as_bytes())
+        .map_err(|source| app_io("primary stderr forwarding", &source))
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn drain_direct_primary_role_events(
     supervisor: &PrimaryRoleSupervisor,
     router: Option<&PrimaryRouterHandle>,
 ) -> Result<(), HostAppError> {
@@ -2552,7 +2804,7 @@ fn drain_windows_primary_role_events(
         let Some(router) = router else {
             if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
                 return Err(app_detail(
-                    "Windows primary generation update",
+                    "primary generation update",
                     "generation changed before the primary router attached",
                 ));
             }
@@ -2563,8 +2815,8 @@ fn drain_windows_primary_role_events(
     Ok(())
 }
 
-#[cfg(windows)]
-fn terminate_windows_primary_owner(
+#[cfg(any(target_os = "linux", windows))]
+fn terminate_direct_primary_owner(
     error: HostAppError,
     recovery: &PrimaryRecoveryGate,
     supervisor: &PrimaryRoleSupervisor,
@@ -2576,8 +2828,8 @@ fn terminate_windows_primary_owner(
     error
 }
 
-#[cfg(windows)]
-impl Drop for WindowsPrimaryOwner {
+#[cfg(any(target_os = "linux", windows))]
+impl Drop for DirectPrimaryOwner {
     fn drop(&mut self) {
         if self.handle.is_none() {
             return;
@@ -2587,35 +2839,33 @@ impl Drop for WindowsPrimaryOwner {
     }
 }
 
-#[cfg(windows)]
-impl WindowsPrimaryOwnerHandle {
+#[cfg(any(target_os = "linux", windows))]
+impl DirectPrimaryOwnerHandle {
     fn deny_recovery(&self) {
         let _ = self
             .command_tx
-            .send(WindowsPrimaryOwnerCommand::DenyRecovery);
+            .send(DirectPrimaryOwnerCommand::DenyRecovery);
     }
 
     fn arm_recovery(&self) -> Result<(), HostAppError> {
         self.request(
-            WindowsPrimaryOwnerCommand::ArmRecovery,
-            "Windows primary recovery arm",
+            DirectPrimaryOwnerCommand::ArmRecovery,
+            "primary recovery arm",
         )
     }
 
     fn fail_generation(&self, attempt: u32) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
-            .send(WindowsPrimaryOwnerCommand::FailGeneration(
-                attempt, reply_tx,
-            ))
-            .map_err(|_| app_detail("Windows primary app-link failure", "owner stopped"))?;
-        receive_windows_owner_reply(&reply_rx, "Windows primary app-link failure", false)
+            .send(DirectPrimaryOwnerCommand::FailGeneration(attempt, reply_tx))
+            .map_err(|_| app_detail("primary app-link failure", "owner stopped"))?;
+        receive_direct_owner_reply(&reply_rx, "primary app-link failure", false)
     }
 
     fn prepare_accepted_shutdown(&self) -> Result<(), HostAppError> {
         self.request(
-            WindowsPrimaryOwnerCommand::PrepareAcceptedShutdown,
-            "Windows accepted-shutdown preparation",
+            DirectPrimaryOwnerCommand::PrepareAcceptedShutdown,
+            "accepted-shutdown preparation",
         )
     }
 
@@ -2623,34 +2873,34 @@ impl WindowsPrimaryOwnerHandle {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         if self
             .command_tx
-            .send(WindowsPrimaryOwnerCommand::Shutdown(reply_tx))
+            .send(DirectPrimaryOwnerCommand::Shutdown(reply_tx))
             .is_err()
         {
             return Ok(());
         }
-        receive_windows_owner_reply(&reply_rx, "Windows primary shutdown", true)
+        receive_direct_owner_reply(&reply_rx, "primary shutdown", true)
     }
 
     fn request(
         &self,
-        command: impl FnOnce(mpsc::SyncSender<Result<(), String>>) -> WindowsPrimaryOwnerCommand,
+        command: impl FnOnce(mpsc::SyncSender<Result<(), String>>) -> DirectPrimaryOwnerCommand,
         phase: &'static str,
     ) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(command(reply_tx))
             .map_err(|_| app_detail(phase, "owner stopped"))?;
-        receive_windows_owner_reply(&reply_rx, phase, false)
+        receive_direct_owner_reply(&reply_rx, phase, false)
     }
 }
 
-#[cfg(windows)]
-fn receive_windows_owner_reply(
+#[cfg(any(target_os = "linux", windows))]
+fn receive_direct_owner_reply(
     reply_rx: &Receiver<Result<(), String>>,
     phase: &'static str,
     owner_exit_is_success: bool,
 ) -> Result<(), HostAppError> {
-    match reply_rx.recv_timeout(WINDOWS_PRIMARY_OWNER_REPLY_DEADLINE) {
+    match reply_rx.recv_timeout(DIRECT_PRIMARY_OWNER_REPLY_DEADLINE) {
         Ok(Ok(())) => Ok(()),
         Ok(Err(detail)) => Err(app_detail(phase, detail)),
         Err(RecvTimeoutError::Timeout) => Err(app_detail(
@@ -2664,7 +2914,7 @@ fn receive_windows_owner_reply(
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 enum PrimaryOwnerUpdate {
     Role(PrimaryRoleEvent),
     Bound(BoundPrimaryGeneration),
@@ -2682,10 +2932,10 @@ impl From<GuardedPrimaryUpdate> for PrimaryOwnerUpdate {
 
 #[cfg(target_os = "macos")]
 type PlatformPrimaryOwnerHandle = GuardianOwnerHandle;
-#[cfg(windows)]
-type PlatformPrimaryOwnerHandle = WindowsPrimaryOwnerHandle;
+#[cfg(any(target_os = "linux", windows))]
+type PlatformPrimaryOwnerHandle = DirectPrimaryOwnerHandle;
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone)]
 struct PrimaryRouterHandle {
     current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
@@ -2699,16 +2949,16 @@ struct PrimaryRouterHandle {
     window_commands: Sender<AppWindowCommand>,
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct ActivePrimaryGeneration {
     attempt: u32,
     writer: BootstrapStream,
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouterHandle {
     fn signal_ready(&self) -> Result<(), HostAppError> {
         if self.recovery_armed.load(Ordering::Acquire) {
@@ -2815,7 +3065,7 @@ impl PrimaryRouterHandle {
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
         #[cfg(windows)]
         let peer_close = await_windows_quit_peer_close(reader);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let peer_close = Ok(());
         let link_close = finish_link_shutdown(
             active.writer.shutdown_app_link(),
@@ -2981,12 +3231,12 @@ impl PrimaryRouterHandle {
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct PrimaryRouter {
     handle: PrimaryRouterHandle,
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouter {
     #[cfg(all(test, target_os = "macos"))]
     fn start(
@@ -3068,14 +3318,14 @@ impl PrimaryRouter {
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl Drop for PrimaryRouter {
     fn drop(&mut self) {
         let _ = self.stop_and_join();
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[allow(clippy::too_many_lines)] // one reader owns the complete echo/lifecycle frame dispatch
 fn read_primary_frames(
     reader: &mut BootstrapStream,
@@ -3153,7 +3403,7 @@ fn read_primary_frames(
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
                         #[cfg(windows)]
                         handle.lifecycle_quit(attempt, header.corr(), &reply, reader)?;
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "macos", target_os = "linux"))]
                         handle.lifecycle_quit(attempt, header.corr(), &reply)?;
                         return Ok(());
                     }
@@ -3201,7 +3451,7 @@ fn read_primary_frames(
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn write_primary_reply(
     current: &Mutex<Option<ActivePrimaryGeneration>>,
     shutdown: &SessionShutdownState,
@@ -3234,7 +3484,7 @@ fn write_primary_reply(
     .map_err(|source| app_ipc("primary session reply", &source))
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(), HostAppError> {
     match result {
         Ok(()) => Ok(()),
@@ -3292,7 +3542,7 @@ fn await_windows_quit_peer_close_until(
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn app_detail(phase: &'static str, detail: impl Into<String>) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-037",
@@ -3302,7 +3552,7 @@ fn app_detail(phase: &'static str, detail: impl Into<String>) -> HostAppError {
     )
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn collapse_app_failures<const N: usize>(
     primary: &HostAppError,
     cleanup: [Result<(), HostAppError>; N],
@@ -3315,7 +3565,7 @@ fn collapse_app_failures<const N: usize>(
     app_detail("startup cleanup", detail)
 }
 
-#[cfg(windows)]
+#[cfg(any(target_os = "linux", windows))]
 fn append_app_cleanup<const N: usize>(
     mut primary: HostAppError,
     cleanup: [Result<(), HostAppError>; N],
@@ -3327,7 +3577,7 @@ fn append_app_cleanup<const N: usize>(
     primary
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn collapse_app_results(
     results: impl IntoIterator<Item = Result<(), HostAppError>>,
 ) -> Result<(), HostAppError> {
@@ -3348,7 +3598,7 @@ fn collapse_app_results(
     Err(app_detail("session cleanup", detail))
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn app_io(phase: &'static str, source: &io::Error) -> HostAppError {
     HostAppError::io(
         "KELD-CORE-037",
@@ -3358,7 +3608,7 @@ fn app_io(phase: &'static str, source: &io::Error) -> HostAppError {
     )
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn app_runtime(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
     app_detail(phase, source.to_string())
 }
@@ -3373,7 +3623,7 @@ fn app_guardian_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) 
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(target_os = "linux", windows))]
 fn app_runtime_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-033",
@@ -3383,11 +3633,11 @@ fn app_runtime_fatal(phase: &'static str, source: &keld_runtime::RuntimeError) -
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(target_os = "linux", windows))]
 fn app_self_termination(record: keld_runtime::SelfTerminationRecord) -> HostAppError {
     HostAppError::new(
         "KELD-CORE-033",
-        "Windows primary self-termination",
+        "primary self-termination",
         format!(
             "Bun process {} exited without a host shutdown request (status {:?})",
             record.pid, record.exit_code
@@ -3396,7 +3646,7 @@ fn app_self_termination(record: keld_runtime::SelfTerminationRecord) -> HostAppE
     )
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn app_ipc(phase: &'static str, source: &IpcError) -> HostAppError {
     app_detail(phase, source.to_string())
 }
@@ -4579,15 +4829,12 @@ mod tests {
     fn windows_shutdown_disconnect_is_idempotent_but_other_requests_fail() {
         let (shutdown_tx, shutdown_rx) = mpsc::sync_channel::<Result<(), String>>(1);
         drop(shutdown_tx);
-        assert!(
-            receive_windows_owner_reply(&shutdown_rx, "Windows primary shutdown", true).is_ok()
-        );
+        assert!(receive_direct_owner_reply(&shutdown_rx, "Windows primary shutdown", true).is_ok());
 
         let (request_tx, request_rx) = mpsc::sync_channel::<Result<(), String>>(1);
         drop(request_tx);
         assert!(
-            receive_windows_owner_reply(&request_rx, "Windows primary recovery arm", false)
-                .is_err()
+            receive_direct_owner_reply(&request_rx, "Windows primary recovery arm", false).is_err()
         );
     }
 
@@ -4688,7 +4935,7 @@ mod tests {
         let shutdown = SessionShutdownState::new();
         assert!(shutdown.claim_cli_lease_lost());
         let created = AtomicBool::new(false);
-        let result = run_windows_startup_if_session_running(&shutdown, || {
+        let result = run_direct_startup_if_session_running(&shutdown, || {
             created.store(true, Ordering::Release);
         });
         assert!(result.is_none());

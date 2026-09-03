@@ -187,7 +187,7 @@ where
             .process_group(0)
             .stdin(Stdio::null());
         Ok(PreparedChild {
-            command,
+            command: command.into(),
             lease: SupervisedGuardianLease {
                 registration: self.registration.take().ok_or_else(|| {
                     lifecycle_error(
@@ -1351,7 +1351,7 @@ where
             .process_group(0)
             .stdin(Stdio::null());
         Ok(PreparedChild {
-            command,
+            command: command.into(),
             lease: GuardedPrimaryLease {
                 attempt,
                 control: Arc::clone(&self.control),

@@ -7,12 +7,12 @@ use std::io::Read as _;
 use std::io::{self, ErrorKind, Write};
 #[cfg(windows)]
 use std::io::{BufRead as _, BufReader};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::process::CommandExt as _;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::process::{Command, Stdio};
 #[cfg(windows)]
 use std::sync::mpsc;
@@ -215,7 +215,7 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
 
 /// Runs `keld dev` in `project_root`.
 ///
-/// On macOS and Windows this compiles one owner-private stage and launches its no-flag
+/// On macOS, Linux, and Windows this compiles one owner-private stage and launches its no-flag
 /// host with a private stdin liveness lease. The host owns the window,
 /// authenticated app link, and Bun. Other platforms fail closed until their
 /// KEL-96/T4 no-flag host slice lands.
@@ -224,11 +224,11 @@ pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
 ///
 /// Returns [`DevError`] when checks, staging, host launch, Bun, or the window fails.
 pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         run_dev_host(project_root)
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         crate::boot::stage_dev_boot(project_root, Path::new(""))
             .map(|_| ())
@@ -236,7 +236,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
@@ -264,7 +264,7 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     command.process_group(0);
     let host = command.spawn();
     let mut host = match host {
@@ -311,6 +311,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     let status = host.wait()?;
     drop(lease_writer);
     drop(stage);
+    #[cfg(target_os = "linux")]
+    cleanup_linux_dev_stage(&stage_root)?;
     #[cfg(windows)]
     cleanup_sentinel.wait(&stage_root)?;
     if status.success() {
@@ -320,6 +322,19 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
             "KELD-CLI-048: staged no-flag host exited with {status}. \
              Fix the preceding host diagnostic, then re-run `keld dev`."
         )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn cleanup_linux_dev_stage(stage_root: &Path) -> Result<(), DevError> {
+    match fs::remove_dir_all(stage_root) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(DevError::Doctor(format!(
+            "KELD-CLI-047: Linux dev-stage cleanup failed for `{}` after host exit: {source}. \
+             Confirm no staged process remains, remove that exact nonce directory, and retry.",
+            stage_root.display()
+        ))),
     }
 }
 
@@ -596,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     fn shipping_dev_fails_closed_before_resources_on_an_unsupported_platform() {
         let error = run_dev(Path::new("unused-on-an-unsupported-platform"))
             .expect_err("unsupported no-flag host must fail closed");
@@ -810,7 +825,7 @@ mod tests {
     #[test]
     fn load_dev_window_html_rejects_absolute_path() {
         let dir = tempfile::tempdir().expect("tempdir");
-        #[cfg(unix)]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let abs = "/tmp/keld-dev-abs.html";
         #[cfg(windows)]
         let abs = r"C:\keld-dev-abs.html";

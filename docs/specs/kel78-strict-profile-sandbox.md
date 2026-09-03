@@ -638,7 +638,7 @@ Renderer sandbox is a different column.
       `unshare`+`CLONE_NEWUSER` (+ Landlock **stack only** when present)
       and unavailable-userns fail-closed proof. `SCM_RIGHTS` is a T4
       runtime probe, not an admit primitive.
-      Implementation head `522b27b7c78caa52cedc7e001d8059e37b93aa7a`
+      Implementation head `cfb8a238d6ff8b61c27cf825dd31ee3b2d30f126`
       has real Ubuntu kernel `7.0.0-30-generic` evidence: Bubblewrap 0.11.1
       (`sha256:0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`),
       trusted post-Landlock launcher readiness, mount/Landlock/seccomp/FD/namespace
@@ -650,10 +650,10 @@ Renderer sandbox is a different column.
       unprivileged user namespaces; without it the retained negative run fails
       at `RTM_NEWADDR` before readiness instead of retrying or skipping T4.
       The x86_64 synthetic artifact/profile pair is
-      `sha256:5a6b9caa8a719e7ad335ff62ac41917b786444acf7769c6043c577739b895633` /
-      `sha256:9aeadfa21b677cef63167f7445548bff9e8299ea432e70aaa208ae6d40de7b2c`.
-      Product-role consumption remains KEL-96/KEL-75 work; T4 proves the
-      reusable runtime mechanism and does not mark an unconsumed role Strict.
+      `sha256:01e5fcd3f4ae3342ea2bace17d91da5d45b12e71812ecfda2f15031132707d58` /
+      `sha256:f3f1be134fee24d5fb2ff4dbf436dfe38e18a27b4e0ebea5f564704d4801defa`.
+      KEL-96 now consumes the mechanism for the real no-flag Linux primary;
+      other named-role/product admission remains KEL-75/KEL-78 work.
 - [ ] T5: Crash/hang/OOM cleanup and updater-boundary probes on each OS
       that passed T2–T4.
 - [ ] T6: Doctor / build / release metadata surfaces. Then KEL-75 T6 may

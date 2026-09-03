@@ -1,14 +1,14 @@
 //! Non-release owner-private boot stage compiler (KEL-96/T1a/T4).
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::fs::{self, File, OpenOptions};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::io::{self, Read, Seek, SeekFrom, Write};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
 use windows_permissions::utilities::current_process_sid;
@@ -24,11 +24,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const PERMISSIONS_BYTES: &[u8] = b"{}\n";
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// One completed owner-private non-release app stage.
@@ -90,7 +90,7 @@ impl std::fmt::Display for BootCompileError {
 
 impl std::error::Error for BootCompileError {}
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct StageGuard {
     root: PathBuf,
     keep: bool,
@@ -98,7 +98,7 @@ struct StageGuard {
     launch_guards: Vec<File>,
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl Drop for StageGuard {
     fn drop(&mut self) {
         if !self.keep {
@@ -123,28 +123,28 @@ pub fn stage_dev_boot(
     project_root: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         let _ = (project_root, developer_host);
         Err(BootCompileError::new(
             "platform availability",
-            "the boot compiler supports macOS and Windows; complete KEL-96/T4 for this platform",
+            "the boot compiler supports macOS, Linux, and Windows; complete KEL-96/T4 for this platform",
         ))
     }
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         stage_dev_boot_platform(project_root, developer_host)
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[allow(clippy::too_many_lines)] // one atomic staging transaction keeps cleanup and integrity checks contiguous
 fn stage_dev_boot_platform(
     project_root: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
-    #[cfg(target_os = "macos")]
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::os::unix::fs::PermissionsExt as _;
 
     let project_root = project_root
         .canonicalize()
@@ -162,32 +162,25 @@ fn stage_dev_boot_platform(
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = contained_source(&project_root, &renderer, "renderer")?;
-    let developer_host = developer_host
-        .canonicalize()
-        .map_err(|source| BootCompileError::new("developer host", source.to_string()))?;
-    let mut host_source = File::open(&developer_host)
-        .map_err(|source| BootCompileError::new("developer host", source.to_string()))?;
-    let host_source_metadata = host_source
-        .metadata()
-        .map_err(|source| BootCompileError::new("developer host", source.to_string()))?;
-    if !host_source_metadata.is_file() {
-        return Err(BootCompileError::new(
-            "developer host",
-            "source must be a regular file",
-        ));
-    }
-    #[cfg(target_os = "macos")]
-    if host_source_metadata.permissions().mode() & 0o100 == 0 {
-        return Err(BootCompileError::new(
-            "developer host",
-            "source must be owner-executable",
-        ));
-    }
+    let (developer_host_path, mut host_source, host_source_metadata) =
+        open_developer_executable(developer_host, "developer host")?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = developer_host_path;
+    #[cfg(target_os = "linux")]
+    let (_, mut launcher_source, launcher_source_metadata) = open_developer_executable(
+        &developer_host_path
+            .parent()
+            .ok_or_else(|| BootCompileError::new("developer launcher", "host has no parent"))?
+            .join("keld-role-launcher"),
+        "developer launcher",
+    )?;
 
     let dev_root = project_root.join(".keld/dev");
     #[cfg(target_os = "macos")]
     fs::create_dir_all(&dev_root)
         .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+    #[cfg(target_os = "linux")]
+    prepare_linux_dev_root(&project_root, &dev_root)?;
     #[cfg(windows)]
     let launch_guards = prepare_windows_launch_parents(&project_root, &dev_root)?;
     let root = create_launch_root(&dev_root)?;
@@ -203,37 +196,31 @@ fn stage_dev_boot_platform(
         verify_windows_stage_acl(&root)?;
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let staged_host = root.join("keld-host");
     #[cfg(windows)]
     let staged_host = root.join("keld-host.exe");
-    let source_digest = copy_host(&mut host_source, &staged_host)?;
-    let staged_digest = digest_file(&staged_host, "staged host")?;
-    if source_digest != staged_digest {
-        return Err(BootCompileError::new(
-            "host copy integrity",
-            "staged host digest differs from the already-open source bytes",
-        ));
-    }
-    #[cfg(target_os = "macos")]
-    let staged_metadata = fs::metadata(&staged_host)
-        .map_err(|source| BootCompileError::new("staged host", source.to_string()))?;
-    #[cfg(target_os = "macos")]
-    if (host_source_metadata.dev(), host_source_metadata.ino())
-        == (staged_metadata.dev(), staged_metadata.ino())
-    {
-        return Err(BootCompileError::new(
-            "host copy integrity",
-            "staged host reuses the source inode",
-        ));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let read_execute_mode = (host_source_metadata.permissions().mode() & 0o555) | 0o100;
-        fs::set_permissions(&staged_host, fs::Permissions::from_mode(read_execute_mode)).map_err(
-            |source| BootCompileError::new("staged host permissions", source.to_string()),
-        )?;
-    }
+    #[cfg(windows)]
+    let source_digest = stage_developer_executable(
+        &mut host_source,
+        &host_source_metadata,
+        &staged_host,
+        "host",
+    )?;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    stage_developer_executable(
+        &mut host_source,
+        &host_source_metadata,
+        &staged_host,
+        "host",
+    )?;
+    #[cfg(target_os = "linux")]
+    stage_developer_executable(
+        &mut launcher_source,
+        &launcher_source_metadata,
+        &root.join("keld-role-launcher"),
+        "launcher",
+    )?;
 
     stage_project_file(&root, &entry, &entry_source, "entry")?;
     stage_project_file(&root, &renderer, &renderer_source, "renderer")?;
@@ -262,7 +249,7 @@ fn stage_dev_boot_platform(
         "boot descriptor",
     )?;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let mode = fs::metadata(&root)
             .map_err(|source| BootCompileError::new("stage mode", source.to_string()))?
@@ -296,6 +283,57 @@ fn stage_dev_boot_platform(
         #[cfg(windows)]
         launch_guards,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_dev_root(project_root: &Path, dev_root: &Path) -> Result<(), BootCompileError> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+
+    let expected_uid = fs::metadata(project_root)
+        .map_err(|source| BootCompileError::new("project root", source.to_string()))?
+        .uid();
+    for directory in [project_root.join(".keld"), dev_root.to_owned()] {
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink()
+                    || !metadata.is_dir()
+                    || metadata.uid() != expected_uid
+                {
+                    return Err(BootCompileError::new(
+                        "dev root",
+                        format!(
+                            "{} must be a current-project-owner non-symlink directory",
+                            directory.display()
+                        ),
+                    ));
+                }
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                    .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                let mut builder = fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder
+                    .create(&directory)
+                    .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+            }
+            Err(source) => return Err(BootCompileError::new("dev root", source.to_string())),
+        }
+        let metadata = fs::symlink_metadata(&directory)
+            .map_err(|source| BootCompileError::new("dev root", source.to_string()))?;
+        let mode = metadata.permissions().mode() & 0o7777;
+        if !metadata.is_dir() || metadata.uid() != expected_uid || mode != 0o700 {
+            return Err(BootCompileError::new(
+                "dev root",
+                format!(
+                    "{} failed owner-private readback; uid={} expected_uid={expected_uid} mode=0o{mode:o}",
+                    directory.display(),
+                    metadata.uid()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -347,9 +385,9 @@ fn open_windows_launch_guard(path: &Path) -> Result<File, BootCompileError> {
     Ok(guard)
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::os::unix::fs::DirBuilderExt;
 
     for _ in 0..8 {
@@ -362,7 +400,7 @@ fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
             name.push(char::from(LOWER_HEX[usize::from(byte & 0x0f)]));
         }
         let root = dev_root.join(name);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let created = fs::DirBuilder::new().mode(0o700).create(&root);
         #[cfg(windows)]
         let created = create_windows_stage_root(&root);
@@ -383,7 +421,7 @@ fn create_launch_root(dev_root: &Path) -> Result<PathBuf, BootCompileError> {
     ))
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn validate_relative(kind: &'static str, value: &str) -> Result<(), BootCompileError> {
     if value.is_empty()
         || value.contains('\\')
@@ -403,7 +441,7 @@ fn validate_relative(kind: &'static str, value: &str) -> Result<(), BootCompileE
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn contained_source(
     project_root: &Path,
     relative: &str,
@@ -427,42 +465,111 @@ fn contained_source(
     Ok(path)
 }
 
-#[cfg(any(target_os = "macos", windows))]
-fn copy_host(source: &mut File, destination: &Path) -> Result<[u8; 32], BootCompileError> {
-    #[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn open_developer_executable(
+    path: &Path,
+    kind: &'static str,
+) -> Result<(PathBuf, File, fs::Metadata), BootCompileError> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = path
+        .canonicalize()
+        .map_err(|source| BootCompileError::new(kind, source.to_string()))?;
+    let file =
+        File::open(&path).map_err(|source| BootCompileError::new(kind, source.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| BootCompileError::new(kind, source.to_string()))?;
+    if !metadata.is_file() {
+        return Err(BootCompileError::new(kind, "source must be a regular file"));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if metadata.permissions().mode() & 0o100 == 0 {
+        return Err(BootCompileError::new(
+            kind,
+            "source must be owner-executable",
+        ));
+    }
+    Ok((path, file, metadata))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn stage_developer_executable(
+    source: &mut File,
+    source_metadata: &fs::Metadata,
+    destination: &Path,
+    kind: &'static str,
+) -> Result<[u8; 32], BootCompileError> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    #[cfg(windows)]
+    let _ = source_metadata;
+
+    let source_digest = copy_executable(source, destination)?;
+    let staged_digest = digest_file(destination, "staged executable")?;
+    if source_digest != staged_digest {
+        return Err(BootCompileError::new(
+            "executable copy integrity",
+            format!("staged {kind} digest differs from the already-open source bytes"),
+        ));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let staged_metadata = fs::metadata(destination)
+            .map_err(|source| BootCompileError::new("staged executable", source.to_string()))?;
+        if (source_metadata.dev(), source_metadata.ino())
+            == (staged_metadata.dev(), staged_metadata.ino())
+        {
+            return Err(BootCompileError::new(
+                "executable copy integrity",
+                format!("staged {kind} reuses the source inode"),
+            ));
+        }
+        let read_execute_mode = (source_metadata.permissions().mode() & 0o555) | 0o100;
+        fs::set_permissions(destination, fs::Permissions::from_mode(read_execute_mode)).map_err(
+            |source| BootCompileError::new("staged executable permissions", source.to_string()),
+        )?;
+    }
+    Ok(source_digest)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn copy_executable(source: &mut File, destination: &Path) -> Result<[u8; 32], BootCompileError> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::os::unix::fs::OpenOptionsExt;
 
     source
         .seek(SeekFrom::Start(0))
-        .map_err(|error| BootCompileError::new("developer host", error.to_string()))?;
+        .map_err(|error| BootCompileError::new("developer executable", error.to_string()))?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     options.mode(0o700);
     let mut destination = options
         .open(destination)
-        .map_err(|error| BootCompileError::new("staged host", error.to_string()))?;
+        .map_err(|error| BootCompileError::new("staged executable", error.to_string()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
     loop {
         let read = source
             .read(&mut buffer)
-            .map_err(|error| BootCompileError::new("developer host", error.to_string()))?;
+            .map_err(|error| BootCompileError::new("developer executable", error.to_string()))?;
         if read == 0 {
             break;
         }
         destination
             .write_all(&buffer[..read])
-            .map_err(|error| BootCompileError::new("staged host", error.to_string()))?;
+            .map_err(|error| BootCompileError::new("staged executable", error.to_string()))?;
         hasher.update(&buffer[..read]);
     }
     destination
         .sync_all()
-        .map_err(|error| BootCompileError::new("staged host", error.to_string()))?;
+        .map_err(|error| BootCompileError::new("staged executable", error.to_string()))?;
     Ok(hasher.finalize().into())
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn digest_file(path: &Path, kind: &'static str) -> Result<[u8; 32], BootCompileError> {
     let mut file =
         File::open(path).map_err(|error| BootCompileError::new(kind, error.to_string()))?;
@@ -480,7 +587,7 @@ fn digest_file(path: &Path, kind: &'static str) -> Result<[u8; 32], BootCompileE
     Ok(hasher.finalize().into())
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn stage_project_file(
     root: &Path,
     relative: &str,
@@ -496,19 +603,19 @@ fn stage_project_file(
     write_new_file(&destination, &bytes, 0o400, kind)
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn write_new_file(
     path: &Path,
     bytes: &[u8],
     mode: u32,
     kind: &'static str,
 ) -> Result<(), BootCompileError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::os::unix::fs::OpenOptionsExt;
 
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     options.mode(mode);
     #[cfg(windows)]
     let _ = mode;
@@ -563,7 +670,7 @@ fn verify_windows_stage_acl(path: &Path) -> Result<(), BootCompileError> {
         .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, unix))]
 #[allow(clippy::expect_used, clippy::panic)] // unit-test fixture failures are assertion oracles
 mod tests {
     use std::fs;
@@ -587,6 +694,13 @@ mod tests {
         let host = temp.path().join("developer-keld-host");
         fs::write(&host, b"developer-host-bytes").expect("host");
         fs::set_permissions(&host, fs::Permissions::from_mode(0o700)).expect("host mode");
+        #[cfg(target_os = "linux")]
+        {
+            let launcher = temp.path().join("keld-role-launcher");
+            fs::write(&launcher, b"developer-launcher-bytes").expect("launcher");
+            fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700))
+                .expect("launcher mode");
+        }
         (temp, project, host)
     }
 
@@ -609,6 +723,17 @@ mod tests {
                 & 0o777,
             0o700
         );
+        #[cfg(target_os = "linux")]
+        for directory in [project.join(".keld"), project.join(".keld/dev")] {
+            assert_eq!(
+                fs::metadata(directory)
+                    .expect("private Linux stage parent")
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0o700
+            );
+        }
         assert_eq!(
             fs::read(staged.root().join("keld.permissions.jsonc")).expect("permissions"),
             b"{}\n"
@@ -635,6 +760,26 @@ mod tests {
         );
         assert_ne!(staged_metadata.permissions().mode() & 0o100, 0);
         assert_eq!(staged_metadata.permissions().mode() & 0o222, 0);
+        #[cfg(target_os = "linux")]
+        {
+            let source_launcher = source_host
+                .parent()
+                .expect("source parent")
+                .join("keld-role-launcher");
+            let staged_launcher = staged.root().join("keld-role-launcher");
+            assert_eq!(
+                fs::read(&staged_launcher).expect("staged launcher"),
+                b"developer-launcher-bytes"
+            );
+            let source_metadata = fs::metadata(source_launcher).expect("source launcher metadata");
+            let staged_metadata = fs::metadata(staged_launcher).expect("staged launcher metadata");
+            assert_ne!(
+                (source_metadata.dev(), source_metadata.ino()),
+                (staged_metadata.dev(), staged_metadata.ino())
+            );
+            assert_ne!(staged_metadata.permissions().mode() & 0o100, 0);
+            assert_eq!(staged_metadata.permissions().mode() & 0o222, 0);
+        }
 
         let descriptor: serde_json::Value = serde_json::from_slice(
             &fs::read(staged.root().join("keld.boot.json")).expect("boot descriptor"),
@@ -658,6 +803,23 @@ mod tests {
         let first = stage_dev_boot(&project, &source_host).expect("first");
         let second = stage_dev_boot(&project, &source_host).expect("second");
         assert_ne!(first.root(), second.root());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_role_launcher_fails_before_creating_a_stage() {
+        let (_temp, project, source_host) = fixture();
+        fs::remove_file(
+            source_host
+                .parent()
+                .expect("source parent")
+                .join("keld-role-launcher"),
+        )
+        .expect("remove launcher negative control");
+        let error = stage_dev_boot(&project, &source_host)
+            .expect_err("Linux stage without the strict launcher must fail");
+        assert!(error.to_string().contains("developer launcher"), "{error}");
+        assert!(!project.join(".keld/dev").exists());
     }
 
     #[test]

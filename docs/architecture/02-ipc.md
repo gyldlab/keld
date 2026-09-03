@@ -57,7 +57,7 @@ ordinary-user token before admission, followed by an authorized same-user echo
 and a fresh successor generation. The DACL does not exclude an administrator or
 a malicious process running as the same user; the HELLO token remains mandatory.
 
-**macOS/Windows no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
+**macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
 gives the accepted stream to one logical private router with serialized writes.
 Each active stream routes
@@ -70,12 +70,15 @@ Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, stops and reaps the supervised Bun
 child, and only then wakes the platform UI loop to exit. macOS composes the
 guardian/process-group owner; Windows consumes T8's `PrimaryRoleSupervisor` over the
-current-user-DACL named pipe.
+current-user-DACL named pipe; the current Ubuntu/Debian x86_64 Linux profile consumes that supervisor through KEL-78's
+strict process boundary and exposes only the exact authenticated Unix socket
+inode at its original endpoint path.
 The locator is consumed at successful authentication. `keld dev` now uses the
-staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
+staged no-flag host on all three desktop OSes: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
-permission. Linux `keld dev` fails closed until its KEL-96/T4 no-flag row.
+permission. Linux additionally stages the dedicated strict-role launcher and
+retains no sandbox, namespace, or descendant-reaper authority in the CLI.
 
 ## 2. Wire protocol (control plane)
 

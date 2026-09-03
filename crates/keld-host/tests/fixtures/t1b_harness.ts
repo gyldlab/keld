@@ -175,13 +175,25 @@ if (process.platform === "win32") {
   const leaseHandle = process.env.KELD_TEST_WINDOWS_HOST_LEASE_HANDLE;
   if (leaseHandle) await sendControl(`LEASE_HANDLE ${leaseHandle}`);
 } else {
-  // Real-macOS acceptance pins the system tool instead of trusting a caller-controlled PATH.
-  const descendant = Bun.spawn(["/usr/bin/tail", "-f", "/dev/null"], {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  await sendControl(`DESCENDANT ${descendant.pid}`);
+  if (process.env.KELD_T4_SKIP_DESCENDANT === "1") {
+    await sendControl("DESCENDANT 0");
+  } else {
+    // Linux strict has an empty root, so reuse the exact mounted Bun artifact.
+    // Other Unix rows retain the pinned system tool used by their own proof.
+    const strictProgram =
+      process.env.KELD_T4_LINUX_STRICT === "1" &&
+      (await Bun.file("/runtime/program").exists());
+    const descendantCommand =
+      strictProgram
+        ? ["/runtime/program", "-e", "await new Promise(() => {})"]
+        : ["/usr/bin/tail", "-f", "/dev/null"];
+    const descendant = Bun.spawn(descendantCommand, {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await sendControl(`DESCENDANT ${descendant.pid}`);
+  }
 }
 if (generationAttempt === 2) {
   // A local flush does not prove the peer observed both control records before

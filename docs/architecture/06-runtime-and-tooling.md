@@ -131,9 +131,12 @@
   paths, host/update/device absence, AF_INET and namespace-escape denial,
   ancillary-FD denial, ambient-FD closure, equally contained descendants,
   host-only death reaping and relaunch. Bun 1.4.0 starts under the mechanism.
-  This is not yet the default `Supervisor`/KEL-96 product path and does not make
-  an unconsumed or mismatched proof `Strict`; those integrations remain
-  fail-closed.
+  KEL-96 now consumes this mechanism for every Linux no-flag primary generation
+  through the existing `PrimaryRoleSupervisor`: the dev stage includes a
+  dedicated minimal launcher, an exact Ubuntu/Debian x86_64 runtime-file
+  manifest, one writable role root, and exact authenticated socket mounts. It
+  does not create a second restart loop. Other named roles and unproved profile
+  or artifact combinations remain fail-closed.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
@@ -236,7 +239,7 @@ roles follow only after those slices and their shipping integration gates.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | **Today:** on macOS and Windows compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux fails closed until its KEL-96/T4 no-flag row. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
+| `keld dev` | **Today:** on macOS, Windows, and Linux compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux also stages the strict-role launcher and removes the exact nonce after normal, lease-loss, or observed abnormal host exit. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
@@ -269,9 +272,10 @@ the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
 `keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
 on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
-before giving up with a typed `KELD-RUNTIME-002`. On macOS and Windows shipping
+before giving up with a typed `KELD-RUNTIME-002`. On all three desktop OSes shipping
 `keld dev` delegates to the staged host. macOS composes that supervisor through
-the shared guardian; Windows consumes T8's primary supervisor directly. The
+the shared guardian; Windows consumes T8's primary supervisor directly; Linux
+uses the same primary owner with each generation prepared by the strict profile. The
 retained `run_dev_echo` diagnostic/test seam also spawns through
 the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
@@ -311,7 +315,7 @@ The fact and policy have separate owners. `keld-runtime` counts every observed
 self-termination and retains the latest all-termination record plus the latest
 crash-class diagnostic/record. The legacy window path uses strict
 `HostOwnedHelloSession::shutdown` and treats every post-ready self-termination as
-fatal. The macOS and Windows no-flag paths recover nonzero crashes below the breaker with a
+fatal. The macOS, Windows, and Linux no-flag paths recover nonzero crashes below the breaker with a
 fresh generation while keeping status zero, admission failure and a tripped
 breaker terminal. The windowless echo path has completed its observable work after its reply is
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
@@ -335,12 +339,14 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-One platform limit remains: Linux `keld dev` fails closed before creating an app
-resource, and its real T4 product rows are absent. The Windows no-flag slice
-proves abnormal host-death descendant cleanup through KEL-78/T3's host Job and
-post-CLI-death stage deletion through `keld.windows-dev-stage-cleanup/v1`.
-Strict-profile LPAC containment remains separately owned and evidenced by
-KEL-78; KEL-96 does not claim that proof as a no-flag-host responsibility.
+The Windows no-flag slice proves abnormal host-death descendant cleanup through
+KEL-78/T3's host Job and post-CLI-death stage deletion through
+`keld.windows-dev-stage-cleanup/v1`. The Linux no-flag slice proves the
+corresponding real host-only death against KEL-78/T4's PID namespace and
+parent-death coupling: the Bun leader and descendant disappear, the live CLI
+removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
+strict-profile admission matrix remain separately owned and evidenced by
+KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /

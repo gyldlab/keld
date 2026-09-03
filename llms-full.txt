@@ -838,7 +838,7 @@ Three principal classes, with host-minted instances inside each class:
    is a typed host call checked by the capability engine. Children are intended to be
    crashable and restartable without tearing down windows. v0 has KEL-70's one
    host-owned supervised primary-child echo slice with restart/backoff/output capture
-   co-lived with the hello window (KEL-30), plus KEL-96's macOS and Windows no-flag
+   co-lived with the hello window (KEL-30), plus KEL-96's macOS, Windows, and Linux no-flag
    `keld-host` owner with a strict staged boot descriptor, one multiplexed
    echo/lifecycle link, native window, ordered Quit cleanup, and a shipping
    `keld dev` launcher that owns only staging, logs, the host process handle,
@@ -943,8 +943,8 @@ carries a local `// SAFETY:` proof.
   generation—not a PID, token or socket name—and old authority is revoked before a
   successor is provisioned.   Current implementation has KEL-70's generic one-child
   supervision, the host-owned concurrent echo app-link (KEL-30), KEL-96's
-  macOS and Windows no-flag validated boot plus one-link echo/lifecycle sessions and live
-  event-loop wake, and KEL-96/T2/T4's macOS/Windows CLI-to-host delegation with
+  macOS, Windows, and Linux no-flag validated boot plus one-link echo/lifecycle sessions and live
+  event-loop wake, and KEL-96/T2/T4's cross-platform CLI-to-host delegation with
   lease-loss ordered teardown, KEL-75 T1b/T8's platform primary-generation
   coordinator (`keld_runtime::primary`), and KEL-75 T2's
   Unix `keld_runtime::registry::RoleRegistry` for one `primary` plus one
@@ -952,8 +952,12 @@ carries a local `// SAFETY:` proof.
   between authenticated role generations. KEL-96's Windows slice consumes T8 for
   same-HWND recovery over the current-user-DACL named pipe and composes KEL-78's
   Windows Job/LPAC owner for abnormal-host-death reaping. It does not add
-  privileged dispatch. Window-bound roles, complete role grants, and complete
-  cross-platform strict sandbox admission remain later KEL-75/KEL-78 slices.
+  privileged dispatch. The current Ubuntu/Debian x86_64 Linux slice uses the same primary supervisor through
+  KEL-78's strict Bubblewrap/empty-root/seccomp/Landlock mechanism, with an exact
+  staged launcher and app-link socket mount; host-only death reaps its Bun
+  descendant tree before relaunch. Window-bound roles, complete role grants,
+  non-primary product admission, and the remaining OS strict profiles remain
+  later KEL-75/KEL-78 slices.
 - Webview content processes: whatever the selected engine does (WKWebView WebContent,
   WebView2 helpers, WebKitGTK web process, or future CEF subprocesses if that candidate
   lands). We never fight the engine's model.
@@ -1066,7 +1070,7 @@ ordinary-user token before admission, followed by an authorized same-user echo
 and a fresh successor generation. The DACL does not exclude an administrator or
 a malicious process running as the same user; the HELLO token remains mandatory.
 
-**macOS/Windows no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
+**macOS/Windows/Linux no-flag primary (KEL-96 T1a-T4):** the staged `keld-host` process
 mints and authenticates one one-use platform bootstrap per Bun generation, then
 gives the accepted stream to one logical private router with serialized writes.
 Each active stream routes
@@ -1079,12 +1083,15 @@ Quit atomically quiesces dispatch and records accepted-shutdown attribution,
 writes its correlated reply, closes the link, stops and reaps the supervised Bun
 child, and only then wakes the platform UI loop to exit. macOS composes the
 guardian/process-group owner; Windows consumes T8's `PrimaryRoleSupervisor` over the
-current-user-DACL named pipe.
+current-user-DACL named pipe; the current Ubuntu/Debian x86_64 Linux profile consumes that supervisor through KEL-78's
+strict process boundary and exposes only the exact authenticated Unix socket
+inode at its original endpoint path.
 The locator is consumed at successful authentication. `keld dev` now uses the
-staged no-flag host on macOS and Windows: the CLI owns no app-link endpoint, token, stream,
+staged no-flag host on all three desktop OSes: the CLI owns no app-link endpoint, token, stream,
 reader, writer, router, or Bun supervisor. Its separate stdin-v1 writer is only
 a host-liveness lease; it never carries a frame, principal, path, digest, or
-permission. Linux `keld dev` fails closed until its KEL-96/T4 no-flag row.
+permission. Linux additionally stages the dedicated strict-role launcher and
+retains no sandbox, namespace, or descendant-reaper authority in the CLI.
 
 ## 2. Wire protocol (control plane)
 
@@ -1462,9 +1469,11 @@ manifest decoder.
    - Linux: the live T4 mechanism uses unprivileged Bubblewrap user/mount/PID/network
      namespaces, an empty-root exact-file mount policy, zero capabilities,
      `no_new_privs`, x86_64-only Keld seccomp filters (other architectures fail
-     closed), and a stacked Landlock launcher. Its real
-     hostile fixture and host-death/relaunch proof are platform evidence; product roles
-     remain unverified until they consume this mechanism and matching archive.
+     closed), and a stacked Landlock launcher. Its real hostile fixture and
+     host-death/relaunch proof are platform evidence. KEL-96 consumes the
+     mechanism for the no-flag primary with exact code/runtime/socket mounts;
+     other named roles remain unverified until they consume a matching profile
+     and archive.
    The only compatibility fallback is an explicit Keld `legacy` profile that forfeits
    the zero-authority claim. Electron `sandbox` / `appSandbox: "off"`, package names,
    missing primitives, and failed proofs never select or auto-downgrade into legacy.
@@ -2036,9 +2045,12 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   paths, host/update/device absence, AF_INET and namespace-escape denial,
   ancillary-FD denial, ambient-FD closure, equally contained descendants,
   host-only death reaping and relaunch. Bun 1.4.0 starts under the mechanism.
-  This is not yet the default `Supervisor`/KEL-96 product path and does not make
-  an unconsumed or mismatched proof `Strict`; those integrations remain
-  fail-closed.
+  KEL-96 now consumes this mechanism for every Linux no-flag primary generation
+  through the existing `PrimaryRoleSupervisor`: the dev stage includes a
+  dedicated minimal launcher, an exact Ubuntu/Debian x86_64 runtime-file
+  manifest, one writable role root, and exact authenticated socket mounts. It
+  does not create a second restart loop. Other named roles and unproved profile
+  or artifact combinations remain fail-closed.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
@@ -2141,7 +2153,7 @@ roles follow only after those slices and their shipping integration gates.
 | Verb | Contract |
 |---|---|
 | `keld create` / `create-keld` | templates: vanilla-ts, react, vue, svelte, solid, electron-migration; first window < 60 s from cold |
-| `keld dev` | **Today:** on macOS and Windows compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux fails closed until its KEL-96/T4 no-flag row. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
+| `keld dev` | **Today:** on macOS, Windows, and Linux compiles an owner-private stage and launches its no-flag host; the CLI owns logs, the host handle and a liveness writer but no window, app link, token or Bun supervisor. Linux also stages the strict-role launcher and removes the exact nonce after normal, lease-loss, or observed abnormal host exit. **Destination:** also starts the app's own dev server (delegation, Deno lesson D4) and adds the dev permission recorder, hot-restart on change via Bun watch, and devtools policy. |
 | `keld build` | app bundle via the app's bundler → `keld-pack` → signed installers + update artifacts; `--frozen-permissions` gate |
 | `keld migrate` | Electron analyzer + config generator + compat report (see 04-electron-compat) |
 | `keld doctor` | env checks, native-module DB scan, permission diffs, web-baseline scan (`--web-compat`), Linux GPU matrix probe |
@@ -2174,9 +2186,10 @@ the destination env vars, `--inspect` passthrough, and Bun watch hot-restart are
 built yet. Spawn/backoff/crash-loop supervision **is** built (KEL-70):
 `keld_runtime::Supervisor` spawns the child, captures its stdout/stderr, and restarts it
 on crash with exponential backoff up to a `RestartPolicy` (default 3 crashes / 30s)
-before giving up with a typed `KELD-RUNTIME-002`. On macOS and Windows shipping
+before giving up with a typed `KELD-RUNTIME-002`. On all three desktop OSes shipping
 `keld dev` delegates to the staged host. macOS composes that supervisor through
-the shared guardian; Windows consumes T8's primary supervisor directly. The
+the shared guardian; Windows consumes T8's primary supervisor directly; Linux
+uses the same primary owner with each generation prepared by the strict profile. The
 retained `run_dev_echo` diagnostic/test seam also spawns through
 the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
@@ -2216,7 +2229,7 @@ The fact and policy have separate owners. `keld-runtime` counts every observed
 self-termination and retains the latest all-termination record plus the latest
 crash-class diagnostic/record. The legacy window path uses strict
 `HostOwnedHelloSession::shutdown` and treats every post-ready self-termination as
-fatal. The macOS and Windows no-flag paths recover nonzero crashes below the breaker with a
+fatal. The macOS, Windows, and Linux no-flag paths recover nonzero crashes below the breaker with a
 fresh generation while keeping status zero, admission failure and a tripped
 breaker terminal. The windowless echo path has completed its observable work after its reply is
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
@@ -2240,12 +2253,14 @@ answering "printed, then terminated" versus "terminated, then printed" for the
 records that decide the caller policy, rather than from when the host happened to
 look.
 
-One platform limit remains: Linux `keld dev` fails closed before creating an app
-resource, and its real T4 product rows are absent. The Windows no-flag slice
-proves abnormal host-death descendant cleanup through KEL-78/T3's host Job and
-post-CLI-death stage deletion through `keld.windows-dev-stage-cleanup/v1`.
-Strict-profile LPAC containment remains separately owned and evidenced by
-KEL-78; KEL-96 does not claim that proof as a no-flag-host responsibility.
+The Windows no-flag slice proves abnormal host-death descendant cleanup through
+KEL-78/T3's host Job and post-CLI-death stage deletion through
+`keld.windows-dev-stage-cleanup/v1`. The Linux no-flag slice proves the
+corresponding real host-only death against KEL-78/T4's PID namespace and
+parent-death coupling: the Bun leader and descendant disappear, the live CLI
+removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
+strict-profile admission matrix remain separately owned and evidenced by
+KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
 The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
 hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
 connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
@@ -2842,16 +2857,16 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
-| `crate.keld-core` | All | **Partial** — Host lifecycle, hello, and macOS/Windows no-flag app sessions are implemented; Linux no-flag product boot is absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-core/src/app_session.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-core` | All | **Partial** — Host lifecycle, hello, and macOS/Windows/Linux no-flag app sessions are implemented; full named-role and privileged dispatch remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-core/src/app_session.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96, KEL-102 | `3d9e5c78db273f550c47f1a6b4655712de2723a0` |
 | `crate.keld-wv` | All | **Partial** — WKWebView, WebView2, and WebKitGTK backends exist; persistent profile identity, the destination engine policy, and the renderer bridge remain incomplete. | [code](../../crates/keld-wv/src/lib.rs), [test](../../crates/keld-wv/src/engine.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-27, KEL-28, KEL-65, KEL-135 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-ipc` | All | **Partial** — kipc framing, codecs, HELLO authentication, Unix bootstrap, and the Windows named-pipe app-link are implemented; channel registry and shared-memory lanes are absent. | [code](../../crates/keld-ipc/src/lib.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-30, KEL-101, KEL-133 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — The scoped filesystem broker is guard-checked and live; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and the standalone Linux strict mechanism exist; full named-role and product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78 | `522b27b7c78caa52cedc7e001d8059e37b93aa7a` |
+| `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `cfb8a238d6ff8b61c27cf825dd31ee3b2d30f126` |
 | `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, delta application, rollback, and feeds are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows no-flag sessions; Linux no-flag integration and the destination registry are absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `cfb8a238d6ff8b61c27cf825dd31ee3b2d30f126` |
 | `crate.keld-cli` | All | **Partial** — create, dev, doctor, MCP, hello, and IPC diagnostics exist; build, migrate, gen, and ext remain reserved. | [code](../../crates/keld-cli/src/lib.rs), [test](../../crates/keld-cli/tests/cli_kel29.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-29, KEL-42, KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 
 ## Packages
@@ -2870,9 +2885,9 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
 | `phase.0` | All | **Partial** — The tracked workspace, architecture, agent workflow, and CI exist; the first attributed performance harness remains absent. | [code](../../crates/keld-core/src/lib.rs), [CI](../../.github/workflows/ci.yml) | [Specified](../../docs/architecture/01-overview.md) | KEL-39 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `phase.1` | All | **Partial** — macOS and Windows no-flag app sessions exist; Linux product boot and the full public role API remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `phase.1` | All | **Partial** — macOS, Windows, and Linux no-flag app sessions exist; the full public role API and release artifact chain remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `3d9e5c78db273f550c47f1a6b4655712de2723a0` |
 | `phase.2` | All | **Partial** — MCP v1, permission evaluation, guard dispatch, and one filesystem broker exist; bulk IPC, codegen, and broad compatibility remain absent. | [code](../../crates/keld-guard/src/lib.rs), [code](../../crates/keld-cli/src/mcp/mod.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-42, KEL-69, KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `phase.3` | All | **Partial** — The standalone Linux strict mechanism is implemented and proven; product admission, distribution, signed updates, remaining OS profiles, limits, reporting, and addon workers remain incomplete. | [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-78 | `51c52f6772b3587b8fe1b1023e492e419f5e242c` |
+| `phase.3` | All | **Partial** — The Linux strict mechanism is implemented and consumed by the no-flag primary; distribution, signed updates, remaining OS/profile admission, limits, reporting, and addon workers remain incomplete. | [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-78, KEL-96 | `cfb8a238d6ff8b61c27cf825dd31ee3b2d30f126` |
 | `phase.4` | All | **Specified only** — Compatibility-depth, corpus, pinned-engine, and stable-plugin goals are specified but not implemented. | — | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 
 ## Platform surfaces
@@ -2882,7 +2897,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `surface.windows-app-link` | Windows | **Partial** — The shipping app-link uses a current-user protected named pipe plus HELLO; distinct ordinary-user denial and authorized same-user successor echo are proven, while decimal diagnostic compatibility remains. | [code](../../crates/keld-ipc/src/windows_named_pipe.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/specs/kel101-windows-named-pipe-dacl.md) | KEL-101 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `surface.no-flag-macos` | macOS | **Partial** — The no-flag host, native window, app link, recovery, and ordered cleanup are implemented for the current slice. | [code](../../crates/keld-core/src/app_session.rs), [test](../../crates/keld-host/tests/no_flag_macos.rs) | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `surface.no-flag-windows` | Windows | **Partial** — The no-flag host, native window, named-pipe app link, recovery, and ordered cleanup are implemented for the current slice. | [code](../../crates/keld-core/src/app_session.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs) | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-96, KEL-101 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `surface.no-flag-linux` | Linux | **Specified only** — Linux no-flag product boot is specified and currently fails closed. | — | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `surface.no-flag-linux` | Linux | **Partial** — The no-flag host, WebKitGTK window, authenticated app link, strict Bun generations, recovery, CLI/host-death cleanup, and relaunch are implemented for Ubuntu/Debian x86_64 Wayland; X11, non-Debian, and release packaging remain unverified. | [code](../../crates/keld-core/src/app_session.rs), [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-28, KEL-96 | `3d9e5c78db273f550c47f1a6b4655712de2723a0` |
 
 ---
 

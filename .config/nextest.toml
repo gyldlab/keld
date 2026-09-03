@@ -49,3 +49,14 @@ max-threads = 1
 [[profile.ci.overrides]]
 filter = "binary(linux_strict_boundary)"
 test-group = "linux-strict-boundary"
+
+# These rows each own a real Wayland/WebKitGTK app session plus a strict Bun
+# process tree. The product does not require independent test processes to
+# contend for one desktop compositor. Preserve every deadline and assertion,
+# and serialize this native-GUI binary without retries.
+[test-groups.linux-no-flag-gui]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = "binary(no_flag_linux)"
+test-group = "linux-no-flag-gui"

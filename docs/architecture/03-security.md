@@ -129,9 +129,11 @@ manifest decoder.
    - Linux: the live T4 mechanism uses unprivileged Bubblewrap user/mount/PID/network
      namespaces, an empty-root exact-file mount policy, zero capabilities,
      `no_new_privs`, x86_64-only Keld seccomp filters (other architectures fail
-     closed), and a stacked Landlock launcher. Its real
-     hostile fixture and host-death/relaunch proof are platform evidence; product roles
-     remain unverified until they consume this mechanism and matching archive.
+     closed), and a stacked Landlock launcher. Its real hostile fixture and
+     host-death/relaunch proof are platform evidence. KEL-96 consumes the
+     mechanism for the no-flag primary with exact code/runtime/socket mounts;
+     other named roles remain unverified until they consume a matching profile
+     and archive.
    The only compatibility fallback is an explicit Keld `legacy` profile that forfeits
    the zero-authority claim. Electron `sandbox` / `appSandbox: "off"`, package names,
    missing primitives, and failed proofs never select or auto-downgrade into legacy.

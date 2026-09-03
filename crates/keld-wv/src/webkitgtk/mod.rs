@@ -28,9 +28,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::unix::WindowExtUnix;
 use tao::window::{Window, WindowBuilder};
@@ -39,9 +44,14 @@ use wry::WebViewBuilderExtUnix;
 use keld_guard::PermissionsManifest;
 
 use crate::WebviewId;
-use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebKitGtkEngineExt, WebviewSpec};
+use crate::engine::{
+    AppWindowCommand, AppWindowEvent, DevtoolsAction, NavTarget, Rect, WebEngine,
+    WebKitGtkEngineExt, WebviewSpec,
+};
 use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
+
+const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Outcome of [`probe_gpu_stack`]: whether Keld silently degraded rendering
 /// to avoid a known `WebKitGTK` crash/flicker class.
@@ -152,11 +162,13 @@ struct View {
 /// after the last window closes (KEL-30 concurrent hello app-link).
 pub struct WebKitGtkEngine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
-    event_loop: Option<EventLoop<()>>,
+    event_loop: Option<EventLoop<AppWindowCommand>>,
     /// Result of the startup GPU-stack probe — surfaced via [`Self::gpu_safe_mode`].
     gpu_safe_mode: GpuSafeMode,
     views: BTreeMap<u32, View>,
     next_id: u32,
+    navigation_ready: Arc<AtomicBool>,
+    app_window_created: bool,
 }
 
 impl fmt::Debug for WebKitGtkEngine {
@@ -179,10 +191,12 @@ impl WebKitGtkEngine {
     pub fn new() -> Self {
         let gpu_safe_mode = probe_gpu_stack();
         Self {
-            event_loop: Some(EventLoop::new()),
+            event_loop: Some(EventLoopBuilder::with_user_event().build()),
             gpu_safe_mode,
             views: BTreeMap::new(),
             next_id: 1,
+            navigation_ready: Arc::new(AtomicBool::new(false)),
+            app_window_created: false,
         }
     }
 
@@ -232,6 +246,198 @@ impl WebKitGtkEngine {
         }
     }
 
+    /// Creates the initial app window and emits live navigation readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError`] when the window or webview cannot be created, or
+    /// when the v0 app-window slot was already consumed.
+    pub fn create_app(
+        &mut self,
+        spec: &WebviewSpec,
+        events: Sender<AppWindowEvent>,
+    ) -> Result<WebviewId, WvError> {
+        if self.app_window_created || !self.views.is_empty() {
+            return Err(WvError::EventLoop(String::from(
+                "the v0 app window was already created",
+            )));
+        }
+        self.navigation_ready.store(false, Ordering::Release);
+        let id = self.create_internal(spec, Some(events))?;
+        self.app_window_created = true;
+        Ok(id)
+    }
+
+    /// Runs the Linux UI loop until Quit or a fatal app-session command.
+    ///
+    /// Commands cross tao's [`EventLoopProxy`], so app-link threads never
+    /// mutate GTK or `WebKit` objects. Closing the last window reports the
+    /// lifecycle event and keeps the loop alive until Bun sends Quit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError::Navigate`] when initial navigation exceeds its
+    /// deadline, and [`WvError::EventLoop`] for duplicate run, a fatal app
+    /// command, bridge failure, or a non-zero tao exit.
+    pub fn run_app_until_quit(
+        mut self,
+        commands: Receiver<AppWindowCommand>,
+        events: Sender<AppWindowEvent>,
+    ) -> Result<(), WvError> {
+        let Some(mut event_loop) = self.event_loop.take() else {
+            return Err(WvError::EventLoop(String::from(
+                "run loop already started; call run_app_until_quit once",
+            )));
+        };
+        let stop_bridge = Arc::new(AtomicBool::new(false));
+        let terminal_intent = Arc::new(AtomicBool::new(false));
+        let bridge = spawn_app_wake_bridge(
+            commands,
+            event_loop.create_proxy(),
+            Arc::clone(&stop_bridge),
+            Arc::clone(&terminal_intent),
+        )?;
+        let fatal = Arc::new(AtomicBool::new(false));
+        let fatal_in_loop = Arc::clone(&fatal);
+        let navigation_timed_out = Arc::new(AtomicBool::new(false));
+        let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
+        let navigation_ready = Arc::clone(&self.navigation_ready);
+        let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
+        let terminal_intent_in_loop = Arc::clone(&terminal_intent);
+        let mut views = std::mem::take(&mut self.views);
+        let code = event_loop.run_return(move |event, _, control_flow| {
+            let terminal = matches!(
+                event,
+                Event::UserEvent(AppWindowCommand::Quit | AppWindowCommand::Fatal)
+            ) || terminal_intent_in_loop.load(Ordering::Acquire);
+            if navigation_ready.load(Ordering::Acquire) {
+                *control_flow = ControlFlow::Wait;
+            } else if views.is_empty() {
+                // A pre-navigation user close is a lifecycle event, not a
+                // renderer timeout. Keep the loop alive for Bun's Quit.
+                *control_flow = ControlFlow::Wait;
+            } else if navigation_deadline_expired(
+                false,
+                !views.is_empty(),
+                terminal,
+                Instant::now(),
+                navigation_deadline,
+            ) {
+                navigation_timed_out_in_loop.store(true, Ordering::Release);
+                views.clear();
+                *control_flow = ControlFlow::Exit;
+                return;
+            } else {
+                *control_flow = ControlFlow::WaitUntil(navigation_deadline);
+            }
+            match event {
+                Event::UserEvent(AppWindowCommand::Quit) => {
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::UserEvent(AppWindowCommand::Fatal) => {
+                    fatal_in_loop.store(true, Ordering::Release);
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::WindowEvent {
+                    window_id,
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    views.retain(|_, view| view.window.id() != window_id);
+                    if views.is_empty() {
+                        let _ = events.send(AppWindowEvent::LastWindowClosed);
+                    }
+                }
+                _ => {}
+            }
+        });
+        stop_bridge.store(true, Ordering::Release);
+        let _ = bridge.join();
+        if navigation_timed_out.load(Ordering::Acquire) {
+            return Err(WvError::Navigate(String::from(
+                "initial renderer navigation did not finish before the startup deadline",
+            )));
+        }
+        if fatal.load(Ordering::Acquire) {
+            return Err(WvError::EventLoop(String::from(
+                "primary app session failed while the Linux event loop was live",
+            )));
+        }
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(WvError::EventLoop(format!(
+                "event loop exited with status {code}"
+            )))
+        }
+    }
+
+    fn create_internal(
+        &mut self,
+        spec: &WebviewSpec,
+        app_events: Option<Sender<AppWindowEvent>>,
+    ) -> Result<WebviewId, WvError> {
+        let Some(event_loop) = self.event_loop.as_ref() else {
+            return Err(WvError::EventLoop(String::from(
+                "run loop already started; create webviews before run_until_closed",
+            )));
+        };
+        let window = WindowBuilder::new()
+            .with_title(&spec.title)
+            .with_inner_size(tao::dpi::LogicalSize::new(
+                spec.size.width,
+                spec.size.height,
+            ))
+            .with_resizable(true)
+            .with_minimizable(true)
+            .with_closable(true)
+            .build(event_loop)
+            .map_err(|e| WvError::Window(e.to_string()))?;
+
+        let builder = wry::WebViewBuilder::new();
+        #[cfg(debug_assertions)]
+        let builder = builder.with_devtools(true);
+        // KEL-59 parity: without the guard WebKitGTK falls back to its own
+        // permission prompt. The empty manifest is the default-deny policy;
+        // mint the webview id first so it cannot inherit app-process grants.
+        let id = self.next_id;
+        let builder = with_guarded_media_permissions(
+            builder,
+            PermissionsManifest::default(),
+            webview_media_principal(WebviewId(id)),
+        );
+        let ready = Arc::clone(&self.navigation_ready);
+        let builder = builder.with_on_page_load_handler(move |event, _url| {
+            if matches!(event, wry::PageLoadEvent::Finished)
+                && !ready.swap(true, Ordering::AcqRel)
+                && let Some(events) = app_events.as_ref()
+            {
+                let _ = events.send(AppWindowEvent::NavigationReady);
+            }
+        });
+        let builder = match &spec.initial {
+            NavTarget::Html(html) => builder.with_html(html),
+            NavTarget::Url(url) => builder.with_url(url),
+        };
+        // wry's plain `build(&window)` wires only X11. `build_gtk` with tao's
+        // existing default vbox is required for both Wayland and X11; passing
+        // the GtkApplicationWindow itself silently leaves the webview detached.
+        let vbox = window.default_vbox().ok_or_else(|| {
+            WvError::Webview(String::from(
+                "tao window has no default GTK vbox (WindowBuilderExtUnix::with_default_vbox(false) was set)",
+            ))
+        })?;
+        let webview = builder
+            .build_gtk(vbox)
+            .map_err(|e| WvError::Webview(e.to_string()))?;
+
+        self.next_id += 1;
+        self.views.insert(id, View { webview, window });
+        Ok(WebviewId(id))
+    }
+
     fn view(&self, id: WebviewId) -> Result<&View, WvError> {
         self.views
             .get(&id.0)
@@ -247,72 +453,7 @@ impl Default for WebKitGtkEngine {
 
 impl WebEngine for WebKitGtkEngine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
-        let Some(event_loop) = self.event_loop.as_ref() else {
-            return Err(WvError::EventLoop(String::from(
-                "run loop already started; create webviews before run_until_closed",
-            )));
-        };
-        let window = WindowBuilder::new()
-            .with_title(&spec.title)
-            .with_inner_size(tao::dpi::LogicalSize::new(
-                spec.size.width,
-                spec.size.height,
-            ))
-            // KEL-25/KEL-28: standard window chrome — resize, minimize, close.
-            .with_resizable(true)
-            .with_minimizable(true)
-            .with_closable(true)
-            .build(event_loop)
-            .map_err(|e| WvError::Window(e.to_string()))?;
-
-        // Developer extras are debug-only until keld-guard owns `web.devtools`.
-        let builder = wry::WebViewBuilder::new();
-        #[cfg(debug_assertions)]
-        let builder = builder.with_devtools(true);
-        // KEL-59 parity. Without this, WebKitGTK falls back to its own
-        // permission prompt on a `PermissionRequested` event it can't
-        // handle — default-ask, not default-deny. Empty manifest → deny
-        // everything. KEL-73: mint the webview id first so capture cannot
-        // inherit AppProcess grants.
-        let id = self.next_id;
-        let builder = with_guarded_media_permissions(
-            builder,
-            PermissionsManifest::default(),
-            webview_media_principal(WebviewId(id)),
-        );
-        let builder = match &spec.initial {
-            NavTarget::Html(html) => builder.with_html(html),
-            NavTarget::Url(url) => builder.with_url(url),
-        };
-        // wry's plain `build(&window)` only wires the X11 path; Wayland needs
-        // `build_gtk` (wry's own docs: "If you also want to support Wayland
-        // too... use WebViewBuilderExtUnix::build_gtk"). KEL-28's DoD
-        // requires both session types, so this is not optional.
-        //
-        // The container passed to `build_gtk` MUST be the vertical
-        // `gtk::Box` tao adds as the window's sole child
-        // (`WindowExtUnix::default_vbox`), not the `GtkApplicationWindow`
-        // itself (`gtk_window()`) — a `GtkApplicationWindow` is a `GtkBin`
-        // (exactly one child) and that slot is already taken by tao's own
-        // vbox. Passing `gtk_window()` compiles and even runs, but GTK logs
-        // "can only contain one widget at a time" and the webview never
-        // actually attaches — confirmed live under Xvfb (see
-        // `docs/agents/learnings.md`). Every real wry example
-        // (`examples/simple.rs` etc.) uses `default_vbox()`; the
-        // `gtk_window()` form in wry's top-of-crate doc comment is the
-        // X11-only `build(&window)` snippet, not `build_gtk`'s.
-        let vbox = window.default_vbox().ok_or_else(|| {
-            WvError::Webview(String::from(
-                "tao window has no default GTK vbox (WindowBuilderExtUnix::with_default_vbox(false) was set)",
-            ))
-        })?;
-        let webview = builder
-            .build_gtk(vbox)
-            .map_err(|e| WvError::Webview(e.to_string()))?;
-
-        self.next_id += 1;
-        self.views.insert(id, View { webview, window });
-        Ok(WebviewId(id))
+        self.create_internal(spec, None)
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
@@ -361,6 +502,53 @@ impl WebEngine for WebKitGtkEngine {
 
 impl WebKitGtkEngineExt for WebKitGtkEngine {}
 
+fn spawn_app_wake_bridge(
+    commands: Receiver<AppWindowCommand>,
+    proxy: EventLoopProxy<AppWindowCommand>,
+    stop: Arc<AtomicBool>,
+    terminal_intent: Arc<AtomicBool>,
+) -> Result<thread::JoinHandle<()>, WvError> {
+    thread::Builder::new()
+        .name("keld-wv-linux-app-wake".to_owned())
+        .spawn(move || {
+            loop {
+                match commands.recv_timeout(Duration::from_millis(100)) {
+                    Ok(command) => {
+                        if stop.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let terminal =
+                            matches!(command, AppWindowCommand::Quit | AppWindowCommand::Fatal);
+                        if terminal {
+                            terminal_intent.store(true, Ordering::Release);
+                        }
+                        if proxy.send_event(command).is_err() || terminal {
+                            return;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => {
+                        terminal_intent.store(true, Ordering::Release);
+                        let _ = proxy.send_event(AppWindowCommand::Fatal);
+                        return;
+                    }
+                }
+            }
+        })
+        .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
+}
+
+fn navigation_deadline_expired(
+    ready: bool,
+    has_views: bool,
+    terminal: bool,
+    now: Instant,
+    deadline: Instant,
+) -> bool {
+    !ready && has_views && !terminal && now >= deadline
+}
+
 /// Opens a window from `spec` and runs until the user closes it.
 ///
 /// Thin wrapper for the Phase 1 hello slice: probes the GPU stack, builds a
@@ -378,7 +566,12 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuSafeMode, WebKitGtkEngine, is_wayland_session, nvidia_driver_loaded};
+    use std::time::{Duration, Instant};
+
+    use super::{
+        GpuSafeMode, WebKitGtkEngine, is_wayland_session, navigation_deadline_expired,
+        nvidia_driver_loaded,
+    };
     use crate::error::WvError;
 
     #[test]
@@ -436,6 +629,24 @@ mod tests {
     fn unknown_webview_id_is_typed_not_panic() {
         let err = WvError::UnknownWebview { id: 3 };
         assert!(err.to_string().contains("KELD-WV-007"));
+    }
+
+    #[test]
+    fn closed_or_terminal_window_never_becomes_a_navigation_timeout() {
+        let deadline = Instant::now();
+        let expired = deadline + Duration::from_millis(1);
+        assert!(navigation_deadline_expired(
+            false, true, false, expired, deadline
+        ));
+        assert!(!navigation_deadline_expired(
+            false, false, false, expired, deadline
+        ));
+        assert!(!navigation_deadline_expired(
+            false, true, true, expired, deadline
+        ));
+        assert!(!navigation_deadline_expired(
+            true, true, false, expired, deadline
+        ));
     }
 
     #[test]

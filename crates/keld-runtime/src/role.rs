@@ -6,6 +6,8 @@
 //! breaking, output capture, shutdown and reap stay in the generic supervisor.
 
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -19,6 +21,10 @@ use keld_ipc::{
     BootstrapRejection, BootstrapRejectionObserver, BootstrapStream, SessionToken, parse_app_link,
 };
 
+#[cfg(target_os = "linux")]
+use crate::PreparedCommand;
+#[cfg(target_os = "linux")]
+use crate::linux_strict::LinuxStrictProfile;
 use crate::{
     CapturedOutput, ChildPreparer, CrashLedger, GenerationLease, PreparedChild, RestartPolicy,
     RevocationCause, RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
@@ -329,6 +335,8 @@ pub struct RoleConfig {
     current_dir: Option<PathBuf>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
+    #[cfg(target_os = "linux")]
+    linux_strict: Option<LinuxStrictProfile>,
     #[cfg(test)]
     #[cfg(unix)]
     probe_tx: Option<Sender<ProvisionedProbe>>,
@@ -368,6 +376,8 @@ impl RoleConfig {
             current_dir: None,
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
+            #[cfg(target_os = "linux")]
+            linux_strict: None,
             #[cfg(test)]
             #[cfg(unix)]
             probe_tx: None,
@@ -416,6 +426,17 @@ impl RoleConfig {
     #[must_use]
     pub fn current_dir(mut self, current_dir: impl Into<PathBuf>) -> Self {
         self.current_dir = Some(current_dir.into());
+        self
+    }
+
+    /// Runs every Linux generation through the validated strict profile.
+    ///
+    /// Strict roles use the sandbox's fixed `/app` working directory and an
+    /// exact environment, so [`Self::current_dir`] must not also be set.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub fn linux_strict(mut self, profile: LinuxStrictProfile) -> Self {
+        self.linux_strict = Some(profile);
         self
     }
 
@@ -570,16 +591,16 @@ impl RoleSupervisor {
         self.supervisor.shutdown();
     }
 
-    /// Stops crash-successor admission without killing the current Windows
+    /// Stops crash-successor admission without killing the current direct
     /// generation before its accepted Quit reply is written.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn accept_shutdown(&self) {
         self.supervisor.accept_shutdown();
     }
 
-    /// Revokes, kills/reaps, and restart-policies the named Windows generation
+    /// Revokes, kills/reaps, and restart-policies the named direct generation
     /// after its authenticated app link fails while the process is still live.
-    #[cfg(windows)]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn restart_generation(&self, attempt: u32) {
         self.supervisor.restart_generation(attempt);
     }
@@ -621,6 +642,10 @@ impl ChildPreparer for RolePreparer {
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
         let provisioned = self.generation_owner.provision(attempt)?;
+        #[cfg(target_os = "linux")]
+        if let Some(profile) = &self.config.linux_strict {
+            return prepare_linux_strict(&self.config, profile, provisioned);
+        }
         let mut command = Command::new(&self.config.program);
         command.args(&self.config.args);
         if let Some(current_dir) = &self.config.current_dir {
@@ -636,7 +661,7 @@ impl ChildPreparer for RolePreparer {
             .env("KELD_APP_LINK", &provisioned.app_link)
             .stdin(Stdio::null());
         Ok(PreparedChild {
-            command,
+            command: command.into(),
             lease: provisioned.lease,
         })
     }
@@ -650,6 +675,56 @@ impl ChildPreparer for RolePreparer {
             return Ok(true);
         };
         await_recovery_decision(decision, shutdown, accepted_shutdown)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_strict(
+    config: &RoleConfig,
+    profile: &LinuxStrictProfile,
+    provisioned: ProvisionedRoleGeneration,
+) -> Result<PreparedChild<RoleGenerationLease>, RuntimeError> {
+    let ProvisionedRoleGeneration { app_link, lease } = provisioned;
+    let prepared = (|| {
+        if config.current_dir.is_some() {
+            return Err(RuntimeError::Lifecycle {
+                phase: "Linux strict role preparation",
+                source: std::io::Error::other(
+                    "strict roles use the fixed /app working directory; remove current_dir",
+                ),
+            });
+        }
+        let (endpoint, _) =
+            parse_app_link(&app_link).map_err(|source| RuntimeError::Lifecycle {
+                phase: "Linux strict app-link",
+                source: std::io::Error::other(source),
+            })?;
+        let mut environment = config
+            .env
+            .iter()
+            .filter(|(key, _)| !config.env_remove.contains(key))
+            .cloned()
+            .collect::<Vec<_>>();
+        environment.push((OsString::from("KELD_APP_LINK"), OsString::from(&app_link)));
+        profile
+            .command_for_app_link(
+                Path::new(&config.program),
+                &config.args,
+                &environment,
+                Path::new(endpoint),
+            )
+            .map(PreparedCommand::LinuxStrict)
+            .map_err(|source| RuntimeError::Lifecycle {
+                phase: "Linux strict role preparation",
+                source: std::io::Error::other(source),
+            })
+    })();
+    match prepared {
+        Ok(command) => Ok(PreparedChild { command, lease }),
+        Err(error) => {
+            lease.revoke(RevocationCause::SpawnFailed)?;
+            Err(error)
+        }
     }
 }
 
