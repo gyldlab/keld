@@ -499,6 +499,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Windows zero-capability LPAC admission failed
 - fix: Do not start an unconfined replacement. Repair the AppContainer profile, reviewed path ACLs, explicit environment, or private inherited-handle allowlist and refresh the hostile proof.
 
+## KELD-RUNTIME-016
+
+- crate: keld-runtime
+- message: Linux strict-profile construction, namespace, mount, seccomp, Landlock, FD isolation, readiness, or target exec failed
+- fix: Do not start an uncontained replacement. Install the reviewed unprivileged Bubblewrap and Keld launcher artifacts, repair the exact runtime-file/mount/seccomp/Landlock profile, then refresh the hostile proof.
+
 ## KELD-NATIVE-001
 
 - crate: keld-native

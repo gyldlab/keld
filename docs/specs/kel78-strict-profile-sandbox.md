@@ -446,6 +446,21 @@ or the seccomp filter; a descendant creates a user namespace via
 `clone`/`clone3`/`unshare`/`setns`. `SCM_RIGHTS` is a runtime hostile
 probe (ledger L5), not an `admit()` primitive.
 
+T4 implements this policy with the unprivileged Bubblewrap facility recorded
+in ledger L10, not a custom post-fork namespace runtime. The host validates a
+root-owned executable with no setuid/setgid bits or file capabilities, supplies
+the exact namespace and empty-root mount arguments, and passes two Keld-owned
+seccomp programs through fixed child-private FDs. The current program is
+x86_64-only and every other architecture fails command construction. A minimal read-only Keld
+launcher inside that root applies the highest kernel-supported Landlock
+filesystem/network ABI, records a kernel with no Landlock, fails when Landlock
+is built but disabled or enforcement errors, writes a unique owner-private
+readiness record, and `exec`s the target. Only regular runtime
+files may be allowlisted; directory-wide library mounts, userns-try,
+`--not-a-security-boundary`, privileged/setuid fallback, and ambient FDs are
+rejected. Bubblewrap owns PID-namespace reaping and parent-death coupling;
+Keld's existing Supervisor remains the restart owner.
+
 ### Types and channels (sketch; not implemented on this SHA)
 
 ```text

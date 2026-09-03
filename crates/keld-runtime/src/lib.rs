@@ -20,6 +20,8 @@ use std::os::windows::io::AsRawHandle as _;
 #[cfg(windows)]
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
+#[cfg(target_os = "linux")]
+pub mod linux_strict;
 #[cfg(target_os = "macos")]
 pub mod macos_guardian;
 #[cfg(any(unix, windows))]

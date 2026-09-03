@@ -143,7 +143,7 @@ Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 
 - Rust lints are workspace-owned. A new `allow` needs inline justification.
 - Production `unsafe` is limited to sanctioned path owners: `keld-wv` backends,
-  `keld-runtime` Windows modules, and reviewed `keld-ipc::windows_named_pipe`;
+  `keld-runtime` Windows/Linux containment modules, and reviewed `keld-ipc::windows_named_pipe`;
   future `keld-ipc` shm is reserved. Each denies `unsafe_op_in_unsafe_fn` and
   carries local `// SAFETY:` proofs. A new production path requires an issue-scoped
   root/nested owner update plus independent `unsafe` gate evidence on the exact

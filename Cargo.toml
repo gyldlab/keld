@@ -118,6 +118,26 @@ nix = { version = "=0.31.3", default-features = false, features = ["fs", "signal
 #   Apache-2.0; MSRV 1.71 <= workspace 1.97. Unsafe is isolated to reviewed
 #   Windows platform modules with exact handle/pointer lifetime proofs.
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+# --- Dependency review (KEL-78/T4 / AGENTS.md gate) ---
+# Name: seccompiler =0.5.0 (rust-vmm)
+# Purpose: compile Keld's fixed Linux syscall-deny policy into architecture-
+#   checked classic BPF consumed by unprivileged Bubblewrap. Keld serializes
+#   only the public sock_filter fields; Bubblewrap owns kernel installation.
+# Alternatives rejected: hand-written BPF duplicates verifier-sensitive jump/
+#   architecture policy; libseccomp adds a C runtime dependency; seccomp or
+#   Landlock alone cannot replace T4's required namespace + mount-table deny.
+# No JSON frontend is enabled. License Apache-2.0 OR BSD-3-Clause (allowed);
+# Linux-only, cold strict-profile launch path.
+seccompiler = { version = "=0.5.0", default-features = false }
+# KEL-78/T4: safe `security.capability` xattr readback for the reviewed
+# unprivileged Bubblewrap executable. Exact version is already lockfile-pinned
+# through tempfile; `fs` only, cold Linux admission path.
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
+# KEL-78/T4: official safe Landlock ABI wrapper used by the in-sandbox
+# launcher after Bubblewrap's mount deny and before target exec. It applies the
+# highest supported filesystem/network ABI; a kernel without Landlock is
+# recorded, while a built-but-disabled LSM fails. MIT OR Apache-2.0; MSRV 1.71.
+landlock = { version = "=0.4.7", default-features = false }
 # --- Dependency review (KEL-77 T2 / AGENTS.md gate) ---
 # Name: sha2 0.10 (RustCrypto)
 # Purpose: SHA-256 for KEL-77 test artifacts and KEL-96's cold `keld-cli`
