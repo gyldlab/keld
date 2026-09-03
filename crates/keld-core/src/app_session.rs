@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 #[cfg(windows)]
 use std::ffi::OsString;
 use std::fmt;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), windows))]
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::fs::File;
@@ -15,7 +15,7 @@ use std::fs::File;
 use std::io::{self, Read, Write as _};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt as _;
@@ -64,7 +64,7 @@ use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
     LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use keld_runtime::linux_strict::LinuxStrictProfile;
 #[cfg(target_os = "macos")]
 use keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate, GuardianBootstrap};
@@ -1685,13 +1685,12 @@ fn run_app_direct(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const LINUX_BUN_ENTRY: &str = "/code/main.ts";
-#[cfg(target_os = "linux")]
 // Deliberate Ubuntu/Debian x86_64 runtime manifest for the currently proved
 // Linux product profile. KEL-28 owns non-Debian evidence; target-driven `ldd`
 // execution here would run untrusted loader metadata outside containment.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const LINUX_UBUNTU_X86_RUNTIME: [(&str, &str, bool); 6] = [
     (
         "/usr/lib/x86_64-linux-gnu/libc.so.6",
@@ -1727,6 +1726,25 @@ const LINUX_UBUNTU_X86_RUNTIME: [(&str, &str, bool); 6] = [
 
 #[cfg(target_os = "linux")]
 fn linux_strict_primary_config(
+    root: &Path,
+    entry_path: &Path,
+) -> Result<PrimaryRoleConfig, HostAppError> {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (root, entry_path);
+        return Err(app_detail(
+            "Linux strict runtime architecture",
+            "the proved Ubuntu/Debian strict runtime manifest supports x86_64 only",
+        ));
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        linux_strict_primary_config_x86(root, entry_path)
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn linux_strict_primary_config_x86(
     root: &Path,
     entry_path: &Path,
 ) -> Result<PrimaryRoleConfig, HostAppError> {
@@ -1777,7 +1795,7 @@ fn linux_strict_primary_config(
     Ok(config.linux_strict(profile))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn resolve_linux_bun() -> Result<PathBuf, HostAppError> {
     let path = std::env::var_os("PATH")
         .ok_or_else(|| app_detail("Linux Bun resolution", "PATH is unset"))?;
