@@ -466,9 +466,7 @@ fn run_same_window_recovery(failure_command: &str) {
 
     let (mut g1_reader, mut g1_writer, g1_pid, g1_link) =
         accept_ready_generation(&control_listener, &mut child);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("initial renderer beacon");
+    expect_renderer_beacon(&beacon_rx, "initial renderer beacon");
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
@@ -596,9 +594,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     let host_pid =
         wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("shipping renderer beacon");
+    expect_renderer_beacon(&beacon_rx, "shipping renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
     writer.write_all(b"QUIT\n").expect("shipping Quit");
@@ -670,9 +666,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _, lease_handle) =
         accept_ready_generation_with_lease(&control_listener, &mut cli);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("lease renderer beacon");
+    expect_renderer_beacon(&beacon_rx, "lease renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     let controller_pipe = cli
         .stdout
@@ -749,9 +743,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (reader, _writer, bun_pid, _, descendant_pid) =
         accept_ready_generation_with_descendant(&control_listener, &mut cli);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("host-death renderer beacon");
+    expect_renderer_beacon(&beacon_rx, "host-death renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
 
     let host = open_process_for_wait(host_pid, true);
@@ -1206,9 +1198,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("WebView2 renderer requested the exact beacon");
+    expect_renderer_beacon(&beacon_rx, "WebView2 renderer requested the exact beacon");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -1235,31 +1225,132 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     }
 }
 
-fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<()>) {
-    let (mut stream, _) = listener.accept().expect("accept renderer beacon");
-    stream
-        .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("beacon read deadline");
-    let request = read_renderer_request_line(|buffer| stream.read(buffer))
-        .expect("read renderer beacon")
-        .unwrap_or_default();
-    let request = String::from_utf8_lossy(&request);
-    assert!(request.starts_with("GET /ready.png "), "{request}");
-    stream
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .expect("reply renderer beacon");
-    observed.send(()).expect("publish renderer beacon");
+fn expect_renderer_beacon(observed: &mpsc::Receiver<Result<(), String>>, context: &str) {
+    let result = observed
+        .recv_timeout(PRODUCT_DEADLINE)
+        .unwrap_or_else(|error| panic!("{context}: beacon worker did not report: {error}"));
+    result.unwrap_or_else(|error| panic!("{context}: {error}"));
+}
+
+fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<Result<(), String>>) {
+    let result = serve_renderer_beacon_until(listener, Instant::now() + PRODUCT_DEADLINE);
+    let _ = observed.send(result);
+}
+
+fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Result<(), String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err("renderer beacon deadline elapsed before the exact request".to_owned());
+        }
+        let (mut stream, _) = match listener.accept() {
+            Ok(accepted) => accepted,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::yield_now();
+                continue;
+            }
+            Err(error) => return Err(format!("accept renderer beacon: {error}")),
+        };
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("set renderer beacon stream blocking: {error}"))?;
+
+        let Some(request) = read_renderer_request_line(|buffer| {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "renderer beacon absolute deadline elapsed",
+                    )
+                })?;
+            stream.set_read_timeout(Some(remaining))?;
+            stream.read(buffer)
+        })?
+        else {
+            // WebView2 may preconnect and close without an HTTP request. That
+            // connection carries no renderer evidence, so keep the same
+            // absolute deadline and await the actual request.
+            continue;
+        };
+
+        if !request.starts_with(b"GET /ready.png ") {
+            return Err(format!(
+                "renderer requested an unexpected beacon: {}",
+                String::from_utf8_lossy(&request)
+            ));
+        }
+
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "renderer beacon deadline elapsed before the HTTP reply".to_owned())?;
+        stream
+            .set_write_timeout(Some(remaining))
+            .map_err(|error| format!("set renderer beacon write deadline: {error}"))?;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .map_err(|error| format!("reply renderer beacon: {error}"))?;
+        return Ok(());
+    }
 }
 
 fn read_renderer_request_line(
     mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
 ) -> Result<Option<Vec<u8>>, String> {
-    let mut request = [0_u8; 2048];
-    let read = read_chunk(&mut request).map_err(|error| error.to_string())?;
-    if read == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(request[..read].to_vec()))
+    const REQUEST_LINE_LIMIT: usize = 2048;
+    let mut request = Vec::new();
+    loop {
+        if request.len() == REQUEST_LINE_LIMIT {
+            return Err(format!(
+                "renderer beacon request line exceeded {REQUEST_LINE_LIMIT} bytes"
+            ));
+        }
+        let mut chunk = [0_u8; 256];
+        let available = (REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
+        let read = match read_chunk(&mut chunk[..available]) {
+            Ok(read) => read,
+            Err(error)
+                if request.is_empty()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+            {
+                return Ok(None);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return Err(format!(
+                    "renderer beacon request reset after {} bytes: {error}",
+                    request.len()
+                ));
+            }
+            Err(error) => return Err(format!("read renderer beacon request: {error}")),
+        };
+        if read == 0 {
+            return if request.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "renderer beacon request ended before CRLF: {}",
+                    String::from_utf8_lossy(&request)
+                ))
+            };
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(line_end) = request.windows(2).position(|bytes| bytes == b"\r\n") {
+            request.truncate(line_end);
+            return Ok(Some(request));
+        }
     }
 }
 
@@ -1295,10 +1386,85 @@ fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
         .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         .expect("write target renderer request");
 
-    observed_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("exact renderer request observed after empty preconnect");
+    expect_renderer_beacon(
+        &observed_rx,
+        "exact renderer request observed after empty preconnect",
+    );
     beacon.join().expect("beacon regression thread");
+}
+
+#[test]
+fn renderer_beacon_reports_its_absolute_deadline_instead_of_disconnect() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon deadline listener");
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        observed_tx
+            .send(result)
+            .expect("publish beacon deadline result");
+    });
+
+    let result = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("beacon worker honored its absolute deadline");
+    assert_eq!(
+        result,
+        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+    );
+    beacon.join().expect("beacon deadline thread");
+}
+
+#[test]
+fn renderer_beacon_ignores_only_a_reset_before_request_bytes() {
+    let empty = read_renderer_request_line(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "empty preconnect reset",
+        ))
+    })
+    .expect("pre-request reset is an empty preconnect");
+    assert_eq!(empty, None);
+
+    let mut first = true;
+    let partial = read_renderer_request_line(|buffer| {
+        if first {
+            first = false;
+            buffer[..3].copy_from_slice(b"GET");
+            Ok(3)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "partial request reset",
+            ))
+        }
+    })
+    .expect_err("a reset after request bytes must remain a failure");
+    assert!(
+        partial.starts_with("renderer beacon request reset after 3 bytes:"),
+        "{partial}"
+    );
+}
+
+#[test]
+fn renderer_beacon_preserves_the_unexpected_path_failure() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind wrong-path listener");
+    let address = listener.local_addr().expect("wrong-path address");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let beacon = thread::spawn(move || serve_renderer_beacon_until(&listener, deadline));
+    let mut request = TcpStream::connect(address).expect("connect wrong-path request");
+    request
+        .write_all(b"GET /leaked.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write wrong-path request");
+
+    let error = beacon
+        .join()
+        .expect("wrong-path beacon thread")
+        .expect_err("wrong renderer path must fail");
+    assert_eq!(
+        error,
+        "renderer requested an unexpected beacon: GET /leaked.png HTTP/1.1"
+    );
 }
 
 fn accept_control_or_host_failure(
