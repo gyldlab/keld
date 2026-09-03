@@ -285,7 +285,12 @@ fn strict_profile_rejects_untrusted_inputs_and_setup_failure_runs_no_target() {
     let error = command
         .spawn()
         .expect_err("missing mount source must fail before returning a target");
-    assert!(error.to_string().contains("launcher readiness"), "{error}");
+    let error = error.to_string();
+    assert!(error.contains("launcher readiness"), "{error}");
+    assert!(error.contains("stderr: "), "{error}");
+    assert!(!error.contains("stderr: empty"), "{error}");
+    assert!(!error.contains("stderr: unavailable"), "{error}");
+    assert!(!error.contains("stderr: unreadable"), "{error}");
 
     let malformed = Command::new(strict_launcher())
         .output()

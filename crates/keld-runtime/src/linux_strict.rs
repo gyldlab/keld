@@ -480,9 +480,12 @@ fn wait_for_launcher_ready(child: &mut Child, readiness: &Path) -> Result<(), Li
         };
         if let Some(status) = status {
             let _ = fs::remove_file(readiness);
+            let stderr = failed_child_stderr(child);
             return Err(LinuxStrictError::new(
                 "launcher readiness",
-                format!("Bubblewrap exited with {status} before post-Landlock readiness"),
+                format!(
+                    "Bubblewrap exited with {status} before post-Landlock readiness; stderr: {stderr}"
+                ),
             ));
         }
         if std::time::Instant::now() >= deadline {
@@ -503,6 +506,40 @@ fn terminate_failed_start(child: &mut Child) {
     if let Some(stderr) = child.stderr.as_mut() {
         let mut discarded = [0_u8; 4096];
         let _ = stderr.read(&mut discarded);
+    }
+}
+
+fn failed_child_stderr(child: &mut Child) -> String {
+    let Some(mut stderr) = child.stderr.take() else {
+        return String::from("unavailable");
+    };
+    let Ok(flags) = rustix::fs::fcntl_getfl(&stderr) else {
+        return String::from("unreadable");
+    };
+    if rustix::fs::fcntl_setfl(&stderr, flags | rustix::fs::OFlags::NONBLOCK).is_err() {
+        return String::from("unreadable");
+    }
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    while bytes.len() <= 4096 {
+        match stderr.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => bytes.extend_from_slice(&chunk[..read]),
+            Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(source) if source.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return String::from("unreadable"),
+        }
+    }
+    let truncated = bytes.len() > 4096;
+    bytes.truncate(4096);
+    let mut text = String::from_utf8_lossy(&bytes).trim().to_owned();
+    if truncated {
+        text.push_str(" [truncated]");
+    }
+    if text.is_empty() {
+        String::from("empty")
+    } else {
+        text
     }
 }
 
