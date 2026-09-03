@@ -112,6 +112,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-on-failure: true
+      - name: Check keld-ipc fuzz workspace
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
+        run: |
+          cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml
       - name: Product status Windows path contracts
         if: matrix.os == 'windows-latest'
         shell: bash
