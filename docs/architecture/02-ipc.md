@@ -111,7 +111,8 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   fails deterministically rather than mis-reporting: `KELD-IPC-003` from
   `keld_ipc::codec::decode`, surfaced by `@keld/electron` as `KELD-IPC-005`
   ("not a CallError"). The generated hello scaffold
-  (`crates/keld-cli/templates/hello/src/kipc.ts`) speaks only the ungated echo
+  (`crates/keld-cli/templates/hello/src/kipc.ts`, embedded into the generated
+  self-contained `src/main.ts` entry) speaks only the ungated echo
   channel and does not decode `ERR` payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver

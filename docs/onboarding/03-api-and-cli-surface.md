@@ -600,38 +600,44 @@ my-app/
 ├─ keld.config.ts    app config (see caveat below)
 ├─ package.json      name, private, type: module, start script
 └─ src/
-   ├─ main.ts        the app main process
-   └─ kipc.ts        hand-written kipc v2 client (KEL-30) — main.ts's only import
+   ├─ main.ts        self-contained app process + hand-written kipc v2 client (KEL-30)
+   └─ kipc.ts        compatibility re-export from main.ts; no second client copy
 ```
 
-`src/kipc.test.ts` (golden-vector tests for `kipc.ts`, run with `bun test`) lives beside it in the
-repo but is **not** one of the six: `HELLO_TEMPLATE` in `template.rs` is an explicit allow-list, not
-a directory glob, so test files can sit next to what they test without shipping to end users.
+The repository template keeps the wire client in
+[`templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts), its golden-vector
+tests in `templates/hello/src/kipc.test.ts`, and the app body in
+`templates/hello/src/main-body.ts`. `template.rs` composes the client and body byte-for-byte into the
+generated `src/main.ts`; generated `src/kipc.ts` only re-exports that module for source
+compatibility. This preserves one tested wire implementation while keeping the strict dev stage's
+configured entry self-contained.
 
 ### 5.1 `src/main.ts` — the main process
 
-Source: [`crates/keld-cli/templates/hello/src/main.ts`](../../crates/keld-cli/templates/hello/src/main.ts).
+Sources: [`crates/keld-cli/templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts)
+and [`crates/keld-cli/templates/hello/src/main-body.ts`](../../crates/keld-cli/templates/hello/src/main-body.ts),
+composed by [`template.rs`](../../crates/keld-cli/src/template.rs).
 
 ```ts
-import { AppLinkSession } from "./kipc";
+if (import.meta.main) {
+  const link = process.env.KELD_APP_LINK;
+  if (!link) {
+    console.error(
+      "KELD-CLI-010: KELD_APP_LINK is unset — run the app with `keld dev`, not `bun` directly.",
+    );
+    process.exit(1);
+  }
 
-const link = process.env.KELD_APP_LINK;
-if (!link) {
-  console.error(
-    "KELD-CLI-010: KELD_APP_LINK is unset — run the app with `keld dev`, not `bun` directly.",
-  );
-  process.exit(1);
+  const session = await AppLinkSession.connect(link);
+  try {
+    const response = await session.echo({ message: "keld", count: 1 });
+    console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
+    console.log("{{name}}: main process ready (IPC echo ok)");
+    await new Promise(() => {});
+  } finally {
+    session.close();
+  }
 }
-
-const session = await AppLinkSession.connect(link);
-try {
-  const response = await session.echo({ message: "keld", count: 1 });
-  console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
-} finally {
-  session.close();
-}
-
-console.log("{{name}}: main process ready (IPC echo ok)");
 ```
 
 Read it as a contract statement in four parts:
@@ -642,14 +648,15 @@ Read it as a contract statement in four parts:
    `KELD-IPC-007`. The file guards on `KELD_APP_LINK` and fails with a code-carrying
    message rather than crashing — the framework's error convention applied inside a
    template.
-2. **The app process is Bun-specific**, not Node-compatible: it uses `Bun.connect`
-   (via `./kipc`) and top-level `await`.
+2. **The app process is Bun-specific**, not Node-compatible: its embedded client uses
+   `Bun.connect` and top-level `await`.
 3. **There is still no schema-driven TypeScript SDK** (`@keld/api`, `keld gen`, KEL-13
    remain unbuilt), but as of KEL-30 the template no longer shells out to a second
-   process to fake one. `./kipc.ts` is a hand-written client speaking the real kipc v2
+   process to fake one. The embedded client source is hand-written and speaks the real kipc v2
    wire format — frame header, postcard `EchoRequest`/`EchoResponse`, one `HELLO`
    per connection then N `CALL`/`REPLY` via `AppLinkSession` — pinned byte-for-byte
-   against `keld-ipc`'s own Rust tests. It is the
+   against `keld-ipc`'s own Rust tests. The generated `src/kipc.ts` is only a
+   compatibility re-export of `src/main.ts`; it does not duplicate this implementation. It is the
    actual "Bun to Rust and back" vertical slice, not a placeholder for one. Expect it to
    be replaced by generated code once `@keld/api` exists; until then it is real, tested
    transport, not a stub.
@@ -680,7 +687,8 @@ Be precise about what this does today:
 - `name` is the window title (`title_from_config_ts` / `hello_title_for_project`).
 - `renderer` is the HTML `keld dev` loads (`renderer_from_config_ts` /
   `load_dev_window_html`). Default is `index.html` when the field is omitted.
-- `entry` is **not** consulted — `run_dev` still hardcodes `src/main.ts`.
+- `entry` selects the project-relative app file copied into the strict private dev stage;
+  the no-flag host runs only that staged entry.
 - `find_project_root` walks up looking for the file; `keld doctor` confirms it is
   present (plus `src/main.ts`). This is not the arch/04 §2 `defineConfig` schema
   (`@keld/cli` does not exist; only `@keld/electron` exists under `packages/`).
@@ -707,7 +715,7 @@ sequenceDiagram
     participant CLI as keld dev (parent)
     participant Host as staged no-flag keld-host
     participant Guard as guardian + Supervisor
-    participant Bun as Bun (src/main.ts + kipc.ts)
+    participant Bun as Bun (self-contained src/main.ts)
     participant Win as WKWebView window
 
     Dev->>CLI: keld dev
@@ -716,23 +724,23 @@ sequenceDiagram
     CLI->>Host: no args, separate process group + stdin-v1 lease, forward stdio
     Host->>Guard: authenticated guardian bootstrap
     Guard->>Bun: bun run staged entry + KELD_APP_LINK
-    Bun->>Host: HELLO (Bun.connect, ./kipc.ts)
+    Bun->>Host: HELLO (embedded kipc client)
     Host-->>Bun: HELLO
     Host->>Win: create window + initial navigation
     Host-->>Bun: Ready
-    Bun->>Host: two echo CALLs
-    Host-->>Bun: two REPLY frames
+    Bun->>Host: one stock echo CALL
+    Host-->>Bun: one stock REPLY frame
     Bun->>Host: Quit CALL after close or app.quit()
     Host-->>Bun: correlated Quit REPLY, then link EOF
     Host-->>CLI: exit after guardian/Bun reap and UI teardown
 ```
 
-The real-macOS integration test
+The real-macOS integration test's acceptance observer
 [`crates/keld-host/tests/no_flag_macos.rs`](../../crates/keld-host/tests/no_flag_macos.rs)
-exercises the shipping CLI-to-host chain, exact renderer, two calls, descriptor
-ownership, CLI-only death cleanup, and a fresh orderly relaunch against the real
-TypeScript client. `crates/keld-cli/tests/bun_echo.rs` remains the faster
-windowless diagnostic contract.
+exercises the shipping CLI-to-host chain, exact renderer, and a second call on the same
+authenticated stream, plus descriptor ownership, CLI-only death cleanup, and a fresh orderly
+relaunch. The stock entry makes the single call shown above; `crates/keld-cli/tests/bun_echo.rs`
+remains the faster windowless diagnostic contract.
 
 ---
 

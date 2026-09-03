@@ -267,7 +267,7 @@ sequenceDiagram
     participant CLI as keld dev<br/>(keld-cli)
     participant Host as staged keld-host<br/>+ keld-core app session
     participant Owner as platform primary owner<br/>macOS guardian / Windows+Linux supervisor
-    participant Bun as bun run src/main.ts<br/>+ kipc.ts (KEL-30)
+    participant Bun as bun run staged<br/>self-contained src/main.ts
     participant Win as native window<br/>WKWebView / WebView2 / WebKitGTK
 
     CLI->>CLI: run_checks() — bun on PATH?<br/>keld.config.ts + src/main.ts?<br/>renderer HTML present and project-relative?
@@ -280,8 +280,8 @@ sequenceDiagram
     Host-->>Bun: HELLO
     Host->>Win: create and finish initial navigation
     Host-->>Bun: lifecycle Ready
-    Bun->>Host: two CALLs on ECHO_CHANNEL
-    Host-->>Bun: two REPLY frames
+    Bun->>Host: one stock CALL on ECHO_CHANNEL
+    Host-->>Bun: one stock REPLY frame
     alt lifecycle Quit
         Bun->>Host: correlated Quit Call
         Host-->>Bun: Quit Reply, then link EOF
@@ -294,13 +294,13 @@ sequenceDiagram
 
 The honest reading of that diagram:
 
-- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template speaks kipc from `src/kipc.ts`, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
-- **The macOS, Windows, and Linux windows/IPC sessions are concurrent and host-owned.** One
-  authenticated stream carries Ready, two echo calls and Quit while the
-  native window is live; a fresh stream replaces it after a recoverable crash
-  without changing that window. The CLI retains no listener, token, stream,
-  window, or Bun supervisor. Linux runs each generation inside the strict
-  empty-root profile and reaps its descendant tree on host death.
+- **The Bun child is a kipc peer for echo (KEL-30) and `@keld/electron` lifecycle (KEL-72).** `@keld/api` does not exist yet; the hello template embeds its wire-tested kipc client into the self-contained `src/main.ts` entry, and `@keld/electron` speaks `LIFECYCLE_CHANNEL` directly.
+- **The macOS, Windows, and Linux windows/IPC sessions are concurrent and host-owned.** The stock
+  entry makes one echo call and remains alive with its authenticated stream while the native window
+  is live. The product acceptance observer proves a second call on that same stream; a fresh stream
+  replaces it after a recoverable crash without changing the window. The CLI retains no listener,
+  token, stream, window, or Bun supervisor. Linux runs each generation inside the strict empty-root
+  profile and reaps its descendant tree on host death.
 - **Echo dispatch has no guard check — deliberately.** `serve_echo_session`
   (`crates/keld-ipc/src/session.rs:16-47`) goes straight from frame decode to handler;
   echo (KEL-30) is an unprivileged demo channel, not routed through the guard. A generic

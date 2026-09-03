@@ -347,9 +347,10 @@ parent-death coupling: the Bun leader and descendant disappear, the live CLI
 removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
 strict-profile admission matrix remain separately owned and evidenced by
 KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
-The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is a
-hand-written, wire-exact v0 client (postcard framing, one `HELLO` per
-connection, then N `CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
+The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is the
+hand-written, wire-exact v0 client embedded into the generated self-contained
+`src/main.ts` entry (postcard framing, one `HELLO` per connection, then N
+`CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
 `@keld/schema` codegen (KEL-13) is not built, so this is the actual
 "Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,

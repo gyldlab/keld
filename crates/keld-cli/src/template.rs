@@ -25,11 +25,15 @@ pub const HELLO_TEMPLATE: &[TemplateFile] = &[
     },
     TemplateFile {
         path: "src/main.ts",
-        contents: include_str!("../templates/hello/src/main.ts"),
+        contents: concat!(
+            include_str!("../templates/hello/src/kipc.ts"),
+            "\n",
+            include_str!("../templates/hello/src/main-body.ts")
+        ),
     },
     TemplateFile {
         path: "src/kipc.ts",
-        contents: include_str!("../templates/hello/src/kipc.ts"),
+        contents: include_str!("../templates/hello/src/kipc-compat.ts"),
     },
     TemplateFile {
         path: ".gitignore",
@@ -41,10 +45,11 @@ pub const HELLO_TEMPLATE: &[TemplateFile] = &[
 mod tests {
     use super::HELLO_TEMPLATE;
 
-    /// `kipc.test.ts` is scaffold-internal test coverage, not app code a
-    /// created project should carry. `HELLO_TEMPLATE` is an explicit
-    /// allow-list (not a directory glob) specifically so files like this can
-    /// live beside `kipc.ts` without shipping.
+    /// `kipc.test.ts`, the wire client source, and `main-body.ts` are
+    /// scaffold-internal sources, not separately copied app files.
+    /// `HELLO_TEMPLATE` is an explicit allow-list (not a directory glob) so
+    /// the client and app body can be composed into one staged entry while the
+    /// historical `src/kipc.ts` import path remains a tiny re-export facade.
     #[test]
     fn template_does_not_embed_test_files() {
         for file in HELLO_TEMPLATE {

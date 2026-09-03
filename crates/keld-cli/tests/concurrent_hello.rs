@@ -9,6 +9,8 @@ use std::time::Duration;
 use keld_cli::create::create_project;
 use keld_cli::dev::start_dev_session;
 
+const KIPC_TS: &str = include_str!("../templates/hello/src/kipc.ts");
+
 #[test]
 fn host_owned_session_keeps_bun_alive_and_second_echo_after_window_phase() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -17,11 +19,8 @@ fn host_owned_session_keeps_bun_alive_and_second_echo_after_window_phase() {
     let marker = root.join("echo-again");
     let marker_lit = marker.display().to_string();
 
-    fs::write(
-        root.join("src/main.ts"),
-        format!(
-            r#"
-import {{ AppLinkSession }} from "./kipc";
+    let body = format!(
+        r#"
 import {{ watchFile, unwatchFile, existsSync }} from "node:fs";
 
 const link = process.env.KELD_APP_LINK;
@@ -62,9 +61,9 @@ try {{
   session.close();
 }}
 "#
-        ),
-    )
-    .expect("overwrite main");
+    );
+    let main = [KIPC_TS, body.as_str()].concat();
+    fs::write(root.join("src/main.ts"), main).expect("overwrite main");
 
     let session = start_dev_session(&root).expect("start host-owned session");
     session
