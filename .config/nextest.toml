@@ -37,3 +37,15 @@ max-threads = 1
 [[profile.ci.overrides]]
 filter = "binary(no_flag_windows)"
 test-group = "windows-no-flag-gui"
+
+# Linux strict cases each construct user/mount/PID/network namespaces and use
+# the same built launcher artifact. Parallel nextest processes can make
+# Bubblewrap setup fail under shared runner limits; this is not a concurrency
+# product contract. Preserve every assertion/deadline and serialize this one
+# OS-bound binary without retries.
+[test-groups.linux-strict-boundary]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = "binary(linux_strict_boundary)"
+test-group = "linux-strict-boundary"

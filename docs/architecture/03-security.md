@@ -120,14 +120,21 @@ manifest decoder.
    process gets no direct fs/net/shell APIs from Keld — `@keld/api` calls are kipc
    calls into guarded host handlers. (Bun itself can still `fs.read` — see layer 2.)
 2. **OS sandbox on the app process (progressive)**: because *authority already lives in
-   the host*, we can clamp the Bun child without breaking the model:
-   - macOS: `sandbox_init` profile (deny fs-write outside app containers, deny net when
-     manifest has none) — v0.3 target;
-   - Windows: restricted token + job object; AppContainer as stretch;
-   - Linux: landlock + seccomp basic profile.
-   Escape hatch per app (`"appSandbox": "off"`) for native modules that need raw access,
-   loudly surfaced in `keld doctor`. Electron-compat apps start with sandbox off +
-   roadmap to tighten (compat first, then squeeze).
+   the host*, Keld can clamp Bun without moving broker authority into the child. The
+   exact fail-closed contract is KEL-78, not this summary:
+   - macOS: separately signed App Sandbox helper remains unverified; deprecated
+     `sandbox_init` and inherit-from-host are rejected;
+   - Windows: the live zero-capability LPAC + reviewed ACL/handle-list mechanism is the
+     authority boundary; the non-breakaway Job is descendant cleanup, not authority;
+   - Linux: the live T4 mechanism uses unprivileged Bubblewrap user/mount/PID/network
+     namespaces, an empty-root exact-file mount policy, zero capabilities,
+     `no_new_privs`, x86_64-only Keld seccomp filters (other architectures fail
+     closed), and a stacked Landlock launcher. Its real
+     hostile fixture and host-death/relaunch proof are platform evidence; product roles
+     remain unverified until they consume this mechanism and matching archive.
+   The only compatibility fallback is an explicit Keld `legacy` profile that forfeits
+   the zero-authority claim. Electron `sandbox` / `appSandbox: "off"`, package names,
+   missing primitives, and failed proofs never select or auto-downgrade into legacy.
 3. **Webview hardening (always on)**: CSP injection, `keld://` scheme is
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless

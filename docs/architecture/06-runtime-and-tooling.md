@@ -109,6 +109,31 @@
   existing `Supervisor` inside the guardian and consuming the result from the
   no-flag host owner. The guardian still does not implement App Sandbox or
   Strict admission.
+- **Linux strict mechanism (KEL-78/T4):**
+  `keld_runtime::linux_strict` constructs one unprivileged, fail-closed role
+  boundary through a validated root-owned non-setuid/capability Bubblewrap and
+  a reviewed Keld launcher. Bubblewrap owns fresh user/mount/PID/network
+  namespaces, the empty-root exact-file mount table, zero capabilities,
+  `no_new_privs`, a PID-1 reaper and parent-death coupling. Keld passes two
+  x86_64 architecture-checked seccomp programs only through child-private FDs
+  3–4; every other architecture currently fails closed before command creation;
+  an async-signal-safe pre-exec step duplicates those FDs and marks every
+  higher descriptor close-on-exec without mutating caller-owned flags. The
+  read-only launcher stacks the highest supported Landlock filesystem/network
+  ABI, records `NotImplemented` when the kernel lacks Landlock, fails on a
+  disabled or broken available implementation, emits the exact observed state
+  after that decision through a parent-controlled pipe that is closed before
+  target exec, and replaces itself with the target. The writable role cannot
+  forge this state or inherit the channel. `NotImplemented` does not waive the
+  independently required namespace, empty-root mount, capability, descriptor,
+  or seccomp layers and never selects `legacy`.
+  Real Linux tests prove exact runtime-file/code mounts, writable role-private
+  paths, host/update/device absence, AF_INET and namespace-escape denial,
+  ancillary-FD denial, ambient-FD closure, equally contained descendants,
+  host-only death reaping and relaunch. Bun 1.4.0 starts under the mechanism.
+  This is not yet the default `Supervisor`/KEL-96 product path and does not make
+  an unconsumed or mismatched proof `Strict`; those integrations remain
+  fail-closed.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 

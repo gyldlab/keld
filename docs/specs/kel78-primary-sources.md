@@ -289,6 +289,14 @@ of a sandbox, not containment.
 - **Quote:** "A new mount namespace is created using either clone(2) or unshare(2) with the CLONE_NEWNS flag. When a new mount namespace is created, its mount list is initialized as follows: If the namespace is created using clone(2), the mount list of the child's namespace is a copy of the mount list in the parent process's mount namespace. If the namespace is created using unshare(2), the mount list of the new namespace is a copy of the mount list in the caller's previous mount namespace."
 - **Use:** Linux `strict` requires `CLONE_NEWNS` **and** a mount-table host-path deny (bind-mount allowlist, cover/unmount, or `pivot_root`) with tests that role-private paths still work. A copied host mount table is not containment. Landlock (L8) may only stack; it is not the item-2 deny.
 
+### L10. Bubblewrap constructs policy-defined unprivileged namespace roots and owns PID-1 reaping
+
+- **Sources:** <https://github.com/containers/bubblewrap/blob/124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe/README.md>, <https://github.com/containers/bubblewrap/blob/124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe/bubblewrap.c>, and the upstream Ubuntu 24.04 CI fix <https://github.com/containers/bubblewrap/commit/f97804f5171f9416daa37a83e07ea5c264ffc383>
+- **Publisher:** containers/bubblewrap maintainers
+- **Dated:** upstream `v0.11.1` commit `124c4cdf4321f63ef17a1cb0ce8f9dd45bd7adbe` inspected 2026-09-03; real Ubuntu package `0.11.1`, `/usr/bin/bwrap` SHA-256 `0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`
+- **Evidence:** upstream documents an initially empty tmpfs root, caller-selected visible mounts, user/PID/network namespaces, a PID-1 reaper, passed-in seccomp filters, `no_new_privs`, and parent-death killing. Current source rejects setuid and unexpected file capabilities and closes descriptors outside the explicit extra-FD list. Upstream's Ubuntu 24.04 workflow disables `kernel.apparmor_restrict_unprivileged_userns` before its Bubblewrap smoke tests; Keld's runner reproduced the otherwise-denied `RTM_NEWADDR` loopback setup and uses the same explicit prerequisite without retrying or weakening the namespace test.
+- **Use:** T4 reuses a root-owned, non-setuid/non-setgid, capability-free Bubblewrap executable. Bubblewrap and Keld-launcher canonical path ancestors must be root/current-user owned and must deny other-principal entry replacement; sticky root-owned transit directories remain valid. Keld still owns every argument, the exact read-only runtime-file list, the writable role root, seccomp policy, stacked Landlock launcher, parent-controlled readiness pipe, and hostile evidence. The launcher closes the pipe before target exec. `--unshare-user-try` and `--not-a-security-boundary` are forbidden. Missing/unprivileged-userns failure starts no target; there is no privileged or legacy fallback.
+
 ---
 
 ## Sources consulted and rejected as proof

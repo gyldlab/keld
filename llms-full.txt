@@ -1453,14 +1453,21 @@ manifest decoder.
    process gets no direct fs/net/shell APIs from Keld — `@keld/api` calls are kipc
    calls into guarded host handlers. (Bun itself can still `fs.read` — see layer 2.)
 2. **OS sandbox on the app process (progressive)**: because *authority already lives in
-   the host*, we can clamp the Bun child without breaking the model:
-   - macOS: `sandbox_init` profile (deny fs-write outside app containers, deny net when
-     manifest has none) — v0.3 target;
-   - Windows: restricted token + job object; AppContainer as stretch;
-   - Linux: landlock + seccomp basic profile.
-   Escape hatch per app (`"appSandbox": "off"`) for native modules that need raw access,
-   loudly surfaced in `keld doctor`. Electron-compat apps start with sandbox off +
-   roadmap to tighten (compat first, then squeeze).
+   the host*, Keld can clamp Bun without moving broker authority into the child. The
+   exact fail-closed contract is KEL-78, not this summary:
+   - macOS: separately signed App Sandbox helper remains unverified; deprecated
+     `sandbox_init` and inherit-from-host are rejected;
+   - Windows: the live zero-capability LPAC + reviewed ACL/handle-list mechanism is the
+     authority boundary; the non-breakaway Job is descendant cleanup, not authority;
+   - Linux: the live T4 mechanism uses unprivileged Bubblewrap user/mount/PID/network
+     namespaces, an empty-root exact-file mount policy, zero capabilities,
+     `no_new_privs`, x86_64-only Keld seccomp filters (other architectures fail
+     closed), and a stacked Landlock launcher. Its real
+     hostile fixture and host-death/relaunch proof are platform evidence; product roles
+     remain unverified until they consume this mechanism and matching archive.
+   The only compatibility fallback is an explicit Keld `legacy` profile that forfeits
+   the zero-authority claim. Electron `sandbox` / `appSandbox: "off"`, package names,
+   missing primitives, and failed proofs never select or auto-downgrade into legacy.
 3. **Webview hardening (always on)**: CSP injection, `keld://` scheme is
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless
@@ -2007,6 +2014,31 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   existing `Supervisor` inside the guardian and consuming the result from the
   no-flag host owner. The guardian still does not implement App Sandbox or
   Strict admission.
+- **Linux strict mechanism (KEL-78/T4):**
+  `keld_runtime::linux_strict` constructs one unprivileged, fail-closed role
+  boundary through a validated root-owned non-setuid/capability Bubblewrap and
+  a reviewed Keld launcher. Bubblewrap owns fresh user/mount/PID/network
+  namespaces, the empty-root exact-file mount table, zero capabilities,
+  `no_new_privs`, a PID-1 reaper and parent-death coupling. Keld passes two
+  x86_64 architecture-checked seccomp programs only through child-private FDs
+  3–4; every other architecture currently fails closed before command creation;
+  an async-signal-safe pre-exec step duplicates those FDs and marks every
+  higher descriptor close-on-exec without mutating caller-owned flags. The
+  read-only launcher stacks the highest supported Landlock filesystem/network
+  ABI, records `NotImplemented` when the kernel lacks Landlock, fails on a
+  disabled or broken available implementation, emits the exact observed state
+  after that decision through a parent-controlled pipe that is closed before
+  target exec, and replaces itself with the target. The writable role cannot
+  forge this state or inherit the channel. `NotImplemented` does not waive the
+  independently required namespace, empty-root mount, capability, descriptor,
+  or seccomp layers and never selects `legacy`.
+  Real Linux tests prove exact runtime-file/code mounts, writable role-private
+  paths, host/update/device absence, AF_INET and namespace-escape denial,
+  ancillary-FD denial, ambient-FD closure, equally contained descendants,
+  host-only death reaping and relaunch. Bun 1.4.0 starts under the mechanism.
+  This is not yet the default `Supervisor`/KEL-96 product path and does not make
+  an unconsumed or mismatched proof `Strict`; those integrations remain
+  fail-closed.
 
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
@@ -2815,7 +2847,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-ipc` | All | **Partial** — kipc framing, codecs, HELLO authentication, Unix bootstrap, and the Windows named-pipe app-link are implemented; channel registry and shared-memory lanes are absent. | [code](../../crates/keld-ipc/src/lib.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-30, KEL-101, KEL-133 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — The scoped filesystem broker is guard-checked and live; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, and Windows primary generations exist; full named-role and strict-profile wiring is absent. | [code](../../crates/keld-runtime/src/lib.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and the standalone Linux strict mechanism exist; full named-role and product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78 | `522b27b7c78caa52cedc7e001d8059e37b93aa7a` |
 | `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, delta application, rollback, and feeds are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -2840,7 +2872,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `phase.0` | All | **Partial** — The tracked workspace, architecture, agent workflow, and CI exist; the first attributed performance harness remains absent. | [code](../../crates/keld-core/src/lib.rs), [CI](../../.github/workflows/ci.yml) | [Specified](../../docs/architecture/01-overview.md) | KEL-39 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `phase.1` | All | **Partial** — macOS and Windows no-flag app sessions exist; Linux product boot and the full public role API remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `phase.2` | All | **Partial** — MCP v1, permission evaluation, guard dispatch, and one filesystem broker exist; bulk IPC, codegen, and broad compatibility remain absent. | [code](../../crates/keld-guard/src/lib.rs), [code](../../crates/keld-cli/src/mcp/mod.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-42, KEL-69, KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `phase.3` | All | **Specified only** — Distribution, signed updates, strict-profile product admission, and Linux hardening are specified but not implemented. | — | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-78 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `phase.3` | All | **Partial** — The standalone Linux strict mechanism is implemented and proven; product admission, distribution, signed updates, remaining OS profiles, limits, reporting, and addon workers remain incomplete. | [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-78 | `51c52f6772b3587b8fe1b1023e492e419f5e242c` |
 | `phase.4` | All | **Specified only** — Compatibility-depth, corpus, pinned-engine, and stable-plugin goals are specified but not implemented. | — | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 
 ## Platform surfaces
@@ -4230,6 +4262,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-runtime
 - message: Windows zero-capability LPAC admission failed
 - fix: Do not start an unconfined replacement. Repair the AppContainer profile, reviewed path ACLs, explicit environment, or private inherited-handle allowlist and refresh the hostile proof.
+
+## KELD-RUNTIME-016
+
+- crate: keld-runtime
+- message: Linux strict-profile construction, namespace, mount, seccomp, Landlock, FD isolation, readiness, or target exec failed
+- fix: Do not start an uncontained replacement. For an unsupported architecture or unavailable unprivileged user namespaces, move the workload to a supported x86_64 host with unprivileged user namespaces. Otherwise install or repair the reviewed Bubblewrap and Keld launcher artifacts and the exact runtime-file, mount, seccomp, enabled-Landlock, readiness-channel, or target configuration, then refresh the hostile proof. A kernel without Landlock is recorded rather than treated as this error; `legacy` remains an explicit policy choice that forfeits the zero-authority claim and is never selected automatically.
 
 ## KELD-NATIVE-001
 

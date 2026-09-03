@@ -1,7 +1,7 @@
 # Spec: strict-profile OS sandbox and native-addon-worker proof
 
 Status: approved
-Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-08-31
+Linear: KEL-78 · Owner: GYLDLAB · Updated: 2026-09-03
 
 Approval provenance: direct-session human authorization for the frozen Windows
 T3 contract is recorded in Linear comment
@@ -446,6 +446,23 @@ or the seccomp filter; a descendant creates a user namespace via
 `clone`/`clone3`/`unshare`/`setns`. `SCM_RIGHTS` is a runtime hostile
 probe (ledger L5), not an `admit()` primitive.
 
+T4 implements this policy with the unprivileged Bubblewrap facility recorded
+in ledger L10, not a custom post-fork namespace runtime. The host validates a
+root-owned executable with no setuid/setgid bits or file capabilities, validates
+the Bubblewrap and Keld-launcher ancestor chains against other-principal entry replacement, supplies
+the exact namespace and empty-root mount arguments, and passes two Keld-owned
+seccomp programs through fixed child-private FDs. The current program is
+x86_64-only and every other architecture fails command construction. A minimal read-only Keld
+launcher inside that root applies the highest kernel-supported Landlock
+filesystem/network ABI, records a kernel with no Landlock, fails when Landlock
+is built but disabled or enforcement errors, writes the exact observed state
+through a parent-controlled pipe closed before target exec, and `exec`s the
+target. The writable role cannot forge the state or inherit that channel. Only regular runtime
+files may be allowlisted; directory-wide library mounts, userns-try,
+`--not-a-security-boundary`, privileged/setuid fallback, and ambient FDs are
+rejected. Bubblewrap owns PID-namespace reaping and parent-death coupling;
+Keld's existing Supervisor remains the restart owner.
+
 ### Types and channels (sketch; not implemented on this SHA)
 
 ```text
@@ -615,12 +632,28 @@ Renderer sandbox is a different column.
       and prove the strict child/descendant enrollment separately.
 - [x] T3: Windows zero-capability LPAC + ACL + handle allowlist + job
       descendant proof.
-- [ ] T4: Linux namespace + explicit host-path deny (role-private paths still
+- [x] T4: Linux namespace + explicit host-path deny (role-private paths still
       work; mount-table change or `pivot_root`, not Landlock) +
       `no_new_privs` + cap drop + seccomp that denies `clone3` / `setns` /
       `unshare`+`CLONE_NEWUSER` (+ Landlock **stack only** when present)
       and unavailable-userns fail-closed proof. `SCM_RIGHTS` is a T4
       runtime probe, not an admit primitive.
+      Implementation head `522b27b7c78caa52cedc7e001d8059e37b93aa7a`
+      has real Ubuntu kernel `7.0.0-30-generic` evidence: Bubblewrap 0.11.1
+      (`sha256:0abea81db798ebf6b4742ac0664802d97521547a353c2a0dbdc21d76cbbfd2c0`),
+      trusted post-Landlock launcher readiness, mount/Landlock/seccomp/FD/namespace
+      hostile passes, host-only death of a four-process enrolled tree plus
+      relaunch, and Bun 1.4.0 artifact
+      `sha256:33d56b070be6a9e3da0ab013038b43d1645d0534ca811ecdba4472599117eb4b`.
+      GitHub's Ubuntu 24.04 runner also follows upstream Bubblewrap commit
+      `f97804f5171f9416daa37a83e07ea5c264ffc383` by explicitly enabling
+      unprivileged user namespaces; without it the retained negative run fails
+      at `RTM_NEWADDR` before readiness instead of retrying or skipping T4.
+      The x86_64 synthetic artifact/profile pair is
+      `sha256:5a6b9caa8a719e7ad335ff62ac41917b786444acf7769c6043c577739b895633` /
+      `sha256:9aeadfa21b677cef63167f7445548bff9e8299ea432e70aaa208ae6d40de7b2c`.
+      Product-role consumption remains KEL-96/KEL-75 work; T4 proves the
+      reusable runtime mechanism and does not mark an unconsumed role Strict.
 - [ ] T5: Crash/hang/OOM cleanup and updater-boundary probes on each OS
       that passed T2–T4.
 - [ ] T6: Doctor / build / release metadata surfaces. Then KEL-75 T6 may
@@ -705,6 +738,14 @@ for the host-path deny.
   accepted-Quit byte; unmarked EOF remains host death. This is not a
   Strict-containment claim. Human
   delegation is recorded on KEL-78/KEL-96.
+- T4 unsafe: **yes** — `linux_strict.rs` uses only child-side `fcntl(F_DUPFD)`,
+  `dup3`, and `close_range(CLOSE_RANGE_CLOEXEC)` in the pre-exec closure; the
+  real inheritable-host-FD negative control fails without it.
+- T4 public API / permission model / dependency: **yes** — the Linux-only
+  profile/command/launcher API implements the approved strict boundary;
+  unprivileged Bubblewrap is an external TCB input and workspace-pinned
+  `seccompiler` 0.5.0, `rustix` 1.1.4, and `landlock` 0.4.7 are the reviewed
+  target-only Rust dependencies. T4 changes no public kipc wire bytes.
 
 Removal / rollback: delete the admission gate and keep KEL-70 unsandboxed
 supervision; every surface returns to `unverified`. Do not keep a half-applied
@@ -723,8 +764,9 @@ waiver for a different product result.
 
 ## 10. Open questions
 
-1. If unprivileged user namespaces are unavailable, may a reviewed privileged
-   launcher join the TCB, or is `legacy` / refuse the only option?
+1. Resolved for T4: unavailable unprivileged user namespaces fail closed. No
+   privileged/setuid launcher or automatic legacy fallback joins the TCB. A
+   future alternative requires a separately approved contract and proof.
 2. What is the minimum experimentally required Bun JIT entitlement set on
    each OS? Recorded Bun-start failures decide; do not pre-grant.
 3. After approval, who updates architecture 03 §4.2 to replace the
