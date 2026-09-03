@@ -443,8 +443,6 @@ fn run_same_window_recovery(failure_command: &str) {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -468,7 +466,10 @@ fn run_same_window_recovery(failure_command: &str) {
 
     let (mut g1_reader, mut g1_writer, g1_pid, g1_link) =
         accept_ready_generation(&control_listener, &mut child);
-    expect_renderer_beacon(&beacon_rx, "initial renderer beacon");
+    expect_renderer_beacon(
+        spawn_renderer_beacon(beacon_listener),
+        "initial renderer beacon",
+    );
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
@@ -494,7 +495,6 @@ fn run_same_window_recovery(failure_command: &str) {
     assert!(status.success(), "recovery host exited with {status}");
     assert!(!process_exists(g1_pid), "retired g1 Bun survived");
     assert!(!process_exists(g2_pid), "g2 Bun survived Quit");
-    beacon.join().expect("recovery beacon thread");
 }
 
 #[test]
@@ -568,8 +568,6 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind shipping beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -596,7 +594,10 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     let host_pid =
         wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
-    expect_renderer_beacon(&beacon_rx, "shipping renderer beacon");
+    expect_renderer_beacon(
+        spawn_renderer_beacon(beacon_listener),
+        "shipping renderer beacon",
+    );
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
     writer.write_all(b"QUIT\n").expect("shipping Quit");
@@ -628,7 +629,6 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         "delegated Bun survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
-    beacon.join().expect("shipping beacon thread");
 }
 
 #[test]
@@ -641,8 +641,6 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lease beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -668,7 +666,10 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _, lease_handle) =
         accept_ready_generation_with_lease(&control_listener, &mut cli);
-    expect_renderer_beacon(&beacon_rx, "lease renderer beacon");
+    expect_renderer_beacon(
+        spawn_renderer_beacon(beacon_listener),
+        "lease renderer beacon",
+    );
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     let controller_pipe = cli
         .stdout
@@ -702,7 +703,6 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         handle_census.bun_count,
         handle_census.lease_host_handle,
     );
-    beacon.join().expect("lease beacon thread");
 }
 
 #[test]
@@ -718,8 +718,6 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .local_addr()
         .expect("host-death beacon address")
         .port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -745,7 +743,10 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (reader, _writer, bun_pid, _, descendant_pid) =
         accept_ready_generation_with_descendant(&control_listener, &mut cli);
-    expect_renderer_beacon(&beacon_rx, "host-death renderer beacon");
+    expect_renderer_beacon(
+        spawn_renderer_beacon(beacon_listener),
+        "host-death renderer beacon",
+    );
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
 
     let host = open_process_for_wait(host_pid, true);
@@ -762,7 +763,6 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     assert!(!cli_status.success(), "host death became CLI success");
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
     wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("host-death beacon thread");
 
     let relaunched = run_product_cycle(&fixture, "post-host-death");
     println!(
@@ -1154,8 +1154,6 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon listener");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -1200,7 +1198,10 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    expect_renderer_beacon(&beacon_rx, "WebView2 renderer requested the exact beacon");
+    expect_renderer_beacon(
+        spawn_renderer_beacon(beacon_listener),
+        "WebView2 renderer requested the exact beacon",
+    );
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -1218,7 +1219,6 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         !process_exists(bun_pid),
         "Bun {bun_pid} survived orderly host exit"
     );
-    beacon.join().expect("beacon thread");
 
     ProductEvidence {
         host_pid,
@@ -1227,16 +1227,42 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     }
 }
 
-fn expect_renderer_beacon(observed: &mpsc::Receiver<Result<(), String>>, context: &str) {
-    let result = observed
-        .recv_timeout(PRODUCT_DEADLINE)
-        .unwrap_or_else(|error| panic!("{context}: beacon worker did not report: {error}"));
-    result.unwrap_or_else(|error| panic!("{context}: {error}"));
+struct RendererBeacon {
+    observed: mpsc::Receiver<Result<(), String>>,
+    worker: thread::JoinHandle<()>,
+    deadline: Instant,
 }
 
-fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<Result<(), String>>) {
-    let result = serve_renderer_beacon_until(listener, Instant::now() + PRODUCT_DEADLINE);
-    let _ = observed.send(result);
+fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let (observed_tx, observed) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        let _ = observed_tx.send(result);
+    });
+    RendererBeacon {
+        observed,
+        worker,
+        deadline,
+    }
+}
+
+fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
+    let RendererBeacon {
+        observed,
+        worker,
+        deadline,
+    } = beacon;
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or_default();
+    let result = observed.recv_timeout(remaining);
+    worker
+        .join()
+        .unwrap_or_else(|_| panic!("{context}: beacon worker panicked"));
+    let result =
+        result.unwrap_or_else(|error| panic!("{context}: beacon worker did not report: {error}"));
+    result.unwrap_or_else(|error| panic!("{context}: {error}"));
 }
 
 struct PendingRendererRequest {
@@ -1422,8 +1448,7 @@ fn renderer_beacon_accumulates_a_fragmented_request_line() {
 fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon regression listener");
     let address = listener.local_addr().expect("beacon regression address");
-    let (observed_tx, observed_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&listener, &observed_tx));
+    let beacon = spawn_renderer_beacon(listener);
 
     drop(TcpStream::connect(address).expect("connect empty preconnect"));
     let mut target = TcpStream::connect(address).expect("connect target renderer request");
@@ -1432,10 +1457,9 @@ fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
         .expect("write target renderer request");
 
     expect_renderer_beacon(
-        &observed_rx,
+        beacon,
         "exact renderer request observed after empty preconnect",
     );
-    beacon.join().expect("beacon regression thread");
 }
 
 #[test]
