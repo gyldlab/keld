@@ -41,6 +41,13 @@ in agent-facing files. Architecture specs remain prose.
 - Fix the root cause, keep scope bounded, and park adjacent cleanup.
 - Ask one focused question only when a user-owned choice materially changes the result;
   otherwise take the smallest reversible path.
+- When reporting a defect, blocker, failed predicate, or incomplete result, agents MUST
+  follow the evidence-backed outcome immediately with a concrete resolution path. Name
+  the owner when known; otherwise state that ownership is unknown and give the first
+  action to identify it. Include ordered next actions, the exact command/comment/decision
+  when known, and the first completion check. Separate the user's required action from
+  work the agent can continue; suggested steps do not expand authority, and a
+  problem-only handoff is incomplete.
 
 ## Atomic problem-solving protocol (MUST)
 
