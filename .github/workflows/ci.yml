@@ -182,6 +182,11 @@ jobs:
               cargo nextest run -p "$package" --profile ci --no-tests=pass
             fi
           done
+      - name: Real Linux foreign-owner refusal (KEL-167)
+        if: matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')
+        env:
+          KELD_REAL_LINUX_OWNER_PROOF: "1"
+        run: cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture
       - name: rustdoc (warnings deny)
         if: matrix.os == 'ubuntu-latest'
         env:

@@ -1293,6 +1293,7 @@ dependencies = [
  "keld-ipc",
  "keld-runtime",
  "rmcp",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",

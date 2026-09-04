@@ -4030,6 +4030,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The delegated staged host exited unsuccessfully
 - fix: Fix the preceding host diagnostic, then re-run `keld dev`.
 
+## KELD-CLI-049
+
+- crate: keld-cli
+- message: Project path is not owned by the invoking OS principal
+- fix: Move the project below a directory owned by the invoking user and correct the path's ownership before running Keld.
+
 ## KELD-MCP001
 
 - crate: keld-cli

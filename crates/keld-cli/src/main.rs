@@ -47,10 +47,9 @@ fn main() {
         },
         Some("dev") => match parse_dev_flags(&args[2..]) {
             Ok(()) => match env::current_dir() {
-                Ok(cwd) => {
-                    let root = find_project_root(&cwd).unwrap_or(cwd);
-                    run_dev(&root).map_err(|e| e.to_string())
-                }
+                Ok(cwd) => find_project_root(&cwd)
+                    .map_err(|error| error.to_string())
+                    .and_then(|root| run_dev(&root.unwrap_or(cwd)).map_err(|e| e.to_string())),
                 Err(e) => Err(e.to_string()),
             },
             Err(err) => {
@@ -59,11 +58,9 @@ fn main() {
             }
         },
         Some("doctor") => match env::current_dir() {
-            Ok(cwd) => {
-                let root = find_project_root(&cwd);
-                run_doctor_cmd(root.as_deref(), &args[2..]);
-                Ok(())
-            }
+            Ok(cwd) => find_project_root(&cwd)
+                .map_err(|error| error.to_string())
+                .map(|root| run_doctor_cmd(root.as_deref(), &args[2..])),
             Err(e) => Err(e.to_string()),
         },
         Some("mcp") => run_mcp_cmd(&args[2..]),
@@ -131,7 +128,7 @@ fn run_mcp_cmd(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("serve") => {
             let cwd = env::current_dir().map_err(|e| e.to_string())?;
-            let root = find_project_root(&cwd);
+            let root = find_project_root(&cwd).map_err(|error| error.to_string())?;
             run_mcp_serve(root.as_deref()).map_err(|e| e.to_string())
         }
         Some(other) => {
