@@ -1772,14 +1772,15 @@ fn linux_strict_primary_config_x86(
         .readonly_runtime(&root.join(entry_path), Path::new(LINUX_BUN_ENTRY))
         .map_err(|source| app_detail("Linux strict entry", source.to_string()))?;
 
-    let mut config = PrimaryRoleConfig::new(bun)
+    let config = PrimaryRoleConfig::new(bun)
         .arg("run")
         .arg(LINUX_BUN_ENTRY)
         .env("HOME", "/app")
         .env("TMPDIR", "/tmp")
         .env_remove(DEV_LEASE_ENV);
     #[cfg(debug_assertions)]
-    {
+    let config = {
+        let mut config = config;
         if let Some(control) = std::env::var_os("KELD_T1B_CONTROL") {
             let control = PathBuf::from(control)
                 .canonicalize()
@@ -1793,7 +1794,8 @@ fn linux_strict_primary_config_x86(
             config = config.env("KELD_T2_EXIT_ON_LINK_EOF", value);
         }
         config = config.env("KELD_T4_LINUX_STRICT", "1");
-    }
+        config
+    };
     Ok(config.linux_strict(profile))
 }
 

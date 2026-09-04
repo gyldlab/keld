@@ -249,8 +249,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev pkg-config build-essential fluxbox wmctrl x11-utils xvfb xdotool
-      - name: Build keld-host
-        run: cargo build -p keld-host
+      - name: Build release keld-host with warnings denied
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo build --release -p keld-host
       # KEL-28's own DoD promised "a smoke test exists that CI can run
       # (headless/virtual display where needed)" but this job never existed
       # until now — closing a disclosed gap, not a new requirement.
@@ -368,7 +370,7 @@ jobs:
             exit 1
           fi
 
-          ./target/debug/keld-host --hello --title CI-Linux-Smoke &
+          ./target/release/keld-host --hello --title CI-Linux-Smoke &
           hello_pid=$!
 
           window_id=""
