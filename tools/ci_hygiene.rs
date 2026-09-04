@@ -173,23 +173,74 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         "running_under_msys() {",
         "docker_host_path() {",
         "prepare_docker_output_dir() {",
+        "restore_docker_output_dir() {",
+        "if ! running_under_msys; then",
+        "\"$render_parent\"/keld-mermaid-render.*) ;;",
+        "cleanup() {",
+        "local cleanup_status=$?",
+        "local cleanup_failed=0",
+        "trap - EXIT",
+        "if restore_docker_output_dir \"$render_dir\"; then",
+        "exit \"$cleanup_status\"",
         "render_dir=$(mktemp -d \"$render_parent/keld-mermaid-render.XXXXXX\")",
         "prepare_docker_output_dir \"$render_dir\"",
         "docker_render_dir=$(docker_host_path \"$render_dir\")",
         "export MSYS2_ARG_CONV_EXCL='*'",
     ];
-    let [running, docker_path, prepare, render_create, prepare_call, render_path, exclusion] =
-        required.map(|line| {
+    let [
+        running,
+        docker_path,
+        prepare,
+        restore,
+        restore_guard,
+        restore_allowlist,
+        cleanup,
+        cleanup_status,
+        cleanup_failed,
+        disable_exit_trap,
+        restore_call,
+        exit_with_status,
+        render_create,
+        prepare_call,
+        render_path,
+        exclusion,
+    ] = required.map(|line| {
         shell_line_position(&lines, line).ok_or_else(|| {
             format!(
-                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing executable shell line `{line}`. Restore the PowerShell-launched Git-Bash detection, host-path conversion, and writable isolated output bind."
+                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing executable shell line `{line}`. Restore the PowerShell-launched Git-Bash detection, host-path conversion, writable isolated output bind, and owner-only retained-output cleanup."
             )
         })
     });
-    let (running, docker_path, prepare, render_create, prepare_call, render_path, exclusion) = (
+    let (
+        running,
+        docker_path,
+        prepare,
+        restore,
+        restore_guard,
+        restore_allowlist,
+        cleanup,
+        cleanup_status,
+        cleanup_failed,
+        disable_exit_trap,
+        restore_call,
+        exit_with_status,
+        render_create,
+        prepare_call,
+        render_path,
+        exclusion,
+    ) = (
         running?,
         docker_path?,
         prepare?,
+        restore?,
+        restore_guard?,
+        restore_allowlist?,
+        cleanup?,
+        cleanup_status?,
+        cleanup_failed?,
+        disable_exit_trap?,
+        restore_call?,
+        exit_with_status?,
         render_create?,
         prepare_call?,
         render_path?,
@@ -197,12 +248,21 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
     );
     if !(running < docker_path
         && docker_path < prepare
-        && prepare < render_create
+        && prepare < restore
+        && restore < restore_guard
+        && restore_guard < restore_allowlist
+        && restore_allowlist < cleanup
+        && cleanup < cleanup_status
+        && cleanup_status < cleanup_failed
+        && cleanup_failed < disable_exit_trap
+        && disable_exit_trap < restore_call
+        && restore_call < exit_with_status
+        && exit_with_status < render_create
         && render_create < prepare_call
         && prepare_call < render_path)
     {
         return Err(format!(
-            "CI-HYGIENE: `{MERMAID_RENDERER}` has the MSYS detector, converter, output preparation, or render-directory calls out of order. Restore definition-before-use and prepare the directory before converting/mounting it."
+            "CI-HYGIENE: `{MERMAID_RENDERER}` has the MSYS detector, converter, output preparation/restoration, cleanup, or render-directory calls out of order. Restore definition-before-use, owner-only failure cleanup, and preparation before conversion/mounting it."
         ));
     }
     let uname = lines
@@ -215,6 +275,7 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         .collect();
     let cygpath = shell_line_position(&lines, "cygpath -am \"$path\"");
     let chmod = shell_line_position(&lines, "chmod 0777 -- \"$path\" || {");
+    let restore_chmod = shell_line_position(&lines, "chmod 0700 -- \"$path\" || {");
     let docker_run = lines
         .iter()
         .position(|line| line.starts_with("run_with_timeout 120 docker run"));
@@ -222,15 +283,13 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         || !msys_conditionals
             .iter()
             .any(|index| docker_path < *index && *index < prepare)
-        || !msys_conditionals
-            .iter()
-            .any(|index| prepare < *index && *index < render_create)
         || !cygpath.is_some_and(|index| docker_path < index && index < prepare)
-        || !chmod.is_some_and(|index| prepare < index && index < render_create)
+        || !chmod.is_some_and(|index| prepare < index && index < restore)
+        || !restore_chmod.is_some_and(|index| restore < index && index < cleanup)
         || !docker_run.is_some_and(|index| exclusion < index)
     {
         return Err(format!(
-            "CI-HYGIENE: `{MERMAID_RENDERER}` has inert or reordered MSYS handling. The uname fallback and both guarded function bodies must be executable, and path-conversion exclusion must precede Docker."
+            "CI-HYGIENE: `{MERMAID_RENDERER}` has inert or reordered MSYS handling. Detection, 0777 preparation, 0700 retained-output restoration, failure-status preservation, and path-conversion exclusion must remain executable and ordered."
         ));
     }
     Ok(())
@@ -1824,7 +1883,8 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         r#"if [[ -L "$workspace/target" ]]; then"#,
         r#"render_parent=$(cd "$workspace/target" && pwd -P)"#,
         r#"[[ "$render_parent" == "$workspace/target" ]] || {"#,
-        r#""$render_parent"/keld-mermaid-render.*) rm -rf -- "$render_dir" ;;"#,
+        r#""$render_parent"/keld-mermaid-render.*)"#,
+        r#"if ! rm -rf -- "$render_dir"; then"#,
     ] {
         if !uncommented_line_contains(&renderer, needle) {
             return Err(format!(
@@ -3422,6 +3482,196 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    fn write_msys_renderer_fixture(
+        temp: &TempDir,
+        docker: &str,
+        chmod: Option<&str>,
+        remove: Option<&str>,
+    ) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+
+        let checkout = temp.path().join("checkout");
+        fs::create_dir(&checkout).expect("checkout directory");
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&checkout)
+                .status()
+                .expect("initialize fixture")
+                .success()
+        );
+        fs::write(
+            checkout.join("diagram.md"),
+            "```mermaid\nflowchart LR\n A-->B\n```\n",
+        )
+        .expect("tracked diagram");
+        assert!(
+            Command::new("git")
+                .args(["add", "diagram.md"])
+                .current_dir(&checkout)
+                .status()
+                .expect("track diagram")
+                .success()
+        );
+        fs::create_dir(checkout.join("tools")).expect("fixture tools");
+        fs::write(checkout.join(MERMAID_CONFIG), "{}\n").expect("renderer config");
+        temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
+        temp.write("bin/docker", docker);
+        temp.write("bin/uname", "#!/usr/bin/env bash\nprintf 'MSYS_NT-10.0\\n'\n");
+        temp.write(
+            "bin/cygpath",
+            "#!/usr/bin/env bash\n[[ \"$1\" == '-am' ]] || exit 64\nprintf '%s\\n' \"$2\"\n",
+        );
+        temp.write(
+            "bin/chmod",
+            chmod.unwrap_or(
+                "#!/usr/bin/env bash\nmode=$1\nshift\n[[ \"${1:-}\" == -- ]] && shift\nexec /bin/chmod \"$mode\" \"$@\"\n",
+            ),
+        );
+        if let Some(remove) = remove {
+            temp.write("bin/rm", remove);
+        }
+        for shim in ["docker", "uname", "cygpath", "chmod"] {
+            let path = temp.path().join("bin").join(shim);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                .expect("shim executable");
+        }
+        for shim in ["rm"] {
+            let path = temp.path().join("bin").join(shim);
+            if path.exists() {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+                    .expect("shim executable");
+            }
+        }
+        checkout
+    }
+
+    #[cfg(unix)]
+    fn run_msys_renderer_fixture(temp: &TempDir, checkout: &Path) -> std::process::Output {
+        use std::process::Command;
+
+        let mut paths = vec![temp.path().join("bin")];
+        paths.extend(env::split_paths(&env::var_os("PATH").expect("tool PATH")));
+        Command::new("bash")
+            .arg(temp.path().join("renderer.sh"))
+            .current_dir(checkout)
+            .env_remove("MSYSTEM")
+            .env("PATH", env::join_paths(paths).expect("fixture PATH"))
+            .output()
+            .expect("execute real renderer script")
+    }
+
+    #[cfg(unix)]
+    fn retained_render_dirs(checkout: &Path) -> Vec<PathBuf> {
+        fs::read_dir(checkout.join("target"))
+            .expect("checkout-local output directory")
+            .map(|entry| entry.expect("retained output entry").path())
+            .collect()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mermaid_renderer_retains_msys_failure_output_with_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new();
+        let checkout = write_msys_renderer_fixture(
+            &temp,
+            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
+            None,
+            None,
+        );
+        let output = run_msys_renderer_fixture(&temp, &checkout);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("failed-render output retained"),
+            "missing retained-output receipt: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let retained = retained_render_dirs(&checkout);
+        assert_eq!(retained.len(), 1, "retained output: {retained:?}");
+        assert!(
+            retained[0]
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("keld-mermaid-render.")),
+            "wrong retained output path: {:?}",
+            retained[0]
+        );
+        assert_eq!(
+            fs::metadata(&retained[0])
+                .expect("retained output metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mermaid_renderer_does_not_claim_owner_only_when_restoration_fails() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new();
+        let checkout = write_msys_renderer_fixture(
+            &temp,
+            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
+            Some(
+                "#!/usr/bin/env bash\nmode=$1\nshift\n[[ \"${1:-}\" == -- ]] && shift\nif [[ \"$mode\" == 0700 ]]; then exit 44; fi\nexec /bin/chmod \"$mode\" \"$@\"\n",
+            ),
+            None,
+        );
+        let output = run_msys_renderer_fixture(&temp, &checkout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr.contains("owner-only restoration failed"), "{stderr}");
+        assert!(!stderr.contains("with owner-only host access"), "{stderr}");
+        let retained = retained_render_dirs(&checkout);
+        assert_eq!(retained.len(), 1, "retained output: {retained:?}");
+        assert_eq!(
+            fs::metadata(&retained[0])
+                .expect("retained output metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mermaid_renderer_restores_output_when_success_cleanup_cannot_remove_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new();
+        let checkout = write_msys_renderer_fixture(
+            &temp,
+            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrm) exit 0 ;;\nrun)\n  out=''\n  shift\n  while [[ $# -gt 0 ]]; do\n    if [[ \"$1\" == --volume ]]; then\n      case \"$2\" in *:/out) out=\"${2%:/out}\" ;; esac\n      shift 2\n    else\n      shift\n    fi\n  done\n  [[ -n \"$out\" ]] || exit 64\n  printf '<svg><title>fixture</title><desc>fixture</desc></svg>' >\"$out/fixture.svg\"\n  ;;\n*) exit 99 ;;\nesac\n",
+            None,
+            Some("#!/usr/bin/env bash\nexit 66\n"),
+        );
+        let output = run_msys_renderer_fixture(&temp, &checkout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            stderr.contains("successful-render output could not be removed; retained"),
+            "{stderr}"
+        );
+        let retained = retained_render_dirs(&checkout);
+        assert_eq!(retained.len(), 1, "retained output: {retained:?}");
+        assert_eq!(
+            fs::metadata(&retained[0])
+                .expect("retained output metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
     #[test]
     fn mermaid_output_outside_the_shared_checkout_fails() {
         let temp = complete_fixture();
@@ -3474,6 +3724,49 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("MSYS output bind must remain writable");
         assert!(error.contains("prepare_docker_output_dir"), "{error}");
+    }
+
+    #[test]
+    fn missing_mermaid_msys_permission_restoration_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace(
+                    "if restore_docker_output_dir \"$render_dir\"; then",
+                    "",
+                ),
+        );
+        let error =
+            check(temp.path()).expect_err("retained output must return to owner-only access");
+        assert!(error.contains("restore_docker_output_dir"), "{error}");
+    }
+
+    #[test]
+    fn mermaid_permission_restoration_must_stay_bounded_and_preserve_status() {
+        for (old, replacement) in [
+            ("if ! running_under_msys; then", "if false; then"),
+            ("\"$render_parent\"/keld-mermaid-render.*) ;;", "*) ;;"),
+            (
+                "chmod 0700 -- \"$path\" || {",
+                "chmod 0777 -- \"$path\" || {",
+            ),
+            ("local cleanup_status=$?", "local cleanup_status=0"),
+            ("trap - EXIT", "true"),
+            ("exit \"$cleanup_status\"", "exit 0"),
+        ] {
+            let temp = complete_fixture();
+            temp.write(
+                MERMAID_RENDERER,
+                &read(temp.path(), MERMAID_RENDERER)
+                    .expect("renderer fixture")
+                    .replace(old, replacement),
+            );
+            let error = check(temp.path())
+                .expect_err("retained-output restoration must remain bounded and failure-safe");
+            assert!(error.contains("CI-HYGIENE"), "{old}: {error}");
+        }
     }
 
     #[test]
