@@ -256,9 +256,9 @@ jobs:
       # KEL-28's own DoD promised "a smoke test exists that CI can run
       # (headless/virtual display where needed)" but this job never existed
       # until now — closing a disclosed gap, not a new requirement.
-      # No GPU/Wayland on this runner, so the GPU-safe-mode probe
-      # (webkitgtk::probe_gpu_stack) reports Normal and is a no-op here;
-      # this job proves window creation, not the safe-mode branch.
+      # No GPU/Wayland on this runner, so process-entry GPU preparation and
+      # WebKitGtkEngine's fail-closed validation both report Normal here;
+      # this job proves window creation, not the NVIDIA+Wayland re-exec branch.
       - name: Xvfb GUI smoke test — title, controls, and clean close
         run: |
           xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' bash <<'X11'

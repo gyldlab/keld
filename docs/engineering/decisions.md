@@ -197,14 +197,15 @@ feature flags needed for the hello slice), mirroring `wkwebview/mod.rs`
 structurally, with one deliberate deviation: `WebViewBuilderExtUnix::build_gtk`
 against the tao-owned GTK window, not the plain cross-platform `build()`, which
 wry's own docs say is X11-only. KEL-28's DoD requires Wayland too. One
-Linux-only addition crate `AGENTS.md` requires: `probe_gpu_stack()` detects
-NVIDIA + Wayland (`/proc/driver/nvidia/version` + `WAYLAND_DISPLAY`) and sets
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` on the process's own environment before any
-GTK/WebKit call — never by asking a developer to export a shell variable —
-mitigating the documented DMA-BUF crash/flicker class on `WebKitGTK` ≤ 2.54
-(tauri-apps/tauri#9394, #14924). Detection is split from the mutation
-(`detect_gpu_safe_mode`, pure, vs. `probe_gpu_stack`, which also applies it) so
-`keld doctor` can read the state later without side effects. Media-permission
+Linux-only addition crate `AGENTS.md` requires: pure
+`detect_gpu_safe_mode()` detects NVIDIA + Wayland
+(`/proc/driver/nvidia/version` + `WAYLAND_DISPLAY`), while KEL-132's
+`prepare_gpu_safe_mode_process()` exact-self re-execs process entry with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` before any GTK/WebKit call. This avoids
+unsound live-process environment mutation and never asks a developer to export
+a shell variable, while preserving the documented DMA-BUF crash/flicker
+mitigation on `WebKitGTK` ≤ 2.54 (tauri-apps/tauri#9394, #14924). The pure
+detector lets `keld doctor` read the state later without side effects. Media-permission
 guard (KEL-59) reuses the existing wry helpers unchanged (`media.rs` widened
 from macOS-only to `any(macos, linux)`), since Linux's default without a
 handler is also "show the platform's own prompt," same category as the old

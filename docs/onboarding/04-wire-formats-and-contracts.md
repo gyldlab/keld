@@ -654,6 +654,8 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-WV-005` | Navigation failed | `error.rs:49` |
 | `KELD-WV-006` | Script evaluation failed | `error.rs:54` |
 | `KELD-WV-007` | Unknown webview id | `error.rs:59` |
+| `KELD-WV-008` | WebView2 runtime unavailable | `keld-wv/src/error.rs` (`WvError::WebView2RuntimeMissing`) |
+| `KELD-WV-010` | Linux GPU safe-mode preparation failed | `keld-wv/src/error.rs` (`WvError::GpuSafeModePreparation`) |
 | `KELD-CLI-010` | `KELD_APP_LINK` unset in the app process | `templates/hello/src/main-body.ts` |
 | `KELD-CLI-020` | Invalid project name | `keld-cli/src/create.rs:28` |
 | `KELD-CLI-021` | Target directory already exists | `create.rs:34` |
@@ -670,8 +672,8 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 
 ### The "errors state the fix" rule, demonstrated
 
-`keld-wv` is the reference implementation, and its fix text is *tested* — `error.rs:74-118` asserts
-that each of the seven variants renders both its code and a fix hint, so a message that degrades to
+`keld-wv` is the reference implementation, and its fix text is *tested* — `error.rs` asserts
+that each of the nine variants renders both its code and a fix hint, so a message that degrades to
 a bare description fails CI:
 
 ```rust

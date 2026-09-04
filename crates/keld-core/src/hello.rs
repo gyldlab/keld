@@ -9,6 +9,24 @@ use std::path::Path;
 
 use keld_wv::{HELLO_HTML, WvError, run_hello_window as wv_run_hello};
 
+/// Prepares the current process for its platform webview backend.
+///
+/// On Linux NVIDIA+Wayland this may replace the process through exact
+/// `/proc/self/exe` with the DMA-BUF safe-mode environment applied. Shipping
+/// binaries call this from their process-entry dispatcher before creating
+/// threads or non-repeatable state. Other platforms return immediately.
+///
+/// # Errors
+///
+/// Returns [`WvError`] if Linux exact-self re-exec fails.
+pub fn prepare_webview_process() -> Result<(), WvError> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = keld_wv::webkitgtk::prepare_gpu_safe_mode_process()?;
+    }
+    Ok(())
+}
+
 /// Window title when config/args do not supply one.
 pub const DEFAULT_HELLO_TITLE: &str = "Keld";
 
@@ -19,6 +37,7 @@ pub const DEFAULT_RENDERER: &str = "index.html";
 pub const DEFAULT_ENTRY: &str = "src/main.ts";
 
 /// Opens the default Keld hello window until the user closes it.
+/// On Linux, process entry must call [`prepare_webview_process`] first.
 ///
 /// # Errors
 ///
@@ -28,6 +47,7 @@ pub fn run_hello_window() -> Result<(), WvError> {
 }
 
 /// Opens a hello window with `title` until the user closes it.
+/// On Linux, process entry must call [`prepare_webview_process`] first.
 ///
 /// # Errors
 ///
@@ -40,6 +60,7 @@ pub fn run_hello_window_titled(title: &str) -> Result<(), WvError> {
 ///
 /// Used by `keld dev` with the project's renderer file contents. `keld hello`
 /// and `keld-host --hello` keep the compiled `HELLO_HTML` constant.
+/// On Linux, process entry must call [`prepare_webview_process`] first.
 ///
 /// # Errors
 ///

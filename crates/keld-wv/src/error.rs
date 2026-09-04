@@ -35,6 +35,11 @@ pub enum WvError {
         /// Probe failure text from `GetAvailableCoreWebView2BrowserVersionString`.
         detail: String,
     },
+    /// Linux NVIDIA+Wayland safe-mode process preparation was skipped or failed.
+    GpuSafeModePreparation {
+        /// Exact preparation or re-exec failure.
+        detail: String,
+    },
 }
 
 impl fmt::Display for WvError {
@@ -83,6 +88,12 @@ impl fmt::Display for WvError {
                  https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. \
                  Keld will not download or execute an installer for you."
             ),
+            Self::GpuSafeModePreparation { detail } => write!(
+                f,
+                "KELD-WV-010: Linux GPU safe-mode preparation failed — {detail}. \
+                 Launch through Keld's process entry before creating a webview; \
+                 do not mutate or export the process environment manually."
+            ),
         }
     }
 }
@@ -95,7 +106,7 @@ mod tests {
 
     #[test]
     fn display_messages_carry_error_codes_and_fix_guidance() {
-        let cases: [(WvError, &str, &str); 8] = [
+        let cases: [(WvError, &str, &str); 9] = [
             (
                 WvError::UnsupportedPlatform {
                     os: "freebsd",
@@ -140,6 +151,13 @@ mod tests {
                 },
                 "KELD-WV-008",
                 "Evergreen Runtime",
+            ),
+            (
+                WvError::GpuSafeModePreparation {
+                    detail: String::from("boom"),
+                },
+                "KELD-WV-010",
+                "process entry",
             ),
         ];
         for (err, code, fix_hint) in cases {

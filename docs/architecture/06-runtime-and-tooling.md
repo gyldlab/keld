@@ -252,10 +252,12 @@ v0 live verbs: `create`, `dev`, `doctor`, `mcp`, `hello`, `ipc-echo`, `ipc-clien
 non-project-relative is `KELD-CLI-035`), and a webview info line on macOS,
 Windows, and Linux (all three live `WebEngine` backends as of KEL-28).
 Native-module DB, permission diffs, and `--web-compat` are
-not live. The Linux GPU-stack probe (`webkitgtk::probe_gpu_stack`, KEL-28) runs
-automatically at engine creation and applies NVIDIA+Wayland safe-mode
-internally; it is not yet its own `keld doctor` line — the `webview` check only
-reports backend availability, not safe-mode state. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
+not live. Linux process entry runs
+`webkitgtk::prepare_gpu_safe_mode_process` (KEL-28/KEL-132), which exact-self
+re-execs with NVIDIA+Wayland safe-mode before engine creation; the constructor
+fails closed if preparation was skipped. This is not yet its own `keld doctor`
+line — the `webview` check only reports backend availability, not safe-mode
+state. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
 `doctor`, `hello`) are `KELD-CLI-044` (exit 2). `keld create` takes one project
 name; `--template` is not live (vanilla-ts hello only). `keld dev` takes no
 flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
