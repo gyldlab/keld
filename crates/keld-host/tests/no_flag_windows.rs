@@ -29,6 +29,9 @@ use windows_sys::Win32::System::Threading::{
 
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
+const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
+const RENDERER_CONNECTION_LIMIT: usize = 16;
+const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
@@ -441,8 +444,7 @@ fn run_same_window_recovery(failure_command: &str) {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -466,9 +468,7 @@ fn run_same_window_recovery(failure_command: &str) {
 
     let (mut g1_reader, mut g1_writer, g1_pid, g1_link) =
         accept_ready_generation(&control_listener, &mut child);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("initial renderer beacon");
+    expect_renderer_beacon(beacon, "initial renderer beacon");
     let g1_window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     writeln!(g1_writer, "{failure_command}").expect("fail g1 app link or process");
     g1_writer.flush().expect("flush g1 failure command");
@@ -494,7 +494,6 @@ fn run_same_window_recovery(failure_command: &str) {
     assert!(status.success(), "recovery host exited with {status}");
     assert!(!process_exists(g1_pid), "retired g1 Bun survived");
     assert!(!process_exists(g2_pid), "g2 Bun survived Quit");
-    beacon.join().expect("recovery beacon thread");
 }
 
 #[test]
@@ -568,8 +567,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind shipping beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -596,9 +594,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     let host_pid =
         wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("shipping renderer beacon");
+    expect_renderer_beacon(beacon, "shipping renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
     writer.write_all(b"QUIT\n").expect("shipping Quit");
@@ -630,7 +626,6 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         "delegated Bun survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
-    beacon.join().expect("shipping beacon thread");
 }
 
 #[test]
@@ -643,8 +638,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lease beacon");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -670,9 +664,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _, lease_handle) =
         accept_ready_generation_with_lease(&control_listener, &mut cli);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("lease renderer beacon");
+    expect_renderer_beacon(beacon, "lease renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     let controller_pipe = cli
         .stdout
@@ -706,7 +698,6 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         handle_census.bun_count,
         handle_census.lease_host_handle,
     );
-    beacon.join().expect("lease beacon thread");
 }
 
 #[test]
@@ -722,8 +713,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .local_addr()
         .expect("host-death beacon address")
         .port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -749,9 +739,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
     let (reader, _writer, bun_pid, _, descendant_pid) =
         accept_ready_generation_with_descendant(&control_listener, &mut cli);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("host-death renderer beacon");
+    expect_renderer_beacon(beacon, "host-death renderer beacon");
     let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
 
     let host = open_process_for_wait(host_pid, true);
@@ -768,7 +756,6 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     assert!(!cli_status.success(), "host death became CLI success");
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
     wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("host-death beacon thread");
 
     let relaunched = run_product_cycle(&fixture, "post-host-death");
     println!(
@@ -1160,8 +1147,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         .port();
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon listener");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -1206,9 +1192,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("WebView2 renderer requested the exact beacon");
+    expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon");
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
@@ -1226,7 +1210,6 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         !process_exists(bun_pid),
         "Bun {bun_pid} survived orderly host exit"
     );
-    beacon.join().expect("beacon thread");
 
     ProductEvidence {
         host_pid,
@@ -1235,19 +1218,640 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     }
 }
 
-fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<()>) {
-    let (mut stream, _) = listener.accept().expect("accept renderer beacon");
-    stream
-        .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("beacon read deadline");
-    let mut request = [0_u8; 2048];
-    let read = stream.read(&mut request).expect("read renderer beacon");
-    let request = String::from_utf8_lossy(&request[..read]);
-    assert!(request.starts_with("GET /ready.png "), "{request}");
-    stream
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .expect("reply renderer beacon");
-    observed.send(()).expect("publish renderer beacon");
+struct RendererBeacon {
+    observed: mpsc::Receiver<Result<(), String>>,
+    worker: thread::JoinHandle<()>,
+    activate_deadline: mpsc::Sender<Instant>,
+}
+
+fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
+    let (observed_tx, observed) = mpsc::channel();
+    let (activate_deadline, deadline_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = serve_renderer_beacon_loop(&listener, &deadline_rx);
+        let _ = observed_tx.send(result);
+    });
+    RendererBeacon {
+        observed,
+        worker,
+        activate_deadline,
+    }
+}
+
+fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
+    let RendererBeacon {
+        observed,
+        worker,
+        activate_deadline,
+    } = beacon;
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let _ = activate_deadline.send(deadline);
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or_default();
+    let initial_result = observed.recv_timeout(remaining);
+    finish_renderer_beacon(&observed, worker, initial_result, context)
+        .unwrap_or_else(|error| panic!("{error}"));
+}
+
+fn finish_renderer_beacon(
+    observed: &mpsc::Receiver<Result<(), String>>,
+    worker: thread::JoinHandle<()>,
+    initial_result: Result<Result<(), String>, mpsc::RecvTimeoutError>,
+    context: &str,
+) -> Result<(), String> {
+    worker
+        .join()
+        .map_err(|_| format!("{context}: beacon worker panicked"))?;
+    let result = match initial_result {
+        Ok(result) => result,
+        Err(receive_error) => match observed.try_recv() {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) | Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {
+                return Err(format!(
+                    "{context}: beacon worker did not report: {receive_error}"
+                ));
+            }
+        },
+    };
+    result.map_err(|error| format!("{context}: {error}"))
+}
+
+struct PendingRendererRequest {
+    stream: TcpStream,
+    request: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RendererRequestRead {
+    Pending,
+    Empty,
+    Complete(Vec<u8>),
+}
+
+fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Result<(), String> {
+    let (deadline_tx, deadline_rx) = mpsc::channel();
+    deadline_tx
+        .send(deadline)
+        .expect("activate fixed renderer beacon deadline");
+    serve_renderer_beacon_loop(listener, &deadline_rx)
+}
+
+fn serve_renderer_beacon_loop(
+    listener: &TcpListener,
+    deadline_rx: &mpsc::Receiver<Instant>,
+) -> Result<(), String> {
+    serve_renderer_beacon_loop_with_clock(listener, deadline_rx, Instant::now)
+}
+
+fn serve_renderer_beacon_loop_with_clock(
+    listener: &TcpListener,
+    deadline_rx: &mpsc::Receiver<Instant>,
+    mut now: impl FnMut() -> Instant,
+) -> Result<(), String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
+    let mut pending = Vec::<PendingRendererRequest>::new();
+    let mut deadline = None;
+
+    loop {
+        if deadline.is_none() {
+            match deadline_rx.try_recv() {
+                Ok(activated) => deadline = Some(activated),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("renderer beacon deadline owner ended before awaiting".to_owned());
+                }
+            }
+        }
+        let remaining = deadline
+            .map(|deadline| renderer_beacon_remaining(deadline, now()))
+            .transpose()?;
+
+        let mut index = 0;
+        while index < pending.len() {
+            let request = {
+                let PendingRendererRequest { stream, request } = &mut pending[index];
+                read_renderer_request_line(request, |buffer| stream.read(buffer))
+            }?;
+            match request {
+                RendererRequestRead::Pending => index += 1,
+                RendererRequestRead::Empty => {
+                    pending.swap_remove(index);
+                }
+                RendererRequestRead::Complete(request) => {
+                    let mut matched = pending.swap_remove(index);
+                    if !request.starts_with(b"GET /ready.png ") {
+                        return Err(format!(
+                            "renderer requested an unexpected beacon: {}",
+                            String::from_utf8_lossy(&request)
+                        ));
+                    }
+                    matched.stream.set_nonblocking(false).map_err(|error| {
+                        format!("set renderer beacon reply stream blocking: {error}")
+                    })?;
+                    let write_timeout = deadline
+                        .map(|deadline| renderer_beacon_remaining(deadline, now()))
+                        .transpose()?
+                        .unwrap_or(PRODUCT_DEADLINE);
+                    matched
+                        .stream
+                        .set_write_timeout(Some(write_timeout))
+                        .map_err(|error| format!("set renderer beacon write deadline: {error}"))?;
+                    matched
+                        .stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .map_err(|error| format!("reply renderer beacon: {error}"))?;
+                    return Ok(());
+                }
+            }
+        }
+
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if pending.len() == RENDERER_CONNECTION_LIMIT {
+                    return Err(format!(
+                        "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+                    ));
+                }
+                stream
+                    .set_nonblocking(true)
+                    .map_err(|error| format!("set renderer beacon stream nonblocking: {error}"))?;
+                pending.push(PendingRendererRequest {
+                    stream,
+                    request: Vec::new(),
+                });
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(format!("accept renderer beacon: {error}")),
+        }
+
+        // This only backs off the nonblocking kernel poll; socket readiness
+        // and the parent-activated absolute deadline remain the observables.
+        thread::park_timeout(remaining.map_or(RENDERER_ACCEPT_POLL, |remaining| {
+            remaining.min(RENDERER_ACCEPT_POLL)
+        }));
+    }
+}
+
+fn renderer_beacon_remaining(deadline: Instant, now: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "renderer beacon deadline elapsed before the exact request".to_owned())
+}
+
+fn read_renderer_request_line(
+    request: &mut Vec<u8>,
+    mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
+) -> Result<RendererRequestRead, String> {
+    loop {
+        if request.len() == RENDERER_REQUEST_LINE_LIMIT {
+            return Err(format!(
+                "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
+            ));
+        }
+        let mut chunk = [0_u8; 256];
+        let available = (RENDERER_REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
+        let read = match read_chunk(&mut chunk[..available]) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(RendererRequestRead::Pending);
+            }
+            Err(error) if request.is_empty() && error.kind() == std::io::ErrorKind::TimedOut => {
+                return Ok(RendererRequestRead::Pending);
+            }
+            Err(error)
+                if request.is_empty()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+            {
+                return Ok(RendererRequestRead::Empty);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return Err(format!(
+                    "renderer beacon request reset after {} bytes: {error}",
+                    request.len()
+                ));
+            }
+            Err(error) => return Err(format!("read renderer beacon request: {error}")),
+        };
+        if read == 0 {
+            return if request.is_empty() {
+                Ok(RendererRequestRead::Empty)
+            } else {
+                Err(format!(
+                    "renderer beacon request ended before CRLF: {}",
+                    String::from_utf8_lossy(request)
+                ))
+            };
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(line_end) = request.windows(2).position(|bytes| bytes == b"\r\n") {
+            let mut complete = std::mem::take(request);
+            complete.truncate(line_end);
+            return Ok(RendererRequestRead::Complete(complete));
+        }
+    }
+}
+
+#[test]
+fn renderer_beacon_accumulates_a_fragmented_request_line() {
+    let mut chunks = [
+        b"G".as_slice(),
+        b"ET /ready.png HTTP/1.1\r".as_slice(),
+        b"\nHost: 127.0.0.1\r\n\r\n".as_slice(),
+    ]
+    .into_iter();
+    let mut request = Vec::new();
+    let result = read_renderer_request_line(&mut request, |buffer| {
+        let chunk = chunks.next().unwrap_or_default();
+        buffer[..chunk.len()].copy_from_slice(chunk);
+        Ok(chunk.len())
+    })
+    .expect("read fragmented renderer request");
+
+    assert_eq!(
+        result,
+        RendererRequestRead::Complete(b"GET /ready.png HTTP/1.1".to_vec())
+    );
+}
+
+#[test]
+fn renderer_beacon_prefers_worker_error_published_after_initial_receive_timeout() {
+    let (observed_tx, observed) = mpsc::channel();
+    let (publish_tx, publish_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        publish_rx
+            .recv()
+            .expect("release late renderer beacon publication");
+        observed_tx
+            .send(Err("precise worker failure".to_owned()))
+            .expect("publish precise renderer beacon failure");
+    });
+    let initial_result = observed.recv_timeout(Duration::from_millis(1));
+    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
+    publish_tx
+        .send(())
+        .expect("release worker after initial receive timeout");
+
+    let result = finish_renderer_beacon(&observed, worker, initial_result, "late publication");
+    assert_eq!(
+        result,
+        Err("late publication: precise worker failure".to_owned())
+    );
+}
+
+#[test]
+fn renderer_beacon_rejects_worker_success_published_after_initial_receive_timeout() {
+    let (observed_tx, observed) = mpsc::channel();
+    let (publish_tx, publish_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        publish_rx
+            .recv()
+            .expect("release late renderer beacon success");
+        observed_tx
+            .send(Ok(()))
+            .expect("publish late renderer beacon success");
+    });
+    let initial_result = observed.recv_timeout(Duration::from_millis(1));
+    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
+    publish_tx
+        .send(())
+        .expect("release success after initial receive timeout");
+
+    let result = finish_renderer_beacon(&observed, worker, initial_result, "late success");
+    assert_eq!(
+        result,
+        Err("late success: beacon worker did not report: timed out waiting on channel".to_owned())
+    );
+}
+
+#[test]
+fn renderer_beacon_preserves_initial_timeout_when_worker_publishes_nothing() {
+    let (observed_tx, observed) = mpsc::channel::<Result<(), String>>();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        release_rx
+            .recv()
+            .expect("release renderer beacon worker without publication");
+        drop(observed_tx);
+    });
+    let initial_result = observed.recv_timeout(Duration::from_millis(1));
+    assert_eq!(initial_result, Err(mpsc::RecvTimeoutError::Timeout));
+    release_tx
+        .send(())
+        .expect("release non-publishing worker after initial timeout");
+
+    let result = finish_renderer_beacon(&observed, worker, initial_result, "no publication");
+    assert_eq!(
+        result,
+        Err(
+            "no publication: beacon worker did not report: timed out waiting on channel".to_owned()
+        )
+    );
+}
+
+#[test]
+fn renderer_beacon_request_line_enforces_exact_maximum_and_maximum_plus_one() {
+    let exact = vec![b'a'; RENDERER_REQUEST_LINE_LIMIT - 2];
+    let mut exact_wire = exact.clone();
+    exact_wire.extend_from_slice(b"\r\n");
+    let mut exact_cursor = std::io::Cursor::new(exact_wire);
+    let mut request = Vec::new();
+    let result = read_renderer_request_line(&mut request, |buffer| exact_cursor.read(buffer))
+        .expect("exact-limit request line");
+    assert_eq!(result, RendererRequestRead::Complete(exact));
+
+    let mut oversized_wire = vec![b'b'; RENDERER_REQUEST_LINE_LIMIT - 1];
+    oversized_wire.extend_from_slice(b"\r\n");
+    let mut oversized_cursor = std::io::Cursor::new(oversized_wire);
+    let mut request = Vec::new();
+    let error = read_renderer_request_line(&mut request, |buffer| oversized_cursor.read(buffer))
+        .expect_err("maximum-plus-one request line must fail");
+    assert_eq!(
+        error,
+        format!("renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes")
+    );
+}
+
+#[test]
+fn renderer_beacon_rechecks_the_absolute_deadline_before_replying() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind reply-deadline listener");
+    let address = listener.local_addr().expect("reply-deadline address");
+    let mut target = TcpStream::connect(address).expect("connect reply-deadline request");
+    target
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("reply-deadline response kill switch");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write reply-deadline request");
+
+    let before = Instant::now();
+    let deadline = before + Duration::from_secs(1);
+    let after = deadline + Duration::from_nanos(1);
+    let (deadline_tx, deadline_rx) = mpsc::channel();
+    deadline_tx
+        .send(deadline)
+        .expect("activate injected reply deadline");
+    let mut observations = [before, before, after].into_iter();
+    let result = serve_renderer_beacon_loop_with_clock(&listener, &deadline_rx, || {
+        observations
+            .next()
+            .expect("renderer beacon sampled the clock beyond the reply boundary")
+    });
+
+    assert_eq!(
+        result,
+        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+    );
+    assert!(
+        observations.next().is_none(),
+        "the reply boundary did not consume its fresh clock observation"
+    );
+    let mut response = Vec::new();
+    target
+        .read_to_end(&mut response)
+        .expect("read reply-deadline response");
+    assert!(response.is_empty(), "late response escaped: {response:?}");
+}
+
+#[test]
+fn renderer_beacon_ignores_an_empty_preconnect_before_the_exact_request() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon regression listener");
+    let address = listener.local_addr().expect("beacon regression address");
+    let beacon = spawn_renderer_beacon(listener);
+
+    drop(TcpStream::connect(address).expect("connect empty preconnect"));
+    let mut target = TcpStream::connect(address).expect("connect target renderer request");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write target renderer request");
+
+    expect_renderer_beacon(
+        beacon,
+        "exact renderer request observed after empty preconnect",
+    );
+}
+
+#[test]
+fn renderer_beacon_serves_before_the_parent_activates_its_wait_deadline() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind early beacon listener");
+    let address = listener.local_addr().expect("early beacon address");
+    let beacon = spawn_renderer_beacon(listener);
+    let mut target = TcpStream::connect(address).expect("connect early renderer request");
+    target
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("early response kill switch");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write early renderer request");
+    let mut response = [0_u8; 128];
+    let read = target
+        .read(&mut response)
+        .expect("worker replied before parent await");
+    assert!(
+        response[..read].starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "{}",
+        String::from_utf8_lossy(&response[..read])
+    );
+
+    expect_renderer_beacon(beacon, "early renderer request");
+}
+
+#[test]
+fn renderer_beacon_does_not_serialize_idle_preconnects_before_the_exact_request() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind idle-preconnect listener");
+    let address = listener.local_addr().expect("idle-preconnect address");
+    let idle = (0..(RENDERER_CONNECTION_LIMIT - 1))
+        .map(|_| TcpStream::connect(address).expect("queue idle preconnect"))
+        .collect::<Vec<_>>();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        let _ = observed_tx.send(result);
+    });
+
+    let mut target = TcpStream::connect(address).expect("connect exact request behind idle peer");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write exact request behind idle peer");
+
+    let observed = observed_rx.recv_timeout(Duration::from_secs(1));
+    drop(idle);
+    beacon.join().expect("idle-preconnect beacon thread");
+    let result = observed.expect("idle peers serialized ahead of the exact request");
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn renderer_beacon_reaps_closed_pending_connections_before_applying_the_live_cap() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale-pending listener");
+    let address = listener.local_addr().expect("stale-pending address");
+    let stale = (0..RENDERER_CONNECTION_LIMIT)
+        .map(|_| TcpStream::connect(address).expect("queue stale pending connection"))
+        .collect::<Vec<_>>();
+    drop(stale);
+
+    let mut target = TcpStream::connect(address).expect("connect behind stale pending peers");
+    target
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("stale-pending response kill switch");
+    target
+        .write_all(b"GET /ready.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write exact request behind stale pending peers");
+
+    let result = serve_renderer_beacon_until(&listener, Instant::now() + Duration::from_secs(1));
+    assert_eq!(result, Ok(()));
+    let mut response = Vec::new();
+    target
+        .read_to_end(&mut response)
+        .expect("read exact response behind stale pending peers");
+    assert_eq!(
+        response,
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+}
+
+#[test]
+fn renderer_beacon_rejects_maximum_plus_one_pending_connections() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind connection-limit listener");
+    let address = listener.local_addr().expect("connection-limit address");
+    let pending = (0..=RENDERER_CONNECTION_LIMIT)
+        .map(|_| TcpStream::connect(address).expect("queue pending connection"))
+        .collect::<Vec<_>>();
+    let result = serve_renderer_beacon_until(&listener, Instant::now() + Duration::from_secs(1));
+    drop(pending);
+
+    assert_eq!(
+        result,
+        Err(format!(
+            "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+        ))
+    );
+}
+
+#[test]
+fn renderer_beacon_reports_its_absolute_deadline_instead_of_disconnect() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon deadline listener");
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        observed_tx
+            .send(result)
+            .expect("publish beacon deadline result");
+    });
+
+    let result = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("beacon worker honored its absolute deadline");
+    assert_eq!(
+        result,
+        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+    );
+    beacon.join().expect("beacon deadline thread");
+}
+
+#[test]
+fn renderer_beacon_empty_preconnect_does_not_renew_the_deadline() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind preconnect deadline listener");
+    let address = listener.local_addr().expect("preconnect deadline address");
+    drop(TcpStream::connect(address).expect("queue empty preconnect before deadline"));
+
+    let deadline = Instant::now() + Duration::from_millis(50);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let beacon = thread::spawn(move || {
+        let result = serve_renderer_beacon_until(&listener, deadline);
+        observed_tx
+            .send(result)
+            .expect("publish preconnect deadline result");
+    });
+
+    let result = observed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("empty preconnect retained the original absolute deadline");
+    assert_eq!(
+        result,
+        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+    );
+    beacon.join().expect("preconnect deadline thread");
+}
+
+#[test]
+fn renderer_beacon_ignores_only_idle_or_reset_before_request_bytes() {
+    for kind in [
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::ConnectionAborted,
+    ] {
+        let mut request = Vec::new();
+        let empty = read_renderer_request_line(&mut request, |_| {
+            Err(std::io::Error::new(kind, "empty preconnect ended"))
+        })
+        .expect("pre-request close is an empty preconnect");
+        assert_eq!(empty, RendererRequestRead::Empty);
+    }
+    for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::WouldBlock] {
+        let mut request = Vec::new();
+        let idle = read_renderer_request_line(&mut request, |_| {
+            Err(std::io::Error::new(kind, "empty preconnect ended"))
+        })
+        .expect("pre-request idle remains pending");
+        assert_eq!(idle, RendererRequestRead::Pending);
+    }
+
+    let mut first = true;
+    let mut request = Vec::new();
+    let partial = read_renderer_request_line(&mut request, |buffer| {
+        if first {
+            first = false;
+            buffer[..3].copy_from_slice(b"GET");
+            Ok(3)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "partial request reset",
+            ))
+        }
+    })
+    .expect_err("a reset after request bytes must remain a failure");
+    assert!(
+        partial.starts_with("renderer beacon request reset after 3 bytes:"),
+        "{partial}"
+    );
+}
+
+#[test]
+fn renderer_beacon_preserves_the_unexpected_path_failure() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind wrong-path listener");
+    let address = listener.local_addr().expect("wrong-path address");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let beacon = thread::spawn(move || serve_renderer_beacon_until(&listener, deadline));
+    let mut request = TcpStream::connect(address).expect("connect wrong-path request");
+    request
+        .write_all(b"GET /leaked.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .expect("write wrong-path request");
+
+    let error = beacon
+        .join()
+        .expect("wrong-path beacon thread")
+        .expect_err("wrong renderer path must fail");
+    assert_eq!(
+        error,
+        "renderer requested an unexpected beacon: GET /leaked.png HTTP/1.1"
+    );
 }
 
 fn accept_control_or_host_failure(
