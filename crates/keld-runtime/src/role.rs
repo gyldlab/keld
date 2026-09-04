@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,7 @@ use crate::PreparedCommand;
 use crate::linux_strict::LinuxStrictProfile;
 use crate::{
     CapturedOutput, ChildPreparer, CrashLedger, GenerationLease, PreparedChild, RestartPolicy,
-    RevocationCause, RuntimeError, Supervisor, SupervisorOutcome, lock_or_recover,
+    RevocationCause, RuntimeError, Supervisor, SupervisorOutcome,
 };
 
 pub(crate) const DEFAULT_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -986,7 +986,12 @@ impl GenerationLease for RoleGenerationLease {
         if first_error.is_ok() {
             first_error = self.poll_admission();
         }
-        if let Some(stream) = lock_or_recover(&self.link).take() {
+        if let Some(stream) = self
+            .link
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             let _ = stream.shutdown_app_link();
         }
         let _ = self.events_tx.send(RoleEvent::Revoked {
@@ -1061,12 +1066,12 @@ impl RoleGenerationLease {
         stream: BootstrapStream,
         clone_stream: impl FnOnce(&BootstrapStream) -> std::io::Result<BootstrapStream>,
     ) -> Result<Option<BootstrapStream>, RuntimeError> {
-        *lock_or_recover(&self.link) = Some(stream);
+        *self.link.lock().unwrap_or_else(PoisonError::into_inner) = Some(stream);
         self.admission_done = true;
         if self.bound_tx.is_none() {
             return Ok(None);
         }
-        let link = lock_or_recover(&self.link);
+        let link = self.link.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(stream) = link.as_ref() else {
             return Err(RuntimeError::Lifecycle {
                 phase: self.owner.bootstrap_admission_phase(),
@@ -1293,7 +1298,11 @@ mod lifecycle_tests {
         assert!(error.to_string().contains("clone sentinel"), "{error}");
         assert!(lease.admission_done, "consumed admission must stay latched");
         assert!(
-            lock_or_recover(&lease.link).is_some(),
+            lease
+                .link
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some(),
             "the generation lease must retain the authenticated stream for revoke"
         );
 
