@@ -70,7 +70,7 @@ docker_host_path() {
   fi
 }
 
-# Docker Desktop presents Git-Bash /tmp binds to Linux containers as root-owned
+# Docker Desktop can present Git-Bash bind mounts to Linux containers as root-owned
 # even when the host directory belongs to the invoking Windows user. The
 # renderer deliberately runs as the non-root Git-Bash uid/gid, so grant that
 # isolated random output directory write access on MSYS only. Unix permissions
@@ -83,6 +83,27 @@ prepare_docker_output_dir() {
       return 1
     }
   fi
+}
+
+# A failed render is intentionally retained for diagnosis. Undo the temporary
+# broad mode before returning it to the invoking user; do not apply chmod to an
+# unvalidated path or alter the mktemp-owned Unix path.
+restore_docker_output_dir() {
+  local path=$1
+  if ! running_under_msys; then
+    return 0
+  fi
+  case "$path" in
+    "$render_parent"/keld-mermaid-render.*) ;;
+    *)
+      echo "KELD-DOCS006: refused to restore permissions on unexpected render path '$path'. Remove it manually after inspection." >&2
+      return 1
+      ;;
+  esac
+  chmod 0700 -- "$path" || {
+    echo "KELD-DOCS006: cannot restore owner-only access on retained Docker output '$path'. Repair its Windows ACL before inspecting or removing it." >&2
+    return 1
+  }
 }
 
 docker info >/dev/null 2>&1 || {
@@ -137,18 +158,50 @@ export DOCKER_HOST=$docker_host
 export DOCKER_CONFIG=$docker_config_dir
 
 cleanup() {
+  local cleanup_status=$?
+  local cleanup_failed=0
+  trap - EXIT
   if [[ -n "$active_container" ]]; then
     docker rm --force "$active_container" >/dev/null 2>&1 || true
   fi
-  if [[ "$render_succeeded" == 1 && "$keep_output" == 0 && -n "$render_dir" ]]; then
-    case "$render_dir" in
-      "$render_parent"/keld-mermaid-render.*) rm -rf -- "$render_dir" ;;
-      *)
-        echo "KELD-DOCS006: refused to clean unexpected render path '$render_dir'. Remove it manually after inspection." >&2
-        ;;
-    esac
+  if [[ -n "$render_dir" ]]; then
+    if [[ "$render_succeeded" == 1 && "$keep_output" == 0 ]]; then
+      case "$render_dir" in
+        "$render_parent"/keld-mermaid-render.*)
+          if ! rm -rf -- "$render_dir"; then
+            cleanup_failed=1
+            if [[ -d "$render_dir" ]]; then
+              if restore_docker_output_dir "$render_dir"; then
+                echo "KELD-DOCS006: successful-render output could not be removed; retained in $render_dir with owner-only host access." >&2
+              else
+                echo "KELD-DOCS006: successful-render output could not be removed and owner-only restoration failed for $render_dir. Repair its Windows ACL before inspection or removal." >&2
+              fi
+            fi
+          fi
+          ;;
+        *)
+          echo "KELD-DOCS006: refused to clean unexpected render path '$render_dir'. Remove it manually after inspection." >&2
+          cleanup_failed=1
+          ;;
+      esac
+    else
+      if restore_docker_output_dir "$render_dir"; then
+        if [[ "$render_succeeded" == 0 ]]; then
+          echo "KELD-DOCS006: failed-render output retained in $render_dir with owner-only host access." >&2
+        fi
+      else
+        cleanup_failed=1
+        if [[ "$render_succeeded" == 0 ]]; then
+          echo "KELD-DOCS006: failed-render output retained in $render_dir, but owner-only restoration failed. Repair its Windows ACL before inspection or removal." >&2
+        fi
+      fi
+    fi
   fi
-  rmdir "$docker_config_dir" >/dev/null 2>&1 || true
+  rmdir "$docker_config_dir" >/dev/null 2>&1 || cleanup_failed=1
+  if [[ "$cleanup_status" == 0 && "$cleanup_failed" == 1 ]]; then
+    exit 1
+  fi
+  exit "$cleanup_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
