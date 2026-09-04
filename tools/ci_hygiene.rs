@@ -173,23 +173,58 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         "running_under_msys() {",
         "docker_host_path() {",
         "prepare_docker_output_dir() {",
+        "restore_docker_output_dir() {",
+        "if ! running_under_msys; then",
+        "/tmp/keld-mermaid-render.*) ;;",
+        "cleanup() {",
+        "restore_docker_output_dir \"$render_dir\" || cleanup_status=1",
         "render_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)",
         "prepare_docker_output_dir \"$render_dir\"",
         "docker_render_dir=$(docker_host_path \"$render_dir\")",
         "export MSYS2_ARG_CONV_EXCL='*'",
     ];
-    let [running, docker_path, prepare, render_create, prepare_call, render_path, exclusion] =
-        required.map(|line| {
+    let [
+        running,
+        docker_path,
+        prepare,
+        restore,
+        restore_guard,
+        restore_allowlist,
+        cleanup,
+        restore_call,
+        render_create,
+        prepare_call,
+        render_path,
+        exclusion,
+    ] = required.map(|line| {
         shell_line_position(&lines, line).ok_or_else(|| {
             format!(
-                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing executable shell line `{line}`. Restore the PowerShell-launched Git-Bash detection, host-path conversion, and writable isolated output bind."
+                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing executable shell line `{line}`. Restore the PowerShell-launched Git-Bash detection, host-path conversion, writable isolated output bind, and owner-only retained-output cleanup."
             )
         })
     });
-    let (running, docker_path, prepare, render_create, prepare_call, render_path, exclusion) = (
+    let (
+        running,
+        docker_path,
+        prepare,
+        restore,
+        restore_guard,
+        restore_allowlist,
+        cleanup,
+        restore_call,
+        render_create,
+        prepare_call,
+        render_path,
+        exclusion,
+    ) = (
         running?,
         docker_path?,
         prepare?,
+        restore?,
+        restore_guard?,
+        restore_allowlist?,
+        cleanup?,
+        restore_call?,
         render_create?,
         prepare_call?,
         render_path?,
@@ -197,12 +232,17 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
     );
     if !(running < docker_path
         && docker_path < prepare
-        && prepare < render_create
+        && prepare < restore
+        && restore < restore_guard
+        && restore_guard < restore_allowlist
+        && restore_allowlist < cleanup
+        && cleanup < restore_call
+        && restore_call < render_create
         && render_create < prepare_call
         && prepare_call < render_path)
     {
         return Err(format!(
-            "CI-HYGIENE: `{MERMAID_RENDERER}` has the MSYS detector, converter, output preparation, or render-directory calls out of order. Restore definition-before-use and prepare the directory before converting/mounting it."
+            "CI-HYGIENE: `{MERMAID_RENDERER}` has the MSYS detector, converter, output preparation/restoration, cleanup, or render-directory calls out of order. Restore definition-before-use, owner-only failure cleanup, and preparation before conversion/mounting."
         ));
     }
     let uname = lines
@@ -215,6 +255,10 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         .collect();
     let cygpath = shell_line_position(&lines, "cygpath -am \"$path\"");
     let chmod = shell_line_position(&lines, "chmod 0777 -- \"$path\" || {");
+    let restore_chmod = shell_line_position(&lines, "chmod 0700 -- \"$path\" || {");
+    let capture_status = shell_line_position(&lines, "local cleanup_status=$?");
+    let disable_exit_trap = shell_line_position(&lines, "trap - EXIT");
+    let exit_with_status = shell_line_position(&lines, "exit \"$cleanup_status\"");
     let docker_run = lines
         .iter()
         .position(|line| line.starts_with("run_with_timeout 120 docker run"));
@@ -224,13 +268,17 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
             .any(|index| docker_path < *index && *index < prepare)
         || !msys_conditionals
             .iter()
-            .any(|index| prepare < *index && *index < render_create)
+            .any(|index| prepare < *index && *index < restore)
         || !cygpath.is_some_and(|index| docker_path < index && index < prepare)
-        || !chmod.is_some_and(|index| prepare < index && index < render_create)
+        || !chmod.is_some_and(|index| prepare < index && index < restore)
+        || !restore_chmod.is_some_and(|index| restore < index && index < cleanup)
+        || !capture_status.is_some_and(|index| cleanup < index && index < restore_call)
+        || !disable_exit_trap.is_some_and(|index| cleanup < index && index < restore_call)
+        || !exit_with_status.is_some_and(|index| restore_call < index && index < render_create)
         || !docker_run.is_some_and(|index| exclusion < index)
     {
         return Err(format!(
-            "CI-HYGIENE: `{MERMAID_RENDERER}` has inert or reordered MSYS handling. The uname fallback and both guarded function bodies must be executable, and path-conversion exclusion must precede Docker."
+            "CI-HYGIENE: `{MERMAID_RENDERER}` has inert or reordered MSYS handling. Detection, 0777 preparation, 0700 retained-output restoration, failure-status preservation, and path-conversion exclusion must remain executable and ordered."
         ));
     }
     Ok(())
@@ -2026,7 +2074,7 @@ mod tests {
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(
             MERMAID_RENDERER,
-            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ndocker_host_path\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\nrunning_under_msys() {\ncase \"$(uname -s 2>/dev/null || true)\" in\n}\ndocker_host_path() {\nif running_under_msys; then\ncygpath -am \"$path\"\n}\nprepare_docker_output_dir() {\nif running_under_msys; then\nchmod 0777 -- \"$path\" || {\n}\nrender_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)\nprepare_docker_output_dir \"$render_dir\"\ndocker_render_dir=$(docker_host_path \"$render_dir\")\nexport MSYS2_ARG_CONV_EXCL='*'\nrun_with_timeout 120 docker run\n",
+            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ndocker_host_path\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\nrunning_under_msys() {\ncase \"$(uname -s 2>/dev/null || true)\" in\n}\ndocker_host_path() {\nif running_under_msys; then\ncygpath -am \"$path\"\n}\nprepare_docker_output_dir() {\nif running_under_msys; then\nchmod 0777 -- \"$path\" || {\n}\nrestore_docker_output_dir() {\nif ! running_under_msys; then\n/tmp/keld-mermaid-render.*) ;;\nchmod 0700 -- \"$path\" || {\n}\ncleanup() {\nlocal cleanup_status=$?\ntrap - EXIT\nrestore_docker_output_dir \"$render_dir\" || cleanup_status=1\nexit \"$cleanup_status\"\n}\nrender_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)\nprepare_docker_output_dir \"$render_dir\"\ndocker_render_dir=$(docker_host_path \"$render_dir\")\nexport MSYS2_ARG_CONV_EXCL='*'\nrun_with_timeout 120 docker run\n",
         );
         temp.write(
             MERMAID_CONFIG,
@@ -3198,6 +3246,76 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("MSYS output bind must remain writable");
         assert!(error.contains("prepare_docker_output_dir"), "{error}");
+    }
+
+    #[test]
+    fn missing_mermaid_msys_permission_restoration_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace(
+                    "restore_docker_output_dir \"$render_dir\" || cleanup_status=1",
+                    "",
+                ),
+        );
+        let error = check(temp.path()).expect_err("retained output must return to owner-only");
+        assert!(error.contains("restore_docker_output_dir"), "{error}");
+    }
+
+    #[test]
+    fn broadened_mermaid_retained_output_mode_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace("chmod 0700 -- \"$path\" || {", "chmod 0777 -- \"$path\" || {"),
+        );
+        let error = check(temp.path()).expect_err("retained output must not stay broadly writable");
+        assert!(error.contains("0700"), "{error}");
+    }
+
+    #[test]
+    fn mermaid_permission_restoration_must_stay_msys_only_and_path_bounded() {
+        for (old, replacement) in [
+            ("if ! running_under_msys; then", "if false; then"),
+            ("/tmp/keld-mermaid-render.*) ;;", "*) ;;"),
+        ] {
+            let temp = complete_fixture();
+            temp.write(
+                MERMAID_RENDERER,
+                &read(temp.path(), MERMAID_RENDERER)
+                    .expect("renderer fixture")
+                    .replace(old, replacement),
+            );
+            let error = check(temp.path())
+                .expect_err("permission restoration must be MSYS-only and path-bounded");
+            assert!(
+                error.contains("owner-only retained-output cleanup"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn mermaid_cleanup_must_preserve_the_original_failure_status() {
+        for (old, replacement) in [
+            ("local cleanup_status=$?", "local cleanup_status=0"),
+            ("trap - EXIT", "true"),
+            ("exit \"$cleanup_status\"", "exit 0"),
+        ] {
+            let temp = complete_fixture();
+            temp.write(
+                MERMAID_RENDERER,
+                &read(temp.path(), MERMAID_RENDERER)
+                    .expect("renderer fixture")
+                    .replace(old, replacement),
+            );
+            let error = check(temp.path()).expect_err("cleanup must preserve render failure");
+            assert!(error.contains("failure-status preservation"), "{error}");
+        }
     }
 
     #[test]

@@ -85,6 +85,27 @@ prepare_docker_output_dir() {
   fi
 }
 
+# A failed render is intentionally retained for diagnosis. Undo the temporary
+# broad mode before returning it to the invoking user; do not apply chmod to an
+# unvalidated path or alter the mktemp-owned Unix path.
+restore_docker_output_dir() {
+  local path=$1
+  if ! running_under_msys; then
+    return 0
+  fi
+  case "$path" in
+    /tmp/keld-mermaid-render.*) ;;
+    *)
+      echo "KELD-DOCS006: refused to restore permissions on unexpected render path '$path'. Remove it manually after inspection." >&2
+      return 1
+      ;;
+  esac
+  chmod 0700 -- "$path" || {
+    echo "KELD-DOCS006: cannot restore owner-only access on retained Docker output '$path'. Repair its Windows ACL before inspecting or removing it." >&2
+    return 1
+  }
+}
+
 docker info >/dev/null 2>&1 || {
   echo 'KELD-DOCS006: Docker daemon is unavailable. Start Docker, then rerun `just mermaid-render-check`.' >&2
   exit 1
@@ -136,18 +157,29 @@ export DOCKER_HOST=$docker_host
 export DOCKER_CONFIG=$docker_config_dir
 
 cleanup() {
+  local cleanup_status=$?
+  trap - EXIT
   if [[ -n "$active_container" ]]; then
     docker rm --force "$active_container" >/dev/null 2>&1 || true
   fi
-  if [[ "$render_succeeded" == 1 && "$keep_output" == 0 && -n "$render_dir" ]]; then
-    case "$render_dir" in
-      /tmp/keld-mermaid-render.*) rm -rf -- "$render_dir" ;;
-      *)
-        echo "KELD-DOCS006: refused to clean unexpected render path '$render_dir'. Remove it manually after inspection." >&2
-        ;;
-    esac
+  if [[ -n "$render_dir" ]]; then
+    if [[ "$render_succeeded" == 1 && "$keep_output" == 0 ]]; then
+      case "$render_dir" in
+        /tmp/keld-mermaid-render.*) rm -rf -- "$render_dir" || cleanup_status=1 ;;
+        *)
+          echo "KELD-DOCS006: refused to clean unexpected render path '$render_dir'. Remove it manually after inspection." >&2
+          cleanup_status=1
+          ;;
+      esac
+    else
+      restore_docker_output_dir "$render_dir" || cleanup_status=1
+      if [[ "$render_succeeded" == 0 ]]; then
+        echo "KELD-DOCS006: failed-render output retained in $render_dir with owner-only host access." >&2
+      fi
+    fi
   fi
   rmdir "$docker_config_dir" >/dev/null 2>&1 || true
+  exit "$cleanup_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
