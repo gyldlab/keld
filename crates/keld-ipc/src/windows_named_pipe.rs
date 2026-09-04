@@ -15,7 +15,7 @@ use std::ptr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 #[cfg(test)]
 use std::{cell::RefCell, sync::mpsc};
@@ -231,7 +231,11 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn disconnect_for_retry(&self) -> io::Result<()> {
-        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if self.inner.consumed.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -268,7 +272,11 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn cancel(&self) -> io::Result<()> {
-        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if self.inner.consumed.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -286,13 +294,21 @@ impl WindowsNamedPipeServer {
     }
 
     pub(crate) fn security_facts(&self) -> io::Result<PipeSecurityFacts> {
-        let pipe = lock_or_recover(&self.inner.pipe);
+        let pipe = self
+            .inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let pipe = pipe.as_ref().ok_or_else(closed_pipe_error)?;
         read_security_facts(pipe)
     }
 
     pub(crate) fn close_terminal(&self) -> io::Result<()> {
-        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.inner.consumed.store(true, Ordering::Release);
         self.cancel_pending_io()?;
         // SAFETY: the server owns the live handle and all pending operations
@@ -306,7 +322,13 @@ impl WindowsNamedPipeServer {
                 return Err(error);
             }
         }
-        drop(lock_or_recover(&self.inner.pipe).take());
+        drop(
+            self.inner
+                .pipe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
         Ok(())
     }
 
@@ -440,7 +462,10 @@ impl WindowsNamedPipeServer {
             )));
         }
         let descriptor = GetSecurityInfo(
-            lock_or_recover(&self.inner.pipe)
+            self.inner
+                .pipe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
                 .as_ref()
                 .ok_or_else(closed_pipe_error)?,
             SeObjectType::SE_KERNEL_OBJECT,
@@ -480,7 +505,10 @@ impl WindowsNamedPipeServer {
     }
 
     fn raw_pipe(&self) -> io::Result<*mut core::ffi::c_void> {
-        lock_or_recover(&self.inner.pipe)
+        self.inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .map(AsRawHandle::as_raw_handle)
             .ok_or_else(closed_pipe_error)
@@ -491,7 +519,11 @@ impl WindowsNamedPipeServer {
         &self,
         inspect: impl FnOnce(&OwnedHandle) -> io::Result<T>,
     ) -> io::Result<T> {
-        let pipe = lock_or_recover(&self.inner.pipe);
+        let pipe = self
+            .inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         inspect(pipe.as_ref().ok_or_else(closed_pipe_error)?)
     }
 
@@ -519,41 +551,75 @@ impl WindowsNamedPipeStream {
             inner: Arc::clone(&self.inner),
             read_event: OwnedEvent::new()?,
             write_event: OwnedEvent::new()?,
-            read_timeout: Mutex::new(*lock_or_recover(&self.read_timeout)),
-            write_timeout: Mutex::new(*lock_or_recover(&self.write_timeout)),
-            absolute_deadline: Mutex::new(*lock_or_recover(&self.absolute_deadline)),
+            read_timeout: Mutex::new(
+                *self
+                    .read_timeout
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            ),
+            write_timeout: Mutex::new(
+                *self
+                    .write_timeout
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            ),
+            absolute_deadline: Mutex::new(
+                *self
+                    .absolute_deadline
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            ),
         })
     }
 
     pub(crate) fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         validate_timeout(timeout)?;
-        *lock_or_recover(&self.read_timeout) = timeout;
+        *self
+            .read_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = timeout;
         Ok(())
     }
 
     pub(crate) fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         validate_timeout(timeout)?;
-        *lock_or_recover(&self.write_timeout) = timeout;
+        *self
+            .write_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = timeout;
         Ok(())
     }
 
     pub(crate) fn read_timeout(&self) -> Option<Duration> {
-        *lock_or_recover(&self.read_timeout)
+        *self
+            .read_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn write_timeout(&self) -> Option<Duration> {
-        *lock_or_recover(&self.write_timeout)
+        *self
+            .write_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn set_absolute_deadline(&self, deadline: Option<Instant>) {
-        *lock_or_recover(&self.absolute_deadline) = deadline;
+        *self
+            .absolute_deadline
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = deadline;
     }
 
     pub(crate) fn shutdown(&self) -> io::Result<()> {
         let server = WindowsNamedPipeServer {
             inner: Arc::clone(&self.inner),
         };
-        let _lifecycle = lock_or_recover(&self.inner.lifecycle);
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let cancel_error = server.cancel_pending_io().err();
         // SAFETY: this is the live server pipe handle. Cancelling does not
         // free another operation's OVERLAPPED or buffer; each operation owner
@@ -585,7 +651,10 @@ impl WindowsNamedPipeStream {
     }
 
     fn raw_pipe(&self) -> io::Result<*mut core::ffi::c_void> {
-        lock_or_recover(&self.inner.pipe)
+        self.inner
+            .pipe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .map(AsRawHandle::as_raw_handle)
             .ok_or_else(closed_pipe_error)
@@ -598,8 +667,14 @@ impl Read for WindowsNamedPipeStream {
             return Ok(0);
         }
         let timeout = effective_timeout(
-            *lock_or_recover(&self.read_timeout),
-            *lock_or_recover(&self.absolute_deadline),
+            *self
+                .read_timeout
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            *self
+                .absolute_deadline
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
         )?;
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
@@ -628,8 +703,14 @@ impl Write for WindowsNamedPipeStream {
             return Ok(0);
         }
         let timeout = effective_timeout(
-            *lock_or_recover(&self.write_timeout),
-            *lock_or_recover(&self.absolute_deadline),
+            *self
+                .write_timeout
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            *self
+                .absolute_deadline
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
         )?;
         #[cfg(test)]
         let _active = ActiveStreamIo::new(&self.inner.active_stream_io);
@@ -978,13 +1059,6 @@ fn effective_timeout(
 
 fn wide(value: &str) -> Vec<u16> {
     OsStr::new(value).encode_wide().chain(Some(0)).collect()
-}
-
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
 }
 
 fn closed_pipe_error() -> io::Error {
