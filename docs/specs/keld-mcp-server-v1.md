@@ -1,6 +1,6 @@
 # Spec: keld MCP server v1 (doctor · docs search · permissions explain)
 
-Status: **APPROVED** (human approval 2026-08-11)
+Status: done
 Linear: KEL-42 · Owner: TBD (human approver) · Updated: 2026-08-13
 
 > Status flipped to **APPROVED** on 2026-08-11; implementation may proceed under
