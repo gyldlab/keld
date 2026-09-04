@@ -175,7 +175,8 @@ impl std::fmt::Display for BootCompileError {
             Self::Staging { phase, detail } => write!(
                 f,
                 "KELD-CLI-047: boot staging failed during {phase} — {detail}. \
-                 Fix the project files and regenerate a fresh owner-private dev stage."
+                 Fix the named project or installation input, or the reported staging \
+                 integrity failure, then generate a fresh owner-private dev stage."
             ),
         }
     }
@@ -793,6 +794,30 @@ fn create_windows_stage_root(path: &Path) -> io::Result<()> {
 fn verify_windows_stage_acl(path: &Path) -> Result<(), BootCompileError> {
     keld_core::app_session::validate_windows_dev_stage_acl(path)
         .map_err(|source| BootCompileError::new("stage DACL readback", source.to_string()))
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)] // rendered diagnostics are assertion oracles
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn staging_remediation_covers_project_and_installation_inputs() {
+        for (phase, expected_fix) in [
+            ("project config", "project"),
+            ("developer launcher", "installation"),
+        ] {
+            let rendered = BootCompileError::new(phase, "fixture failure").to_string();
+
+            assert_eq!(rendered.matches("KELD-CLI-047").count(), 1, "{rendered}");
+            assert!(rendered.contains(phase), "{rendered}");
+            assert!(rendered.contains(expected_fix), "{rendered}");
+            assert!(
+                rendered.contains("fresh owner-private dev stage"),
+                "{rendered}"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
