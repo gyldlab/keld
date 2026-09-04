@@ -227,7 +227,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-cli
 - message: Owner-private no-flag boot staging failed
-- fix: Fix the named project input or host-copy integrity failure, then generate a fresh dev stage.
+- fix: Fix the named project or installation input, or the reported staging integrity failure, then generate a fresh owner-private dev stage.
 
 ## KELD-CLI-048
 
