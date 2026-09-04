@@ -1,6 +1,9 @@
 //! KEL-30: host-owned concurrent hello app-link (Bun + echo live together).
 
-#![allow(clippy::expect_used)]
+#![allow(
+    clippy::expect_used,
+    reason = "This integration test uses expect to make process and IPC failures part of its assertion oracle"
+)]
 
 use std::fs;
 use std::process::Command;

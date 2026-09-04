@@ -55,7 +55,10 @@
 //! AC5 and is human-gated; without it the restarted generation hangs, which is
 //! precisely the condition documented above.
 
-#![allow(clippy::expect_used)]
+#![allow(
+    clippy::expect_used,
+    reason = "These integration tests use expect to make process-lifecycle observations part of their assertion oracle"
+)]
 
 use std::fs;
 use std::process::Command;
