@@ -1,12 +1,21 @@
 {
   "name": "@keld/electron",
   "version": "0.0.1",
+  "packageManager": "bun@1.4.0",
   "type": "module",
   "description": "Electron API compatibility facade over kipc",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "files": [
     "src"
-  ]
+  ],
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "7.0.2"
+  }
 }

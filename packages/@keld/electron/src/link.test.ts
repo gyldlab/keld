@@ -393,7 +393,7 @@ describe("LifecycleLink write deadlines", () => {
     Bun.connect = (async (opts: { socket?: Record<string, (...args: never[]) => void> }) => {
       captured.handlers = opts.socket ?? {};
       return socket;
-    }) as typeof Bun.connect;
+    }) as unknown as typeof Bun.connect;
     return captured;
   }
 
@@ -508,7 +508,7 @@ describe("LifecycleLink shared receiver rules (kel133)", () => {
         },
         end(): void {},
       };
-    }) as typeof Bun.connect;
+    }) as unknown as typeof Bun.connect;
     return captured;
   }
 

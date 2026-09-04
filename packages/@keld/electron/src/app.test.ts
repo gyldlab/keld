@@ -27,8 +27,8 @@ async function waitChildOrKill(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const finished = Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+      new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
       proc.exited,
     ]).then(([stdout, stderr, code]) => ({ stdout, stderr, code }));
     const timeout = new Promise<never>((_, reject) => {

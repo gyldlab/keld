@@ -552,11 +552,9 @@ export type KeldCallError = Error & { code: string };
 
 /** True when `e` is a rejected `Call` carrying a registered `KELD-*` code. */
 export function isCallError(e: unknown): e is KeldCallError {
-  return (
-    e instanceof Error &&
-    typeof (e as { code?: unknown }).code === "string" &&
-    (e as { code: string }).code.startsWith("KELD-")
-  );
+  if (!(e instanceof Error)) return false;
+  const { code } = e as Error & { code?: unknown };
+  return typeof code === "string" && code.startsWith("KELD-");
 }
 
 /**
