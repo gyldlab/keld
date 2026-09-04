@@ -140,14 +140,19 @@ conditionals, and no per-file logic.
 The one verb that ties everything together. Sequence, from
 [`dev.rs::run_dev`](../../crates/keld-cli/src/dev.rs):
 
-1. **Find the project root.** `main.rs` calls `find_project_root(&cwd)`, which walks up
-   from the cwd looking for a `keld.config.ts` file. If none is found anywhere up the
-   tree it falls back to the cwd (`unwrap_or(cwd)`) — so step 2 is what produces the
-   error message, not the search.
+1. **Find an owner-controlled project root.** `main.rs` calls
+   `find_project_root(&cwd)`, which walks up from the cwd looking for a
+   `keld.config.ts` file while every traversed directory remains owned by the
+   invoking OS principal. The walk stops at the first foreign-owned boundary. A
+   candidate root and config are both owner-checked; a foreign candidate fails as
+   `KELD-CLI-049` instead of being read or executed. If no config exists below the
+   ownership boundary, `dev` falls back to the cwd and step 2 reports the missing
+   layout.
 2. **Run the doctor checks.** Any failure aborts with `KELD-CLI-032` and the full check
    list, before any process is spawned.
 3. **On macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile, compile one fresh stage.** `stage_dev_boot` reads the reviewed
-   project fields, copies the sibling developer `keld-host`,
+   project fields, rechecks that the resolved entry and renderer belong to the
+   invoking principal, copies the sibling developer `keld-host`,
    writes the strict boot descriptor and explicit permissions fixture, and
    returns the owner-private launch root. macOS verifies exact `0o700`; Linux
    also makes `.keld`, `dev`, and the nonce owner-private and copies the minimal
@@ -547,8 +552,8 @@ subcommands can call in. Selected modules:
 | Module | Public items |
 |---|---|
 | `create` | `CreateError::{InvalidName, Exists, Io}`, `validate_name(&str)`, `create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>` |
-| `boot` | `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole owner-private stage producer |
-| `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Option<PathBuf>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows `run_dev` delegates to the staged no-flag host |
+| `boot` | `ProjectOwnershipError`, `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole current-principal ownership predicate and owner-private stage producer |
+| `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Result<Option<PathBuf>, ProjectOwnershipError>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows/Linux `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
 | `echo_link` | `EchoServer::{start -> io::Result, link, join, shutdown}` uses the shared platform listener; Windows retains client-only decimal diagnostic compatibility as `EchoEndpoint::Tcp(u16)`; `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |

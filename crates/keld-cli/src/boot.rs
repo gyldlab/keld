@@ -1,7 +1,8 @@
 //! Non-release owner-private boot stage compiler (KEL-96/T1a/T4).
 
+use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -11,9 +12,11 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
+use windows_permissions::constants::{SeObjectType, SecurityInformation};
+#[cfg(windows)]
 use windows_permissions::utilities::current_process_sid;
 #[cfg(windows)]
-use windows_permissions::wrappers::ConvertSidToStringSid;
+use windows_permissions::wrappers::{ConvertSidToStringSid, GetNamedSecurityInfo};
 #[cfg(windows)]
 use windows_permissions::{LocalBox, SecurityDescriptor};
 #[cfg(windows)]
@@ -61,30 +64,120 @@ impl DevBootStage {
     }
 }
 
+/// Failure to prove that project input belongs to the invoking OS principal.
+#[derive(Debug)]
+pub struct ProjectOwnershipError {
+    path: PathBuf,
+    detail: String,
+}
+
+impl ProjectOwnershipError {
+    pub(crate) fn foreign(path: PathBuf) -> Self {
+        Self {
+            path,
+            detail: String::from("owner does not equal the invoking OS principal"),
+        }
+    }
+
+    fn inspection(path: PathBuf, source: impl std::fmt::Display) -> Self {
+        Self {
+            path,
+            detail: format!("owner could not be verified: {source}"),
+        }
+    }
+}
+
+impl std::fmt::Display for ProjectOwnershipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CLI-049: refusing project path `{}` — {}. \
+             Move the project below a directory owned by the invoking user and correct the path's ownership before running Keld.",
+            self.path.display(),
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for ProjectOwnershipError {}
+
+/// Returns only after `path` is proven to belong to the invoking OS principal.
+pub(crate) fn ensure_current_principal_owns(path: &Path) -> Result<(), ProjectOwnershipError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = fs::metadata(path)
+            .map_err(|source| ProjectOwnershipError::inspection(path.to_owned(), source))?;
+        let invoking_uid = rustix::process::geteuid().as_raw();
+        if metadata.uid() != invoking_uid {
+            return Err(ProjectOwnershipError::foreign(path.to_owned()));
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let current = current_process_sid()
+            .map_err(|source| ProjectOwnershipError::inspection(path.to_owned(), source))?;
+        let descriptor = GetNamedSecurityInfo(
+            path.as_os_str(),
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Owner,
+        )
+        .map_err(|source| ProjectOwnershipError::inspection(path.to_owned(), source))?;
+        if descriptor.owner() != Some(&current) {
+            return Err(ProjectOwnershipError::foreign(path.to_owned()));
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(ProjectOwnershipError::inspection(
+            path.to_owned(),
+            "this platform has no implemented project-owner identity check",
+        ))
+    }
+}
+
 /// Failure while compiling the non-release boot stage.
 #[derive(Debug)]
-pub struct BootCompileError {
-    phase: &'static str,
-    detail: String,
+pub enum BootCompileError {
+    /// Project input did not belong to the invoking principal.
+    ProjectOwnership(ProjectOwnershipError),
+    /// Another staging phase failed.
+    Staging {
+        /// Staging operation that failed.
+        phase: &'static str,
+        /// Underlying failure detail.
+        detail: String,
+    },
 }
 
 impl BootCompileError {
     fn new(phase: &'static str, detail: impl Into<String>) -> Self {
-        Self {
+        Self::Staging {
             phase,
             detail: detail.into(),
         }
     }
 }
 
+impl From<ProjectOwnershipError> for BootCompileError {
+    fn from(value: ProjectOwnershipError) -> Self {
+        Self::ProjectOwnership(value)
+    }
+}
+
 impl std::fmt::Display for BootCompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "KELD-CLI-047: boot staging failed during {} — {}. \
-             Fix the project files and regenerate a fresh owner-private dev stage.",
-            self.phase, self.detail
-        )
+        match self {
+            Self::ProjectOwnership(error) => error.fmt(f),
+            Self::Staging { phase, detail } => write!(
+                f,
+                "KELD-CLI-047: boot staging failed during {phase} — {detail}. \
+                 Fix the project files and regenerate a fresh owner-private dev stage."
+            ),
+        }
     }
 }
 
@@ -138,18 +231,37 @@ pub fn stage_dev_boot(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-#[allow(clippy::too_many_lines)] // one atomic staging transaction keeps cleanup and integrity checks contiguous
 fn stage_dev_boot_platform(
     project_root: &Path,
     developer_host: &Path,
 ) -> Result<DevBootStage, BootCompileError> {
+    stage_dev_boot_platform_with_owner_check(
+        project_root,
+        developer_host,
+        ensure_current_principal_owns,
+    )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[allow(clippy::too_many_lines)] // one atomic staging transaction keeps cleanup and integrity checks contiguous
+fn stage_dev_boot_platform_with_owner_check<F>(
+    project_root: &Path,
+    developer_host: &Path,
+    mut owner_check: F,
+) -> Result<DevBootStage, BootCompileError>
+where
+    F: FnMut(&Path) -> Result<(), ProjectOwnershipError>,
+{
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::os::unix::fs::PermissionsExt as _;
 
     let project_root = project_root
         .canonicalize()
         .map_err(|source| BootCompileError::new("project root", source.to_string()))?;
-    let config = fs::read_to_string(project_root.join("keld.config.ts"))
+    owner_check(&project_root)?;
+    let config_path = project_root.join("keld.config.ts");
+    owner_check(&config_path)?;
+    let config = fs::read_to_string(config_path)
         .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
     let name = keld_core::title_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_HELLO_TITLE.to_owned());
@@ -162,6 +274,8 @@ fn stage_dev_boot_platform(
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = contained_source(&project_root, &renderer, "renderer")?;
+    owner_check(&entry_source)?;
+    owner_check(&renderer_source)?;
     let (developer_host_path, mut host_source, host_source_metadata) =
         open_developer_executable(developer_host, "developer host")?;
     #[cfg(not(target_os = "linux"))]
@@ -287,11 +401,22 @@ fn stage_dev_boot_platform(
 
 #[cfg(target_os = "linux")]
 fn prepare_linux_dev_root(project_root: &Path, dev_root: &Path) -> Result<(), BootCompileError> {
+    prepare_linux_dev_root_for_uid(project_root, dev_root, rustix::process::geteuid().as_raw())
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_dev_root_for_uid(
+    project_root: &Path,
+    dev_root: &Path,
+    expected_uid: u32,
+) -> Result<(), BootCompileError> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 
-    let expected_uid = fs::metadata(project_root)
-        .map_err(|source| BootCompileError::new("project root", source.to_string()))?
-        .uid();
+    let project_metadata = fs::metadata(project_root)
+        .map_err(|source| BootCompileError::new("project root", source.to_string()))?;
+    if project_metadata.uid() != expected_uid {
+        return Err(ProjectOwnershipError::foreign(project_root.to_owned()).into());
+    }
     for directory in [project_root.join(".keld"), dev_root.to_owned()] {
         match fs::symlink_metadata(&directory) {
             Ok(metadata) => {
@@ -805,6 +930,45 @@ mod tests {
         assert_ne!(first.root(), second.root());
     }
 
+    #[test]
+    fn stage_dev_boot_refuses_a_foreign_owned_project_root() {
+        let (_temp, project, source_host) = fixture();
+        let error = stage_dev_boot_platform_with_owner_check(&project, &source_host, |_| {
+            Err(ProjectOwnershipError::foreign(project.clone()))
+        })
+        .expect_err("foreign-owned project input must fail before staging");
+
+        assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
+        assert!(
+            !project.join(".keld").exists(),
+            "ownership refusal must precede every staging side effect"
+        );
+    }
+
+    #[test]
+    fn stage_dev_boot_refuses_a_foreign_owned_entry_before_staging() {
+        let (_temp, project, source_host) = fixture();
+        let entry = project
+            .join("src/main.ts")
+            .canonicalize()
+            .expect("canonical entry fixture");
+        let error = stage_dev_boot_platform_with_owner_check(&project, &source_host, |candidate| {
+            if candidate == entry {
+                Err(ProjectOwnershipError::foreign(candidate.to_owned()))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("foreign-owned executable project bytes must not be staged");
+
+        assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
+        assert!(error.to_string().contains("src/main.ts"), "{error}");
+        assert!(
+            !project.join(".keld").exists(),
+            "entry ownership refusal must precede every staging side effect"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn missing_role_launcher_fails_before_creating_a_stage() {
@@ -820,6 +984,32 @@ mod tests {
             .expect_err("Linux stage without the strict launcher must fail");
         assert!(error.to_string().contains("developer launcher"), "{error}");
         assert!(!project.join(".keld/dev").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prepare_linux_dev_root_rejects_foreign_project_before_permissions_change() {
+        let (_temp, project, _source_host) = fixture();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o755))
+            .expect("project fixture mode");
+        let actual_uid = fs::metadata(&project).expect("project metadata").uid();
+        let foreign_uid = actual_uid.checked_add(1).unwrap_or_else(|| actual_uid - 1);
+
+        let error =
+            prepare_linux_dev_root_for_uid(&project, &project.join(".keld/dev"), foreign_uid)
+                .expect_err("project ownership must be anchored to the invoking euid");
+
+        assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
+        assert_eq!(
+            fs::metadata(&project)
+                .expect("project metadata after refusal")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755,
+            "ownership mismatch must fail before any permission mutation"
+        );
+        assert!(!project.join(".keld").exists());
     }
 
     #[test]

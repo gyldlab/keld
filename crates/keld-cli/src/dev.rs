@@ -28,6 +28,7 @@ use keld_runtime::RestartPolicy;
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
+use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
@@ -112,16 +113,44 @@ pub struct DevEchoResult {
     pub link: String,
 }
 
-/// Finds the project root containing `keld.config.ts`, starting at `cwd`.
-#[must_use]
-pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
+/// Finds an owner-controlled project root containing `keld.config.ts`, starting at `cwd`.
+///
+/// Discovery stops at the first ancestor not owned by the invoking OS principal.
+/// If that boundary itself contains a Keld config, the ownership fault is
+/// returned instead of being mistaken for an absent project.
+///
+/// # Errors
+///
+/// Returns [`ProjectOwnershipError`] (`KELD-CLI-049`) when a candidate project
+/// directory or its config is not owned by the invoking principal, or its
+/// owner cannot be inspected.
+pub fn find_project_root(cwd: &Path) -> Result<Option<PathBuf>, ProjectOwnershipError> {
+    find_project_root_with_owner_check(cwd, ensure_current_principal_owns)
+}
+
+fn find_project_root_with_owner_check<F>(
+    cwd: &Path,
+    mut owner_check: F,
+) -> Result<Option<PathBuf>, ProjectOwnershipError>
+where
+    F: FnMut(&Path) -> Result<(), ProjectOwnershipError>,
+{
     let mut dir = cwd.to_path_buf();
     loop {
-        if dir.join("keld.config.ts").is_file() {
-            return Some(dir);
+        let config = dir.join("keld.config.ts");
+        if let Err(error) = owner_check(&dir) {
+            return if config.is_file() {
+                Err(error)
+            } else {
+                Ok(None)
+            };
+        }
+        if config.is_file() {
+            owner_check(&config)?;
+            return Ok(Some(dir));
         }
         if !dir.pop() {
-            return None;
+            return Ok(None);
         }
     }
 }
@@ -675,7 +704,9 @@ mod tests {
         fs::create_dir_all(root.join("src")).expect("src");
         fs::write(root.join("keld.config.ts"), "export default {}\n").expect("config");
         assert_eq!(
-            find_project_root(&root.join("src")).as_deref(),
+            find_project_root(&root.join("src"))
+                .expect("owned project discovery")
+                .as_deref(),
             Some(root.as_path())
         );
     }
@@ -683,7 +714,65 @@ mod tests {
     #[test]
     fn missing_config_is_none() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(find_project_root(dir.path()), None);
+        assert_eq!(find_project_root(dir.path()).expect("owned search"), None);
+    }
+
+    #[test]
+    fn find_project_root_skips_an_ancestor_owned_by_another_principal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let trusted_project = dir.path().join("trusted-project");
+        let foreign_boundary = trusted_project.join("foreign-boundary");
+        let cwd = foreign_boundary.join("nested");
+        fs::create_dir_all(&cwd).expect("nested cwd");
+        fs::write(
+            trusted_project.join("keld.config.ts"),
+            "export default {}\n",
+        )
+        .expect("higher trusted config");
+
+        let selected = find_project_root_with_owner_check(&cwd, |candidate| {
+            if candidate == foreign_boundary {
+                Err(ProjectOwnershipError::foreign(candidate.to_owned()))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("an unowned boundary without a config stops discovery cleanly");
+
+        assert_eq!(
+            selected, None,
+            "the walk must not skip a foreign boundary and adopt a higher config"
+        );
+    }
+
+    #[test]
+    fn find_project_root_rejects_a_foreign_candidate_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let foreign_project = dir.path().join("foreign-project");
+        let cwd = foreign_project.join("nested");
+        fs::create_dir_all(&cwd).expect("nested cwd");
+        fs::write(
+            foreign_project.join("keld.config.ts"),
+            "export default {}\n",
+        )
+        .expect("foreign config");
+
+        let error = find_project_root_with_owner_check(&cwd, |candidate| {
+            if candidate == foreign_project {
+                Err(ProjectOwnershipError::foreign(candidate.to_owned()))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("a foreign candidate config must be an explicit ownership fault");
+
+        assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains(&foreign_project.display().to_string()),
+            "{error}"
+        );
     }
 
     #[test]
