@@ -197,23 +197,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: changes
-    # This lane owns one contract: the Bun suites under `packages/` pass. Its
-    # only inputs are those package trees, so a Rust-only diff skips it and a
-    # TypeScript diff runs it (tools/ci_changes.sh, `ts` output). Job-level
-    # `if` may reference needs/github/vars/inputs only — GitHub evaluates it
-    # before matrix expansion, so `matrix` here would invalidate the workflow.
+    # This lane owns the package compiler and Bun runtime contracts. Its only
+    # inputs are those package trees, so a Rust-only diff skips it and a
+    # TypeScript diff runs it (tools/ci_changes.sh, `ts` output). Job-level `if`
+    # may reference needs/github/vars/inputs only — GitHub evaluates it before
+    # matrix expansion, so `matrix` here would invalidate the workflow.
     if: needs.changes.outputs.ts == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Exact pin (KEL-77): Bun 1.4.0 fixed kill-after-exit. Do not float `latest`.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.0"
-      # No `bun install` step: every `packages/` manifest declares zero
-      # dependencies today, so there is nothing to resolve. A package that adds
-      # one must land a committed lockfile and `bun install --frozen-lockfile`
-      # here, not an unpinned resolve at job time.
-      - name: bun test
+      - name: frozen install, typecheck, and bun test
         shell: bash
         env:
           KELD_CI_TS_PACKAGES: ${{ needs.changes.outputs.ts_packages }}
@@ -226,7 +224,12 @@ jobs:
             exit 1
           fi
           for package in $KELD_CI_TS_PACKAGES; do
-            (cd "$package" && bun test)
+            (
+              cd "$package"
+              bun install --frozen-lockfile
+              bun run typecheck
+              bun test
+            )
           done
 
   linux-gui-smoke:
