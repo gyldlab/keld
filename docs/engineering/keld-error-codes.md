@@ -427,6 +427,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Mermaid documentation policy or pinned SVG rendering failed
 - fix: Add the required accessibility metadata and canonical palette, then run `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` with Docker available.
 
+## KELD-DOCS007
+
+- crate: product-status
+- message: Product-status ledger generation or contract validation failed
+- fix: Follow the emitted condition-specific repair, then run `just product-status-test`, `just product-status`, and `just product-status-check`.
+
 ## KELD-RUNTIME-001
 
 - crate: keld-runtime
