@@ -44,6 +44,15 @@ pub enum DevError {
     Doctor(String),
     /// Child process or thread failure.
     Io(io::Error),
+    /// The owner-private staged host could not be launched.
+    StagedHostLaunch {
+        /// Exact staged executable path passed to the OS.
+        path: PathBuf,
+        /// Primary process-spawn failure.
+        source: io::Error,
+        /// Secondary cleanup failure, when the launch directory could not be removed.
+        cleanup: Option<io::Error>,
+    },
     /// IPC or host failure surfaced as text.
     Runtime(String),
     /// The supervised app process died while the host owned the window
@@ -72,6 +81,29 @@ impl std::fmt::Display for DevError {
                 "KELD-CLI-030: dev session I/O error — {e}. \
                  Check that `bun` is on PATH and the project files are readable."
             ),
+            Self::StagedHostLaunch {
+                path,
+                source,
+                cleanup,
+            } => {
+                write!(
+                    f,
+                    "KELD-CLI-050: staged host launch failed for `{}` — {source}.",
+                    path.display()
+                )?;
+                if let Some(cleanup) = cleanup {
+                    let launch_root = path.parent().unwrap_or(path);
+                    write!(
+                        f,
+                        " Cleanup of `{}` also failed — {cleanup}.",
+                        launch_root.display()
+                    )?;
+                }
+                write!(
+                    f,
+                    " Verify that `keld` and `keld-host` came from the same installation and that the staged path is executable. If cleanup failed, remove only the named launch directory after confirming no staged process remains."
+                )
+            }
             Self::Runtime(msg) => write!(
                 f,
                 "KELD-CLI-031: dev session failed — {msg}. \
@@ -209,6 +241,18 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
     Err(DevError::Doctor(msg))
 }
 
+fn staged_host_launch_error(
+    path: PathBuf,
+    source: io::Error,
+    cleanup: Result<(), io::Error>,
+) -> DevError {
+    DevError::StagedHostLaunch {
+        path,
+        source,
+        cleanup: cleanup.err(),
+    }
+}
+
 /// Doctor checks, then one Bun IPC echo round-trip without opening a window.
 ///
 /// Starts the host-owned app-link + supervised Bun, awaits the ready marker,
@@ -286,7 +330,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     #[cfg(windows)]
     let mut stage = stage;
     let stage_root = stage.root().to_owned();
-    let mut command = Command::new(stage.host());
+    let staged_host = stage.host().to_owned();
+    let mut command = Command::new(&staged_host);
     command
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
@@ -300,14 +345,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         Ok(host) => host,
         Err(source) => {
             drop(stage);
-            if let Err(cleanup) = fs::remove_dir_all(&stage_root) {
-                return Err(DevError::Doctor(format!(
-                    "KELD-CLI-047: boot staging failed during host launch cleanup — \
-                     spawn failed: {source}; cleanup failed: {cleanup}. \
-                     Remove that owner-private nonce directory and retry."
-                )));
-            }
-            return Err(DevError::Io(source));
+            let cleanup = fs::remove_dir_all(&stage_root);
+            return Err(staged_host_launch_error(staged_host, source, cleanup));
         }
     };
     let lease_writer = host.stdin.take().ok_or_else(|| {
@@ -654,6 +693,43 @@ mod tests {
         // The shipping success path: supervision fine, window closed normally.
         // `keld dev` must still exit 0.
         assert!(window_phase_outcome(Ok(()), Ok(())).is_ok());
+    }
+
+    #[test]
+    fn staged_host_spawn_failure_names_host_path_not_bun() {
+        let path = PathBuf::from("/owner-private/stage/keld-host");
+        let error = staged_host_launch_error(
+            path.clone(),
+            io::Error::new(ErrorKind::PermissionDenied, "spawn denied"),
+            Ok(()),
+        );
+        let rendered = error.to_string();
+
+        assert!(rendered.starts_with("KELD-CLI-050"), "{rendered}");
+        assert!(rendered.contains(&path.display().to_string()), "{rendered}");
+        assert!(rendered.contains("spawn denied"), "{rendered}");
+        assert!(!rendered.contains("bun"), "{rendered}");
+        assert!(!rendered.contains("KELD-CLI-047"), "{rendered}");
+    }
+
+    #[test]
+    fn staged_host_cleanup_failure_is_context_not_a_second_primary_code() {
+        let error = staged_host_launch_error(
+            PathBuf::from("/owner-private/stage/keld-host"),
+            io::Error::new(ErrorKind::NotFound, "staged host missing"),
+            Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                "cleanup denied",
+            )),
+        );
+        let rendered = error.to_string();
+
+        assert_eq!(rendered.matches("KELD-CLI-").count(), 1, "{rendered}");
+        assert!(rendered.starts_with("KELD-CLI-050"), "{rendered}");
+        assert!(rendered.contains("staged host missing"), "{rendered}");
+        assert!(rendered.contains("cleanup denied"), "{rendered}");
+        assert!(!rendered.contains("bun"), "{rendered}");
+        assert!(!rendered.contains("KELD-CLI-047"), "{rendered}");
     }
 
     #[test]

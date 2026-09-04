@@ -553,7 +553,7 @@ subcommands can call in. Selected modules:
 |---|---|
 | `create` | `CreateError::{InvalidName, Exists, Io}`, `validate_name(&str)`, `create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>` |
 | `boot` | `ProjectOwnershipError`, `stage_dev_boot(project, developer_host) -> Result<DevBootStage, BootCompileError>`; the sole current-principal ownership predicate and owner-private stage producer |
-| `dev` | `DevError::{Doctor, Io, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Result<Option<PathBuf>, ProjectOwnershipError>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows/Linux `run_dev` delegates to the staged no-flag host |
+| `dev` | `DevError::{Doctor, Io, StagedHostLaunch, Runtime, WindowPhase, Renderer}`, `find_project_root(&Path) -> Result<Option<PathBuf>, ProjectOwnershipError>`, `run_dev(&Path) -> Result<(), DevError>`; macOS/Windows/Linux `run_dev` delegates to the staged no-flag host |
 | `doctor` | `Check { label, ok, detail }`, `run_checks(Option<&Path>) -> Vec<Check>`, `all_ok(&[Check]) -> bool` |
 | `echo_link` | `EchoServer::{start -> io::Result, link, join, shutdown}` uses the shared platform listener; Windows retains client-only decimal diagnostic compatibility as `EchoEndpoint::Tcp(u16)`; `echo_roundtrip(link: &str, &EchoRequest) -> Result<EchoResponse, IpcError>` |
 | `template` | `TemplateFile { path, contents }`, `HELLO_TEMPLATE: &[TemplateFile]` |
