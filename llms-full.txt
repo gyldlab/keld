@@ -4036,6 +4036,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Project path is not owned by the invoking OS principal
 - fix: Move the project below a directory owned by the invoking user and correct the path's ownership before running Keld.
 
+## KELD-CLI-050
+
+- crate: keld-cli
+- message: Owner-private staged host could not be launched
+- fix: Verify `keld` and `keld-host` came from the same installation and the named staged path is executable. If cleanup also failed, remove only the named launch directory after confirming no staged process remains.
+
 ## KELD-MCP001
 
 - crate: keld-cli
