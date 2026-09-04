@@ -11,7 +11,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test hooks-test mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene fmt-check clippy test doc deny
 
 # Check playbook routing and require crate AGENTS.md wherever Rust opts into unsafe.
 agents-md:
@@ -156,6 +156,10 @@ hygiene:
 # KEL-81: keep change-based CI routing falsifiable outside GitHub Actions too.
 ci-router-test:
     tools/ci_changes_test.sh
+
+# KEL-159: checkout hooks must never execute code from the incoming revision.
+hooks-test:
+    tools/hooks_test.sh
 
 # Format the workspace in place.
 fmt:
@@ -323,11 +327,17 @@ competitors-sync *args:
         -o "$ROOT/target/competitors-sync/competitors-sync"
     "$ROOT/target/competitors-sync/competitors-sync" "$@" "$ROOT"
 
-# Point this clone at tracked .githooks/ (local config only — not --global).
+# Install reviewed hook copies outside the working tree (local config only — not --global).
 hooks-install:
     #!/usr/bin/env bash
     set -euo pipefail
     ROOT="$(git rev-parse --show-toplevel)"
-    git -C "$ROOT" config core.hooksPath .githooks
-    chmod +x "$ROOT/.githooks/post-merge" "$ROOT/.githooks/post-checkout"
-    echo "hooks-install: core.hooksPath=.githooks (local). pull/checkout will run research-sync then competitors-sync."
+    COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
+    HOOKS_DIR="$COMMON_DIR/keld-hooks"
+    mkdir -p "$HOOKS_DIR"
+    cp -- "$ROOT/.githooks/post-merge" "$HOOKS_DIR/post-merge"
+    cp -- "$ROOT/.githooks/post-checkout" "$HOOKS_DIR/post-checkout"
+    chmod +x "$HOOKS_DIR/post-merge" "$HOOKS_DIR/post-checkout"
+    git -C "$ROOT" config core.hooksPath "$HOOKS_DIR"
+    echo "hooks-install: installed reviewed reminder hooks at $HOOKS_DIR (local)."
+    echo "hooks-install: checkout/merge will not execute working-tree code."

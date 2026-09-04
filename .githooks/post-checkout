@@ -1,31 +1,18 @@
 #!/usr/bin/env bash
-# After branch checkout: refresh local-only research + competitor clones.
-# Soft-skip on missing just / no private-repo access — never fail the checkout.
+# After branch checkout: remind maintainers to refresh local-only clones deliberately.
+# This installed copy must never execute code from the incoming working tree.
 # Args from git: previous HEAD, new HEAD, branch(1)/file(0) flag.
-# competitors-sync is backgrounded so checkout is not blocked on shallow clones.
-set -uo pipefail
+set -u
 
 # File checkouts (flag 0) should not re-sync trees.
 if [[ "${3:-0}" != "1" ]]; then
   exit 0
 fi
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-cd "$ROOT" || exit 0
-
-if ! command -v just >/dev/null 2>&1; then
-  echo "warning: just not found; skip research-sync / competitors-sync" >&2
-  exit 0
-fi
-
-if ! just research-sync; then
-  echo "warning: research-sync failed; research tree may be stale (checkout succeeded)" >&2
-fi
-
-(
-  if ! just competitors-sync; then
-    echo "warning: competitors-sync failed; checkout succeeded (local-only trees unchanged)" >&2
-  fi
-) &
+printf '%s\n' \
+  'keld hook: checkout ran no repository code.' \
+  'After reviewing the checked-out revision, refresh local-only clones explicitly:' \
+  '  just research-sync' \
+  '  just competitors-sync'
 
 exit 0

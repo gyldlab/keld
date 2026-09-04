@@ -10,6 +10,7 @@
 /Cargo.lock                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /rust-toolchain.toml                @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /.github/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+/.githooks/                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /AGENTS.md                          @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /.agents/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
 /.codex/                            @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
