@@ -18,10 +18,12 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
   back to AppProcess. v0 `evaluate` still denies webview principals
   (`KELD-GUARD006`) until window-level grants exist — that is fail-closed,
   not a reason to present AppProcess. Per backend:
-  - macOS / Linux (wry interim): agents MUST NOT omit wry `with_permission_handler`
-    on a live `WebViewBuilder` — wry 0.56 auto-grants on macOS and shows
-    WebKitGTK's own prompt on Linux when the handler is `None`; neither is
-    default-deny.
+  - macOS 12+ (wry interim): agents MUST NOT omit wry `with_permission_handler`;
+    wry auto-grants new media requests when absent. Pinned wry cfg-removes its
+    delegate on older debug hosts; oldest-OS proof is open ([source](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs)).
+  - Linux (wry interim): WebKitGTK 2.52.6 and wry 0.56.1 default-deny an
+    unhandled new request, but that fallback is not proof Keld evaluated the
+    right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance remains mandatory.
   - Windows (direct COM, KEL-65): agents MUST register the guarded
     `add_PermissionRequested` handler before the first navigation — WebView2's
     fallback is a user prompt (default-ask, not default-deny). The first

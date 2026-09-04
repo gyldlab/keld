@@ -309,9 +309,11 @@ The honest reading of that diagram:
   caller: `keld_native::fs::{fs_read, fs_write}` (KEL-71) — a real kipc channel
   (`serve_fs_session`), guard-checked before any OS call, with real temp-file oracles
   proving allow/deny/`..`/non-`AppProcess` cases. Every other `keld-native` module is
-  still a name only. MCP `keld_permissions_explain` and the webview media-capture
-  handlers (all three OS backends) call `keld-guard::evaluate` directly, independent of
-  `dispatch_privileged`.
+  still a name only. MCP `keld_permissions_explain` and each applicable
+  new-request webview media callback call `keld-guard::evaluate` directly,
+  independent of `dispatch_privileged`. Pinned wry does not consume that
+  callback below macOS 12 on debug hosts, and saved browser permission
+  preferences remain a KEL-135 profile-lifecycle boundary.
 - **`keld-runtime` now supervises the Bun spawn (KEL-70).** `keld-cli/src/dev.rs`
   `run_dev_echo` spawns through `keld_runtime::Supervisor`, which restarts a crashed
   (non-zero exit) child with exponential backoff up to `RestartPolicy`'s defaults

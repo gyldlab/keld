@@ -141,14 +141,18 @@ manifest decoder.
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless
    `web.devtools: true`.
-   **v0:** camera and microphone requests are default-deny on all three live
-   backends: macOS and Linux (KEL-28) both install wry `with_permission_handler`
-   (`with_guarded_media_permissions`, shared helper); Windows registers the
-   `WebView2` `add_PermissionRequested` handler before the first navigation
-   (KEL-65 direct COM — the ordering is compile-enforced). All three evaluate
+   **v0:** new camera and microphone requests are explicitly default-denied by
+   Keld on Linux, Windows, and macOS 12+: macOS/Linux install wry
+   `with_permission_handler`; Windows registers WebView2
+   `add_PermissionRequested` before first navigation. The callbacks evaluate
    `web.camera` / `web.microphone` as the requesting `Principal::Webview`
-   (host-minted `WebviewId`, generation `0` until navigation rotation lands)
-   with requested resource `*` (no platform callback passes an origin).
+   (host-minted `WebviewId`, generation `0`). Wry exposes no origin; WebView2
+   exposes `Uri`, but Keld's v0 adapter currently reads only `PermissionKind`
+   and deliberately evaluates resource `*` without origin filtering. Pinned
+   wry does not consume the macOS callback below 12 on debug hosts, and saved
+   browser permission preferences can bypass
+   new-request callbacks; oldest-macOS proof and KEL-135 profile-backed
+   restart/revocation evidence remain open.
    Missing identity and `AppProcess` fail closed (`KELD-GUARD007`) so `/app`
    media grants cannot apply to a remote or other webview. A minted webview
    principal is still `KELD-GUARD006` until window-level grants exist. CSP

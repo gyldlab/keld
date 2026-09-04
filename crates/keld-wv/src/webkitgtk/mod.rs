@@ -29,22 +29,17 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
-use tao::platform::run_return::EventLoopExtRunReturn;
-use tao::platform::unix::WindowExtUnix;
-use tao::window::{Window, WindowBuilder};
-use wry::WebViewBuilderExtUnix;
-
-use keld_guard::PermissionsManifest;
-
 use crate::WebviewId;
 use crate::engine::{
     AppWindowCommand, AppWindowEvent, DevtoolsAction, NavTarget, Rect, WebEngine,
     WebKitGtkEngineExt, WebviewSpec,
 };
 use crate::error::WvError;
-use crate::media::{webview_media_principal, with_guarded_media_permissions};
+use crate::media::guarded_default_media_builder;
+use tao::event::{Event, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
+use tao::platform::run_return::EventLoopExtRunReturn;
+use tao::window::{Window, WindowBuilder};
 
 const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 const GPU_SAFE_MODE_ENV: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
@@ -526,20 +521,9 @@ impl WebKitGtkEngine {
             .build(event_loop)
             .map_err(|e| WvError::Window(e.to_string()))?;
 
-        let builder = wry::WebViewBuilder::new();
-        #[cfg(debug_assertions)]
-        let builder = builder.with_devtools(true);
-        // KEL-59 parity: without the guard WebKitGTK falls back to its own
-        // permission prompt. The empty manifest is the default-deny policy;
-        // mint the webview id first so it cannot inherit app-process grants.
-        let id = self.next_id;
-        let builder = with_guarded_media_permissions(
-            builder,
-            PermissionsManifest::default(),
-            webview_media_principal(WebviewId(id)),
-        );
         let ready = Arc::clone(&self.navigation_ready);
-        let builder = builder.with_on_page_load_handler(move |event, _url| {
+        let id = self.next_id;
+        let builder = guarded_default_media_builder(WebviewId(id), move |event, _url| {
             if matches!(event, wry::PageLoadEvent::Finished)
                 && !ready.swap(true, Ordering::AcqRel)
                 && let Some(events) = app_events.as_ref()
@@ -547,21 +531,14 @@ impl WebKitGtkEngine {
                 let _ = events.send(AppWindowEvent::NavigationReady);
             }
         });
-        let builder = match &spec.initial {
-            NavTarget::Html(html) => builder.with_html(html),
-            NavTarget::Url(url) => builder.with_url(url),
-        };
-        // wry's plain `build(&window)` wires only X11. `build_gtk` with tao's
-        // existing default vbox is required for both Wayland and X11; passing
-        // the GtkApplicationWindow itself silently leaves the webview detached.
-        let vbox = window.default_vbox().ok_or_else(|| {
-            WvError::Webview(String::from(
-                "tao window has no default GTK vbox (WindowBuilderExtUnix::with_default_vbox(false) was set)",
-            ))
-        })?;
-        let webview = builder
-            .build_gtk(vbox)
-            .map_err(|e| WvError::Webview(e.to_string()))?;
+        // KEL-59/KEL-132: Linux defaults an unhandled request to deny, but
+        // that is not proof Keld evaluated the right manifest/principal. The
+        // guarded witness mints the webview principal and is required to apply
+        // initial content and build the live WebKitGTK view.
+        // wry's plain `build(&window)` wires only X11. The witness owns the
+        // `build_gtk` call, so the guarded builder cannot be recovered to
+        // replace its callback before the Wayland/X11 build.
+        let webview = builder.build_initial_gtk(&spec.initial, &window)?;
 
         self.next_id += 1;
         self.views.insert(id, View { webview, window });

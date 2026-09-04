@@ -70,6 +70,23 @@ surfacing that result, and the fuller version-matrix probe in
 `docs/research/library/host-platforms/06-webview-reality.md`
 describes (today's probe is driver + session type only).
 
+Media permission installation is explicit for new requests on every live
+backend. macOS 12+ wry auto-grants when its handler is absent; pinned wry does
+not expose that delegate callback on older debug hosts, whose support boundary
+and real acceptance remain open. WebKitGTK 2.52.6 and wry 0.56.1 deny an
+unhandled Linux request by default, but that fallback is not evidence that
+Keld evaluated the correct webview principal and manifest. The interim wry
+backends therefore keep the raw builder inside a guard-installed witness
+through initial content/build. KEL-132's Linux proof binds one run nonce,
+process, executable, default manifest, minted principal, `keld-guard` decision,
+secure-localhost mock request, explicit WebKitGTK deny API, and top-level-window
+census. The successful GLib signal registration, callback decision, and deny
+API are observed on the process main thread. JavaScript denial alone is not
+sufficient provenance. Wry documents
+that saved browser permission preferences bypass its callback; KEL-135's
+ephemeral-dev and identity-bound persistent-store lifecycle is a prerequisite
+for the corresponding restart/revocation proof.
+
 ## 2. Renderer bridge contract (`window.keld`)
 
 **Destination; not implemented in the live hello backends.** The bridge is injected

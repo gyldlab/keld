@@ -910,6 +910,57 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_linux_media_guard_step(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "linux-gui-smoke") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must keep the `linux-gui-smoke` job that owns real WebKitGTK media and window evidence."
+        ));
+    };
+    let build_step = "Build Linux media guard probe";
+    let gui_step = "Xvfb GUI smoke test — title, controls, and clean close";
+    for step in [build_step, gui_step] {
+        if workflow_direct_named_step_count(&block, step) != 1 {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` must contain exactly one direct `{step}` step for KEL-132."
+            ));
+        }
+        let step_block = workflow_direct_named_step_block(&block, step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` cannot parse the direct `{step}` step for KEL-132.")
+        })?;
+        if workflow_named_step_direct_keys(&step_block, step) != Some(vec![String::from("run")]) {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must have only an unconditional direct `run` key for KEL-132."
+            ));
+        }
+    }
+    let build_block = workflow_direct_named_step_block(&block, build_step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` cannot parse `{build_step}` for KEL-132.")
+    })?;
+    let expected_build = vec![
+        String::from("cargo build -p keld-wv --example linux_media_guard"),
+        String::from(
+            "cc -shared -fPIC -Wall -Wextra -Werror -Wpedantic $(pkg-config --cflags webkit2gtk-4.1) crates/keld-wv/tests/fixtures/linux_media_interpose.c -o \"$RUNNER_TEMP/linux_media_interpose.so\" -ldl $(pkg-config --libs webkit2gtk-4.1)",
+        ),
+    ];
+    if workflow_named_step_shell_commands(&build_block, build_step) != Some(expected_build) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{build_step}` must contain exactly KEL-132's two executable build commands and no wrappers."
+        ));
+    }
+    let gui_block = workflow_direct_named_step_block(&block, gui_step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` cannot parse `{gui_step}` for KEL-132.")
+    })?;
+    let expected_gui = "xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host";
+    if workflow_named_step_direct_value(&gui_block, gui_step, "run").as_deref()
+        != Some(expected_gui)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{gui_step}` must directly execute KEL-132's tracked Linux GUI oracle as its only command; conditional or early-success wrappers are forbidden."
+        ));
+    }
+    Ok(())
+}
+
 fn check_required_job(text: &str) -> Result<(), String> {
     let Some(block) = workflow_job_block(text, "required") else {
         return Err(format!(
@@ -1609,6 +1660,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_fuzz_workspace_step(&text)?;
     check_msrv_avoids_apt(&text)?;
     check_bun_test_job(&text)?;
+    check_linux_media_guard_step(&text)?;
     check_required_job(&text)?;
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
@@ -1811,6 +1863,14 @@ mod tests {
             "        env:",
             "          KELD_CI_TS_PACKAGES: ${{ needs.changes.outputs.ts_packages }}",
             "        run: cd fixture && bun test",
+            "  linux-gui-smoke:",
+            "    steps:",
+            "      - name: Build Linux media guard probe",
+            "        run: |",
+            "          cargo build -p keld-wv --example linux_media_guard",
+            "          cc -shared -fPIC -Wall -Wextra -Werror -Wpedantic $(pkg-config --cflags webkit2gtk-4.1) crates/keld-wv/tests/fixtures/linux_media_interpose.c -o \"$RUNNER_TEMP/linux_media_interpose.so\" -ldl $(pkg-config --libs webkit2gtk-4.1)",
+            "      - name: Xvfb GUI smoke test — title, controls, and clean close",
+            "        run: xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host",
             "  msrv:",
             "    runs-on: macos-latest",
             "    steps:",
@@ -1979,6 +2039,59 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn linux_media_guard_commands_are_mandatory_in_the_gui_lane() {
+        for (needle, replacement) in [
+            (
+                "          cargo build -p keld-wv --example linux_media_guard\n",
+                "          removed-media-build\n",
+            ),
+            (
+                "crates/keld-wv/tests/fixtures/linux_media_interpose.c",
+                "removed-media-interposer.c",
+            ),
+            ("-Wall -Wextra -Werror -Wpedantic", "-Wall -Wextra"),
+            (
+                "xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host",
+                "removed-media-run",
+            ),
+        ] {
+            let temp = complete_fixture();
+            let workflow = valid_workflow().replacen(needle, replacement, 1);
+            temp.write(WORKFLOW, &workflow);
+            let error = check(temp.path()).expect_err("missing media command must fail");
+            assert!(error.contains("KEL-132"), "{needle}: {error}");
+        }
+    }
+
+    #[test]
+    fn linux_media_guard_rejects_inert_or_conditional_commands() {
+        for (needle, replacement) in [
+            (
+                "          cargo build -p keld-wv --example linux_media_guard\n",
+                "          echo cargo build -p keld-wv --example linux_media_guard\n",
+            ),
+            (
+                "      - name: Build Linux media guard probe\n        run: |\n",
+                "      - name: Build Linux media guard probe\n        if: false\n        run: |\n",
+            ),
+            (
+                "        run: xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n",
+                "        run: |\n          exit\n          xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n",
+            ),
+            (
+                "        run: xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n",
+                "        run: |\n          if [ 1 -eq 0 ]; then\n            xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' crates/keld-wv/tests/linux_gui_smoke.sh \"$RUNNER_TEMP/linux_media_interpose.so\" target/debug/examples/linux_media_guard ./target/release/keld-host\n          fi\n",
+            ),
+        ] {
+            let temp = complete_fixture();
+            let workflow = valid_workflow().replacen(needle, replacement, 1);
+            temp.write(WORKFLOW, &workflow);
+            let error = check(temp.path()).expect_err("inert media command must fail");
+            assert!(error.contains("KEL-132"), "{needle}: {error}");
+        }
     }
 
     #[test]

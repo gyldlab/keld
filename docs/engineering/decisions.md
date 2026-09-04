@@ -156,6 +156,21 @@ and had no `with_permission_handler`. 0.56.1 adds the handler; Keld installs it
 and default-denies via `keld-guard` (`web.camera` / `web.microphone`). tao stays
 0.35.3: wry 0.56 `build` takes `raw_window_handle::HasWindowHandle`.
 
+**Update (2026-09-04, KEL-132).** The former source-string installation test
+passed even when the production wry installer returned its input unchanged.
+Both interim wry backends now keep the raw builder inside a guard-installed
+witness through initial content/build, and a fake invokes the exact installed
+callback.
+Linux's unhandled WebKitGTK/wry default is deny rather than a platform prompt;
+the real Linux proof therefore records the default manifest, minted principal,
+`keld-guard` decision, explicit deny API call, request/process nonce, and
+window census with mock camera/microphone devices. A JavaScript
+`NotAllowedError` alone is not Keld-policy provenance. Saved permission
+preferences bypass wry's new-request callback; KEL-135 owns their profile and
+restart/revocation lifecycle. Pinned wry also cfg-removes the delegate callback
+below macOS 12 on debug hosts, so oldest-supported-macOS acceptance remains
+open rather than inferred from Linux.
+
 **Destination (architecture 05 §1).** `keld-wv` is Keld's own `WebEngine` layer over
 WKWebView (**objc2**), WebView2 (**windows-rs** + WebView2 COM), and WebKitGTK
 (**webkit6/gtk4**). wry/tao stay as reference implementations and a quirks catalog.
@@ -207,9 +222,9 @@ a shell variable, while preserving the documented DMA-BUF crash/flicker
 mitigation on `WebKitGTK` ≤ 2.54 (tauri-apps/tauri#9394, #14924). The pure
 detector lets `keld doctor` read the state later without side effects. Media-permission
 guard (KEL-59) reuses the existing wry helpers unchanged (`media.rs` widened
-from macOS-only to `any(macos, linux)`), since Linux's default without a
-handler is also "show the platform's own prompt," same category as the old
-Windows default.
+from macOS-only to `any(macos, linux)`). Later WebKitGTK 2.52.6/wry 0.56.1
+inspection corrected the original prompt claim: an unhandled Linux request is
+denied, but that fallback supplies no Keld principal/manifest provenance.
 
 Verification: compiled, clippy-clean, and 225 tests green (including live
 Bun↔Rust kipc integration) on real Ubuntu 26.04 (GTK3/WebKit2GTK 4.1 dev libs
