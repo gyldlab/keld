@@ -1,6 +1,10 @@
 //! KEL-78 T1: the synthetic probe binary must not claim OS containment.
 
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "This integration test uses expect and assertion panics as its probe-process contract oracle"
+)]
 
 use std::process::Command;
 
