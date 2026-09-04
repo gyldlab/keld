@@ -30,13 +30,11 @@ use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
 
-use keld_guard::PermissionsManifest;
-
 use crate::WebviewId;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
-use crate::media::{webview_media_principal, with_guarded_media_permissions};
+use crate::media::guarded_default_media_builder;
 use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
 const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
@@ -262,26 +260,12 @@ impl WkWebViewEngine {
             .build(event_loop)
             .map_err(|error| WvError::Window(error.to_string()))?;
         mark_startup(&self.startup, StartupPhase::WindowCreated);
-        let builder = wry::WebViewBuilder::new();
-        #[cfg(debug_assertions)]
-        let builder = builder.with_devtools(true);
         let id = self.next_id;
-        let builder = with_guarded_media_permissions(
-            builder,
-            PermissionsManifest::default(),
-            webview_media_principal(WebviewId(id)),
+        let builder = guarded_default_media_builder(
+            WebviewId(id),
+            page_load_trace_handler(Arc::clone(&self.startup), app_events),
         );
-        let builder = builder.with_on_page_load_handler(page_load_trace_handler(
-            Arc::clone(&self.startup),
-            app_events,
-        ));
-        let builder = match &spec.initial {
-            NavTarget::Html(html) => builder.with_html(html),
-            NavTarget::Url(url) => builder.with_url(url),
-        };
-        let webview = builder
-            .build(&window)
-            .map_err(|error| WvError::Webview(error.to_string()))?;
+        let webview = builder.build_initial_window(&spec.initial, &window)?;
         mark_startup(&self.startup, StartupPhase::WebviewAttached);
         self.next_id += 1;
         self.views.insert(id, View { webview, window });

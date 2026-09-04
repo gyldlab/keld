@@ -486,8 +486,10 @@ Supporting types:
   `WEB_MEDIA_ORIGIN`, `media_permission_allowed(manifest, principal, kind)` — default-deny
   camera/mic policy (KEL-59, KEL-73). Evaluates as the requesting `Principal::Webview`
   when the host has minted that id. Missing identity and `AppProcess` are
-  `KELD-GUARD007`. v0 requested resource is `*` because neither platform callback
-  passes an origin (wry's handler on macOS, `PermissionRequested` args on Windows).
+  `KELD-GUARD007`. Wry's macOS/Linux callback exposes no origin. Windows
+  `PermissionRequested` exposes `Uri`, but the v0 adapter reads only
+  `PermissionKind` and discards the URI, so all three evaluate resource `*`
+  without origin filtering.
 - `WebviewId(pub u32)`, `EnginePolicy::{ System (default), Pinned }` (declared in
   [`lib.rs`](../../crates/keld-wv/src/lib.rs); nothing reads `EnginePolicy` yet)
 - `WvError` — nine variants, codes `KELD-WV-001..008` and `KELD-WV-010`
@@ -501,9 +503,9 @@ Backends:
 
 | Module | Platform | State |
 |---|---|---|
-| `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
+| `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. On macOS 12+, new camera/mic requests go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). Pinned wry cfg-removes that delegate callback below 12 on debug hosts, so the oldest-supported-OS boundary and real proof remain open. |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms the X11 backend, and KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. A real X11 product run remains open. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms the X11 backend, and KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. A real X11 product run remains open. New camera/mic requests go through a guard-installed wry builder → `keld-guard`; Linux's unhandled default deny is not accepted as policy provenance, so the KEL-132 real probe binds callback/API denial to the manifest, principal, process and no-prompt census. Saved-preference restart/revocation remains KEL-135-owned. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live
@@ -574,7 +576,7 @@ the behavior that exists today so target contracts are not mistaken for shipped 
 
 | Crate | Everything it exposes |
 |---|---|
-| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`, plus `verified_manifest::{VerifiedManifest, load_verified_manifest}` for the shipping no-flag startup snapshot. MCP `keld_permissions_explain`, all three webview media-capture handlers, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call the evaluator; reachable privileged host routing remains KEL-102/T3. |
+| `keld_guard` | `Principal::{AppProcess, Webview{id,generation}, Plugin{id}}`, `Decision::{Allow, Deny(DenyReason)}`, `DenyReason::{NotGranted, OutOfScope, ChannelForbidden, NotAppProcess, MediaPrincipalRequired}`, `parse_manifest` / `load_manifest` / `evaluate`, plus `verified_manifest::{VerifiedManifest, load_verified_manifest}` for the shipping no-flag startup snapshot. MCP `keld_permissions_explain`, each applicable new-request webview media callback, and `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) call the evaluator; saved-preference profile lifecycle remains KEL-135-owned and reachable privileged host routing remains KEL-102/T3. |
 | `keld_runtime` | `primary::{PrimaryRoleSupervisor, PrimaryRoleConfig, BoundPrimaryGeneration, PrimaryRecoveryGate}` over the one shared generation/restart owner. The gated start surface pauses the first crash successor until the host arms recovery after initial Ready; dropping/denying the gate prevents provisioning. |
 | `keld_native` | `MODULES: &[&str]` — the 15 planned module names (`window`, `menu`, `tray`, `dialog`, …) |
 | `keld_update` | `Channel::{Stable, Beta, Canary}` |
