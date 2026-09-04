@@ -115,6 +115,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: WebView2 runtime unavailable
 - fix: Install the Evergreen Runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. Keld will not download or execute an installer for you.
 
+## KELD-WV-010
+
+- crate: keld-wv
+- message: Linux GPU safe-mode preparation failed
+- fix: Launch through Keld's process entry before creating a webview; Keld exact-self re-execs with the mitigation, so do not mutate or export the process environment manually.
+
 ## KELD-CLI-010
 
 - crate: keld-cli

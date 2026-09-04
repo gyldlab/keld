@@ -29,7 +29,9 @@ fn main() {
             Ok(())
         }
         Some("hello") => match parse_hello_flags(&args[2..]) {
-            Ok(()) => run_hello_window().map_err(|e| e.to_string()),
+            Ok(()) => keld_core::prepare_webview_process()
+                .and_then(|()| run_hello_window())
+                .map_err(|e| e.to_string()),
             Err(err) => {
                 eprintln!("{err}");
                 process::exit(2);

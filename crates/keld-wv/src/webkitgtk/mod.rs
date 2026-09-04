@@ -9,25 +9,20 @@
 //! destination is a later rewrite, not this slice.
 //!
 //! Unlike the other two backends this module owns one extra Linux-only
-//! concern: [`probe_gpu_stack`] applies the documented NVIDIA+Wayland
-//! DMA-BUF safe-mode mitigation internally before any `WebKit`/GTK object is
-//! constructed. Crate `AGENTS.md`: agents MUST probe the GPU stack and apply
-//! safe-mode before init, MUST NOT instruct env-var exports — this is that
-//! probe, not a doc telling a developer to set a shell variable.
-//!
-// SAFETY: `probe_gpu_stack` calls `std::env::set_var`, `unsafe` in edition
-// 2024 because concurrent env reads on other threads are a real soundness
-// gap on some platforms. It runs at the very start of `WebKitGtkEngine::new`
-// — before the tao event loop, GTK main loop, or any WebKit object exists —
-// so no other thread in this process is reading or writing the environment
-// concurrently. Every mutation of engine and window state after that happens
-// on the same UI thread inside tao's event loop, satisfying the crate
-// `AGENTS.md` "UI-thread-only mutations" invariant.
+//! concern: [`prepare_gpu_safe_mode_process`] applies the documented
+//! NVIDIA+Wayland DMA-BUF safe-mode mitigation by exact-self re-exec before
+//! any `WebKit`/GTK object is constructed. [`WebKitGtkEngine::new`] then
+//! validates that preparation before init. Crate `AGENTS.md`: do this
+//! programmatically, never by instructing users to export an environment
+//! variable.
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::collections::BTreeMap;
+use std::ffi::{CString, OsStr, OsString, c_char};
 use std::fmt;
+use std::io;
+use std::os::unix::ffi::OsStringExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -52,9 +47,20 @@ use crate::error::WvError;
 use crate::media::{webview_media_principal, with_guarded_media_permissions};
 
 const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
+const GPU_SAFE_MODE_ENV: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+const SELF_EXE: &str = "/proc/self/exe";
 
-/// Outcome of [`probe_gpu_stack`]: whether Keld silently degraded rendering
-/// to avoid a known `WebKitGTK` crash/flicker class.
+unsafe extern "C" {
+    #[link_name = "execve"]
+    fn execve_raw(
+        path: *const c_char,
+        argv: *const *const c_char,
+        envp: *const *const c_char,
+    ) -> std::ffi::c_int;
+}
+
+/// Outcome of Linux GPU-stack detection and process preparation: whether Keld
+/// silently degraded rendering to avoid a known `WebKitGTK` crash/flicker class.
 ///
 /// `keld doctor` and apps read this as the structured `degraded-rendering`
 /// fact crate `AGENTS.md` requires — not a log line to grep for.
@@ -62,6 +68,9 @@ const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 pub enum GpuSafeMode {
     /// No known-risky driver/session combination detected.
     Normal,
+    /// NVIDIA proprietary driver + Wayland require process preparation, but
+    /// the DMA-BUF mitigation is not present yet.
+    NvidiaWaylandPreparationRequired,
     /// NVIDIA proprietary driver + Wayland session: `WebKitGTK`'s DMA-BUF
     /// compositor path crashes and flickers on this combination, on every
     /// `WebKitGTK` release through 2.54 (no fix shipped as of that release —
@@ -69,7 +78,7 @@ pub enum GpuSafeMode {
     /// [tauri-apps/tauri#9394](https://github.com/tauri-apps/tauri/issues/9394),
     /// [#14924](https://github.com/tauri-apps/tauri/issues/14924).
     /// `WEBKIT_DISABLE_DMABUF_RENDERER=1` remains the documented mitigation.
-    NvidiaWaylandDmabuf,
+    NvidiaWaylandDmabufDisabled,
 }
 
 impl GpuSafeMode {
@@ -77,7 +86,13 @@ impl GpuSafeMode {
     /// (safe) mode rather than the driver's normal accelerated path.
     #[must_use]
     pub const fn is_degraded(self) -> bool {
-        !matches!(self, Self::Normal)
+        matches!(self, Self::NvidiaWaylandDmabufDisabled)
+    }
+
+    /// Whether process entry must exact-self re-exec before engine creation.
+    #[must_use]
+    pub const fn requires_preparation(self) -> bool {
+        matches!(self, Self::NvidiaWaylandPreparationRequired)
     }
 
     /// Short, stable reason string for `keld doctor` / app-surfaced diagnostics.
@@ -85,7 +100,10 @@ impl GpuSafeMode {
     pub const fn reason(self) -> Option<&'static str> {
         match self {
             Self::Normal => None,
-            Self::NvidiaWaylandDmabuf => Some(
+            Self::NvidiaWaylandPreparationRequired => Some(
+                "NVIDIA driver + Wayland: DMA-BUF safe-mode preparation is required before WebKitGTK initialization",
+            ),
+            Self::NvidiaWaylandDmabufDisabled => Some(
                 "NVIDIA driver + Wayland: DMA-BUF renderer disabled \
                  (WEBKIT_DISABLE_DMABUF_RENDERER=1) to avoid known crashes/flicker",
             ),
@@ -106,46 +124,154 @@ fn nvidia_driver_loaded() -> bool {
     std::path::Path::new("/proc/driver/nvidia/version").exists()
 }
 
-/// Detects the known-risky NVIDIA+Wayland combination. Pure: reads the
-/// session type and driver presence, mutates nothing. Safe to call from
-/// anywhere (`keld doctor`, tests, repeatedly) without side effects — unlike
-/// [`probe_gpu_stack`], which additionally applies the mitigation.
+fn detect_gpu_safe_mode_with(wayland: bool, nvidia: bool, value: Option<&OsStr>) -> GpuSafeMode {
+    if !wayland || !nvidia {
+        GpuSafeMode::Normal
+    } else if value == Some(OsStr::new("1")) {
+        GpuSafeMode::NvidiaWaylandDmabufDisabled
+    } else {
+        GpuSafeMode::NvidiaWaylandPreparationRequired
+    }
+}
+
+/// Detects the NVIDIA+Wayland safe-mode state. Pure: reads the session,
+/// driver presence, and mitigation environment, but mutates nothing. Safe to call from
+/// anywhere (`keld doctor`, tests, repeatedly) without side effects. Process
+/// preparation is owned separately by [`prepare_gpu_safe_mode_process`].
 ///
 /// Best-effort: an unreadable `/proc` entry (e.g. a sandboxed container) is
 /// read as "no NVIDIA driver," not an error — a missed degradation defaults
 /// to the driver's normal path, which is no worse than not probing at all.
 #[must_use]
 pub fn detect_gpu_safe_mode() -> GpuSafeMode {
-    if is_wayland_session() && nvidia_driver_loaded() {
-        GpuSafeMode::NvidiaWaylandDmabuf
+    let value = std::env::var_os(GPU_SAFE_MODE_ENV);
+    detect_gpu_safe_mode_with(
+        is_wayland_session(),
+        nvidia_driver_loaded(),
+        value.as_deref(),
+    )
+}
+
+fn nul_error(kind: &'static str) -> impl FnOnce(std::ffi::NulError) -> io::Error {
+    move |_| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind} contains NUL"))
+}
+
+fn build_execve_vectors<I, E>(
+    arguments: I,
+    environment: E,
+) -> io::Result<(Vec<CString>, Vec<CString>)>
+where
+    I: IntoIterator<Item = OsString>,
+    E: IntoIterator<Item = (OsString, OsString)>,
+{
+    let mut argument_strings = arguments
+        .into_iter()
+        .map(|arg| CString::new(arg.into_vec()).map_err(nul_error("process argument")))
+        .collect::<io::Result<Vec<_>>>()?;
+    if argument_strings.is_empty() {
+        argument_strings.push(CString::new(SELF_EXE).map_err(nul_error("fallback argv0"))?);
+    }
+
+    let mut environment_strings = Vec::new();
+    for (key, value) in environment {
+        if key == OsStr::new(GPU_SAFE_MODE_ENV) {
+            continue;
+        }
+        let mut entry = key.into_vec();
+        entry.push(b'=');
+        entry.extend(value.into_vec());
+        environment_strings
+            .push(CString::new(entry).map_err(nul_error("process environment entry"))?);
+    }
+    environment_strings.push(
+        CString::new(format!("{GPU_SAFE_MODE_ENV}=1"))
+            .map_err(nul_error("GPU safe-mode environment entry"))?,
+    );
+    Ok((argument_strings, environment_strings))
+}
+
+fn exact_self_execve() -> io::Error {
+    let (argv, envp) = match build_execve_vectors(std::env::args_os(), std::env::vars_os()) {
+        Ok(vectors) => vectors,
+        Err(error) => return error,
+    };
+    let mut argv_ptrs: Vec<*const c_char> = argv.iter().map(|value| value.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+    let mut envp_ptrs: Vec<*const c_char> = envp.iter().map(|value| value.as_ptr()).collect();
+    envp_ptrs.push(std::ptr::null());
+
+    // SAFETY: Linux execve(2) takes NUL-terminated strings in NULL-terminated
+    // pointer arrays and does not return on success:
+    // https://man7.org/linux/man-pages/man2/execve.2.html
+    // The path is a static C string. Every argv/envp entry is an owned
+    // `CString`; neither the arrays nor their backing strings move or drop
+    // during the call. `execve` receives envp directly and never requires us
+    // to assign process-global `environ`.
+    let result = unsafe {
+        execve_raw(
+            c"/proc/self/exe".as_ptr(),
+            argv_ptrs.as_ptr(),
+            envp_ptrs.as_ptr(),
+        )
+    };
+    if result == -1 {
+        io::Error::last_os_error()
     } else {
-        GpuSafeMode::Normal
+        io::Error::other(format!("execve returned unexpected status {result}"))
     }
 }
 
-/// Detects the known-risky NVIDIA+Wayland combination ([`detect_gpu_safe_mode`])
-/// and, if found, applies the documented safe-mode mitigation on this
-/// process's own environment.
-///
-/// Callers MUST invoke this before any `WebKit`/GTK object is constructed —
-/// [`WebKitGtkEngine::new`] is the only current call site, at the very top of
-/// engine construction, before the tao event loop or any GTK/WebKit call.
-/// Calling it a second time is safe but pointless (idempotent env write); do
-/// not call it from `keld doctor` or anywhere that only wants to *read* the
-/// state — use [`detect_gpu_safe_mode`] there instead, which cannot mutate
-/// anything.
-#[must_use]
-pub fn probe_gpu_stack() -> GpuSafeMode {
-    let mode = detect_gpu_safe_mode();
-    if mode.is_degraded() {
-        // SAFETY: this function's own contract requires the caller to invoke
-        // it before the tao event loop or any GTK/WebKit call exists — see
-        // the module SAFETY note for why no concurrent env access exists yet.
-        unsafe {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
+fn prepare_gpu_safe_mode_process_with<F>(
+    mode: GpuSafeMode,
+    reexec: F,
+) -> Result<GpuSafeMode, WvError>
+where
+    F: FnOnce() -> io::Error,
+{
+    if !mode.requires_preparation() {
+        return Ok(mode);
     }
-    mode
+
+    let error = reexec();
+    Err(WvError::GpuSafeModePreparation {
+        detail: format!("exact-self re-exec through `{SELF_EXE}` failed: {error}"),
+    })
+}
+
+/// Applies the NVIDIA+Wayland safe-mode mitigation before webview startup.
+///
+/// On the risky stack, an unprepared process is replaced through
+/// `/proc/self/exe` with the same arguments and
+/// `WEBKIT_DISABLE_DMABUF_RENDERER=1`. `exec` preserves the process identity
+/// while avoiding edition-2024's unsound concurrent mutation of the live
+/// environment. The Linux [`execve(2)` contract](https://man7.org/linux/man-pages/man2/execve.2.html)
+/// receives explicit null-terminated `argv` and `envp`, preserves the PID, and
+/// does not return on success. Call this from a process-entry dispatcher before
+/// creating threads or other state that cannot safely be repeated. It returns
+/// normally only when no mitigation is needed or the replacement process is prepared.
+///
+/// # Errors
+///
+/// Returns [`WvError`] when exact-self re-exec fails. It never falls back to
+/// initializing `WebKitGTK` on the risky unprepared path.
+pub fn prepare_gpu_safe_mode_process() -> Result<GpuSafeMode, WvError> {
+    prepare_gpu_safe_mode_process_with(detect_gpu_safe_mode(), exact_self_execve)
+}
+
+fn require_prepared_gpu_safe_mode_with(mode: GpuSafeMode) -> Result<GpuSafeMode, WvError> {
+    if mode.requires_preparation() {
+        Err(WvError::GpuSafeModePreparation {
+            detail: String::from(
+                "NVIDIA+Wayland engine construction was reached before exact-self re-exec",
+            ),
+        })
+    } else {
+        Ok(mode)
+    }
+}
+
+fn require_prepared_gpu_safe_mode() -> Result<GpuSafeMode, WvError> {
+    require_prepared_gpu_safe_mode_with(detect_gpu_safe_mode())
 }
 
 /// One live webview and the host window it fills (v0: one per window).
@@ -187,17 +313,21 @@ impl WebKitGtkEngine {
     ///
     /// Must be called on the process main thread — GTK's platform contract,
     /// enforced by tao (which aborts otherwise).
-    #[must_use]
-    pub fn new() -> Self {
-        let gpu_safe_mode = probe_gpu_stack();
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError`] before GTK/WebKit initialization when a risky
+    /// NVIDIA+Wayland process skipped [`prepare_gpu_safe_mode_process`].
+    pub fn new() -> Result<Self, WvError> {
+        let gpu_safe_mode = require_prepared_gpu_safe_mode()?;
+        Ok(Self {
             event_loop: Some(EventLoopBuilder::with_user_event().build()),
             gpu_safe_mode,
             views: BTreeMap::new(),
             next_id: 1,
             navigation_ready: Arc::new(AtomicBool::new(false)),
             app_window_created: false,
-        }
+        })
     }
 
     /// Result of the startup GPU-stack probe, for `keld doctor` and
@@ -445,12 +575,6 @@ impl WebKitGtkEngine {
     }
 }
 
-impl Default for WebKitGtkEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl WebEngine for WebKitGtkEngine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
         self.create_internal(spec, None)
@@ -553,24 +677,29 @@ fn navigation_deadline_expired(
 ///
 /// Thin wrapper for the Phase 1 hello slice: probes the GPU stack, builds a
 /// [`WebKitGtkEngine`], creates one webview, and hands the thread to the run
-/// loop.
+/// loop. Process entry must call [`prepare_gpu_safe_mode_process`] first.
 ///
 /// # Errors
 ///
 /// Returns [`WvError`] if window or webview creation fails.
 pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
-    let mut engine = WebKitGtkEngine::new();
+    let mut engine = WebKitGtkEngine::new()?;
     engine.create(spec)?;
     engine.run_until_closed()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::{CString, OsStr, OsString};
+    use std::io;
+    use std::os::unix::ffi::OsStringExt;
     use std::time::{Duration, Instant};
 
     use super::{
-        GpuSafeMode, WebKitGtkEngine, is_wayland_session, navigation_deadline_expired,
-        nvidia_driver_loaded,
+        GPU_SAFE_MODE_ENV, GpuSafeMode, WebKitGtkEngine, build_execve_vectors,
+        detect_gpu_safe_mode_with, is_wayland_session, navigation_deadline_expired,
+        nvidia_driver_loaded, prepare_gpu_safe_mode_process_with,
+        require_prepared_gpu_safe_mode_with,
     };
     use crate::error::WvError;
 
@@ -582,8 +711,9 @@ mod tests {
 
     #[test]
     fn gpu_safe_mode_nvidia_wayland_is_degraded_with_a_reason() {
-        let mode = GpuSafeMode::NvidiaWaylandDmabuf;
+        let mode = GpuSafeMode::NvidiaWaylandDmabufDisabled;
         assert!(mode.is_degraded());
+        assert!(!mode.requires_preparation());
         let reason = mode.reason().expect("degraded mode must explain itself");
         assert!(
             reason.contains("WEBKIT_DISABLE_DMABUF_RENDERER"),
@@ -591,6 +721,16 @@ mod tests {
         );
         assert!(reason.contains("NVIDIA"), "{reason}");
         assert!(reason.contains("Wayland"), "{reason}");
+    }
+
+    #[test]
+    fn unprepared_nvidia_wayland_is_risky_not_degraded() {
+        let mode = GpuSafeMode::NvidiaWaylandPreparationRequired;
+        assert!(mode.requires_preparation());
+        assert!(!mode.is_degraded());
+        let reason = mode.reason().expect("unprepared risk must explain itself");
+        assert!(reason.contains("preparation is required"), "{reason}");
+        assert!(!reason.contains("renderer disabled"), "{reason}");
     }
 
     /// Pure probes: no GTK/WebKit call, no env mutation, safe to run in any
@@ -603,7 +743,7 @@ mod tests {
 
     /// `detect_gpu_safe_mode` must never touch the process environment —
     /// `keld doctor` (and this test) can call it freely without side
-    /// effects. Only `probe_gpu_stack` may mutate.
+    /// effects. No backend path mutates the live process environment.
     #[test]
     fn detect_gpu_safe_mode_does_not_mutate_the_environment() {
         // `env::var_os` (read) is safe in edition 2024; only `set_var` /
@@ -615,6 +755,103 @@ mod tests {
             before, after,
             "detect_gpu_safe_mode must be pure — no env mutation"
         );
+    }
+
+    #[test]
+    fn gpu_safe_mode_preparation_matrix_fails_closed() {
+        assert_eq!(
+            detect_gpu_safe_mode_with(false, true, None),
+            GpuSafeMode::Normal
+        );
+        assert_eq!(
+            detect_gpu_safe_mode_with(true, false, None),
+            GpuSafeMode::Normal
+        );
+        assert_eq!(
+            detect_gpu_safe_mode_with(true, true, None),
+            GpuSafeMode::NvidiaWaylandPreparationRequired
+        );
+        assert_eq!(
+            detect_gpu_safe_mode_with(true, true, Some(OsStr::new("0"))),
+            GpuSafeMode::NvidiaWaylandPreparationRequired
+        );
+        assert_eq!(
+            detect_gpu_safe_mode_with(true, true, Some(OsStr::new("1"))),
+            GpuSafeMode::NvidiaWaylandDmabufDisabled
+        );
+
+        assert_eq!(
+            require_prepared_gpu_safe_mode_with(GpuSafeMode::Normal)
+                .expect("normal stack needs no preparation"),
+            GpuSafeMode::Normal
+        );
+        assert_eq!(
+            require_prepared_gpu_safe_mode_with(GpuSafeMode::NvidiaWaylandDmabufDisabled)
+                .expect("prepared risky stack"),
+            GpuSafeMode::NvidiaWaylandDmabufDisabled
+        );
+        let error =
+            require_prepared_gpu_safe_mode_with(GpuSafeMode::NvidiaWaylandPreparationRequired)
+                .expect_err("unprepared risky stack must fail before GTK/WebKit");
+        let message = error.to_string();
+        assert!(message.contains("KELD-WV-010"), "{message}");
+        assert!(message.contains("exact-self re-exec"), "{message}");
+    }
+
+    #[test]
+    fn execve_vectors_preserve_argv0_args_and_one_mitigation_override() {
+        let (argv, envp) = build_execve_vectors(
+            [OsString::from("multicall-keld"), OsString::from("--hello")],
+            [
+                (OsString::from("KEEP"), OsString::from("value")),
+                (OsString::from(GPU_SAFE_MODE_ENV), OsString::from("stale")),
+                (
+                    OsString::from(GPU_SAFE_MODE_ENV),
+                    OsString::from("duplicate"),
+                ),
+            ],
+        )
+        .expect("valid execve vectors");
+        let argv: Vec<&[u8]> = argv.iter().map(CString::as_bytes).collect();
+        assert_eq!(argv, [b"multicall-keld".as_slice(), b"--hello".as_slice()]);
+        let envp: Vec<&[u8]> = envp.iter().map(CString::as_bytes).collect();
+        assert!(envp.contains(&b"KEEP=value".as_slice()));
+        let overrides: Vec<_> = envp
+            .iter()
+            .filter(|entry| entry.starts_with(GPU_SAFE_MODE_ENV.as_bytes()))
+            .copied()
+            .collect();
+        assert_eq!(overrides, [b"WEBKIT_DISABLE_DMABUF_RENDERER=1"]);
+
+        let invalid = OsString::from_vec(b"bad\0argument".to_vec());
+        let error = build_execve_vectors([invalid], std::iter::empty())
+            .expect_err("NUL-bearing argv cannot cross execve");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn process_preparation_reexec_failure_is_typed_and_never_falls_back() {
+        let error = prepare_gpu_safe_mode_process_with(
+            GpuSafeMode::NvidiaWaylandPreparationRequired,
+            || io::Error::other("fixture re-exec failure"),
+        )
+        .expect_err("a returned exec error must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("KELD-WV-010"), "{message}");
+        assert!(message.contains("fixture re-exec failure"), "{message}");
+
+        let normal = prepare_gpu_safe_mode_process_with(GpuSafeMode::Normal, || {
+            panic!("normal stack must not re-exec")
+        })
+        .expect("normal stack");
+        assert_eq!(normal, GpuSafeMode::Normal);
+
+        let prepared =
+            prepare_gpu_safe_mode_process_with(GpuSafeMode::NvidiaWaylandDmabufDisabled, || {
+                panic!("prepared stack must not re-exec")
+            })
+            .expect("prepared risky stack");
+        assert_eq!(prepared, GpuSafeMode::NvidiaWaylandDmabufDisabled);
     }
 
     /// Keeps the engine type named from the test module so a rename fails the

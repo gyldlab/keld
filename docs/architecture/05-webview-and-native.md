@@ -53,11 +53,19 @@ security updates. Verso/Servo remain later conformance candidates only when embe
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
 Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
-safe-mode. **Implemented (KEL-28):** `webkitgtk::probe_gpu_stack` detects
-NVIDIA + Wayland and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` programmatically
-before any GTK/WebKit call — never by asking users to export env vars — and
-returns a `GpuSafeMode` apps can read (`is_degraded()` / `reason()`) as the
-structured degraded-rendering fact. **Not yet built:** a `keld doctor` line
+safe-mode. **Implemented (KEL-28/KEL-132):**
+`webkitgtk::prepare_gpu_safe_mode_process` detects NVIDIA + Wayland and, when
+needed, exact-self re-execs the shipping process with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` before any GTK/WebKit call — never by
+mutating a live multi-threaded environment or asking users to export env vars.
+The backend passes explicit `argv`/`envp` to Linux
+[`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html); the same PID
+executes the replacement image and successful preparation does not return.
+Engine construction fails closed if process-entry preparation was skipped and
+returns a three-state `GpuSafeMode` (`Normal`, preparation required, or DMA-BUF
+disabled); `is_degraded()` is true only after the mitigation is applied. Apps
+can read that state and `reason()` as the structured degraded-rendering fact.
+**Not yet built:** a `keld doctor` line
 surfacing that result, and the fuller version-matrix probe in
 `docs/research/library/host-platforms/06-webview-reality.md`
 describes (today's probe is driver + session type only).

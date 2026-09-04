@@ -571,7 +571,7 @@ Self::UnknownWebview { id } => write!(
 ),
 ```
 
-And the fix text is tested — `error.rs:74-118` asserts that all seven variants contain both their
+And the fix text is tested — `error.rs` asserts that all nine variants contain both their
 code and a fix hint, so a message that degrades to "not implemented" fails CI. `keld-cli` follows
 the same shape (`KELD-CLI-020` through `KELD-CLI-040`). The known gap: `keld-guard`'s `DenyReason`
 renders the capability and scope but not yet the manifest edit that would grant it, which

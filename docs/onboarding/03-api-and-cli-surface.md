@@ -364,7 +364,7 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-045` | `verb.rs` | reserved verb `build` / `migrate` / `gen` / `ext` is not implemented (exit 2) |
 | `KELD-CLI-046` | `verb.rs` | unknown command (exit 2) |
 | `KELD-IPC-001..007` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline · HELLO session token |
-| `KELD-WV-001..007` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id |
+| `KELD-WV-001..008,010` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id · WebView2 runtime · Linux GPU preparation |
 | `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |
 
 The `KELD-WV-*` messages are covered by a test that asserts both the code and the fix
@@ -485,7 +485,7 @@ Supporting types:
   passes an origin (wry's handler on macOS, `PermissionRequested` args on Windows).
 - `WebviewId(pub u32)`, `EnginePolicy::{ System (default), Pinned }` (declared in
   [`lib.rs`](../../crates/keld-wv/src/lib.rs); nothing reads `EnginePolicy` yet)
-- `WvError` — seven variants, codes `KELD-WV-001..007`
+- `WvError` — nine variants, codes `KELD-WV-001..008` and `KELD-WV-010`
 
 Three platform extension traits are declared, all **marker-level** (`: WebEngine`, zero
 methods), and all compiled on every platform so workspace clippy keeps the layout honest:
@@ -498,33 +498,37 @@ Backends:
 |---|---|---|
 | `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. Camera/mic go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. `probe_gpu_stack()` applies NVIDIA+Wayland safe-mode before any GTK/WebKit call — split from the pure `detect_gpu_safe_mode()` so `keld doctor` can read it side-effect-free. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms the X11 backend, and KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. A real X11 product run remains open. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; `Xvfb` + `xdotool` confirms the X11 backend, and KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. A real X11 product run remains open. Camera/mic go through the shared wry `with_guarded_media_permissions` → `keld-guard`. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live
-backends) and `run_hello_window(title: &str, html: &str)`.
+backends) and `run_hello_window(title: &str, html: &str)`. Shipping process entry calls
+`keld_core::prepare_webview_process()` before these helpers on Linux; an embedding that
+calls them directly must do the same before non-repeatable state.
 
-`unsafe_code` is `deny` workspace-wide; `wkwebview/mod.rs` and `webview2/mod.rs` carry
-module-scope `#![allow(unsafe_code)]` with SAFETY comments citing the platform threading
-contracts. Other sanctioned owners are `keld-runtime` Windows modules,
+`unsafe_code` is `deny` workspace-wide; `wkwebview/mod.rs`, `webview2/mod.rs`, and Linux
+`webkitgtk/mod.rs` carry module-scope `#![allow(unsafe_code)]` with local SAFETY proofs
+for their platform calls (Linux owns one direct `execve` with explicit `argv`/`envp`).
+Other sanctioned owners are `keld-runtime` Windows modules,
 `keld-ipc::windows_named_pipe`, and the reserved future `keld-ipc` shm module.
 
 ### 3.3 `keld_core` — the host runtime
 
 ```rust
+pub fn prepare_webview_process() -> Result<(), keld_wv::WvError>  // Linux process-entry exact-self exec
 pub fn run_hello_window() -> Result<(), keld_wv::WvError>  // "Keld" + HELLO_HTML
 pub fn run_hello_window_titled(title: &str) -> Result<(), keld_wv::WvError>  // title + HELLO_HTML
 pub fn run_hello_window_html(title: &str, html: &str) -> Result<(), keld_wv::WvError>  // legacy hello path
 pub struct ValidatedBootSelection { /* private */ }  // keld_core::app_session
 pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // app_session
-pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // shipping macOS/Windows app_session
+pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError>  // shipping macOS/Windows/Linux app_session
 pub const VERSION: &str                                    // = CARGO_PKG_VERSION
 ```
 
 Hello-window and config-title helpers live in
 [`crates/keld-core/src/lib.rs`](../../crates/keld-core/src/lib.rs). The public
 `app_session` module keeps its session implementation private and owns strict
-macOS/Windows boot validation, the one echo/lifecycle router,
+macOS/Windows/Linux boot validation, the one echo/lifecycle router,
 platform supervision, CLI-lease loss and ordered UI exit. Its shipping no-flag
 caller uses `run_guarded`: before any app resource it transfers KEL-96's retained
 handle and digest for the owner-private staged `keld.permissions.jsonc` copy to
