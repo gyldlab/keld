@@ -62,6 +62,17 @@ test("every checkout must be protected; one secure step cannot mask another", ()
   expect(checked).toBeGreaterThan(1);
 });
 
+test("checkout repository case and subpaths cannot bypass its policy", () => {
+  for (const name of ["ACTIONS/CHECKOUT", "Actions/Checkout/."]) {
+    for (const protectedCheckout of [true, false]) {
+      const f = fixture();
+      f.jobs.codeql!.steps.push({ uses: `${name}@3d3c42e5aac5ba805825da76410c181273ba90b1`, with: { "persist-credentials": !protectedCheckout } });
+      if (protectedCheckout) expect(() => check(f)).not.toThrow();
+      else expect(() => check(f)).toThrow("persist-credentials: false");
+    }
+  }
+});
+
 for (const [job, name] of [
   ["codeql", "Initialize CodeQL"],
   ["codeql", "Analyze and upload CodeQL results"],

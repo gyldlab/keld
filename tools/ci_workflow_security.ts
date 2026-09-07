@@ -51,6 +51,12 @@ function actionRef(value: unknown, label: string): string {
   return value;
 }
 
+function actionName(reference: string): string {
+  const [owner = "", repository = "", ...path] = reference.split("@", 1)[0]!.split("/");
+  // GitHub repository identity is case-insensitive; paths within it retain case.
+  return [owner.toLowerCase(), repository.toLowerCase(), ...path].join("/");
+}
+
 function inputsMatch(actual: Mapping, expected: Record<string, string>, label: string): void {
   exactKeys(actual, Object.keys(expected), label);
   for (const [key, expectedValue] of Object.entries(expected)) {
@@ -71,7 +77,7 @@ function namedStep(steps: Mapping[], name: string): Mapping {
 function requiredAction(steps: Mapping[], name: string, action: string, expected: Record<string, string>): Mapping {
   const step = namedStep(steps, name);
   exactKeys(step, ["name", "uses", "with"], name);
-  if (!actionRef(step.uses, name).startsWith(`${action}@`)) fail(`${name} must execute ${action}.`);
+  if (actionName(actionRef(step.uses, name)) !== action) fail(`${name} must execute ${action}.`);
   inputsMatch(mapping(step.with, `${name}.with`), expected, name);
   return step;
 }
@@ -104,7 +110,8 @@ export function checkWorkflowSecurity(source: string): void {
         continue;
       }
       const action = actionRef(step.uses, label);
-      if (action.startsWith("actions/checkout@")) {
+      const identity = actionName(action);
+      if (identity === "actions/checkout" || identity.startsWith("actions/checkout/")) {
         checkouts++;
         const inputs = mapping(step.with, `${label}.with`);
         if (scalar(inputs["persist-credentials"]) !== "false") {
