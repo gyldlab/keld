@@ -58,7 +58,8 @@ to stop, a warning, temporary restrictions or removal from project spaces.
 Urgent safety concerns may require immediate restrictions.
 
 Where safe, we explain the decision and its scope privately to the people
-involved. You may request reconsideration through the same email channel; an
-uninvolved maintainer reviews any new evidence. We aim to acknowledge reports
+involved. You may request reconsideration through the established private channel for
+your report, retaining the conflict and recusal rules above; an uninvolved
+maintainer reviews new evidence. GitHub Support cases use its own appeal process. We aim to acknowledge reports
 within three business days and provide an initial update within seven business
 days. These are volunteer response goals, not guaranteed deadlines.
