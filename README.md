@@ -47,8 +47,9 @@ cd hello-keld
 ```
 
 The expected result is a `hello-keld` window. Close it to end the session;
-`IPC echo ok` is printed when captured Bun output is forwarded at shutdown. This builds both binaries required by `dev`;
-there is no npm installation or packaged app release yet.
+`IPC echo ok` is printed when captured Bun output is forwarded at shutdown. Both
+binaries required by `dev` are built from source; there is no npm installation or
+packaged app release yet.
 
 ## Evidence
 

@@ -2397,9 +2397,12 @@ hand-written, wire-exact v0 client embedded into the generated self-contained
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
 useful standalone; the template no longer shells out to it.
 
-Distribution: `@keld/cli` npm package with per-platform binaries under
-`optionalDependencies` (esbuild pattern); `bunx keld` / `npx keld` work with zero
-global install. Host + runtime binaries fetched signed, verified, cached.
+Target distribution (not implemented): an `@keld/cli` npm package with per-platform
+binaries under `optionalDependencies` (esbuild pattern). `bunx keld` / `npx keld`
+are planned package-manager invocations; no npm wrapper is currently shipped.
+The target fetches signed, verified host and runtime binaries into a cache. Today,
+use the [source-build quick-start](../onboarding/README.md#run-the-current-demo);
+the [product-status ledger](../engineering/product-status.md#packages) owns package maturity.
 
 ## 3. keld-pack: packaging & cross-compilation
 
