@@ -441,13 +441,17 @@ jobs:
       # Rust none mode still executes build.rs/proc macros. Keep this on hosted
       # pull_request runners without secrets or repository write permission.
       # macOS avoids another GTK apt lane; this is not all-OS containment proof.
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
         with:
           languages: ${{ matrix.language }}
           build-mode: none
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
+      - name: Analyze and upload CodeQL results
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
         with:
           category: /language:${{ matrix.language }}
+          upload: always
+          skip-queries: false
           wait-for-processing: true
 
   dependency-review:
@@ -469,12 +473,14 @@ jobs:
           tools/dependency_review_metadata.sh check "$KELD_DEPENDENCY_REPOSITORY" "$KELD_DEPENDENCY_BASE" "$KELD_DEPENDENCY_HEAD"
       # GitHub's supported manifest graph is the oracle. bun.lock transitive
       # coverage is not implied; see docs/engineering/security-ci.md.
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - name: Review dependency vulnerabilities
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha || github.event.before }}
           head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fail-on-severity: low
           fail-on-scopes: runtime, development, unknown
+          vulnerability-check: true
           license-check: false # Cargo license policy remains owned by deny.toml.
           comment-summary-in-pr: never
           retry-on-snapshot-warnings: false
