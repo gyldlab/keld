@@ -99,6 +99,7 @@ workspace=$(git rev-parse --show-toplevel 2>/dev/null) || {
   echo 'KELD-DOCS006: not inside the Keld Git checkout. Change to the repository root, then rerun `just mermaid-render-check`.' >&2
   exit 1
 }
+workspace=$(cd "$workspace" && pwd -P)
 readonly workspace
 readonly render_config="$workspace/tools/mermaid-render-config.json"
 [[ -f "$render_config" ]] || {
@@ -141,7 +142,7 @@ cleanup() {
   fi
   if [[ "$render_succeeded" == 1 && "$keep_output" == 0 && -n "$render_dir" ]]; then
     case "$render_dir" in
-      /tmp/keld-mermaid-render.*) rm -rf -- "$render_dir" ;;
+      "$render_parent"/keld-mermaid-render.*) rm -rf -- "$render_dir" ;;
       *)
         echo "KELD-DOCS006: refused to clean unexpected render path '$render_dir'. Remove it manually after inspection." >&2
         ;;
@@ -152,7 +153,20 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
-render_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)
+# Keep the writable bind alongside the already-shared checkout. Docker Desktop
+# on Linux may share the checkout while rejecting the host /tmp directory.
+if [[ -L "$workspace/target" ]]; then
+  echo 'KELD-DOCS006: renderer target must be a non-symlink directory inside the checkout. Use a regular target directory, then rerun.' >&2
+  exit 1
+fi
+mkdir -p "$workspace/target"
+render_parent=$(cd "$workspace/target" && pwd -P)
+[[ "$render_parent" == "$workspace/target" ]] || {
+  echo 'KELD-DOCS006: renderer target must be a non-symlink directory inside the checkout. Restore its checkout-local path, then rerun.' >&2
+  exit 1
+}
+readonly render_parent
+render_dir=$(mktemp -d "$render_parent/keld-mermaid-render.XXXXXX")
 readonly render_dir
 prepare_docker_output_dir "$render_dir"
 docker_render_dir=$(docker_host_path "$render_dir")
