@@ -5,6 +5,16 @@ on every pull request and push to `main`. `CI required` rejects missing, skipped
 failed or cancelled security jobs. A passing analysis is evidence that the tool ran;
 it is not a claim that Keld has no vulnerabilities.
 
+`ci-hygiene check` runs the parsed workflow security check through Bun, the same
+runtime already required by `just ci`. `tools/ci_workflow_security.ts` owns checkout
+and scanner semantics; the Rust checker retains the other hygiene contracts.
+Block, flow and aliased steps are inspected as objects. Missing, malformed,
+multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.0's
+parser uses the last value for duplicate keys; this check does not claim to reject
+duplicate-key syntax or prove full equivalence to GitHub's YAML implementation.
+The selected parser controls run in CI against pinned Bun 1.4.0. See
+[Bun's YAML documentation](https://bun.com/docs/runtime/yaml) for its conformance limits.
+
 | Check | Input and coverage | Limits |
 | --- | --- | --- |
 | CodeQL Rust | Rust source, extracted on a GitHub-hosted macOS runner with the repository Rust pin | Static analysis; does not establish Windows/Linux containment or runtime correctness. `none` extraction still executes build scripts and procedural macros. |

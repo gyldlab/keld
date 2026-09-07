@@ -395,71 +395,6 @@ fn forbidden_workflow_control_key(text: &str) -> Option<String> {
     None
 }
 
-fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
-    let mut checkout_indent = None;
-    let mut with_indent = None;
-    let mut with_seen = false;
-    let mut credentials_disabled = None;
-    let mut found_checkout = false;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if checkout_indent.is_some_and(|checkout| indent <= checkout) {
-            if credentials_disabled != Some(true) {
-                return false;
-            }
-            checkout_indent = None;
-            with_indent = None;
-        }
-        if uses_spec(content)
-            .is_some_and(|spec| uses_action_ref(spec).starts_with("actions/checkout@"))
-        {
-            if checkout_indent.is_some() {
-                return false;
-            }
-            // A named step places `uses` two columns below its `- name`.
-            checkout_indent = Some(if content.starts_with("- ") {
-                indent
-            } else {
-                indent.saturating_sub(2)
-            });
-            found_checkout = true;
-            credentials_disabled = None;
-            with_indent = None;
-            with_seen = false;
-            continue;
-        }
-        let Some(checkout) = checkout_indent else {
-            continue;
-        };
-        if with_indent.is_some_and(|with| indent <= with) {
-            with_indent = None;
-        }
-        let Some((key, value)) = yaml_mapping_key(content) else {
-            continue;
-        };
-        if indent == checkout + 2 && key == "with" {
-            if with_seen || !value.is_empty() {
-                return false;
-            }
-            with_seen = true;
-            with_indent = Some(indent);
-            continue;
-        }
-        if let Some(with) = with_indent {
-            if indent == with + 2 && key == "persist-credentials" {
-                if credentials_disabled.is_some() {
-                    return false;
-                }
-                credentials_disabled = Some(value.trim_matches(['\'', '"']) == "false");
-            }
-        }
-    }
-    found_checkout && (checkout_indent.is_none() || credentials_disabled == Some(true))
-}
-
 fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
     let mut checkout_indent = None;
     let mut with_indent = None;
@@ -1316,148 +1251,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 18-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
-    if !workflow_has_checkout_persist_credentials_false(&block) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` checkout must set `persist-credentials: false`; the merge-decision job needs repository bytes, not push authority."
-        ));
-    }
-    Ok(())
-}
 
-fn check_security_action_step(
-    job: &str,
-    step: &str,
-    action: &str,
-    inputs: &[(&str, &str)],
-) -> Result<(), String> {
-    if workflow_direct_named_step_count(job, step) != 1
-        || workflow_named_step_direct_keys(job, step).is_none_or(|keys| keys != ["uses", "with"])
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{step}` must occur once as an unconditional action with only `uses` and `with`. A skipped scanner can leave its job successful."
-        ));
-    }
-    if !workflow_named_step_direct_value(job, step, "uses").is_some_and(|value| {
-        is_pinned_sha(&value)
-            && value
-                .trim_matches(['\'', '"'])
-                .starts_with(&format!("{action}@"))
-    }) {
-        return Err(format!(
-            "CI-HYGIENE: `{step}` must execute `{action}`; restore the required security action, not a successful substitute."
-        ));
-    }
-    let actual = workflow_named_step_mapping(job, step, "with").ok_or_else(|| {
-        format!(
-            "CI-HYGIENE: `{step}` needs one explicit action-input mapping without duplicate keys."
-        )
-    })?;
-    if actual.len() != inputs.len()
-        || inputs.iter().any(|(key, expected)| {
-            !actual.iter().any(|(name, value)| {
-                name == key
-                    && if *key == "fail-on-scopes" {
-                        let mut scopes: Vec<_> = value.split(',').map(str::trim).collect();
-                        scopes.sort_unstable();
-                        scopes == ["development", "runtime", "unknown"]
-                    } else {
-                        value == expected
-                    }
-            })
-        })
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{step}` has changed security inputs. Restore extraction/upload or blocking vulnerability review; review changes to filters, bypasses and refs explicitly."
-        ));
-    }
-    Ok(())
-}
-
-fn check_security_jobs(text: &str) -> Result<(), String> {
-    let codeql = workflow_job_block(text, "codeql")
-        .ok_or_else(|| format!("CI-HYGIENE: `{WORKFLOW}` needs the CodeQL job."))?;
-    check_security_action_step(
-        &codeql,
-        "Initialize CodeQL",
-        "github/codeql-action/init",
-        &[
-            ("languages", "${{ matrix.language }}"),
-            ("build-mode", "none"),
-        ],
-    )?;
-    check_security_action_step(
-        &codeql,
-        "Analyze and upload CodeQL results",
-        "github/codeql-action/analyze",
-        &[
-            ("category", "/language:${{ matrix.language }}"),
-            ("upload", "always"),
-            ("skip-queries", "false"),
-            ("wait-for-processing", "true"),
-        ],
-    )?;
-    let dependencies = workflow_job_block(text, "dependency-review")
-        .ok_or_else(|| format!("CI-HYGIENE: `{WORKFLOW}` needs the dependency-review job."))?;
-    check_security_action_step(
-        &dependencies,
-        "Review dependency vulnerabilities",
-        "actions/dependency-review-action",
-        &[
-            (
-                "base-ref",
-                "${{ github.event.pull_request.base.sha || github.event.before }}",
-            ),
-            (
-                "head-ref",
-                "${{ github.event.pull_request.head.sha || github.sha }}",
-            ),
-            ("fail-on-severity", "low"),
-            ("fail-on-scopes", "runtime, development, unknown"),
-            ("vulnerability-check", "true"),
-            ("license-check", "false"),
-            ("comment-summary-in-pr", "never"),
-            ("retry-on-snapshot-warnings", "false"),
-            ("warn-only", "false"),
-            ("show-openssf-scorecard", "false"),
-        ],
-    )?;
-    let metadata = "Reject incomplete dependency metadata";
-    if workflow_direct_named_step_count(&dependencies, metadata) != 1
-        || workflow_named_step_direct_keys(&dependencies, metadata).is_none_or(|keys| keys != ["env", "run"])
-        || workflow_named_step_shell_commands(&dependencies, metadata).as_deref() != Some([
-            "tools/dependency_review_metadata.sh test".to_owned(),
-            "tools/dependency_review_metadata.sh check \"$KELD_DEPENDENCY_REPOSITORY\" \"$KELD_DEPENDENCY_BASE\" \"$KELD_DEPENDENCY_HEAD\"".to_owned(),
-        ].as_slice())
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{metadata}` must execute its self-test and exact metadata check unconditionally, without wrappers or reassignment."
-        ));
-    }
-    let env = workflow_named_step_mapping(&dependencies, metadata, "env").ok_or_else(|| {
-        format!("CI-HYGIENE: `{metadata}` needs its explicit event-SHA environment mapping.")
-    })?;
-    for (key, value) in [
-        ("GH_TOKEN", "${{ github.token }}"),
-        ("KELD_DEPENDENCY_REPOSITORY", "${{ github.repository }}"),
-        (
-            "KELD_DEPENDENCY_BASE",
-            "${{ github.event.pull_request.base.sha || github.event.before }}",
-        ),
-        (
-            "KELD_DEPENDENCY_HEAD",
-            "${{ github.event.pull_request.head.sha || github.sha }}",
-        ),
-    ] {
-        if env.len() != 4
-            || !env
-                .iter()
-                .any(|(name, actual)| name == key && actual == value)
-        {
-            return Err(format!(
-                "CI-HYGIENE: `{metadata}` must bind `{key}` to `{value}`; restore the authenticated event handoff."
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -2043,11 +1837,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    if !workflow_has_checkout_persist_credentials_false(&text) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` must set `persist-credentials: false` inside every `actions/checkout` `with:` mapping. One protected checkout or an echoed/unrelated YAML value does not protect the others."
-        ));
-    }
+
     check_change_router_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
@@ -2056,7 +1846,6 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_bun_test_job(&text)?;
     check_linux_media_guard_step(&text)?;
     check_required_job(&text)?;
-    check_security_jobs(&text)?;
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
     check_atomic_protocol_step(&text)?;
@@ -2068,18 +1857,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    let unpinned = action_uses_unpinned(&text);
-    if !unpinned.is_empty() {
-        let details: Vec<String> = unpinned
-            .iter()
-            .map(|(line, spec)| format!("line {line}: {spec}"))
-            .collect();
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has unpinned `uses:` entries (need a 40-char commit SHA). \
-             Pin each action and leave the tag in a trailing comment. Offenders: {}",
-            details.join("; ")
-        ));
-    }
+
     Ok(())
 }
 
@@ -2158,7 +1936,23 @@ fn run_cli() -> Result<(), String> {
         );
     }
     match command.as_str() {
-        "check" => check(&root),
+        "check" => {
+            check(&root)?;
+            let status = std::process::Command::new("bun")
+                .arg("--no-install")
+                .arg(root.join("tools/ci_workflow_security.ts"))
+                .arg("check")
+                .arg(&root)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .map_err(|error| format!("CI-HYGIENE: cannot run workflow semantic check: {error}. Install the repository Bun prerequisite and rerun just hygiene."))?;
+            if !status.success() {
+                return Err(format!(
+                    "CI-HYGIENE: workflow semantic check failed ({status}); restore the reported security contract before rerunning."
+                ));
+            }
+            Ok(())
+        }
         _ => Err(format!(
             "CI-HYGIENE: unknown command `{command}`. Use `check` to verify KEL-39 files."
         )),
@@ -2212,6 +2006,7 @@ mod tests {
     const PINNED_CHECKOUT: &str =
         "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n";
 
+    // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
     fn valid_workflow() -> String {
         [
             "name: CI",
@@ -2318,44 +2113,6 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/mermaid_docs.rs",
             "      - run: mermaid-docs check .",
             "      - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf",
-            "  codeql:",
-            "    steps:",
-            "      - name: Initialize CodeQL",
-            "        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-            "        with:",
-            "          languages: ${{ matrix.language }}",
-            "          build-mode: none",
-            "      - name: Analyze and upload CodeQL results",
-            "        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-            "        with:",
-            "          category: /language:${{ matrix.language }}",
-            "          upload: always",
-            "          skip-queries: false",
-            "          wait-for-processing: true",
-            "  dependency-review:",
-            "    steps:",
-            "      - name: Reject incomplete dependency metadata",
-            "        env:",
-            "          GH_TOKEN: ${{ github.token }}",
-            "          KELD_DEPENDENCY_REPOSITORY: ${{ github.repository }}",
-            "          KELD_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}",
-            "          KELD_DEPENDENCY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}",
-            "        run: |",
-            "          tools/dependency_review_metadata.sh test",
-            "          tools/dependency_review_metadata.sh check \"$KELD_DEPENDENCY_REPOSITORY\" \"$KELD_DEPENDENCY_BASE\" \"$KELD_DEPENDENCY_HEAD\"",
-            "      - name: Review dependency vulnerabilities",
-            "        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
-            "        with:",
-            "          base-ref: ${{ github.event.pull_request.base.sha || github.event.before }}",
-            "          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}",
-            "          fail-on-severity: low",
-            "          fail-on-scopes: runtime, development, unknown",
-            "          vulnerability-check: true",
-            "          license-check: false",
-            "          comment-summary-in-pr: never",
-            "          retry-on-snapshot-warnings: false",
-            "          warn-only: false",
-            "          show-openssf-scorecard: false",
             "  required:",
             "    name: CI required",
             "    if: ${{ always() }}",
@@ -2757,154 +2514,6 @@ mod tests {
             let error = check_required_job(&workflow).expect_err("missing security job must fail");
             assert!(error.contains(job), "{error}");
         }
-    }
-
-    #[test]
-    fn required_security_actions_cannot_be_disabled_or_warn_only() {
-        let baseline = include_str!("../.github/workflows/ci.yml");
-        let temp = complete_fixture();
-        temp.write(WORKFLOW, baseline);
-        check(temp.path()).expect("unchanged workflow must pass before security mutations");
-        for action in [
-            "github/codeql-action/analyze@",
-            "actions/dependency-review-action@",
-        ] {
-            let action_start = baseline.find(action).expect("security action exists");
-            let line_end = action_start
-                + baseline[action_start..]
-                    .find('\n')
-                    .expect("action line ends");
-            let mut disabled = baseline.to_owned();
-            disabled.insert_str(line_end, "\n        if: false");
-            let temp = complete_fixture();
-            temp.write(WORKFLOW, &disabled);
-            let error =
-                check(temp.path()).expect_err("a skipped security action must fail hygiene");
-            assert!(error.contains("unconditional action"), "{action}: {error}");
-        }
-        let temp = complete_fixture();
-        temp.write(
-            WORKFLOW,
-            &baseline.replacen("warn-only: false", "warn-only: true", 1),
-        );
-        let error =
-            check(temp.path()).expect_err("nonblocking vulnerability review must fail hygiene");
-        assert!(
-            error.contains("Review dependency vulnerabilities")
-                && error.contains("changed security inputs"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn security_action_effects_and_metadata_cannot_be_replaced_with_success() {
-        let baseline = valid_workflow();
-        check_security_jobs(&baseline).expect("unchanged security actions must pass");
-        for (label, needle, replacement) in [
-            ("upload disabled", "upload: always", "upload: never"),
-            (
-                "queries skipped",
-                "skip-queries: false",
-                "skip-queries: true",
-            ),
-            (
-                "processing not awaited",
-                "wait-for-processing: true",
-                "wait-for-processing: false",
-            ),
-            (
-                "vulnerabilities unchecked",
-                "vulnerability-check: true",
-                "vulnerability-check: false",
-            ),
-            (
-                "severity narrowed",
-                "fail-on-severity: low",
-                "fail-on-severity: critical",
-            ),
-            (
-                "development scope omitted",
-                "fail-on-scopes: runtime, development, unknown",
-                "fail-on-scopes: runtime",
-            ),
-            (
-                "advisory bypass",
-                "warn-only: false",
-                "warn-only: false\n          allow-ghsas: GHSA-xxxx-yyyy-zzzz",
-            ),
-            (
-                "duplicate input",
-                "warn-only: false",
-                "warn-only: false\n          warn-only: true",
-            ),
-            (
-                "wrong action",
-                "github/codeql-action/analyze@",
-                "github/codeql-action/init@",
-            ),
-            (
-                "floating action under quoted key",
-                "uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-                "'uses': github/codeql-action/analyze@main",
-            ),
-            (
-                "metadata step skipped",
-                "      - name: Reject incomplete dependency metadata\n",
-                "      - name: Reject incomplete dependency metadata\n        if: false\n",
-            ),
-            (
-                "metadata check echoed",
-                "          tools/dependency_review_metadata.sh check ",
-                "          echo tools/dependency_review_metadata.sh check ",
-            ),
-            (
-                "metadata failure swallowed",
-                "\"$KELD_DEPENDENCY_HEAD\"\n",
-                "\"$KELD_DEPENDENCY_HEAD\" || true\n",
-            ),
-            (
-                "metadata ref changed",
-                "KELD_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}",
-                "KELD_DEPENDENCY_BASE: ${{ github.sha }}",
-            ),
-        ] {
-            assert!(baseline.contains(needle), "missing mutation input: {label}");
-            let mutated = baseline.replacen(needle, replacement, 1);
-            check_security_jobs(&mutated).expect_err(label);
-        }
-        for step in [
-            "Initialize CodeQL",
-            "Analyze and upload CodeQL results",
-            "Review dependency vulnerabilities",
-        ] {
-            let block = workflow_direct_named_step_block(&baseline, step).expect("step exists");
-            check_security_jobs(&baseline.replacen(&block, "", 1)).expect_err("removed action");
-            check_security_jobs(&baseline.replacen(&block, &format!("{block}{block}"), 1))
-                .expect_err("duplicate action");
-            let conditional = baseline.replacen(
-                &format!("      - name: {step}\n"),
-                &format!("      - name: {step}\n        'if': false\n"),
-                1,
-            );
-            check_security_jobs(&conditional).expect_err("quoted action condition");
-        }
-    }
-
-    #[test]
-    fn security_inputs_accept_equivalent_scalar_quotes_and_scope_order() {
-        let workflow = valid_workflow()
-            .replacen("warn-only: false", "'warn-only': 'false'", 1)
-            .replacen(
-                "fail-on-scopes: runtime, development, unknown",
-                "fail-on-scopes: unknown,runtime,development",
-                1,
-            )
-            .replacen(
-                "          skip-queries: false\n          wait-for-processing: true",
-                "          wait-for-processing: true\n          skip-queries: false",
-                1,
-            );
-        check_security_jobs(&workflow).expect("equivalent mappings preserve security effects");
     }
 
     #[test]
@@ -3647,57 +3256,6 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("commented gate must not satisfy hygiene");
         assert!(error.contains("executable Mermaid gate"), "{error}");
-    }
-
-    #[test]
-    fn checkout_credentials_must_be_disabled_in_its_with_mapping() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "      persist-credentials: false\n",
-            "      # persist-credentials: false\n",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("comment must not satisfy checkout hardening");
-        assert!(error.contains("persist-credentials: false"), "{error}");
-    }
-
-    #[test]
-    fn every_checkout_must_disable_credential_persistence() {
-        let secure =
-            format!("{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n");
-        assert!(workflow_has_checkout_persist_credentials_false(&secure));
-        assert!(!workflow_has_checkout_persist_credentials_false("jobs:\n"));
-        for insecure in [
-            PINNED_CHECKOUT.to_owned(),
-            format!("{PINNED_CHECKOUT}        with:\n          persist-credentials: true\n"),
-            format!("{PINNED_CHECKOUT}        env:\n          persist-credentials: false\n"),
-            format!(
-                "{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n          persist-credentials: true\n"
-            ),
-        ] {
-            for workflow in [format!("{secure}{insecure}"), format!("{insecure}{secure}")] {
-                assert!(
-                    !workflow_has_checkout_persist_credentials_false(&workflow),
-                    "one insecure checkout was admitted: {workflow}"
-                );
-            }
-        }
-        let named = secure
-            .replacen("- uses:", "- name: Checkout\n        'uses':", 1)
-            .replace(
-                "persist-credentials: false",
-                "'persist-credentials': 'false'",
-            );
-        assert!(workflow_has_checkout_persist_credentials_false(&format!(
-            "{secure}{named}"
-        )));
-        let named_insecure = named.replace(
-            "'persist-credentials': 'false'",
-            "'persist-credentials': 'true'",
-        );
-        assert!(!workflow_has_checkout_persist_credentials_false(&format!(
-            "{secure}{named_insecure}"
-        )));
     }
 
     #[test]
@@ -4474,22 +4032,6 @@ foreach ($item in $items) {
         );
         let error = check(temp.path()).expect_err("workflow without gitleaks must fail");
         assert!(error.contains("gitleaks detect"), "{error}");
-    }
-
-    #[test]
-    fn unpinned_action_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
-            "actions/checkout@v4",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("floating action tag must fail");
-        assert!(error.contains("unpinned"), "{error}");
-        assert!(
-            error.contains("@v4") || error.contains("checkout@v4"),
-            "{error}"
-        );
     }
 
     #[test]
