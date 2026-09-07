@@ -1224,6 +1224,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "deny",
         "secrets",
         "hygiene",
+        "codeql",
+        "dependency-review",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1252,6 +1254,11 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_DENY", "${{ needs.changes.outputs.deny }}"),
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
+        ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+        (
+            "KELD_RESULT_DEPENDENCY_REVIEW",
+            "${{ needs['dependency-review'].result }}",
+        ),
     ] {
         if workflow_named_step_env_value(&block, "Verify required CI results", key).as_deref()
             != Some(expression)
@@ -1268,7 +1275,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" ",
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
-        "\"$KELD_ROUTE_DOCS\""
+        "\"$KELD_ROUTE_DOCS\" \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1278,7 +1285,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 16-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 18-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
     if !workflow_has_checkout_persist_credentials_false(&block) {
@@ -2157,6 +2164,8 @@ mod tests {
             "      - deny",
             "      - secrets",
             "      - hygiene",
+            "      - codeql",
+            "      - dependency-review",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -2179,6 +2188,8 @@ mod tests {
             "          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}",
             "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
             "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
+            "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
+            "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -2187,7 +2198,8 @@ mod tests {
             "            \"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" \\",
             "            \"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" \\",
             "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
-            "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\"",
+            "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
+            "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
             "",
         ]
         .join("\n")
@@ -2530,7 +2542,36 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("16-argument"), "{error}");
+        assert!(error.contains("18-argument"), "{error}");
+    }
+
+    #[test]
+    fn required_result_must_observe_security_jobs() {
+        for job in ["codeql", "dependency-review"] {
+            let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
+            let error = check_required_job(&workflow).expect_err("missing security job must fail");
+            assert!(error.contains(job), "{error}");
+        }
+    }
+
+    #[test]
+    fn required_result_must_receive_security_results_without_spoofing() {
+        for (key, expression) in [
+            ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+            (
+                "KELD_RESULT_DEPENDENCY_REVIEW",
+                "${{ needs['dependency-review'].result }}",
+            ),
+        ] {
+            let workflow = valid_workflow().replacen(expression, "success", 1);
+            let error =
+                check_required_job(&workflow).expect_err("spoofed security result must fail");
+            assert!(error.contains(key), "{error}");
+            let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
+            let error =
+                check_required_job(&workflow).expect_err("unused security result must fail");
+            assert!(error.contains("18-argument"), "{error}");
+        }
     }
 
     #[test]
