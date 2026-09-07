@@ -398,42 +398,66 @@ fn forbidden_workflow_control_key(text: &str) -> Option<String> {
 fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
     let mut checkout_indent = None;
     let mut with_indent = None;
+    let mut with_seen = false;
+    let mut credentials_disabled = None;
+    let mut found_checkout = false;
 
     for line in text.lines() {
         let Some((indent, content)) = yaml_content(line) else {
             continue;
         };
-        if content.starts_with("- uses:") {
-            checkout_indent = content.contains("actions/checkout@").then_some(indent);
+        if checkout_indent.is_some_and(|checkout| indent <= checkout) {
+            if credentials_disabled != Some(true) {
+                return false;
+            }
+            checkout_indent = None;
             with_indent = None;
+        }
+        if uses_spec(content)
+            .is_some_and(|spec| uses_action_ref(spec).starts_with("actions/checkout@"))
+        {
+            if checkout_indent.is_some() {
+                return false;
+            }
+            // A named step places `uses` two columns below its `- name`.
+            checkout_indent = Some(if content.starts_with("- ") {
+                indent
+            } else {
+                indent.saturating_sub(2)
+            });
+            found_checkout = true;
+            credentials_disabled = None;
+            with_indent = None;
+            with_seen = false;
             continue;
         }
         let Some(checkout) = checkout_indent else {
             continue;
         };
-        if indent <= checkout {
-            checkout_indent = None;
+        if with_indent.is_some_and(|with| indent <= with) {
             with_indent = None;
-            continue;
         }
-        if content == "with:" {
+        let Some((key, value)) = yaml_mapping_key(content) else {
+            continue;
+        };
+        if indent == checkout + 2 && key == "with" {
+            if with_seen || !value.is_empty() {
+                return false;
+            }
+            with_seen = true;
             with_indent = Some(indent);
             continue;
         }
         if let Some(with) = with_indent {
-            if indent <= with {
-                with_indent = None;
-            } else if let Some(value) = content.strip_prefix("persist-credentials:") {
-                let value = value
-                    .trim()
-                    .trim_matches(|character| character == '\'' || character == '"');
-                if value == "false" {
-                    return true;
+            if indent == with + 2 && key == "persist-credentials" {
+                if credentials_disabled.is_some() {
+                    return false;
                 }
+                credentials_disabled = Some(value.trim_matches(['\'', '"']) == "false");
             }
         }
     }
-    false
+    found_checkout && (checkout_indent.is_none() || credentials_disabled == Some(true))
 }
 
 fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
@@ -1712,10 +1736,8 @@ fn action_uses_unpinned(workflow: &str) -> Vec<(usize, String)> {
 }
 
 fn uses_spec(trimmed: &str) -> Option<&str> {
-    let rest = trimmed
-        .strip_prefix("- uses:")
-        .or_else(|| trimmed.strip_prefix("uses:"))?;
-    Some(rest.trim())
+    let (key, value) = yaml_mapping_key(trimmed)?;
+    (key == "uses").then_some(value)
 }
 
 fn uses_action_ref(spec: &str) -> &str {
@@ -2023,7 +2045,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     }
     if !workflow_has_checkout_persist_credentials_false(&text) {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` must set `persist-credentials: false` inside an `actions/checkout` `with:` mapping. An echoed or unrelated YAML value does not protect checkout credentials."
+            "CI-HYGIENE: `{WORKFLOW}` must set `persist-credentials: false` inside every `actions/checkout` `with:` mapping. One protected checkout or an echoed/unrelated YAML value does not protect the others."
         ));
     }
     check_change_router_job(&text)?;
@@ -2200,6 +2222,7 @@ mod tests {
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
             "          fetch-depth: 0",
+            "          persist-credentials: false",
             "      - name: Router contract tests",
             "        run: tools/ci_changes_test.sh",
             "      - name: Classify changed-path ownership",
@@ -2270,6 +2293,8 @@ mod tests {
             "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          persist-credentials: false",
             "      - name: Atomic problem-solving protocol contract",
             "        run: |",
             "          mkdir -p target/atomic-protocol",
@@ -3255,8 +3280,8 @@ mod tests {
         let workflow = valid_workflow()
             .replacen("          fetch-depth: 0\n", "", 1)
             .replacen(
-                "          persist-credentials: false\n",
-                "          persist-credentials: false\n          fetch-depth: 0\n",
+                "  secrets:\n    steps:\n",
+                &format!("  secrets:\n    steps:\n{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n          fetch-depth: 0\n"),
                 1,
             );
         temp.write(WORKFLOW, &workflow);
@@ -3634,6 +3659,45 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("comment must not satisfy checkout hardening");
         assert!(error.contains("persist-credentials: false"), "{error}");
+    }
+
+    #[test]
+    fn every_checkout_must_disable_credential_persistence() {
+        let secure =
+            format!("{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n");
+        assert!(workflow_has_checkout_persist_credentials_false(&secure));
+        assert!(!workflow_has_checkout_persist_credentials_false("jobs:\n"));
+        for insecure in [
+            PINNED_CHECKOUT.to_owned(),
+            format!("{PINNED_CHECKOUT}        with:\n          persist-credentials: true\n"),
+            format!("{PINNED_CHECKOUT}        env:\n          persist-credentials: false\n"),
+            format!(
+                "{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n          persist-credentials: true\n"
+            ),
+        ] {
+            for workflow in [format!("{secure}{insecure}"), format!("{insecure}{secure}")] {
+                assert!(
+                    !workflow_has_checkout_persist_credentials_false(&workflow),
+                    "one insecure checkout was admitted: {workflow}"
+                );
+            }
+        }
+        let named = secure
+            .replacen("- uses:", "- name: Checkout\n        'uses':", 1)
+            .replace(
+                "persist-credentials: false",
+                "'persist-credentials': 'false'",
+            );
+        assert!(workflow_has_checkout_persist_credentials_false(&format!(
+            "{secure}{named}"
+        )));
+        let named_insecure = named.replace(
+            "'persist-credentials': 'false'",
+            "'persist-credentials': 'true'",
+        );
+        assert!(!workflow_has_checkout_persist_credentials_false(&format!(
+            "{secure}{named_insecure}"
+        )));
     }
 
     #[test]
