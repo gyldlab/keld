@@ -169,6 +169,29 @@ Windows laptop. They are not current product measurements or live CI gates.
 evidence in `docs/engineering/budget-scoreboard.md` are measurements. Once the harness
 lands, valid regressions greater than 5% fail the PR or require a written waiver.
 
+### 5.1 Budget semantics (KEL-129 ruling, 2026-09-08)
+
+Every row above scores the shipped hello app, not a diagnostic slice. These readings
+are the owner text for the `gyldlab/keld-benches` metric registry
+(`schema/metrics.v1.json`); a registry or harness rule that conflicts is the defect.
+Research note 234 (`docs/research/library/quality-evidence/performance/`) records why
+each atom needed a ruling.
+
+| Row | Census | Clock and cache class | Statistic and unit |
+|---|---|---|---|
+| Cold start → first paint | the product boot as the host owns it: `keld-host` plus every supervised child it launches before the window (on macOS the guardian re-exec and the Bun primary; the window is created only after the authenticated HELLO). A host-only `--hello` arm is an engine-class diagnostic, never the score. | one monotonic clock armed before the process spawn (`.app` launch for a packaged app; the shell spawn of `keld dev` for the dev loop) to the registry `PAINT-OPPORTUNITY` beacon; `fresh-process` is the gated class and `boot-cold` is reported separately | median with a bootstrap CI over the registry sample policy (30 valid samples per class); milliseconds |
+| Idle RSS, 1 window (sum of keld processes) | keld-owned processes only: the host plus every supervised child the host launched for the session (Bun primary, named roles, the macOS guardian). Engine helpers (WebKit, WebView2, WebKitGTK) and the `keld` dev CLI are excluded and reported as separate diagnostics. | condition-based stability after the window is ready (registry `MEM-IDLE`), never a fixed sleep; `fresh-process` and `warm-cache` | resident set (`ps` RSS or working set) is the scored counter and private footprint is a mandatory diagnostic; the unit is binary: 90 MiB = 92,160 KiB |
+| Installer size (either runtime mode) | the compressed download artifact keld-pack delivers (macOS `.dmg` or signed archive, Windows installer, Linux package), including the embedded Bun when `runtime = bun`; installed bytes and the bare host executable are diagnostics | one document per lane (registry `DISK`); deterministic size, one sample plus one reproducibility rebuild | decimal MB: 20,000,000 B and 6,000,000 B |
+| kipc small-message round trip p99 | the product Bun client (`keld create` `kipc.ts` / `AppLinkSession`) against the shipping host app link; handshake excluded and reported separately | caller monotonic clock around CALL→REPLY; `fresh-process` and `warm-cache`; at least 20 sessions × 100,000 calls | small = the pinned 6-byte echo payload (22-byte frame); representative = 1,024-byte payload (1,040-byte frame); p99 from the session-block bootstrap with the upper CI bound compared to 100 µs |
+| kipc bulk throughput | not scoreable until a shared-memory lane exists behind an approved spec; inline socket throughput is an `IPC-BULK` diagnostic | `warm-cache`; 64 KiB / 1 MiB / 16 MiB inline tiers | one-way payload bytes validated end to end; decimal GB/s = 1,000,000,000 B/s |
+| Update patch, 1-line JS change | the bytes a client downloads: delta plus manifest plus signature over the canonical package (architecture 06 §4a) | deterministic; one sample plus one reproducibility repeat | decimal KB: 50,000 B |
+| `keld dev` cold to window | the first on-screen native window owned by the `keld dev` session (registry `NATIVE-WINDOW`); presentation policy, not paint | clock armed at the shell spawn of `keld dev`; `fresh-process`; release binaries only | median with a bootstrap CI over 30 valid samples; milliseconds |
+| Child crash and recovery | no budget in this table; the registry `CRASH-RECOVERY` interval (kill → revoke → fresh HELLO → first successful call) is a diagnostic; native-window identity and document continuity are both recorded; a `SIGKILL` arm is required | `fresh-process`; 30 independent cycles per arm | median and p90 with bootstrap CIs; milliseconds |
+
+Windows and Linux inherit these readings unless a platform spec says otherwise. The
+registry sample policy governs publication; a harness policy that requires a different
+sample count is a harness defect, not a second rule.
+
 Windows/WebView2 cold start → first paint currently misses its ≤ 300 ms row by ~1.6x
 (~470–510 ms measured), and that gap is not Keld's own cost: `CreateCoreWebView2Controller`
 boots a Chromium process and is, per Microsoft, "the bulk of starting a WebView2 control"

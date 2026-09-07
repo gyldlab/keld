@@ -60,7 +60,7 @@ this scoreboard does not publish a ≤ 300 ms pass/fail label.
 | Installer (runtime = bun) | ≤ 20 MB | 85–150 MB | N/A — Bun not packed |
 | Installer (runtime = none) | ≤ 6 MB | — | N/A — no `.app` / DMG |
 | Cold start → first paint | ≤ 300 ms | 1–3 s | **macOS WK, untraced double-rAF proxy:** last recorded `--publish` median **342.911 ms** (Keld `5ba4672`, benches recipe [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b); raw JSON not in keld-benches git). **Not** traced-arm beacon 352.211 ms. **Not** gyldlab/keld#10 `PageLoadEvent::Finished`. **Not** RSS. **Windows WebView2:** **469 ms** (2026-08-15 direct-COM, [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab632f023488227fcb5e7b44009df899653/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab632f023488227fcb5e7b44009df899653)); architecture 01 §5 records the Chromium controller-creation floor. Measurement only, not a scoreboard pass/fail. |
-| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB | **72.6–77.8 MiB** host-only @ Keld `b93ebb6` (under budget; no Bun; WebKit XPCs excluded). Coalition (host+WebKit helpers) is a different column — see Memory |
+| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB | **72.6–77.8 MiB** host-only @ Keld `b93ebb6` (host-only diagnostic, not the budget census: no Bun, no guardian, WebKit XPCs excluded; architecture 01 §5.1 scores host + guardian + Bun). Coalition (host+WebKit helpers) is a different column — see Memory |
 | kipc small-message p99 | ≤ 100 µs | ~ms-class | **Windows Bun↔Rust diagnostic (KEL-99, 2026-08-23, Keld `1609dbd`):** fresh-process p50 **47.6 µs** / p90 66.3 / p99 **101.6 µs**; warm-cache p50 45.9 / p90 59.3 / p99 **100.5 µs**. 10,000 calls per session, handshake excluded and reported separately. `publication.eligible` is **false** (1 session vs ≥ 20 required, 10k calls vs 100k, no paired Rust arm, no block-bootstrap CIs, thermal state unverified), so both p99 values sitting marginally over budget are **not** a pass/fail verdict. Raw + result JSON: [`windows/bench/results/ipc-rtt/`](https://github.com/gyldlab/keld-benches/tree/0330d6c37ed38c8529c59e256fb99e5e57a6fd62/windows/bench/results/ipc-rtt) @ [`0330d6c`](https://github.com/gyldlab/keld-benches/commit/0330d6c37ed38c8529c59e256fb99e5e57a6fd62); registry status `diagnostic` @ [`6b99cc9`](https://github.com/gyldlab/keld-benches/commit/6b99cc9). macOS and Linux **unmeasured**. |
 | kipc bulk (shm) | ≥ 1 GB/s | n/a | no shm |
 | Update patch, 1-line JS | ≤ 50 KB | full installer | no updater |
@@ -346,8 +346,9 @@ observation of a live `keld dev` tree and by the PE subsystem byte: `keld.exe`
 and `keld-host.exe` are `CONSOLE (3)`, `tauri-hello.exe` is `GUI (2)`.
 
 **The conhost measured here is `keld.exe`'s, not the shipping host's.** The Keld
-arm runs `keld dev`, and `keld dev` does not spawn `keld-host` — it *is* the host
-process. A terminal tool having a console is correct, so this is not a product
+arm runs `keld dev`, and at that session's Keld `2a8e8a4` `keld dev` did not spawn
+`keld-host` — it *was* the host process (historical: since PR #111, 2026-08-29,
+`keld dev` stages and launches a no-flag `keld-host` that owns the window). A terminal tool having a console is correct, so this is not a product
 defect; it is a concrete consequence of the scope mismatch this document already
 discloses, a dev CLI flow measured against a packaged release exe. `keld-host`
 being console subsystem is a separate, forward-looking product question, and it
