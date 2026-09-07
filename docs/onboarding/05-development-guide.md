@@ -25,9 +25,12 @@ For the complete verification gate, also install:
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
 | Docker-compatible engine | Runs the digest-pinned Mermaid renderer for `just ci` |
 
-Use the pinned Rust toolchain and record your actual Bun version with any reported
-result. No private repository, optional checkout hook, or contributor-memory service
-is needed to build or contribute.
+Use the pinned Rust toolchain and **Bun 1.4.0 for the full workspace gate**, matching
+CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
+a demo observed with Bun 1.4.2 is separate evidence. The
+[quick-start prerequisites](README.md#prerequisites) also explain Linux trusted-checkout
+permissions. No private repository, optional checkout hook, or contributor-memory
+service is needed to build or contribute.
 
 ## 2. First run
 
@@ -37,9 +40,12 @@ Bun app-link output. `cargo build -p keld-cli` alone does not provide the host i
 fresh checkout. `just hello` exercises only the diagnostic backend window.
 
 The [platform surfaces ledger](../engineering/product-status.md#platform-surfaces)
-owns current qualification. Linux has a native Ubuntu/Debian x86_64 Wayland no-flag
-slice; X11 product runs, other distributions, and release packaging remain unverified.
-This source-built demo is not an installer or a migrated Electron application.
+owns implemented scope. The [quick-start](README.md#run-the-current-demo) records the
+latest acceptance gaps: Windows candidate execution awaits an existing endpoint-security
+prerequisite; Linux stock native Close leaves session processes/stage alive, while
+SIGINT cleanup is a separate observed result. X11 product runs, other distributions,
+and release packaging remain unverified. This source-built demo is not an installer
+or a migrated Electron application.
 
 ---
 
@@ -400,7 +406,7 @@ repo — if something points you at one, it is describing a different project.
 ## 12. Troubleshooting
 
 **The macOS window does not open.**
-Check, in order: (1) you are on macOS — Windows and Linux return `KELD-WV-001` by design;
+Check, in order: (1) the command is running in the intended macOS desktop session;
 (2) you have a real window server (not a bare SSH session) — window-creation failure
 surfaces as `KELD-WV-002` with that hint; (3) the window opened behind your terminal —
 the binary is not a `.app` bundle, so check Mission Control / cmd-tab before concluding

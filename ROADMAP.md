@@ -19,6 +19,13 @@ and a limited Electron lifecycle facade. The [quick-start](docs/onboarding/READM
 runs that slice. Native services, the wider compatibility surface, migration, packaging,
 and updates remain incomplete; consult the ledger for each component's exact scope.
 
+The latest device acceptance also leaves current work open: the stock application's
+native Close fails on tested Ubuntu/Wayland even though SIGINT cleanup succeeds;
+Windows candidate requalification awaits an existing endpoint-security prerequisite.
+The [quick-start](docs/onboarding/README.md#run-the-current-demo) preserves those
+separate results. Resolve the lifecycle regression and complete admitted platform
+acceptance before treating the demo as release-ready.
+
 ## Prerequisites and exit criteria
 
 | Order | Work | Evidence needed to advance |

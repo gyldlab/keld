@@ -21,20 +21,22 @@ process. Electron migration, application installers, and signed updates are futu
   matches and divergences; broad Electron compatibility is not measured yet.
 
 The generated [Current/Target/Evidence ledger](docs/engineering/product-status.md)
-is the source of truth for implemented scope and its evidence. These platform rows
-summarize its current no-flag app-session surfaces, not release support:
+is the source of truth for implemented scope and its evidence. These rows summarize
+its no-flag app-session implementation and the latest acceptance limitations; they
+do not establish release support:
 
 | Platform | Current app-session slice | Qualification still needed |
 |---|---|---|
 | macOS / WKWebView | Native window, app link, recovery, ordered cleanup | Complete strict profiles and release packaging |
-| Windows / WebView2 | Native window, named-pipe app link, recovery, ordered cleanup | Remaining strict admission and release packaging |
-| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery and cleanup | X11 product run, other distributions/architectures, release packaging |
+| Windows / WebView2 | Native window, named-pipe app link, recovery, ordered cleanup | Quick-start requalification awaits an existing endpoint-security prerequisite; remaining strict admission and release packaging |
+| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Stock app native Close fails the latest Wayland acceptance; X11 product run, other distributions/architectures, release packaging |
 
 ## Try it
 
 Use the [source-build quick-start](docs/onboarding/README.md#run-the-current-demo)
 for prerequisites, expected output, and Windows instructions. With Rust and Bun
-installed, run this in a macOS or qualified Linux desktop terminal:
+installed, run this in a macOS or Ubuntu/Debian x86_64 Wayland desktop terminal
+after checking the platform prerequisites and current limitations below:
 
 ```bash
 git clone https://github.com/gyldlab/keld.git
@@ -46,10 +48,16 @@ cd hello-keld
 ../target/debug/keld dev
 ```
 
-The expected result is a `hello-keld` window. Close it to end the session;
-`IPC echo ok` is printed when captured Bun output is forwarded at shutdown. Both
-binaries required by `dev` are built from source; there is no npm installation or
-packaged app release yet.
+The expected result is a `hello-keld` window. Captured Bun output, including
+`IPC echo ok`, appears at shutdown. The Mac demo verified Ctrl-C shutdown and relaunch;
+it did not independently exercise the window's Close button.
+
+**Known Linux lifecycle gap:** on the tested Ubuntu/Wayland candidate, native Close
+removes the renderer but leaves the host, Bun, and launch stage running. Ctrl-C
+cleaned up that session; this separate interrupt result does not pass normal-close
+acceptance. The [lifecycle issue](https://github.com/gyldlab/keld/issues/176) tracks
+the required stock-app fix. Both binaries are built from source; there is
+no npm installation or packaged app release yet.
 
 ## Evidence
 
