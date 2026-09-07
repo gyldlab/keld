@@ -2470,7 +2470,7 @@ impl GuardianOwnerHandle {
         Ok(reply_rx)
     }
 
-    fn await_recovery_arm(reply_rx: Receiver<Result<(), String>>) -> Result<(), HostAppError> {
+    fn await_recovery_arm(reply_rx: &Receiver<Result<(), String>>) -> Result<(), HostAppError> {
         match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(detail)) => Err(app_detail("primary recovery arm", detail)),
@@ -2873,8 +2873,8 @@ impl DirectPrimaryOwnerHandle {
         )
     }
 
-    fn await_recovery_arm(reply_rx: Receiver<Result<(), String>>) -> Result<(), HostAppError> {
-        receive_direct_owner_reply(&reply_rx, "primary recovery arm", false)
+    fn await_recovery_arm(reply_rx: &Receiver<Result<(), String>>) -> Result<(), HostAppError> {
+        receive_direct_owner_reply(reply_rx, "primary recovery arm", false)
     }
 
     fn fail_generation(&self, attempt: u32) -> Result<(), HostAppError> {
@@ -3014,7 +3014,8 @@ impl PrimaryRouterHandle {
         };
         // The owner can process generation updates requiring the transition
         // guard before acknowledging. Never hold that guard across this wait.
-        let arm = arm_reply.and_then(PlatformPrimaryOwnerHandle::await_recovery_arm);
+        let arm =
+            arm_reply.and_then(|reply| PlatformPrimaryOwnerHandle::await_recovery_arm(&reply));
         if let Err(error) = arm {
             self.guardian.deny_recovery();
             return Err(error);
