@@ -14,8 +14,7 @@ dist/
 /competitors/
 /docs/research/
 
-# Roadmap remains local; agent docs outputs are tracked and stale-checked.
-/ROADMAP.md
+# Public roadmap and generated agent docs are tracked.
 
 # CI workflows, CODEOWNERS, and templates are tracked (KEL-39).
 /.claude

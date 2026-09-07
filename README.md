@@ -1,70 +1,92 @@
 # KELD
 
-**The desktop framework that replaces Electron without requiring a full app rewrite.**
-Rust core · Bun-powered JS/TS main process · system webviews · security by default.
+Keld is a desktop framework being built around a Rust host, Bun application processes,
+and the operating system's webview. Its goal is to make Electron applications smaller
+and easier to secure while measuring compatibility against real application behavior.
 By [GYLDLAB](https://github.com/gyldlab).
 
-> Status: **pre-alpha** — this checkout contains implementation and tracked architecture
-> specs. The generated [Current/Target/Evidence ledger](docs/engineering/product-status.md)
-> is the canonical repository-status view; private research is optional evidence in a
-> separate nested repository.
+**Pre-alpha: build from source.** The current runnable slice scaffolds an application,
+opens a native webview window, and runs an authenticated IPC echo in a supervised Bun
+process. Electron migration, application installers, and signed updates are future work.
 
-## The idea in 30 seconds
+## What works today
 
-Keld starts from Electron's observable API and process contracts, measures them against
-a versioned app corpus, and keeps unsupported behavior explicit. Median apps should
-migrate through configuration; demanding apps may drive targeted runtime, host or app
-patches behind the same compatibility facade.
+- `keld create`, `keld dev`, and `keld doctor` support the current hello application.
+- The Rust host owns the window and Bun lifecycle; kipc provides authenticated app-link
+  communication, framed messages, and typed codecs.
+- Permission parsing and guard-before-handler checks exist. Broad native services and
+  complete strict-profile admission remain incomplete.
+- `@keld/electron` implements a limited application-lifecycle facade. Its
+  [compatibility board](docs/engineering/compat-scoreboard.md) records the known
+  matches and divergences; broad Electron compatibility is not measured yet.
 
-The following is the **target product flow**. `migrate` and `build` are not implemented
-in the current pre-alpha CLI:
+The generated [Current/Target/Evidence ledger](docs/engineering/product-status.md)
+is the source of truth for implemented scope and its evidence. These platform rows
+summarize its current no-flag app-session surfaces, not release support:
 
-```bash
-cd my-electron-app
-bunx keld migrate   # analyzes your app, generates config, aliases electron → @keld/electron
-bunx keld dev       # no bundled Chromium/Node executable; exact gaps reported
-bunx keld build     # signed installers + kilobyte-scale delta updates
-```
+| Platform | Current app-session slice | Qualification still needed |
+|---|---|---|
+| macOS / WKWebView | Native window, app link, recovery, ordered cleanup | Complete strict profiles and release packaging |
+| Windows / WebView2 | Native window, named-pipe app link, recovery, ordered cleanup | Remaining strict admission and release packaging |
+| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery and cleanup | X11 product run, other distributions/architectures, release packaging |
 
-The target architecture replaces Electron's architecture, not its API:
+## Try it
 
-- **A prebuilt Rust host** owns windows, webviews, and every native API — you never
-  install a Rust toolchain.
-- **Your JS/TS main process and named compatibility roles run on Bun** as supervised,
-  strict-profile principals — npm/Node behavior is corpus-tested, ambient OS access is
-  denied, and a child crash does not take your windows down.
-- **System webviews by default** (WebView2 / WKWebView / WebKitGTK) with a polyfill
-  pack and per-platform engine policy.
-- **Typed binary IPC** (schema-first and backpressured; optional per-role shared-memory
-  bulk lanes only after workload and sandbox measurements justify them).
-- **Default-deny permissions** generated from your code, reviewed like a lockfile.
-- **Delta updates (bsdiff+zstd, signed)** and cross-target-assembled installers;
-  signing/notarization remains an exercised per-platform credential flow.
-
-The current implementation is a vertical slice, not the target product. See the
-generated [product-status ledger](docs/engineering/product-status.md) for the exact
-crate, package, phase, platform, and evidence split. Architecture documents continue to
-own target design; Linear owns live execution state.
-
-## Workspace layout
-
-```
-crates/   keld-core · keld-wv · keld-ipc · keld-guard · keld-native · keld-runtime
-          keld-update · keld-pack · keld-compat · keld-host (bin) · keld-cli (bin)
-packages/ @keld/electron; planned package surfaces are classified in the status ledger
-```
-
-## Development
-
-See [`AGENTS.md`](AGENTS.md) for engineering rules and verification gates.
+Use the [source-build quick-start](docs/onboarding/README.md#run-the-current-demo)
+for prerequisites, expected output, and Windows instructions. With Rust and Bun
+installed, run this in a macOS or qualified Linux desktop terminal:
 
 ```bash
-cargo nextest run --workspace --profile ci
-just hello    # launch the diagnostic hello backend for the current platform
+git clone https://github.com/gyldlab/keld.git
+cd keld
+cargo build --locked -p keld-cli -p keld-host
+./target/debug/keld create hello-keld
+cd hello-keld
+../target/debug/keld doctor
+../target/debug/keld dev
 ```
+
+The expected result is a `hello-keld` window. Close it to end the session;
+`IPC echo ok` is printed when captured Bun output is forwarded at shutdown. This builds both binaries required by `dev`;
+there is no npm installation or packaged app release yet.
+
+## Evidence
+
+- [Product status](docs/engineering/product-status.md): code and tests behind every
+  current capability, with target-only work called out.
+- [Electron compatibility](docs/engineering/compat-scoreboard.md): implemented
+  lifecycle behavior and divergences. No product corpus percentage is published yet.
+- [Benchmarks](https://github.com/gyldlab/keld-benches) and the
+  [measurement scoreboard](docs/engineering/budget-scoreboard.md): OS-qualified
+  fixtures, pinned measurements, and limitations. Historical hello measurements do not
+  establish a performance claim for a complete migrated application.
+- [CI](https://github.com/gyldlab/keld/actions/workflows/ci.yml): current automated
+  checks. A CI run and a real desktop acceptance run are different evidence.
+
+## Roadmap
+
+The public [roadmap](ROADMAP.md) explains the next prerequisites and their exit
+criteria. [GitHub Issues](https://github.com/gyldlab/keld/issues) is the public place to
+report defects, find contribution opportunities, and follow work.
+
+## Target
+
+Keld aims to provide a prebuilt Rust host, supervised Bun application roles, typed
+kipc, and generated host-enforced default-deny permissions. Electron applications
+would migrate through a compatibility facade with unsupported behavior visible.
+
+`keld migrate` and `keld build` are reserved commands today. VS Code migration is a
+future stress workload that depends on those framework contracts; it is not a current
+demo. The [architecture](docs/architecture/01-overview.md) defines the destination.
+
+## Contribute
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), the
+[maintainers](MAINTAINERS.md), and the [Code of Conduct](CODE_OF_CONDUCT.md).
+Report vulnerabilities through [SECURITY.md](SECURITY.md). Public code, documentation,
+and tests are sufficient to contribute; private research is optional.
 
 ## License
 
-MIT OR Apache-2.0 — [`LICENSE`](LICENSE), [`LICENSE-MIT`](LICENSE-MIT),
-[`LICENSE-APACHE`](LICENSE-APACHE), and workspace `Cargo.toml`. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).
+MIT OR Apache-2.0 — [LICENSE](LICENSE), [LICENSE-MIT](LICENSE-MIT),
+[LICENSE-APACHE](LICENSE-APACHE).
