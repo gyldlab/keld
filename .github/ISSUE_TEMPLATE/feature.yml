@@ -1,18 +1,19 @@
 name: Feature
 description: Propose new behavior. Larger than a bug fix needs an approved spec first.
 title: "[feat] "
-labels: []
+labels: [triage]
 body:
   - type: markdown
     attributes:
       value: |
-        Do not implement from an unapproved spec (`docs/agents/workflow.md`).
-        Prefer a Linear `KEL-n` for in-tree work.
+        Describe the user need and check existing issues and the public roadmap.
+        Maintainers will establish scope and any required spec before implementation.
+        No private tracker or research access is needed.
   - type: input
     id: linear
     attributes:
-      label: Linear issue
-      description: Existing KEL-n if this is already tracked. Leave blank if none.
+      label: Related issue (optional)
+      description: Public issue/PR link or an existing KEL-n if known. Leave blank otherwise.
       placeholder: KEL-00
   - type: textarea
     id: goal
@@ -38,7 +39,7 @@ body:
   - type: checkboxes
     id: yagni
     attributes:
-      label: YAGNI
+      label: Existing work
       options:
-        - label: Phase 2 (window + kipc echo + crate map) cannot ship without this
+        - label: I checked existing issues and the roadmap and described a concrete user need
           required: true

@@ -1,18 +1,19 @@
 name: Bug
 description: Something does not match a spec, test, or documented command.
 title: "[bug] "
-labels: []
+labels: [triage]
 body:
   - type: markdown
     attributes:
       value: |
-        Implementation work lives in Linear (`KEL-n`). Use this form for a public defect.
-        A bug fix needs a regression test before the change (`AGENTS.md`).
+        Report a defect in current documented behavior. No private tracker access is needed.
+        Do not include unfixed security vulnerabilities or secrets; use private reporting.
+        Maintainers will help identify scope and the regression test.
   - type: input
     id: linear
     attributes:
-      label: Linear issue
-      description: Existing KEL-n if this is already tracked. Leave blank if none.
+      label: Related issue (optional)
+      description: Public issue/PR link or an existing KEL-n if known. Leave blank otherwise.
       placeholder: KEL-00
   - type: textarea
     id: expected

@@ -1,10 +1,22 @@
 # Agent development workflow
 
-How Keld is developed by parallel agents with independent architectural review. Rationale
-and sources: `docs/research/library/agents-tooling/07-agent-first.md`. Rules here bind agents and humans.
+Internal maintainer and agent workflow with independent architectural review. Rationale
+and sources: `docs/research/library/agents-tooling/07-agent-first.md`.
 Task-specific playbooks are routed from `.agents/index.md`; load only matching entries.
 Operational branch/OS templates are in `.agents/coordination.md`; PR/current-head review
 is in `.agents/review.md`.
+
+## Public contributions
+
+External contributors follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md): discuss scope
+in a public GitHub issue, use a fork and a descriptive branch, and open a pull request.
+They do not need private Linear access, research access, an agent harness, or an
+`agent/kel-*` branch. Maintainers publish the accepted scope, spec and acceptance
+criteria on GitHub and handle internal Linear linkage and claims before taking over
+implementation or merging. Changes requiring a spec still need approval before
+implementation. Security, testing and independent-review gates remain unchanged.
+The internal loop below binds maintainers and agents acting with maintainer authority;
+external contributors and their tools use the public path without acquiring that authority.
 
 ## The loop (one issue, one agent, one concern)
 

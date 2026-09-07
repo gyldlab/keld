@@ -1,22 +1,19 @@
-# Single-writer paths from AGENTS.md / docs/agents/workflow.md (KEL-39).
-# Last matching pattern wins. GitHub org `gyldlab` has no teams yet, so current
-# repository admins are listed; replace this owner set with
-# `@gyldlab/keld-maintainers` once that team exists (otherwise CODEOWNERS is a
-# no-op for unknown teams).
-#
-# Any one listed owner can satisfy the review request.
-
-/Cargo.toml                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/Cargo.lock                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/rust-toolchain.toml                @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/.github/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/.githooks/                         @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/AGENTS.md                          @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/.agents/                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/.codex/                            @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/docs/agents/                       @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/docs/engineering/keld-error-codes.md @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/justfile                           @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/tools/                             @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/crates/keld-guard/                 @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
-/crates/keld-ipc/                   @nixn7 @rahul-tumma @hp282000 @amishabenramani @Rajkakadiya07 @0monish
+# Critical ownership stays explicit; the verified visible team has repository write access.
+# All PRs require independent approval; these paths additionally require owner review.
+/Cargo.toml                            @gyldlab/keld-maintainers
+/Cargo.lock                            @gyldlab/keld-maintainers
+/rust-toolchain.toml                   @gyldlab/keld-maintainers
+/.github/                              @gyldlab/keld-maintainers
+/.githooks/                            @gyldlab/keld-maintainers
+/AGENTS.md                             @gyldlab/keld-maintainers
+/.agents/                              @gyldlab/keld-maintainers
+/.codex/                               @gyldlab/keld-maintainers
+/docs/agents/                          @gyldlab/keld-maintainers
+/docs/engineering/keld-error-codes.md  @gyldlab/keld-maintainers
+/justfile                              @gyldlab/keld-maintainers
+/tools/                                @gyldlab/keld-maintainers
+/crates/keld-guard/                    @gyldlab/keld-maintainers
+/crates/keld-ipc/                      @gyldlab/keld-maintainers
+/MAINTAINERS.md                        @gyldlab/keld-maintainers
+/SECURITY.md                           @gyldlab/keld-maintainers
+/CODE_OF_CONDUCT.md                    @gyldlab/keld-maintainers

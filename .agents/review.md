@@ -5,7 +5,7 @@ current head. Coordination and handoff are in `.agents/coordination.md`.
 
 ## Branch and commit contract
 
-- Long-lived branch is `main`. Feature branches are `agent/kel-<n>-<slug>` in one issue
+- Long-lived branch is `main`. Maintainer feature branches are `agent/kel-<n>-<slug>` in one issue
   worktree. Rebase on `origin/main`; `--force-with-lease` MAY rewrite only the feature
   branch. Use an explicit push refspec and read full push output; never force-push main.
 - PR title is the KeldBot conventional format owned by `.agents/ci.md`. Individual
