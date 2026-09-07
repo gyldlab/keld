@@ -10,8 +10,10 @@ who can help.
 Check [open issues](https://github.com/gyldlab/keld/issues) before starting. Look for
 [good first issues](https://github.com/gyldlab/keld/labels/good%20first%20issue) or
 [help wanted](https://github.com/gyldlab/keld/labels/help%20wanted), or report a
-reproducible problem. Include your Keld commit, OS/architecture, Bun version, exact
-command, expected result, and actual output. Remove secrets and private paths from
+reproducible problem. Include your Keld commit, OS/architecture, exact command,
+expected result, actual output and relevant tool versions: `rustc --version` and
+`cargo --version` for Rust reports, `cargo nextest --version` for workspace tests,
+and `bun --revision` for Bun-dependent behavior. Remove secrets and private paths from
 anything you publish. Report security vulnerabilities through
 [SECURITY.md](SECURITY.md).
 
@@ -52,9 +54,9 @@ For an included documentation source, regenerate with `just llms`, then run
 Maintainers and assigned agents use the [internal workflow](docs/agents/workflow.md)
 for Linear linkage, claims, worktrees, independent review, and integration. Contributors
 use the public intake above; maintainers own the internal coordination. Optional local
-research and checkout-hook procedures are described in the
-[development guide](docs/onboarding/05-development-guide.md), and are not prerequisites
-for an external contribution.
+research and checkout-hook setup is owned by the [justfile](justfile) recipes
+`research-sync` and `hooks-install`; neither is a prerequisite for an external
+contribution.
 
 Contributions are licensed under MIT OR Apache-2.0, as declared in
 [LICENSE](LICENSE), [LICENSE-MIT](LICENSE-MIT), and [LICENSE-APACHE](LICENSE-APACHE).
