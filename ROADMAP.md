@@ -21,7 +21,8 @@ and updates remain incomplete; consult the ledger for each component's exact sco
 
 The latest device acceptance also leaves current work open: the stock application's
 native Close fails on tested Ubuntu/Wayland even though SIGINT cleanup succeeds;
-Windows candidate requalification awaits an existing endpoint-security prerequisite.
+Windows source build, create, doctor, native window, interactive Ctrl-C cleanup, and
+relaunch pass, while its stock native-Close criterion remains incomplete.
 The [quick-start](docs/onboarding/README.md#run-the-current-demo) preserves those
 separate results. Resolve the lifecycle regression and complete admitted platform
 acceptance before treating the demo as release-ready.

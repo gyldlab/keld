@@ -41,11 +41,12 @@ fresh checkout. `just hello` exercises only the diagnostic backend window.
 
 The [platform surfaces ledger](../engineering/product-status.md#platform-surfaces)
 owns implemented scope. The [quick-start](README.md#run-the-current-demo) records the
-latest acceptance gaps: Windows candidate execution awaits an existing endpoint-security
-prerequisite; Linux stock native Close leaves session processes/stage alive, while
-SIGINT cleanup is a separate observed result. X11 product runs, other distributions,
-and release packaging remain unverified. This source-built demo is not an installer
-or a migrated Electron application.
+latest acceptance gaps: Windows source build, native window, interactive Ctrl-C
+cleanup/output, and relaunch pass, but stock native Close remains incomplete. Linux
+stock native Close leaves session processes/stage alive, while SIGINT cleanup is a
+separate observed result. X11 product runs, other distributions, and release packaging
+remain unverified. This source-built demo is not an installer or a migrated Electron
+application.
 
 ---
 

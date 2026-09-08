@@ -28,7 +28,7 @@ do not establish release support:
 | Platform | Current app-session slice | Qualification still needed |
 |---|---|---|
 | macOS / WKWebView | Native window, app link, recovery, ordered cleanup | Complete strict profiles and release packaging |
-| Windows / WebView2 | Native window, named-pipe app link, recovery, ordered cleanup | Quick-start requalification awaits an existing endpoint-security prerequisite; remaining strict admission and release packaging |
+| Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock app native Close remains incomplete; remaining strict admission and release packaging |
 | Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Stock app native Close fails the latest Wayland acceptance; X11 product run, other distributions/architectures, release packaging |
 
 ## Try it
@@ -49,8 +49,10 @@ cd hello-keld
 ```
 
 The expected result is a `hello-keld` window. Captured Bun output, including
-`IPC echo ok`, appears at shutdown. The Mac demo verified Ctrl-C shutdown and relaunch;
-it did not independently exercise the window's Close button.
+`IPC echo ok`, appears at shutdown. Source-pinned Windows and Ubuntu device runs
+verified build, create, doctor, the native window, Ctrl-C cleanup, and relaunch with
+Bun 1.4.0. Windows used an interactive PowerShell session. These interrupt runs do
+not pass the separate native-Close criterion.
 
 **Known Linux lifecycle gap:** on the tested Ubuntu/Wayland candidate, native Close
 removes the renderer but leaves the host, Bun, and launch stage running. Ctrl-C

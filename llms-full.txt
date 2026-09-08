@@ -22,15 +22,15 @@ wrapper or packaged application release to install yet.
 - Bun on `PATH`. **Use CI-pinned Bun 1.4.0 for `just ci` and the full workspace test
   gate.** The [Linux strict fixture](../../crates/keld-runtime/tests/linux_strict_boundary.rs)
   asserts that exact version. Record `bun --version` and `bun --revision` before a
-  run. The recorded Mac and Linux demo observations used Bun 1.4.2; those observations
-  do not satisfy the full gate's version prerequisite. The scaffold has no package
-  dependencies to install.
+  run. Earlier Mac/Linux demos used Bun 1.4.2; the newer Ubuntu and Windows quick-start
+  observations used the pinned Bun 1.4.0. Only the pinned version satisfies the current
+  full gate. The scaffold has no package dependencies to install.
 - A desktop session and platform build prerequisites:
 
   | Platform | Prerequisites and qualification |
   |---|---|
   | macOS | Apple command-line developer tools (`xcode-select --install` if absent); WKWebView is supplied by macOS |
-  | Windows | Rust's MSVC build tools and the WebView2 runtime; the current Windows acceptance lane has not built/run this candidate and awaits an existing endpoint-security prerequisite |
+  | Windows | Rust's MSVC build tools and the WebView2 runtime; use an interactive PowerShell session for the qualified `dev`/Ctrl-C path; stock native Close remains incomplete |
   | Ubuntu/Debian x86_64, Wayland | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; stock native Close currently fails, and X11 product runs and other distributions remain unverified |
 
 The Ubuntu build packages are recorded in the [CI workflow](../../.github/workflows/ci.yml).
@@ -88,11 +88,11 @@ cd hello-keld
 ../target/debug/keld dev
 ```
 
-On Windows, these are the source-checked PowerShell commands. The current Windows
-acceptance lane has not built or run this candidate; its requalification awaits an
-existing endpoint-security prerequisite. An unrun acceptance test does not change
-the ledger's implemented scope. Start in
-the repository root:
+On Windows, these are the source-checked PowerShell commands. The recorded Windows
+run used an interactive PowerShell session and verified build, create, doctor, the
+native window, captured shutdown output, Ctrl-C cleanup, and relaunch. A redirected
+PowerShell 5 pipeline or a shell/PTY that exits immediately is not that acceptance
+recipe. Start in the repository root:
 
 ```powershell
 .\target\debug\keld.exe create hello-keld
@@ -117,20 +117,22 @@ one. Expected behavior:
    ```
 
 4. Check that the host/Bun session and its nonce directory under `.keld/dev` are gone
-   before a new run. Ctrl-C cleanup was observed on the recorded Mac and Linux devices;
-   it is a separate acceptance case from native window Close.
+   before a new run. Ctrl-C cleanup was observed on the recorded Mac, Windows, and
+   Linux devices; it is a separate acceptance case from native window Close.
 
 **Normal-close acceptance is currently incomplete.** On physical Ubuntu/Wayland,
 clicking the stock app's Close button removed the renderer but left CLI, host, Bun,
 and the launch stage alive beyond an independent 20-second observation. Subsequent
 Ctrl-C cleaned them up; it did not fix normal Close. The
 [lifecycle issue](https://github.com/gyldlab/keld/issues/176) tracks the separate
-stock-app correction and its required native-close regression. The Mac
-probe exercised SIGINT rather than the Close button, and Windows was not executed.
+stock-app correction and its required native-close regression. The Mac probe exercised
+SIGINT rather than the Close button. The fresh Windows run also leaves its stock
+native-Close criterion incomplete; its passing Ctrl-C result does not replace it.
 
-The Linux relaunch/early-interrupt probe also retained `KELD-CORE-037` during startup,
-although cleanup succeeded. Treat that as unresolved evidence; a fresh frame or
-successful cleanup alone is not a fully ready, clean relaunch result.
+The newer Linux relaunch/early-interrupt probe on
+[PR #184](https://github.com/gyldlab/keld/pull/184) produced no `KELD-CORE` diagnostic
+and passed its cleanup/relaunch observables. That cancellation fix remains a separate
+unmerged candidate, so this documentation change does not claim it landed on `main`.
 
 The generated app is the canonical current example. Its `index.html` is the renderer;
 `src/main.ts` contains the app-link client and echo. It is not an Electron migration
@@ -164,6 +166,10 @@ bun --version   # must report 1.4.0 for the full gate
 bun --revision
 just ci
 ```
+
+On Windows, run the shell-based full gate from Git Bash or another environment with
+the required GNU tools. Keep the interactive PowerShell session for the separate
+native `dev`/Ctrl-C acceptance run.
 
 The [development guide](05-development-guide.md) explains test commands and maintainer
 procedures. Report real results and unavailable checks when opening a draft PR.
