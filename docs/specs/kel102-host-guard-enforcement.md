@@ -677,9 +677,9 @@ owners into T2 would create unused scaffolding or implement later tasks early.
       `800fc0fb-8ae2-4bac-8982-8d6dc157ae2f`; claim released in
       `826f4c33-f358-4ae3-a90e-435623312ccf`. Satisfying T3's row in the
       task-specific predecessor table below is necessary but not sufficient for
-      T3 dispatch: `docs/specs/kel133-kipc-receiver-semantics.md` adds that a
-      partial merge "cannot unlock KEL-130, KEL-102/T3, or KEL-97", and the
-      current execution frontier owns the remaining readiness call.
+      T3 dispatch: the current execution frontier additionally enumerates a
+      landed `KEL-130/T1`, an unrun `keld-native -> keld-core` dependency
+      review, and its own naming of `KEL-102/T3` as outstanding predicates.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
       context. Core routes and passes the verified snapshot/principal/request;
