@@ -35,6 +35,9 @@ const MERGE_DEFAULT_PREFIX: &str = "Default eligible merge: ";
 const PROMPT_TRACKER_HANDOFF_REQUIREMENT: &str = "Handoffs MUST follow Prompt Tracker `docs/06-graph-engineering.md` for system/client/exact-model identity.";
 const CONTRIBUTING_LINK: &str =
     "https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
+const FORM_CONTRIBUTING_LINE: &str = "        Follow the [contribution guide](https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md) for public scope and submission.";
+const CONFIG_CONTRIBUTING_LINE: &str =
+    "    url: https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
 const INDEX_HEADING: &str = "## Task routing";
 const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |";
 const ENFORCEMENT_LINE_PREFIX: &str =
@@ -629,9 +632,15 @@ fn check_public_intake(root: &Path) -> Result<(), String> {
         ));
     }
 
-    for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE, TEMPLATE_CONFIG] {
+    for (consumer, active_line) in [
+        (BUG_TEMPLATE, FORM_CONTRIBUTING_LINE),
+        (FEATURE_TEMPLATE, FORM_CONTRIBUTING_LINE),
+        (TEMPLATE_CONFIG, CONFIG_CONTRIBUTING_LINE),
+    ] {
         let text = read(root, consumer)?;
-        if text.matches(CONTRIBUTING_LINK).count() != 1 {
+        if exact_line_offsets(&text, active_line).len() != 1
+            || text.matches(CONTRIBUTING_LINK).count() != 1
+        {
             return Err(format!(
                 "ATOMIC-PROTOCOL: `{consumer}` must link the `{CONTRIBUTING}` owner exactly once."
             ));
@@ -799,9 +808,9 @@ mod tests {
                 PUBLIC_INTAKE_OWNER_REQUIREMENTS.join("\n")
             ),
         );
-        for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE, TEMPLATE_CONFIG] {
-            temp.write(consumer, &format!("owner: {CONTRIBUTING_LINK}\n"));
-        }
+        temp.write(BUG_TEMPLATE, &format!("{FORM_CONTRIBUTING_LINE}\n"));
+        temp.write(FEATURE_TEMPLATE, &format!("{FORM_CONTRIBUTING_LINE}\n"));
+        temp.write(TEMPLATE_CONFIG, &format!("{CONFIG_CONTRIBUTING_LINE}\n"));
         temp.write(
             REVIEW,
             &format!("# Review\n\n{REVIEW_MERGE_REQUIREMENT}\n"),
@@ -1208,6 +1217,36 @@ mod tests {
             let error = check(&temp.path).expect_err("missing public-intake owner link must fail");
             assert!(error.contains(consumer), "{error}");
         }
+
+        for (consumer, active_line) in [
+            (BUG_TEMPLATE, FORM_CONTRIBUTING_LINE),
+            (FEATURE_TEMPLATE, FORM_CONTRIBUTING_LINE),
+            (TEMPLATE_CONFIG, CONFIG_CONTRIBUTING_LINE),
+        ] {
+            for replacement in [
+                format!("# {CONTRIBUTING_LINK}"),
+                format!("<!-- {CONTRIBUTING_LINK} -->"),
+            ] {
+                let temp = fixture();
+                let text = fs::read_to_string(temp.path.join(consumer))
+                    .expect("read public-intake consumer")
+                    .replace(active_line, &replacement);
+                temp.write(consumer, &text);
+                let error = check(&temp.path)
+                    .expect_err("commented public-intake owner link must not count");
+                assert!(error.contains(consumer), "{error}");
+            }
+        }
+
+        let temp = fixture();
+        let bug = fs::read_to_string(temp.path.join(BUG_TEMPLATE))
+            .expect("read bug fixture")
+            .replace(
+                FORM_CONTRIBUTING_LINE,
+                &format!("        # literal Markdown heading\n{FORM_CONTRIBUTING_LINE}"),
+            );
+        temp.write(BUG_TEMPLATE, &bug);
+        check(&temp.path).expect("a hash inside block-scalar content is not a YAML comment");
 
         let temp = fixture();
         let contributing = fs::read_to_string(temp.path.join(CONTRIBUTING))
