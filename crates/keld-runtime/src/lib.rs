@@ -422,24 +422,6 @@ impl CapturedOutput {
         boundary
     }
 
-    /// Stream offset of the byte at `retained_index` in a transcript that has
-    /// elided `dropped` bytes.
-    ///
-    /// The head is pinned, so an index at or below [`CAPTURE_HEAD_BYTES`] is
-    /// already its own stream offset; everything after the elision is shifted
-    /// by the elided count. Indices in the few bytes between
-    /// [`CAPTURE_HEAD_BYTES`] and the actual head cut are treated as head
-    /// indices, which under-reports the offset rather than over-reports it —
-    /// the direction that surfaces a termination instead of excusing one.
-    #[must_use]
-    pub fn stream_offset(retained_index: usize, dropped: usize) -> usize {
-        if dropped == 0 || retained_index <= CAPTURE_HEAD_BYTES {
-            retained_index
-        } else {
-            retained_index.saturating_add(dropped)
-        }
-    }
-
     /// One line naming how much output was elided, for a consumer that renders
     /// the transcript to a human. `None` when nothing was dropped.
     #[must_use]
@@ -2896,23 +2878,6 @@ mod tests {
         assert_eq!(
             captured.stdout_total_bytes, 3,
             "the child wrote three bytes, whatever the decoding cost"
-        );
-    }
-
-    /// `stream_offset` lifts a retained index into the stream coordinate the
-    /// ledger publishes.
-    #[test]
-    fn stream_offset_pins_the_head_and_shifts_the_tail() {
-        assert_eq!(CapturedOutput::stream_offset(10, 0), 10, "no elision");
-        assert_eq!(
-            CapturedOutput::stream_offset(10, 4096),
-            10,
-            "an index inside the pinned head is already a stream offset"
-        );
-        assert_eq!(
-            CapturedOutput::stream_offset(CAPTURE_HEAD_BYTES + 1, 4096),
-            CAPTURE_HEAD_BYTES + 1 + 4096,
-            "an index past the head is shifted by the elided count"
         );
     }
 
