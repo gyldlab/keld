@@ -884,9 +884,9 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
         ));
     }
-    if !uncommented_line_contains(&block, "bun-version: \"1.4.0\"") {
+    if !uncommented_line_contains(&block, "bun-version: \"1.4.2\"") {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must pin `bun-version: \"1.4.0\"` (KEL-77). A floating `latest` silently changes the runtime under the suite."
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must pin `bun-version: \"1.4.2\"` (KEL-194; KEL-77 lifecycle oracles). A floating `latest` silently changes the runtime under the suite."
         ));
     }
     // Deliberately NOT checked here: that the lane actually executes the suite
@@ -1861,7 +1861,7 @@ mod tests {
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
-            "          bun-version: \"1.4.0\"",
+            "          bun-version: \"1.4.2\"",
             "      - name: bun test",
             "        shell: bash",
             "        env:",
@@ -2826,15 +2826,29 @@ mod tests {
     }
 
     #[test]
+    fn bun_ci_accepts_requested_142_and_rejects_other_versions() {
+        let requested = valid_workflow();
+        assert!(requested.contains("bun-version: \"1.4.2\""));
+        check_bun_test_job(&requested).expect("the requested stable CI pin must pass");
+        for version in ["1.4.0", "latest", "1.4.2-canary.1", "1.4.20"] {
+            let changed = requested.replace("\"1.4.2\"", &format!("\"{version}\""));
+            assert!(
+                check_bun_test_job(&changed).is_err(),
+                "unexpected runtime {version} must not satisfy the CI pin"
+            );
+        }
+    }
+
+    #[test]
     fn floating_bun_version_in_bun_lane_fails() {
         let temp = complete_fixture();
         temp.write(
             WORKFLOW,
-            &valid_workflow().replacen("bun-version: \"1.4.0\"", "bun-version: latest", 1),
+            &valid_workflow().replacen("bun-version: \"1.4.2\"", "bun-version: latest", 1),
         );
         let error = check(temp.path()).expect_err("an unpinned Bun runtime must fail");
         assert!(error.contains("bun-test"), "{error}");
-        assert!(error.contains("1.4.0"), "{error}");
+        assert!(error.contains("1.4.2"), "{error}");
     }
 
     #[test]

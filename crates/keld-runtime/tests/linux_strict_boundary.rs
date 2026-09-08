@@ -355,7 +355,7 @@ fn pinned_bun_starts_and_writes_only_inside_the_strict_role_root() {
         .output()
         .expect("Bun version");
     assert!(version.status.success());
-    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "1.4.0");
+    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "1.4.2");
     fs::write(
         role.path().join("main.ts"),
         "await Bun.write('/app/bun-strict-ok', 'bun-strict-ok\\n');\nconsole.log('KEL78_BUN_STRICT_PASS');\n",
@@ -387,7 +387,7 @@ fn pinned_bun_starts_and_writes_only_inside_the_strict_role_root() {
         b"bun-strict-ok\n"
     );
     eprintln!(
-        "KELD_LINUX_T4_BUN version=1.4.0 artifact_sha256={} status=passed",
+        "KELD_LINUX_T4_BUN version=1.4.2 artifact_sha256={} status=passed",
         file_sha256(&bun)
     );
 }
@@ -588,7 +588,7 @@ fn find_bun() -> std::path::PathBuf {
     std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
         .map(|directory| directory.join("bun"))
         .find(|candidate| candidate.is_file())
-        .expect("pinned Bun 1.4.0 on PATH")
+        .expect("pinned Bun 1.4.2 on PATH")
 }
 
 fn runtime_dependencies(program: &Path) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {

@@ -407,7 +407,7 @@ for shape in plain.ts test.ts tests.ts; do
     shape_index=$((shape_index + 1))
     discovery_shape_case "bun skips it" "$shape" ignored "$shape_index"
 done
-echo "ok: router suite discovery matches bun 1.4.0 across all 32 patterns, 4 case variants and 3 skipped shapes"
+echo "ok: router suite discovery matches the active Bun runtime across all 32 patterns, 4 case variants and 3 skipped shapes"
 
 # A crate fixture with no Bun test consumer must not select the TypeScript
 # lane merely because it lives under tests/fixtures. The matching case below

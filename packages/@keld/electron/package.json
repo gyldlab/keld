@@ -1,7 +1,7 @@
 {
   "name": "@keld/electron",
   "version": "0.0.1",
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.2",
   "type": "module",
   "description": "Electron API compatibility facade over kipc",
   "scripts": {
