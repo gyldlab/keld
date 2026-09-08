@@ -253,13 +253,79 @@ impl Clone for RuntimeError {
     }
 }
 
+/// Bytes retained from the **start** of each stream, never evicted.
+///
+/// A child announces itself early — ready markers, link banners, the first
+/// error — and the host forwards what the supervisor retained. A pure sliding
+/// tail would let a later flood evict exactly the lines a supervisor exists to
+/// report, so the head is pinned and only the middle is elided (KEL-134).
+pub const CAPTURE_HEAD_BYTES: usize = 64 * 1024;
+
+/// Bytes retained from the **end** of each stream, sliding as output arrives.
+///
+/// The tail carries the most recent output, which is what the stderr tail
+/// carried by a crash diagnostic needs.
+pub const CAPTURE_TAIL_BYTES: usize = 192 * 1024;
+
+/// Bytes retained per stream once compaction has run: head plus tail.
+///
+/// A supervised child is untrusted and may print without bound. Retaining
+/// every byte let one faulty or hostile generation exhaust the host while
+/// crash isolation was supposed to keep the window alive (KEL-134).
+pub const CAPTURE_RETENTION_BYTES: usize = CAPTURE_HEAD_BYTES + CAPTURE_TAIL_BYTES;
+
+/// Slack allowed above [`CAPTURE_RETENTION_BYTES`] before compaction runs.
+///
+/// Compaction moves the retained tail, so compacting on every 4 KiB read would
+/// move the whole retained region per read. Draining only once the buffer
+/// exceeds retention *plus* this slack bounds that to one move per `SLACK`
+/// bytes written, while keeping the steady-state ceiling fixed and the hot
+/// path allocation-free.
+pub const CAPTURE_COMPACTION_SLACK_BYTES: usize = 64 * 1024;
+
+/// Hard ceiling on bytes retained per stream at any instant.
+pub const CAPTURE_MAX_RETAINED_BYTES: usize =
+    CAPTURE_RETENTION_BYTES + CAPTURE_COMPACTION_SLACK_BYTES;
+
 /// Stdout/stderr captured from the currently or most-recently supervised child.
+///
+/// `stdout` and `stderr` are **bounded transcripts**, not whole streams: at
+/// most [`CAPTURE_MAX_RETAINED_BYTES`] per stream is retained, as a pinned
+/// head of [`CAPTURE_HEAD_BYTES`] followed by a sliding tail. Only the middle
+/// is elided, so an early ready marker or first error survives an arbitrarily
+/// long later flood.
+///
+/// The `*_total_bytes` counters record everything the child wrote and never
+/// reset across restart generations, so an ordering fact taken from them stays
+/// comparable for the life of the supervisor. `*_dropped_bytes` states how
+/// much of the middle was elided, so a consumer can tell "nothing was printed"
+/// from "it was dropped" (KEL-134).
+///
+/// Once `*_dropped_bytes` is non-zero the retained bytes after the head are no
+/// longer at their stream offsets; use the counters, not string indices, for
+/// ordering.
 #[derive(Debug, Default, Clone)]
 pub struct CapturedOutput {
-    /// Combined stdout across every spawn attempt so far.
+    /// Retained stdout across every spawn attempt: pinned head, elided middle,
+    /// sliding tail. Bounded by [`CAPTURE_MAX_RETAINED_BYTES`]; see
+    /// [`Self::stdout_dropped_bytes`].
     pub stdout: String,
-    /// Combined stderr across every spawn attempt so far.
+    /// Retained stderr across every spawn attempt: pinned head, elided middle,
+    /// sliding tail. Bounded by [`CAPTURE_MAX_RETAINED_BYTES`]; see
+    /// [`Self::stderr_dropped_bytes`].
     pub stderr: String,
+    /// Total stdout bytes written by every generation, including bytes no
+    /// longer retained. Never reset by a restart; monotonic non-decreasing.
+    pub stdout_total_bytes: usize,
+    /// Total stderr bytes written by every generation, including bytes no
+    /// longer retained. Never reset by a restart; monotonic non-decreasing.
+    pub stderr_total_bytes: usize,
+    /// Stdout bytes elided from the middle to honour the retention bound.
+    /// Invariant: `stdout_total_bytes - stdout_dropped_bytes == stdout.len()`.
+    pub stdout_dropped_bytes: usize,
+    /// Stderr bytes elided from the middle to honour the retention bound.
+    /// Invariant: `stderr_total_bytes - stderr_dropped_bytes == stderr.len()`.
+    pub stderr_dropped_bytes: usize,
 }
 
 impl CapturedOutput {
@@ -271,6 +337,63 @@ impl CapturedOutput {
 
     pub(crate) fn stderr_tail(&self, max_chars: usize) -> String {
         Self::tail(&self.stderr, max_chars)
+    }
+
+    /// Appends `chunk`, counts every byte, and elides the middle back to
+    /// [`CAPTURE_RETENTION_BYTES`] once the buffer exceeds the slack ceiling.
+    ///
+    /// The pinned head is never evicted, so output a child printed before a
+    /// flood still reaches the host. Both cut points land on UTF-8 character
+    /// boundaries, so the retained transcript stays valid UTF-8 and the drop
+    /// count is exactly the bytes removed.
+    fn append(stream: &mut String, total: &mut usize, dropped: &mut usize, chunk: &str) {
+        *total = total.saturating_add(chunk.len());
+        stream.push_str(chunk);
+        if stream.len() <= CAPTURE_MAX_RETAINED_BYTES {
+            return;
+        }
+        // First boundary at or after the pinned head.
+        let head_end = Self::boundary_at_or_after(stream, CAPTURE_HEAD_BYTES);
+        // First boundary at or after the start of the sliding tail.
+        let tail_start =
+            Self::boundary_at_or_after(stream, stream.len().saturating_sub(CAPTURE_TAIL_BYTES));
+        if tail_start <= head_end {
+            return;
+        }
+        stream.drain(head_end..tail_start);
+        *dropped = dropped.saturating_add(tail_start - head_end);
+    }
+
+    /// Smallest UTF-8 character boundary at or after `index`, clamped to the
+    /// end of `stream`.
+    fn boundary_at_or_after(stream: &str, index: usize) -> usize {
+        if index >= stream.len() {
+            return stream.len();
+        }
+        let mut boundary = index;
+        while boundary < stream.len() && !stream.is_char_boundary(boundary) {
+            boundary += 1;
+        }
+        boundary
+    }
+
+    /// Records a captured chunk against the stream `is_stdout` selects.
+    fn push_chunk(&mut self, chunk: &str, is_stdout: bool) {
+        if is_stdout {
+            Self::append(
+                &mut self.stdout,
+                &mut self.stdout_total_bytes,
+                &mut self.stdout_dropped_bytes,
+                chunk,
+            );
+        } else {
+            Self::append(
+                &mut self.stderr,
+                &mut self.stderr_total_bytes,
+                &mut self.stderr_dropped_bytes,
+                chunk,
+            );
+        }
     }
 }
 
@@ -319,7 +442,10 @@ pub struct SelfTerminationRecord {
     pub pid: u32,
     /// Exit code when the OS reported one (`None` for signal termination).
     pub exit_code: Option<i32>,
-    /// Length of captured stdout when this termination was recorded.
+    /// Total stdout bytes written when this termination was recorded, taken
+    /// from [`CapturedOutput::stdout_total_bytes`]. This counts bytes the
+    /// child wrote, not bytes still retained, so it never moves backwards when
+    /// the bounded tail drops older output (KEL-134).
     pub stdout_len: usize,
 }
 
@@ -353,6 +479,10 @@ pub struct CrashLedger {
     /// cannot tell "crashed, then printed" from "printed, then crashed".
     /// Comparing a marker's offset against this length answers that question
     /// without any timing assumption (KEL-105).
+    ///
+    /// This is a *total written* offset from
+    /// [`CapturedOutput::stdout_total_bytes`], not an index into the retained
+    /// tail: retention is bounded, so an index would go stale (KEL-134).
     pub stdout_len_at_last_crash: usize,
     /// All unrequested self-terminations across every generation, including
     /// status zero. Never reset or evicted by restart policy.
@@ -1517,7 +1647,10 @@ fn record_self_termination(
     let (stdout_len, stderr_tail) = {
         let captured = output.lock().unwrap_or_else(PoisonError::into_inner);
         (
-            captured.stdout.len(),
+            // Total bytes written, not the retained tail: the retained tail is
+            // bounded (KEL-134) and would make this ordering point go backwards
+            // once older output is dropped.
+            captured.stdout_total_bytes,
             (exit_code != Some(0)).then(|| captured.stderr_tail(2000)),
         )
     };
@@ -1556,11 +1689,7 @@ fn spawn_capture_thread(
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]);
                         let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        if is_stdout {
-                            guard.stdout.push_str(&chunk);
-                        } else {
-                            guard.stderr.push_str(&chunk);
-                        }
+                        guard.push_chunk(&chunk, is_stdout);
                     }
                 }
             }
@@ -1619,11 +1748,7 @@ fn spawn_capture_thread(
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]);
                         let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        if is_stdout {
-                            guard.stdout.push_str(&chunk);
-                        } else {
-                            guard.stderr.push_str(&chunk);
-                        }
+                        guard.push_chunk(&chunk, is_stdout);
                         let _ =
                             budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                                 (current != u64::MAX).then_some(current.saturating_sub(n as u64))
@@ -2576,9 +2701,16 @@ mod tests {
             "the crash must record how far stdout had got, or the host cannot \
              order it against the app's ready marker: {ledger:?}"
         );
+        let captured = sup.output();
         assert!(
-            ledger.stdout_len_at_last_crash <= sup.output().stdout.len(),
-            "the recorded position must be a real offset into captured stdout: {ledger:?}"
+            ledger.stdout_len_at_last_crash <= captured.stdout_total_bytes,
+            "the recorded position must be a real offset into the stdout the \
+             child actually wrote: {ledger:?}"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout.len(),
+            "retained tail, drop count and total must describe one stream: {captured:?}"
         );
         assert!(
             ledger.self_termination_count >= ledger.count,
@@ -2589,6 +2721,215 @@ mod tests {
             .expect("the all-termination view must retain the latest crash");
         assert_eq!(termination.exit_code, Some(3));
         assert_eq!(termination.stdout_len, ledger.stdout_len_at_last_crash);
+    }
+
+    /// KEL-134 storage bound, isolated from process spawning.
+    ///
+    /// This is the negative control for the retention cap: raising
+    /// `CAPTURE_RETENTION_BYTES`, or deleting the compaction branch in
+    /// `CapturedOutput::append`, makes the ceiling assertions below fail
+    /// deterministically on every OS row.
+    #[test]
+    fn bounded_capture_keeps_a_fixed_tail_and_counts_every_byte() {
+        let mut captured = CapturedOutput::default();
+        let chunk = "x".repeat(4096);
+        let chunks = (CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 4;
+        for _ in 0..chunks {
+            captured.push_chunk(&chunk, true);
+            captured.push_chunk(&chunk, false);
+        }
+        let written = chunk.len() * chunks;
+
+        assert!(
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES,
+            "retained stdout must never exceed the documented ceiling: {} > {}",
+            captured.stdout.len(),
+            CAPTURE_MAX_RETAINED_BYTES
+        );
+        assert!(
+            captured.stderr.len() <= CAPTURE_MAX_RETAINED_BYTES,
+            "retained stderr must never exceed the documented ceiling: {} > {}",
+            captured.stderr.len(),
+            CAPTURE_MAX_RETAINED_BYTES
+        );
+        assert_eq!(
+            captured.stdout_total_bytes, written,
+            "every written byte must be counted even when it is not retained"
+        );
+        assert_eq!(captured.stderr_total_bytes, written);
+        assert!(
+            captured.stdout_dropped_bytes > 0,
+            "dropping output must be disclosed, not silent"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout.len(),
+            "total, dropped and retained must describe one stream"
+        );
+        assert_eq!(
+            captured.stderr_total_bytes - captured.stderr_dropped_bytes,
+            captured.stderr.len()
+        );
+        assert!(
+            captured.stdout.len() >= CAPTURE_RETENTION_BYTES,
+            "compaction must keep the retention target, not empty the tail"
+        );
+    }
+
+    /// A child announces itself before it floods. `keld-host` forwards the
+    /// retained transcript, so evicting the pinned head would lose the ready
+    /// marker that `no_flag_macos`/`no_flag_linux` assert is forwarded after
+    /// the fixture writes 1 MiB of noise.
+    #[test]
+    fn bounded_capture_pins_the_head_against_a_later_flood() {
+        let mut captured = CapturedOutput::default();
+        let marker = "KELD_EARLY_MARKER\n";
+        captured.push_chunk(marker, true);
+        let noise = "x".repeat(4096);
+        for _ in 0..((CAPTURE_MAX_RETAINED_BYTES / noise.len()) * 8) {
+            captured.push_chunk(&noise, true);
+        }
+        assert!(
+            captured.stdout_dropped_bytes > 0,
+            "the flood must have forced an elision, or this proves nothing"
+        );
+        assert!(
+            captured.stdout.starts_with(marker),
+            "the pinned head must survive an arbitrarily long later flood"
+        );
+        assert!(
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES,
+            "pinning the head must not defeat the ceiling: {}",
+            captured.stdout.len()
+        );
+        assert!(
+            captured.stdout.ends_with('x'),
+            "the sliding tail must still carry the most recent output"
+        );
+    }
+
+    /// The retained transcript is a `String`, so a cut that split a multi-byte
+    /// character would be unrepresentable. Both cuts must land on boundaries,
+    /// and the drop count must equal the bytes removed.
+    #[test]
+    fn bounded_capture_cuts_on_a_utf8_character_boundary() {
+        let mut captured = CapturedOutput::default();
+        // Three-byte characters do not align with the byte overflow.
+        let chunk = "\u{20ac}".repeat(4096);
+        let chunks = (CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 4;
+        for _ in 0..chunks {
+            captured.push_chunk(&chunk, true);
+        }
+        assert!(captured.stdout_dropped_bytes > 0, "the test must truncate");
+        assert!(
+            captured.stdout.chars().all(|c| c == '\u{20ac}'),
+            "a boundary-splitting cut would leave replacement characters"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout.len()
+        );
+    }
+
+    /// A hostile or faulty child that prints without bound must not grow the
+    /// supervisor's retained memory. This is the KEL-134 defect end to end,
+    /// through a real process and the platform capture thread.
+    #[test]
+    fn chatty_child_does_not_grow_retained_capture() {
+        let target_bytes = CAPTURE_MAX_RETAINED_BYTES * 8;
+        let sup = Supervisor::start(RestartPolicy::default(), move || {
+            chatty_helper_command(target_bytes)
+        })
+        .expect("first spawn must succeed");
+        match sup.wait_for_outcome() {
+            SupervisorOutcome::Stopped => {}
+            other => panic!("chatty child should exit zero and stop, got {other:?}"),
+        }
+        let captured = sup.output();
+        assert!(
+            captured.stdout_total_bytes >= target_bytes,
+            "the child must actually have written past the ceiling: {} < {target_bytes}",
+            captured.stdout_total_bytes
+        );
+        assert!(
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES,
+            "retained stdout must stay bounded through the capture thread: {} > {}",
+            captured.stdout.len(),
+            CAPTURE_MAX_RETAINED_BYTES
+        );
+        assert!(
+            captured.stdout_dropped_bytes > 0,
+            "truncation must be disclosed: {captured:?}"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout.len(),
+            "the invariant must hold across a real capture thread"
+        );
+    }
+
+    /// Restart generations share one supervisor-owned counter. If a restart
+    /// reset or aliased it, an ordering fact recorded before the restart would
+    /// compare against a shorter stream afterwards.
+    #[test]
+    fn capture_totals_do_not_reset_across_restart_generations() {
+        let sup = Supervisor::start(RestartPolicy::default(), || {
+            shell_command("echo alive-before-dying && exit 3")
+        })
+        .expect("first spawn must succeed");
+        match sup.wait_for_outcome() {
+            SupervisorOutcome::CrashLoop(_) => {}
+            other => panic!("expected the breaker to trip, got {other:?}"),
+        }
+        let captured = sup.output();
+        let marker_len = "alive-before-dying\n".len();
+        let ledger = sup.crash_ledger();
+        assert!(
+            ledger.count >= 2,
+            "this test needs more than one generation: {ledger:?}"
+        );
+        assert!(
+            captured.stdout_total_bytes >= marker_len * 2,
+            "each generation's output must accumulate rather than reset: {captured:?}"
+        );
+        assert!(
+            ledger.stdout_len_at_last_crash >= marker_len * 2,
+            "the last crash must be ordered against the whole stream, not just \
+             the final generation: {ledger:?}"
+        );
+        assert!(
+            ledger.stdout_len_at_last_crash <= captured.stdout_total_bytes,
+            "an ordering point must never exceed the bytes written: {ledger:?}"
+        );
+    }
+
+    fn chatty_helper_command(target_bytes: usize) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .args(["--exact", "tests::chatty_helper_process", "--nocapture"])
+            .env("KELD_RUNTIME_CHATTY_BYTES", target_bytes.to_string());
+        command
+    }
+
+    #[test]
+    fn chatty_helper_process() {
+        let Some(target) = std::env::var_os("KELD_RUNTIME_CHATTY_BYTES") else {
+            return;
+        };
+        let target: usize = target
+            .to_string_lossy()
+            .parse()
+            .expect("chatty byte target must parse");
+        let line = "k".repeat(1023);
+        let mut written = 0_usize;
+        let stdout = std::io::stdout();
+        let mut stdout = stdout.lock();
+        while written < target {
+            std::io::Write::write_all(&mut stdout, line.as_bytes()).expect("helper stdout write");
+            std::io::Write::write_all(&mut stdout, b"\n").expect("helper stdout newline");
+            written += line.len() + 1;
+        }
+        std::io::Write::flush(&mut stdout).expect("helper stdout flush");
     }
 
     #[test]

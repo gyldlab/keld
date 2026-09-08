@@ -200,7 +200,12 @@ impl HostOwnedHelloSession {
         loop {
             let captured = supervisor.output();
             if captured.stdout.contains(needle) {
-                self.mark_ready(supervisor, &captured.stdout, needle);
+                self.mark_ready(
+                    supervisor,
+                    &captured.stdout,
+                    captured.stdout_dropped_bytes,
+                    needle,
+                );
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -231,7 +236,12 @@ impl HostOwnedHelloSession {
                 Some(SupervisorEvent::Stopped) => {
                     let captured = supervisor.output();
                     if captured.stdout.contains(needle) {
-                        self.mark_ready(supervisor, &captured.stdout, needle);
+                        self.mark_ready(
+                            supervisor,
+                            &captured.stdout,
+                            captured.stdout_dropped_bytes,
+                            needle,
+                        );
                         return Ok(());
                     }
                     return Err(HelloSessionError::Runtime(
@@ -353,11 +363,12 @@ impl HostOwnedHelloSession {
     /// `stdout` is the exact buffer the marker was found in, and it is read
     /// *before* the ledger on purpose: the ledger only grows, so a termination
     /// that lands in between makes the comparison stricter, never looser.
-    fn mark_ready(&self, supervisor: &Supervisor, stdout: &str, needle: &str) {
+    fn mark_ready(&self, supervisor: &Supervisor, stdout: &str, dropped: usize, needle: &str) {
         if self.ready_recorded.swap(true, Ordering::SeqCst) {
             return;
         }
-        let recovered = recovered_termination_baseline(stdout, needle, &supervisor.crash_ledger());
+        let recovered =
+            recovered_termination_baseline(stdout, dropped, needle, &supervisor.crash_ledger());
         self.recovered_crashes
             .store(recovered.crashes, Ordering::SeqCst);
         self.recovered_self_terminations
@@ -383,9 +394,19 @@ impl HostOwnedHelloSession {
 /// (`docs/architecture/02-ipc.md`), so the earlier death is the honest verdict.
 fn recovered_termination_baseline(
     stdout: &str,
+    dropped: usize,
     needle: &str,
     ledger: &CrashLedger,
 ) -> RecoveredTerminations {
+    // Once the supervisor has elided output to honour its retention bound
+    // (KEL-134), a byte index into the retained transcript is no longer a
+    // stream offset, so it cannot be ordered against the ledger's
+    // total-written offsets. Baseline nothing rather than compare two
+    // coordinate systems: that can only surface a termination, never excuse
+    // one, which is the direction KEL-105/KEL-116 require.
+    if dropped > 0 {
+        return RecoveredTerminations::default();
+    }
     let Some(marker_end) = stdout.find(needle).map(|start| start + needle.len()) else {
         return RecoveredTerminations::default();
     };
@@ -679,8 +700,30 @@ mod ready_baseline_tests {
     fn no_crash_yet_forgives_nothing_and_claims_nothing() {
         let stdout = format!("booting\n{READY}\n");
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger_at(0, 0)),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger_at(0, 0)),
             RecoveredTerminations::default()
+        );
+    }
+
+    #[test]
+    fn an_elided_transcript_forgives_nothing() {
+        // KEL-134: once the supervisor elides output, a byte index into the
+        // retained transcript is not a stream offset. The same inputs that
+        // would forgive a crash with an intact transcript must forgive nothing
+        // once bytes have been dropped, because the safe direction is to
+        // surface a termination rather than excuse it (KEL-105/KEL-116).
+        let crashed = "gen1 booting\n";
+        let stdout = format!("{crashed}{READY}\n");
+        let ledger = ledger_at(1, crashed.len());
+        assert_eq!(
+            recovered_termination_baseline(&stdout, 0, READY, &ledger),
+            RecoveredTerminations { crashes: 1, all: 1 },
+            "control: with an intact transcript this crash is forgiven"
+        );
+        assert_eq!(
+            recovered_termination_baseline(&stdout, 1, READY, &ledger),
+            RecoveredTerminations::default(),
+            "one elided byte is enough to make the offsets incomparable"
         );
     }
 
@@ -691,7 +734,7 @@ mod ready_baseline_tests {
         let crashed = "gen1 booting\n";
         let stdout = format!("{crashed}{READY}\n");
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger_at(1, crashed.len())),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger_at(1, crashed.len())),
             RecoveredTerminations { crashes: 1, all: 1 },
             "a crash the supervisor recovered from before ready must be forgiven"
         );
@@ -705,7 +748,7 @@ mod ready_baseline_tests {
         // them.
         let stdout = format!("{READY}\ndying now\n");
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger_at(1, stdout.len())),
             RecoveredTerminations::default(),
             "a death after the app was live must not be reported as recovered"
         );
@@ -717,7 +760,7 @@ mod ready_baseline_tests {
         // already written when the crash was recorded, so it is post-ready.
         let stdout = READY.to_owned();
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger_at(1, stdout.len())),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger_at(1, stdout.len())),
             RecoveredTerminations::default()
         );
     }
@@ -728,7 +771,7 @@ mod ready_baseline_tests {
         let pre = "gen1 booting\n";
         let stdout = format!("{pre}{READY}\nlate output\n");
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger_at(2, stdout.len())),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger_at(2, stdout.len())),
             RecoveredTerminations::default(),
             "the later death is post-ready, so the run must fail"
         );
@@ -754,7 +797,7 @@ mod ready_baseline_tests {
             }),
         };
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger),
             RecoveredTerminations { crashes: 1, all: 0 },
             "the recovered non-zero exit must remain distinguishable from the later zero exit"
         );
@@ -763,7 +806,7 @@ mod ready_baseline_tests {
     #[test]
     fn an_absent_marker_forgives_nothing() {
         assert_eq!(
-            recovered_termination_baseline("nothing here", READY, &ledger_at(3, 0)),
+            recovered_termination_baseline("nothing here", 0, READY, &ledger_at(3, 0)),
             RecoveredTerminations::default()
         );
     }
@@ -776,7 +819,7 @@ mod ready_baseline_tests {
         let first = format!("{READY}\n");
         let stdout = format!("{first}gen2\n{READY}\n");
         assert_eq!(
-            recovered_termination_baseline(&stdout, READY, &ledger_at(1, first.len() + 5)),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger_at(1, first.len() + 5)),
             RecoveredTerminations::default(),
             "a re-printed marker must not forgive the earlier post-ready death"
         );
