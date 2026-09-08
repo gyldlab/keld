@@ -432,11 +432,19 @@ fn recovered_termination_baseline(
     let Some(marker_end) = stdout.find(needle).map(|start| start + needle.len()) else {
         return RecoveredTerminations::default();
     };
-    // The ledger publishes total-written offsets, so the marker's index in the
-    // retained transcript has to be lifted into the same coordinate system
-    // once the supervisor has elided output (KEL-134). The head is pinned, so
-    // a marker inside it is already at its stream offset.
-    let marker_offset = keld_runtime::CapturedOutput::stream_offset(marker_end, dropped);
+    // The pinned head is the literal start of the stream and is never elided
+    // (KEL-134), so a match ending inside it is provably the *first*
+    // occurrence and already sits at its true stream offset — which is what
+    // the doc above requires and what the ledger's offsets are measured in.
+    //
+    // A match beyond the head, once anything has been elided, may be a later
+    // repeat printed by a restarted generation whose earlier twin was dropped.
+    // Crediting it would order the crash against the wrong marker and excuse a
+    // post-ready death, so no recovery credit is granted there.
+    if dropped > 0 && marker_end > keld_runtime::CAPTURE_HEAD_BYTES {
+        return RecoveredTerminations::default();
+    }
+    let marker_offset = marker_end;
     RecoveredTerminations {
         crashes: if marker_offset > ledger.stdout_len_at_last_crash {
             ledger.count
@@ -754,21 +762,41 @@ mod ready_baseline_tests {
     }
 
     #[test]
-    fn a_marker_past_the_pinned_head_is_shifted_by_the_elided_count() {
-        // A marker found beyond the pinned head really sits `dropped` bytes
-        // further into the stream than its retained index says. Ordering must
-        // use the shifted offset, or a post-ready crash reads as pre-ready.
+    fn a_marker_past_the_pinned_head_earns_no_credit_once_output_was_elided() {
+        // Beyond the pinned head the retained match may be a *repeat* printed
+        // by a restarted generation, with the real first marker elided. The
+        // ordering doc above depends on using the first occurrence, so an
+        // ambiguous match must not forgive anything.
         let filler = "f".repeat(keld_runtime::CAPTURE_HEAD_BYTES + 16);
         let stdout = format!("{filler}{READY}\n");
-        let marker_offset = filler.len() + READY.len();
-        let dropped = 4096;
-        // Crash recorded between the retained index and the true offset: only
-        // the shifted comparison places the marker after it.
-        let ledger = ledger_at(1, marker_offset + 1);
+        let ledger = ledger_at(1, 8);
         assert_eq!(
-            recovered_termination_baseline(&stdout, dropped, READY, &ledger),
+            recovered_termination_baseline(&stdout, 0, READY, &ledger),
             RecoveredTerminations { crashes: 1, all: 1 },
-            "the shifted offset must place the marker after the crash"
+            "control: with nothing elided the match is the first occurrence"
+        );
+        assert_eq!(
+            recovered_termination_baseline(&stdout, 4096, READY, &ledger),
+            RecoveredTerminations::default(),
+            "an ambiguous match must not excuse a termination"
+        );
+    }
+
+    #[test]
+    fn an_elided_first_marker_cannot_be_impersonated_by_a_retained_repeat() {
+        // The hazard in full: generation 1 printed the marker and then died,
+        // that marker was elided, and generation 2 printed it again. Crediting
+        // the retained repeat would order the crash against the wrong marker
+        // and report success over an app that died after it was ready.
+        let filler = "f".repeat(keld_runtime::CAPTURE_HEAD_BYTES + 16);
+        let stdout = format!("{filler}{READY}\n");
+        // The crash is recorded far into the stream — after the elided first
+        // marker — so a naive shifted comparison would call it pre-ready.
+        let ledger = ledger_at(1, 4096);
+        assert_eq!(
+            recovered_termination_baseline(&stdout, 512 * 1024, READY, &ledger),
+            RecoveredTerminations::default(),
+            "a post-ready death must not be laundered by a repeated marker"
         );
     }
 
