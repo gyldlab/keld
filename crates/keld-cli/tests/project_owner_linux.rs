@@ -12,6 +12,11 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Dark background for fixture renderers, so a test run does not flash
+/// white windows across the operator's desktop. Cosmetic only: no test
+/// asserts on it, and the beacon/marker contracts are unchanged.
+const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
+
 const PROOF_ENV: &str = "KELD_REAL_LINUX_OWNER_PROOF";
 
 struct ForeignAccount {
@@ -167,8 +172,11 @@ fn real_linux_second_account_refuses_foreign_owned_project() {
         format!("await Bun.write({marker:?}, \"executed\\n\");\n"),
     )
     .expect("foreign entry");
-    fs::write(&renderer, "<!doctype html><title>foreign owner</title>\n")
-        .expect("foreign renderer");
+    fs::write(
+        &renderer,
+        format!("<!doctype html>{DARK_BG}<title>foreign owner</title>\n"),
+    )
+    .expect("foreign renderer");
 
     let invoking_principal = (
         rustix::process::geteuid().as_raw(),

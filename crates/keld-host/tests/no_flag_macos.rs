@@ -16,6 +16,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+/// Dark background for fixture renderers, so a test run does not flash
+/// white windows across the operator's desktop. Cosmetic only: no test
+/// asserts on it, and the beacon/marker contracts are unchanged.
+const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const TITLE: &str = "KEL96 T1b Fixture";
 const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
 const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
@@ -221,7 +225,7 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{TITLE}</title><img src=\"http://127.0.0.1:{}/never\">\n",
+            "<!doctype html>{DARK_BG}<title>{TITLE}</title><img src=\"http://127.0.0.1:{}/never\">\n",
             blocker.port
         ),
     )
@@ -517,7 +521,7 @@ impl RecoveryCycle {
         fs::write(
             fixture.project.join("index.html"),
             format!(
-                "<!doctype html><title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
+                "<!doctype html>{DARK_BG}<title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
                 beacon.port()
             ),
         )
@@ -1048,7 +1052,7 @@ impl ShippingDevCycle {
         fs::write(
             fixture.project.join("index.html"),
             format!(
-                "<!doctype html><title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
+                "<!doctype html>{DARK_BG}<title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
                 beacon.port()
             ),
         )
@@ -1330,7 +1334,9 @@ impl ProductFixture {
         if !self.project.join("index.html").exists() {
             fs::write(
                 self.project.join("index.html"),
-                format!("<!doctype html><title>{TITLE}</title><p id=marker>{MARKER}</p>\n"),
+                format!(
+                    "<!doctype html>{DARK_BG}<title>{TITLE}</title><p id=marker>{MARKER}</p>\n"
+                ),
             )
             .expect("fallback renderer");
         }
@@ -1363,7 +1369,7 @@ impl ProductFixture {
         fs::write(
             self.project.join("index.html"),
             format!(
-                "<!doctype html><title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
+                "<!doctype html>{DARK_BG}<title>{TITLE}</title><p id=marker>{MARKER}</p><img src=\"http://127.0.0.1:{}/{MARKER}\">\n",
                 beacon.port()
             ),
         )
