@@ -124,6 +124,16 @@ export function checkWorkflowSecurity(source: string): void {
   const codeql = stepsByJob.get("codeql");
   const dependencies = stepsByJob.get("dependency-review");
   if (!codeql || !dependencies) fail("CodeQL and dependency-review jobs must exist.");
+  const codeqlJob = mapping(jobs.codeql, "jobs.codeql");
+  const strategy = mapping(codeqlJob.strategy, "CodeQL strategy");
+  const matrix = mapping(strategy.matrix, "CodeQL matrix");
+  exactKeys(matrix, ["include"], "CodeQL matrix");
+  const expectedLanguages = ["rust", "javascript-typescript", "actions"];
+  const languages = Array.isArray(matrix.include)
+    ? matrix.include.map(row => mapping(row, "CodeQL matrix row").language) : [];
+  if (languages.length !== expectedLanguages.length || !expectedLanguages.every(language => languages.includes(language))) {
+    fail("CodeQL matrix must include rust, javascript-typescript and actions exactly once; restore all scan categories.");
+  }
   const init = requiredAction(codeql, "Initialize CodeQL", "github/codeql-action/init", {
     languages: "${{ matrix.language }}", "build-mode": "none",
   });

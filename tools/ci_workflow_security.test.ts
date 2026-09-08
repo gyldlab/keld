@@ -5,7 +5,7 @@ import { delimiter, dirname, join } from "node:path";
 import { checkWorkflowSecurity } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
-type Fixture = { jobs: Record<string, { steps: Step[] }> };
+type Fixture = { jobs: Record<string, { steps: Step[]; strategy?: { matrix: Record<string, unknown> } }> };
 const source = readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8");
 const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 
@@ -24,6 +24,33 @@ function check(f: Fixture): void { checkWorkflowSecurity(Bun.YAML.stringify(f, n
 
 test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
+});
+
+for (const language of ["rust", "javascript-typescript", "actions"]) {
+  test(`CodeQL matrix cannot omit ${language}`, () => {
+    const f = fixture();
+    const matrix = f.jobs.codeql!.strategy!.matrix;
+    matrix.include = (matrix.include as Step[]).filter(row => row.language !== language);
+    expect(() => check(f)).toThrow("CodeQL matrix");
+  });
+}
+
+test("CodeQL matrix rejects duplicate languages and coverage-altering axes", () => {
+  const duplicate = fixture();
+  const include = duplicate.jobs.codeql!.strategy!.matrix.include as Step[];
+  include[2] = { ...include[0] };
+  expect(() => check(duplicate)).toThrow("CodeQL matrix");
+  for (const extra of [{ exclude: [{ language: "rust" }] }, { language: ["actions"] }]) {
+    const f = fixture();
+    Object.assign(f.jobs.codeql!.strategy!.matrix, extra);
+    expect(() => check(f)).toThrow("CodeQL matrix");
+  }
+});
+
+test("CodeQL matrix coverage is independent of row order", () => {
+  const f = fixture();
+  (f.jobs.codeql!.strategy!.matrix.include as Step[]).reverse();
+  expect(() => check(f)).not.toThrow();
 });
 
 for (const style of ["block", "flow", "alias"] as const) {
@@ -187,6 +214,9 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
     const original = run(source);
     expect(original.exitCode).toBe(0);
     expect(new TextDecoder().decode(original.stdout)).toContain("CI workflow security semantics ok");
+    const missingLanguage = run(source.replace("          - language: actions\n            os: ubuntu-latest\n", ""));
+    expect(missingLanguage.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(missingLanguage.stderr)).toContain("CodeQL matrix");
     for (const insertion of [
       `      - { uses: '${checkout}', with: { persist-credentials: true } }\n`,
       `      - &insecure { uses: '${checkout}', with: { persist-credentials: true } }\n      - *insecure\n`,

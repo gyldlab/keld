@@ -8,6 +8,9 @@ it is not a claim that Keld has no vulnerabilities.
 `ci-hygiene check` runs the parsed workflow security check through Bun, the same
 runtime already required by `just ci`. `tools/ci_workflow_security.ts` owns checkout
 and scanner semantics; the Rust checker retains the other hygiene contracts.
+The CodeQL matrix must include Rust, JavaScript/TypeScript and Actions exactly
+once. Exclusions and additional matrix axes are refused so a successful job cannot
+silently represent fewer scan categories; row order does not affect admission.
 Block, flow and aliased steps are inspected as objects. Missing, malformed,
 multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.0's
 parser uses the last value for duplicate keys; this check does not claim to reject
