@@ -173,7 +173,7 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         "running_under_msys() {",
         "docker_host_path() {",
         "prepare_docker_output_dir() {",
-        "render_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)",
+        "render_dir=$(mktemp -d \"$render_parent/keld-mermaid-render.XXXXXX\")",
         "prepare_docker_output_dir \"$render_dir\"",
         "docker_render_dir=$(docker_host_path \"$render_dir\")",
         "export MSYS2_ARG_CONV_EXCL='*'",
@@ -1707,7 +1707,11 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "docker_host_path",
         "MSYS2_ARG_CONV_EXCL='*'",
         "trap cleanup EXIT",
-        "/tmp/keld-mermaid-render.",
+        r#"workspace=$(cd "$workspace" && pwd -P)"#,
+        r#"if [[ -L "$workspace/target" ]]; then"#,
+        r#"render_parent=$(cd "$workspace/target" && pwd -P)"#,
+        r#"[[ "$render_parent" == "$workspace/target" ]] || {"#,
+        r#""$render_parent"/keld-mermaid-render.*) rm -rf -- "$render_dir" ;;"#,
     ] {
         if !uncommented_line_contains(&renderer, needle) {
             return Err(format!(
@@ -2024,10 +2028,7 @@ mod tests {
         temp.write(AGENT_CONTEXT_CHECKER, "fn main() {}\n");
         temp.write(MERMAID_CHECKER, "fn main() {}\n");
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
-        temp.write(
-            MERMAID_RENDERER,
-            "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf\n--network none\n--read-only\n--cap-drop ALL\n--security-opt no-new-privileges\n--memory 2g\n--pids-limit 256\nrun_with_timeout 300 docker pull\n--pull never\n--jobs 2\n:/input/source.md:ro\ndocker_host_path\ntrap cleanup EXIT\n/tmp/keld-mermaid-render.\nrunning_under_msys() {\ncase \"$(uname -s 2>/dev/null || true)\" in\n}\ndocker_host_path() {\nif running_under_msys; then\ncygpath -am \"$path\"\n}\nprepare_docker_output_dir() {\nif running_under_msys; then\nchmod 0777 -- \"$path\" || {\n}\nrender_dir=$(mktemp -d /tmp/keld-mermaid-render.XXXXXX)\nprepare_docker_output_dir \"$render_dir\"\ndocker_render_dir=$(docker_host_path \"$render_dir\")\nexport MSYS2_ARG_CONV_EXCL='*'\nrun_with_timeout 120 docker run\n",
-        );
+        temp.write(MERMAID_RENDERER, include_str!("mermaid_render_check.sh"));
         temp.write(
             MERMAID_CONFIG,
             "{\"securityLevel\": \"strict\", \"maxTextSize\": 50000, \"maxEdges\": 500, \"deterministicIds\": true}\n",
@@ -3161,6 +3162,83 @@ mod tests {
         assert!(error.contains("--network none"), "{error}");
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn mermaid_renderer_rejects_target_symlink_before_creating_output() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        use std::process::Command;
+
+        let temp = TempDir::new();
+        let checkout = temp.path().join("checkout with spaces");
+        let external = temp.path().join("external");
+        fs::create_dir(&checkout).expect("checkout directory");
+        fs::create_dir(&external).expect("external directory");
+        symlink(&external, checkout.join("target")).expect("escaping target symlink");
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&checkout)
+                .status()
+                .expect("initialize fixture")
+                .success()
+        );
+        fs::write(
+            checkout.join("diagram.md"),
+            "```mermaid\nflowchart LR\n A-->B\n```\n",
+        )
+        .expect("tracked diagram");
+        assert!(
+            Command::new("git")
+                .args(["add", "diagram.md"])
+                .current_dir(&checkout)
+                .status()
+                .expect("track diagram")
+                .success()
+        );
+        fs::create_dir(checkout.join("tools")).expect("fixture tools");
+        fs::write(checkout.join(MERMAID_CONFIG), "{}").expect("config fixture");
+        temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
+        temp.write("bin/docker", "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image) exit 0 ;;\ncontext) printf 'unix:///unused-kel188.sock\\n' ;;\n*) exit 42 ;;\nesac\n");
+        let docker = temp.path().join("bin/docker");
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).expect("driver executable");
+        let mut paths = vec![temp.path().join("bin")];
+        paths.extend(env::split_paths(&env::var_os("PATH").expect("tool PATH")));
+        let output = Command::new("bash")
+            .arg(temp.path().join("renderer.sh"))
+            .current_dir(&checkout)
+            .env("PATH", env::join_paths(paths).expect("fixture PATH"))
+            .output()
+            .expect("execute real renderer script");
+        assert!(!output.status.success());
+        assert!(
+            fs::read_dir(&external)
+                .expect("external observation")
+                .next()
+                .is_none(),
+            "renderer created output outside its checkout"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("non-symlink directory"),
+            "wrong failure boundary: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn mermaid_output_outside_the_shared_checkout_fails() {
+        let temp = complete_fixture();
+        temp.write(
+            MERMAID_RENDERER,
+            &read(temp.path(), MERMAID_RENDERER)
+                .expect("renderer fixture")
+                .replace(
+                    "$render_parent/keld-mermaid-render.",
+                    "/tmp/keld-mermaid-render.",
+                ),
+        );
+        let error = check(temp.path()).expect_err("output must share the checkout mount boundary");
+        assert!(error.contains("render_dir"), "{error}");
+    }
     #[test]
     fn missing_mermaid_msys_path_exclusion_fails() {
         let temp = complete_fixture();
