@@ -20,6 +20,7 @@ const REVIEW: &str = ".agents/review.md";
 const CI: &str = ".agents/ci.md";
 const INDEX: &str = ".agents/index.md";
 const CONTRIBUTING: &str = "CONTRIBUTING.md";
+const MAINTAINERS: &str = "MAINTAINERS.md";
 const BUG_TEMPLATE: &str = ".github/ISSUE_TEMPLATE/bug.yml";
 const FEATURE_TEMPLATE: &str = ".github/ISSUE_TEMPLATE/feature.yml";
 const TEMPLATE_CONFIG: &str = ".github/ISSUE_TEMPLATE/config.yml";
@@ -35,6 +36,8 @@ const MERGE_DEFAULT_PREFIX: &str = "Default eligible merge: ";
 const PROMPT_TRACKER_HANDOFF_REQUIREMENT: &str = "Handoffs MUST follow Prompt Tracker `docs/06-graph-engineering.md` for system/client/exact-model identity.";
 const CONTRIBUTING_LINK: &str =
     "https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
+const MAINTAINER_REVIEW_START: &str = "- **Review:**";
+const MAINTAINER_REVIEW_END: &str = "- **Direction:**";
 const FORM_CONTRIBUTING_REQUIREMENT: &str = "Follow the [contribution guide](https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md) for public scope and submission.";
 #[cfg(test)]
 const FORM_CONTRIBUTING_LINE: &str = "        Follow the [contribution guide](https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md) for public scope and submission.";
@@ -132,6 +135,13 @@ const WORKFLOW_PUBLIC_INTAKE_REQUIREMENTS: &[&str] = &[
     "External contributors follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md), the canonical public-intake owner.",
     "Maintainers bridge accepted public scope into internal Linear linkage, spec and acceptance publication, claims, implementation and merge coordination.",
     "The internal loop below binds maintainers and agents acting with maintainer authority; external contributors do not acquire that authority.",
+];
+
+const MAINTAINER_REVIEW_REQUIREMENTS: &[&str] = &[
+    "changes normally receive approval from a maintainer other than the author/latest pusher.",
+    "CODEOWNERS requests the team; required CI and applicable architecture/security evidence must pass before merge.",
+    "The narrow exception is owned by the internal [standing autonomous merge delegation](.agents/coordination.md#standing-autonomous-merge-delegation); all other actors keep normal human review.",
+    "Agent review remains technical evidence and is never represented as human approval.",
 ];
 
 const ROOT_MERGE_REQUIREMENT: &str = "Review gates require named independent security or architecture evidence under the standing repository-owner delegation in `.agents/coordination.md`; they do not require a human-only actor.";
@@ -663,6 +673,23 @@ fn check_autonomous_merge(root: &Path) -> Result<(), String> {
     require_normalized(&ci, CI_MERGE_REQUIREMENT, CI)?;
     require_unique_normalized(&ci, CI_MERGE_REQUIREMENT, CI)?;
 
+    let maintainers = binding_prose(&read(root, MAINTAINERS)?);
+    let review = line_block(
+        &maintainers,
+        MAINTAINER_REVIEW_START,
+        Some(MAINTAINER_REVIEW_END),
+        MAINTAINERS,
+    )?;
+    let expected = format!(
+        "{MAINTAINER_REVIEW_START} {}",
+        MAINTAINER_REVIEW_REQUIREMENTS.join(" ")
+    );
+    if normalize_binding(review) != normalize_binding(&expected) {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{MAINTAINERS}` review policy must link the `{COORDINATION}` canonical owner without copying its exception."
+        ));
+    }
+
     Ok(())
 }
 
@@ -896,6 +923,13 @@ mod tests {
         temp.write(
             TEMPLATE_CONFIG,
             &format!("{CONFIG_CONTRIBUTING_BLOCK}\n"),
+        );
+        temp.write(
+            MAINTAINERS,
+            &format!(
+                "# Maintainers\n\n{MAINTAINER_REVIEW_START} {}\n{MAINTAINER_REVIEW_END} project direction stays public.\n",
+                MAINTAINER_REVIEW_REQUIREMENTS.join(" ")
+            ),
         );
         temp.write(
             REVIEW,
@@ -1286,6 +1320,55 @@ mod tests {
                 .expect_err("additive or historical merge identity contradiction must fail");
             assert!(error.contains(COORDINATION), "{error}");
         }
+    }
+
+    #[test]
+    fn maintainer_review_links_one_merge_owner() {
+        for (from, to) in [
+            (
+                ".agents/coordination.md#standing-autonomous-merge-delegation",
+                ".agents/coordination.md#another-section",
+            ),
+            (
+                MAINTAINER_REVIEW_REQUIREMENTS[2],
+                "The narrow exception is maintained independently in this file.",
+            ),
+        ] {
+            let temp = fixture();
+            let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
+                .expect("read maintainer fixture")
+                .replacen(from, to, 1);
+            temp.write(MAINTAINERS, &maintainers);
+            let error = check(&temp.path).expect_err("missing merge-owner link must fail");
+            assert!(error.contains(MAINTAINERS), "{error}");
+        }
+
+        for insertion in [
+            " PRs authored by `another-actor` may also skip human review.",
+            &format!(
+                "\n### Historical exception\n\n{}",
+                MAINTAINER_REVIEW_REQUIREMENTS[2]
+            ),
+        ] {
+            let temp = fixture();
+            let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
+                .expect("read maintainer fixture")
+                .replace(MAINTAINER_REVIEW_END, &format!("{insertion}\n{MAINTAINER_REVIEW_END}"));
+            temp.write(MAINTAINERS, &maintainers);
+            let error = check(&temp.path).expect_err("duplicated merge policy must fail");
+            assert!(error.contains(MAINTAINERS), "{error}");
+        }
+
+        let temp = fixture();
+        let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
+            .expect("read maintainer fixture")
+            .replace(
+                MAINTAINER_REVIEW_REQUIREMENTS[2],
+                &format!("<!-- {} -->", MAINTAINER_REVIEW_REQUIREMENTS[2]),
+            );
+        temp.write(MAINTAINERS, &maintainers);
+        let error = check(&temp.path).expect_err("commented owner link must not count");
+        assert!(error.contains(MAINTAINERS), "{error}");
     }
 
     #[test]

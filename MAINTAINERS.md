@@ -19,12 +19,10 @@ permissions are the live ownership record; this list records the founding team.
   scoped work, not a promise of immediate assistance.
 - **Review:** changes normally receive approval from a maintainer other than the
   author/latest pusher. CODEOWNERS requests the team; required CI and applicable
-  architecture/security evidence must pass before merge. For PRs both authored and
-  merged through @0monish or @amishabenramani, the internal standing delegation may
-  waive an additional human approval only after every documented quality predicate
-  passes. GitHub's native allowance keys on the merger, so the agent separately verifies
-  both identities. Other actors keep normal review. Agent review remains technical
-  evidence and is never represented as human approval.
+  architecture/security evidence must pass before merge. The narrow exception is owned
+  by the internal [standing autonomous merge delegation](.agents/coordination.md#standing-autonomous-merge-delegation);
+  all other actors keep normal human review. Agent review remains technical evidence and
+  is never represented as human approval.
 - **Direction:** proposals and consequential decisions are discussed in public
   issues or pull requests and reflected in approved specifications. Private
   research is optional supporting material, not a prerequisite for contributing.
