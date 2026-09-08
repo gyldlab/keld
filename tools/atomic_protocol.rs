@@ -689,6 +689,27 @@ fn check_autonomous_merge(root: &Path) -> Result<(), String> {
             "ATOMIC-PROTOCOL: `{MAINTAINERS}` review policy must link the `{COORDINATION}` canonical owner without copying its exception."
         ));
     }
+    let outside_review = maintainers.replacen(review, "", 1).to_ascii_lowercase();
+    let words = outside_review
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let second_merge_owner = ["merge", "merging", "bypass", "waive", "waiver", "exception"]
+        .iter()
+        .any(|word| words.contains(word))
+        || [
+            "skip human",
+            "without human",
+            "review is optional",
+            "approval is optional",
+        ]
+        .iter()
+        .any(|phrase| outside_review.contains(phrase));
+    if second_merge_owner {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{MAINTAINERS}` contains merge-authorization policy outside its owner-link review block. Keep one owner in `{COORDINATION}`."
+        ));
+    }
 
     Ok(())
 }
@@ -1369,6 +1390,21 @@ mod tests {
         temp.write(MAINTAINERS, &maintainers);
         let error = check(&temp.path).expect_err("commented owner link must not count");
         assert!(error.contains(MAINTAINERS), "{error}");
+
+        let temp = fixture();
+        let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
+            .expect("read maintainer fixture")
+            + "\n## Emergency merge exception\n\nPRs authored by `another-actor` may skip human review.\n";
+        temp.write(MAINTAINERS, &maintainers);
+        let error = check(&temp.path).expect_err("a second merge-policy owner must fail");
+        assert!(error.contains(MAINTAINERS), "{error}");
+
+        let temp = fixture();
+        let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
+            .expect("read maintainer fixture")
+            + "\n## Community\n\nMaintainers mentor contributors and record project direction publicly.\n";
+        temp.write(MAINTAINERS, &maintainers);
+        check(&temp.path).expect("unrelated maintainer prose remains allowed");
     }
 
     #[test]
