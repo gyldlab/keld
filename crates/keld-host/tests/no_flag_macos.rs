@@ -1156,7 +1156,19 @@ impl ShippingDevCycle {
         let old_bun = self.bun_pid;
         let old_descendant = self.descendant_pid;
         let old_link = self.session_dir.clone();
-        let window = native_windows(self.host_pid, TITLE);
+        let window = query_native_windows(
+            self.host_pid,
+            TITLE,
+            NativeWindowScope::All,
+            NativeWindowExpectation::Snapshot,
+            "shipping-recovery-before",
+        );
+        // Initial presentation was proved by launch(). During recovery, a
+        // Space change can remove a live window from the on-screen list.
+        assert!(
+            !window.is_empty(),
+            "recovery requires a live window identity"
+        );
         self.control_writer
             .write_all(b"CRASH\n")
             .expect("crash shipping generation");
@@ -1164,7 +1176,16 @@ impl ShippingDevCycle {
         successor.expect_ready_and_echoes();
         assert_eq!(successor.guardian_pid, old_guardian);
         assert_ne!(successor.bun_pid, old_bun);
-        assert_eq!(native_windows(self.host_pid, TITLE), window);
+        assert_eq!(
+            query_native_windows(
+                self.host_pid,
+                TITLE,
+                NativeWindowScope::All,
+                NativeWindowExpectation::Snapshot,
+                "shipping-recovery-after",
+            ),
+            window
+        );
         assert!(
             !old_link.exists(),
             "retired shipping link directory remains"
