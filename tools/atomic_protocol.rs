@@ -265,6 +265,29 @@ fn yaml_markdown_scalars(text: &str) -> Vec<String> {
     scalars
 }
 
+fn yaml_top_level_value(text: &str, key: &str) -> Option<String> {
+    let mut found = false;
+    let mut value = String::new();
+    for line in text.lines() {
+        if line == key {
+            if found {
+                return None;
+            }
+            found = true;
+            continue;
+        }
+        if !found {
+            continue;
+        }
+        if !line.trim().is_empty() && !line.starts_with(' ') {
+            break;
+        }
+        value.push_str(line);
+        value.push('\n');
+    }
+    found.then_some(value)
+}
+
 fn binding_prose(text: &str) -> String {
     visible_markdown(text)
         .lines()
@@ -673,7 +696,15 @@ fn check_public_intake(root: &Path) -> Result<(), String> {
 
     for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE] {
         let text = read(root, consumer)?;
-        let visible = yaml_markdown_scalars(&text)
+        let body = (exact_line_offsets(&text, "body:").len() == 1)
+            .then(|| yaml_top_level_value(&text, "body:"))
+            .flatten()
+            .ok_or_else(|| {
+            format!(
+                "ATOMIC-PROTOCOL: `{consumer}` must contain one top-level `body:` sequence."
+            )
+        })?;
+        let visible = yaml_markdown_scalars(&body)
             .into_iter()
             .map(|scalar| visible_markdown(&scalar))
             .collect::<Vec<_>>()
@@ -1270,6 +1301,18 @@ mod tests {
             let temp = fixture();
             replace_requirement(&temp, consumer, CONTRIBUTING_LINK);
             let error = check(&temp.path).expect_err("missing public-intake owner link must fail");
+            assert!(error.contains(consumer), "{error}");
+
+            let temp = fixture();
+            let text = fs::read_to_string(temp.path.join(consumer))
+                .expect("read public-intake consumer")
+                .replace(CONTRIBUTING_LINK, "https://github.com/gyldlab/keld/issues");
+            let decoy = format!(
+                "description: |\n  - type: markdown\n    attributes:\n      value: |\n{FORM_CONTRIBUTING_LINE}\n"
+            ) + &text;
+            temp.write(consumer, &decoy);
+            let error = check(&temp.path)
+                .expect_err("a top-level scalar outside `body` must not supply the owner link");
             assert!(error.contains(consumer), "{error}");
         }
 
