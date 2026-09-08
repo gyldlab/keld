@@ -397,6 +397,24 @@ fn trace_linux_policy_decision(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn webview2_installs_popup_denial_before_guard_witness() {
+        // Source ordering is a regression tripwire, not live COM-installation proof.
+        // KEL-168's Windows popup probe supplies that independent OS observable.
+        let backend = include_str!("webview2/mod.rs");
+        let installer = backend
+            .split_once("fn install_guarded_media_permissions(")
+            .expect("Windows guard installer exists")
+            .1
+            .split_once("Ok(GuardInstalled(()))")
+            .expect("guard installer returns its navigation witness")
+            .0;
+        assert!(
+            installer.contains("webview.add_NewWindowRequested("),
+            "KEL-65 direct COM must deny popups before GuardInstalled: otherwise a new WebView2 escapes the guard and lifecycle registry"
+        );
+    }
+
     use super::*;
     use keld_guard::{DenyReason, parse_manifest};
 
