@@ -3142,6 +3142,124 @@ mod tests {
         command
     }
 
+    /// Resident set size of this process in bytes.
+    ///
+    /// `ps` is used rather than a memory-info crate so the soak below needs no
+    /// dependency addition. Nextest runs each test in its own process, so the
+    /// reading is not polluted by sibling tests.
+    #[cfg(unix)]
+    fn process_rss_bytes() -> Option<usize> {
+        let output = Command::new("ps")
+            .args(["-o", "rss=", "-p"])
+            .arg(std::process::id().to_string())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        // `ps` reports kibibytes on both macOS and Linux.
+        String::from_utf8(output.stdout)
+            .ok()?
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .map(|kib| kib * 1024)
+    }
+
+    /// Windows has no dependency-free RSS reading here, so the soak relies on
+    /// its per-sample retained-byte ceiling on that row. Adding a memory-info
+    /// crate for one assertion would be a dependency-addition review gate.
+    #[cfg(windows)]
+    fn process_rss_bytes() -> Option<usize> {
+        None
+    }
+
+    /// KEL-134 bounded soak: a child printing continuously must not grow the
+    /// supervisor's retained memory, sampled *throughout* the run rather than
+    /// only at the end — growth over time is the defect, and a single final
+    /// reading cannot see it.
+    ///
+    /// The negative control is the same one the rest of the suite uses:
+    /// deleting the compaction branch retains everything the child wrote, so
+    /// both the per-sample ceiling and the RSS ceiling below fail by a wide
+    /// margin.
+    #[test]
+    fn continuous_output_soak_keeps_memory_bounded() {
+        // Two orders of magnitude past the retention ceiling, still ~1s of pipe
+        // traffic. Large enough that unbounded retention is unmistakable.
+        let target_bytes = CAPTURE_MAX_RETAINED_BYTES * 200;
+        let rss_growth_ceiling = 32 * 1024 * 1024;
+        let baseline_rss = process_rss_bytes();
+
+        let sup = Supervisor::start(RestartPolicy::default(), move || {
+            chatty_helper_command(target_bytes)
+        })
+        .expect("first spawn must succeed");
+
+        let deadline = Instant::now() + Duration::from_mins(1);
+        let mut samples = 0_usize;
+        let mut peak_retained = 0_usize;
+        let mut peak_rss_growth = 0_usize;
+        loop {
+            let captured = sup.output();
+            peak_retained = peak_retained.max(captured.stdout.len());
+            assert!(
+                captured.stdout.len()
+                    <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+                "retained stdout exceeded the ceiling mid-soak at sample {samples}: {} > {}",
+                captured.stdout.len(),
+                CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes
+            );
+            if let (Some(baseline), Some(now)) = (baseline_rss, process_rss_bytes()) {
+                peak_rss_growth = peak_rss_growth.max(now.saturating_sub(baseline));
+            }
+            samples += 1;
+            if captured.stdout_total_bytes >= target_bytes {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the chatty child did not reach {target_bytes} bytes within the soak deadline; \
+                 wrote {} over {samples} samples",
+                captured.stdout_total_bytes
+            );
+            thread::yield_now();
+        }
+
+        match sup.wait_for_outcome() {
+            SupervisorOutcome::Stopped => {}
+            other => panic!("soak child should exit zero and stop, got {other:?}"),
+        }
+
+        let captured = sup.output();
+        assert!(
+            captured.stdout_total_bytes >= target_bytes,
+            "the soak must actually have written past the ceiling: {} < {target_bytes}",
+            captured.stdout_total_bytes
+        );
+        assert!(
+            samples > 1,
+            "the soak must sample while the child is live, not once at the end"
+        );
+        assert!(
+            peak_retained <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+            "peak retained stdout exceeded the ceiling: {peak_retained}"
+        );
+        assert!(
+            captured.stdout_dropped_bytes > 0,
+            "a soak past the ceiling must have elided output: {captured:?}"
+        );
+
+        if baseline_rss.is_some() {
+            assert!(
+                peak_rss_growth <= rss_growth_ceiling,
+                "resident memory grew {peak_rss_growth} bytes while the child wrote {} — \
+                 the capture bound is not holding",
+                captured.stdout_total_bytes
+            );
+        }
+    }
+
     #[test]
     fn chatty_helper_process() {
         let Some(target) = std::env::var_os("KELD_RUNTIME_CHATTY_BYTES") else {
