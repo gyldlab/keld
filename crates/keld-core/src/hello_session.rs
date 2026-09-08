@@ -27,6 +27,16 @@ pub enum HelloSessionError {
         /// What the caller was waiting for.
         waiting_for: &'static str,
     },
+    /// The marker was never observed and the supervisor had elided output, so
+    /// the child may have printed it into the span that was dropped. Distinct
+    /// from [`Self::Timeout`] because the remedy is different: the marker must
+    /// move earlier, not the deadline later (KEL-134).
+    MarkerPossiblyElided {
+        /// What the caller was waiting for.
+        waiting_for: &'static str,
+        /// Bytes the supervisor dropped from the middle of the transcript.
+        elided_bytes: usize,
+    },
     /// Supervision reached a terminal failure while the host owned this
     /// session — the `keld dev` window phase (KEL-105). The app process is
     /// gone; any window the caller opened is still on screen, but its app
@@ -55,6 +65,16 @@ impl std::fmt::Display for HelloSessionError {
                 f,
                 "KELD-CORE-032: timed out waiting for {waiting_for}. \
                  Confirm Bun is on PATH and the project entry speaks kipc."
+            ),
+            Self::MarkerPossiblyElided {
+                waiting_for,
+                elided_bytes,
+            } => write!(
+                f,
+                "KELD-CORE-034: never observed {waiting_for}, and the supervisor \
+                 elided {elided_bytes} bytes of child output to stay within its \
+                 capture bound. Print the marker before the app's bulk output, \
+                 or reduce that output; raising the timeout will not help."
             ),
             Self::WindowPhase { cause } => write!(
                 f,
@@ -210,6 +230,16 @@ impl HostOwnedHelloSession {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                // A marker printed inside the pinned head can never be elided,
+                // so an absent marker plus a non-zero drop count means the
+                // child printed it too late to survive the capture bound
+                // (KEL-134). Say so instead of blaming the deadline.
+                if captured.stdout_dropped_bytes > 0 {
+                    return Err(HelloSessionError::MarkerPossiblyElided {
+                        waiting_for: "Bun stdout ready marker",
+                        elided_bytes: captured.stdout_dropped_bytes,
+                    });
+                }
                 return Err(HelloSessionError::Timeout {
                     waiting_for: "Bun stdout ready marker",
                 });
@@ -355,8 +385,9 @@ impl HostOwnedHelloSession {
     /// live (KEL-105/KEL-116).
     ///
     /// First transition only. [`Self::wait_until_output_contains`] matches
-    /// against cumulative stdout, so a later call for a marker the app already
-    /// printed returns immediately — re-baselining there would absorb a
+    /// against the retained transcript, whose pinned head keeps an early
+    /// marker findable for the life of the session, so a later call for a
+    /// marker the app already printed returns immediately — re-baselining there would absorb a
     /// self-termination that happened after the app was live and report it as
     /// recovered.
     ///
@@ -398,27 +429,23 @@ fn recovered_termination_baseline(
     needle: &str,
     ledger: &CrashLedger,
 ) -> RecoveredTerminations {
-    // Once the supervisor has elided output to honour its retention bound
-    // (KEL-134), a byte index into the retained transcript is no longer a
-    // stream offset, so it cannot be ordered against the ledger's
-    // total-written offsets. Baseline nothing rather than compare two
-    // coordinate systems: that can only surface a termination, never excuse
-    // one, which is the direction KEL-105/KEL-116 require.
-    if dropped > 0 {
-        return RecoveredTerminations::default();
-    }
     let Some(marker_end) = stdout.find(needle).map(|start| start + needle.len()) else {
         return RecoveredTerminations::default();
     };
+    // The ledger publishes total-written offsets, so the marker's index in the
+    // retained transcript has to be lifted into the same coordinate system
+    // once the supervisor has elided output (KEL-134). The head is pinned, so
+    // a marker inside it is already at its stream offset.
+    let marker_offset = keld_runtime::CapturedOutput::stream_offset(marker_end, dropped);
     RecoveredTerminations {
-        crashes: if marker_end > ledger.stdout_len_at_last_crash {
+        crashes: if marker_offset > ledger.stdout_len_at_last_crash {
             ledger.count
         } else {
             0
         },
         all: ledger
             .last_self_termination
-            .filter(|termination| marker_end > termination.stdout_len)
+            .filter(|termination| marker_offset > termination.stdout_len)
             .map_or(0, |_| ledger.self_termination_count),
     }
 }
@@ -706,12 +733,11 @@ mod ready_baseline_tests {
     }
 
     #[test]
-    fn an_elided_transcript_forgives_nothing() {
-        // KEL-134: once the supervisor elides output, a byte index into the
-        // retained transcript is not a stream offset. The same inputs that
-        // would forgive a crash with an intact transcript must forgive nothing
-        // once bytes have been dropped, because the safe direction is to
-        // surface a termination rather than excuse it (KEL-105/KEL-116).
+    fn a_marker_in_the_pinned_head_is_still_ordered_after_elision() {
+        // KEL-134: the head is pinned, so a marker inside it keeps its true
+        // stream offset even after the middle has been elided. Refusing to
+        // compare there would turn a crash the supervisor already recovered
+        // from into a fatal window-phase error over a healthy app.
         let crashed = "gen1 booting\n";
         let stdout = format!("{crashed}{READY}\n");
         let ledger = ledger_at(1, crashed.len());
@@ -721,9 +747,28 @@ mod ready_baseline_tests {
             "control: with an intact transcript this crash is forgiven"
         );
         assert_eq!(
-            recovered_termination_baseline(&stdout, 1, READY, &ledger),
-            RecoveredTerminations::default(),
-            "one elided byte is enough to make the offsets incomparable"
+            recovered_termination_baseline(&stdout, 512 * 1024, READY, &ledger),
+            RecoveredTerminations { crashes: 1, all: 1 },
+            "the marker sits in the pinned head, so elision cannot change the verdict"
+        );
+    }
+
+    #[test]
+    fn a_marker_past_the_pinned_head_is_shifted_by_the_elided_count() {
+        // A marker found beyond the pinned head really sits `dropped` bytes
+        // further into the stream than its retained index says. Ordering must
+        // use the shifted offset, or a post-ready crash reads as pre-ready.
+        let filler = "f".repeat(keld_runtime::CAPTURE_HEAD_BYTES + 16);
+        let stdout = format!("{filler}{READY}\n");
+        let marker_offset = filler.len() + READY.len();
+        let dropped = 4096;
+        // Crash recorded between the retained index and the true offset: only
+        // the shifted comparison places the marker after it.
+        let ledger = ledger_at(1, marker_offset + 1);
+        assert_eq!(
+            recovered_termination_baseline(&stdout, dropped, READY, &ledger),
+            RecoveredTerminations { crashes: 1, all: 1 },
+            "the shifted offset must place the marker after the crash"
         );
     }
 

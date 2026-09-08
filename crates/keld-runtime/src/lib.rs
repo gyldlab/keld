@@ -321,10 +321,12 @@ pub struct CapturedOutput {
     /// longer retained. Never reset by a restart; monotonic non-decreasing.
     pub stderr_total_bytes: usize,
     /// Stdout bytes elided from the middle to honour the retention bound.
-    /// Invariant: `stdout_total_bytes - stdout_dropped_bytes == stdout.len()`.
+    /// Invariant while the child writes valid UTF-8:
+    /// `stdout_total_bytes - stdout_dropped_bytes == stdout.len()`.
     pub stdout_dropped_bytes: usize,
     /// Stderr bytes elided from the middle to honour the retention bound.
-    /// Invariant: `stderr_total_bytes - stderr_dropped_bytes == stderr.len()`.
+    /// Invariant while the child writes valid UTF-8:
+    /// `stderr_total_bytes - stderr_dropped_bytes == stderr.len()`.
     pub stderr_dropped_bytes: usize,
 }
 
@@ -339,29 +341,72 @@ impl CapturedOutput {
         Self::tail(&self.stderr, max_chars)
     }
 
-    /// Appends `chunk`, counts every byte, and elides the middle back to
-    /// [`CAPTURE_RETENTION_BYTES`] once the buffer exceeds the slack ceiling.
+    /// Appends `chunk`, counts `raw_len` bytes against the total, and elides
+    /// the middle back to [`CAPTURE_RETENTION_BYTES`] once the buffer exceeds
+    /// the slack ceiling.
+    ///
+    /// `raw_len` is the byte count the child actually wrote. It is passed
+    /// separately because `chunk` has already been through
+    /// `String::from_utf8_lossy`, which expands each invalid byte into a
+    /// three-byte replacement character; counting the decoded length would
+    /// overstate every ordering offset the ledger publishes.
+    ///
+    /// Both cut points land on a **line** boundary where one exists within the
+    /// elided span, so the pinned head never has its trailing partial line
+    /// concatenated onto the tail's leading partial line — that would render a
+    /// line the child never printed. Where the span contains no newline the
+    /// cut falls back to a UTF-8 character boundary, which keeps the retained
+    /// transcript valid at the cost of splitting one very long line.
     ///
     /// The pinned head is never evicted, so output a child printed before a
-    /// flood still reaches the host. Both cut points land on UTF-8 character
-    /// boundaries, so the retained transcript stays valid UTF-8 and the drop
-    /// count is exactly the bytes removed.
-    fn append(stream: &mut String, total: &mut usize, dropped: &mut usize, chunk: &str) {
-        *total = total.saturating_add(chunk.len());
+    /// flood still reaches the host.
+    fn append(
+        stream: &mut String,
+        total: &mut usize,
+        dropped: &mut usize,
+        chunk: &str,
+        raw_len: usize,
+    ) {
+        *total = total.saturating_add(raw_len);
         stream.push_str(chunk);
         if stream.len() <= CAPTURE_MAX_RETAINED_BYTES {
             return;
         }
-        // First boundary at or after the pinned head.
-        let head_end = Self::boundary_at_or_after(stream, CAPTURE_HEAD_BYTES);
-        // First boundary at or after the start of the sliding tail.
-        let tail_start =
-            Self::boundary_at_or_after(stream, stream.len().saturating_sub(CAPTURE_TAIL_BYTES));
+        let head_end = Self::head_cut(stream);
+        let tail_start = Self::tail_cut(stream);
+        // Reachable when the elided span holds no newline and the byte-boundary
+        // walk pushes the head cut past the tail cut — a single line longer
+        // than the retained region. Skipping compaction there is deliberate:
+        // the alternative is splitting that line, and the ceiling is restored
+        // on the next chunk that introduces a boundary.
         if tail_start <= head_end {
             return;
         }
         stream.drain(head_end..tail_start);
         *dropped = dropped.saturating_add(tail_start - head_end);
+    }
+
+    /// End of the pinned head: the byte after the first newline at or after
+    /// [`CAPTURE_HEAD_BYTES`], else the character boundary there.
+    ///
+    /// The character boundary is resolved *before* slicing: `CAPTURE_HEAD_BYTES`
+    /// can land inside a multi-byte character, and slicing there panics.
+    fn head_cut(stream: &str) -> usize {
+        let from = Self::boundary_at_or_after(stream, CAPTURE_HEAD_BYTES);
+        stream[from..]
+            .find('\n')
+            .map_or(from, |offset| from + offset + 1)
+    }
+
+    /// Start of the sliding tail: the byte after the first newline at or after
+    /// the tail window, else the character boundary there. Same boundary-first
+    /// rule as [`Self::head_cut`].
+    fn tail_cut(stream: &str) -> usize {
+        let from =
+            Self::boundary_at_or_after(stream, stream.len().saturating_sub(CAPTURE_TAIL_BYTES));
+        stream[from..]
+            .find('\n')
+            .map_or(from, |offset| from + offset + 1)
     }
 
     /// Smallest UTF-8 character boundary at or after `index`, clamped to the
@@ -377,14 +422,45 @@ impl CapturedOutput {
         boundary
     }
 
+    /// Stream offset of the byte at `retained_index` in a transcript that has
+    /// elided `dropped` bytes.
+    ///
+    /// The head is pinned, so an index at or below [`CAPTURE_HEAD_BYTES`] is
+    /// already its own stream offset; everything after the elision is shifted
+    /// by the elided count. Indices in the few bytes between
+    /// [`CAPTURE_HEAD_BYTES`] and the actual head cut are treated as head
+    /// indices, which under-reports the offset rather than over-reports it —
+    /// the direction that surfaces a termination instead of excusing one.
+    #[must_use]
+    pub fn stream_offset(retained_index: usize, dropped: usize) -> usize {
+        if dropped == 0 || retained_index <= CAPTURE_HEAD_BYTES {
+            retained_index
+        } else {
+            retained_index.saturating_add(dropped)
+        }
+    }
+
+    /// One line naming how much output was elided, for a consumer that renders
+    /// the transcript to a human. `None` when nothing was dropped.
+    #[must_use]
+    pub fn elision_notice(dropped: usize) -> Option<String> {
+        (dropped > 0).then(|| {
+            format!("[keld: {dropped} bytes of child output elided between the retained head and tail (KELD-RUNTIME capture bound)]\n")
+        })
+    }
+
     /// Records a captured chunk against the stream `is_stdout` selects.
-    fn push_chunk(&mut self, chunk: &str, is_stdout: bool) {
+    ///
+    /// `raw_len` is the number of bytes read from the child, before lossy
+    /// UTF-8 decoding.
+    fn push_chunk(&mut self, chunk: &str, raw_len: usize, is_stdout: bool) {
         if is_stdout {
             Self::append(
                 &mut self.stdout,
                 &mut self.stdout_total_bytes,
                 &mut self.stdout_dropped_bytes,
                 chunk,
+                raw_len,
             );
         } else {
             Self::append(
@@ -392,6 +468,7 @@ impl CapturedOutput {
                 &mut self.stderr_total_bytes,
                 &mut self.stderr_dropped_bytes,
                 chunk,
+                raw_len,
             );
         }
     }
@@ -1689,7 +1766,7 @@ fn spawn_capture_thread(
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]);
                         let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        guard.push_chunk(&chunk, is_stdout);
+                        guard.push_chunk(&chunk, n, is_stdout);
                     }
                 }
             }
@@ -1748,7 +1825,7 @@ fn spawn_capture_thread(
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]);
                         let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        guard.push_chunk(&chunk, is_stdout);
+                        guard.push_chunk(&chunk, n, is_stdout);
                         let _ =
                             budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                                 (current != u64::MAX).then_some(current.saturating_sub(n as u64))
@@ -2735,8 +2812,8 @@ mod tests {
         let chunk = "x".repeat(4096);
         let chunks = (CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 4;
         for _ in 0..chunks {
-            captured.push_chunk(&chunk, true);
-            captured.push_chunk(&chunk, false);
+            captured.push_chunk(&chunk, chunk.len(), true);
+            captured.push_chunk(&chunk, chunk.len(), false);
         }
         let written = chunk.len() * chunks;
 
@@ -2776,6 +2853,69 @@ mod tests {
         );
     }
 
+    /// Splicing the head's trailing partial line onto the tail's leading
+    /// partial line would render a line the child never printed. Every
+    /// retained line must be one the child actually wrote.
+    #[test]
+    fn elision_never_fabricates_a_line() {
+        let mut captured = CapturedOutput::default();
+        // Distinct, self-identifying lines: any concatenation of two halves is
+        // detectable because a well-formed line has exactly one "|end" marker.
+        for index in 0..40_000 {
+            captured.push_chunk(&format!("line-{index:06}-payload|end\n"), 28, true);
+        }
+        assert!(captured.stdout_dropped_bytes > 0, "the test must elide");
+        for line in captured.stdout.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            assert_eq!(
+                line.matches("|end").count(),
+                1,
+                "a spliced line was fabricated: {line:?}"
+            );
+            assert!(
+                line.starts_with("line-") && line.ends_with("|end"),
+                "retained line is not one the child wrote: {line:?}"
+            );
+        }
+    }
+
+    /// The total counts bytes the child wrote, not the length of the lossy
+    /// UTF-8 decoding. An invalid byte expands to a three-byte replacement
+    /// character, which would otherwise inflate every published offset.
+    #[test]
+    fn totals_count_raw_bytes_not_lossy_decoded_length() {
+        let mut captured = CapturedOutput::default();
+        let decoded = String::from_utf8_lossy(&[0xff, 0xfe, 0xfd]).into_owned();
+        assert!(
+            decoded.len() > 3,
+            "precondition: lossy decoding must expand these bytes"
+        );
+        captured.push_chunk(&decoded, 3, true);
+        assert_eq!(
+            captured.stdout_total_bytes, 3,
+            "the child wrote three bytes, whatever the decoding cost"
+        );
+    }
+
+    /// `stream_offset` lifts a retained index into the stream coordinate the
+    /// ledger publishes.
+    #[test]
+    fn stream_offset_pins_the_head_and_shifts_the_tail() {
+        assert_eq!(CapturedOutput::stream_offset(10, 0), 10, "no elision");
+        assert_eq!(
+            CapturedOutput::stream_offset(10, 4096),
+            10,
+            "an index inside the pinned head is already a stream offset"
+        );
+        assert_eq!(
+            CapturedOutput::stream_offset(CAPTURE_HEAD_BYTES + 1, 4096),
+            CAPTURE_HEAD_BYTES + 1 + 4096,
+            "an index past the head is shifted by the elided count"
+        );
+    }
+
     /// A child announces itself before it floods. `keld-host` forwards the
     /// retained transcript, so evicting the pinned head would lose the ready
     /// marker that `no_flag_macos`/`no_flag_linux` assert is forwarded after
@@ -2784,10 +2924,10 @@ mod tests {
     fn bounded_capture_pins_the_head_against_a_later_flood() {
         let mut captured = CapturedOutput::default();
         let marker = "KELD_EARLY_MARKER\n";
-        captured.push_chunk(marker, true);
+        captured.push_chunk(marker, marker.len(), true);
         let noise = "x".repeat(4096);
         for _ in 0..((CAPTURE_MAX_RETAINED_BYTES / noise.len()) * 8) {
-            captured.push_chunk(&noise, true);
+            captured.push_chunk(&noise, noise.len(), true);
         }
         assert!(
             captured.stdout_dropped_bytes > 0,
@@ -2818,7 +2958,7 @@ mod tests {
         let chunk = "\u{20ac}".repeat(4096);
         let chunks = (CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 4;
         for _ in 0..chunks {
-            captured.push_chunk(&chunk, true);
+            captured.push_chunk(&chunk, chunk.len(), true);
         }
         assert!(captured.stdout_dropped_bytes > 0, "the test must truncate");
         assert!(
