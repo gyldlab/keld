@@ -2,6 +2,7 @@
 #![cfg(target_os = "macos")]
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: assertions are the oracle
 #![allow(clippy::zombie_processes)] // cleanup owns host plus the enrolled Bun process group
+#![allow(unsafe_code)] // test-only macOS kill(2) group cleanup; local SAFETY proof is at the call
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20,6 +21,11 @@ const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
 const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
 const EVENT_DEADLINE: Duration = Duration::from_secs(15);
 const PROCESS_DEADLINE: Duration = Duration::from_secs(5);
+
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn kill_process(pid: i32, signal: i32) -> i32;
+}
 
 #[test]
 fn keld_dev_helper_process() {
@@ -529,20 +535,27 @@ impl RecoveryCycle {
             .spawn()
             .expect("launch T3 no-flag host");
         let host_pid = child.id();
+        let mut cleanup = ShippingLaunchCleanup::new(child);
         let mut current = RecoveryGeneration::accept(&listener, "initial");
         current.expect_ready_and_echoes();
         beacon.assert_exact();
-        let window = await_native_windows(host_pid, TITLE, 1);
-        assert_eq!(window.len(), 1, "initial T3 native window: {window:?}");
+        assert_eq!(parent_process(current.guardian_pid), host_pid);
+        assert_eq!(process_group(current.bun_pid), current.bun_pid);
+        assert_eq!(process_group(current.descendant_pid), current.bun_pid);
         let first_group = current.bun_pid;
-        Self {
-            host: Some(child),
+        cleanup.bun_group = Some(first_group);
+        let mut cycle = Self {
+            host: Some(cleanup.release()),
             host_pid,
             listener,
-            window,
+            window: Vec::new(),
             current: Some(current),
             process_groups: vec![first_group],
-        }
+        };
+        let window = await_native_windows(host_pid, TITLE, 1);
+        assert_eq!(window.len(), 1, "initial T3 native window: {window:?}");
+        cycle.window = window;
+        cycle
     }
 
     fn crash_and_recover(&mut self) -> RecoveryEvidence {
@@ -586,9 +599,10 @@ impl RecoveryCycle {
         );
         assert_ne!(evidence.token, successor.token(), "successor reused token");
         assert_eq!(
-            native_windows(self.host_pid, TITLE),
+            await_same_native_windows(self.host_pid, TITLE, &self.window),
             self.window,
-            "Bun recovery replaced or closed the host-owned native window"
+            "Bun recovery replaced or closed the host-owned native window; target-PID CoreGraphics rows: {}",
+            native_window_rows(self.host_pid)
         );
         assert!(
             UnixStream::connect(&evidence.endpoint).is_err(),
@@ -682,11 +696,7 @@ impl Drop for RecoveryCycle {
             let _ = host.wait();
         }
         for group in &self.process_groups {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", &format!("-{group}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = signal_process_group("-KILL", *group);
         }
     }
 }
@@ -807,11 +817,7 @@ fn dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host() {
                 let _ = host.kill();
                 let _ = host.wait();
             }
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", &format!("-{}", cycle.bun_pid)])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = signal_process_group("-KILL", cycle.bun_pid);
             cycle.group_gone = true;
             writer_thread.join().expect("lease writer joins after kill");
             panic!("host did not drain liveness-only bytes: {error}");
@@ -878,6 +884,164 @@ struct ShippingDevCycle {
     group_gone: bool,
 }
 
+/// Owns a shipping launch until its authenticated process tree is complete.
+/// A post-launch assertion may panic before [`ShippingDevCycle`] exists; this
+/// guard keeps that failure path from orphaning the CLI lease, host/guardian,
+/// or supervised Bun group.
+struct ShippingLaunchCleanup {
+    cli: Option<Child>,
+    host_group: Option<u32>,
+    bun_group: Option<u32>,
+}
+
+impl ShippingLaunchCleanup {
+    fn new(cli: Child) -> Self {
+        Self {
+            cli: Some(cli),
+            host_group: None,
+            bun_group: None,
+        }
+    }
+
+    fn record_authenticated_groups(&mut self, host_group: u32, bun_group: u32) {
+        let test_group = process_group(std::process::id());
+        self.host_group = (host_group != 0 && host_group != test_group).then_some(host_group);
+        self.bun_group = (bun_group != 0 && bun_group != test_group).then_some(bun_group);
+    }
+
+    fn release(mut self) -> Child {
+        self.host_group = None;
+        self.bun_group = None;
+        self.cli.take().expect("shipping CLI cleanup owner")
+    }
+}
+
+impl Drop for ShippingLaunchCleanup {
+    fn drop(&mut self) {
+        if let Some(cli) = self.cli.as_mut()
+            && cli.try_wait().ok().flatten().is_none()
+        {
+            let _ = cli.kill();
+            let _ = cli.wait();
+        }
+        for group in [self.host_group, self.bun_group].into_iter().flatten() {
+            let _ = signal_process_group("-TERM", group);
+        }
+    }
+}
+
+#[test]
+fn shipping_launch_cleanup_reaps_each_owned_process_group() {
+    let cli = Command::new("/bin/sleep")
+        .arg("60")
+        .process_group(0)
+        .spawn()
+        .expect("launch disposable CLI group");
+    let cli_pid = cli.id();
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    let mut host = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("launch disposable host group");
+    let host_pid = host.id();
+    cleanup.host_group = Some(host_pid);
+    let mut descendant_line = String::new();
+    let descendant_read = BufReader::new(host.stdout.take().expect("host child PID pipe"))
+        .read_line(&mut descendant_line)
+        .expect("read host child PID");
+    assert_ne!(descendant_read, 0, "host child PID missing");
+    let host_descendant_pid = descendant_line
+        .trim()
+        .parse::<u32>()
+        .expect("numeric host child PID");
+    let bun = Command::new("/bin/sleep")
+        .arg("60")
+        .process_group(0)
+        .spawn()
+        .expect("launch disposable Bun group");
+    let bun_pid = bun.id();
+    cleanup.bun_group = Some(bun_pid);
+    assert_eq!(process_group(cli_pid), cli_pid);
+    assert_eq!(process_group(host_pid), host_pid);
+    assert_eq!(process_group(bun_pid), bun_pid);
+
+    drop(cleanup);
+    assert!(
+        wait_child_output(host, PROCESS_DEADLINE)
+            .status
+            .signal()
+            .is_some()
+    );
+    assert!(
+        wait_child_output(bun, PROCESS_DEADLINE)
+            .status
+            .signal()
+            .is_some()
+    );
+    await_process_gone(cli_pid);
+    await_process_gone(host_pid);
+    await_process_gone(host_descendant_pid);
+    await_process_gone(bun_pid);
+}
+
+#[test]
+fn single_pid_termination_cannot_substitute_for_group_cleanup() {
+    let leader = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & child=$!; printf '%s\\n' \"$child\"; wait"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("launch disposable process-group leader");
+    let leader_pid = leader.id();
+    let mut cleanup = ShippingLaunchCleanup::new(leader);
+    cleanup.host_group = Some(leader_pid);
+    let mut descendant_line = String::new();
+    let descendant_read = BufReader::new(
+        cleanup
+            .cli
+            .as_mut()
+            .expect("leader cleanup owner")
+            .stdout
+            .take()
+            .expect("leader child PID pipe"),
+    )
+    .read_line(&mut descendant_line)
+    .expect("read leader child PID");
+    assert_ne!(descendant_read, 0, "leader child PID missing");
+    let descendant_pid = descendant_line
+        .trim()
+        .parse::<u32>()
+        .expect("numeric leader child PID");
+    assert_eq!(process_group(leader_pid), leader_pid);
+
+    kill_pid(leader_pid);
+    let _ = cleanup
+        .cli
+        .as_mut()
+        .expect("leader cleanup owner")
+        .wait()
+        .expect("reap disposable leader");
+    assert!(
+        process_exists(descendant_pid),
+        "single-PID termination unexpectedly reaped its group descendant"
+    );
+    signal_process_group("-KILL", leader_pid).expect("kill disposable descendant group");
+    await_process_gone(descendant_pid);
+    cleanup.host_group = None;
+    cleanup.cli.take();
+}
+
+#[test]
+fn process_group_cleanup_rejects_non_group_broadcast_values() {
+    for group in [0, 1] {
+        let error = validate_process_group(group)
+            .expect_err("invalid process group must be rejected before kill(2)");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+}
+
 impl ShippingDevCycle {
     fn launch(fixture: &ProductFixture, helper: &Path, name: &str) -> Self {
         let beacon = Beacon::bind(MARKER);
@@ -894,7 +1058,7 @@ impl ShippingDevCycle {
         listener
             .set_nonblocking(true)
             .expect("nonblocking T2 fixture control");
-        let mut cli = Command::new(helper)
+        let cli = Command::new(helper)
             .args(["--exact", "keld_dev_helper_process", "--nocapture"])
             .process_group(0)
             .current_dir(&fixture.project)
@@ -910,6 +1074,7 @@ impl ShippingDevCycle {
             .spawn()
             .expect("launch shipping keld dev helper");
         let cli_pid = cli.id();
+        let mut cleanup = ShippingLaunchCleanup::new(cli);
         let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
         control
             .set_read_timeout(Some(EVENT_DEADLINE))
@@ -930,39 +1095,13 @@ impl ShippingDevCycle {
         let host_pid = parent_process(guardian_pid);
         let owns_expected_tree =
             parent_process(host_pid) == cli_pid && guardian_pid != cli_pid && host_pid != cli_pid;
-        if !owns_expected_tree {
-            let _ = cli.kill();
-            let _ = cli.wait();
-            kill_pid(bun_pid);
-            kill_pid(descendant_pid);
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", &format!("-{bun_pid}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
         assert!(
             owns_expected_tree,
             "shipping keld dev did not delegate CLI {cli_pid} -> host {host_pid} -> guardian {guardian_pid} -> Bun {bun_pid}"
         );
-        assert_eq!(process_group(bun_pid), bun_pid);
-        assert_eq!(process_group(descendant_pid), bun_pid);
-        assert_eq!(process_group(cli_pid), cli_pid);
-        assert_eq!(process_group(host_pid), host_pid);
-        assert_eq!(process_group(guardian_pid), host_pid);
-        assert_eq!(read_control_line(&mut control_reader), "READY");
-        assert_eq!(read_control_line(&mut control_reader), "ECHO1");
-        assert_eq!(read_control_line(&mut control_reader), "ECHO2");
-        beacon.assert_exact();
-        assert_eq!(await_native_windows(host_pid, TITLE, 1).len(), 1);
-        assert!(native_windows(cli_pid, TITLE).is_empty());
-        assert!(host_unix_sockets(host_pid) > 0);
-        assert_eq!(host_unix_sockets(cli_pid), 0);
-        if name == "t2-cli" {
-            assert_lease_descriptor_ownership(cli_pid, host_pid, guardian_pid, bun_pid);
-        }
-        Self {
-            cli: Some(cli),
+        cleanup.record_authenticated_groups(host_pid, bun_pid);
+        let mut cycle = Self {
+            cli: Some(cleanup.release()),
             cli_pid,
             host_pid,
             guardian_pid,
@@ -973,7 +1112,32 @@ impl ShippingDevCycle {
             control_reader,
             control_writer: control,
             group_gone: false,
+        };
+        assert_eq!(process_group(bun_pid), bun_pid);
+        assert_eq!(process_group(descendant_pid), bun_pid);
+        assert_eq!(process_group(cli_pid), cli_pid);
+        assert_eq!(process_group(host_pid), host_pid);
+        assert_eq!(process_group(guardian_pid), host_pid);
+        assert_eq!(read_control_line(&mut cycle.control_reader), "READY");
+        assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO1");
+        assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO2");
+        beacon.assert_exact();
+        assert_eq!(
+            await_native_windows_for(cycle.host_pid, TITLE, 1, name).len(),
+            1
+        );
+        assert!(native_windows(cli_pid, TITLE).is_empty());
+        assert!(host_unix_sockets(cycle.host_pid) > 0);
+        assert_eq!(host_unix_sockets(cli_pid), 0);
+        if name == "t2-cli" {
+            assert_lease_descriptor_ownership(
+                cli_pid,
+                cycle.host_pid,
+                cycle.guardian_pid,
+                cycle.bun_pid,
+            );
         }
+        cycle
     }
 
     fn evidence(&self) -> String {
@@ -1053,11 +1217,8 @@ impl ShippingDevCycle {
     }
 
     fn signal_cli_group_and_expect_lease_shutdown(&mut self, signal_name: &str, number: i32) {
-        let signal = Command::new("/bin/kill")
-            .args([&format!("-{signal_name}"), &format!("-{}", self.cli_pid)])
-            .status()
-            .expect("signal the CLI process group");
-        assert!(signal.success(), "group {signal_name} failed: {signal}");
+        signal_process_group(&format!("-{signal_name}"), self.cli_pid)
+            .unwrap_or_else(|error| panic!("group {signal_name} failed: {error}"));
         let status = self
             .cli
             .as_mut()
@@ -1131,11 +1292,7 @@ impl Drop for ShippingDevCycle {
             let _ = cli.wait();
         }
         if !self.group_gone && self.bun_pid != 0 {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", &format!("-{}", self.bun_pid)])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = signal_process_group("-KILL", self.bun_pid);
         }
     }
 }
@@ -1932,11 +2089,7 @@ impl Drop for LiveCycle {
             let _ = host.wait();
         }
         if !self.group_gone && self.bun_pid != 0 {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", &format!("-{}", self.bun_pid)])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = signal_process_group("-KILL", self.bun_pid);
         }
     }
 }
@@ -1974,6 +2127,44 @@ fn kill_pid(pid: u32) {
         .status()
         .expect("kill one process");
     assert!(status.success(), "kill {pid}: {status:?}");
+}
+
+fn validate_process_group(group: u32) -> std::io::Result<i32> {
+    let test_group = process_group(std::process::id());
+    if group <= 1 || group == test_group {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "refused to signal an invalid or test-runner process group",
+        ));
+    }
+    i32::try_from(group)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "group exceeds pid_t"))
+}
+
+fn signal_process_group(signal: &str, group: u32) -> std::io::Result<()> {
+    let group = validate_process_group(group)?;
+    let signal = match signal {
+        "-HUP" => 1,
+        "-INT" => 2,
+        "-TERM" => 15,
+        "-KILL" => 9,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unknown signal",
+            ));
+        }
+    };
+    // SAFETY: macOS kill(2) interprets a negative pid below -1 as exactly that
+    // process group. `group` is neither 0, 1 nor the test runner's group, was
+    // observed from this fixture's verified process tree, and the caller
+    // restricts signals to the four named constants.
+    let result = unsafe { kill_process(-group, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 struct Beacon {
@@ -2301,24 +2492,130 @@ print("\(info.pipeinfo.pipe_handle) \(info.pipeinfo.pipe_peerhandle)")
 }
 
 fn native_windows(pid: u32, title: &str) -> Vec<u32> {
-    query_native_windows(pid, title, None)
+    query_native_windows(
+        pid,
+        title,
+        NativeWindowScope::OnScreen,
+        NativeWindowExpectation::Snapshot,
+        "snapshot",
+    )
+}
+
+/// Captures every CoreGraphics row owned by the target PID only when an existing
+/// assertion fails. This is diagnostic evidence: initial launch retains its
+/// title/layer/on-screen oracle, while recovery compares the recorded identity
+/// through the all-window census. Both retain the same observation deadline.
+fn native_window_rows(pid: u32) -> String {
+    const SCRIPT: &str = r#"
+import CoreGraphics
+import Foundation
+let wantedPID = Int(CommandLine.arguments[1])!
+let onScreen = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+let onScreenIDs = Set(onScreen.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value })
+let rows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+let targetRows = rows.compactMap { row -> [String: Any]? in
+  guard (row[kCGWindowOwnerPID as String] as? NSNumber)?.intValue == wantedPID else { return nil }
+  let number = (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0
+  let title = row[kCGWindowName as String] as? String
+  return [
+    "id": number,
+    "layer": (row[kCGWindowLayer as String] as? NSNumber)?.intValue ?? -1,
+    "on_screen": onScreenIDs.contains(number),
+    "title": title ?? "<unavailable>",
+    "title_available": title != nil,
+  ]
+}
+let payload: [String: Any] = [
+  "capture_preflight": CGPreflightScreenCaptureAccess(),
+  "pid": wantedPID,
+  "rows": targetRows,
+]
+let data = try! JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+print(String(data: data, encoding: .utf8)!)
+"#;
+    match Command::new("/usr/bin/xcrun")
+        .args(["swift", "-e", SCRIPT, &pid.to_string()])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        }
+        Ok(output) => format!("diagnostic failed: {output:?}"),
+        Err(error) => format!("diagnostic launch failed: {error}"),
+    }
 }
 
 fn await_native_windows(pid: u32, title: &str, expected: usize) -> Vec<u32> {
-    query_native_windows(pid, title, Some(expected))
+    await_native_windows_for(pid, title, expected, "initial-presentation")
 }
 
-fn query_native_windows(pid: u32, title: &str, expected: Option<usize>) -> Vec<u32> {
-    const SCRIPT: &str = r"
+fn await_native_windows_for(pid: u32, title: &str, expected: usize, observation: &str) -> Vec<u32> {
+    query_native_windows(
+        pid,
+        title,
+        NativeWindowScope::OnScreen,
+        NativeWindowExpectation::Count(expected),
+        observation,
+    )
+}
+
+/// Recovery preserves the already-observed native window identity. Visibility is
+/// a separate launch contract, so this check deliberately uses the all-window
+/// census while keeping the existing bounded observation deadline.
+fn await_same_native_windows(pid: u32, title: &str, expected: &[u32]) -> Vec<u32> {
+    assert!(
+        !expected.is_empty(),
+        "same-window recovery needs an initially observed native window"
+    );
+    query_native_windows(
+        pid,
+        title,
+        NativeWindowScope::All,
+        NativeWindowExpectation::Exact(expected),
+        "recovery-same-window",
+    )
+}
+
+#[derive(Clone, Copy)]
+enum NativeWindowScope {
+    OnScreen,
+    All,
+}
+
+#[derive(Clone, Copy)]
+enum NativeWindowExpectation<'a> {
+    Snapshot,
+    Count(usize),
+    Exact(&'a [u32]),
+}
+
+fn query_native_windows(
+    pid: u32,
+    title: &str,
+    scope: NativeWindowScope,
+    expectation: NativeWindowExpectation<'_>,
+    observation: &str,
+) -> Vec<u32> {
+    const SCRIPT: &str = r#"
 import CoreGraphics
 import Darwin
 import Foundation
 let wantedPID = Int(CommandLine.arguments[1])!
 let wantedTitle = CommandLine.arguments[2]
-let expected = Int(CommandLine.arguments[3])!
+let expectation = CommandLine.arguments[3]
 let deadline = Date().addingTimeInterval(Double(CommandLine.arguments[4])!)
+let scope = CommandLine.arguments[5]
+var seen = Set<UInt32>()
 while true {
-  let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
+  let options: CGWindowListOption
+  if scope == "on-screen" {
+    options = [.optionOnScreenOnly, .excludeDesktopElements]
+  } else if scope == "all" {
+    options = [.excludeDesktopElements]
+  } else {
+    fatalError("unknown native-window scope")
+  }
+  let rows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as! [[String: Any]]
   var found: [UInt32] = []
   for row in rows {
     let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.intValue
@@ -2328,15 +2625,45 @@ while true {
       found.append((row[kCGWindowNumber as String] as! NSNumber).uint32Value)
     }
   }
-  if expected < 0 || found.count == expected {
+  seen.formUnion(found)
+  let matches: Bool
+  if expectation == "snapshot" {
+    matches = true
+  } else if expectation.hasPrefix("count:") {
+    matches = found.count == Int(expectation.dropFirst("count:".count))!
+  } else if expectation.hasPrefix("exact:") {
+    let ids = expectation.dropFirst("exact:".count).split(separator: ",").map { UInt32($0)! }.sorted()
+    matches = found.sorted() == ids
+  } else {
+    fatalError("unknown native-window expectation")
+  }
+  if matches {
     for window in found { print(window) }
     exit(0)
   }
-  if Date() >= deadline { exit(3) }
+  if Date() >= deadline {
+    fputs("native-window observed_ids=\(seen.sorted())\n", stderr)
+    exit(3)
+  }
   sched_yield()
 }
-";
-    let expected_arg = expected.map_or_else(|| String::from("-1"), |value| value.to_string());
+"#;
+    let expectation_arg = match expectation {
+        NativeWindowExpectation::Snapshot => String::from("snapshot"),
+        NativeWindowExpectation::Count(value) => format!("count:{value}"),
+        NativeWindowExpectation::Exact(windows) => format!(
+            "exact:{}",
+            windows
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    };
+    let scope_arg = match scope {
+        NativeWindowScope::OnScreen => "on-screen",
+        NativeWindowScope::All => "all",
+    };
     let timeout_arg = EVENT_DEADLINE.as_secs().to_string();
     let output = Command::new("/usr/bin/xcrun")
         .args([
@@ -2345,12 +2672,17 @@ while true {
             SCRIPT,
             &pid.to_string(),
             title,
-            &expected_arg,
+            &expectation_arg,
             &timeout_arg,
+            scope_arg,
         ])
         .output()
         .expect("run native CoreGraphics census");
-    assert!(output.status.success(), "CoreGraphics census: {output:?}");
+    assert!(
+        output.status.success(),
+        "CoreGraphics census ({observation}): {output:?}; target-PID CoreGraphics rows: {}",
+        native_window_rows(pid)
+    );
     String::from_utf8(output.stdout)
         .expect("CoreGraphics output UTF-8")
         .lines()
