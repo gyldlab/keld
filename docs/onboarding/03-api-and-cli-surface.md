@@ -29,7 +29,9 @@ cargo build -p keld-cli && ./target/debug/keld <verb> [args]
 ```
 
 `cargo run` keeps your current working directory, which matters for `create`, `dev`, and
-`doctor` — all three resolve paths relative to the cwd.
+`doctor` — all three resolve paths relative to the cwd. For `dev`, first build both
+`keld-cli` and `keld-host`; the [quick-start](README.md#run-the-current-demo) includes
+the required sibling executables.
 
 ### 1.2 Dispatch, in one place
 
@@ -88,7 +90,7 @@ prints **`KELD-CLI-046`** first, then the same block, and exits **2**.
 
 ### 1.5 `keld create <name>`
 
-Writes the five embedded template files into `./<name>`. Nothing is downloaded and
+Writes the six embedded template files into `./<name>`. Nothing is downloaded and
 nothing is installed; the files are compiled into the binary with `include_str!`
 ([`template.rs`](../../crates/keld-cli/src/template.rs)).
 
@@ -102,6 +104,7 @@ my-app/.gitignore
 my-app/index.html
 my-app/keld.config.ts
 my-app/package.json
+my-app/src/kipc.ts
 my-app/src/main.ts
 ```
 

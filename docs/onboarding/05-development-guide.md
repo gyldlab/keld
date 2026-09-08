@@ -15,82 +15,37 @@ this guide and those disagree, they win.
 
 ## 1. Prerequisites
 
-| Tool | Required? | Install | Why |
-|---|---|---|---|
-| Rust 1.97.1 | Yes | nothing to do — [`rust-toolchain.toml`](../../rust-toolchain.toml) pins `channel = "1.97.1"` with `rustfmt` + `clippy`, and rustup installs it on your first `cargo` command in this directory | Every crate; edition 2024 |
-| `cargo-nextest` | Yes | `cargo install cargo-nextest --locked` | The test gate is `cargo nextest run --workspace --profile ci` ([`.config/nextest.toml`](../../.config/nextest.toml)) |
-| `cargo-deny` | For `just ci` / the supply-chain gate | `cargo install cargo-deny --locked` | The `deny` job in CI ([`deny.toml`](../../deny.toml)) |
-| `just` | Optional, but assumed by the docs | `cargo install just` (or `brew install just`) | [`justfile`](../../justfile) is the canonical local mirror of CI |
-| Bun | Yes in practice | https://bun.sh | `keld dev` spawns `bun run src/main.ts`; the `bun_echo` integration test **fails** (does not skip) without it |
+The [quick-start](README.md#prerequisites) owns current build and runtime setup.
+For the complete verification gate, also install:
 
-You do **not** need Xcode-the-IDE or Node. `@keld/electron` is a zero-dependency
-TS package (`bun` runs it directly); `keld create`'s hello template still has
-nothing to `bun install`.
+| Tool | Purpose |
+|---|---|
+| `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
+| `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
+| `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
+| Docker-compatible engine | Runs the digest-pinned Mermaid renderer for `just ci` |
 
-Versions this guide was written against (macOS, Darwin 25.5.0, aarch64):
-
-```
-rustc 1.97.1 (8bab26f4f 2026-07-14)     # matches rust-toolchain.toml
-cargo 1.97.1 (c980f4866 2026-06-30)
-cargo-nextest 0.9.140
-cargo-deny 0.19.9
-bun 1.4.0
-just                                    # NOT installed on this machine — see §3.3 for raw equivalents
-```
-
----
+Use the pinned Rust toolchain and **Bun 1.4.0 for the full workspace gate**, matching
+CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
+a demo observed with Bun 1.4.2 is separate evidence. The
+[quick-start prerequisites](README.md#prerequisites) also explain Linux trusted-checkout
+permissions. No private repository, optional checkout hook, or contributor-memory
+service is needed to build or contribute.
 
 ## 2. First run
 
-```bash
-git clone https://github.com/gyldlab/keld.git
-cd keld
+Follow [Run the current demo](README.md#run-the-current-demo), which builds the CLI
+and its required sibling host, scaffolds an app, and exercises doctor, the window, and
+Bun app-link output. `cargo build -p keld-cli` alone does not provide the host in a
+fresh checkout. `just hello` exercises only the diagnostic backend window.
 
-cargo build --workspace          # first build pulls tao/wry on macOS; a few minutes
-just hello                       # == cargo run -p keld-host -- --hello
-cargo run -p keld-cli -- doctor
-```
-
-`just hello` opens a 960×640 window titled "Keld" and blocks until you close it. Live
-backends exist on all three platforms now: macOS (`WKWebView`), Windows (`WebView2`,
-direct COM since KEL-65), and Linux (`WebKitGTK`, wry interim since KEL-28) —
-([`crates/keld-wv/src/wkwebview/mod.rs`](../../crates/keld-wv/src/wkwebview/mod.rs),
-[`webview2/mod.rs`](../../crates/keld-wv/src/webview2/mod.rs),
-[`webkitgtk/mod.rs`](../../crates/keld-wv/src/webkitgtk/mod.rs)). The Linux backend
-compiles, passes its unit tests, and its full crate/workspace suite is green on a real
-Ubuntu box (GTK3 + `libwebkit2gtk-4.1-dev`) — but a real window opening has **not**
-been visually verified anywhere yet (KEL-28 landed from a sandbox with no display
-server; `gtk::init()` fails there with "Failed to initialize GTK", not a code defect).
-Confirm on real Linux hardware/VM with a display before relying on it. `WvError::UnsupportedPlatform`
-(`KELD-WV-001`) still exists for any other target. Everything else in the
-workspace (kipc, the CLI, `create`, `doctor`, the echo tests) is cross-platform and
-builds and tests on all three today.
-
-Expected `doctor` output outside a project (macOS shown; Windows/Linux differ only in
-the `webview` line's detail text — "Windows WebView2..." / "Linux WebKitGTK..."):
-
-```
-[ok] bun — found bun 1.4.0
-[ok] project — no project directory (run inside a scaffolded app for layout checks)
-[ok] webview — macOS WKWebView hello window available via `keld dev`
-```
-
-To see the whole vertical slice end to end:
-
-```bash
-cargo build -p keld-cli
-KELD=$PWD/target/debug/keld          # from the repo root
-
-cd /tmp && "$KELD" create my-app && cd my-app
-"$KELD" dev
-```
-
-which prints `ipc-echo ok: …` and `my-app: main process ready (IPC echo ok)` and opens
-the window. Close the window (or Ctrl-C the terminal) to end the session. Confirmed on
-macOS and Windows with a real display. Linux now has both the X11 Xvfb/window-manager
-smoke (`xdotool search --name Keld`) and native Ubuntu GNOME Wayland no-flag product
-evidence for rendered navigation, two calls, recovery, ordered teardown, strict
-descendant reaping, stage cleanup, and relaunch. A real X11 product run remains open.
+The [platform surfaces ledger](../engineering/product-status.md#platform-surfaces)
+owns implemented scope. The [quick-start](README.md#run-the-current-demo) records the
+latest acceptance gaps: Windows candidate execution awaits an existing endpoint-security
+prerequisite; Linux stock native Close leaves session processes/stage alive, while
+SIGINT cleanup is a separate observed result. X11 product runs, other distributions,
+and release packaging remain unverified. This source-built demo is not an installer
+or a migrated Electron application.
 
 ---
 
@@ -362,10 +317,12 @@ approval.
 
 ---
 
-## 9. The workflow loop
+## 9. The maintainer and assigned-agent workflow loop
 
-For anything bigger than a bug fix, [`docs/agents/workflow.md`](../agents/workflow.md) is
-the process of record. Condensed:
+External contributors follow [CONTRIBUTING.md](../../CONTRIBUTING.md) through public
+GitHub issues and forks. Maintainers handle private planning links and coordination.
+For maintainers and assigned agents, [`docs/agents/workflow.md`](../agents/workflow.md)
+is the process of record. Condensed:
 
 1. **Read before writing** — the issue, the governing spec section in
    `docs/architecture/`, the target crate's `AGENTS.md`, and
@@ -449,7 +406,7 @@ repo — if something points you at one, it is describing a different project.
 ## 12. Troubleshooting
 
 **The macOS window does not open.**
-Check, in order: (1) you are on macOS — Windows and Linux return `KELD-WV-001` by design;
+Check, in order: (1) the command is running in the intended macOS desktop session;
 (2) you have a real window server (not a bare SSH session) — window-creation failure
 surfaces as `KELD-WV-002` with that hint; (3) the window opened behind your terminal —
 the binary is not a `.app` bundle, so check Mission Control / cmd-tab before concluding
@@ -497,3 +454,18 @@ owning process is gone before removing stale files manually
 Much of this tree is uncommitted work in progress (§3.2). Confirm against a clean
 checkout of `main` before assuming your change caused it — and if it did not, say so in
 the PR rather than fixing it silently in an unrelated diff.
+
+
+## Optional maintainer checkout setup
+
+External contributors do not need this setup. Maintainers with access to the separate
+research repository can run `just research-sync` after reviewing the checked-out
+revision, and `just competitors-sync` for the pinned local competitor trees.
+`just research-push` applies only to the nested research repository; never stage that
+repository from the Keld root.
+
+After reviewing their bytes, `just hooks-install` copies notification-only hooks into
+the clone's Git common directory and sets its local `core.hooksPath`. Checkout and
+merge do not run incoming repository code. The hooks print the explicit sync commands;
+Git does not enable them on clone. Rerun installation only when intending to trust
+updated hook bytes.
