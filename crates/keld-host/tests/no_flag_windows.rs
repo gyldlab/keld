@@ -27,6 +27,10 @@ use windows_sys::Win32::System::Threading::{
     WaitForSingleObject,
 };
 
+/// Dark background for fixture renderers, so a test run does not flash
+/// white windows across the operator's desktop. Cosmetic only: no test
+/// asserts on it, and the beacon/marker contracts are unchanged.
+const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
@@ -458,7 +462,7 @@ fn run_same_window_recovery(failure_command: &str) {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>{failure_command}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{failure_command}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("write recovery renderer");
@@ -581,7 +585,7 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>shipping</p><script>\
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>shipping</p><script>\
              const leaked=(typeof process!=='undefined'&&process.env?.KELD_APP_LINK)||globalThis.KELD_APP_LINK;\
              const image=document.createElement('img');\
              image.src='http://127.0.0.1:{beacon_port}/'+(leaked?'leaked':'ready')+'.png';\
@@ -652,7 +656,7 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>lease</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>lease</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("write lease renderer");
@@ -755,7 +759,7 @@ fn run_console_ctrl_c_case() {
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
     let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(fixture.project.join("index.html"), format!(
-        "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+        "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
     )).expect("console renderer");
     let helper = prepare_keld_dev_helper(&fixture);
     let mut cli = Command::new(helper)
@@ -896,7 +900,7 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>host-death</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>host-death</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("write host-death renderer");
@@ -1333,7 +1337,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("write renderer");
@@ -2334,7 +2338,11 @@ impl ProductFixture {
             ),
         )
         .expect("product entry");
-        fs::write(project.join("index.html"), "<!doctype html>\n").expect("product renderer");
+        fs::write(
+            project.join("index.html"),
+            format!("<!doctype html>{DARK_BG}\n"),
+        )
+        .expect("product renderer");
         Self { root, project }
     }
 }

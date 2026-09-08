@@ -16,6 +16,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Dark background for fixture renderers, so a test run does not flash
+/// white windows across the operator's desktop. Cosmetic only: no test
+/// asserts on it, and the beacon/marker contracts are unchanged.
+const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const PRODUCT_TITLE: &str = "KEL96 T4 Linux Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 
@@ -192,7 +196,7 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("recovery renderer");
@@ -272,7 +276,7 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("dev renderer");
@@ -357,7 +361,7 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("death renderer");
@@ -427,7 +431,7 @@ fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("host-death renderer");
@@ -504,7 +508,7 @@ impl StageFixture {
         fs::write(project.join("src/main.ts"), "console.log('linux');\n").expect("entry");
         fs::write(
             project.join("index.html"),
-            "<!doctype html><h1>Linux</h1>\n",
+            format!("<!doctype html>{DARK_BG}<h1>Linux</h1>\n"),
         )
         .expect("renderer");
         Self {
@@ -542,7 +546,11 @@ impl ProductFixture {
             ),
         )
         .expect("product entry");
-        fs::write(project.join("index.html"), "<!doctype html>\n").expect("renderer");
+        fs::write(
+            project.join("index.html"),
+            format!("<!doctype html>{DARK_BG}\n"),
+        )
+        .expect("renderer");
         Self { root, project }
     }
 }
@@ -599,7 +607,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html><title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
         ),
     )
     .expect("write renderer");
