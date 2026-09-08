@@ -866,6 +866,90 @@ fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks the repository's block-style direct action steps, not shell text.
+fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
+    let invalid = || {
+        format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{job}` must have at least one `oven-sh/setup-bun` step, and every such step must pin its own `with.bun-version` to `1.4.2`. Use direct block-style steps and inputs; unrelated job text is not a runtime pin."
+        )
+    };
+    let block = workflow_job_block(text, job).ok_or_else(invalid)?;
+    let mut steps: Vec<Vec<(usize, &str)>> = Vec::new();
+    let mut in_steps = false;
+    for (indent, content) in block.lines().filter_map(yaml_content) {
+        if indent <= 4 {
+            in_steps = indent == 4 && content == "steps:";
+            continue;
+        }
+        if !in_steps {
+            continue;
+        }
+        if indent == 6 {
+            let first = content.strip_prefix("- ").ok_or_else(invalid)?;
+            // Do not silently miss actions hidden in unsupported flow/alias syntax.
+            if first.starts_with('{') || first.starts_with('*') || first.starts_with('&') {
+                return Err(invalid());
+            }
+            steps.push(Vec::new());
+        }
+        if indent >= 6
+            && let Some(step) = steps.last_mut()
+        {
+            step.push((indent, content));
+        }
+    }
+    let mut setups = 0;
+    for step in steps {
+        let properties: Vec<_> = step
+            .iter()
+            .enumerate()
+            .filter(|(index, (indent, _))| *index == 0 || *indent == 8)
+            .filter_map(|(index, (_, content))| {
+                yaml_mapping_key(content).map(|(key, value)| (index, key, value))
+            })
+            .collect();
+        // A valid GitHub step cannot combine `run` and `uses`. In a run step,
+        // block-scalar contents must never be interpreted as action properties.
+        if properties.iter().any(|(_, key, _)| key == "run") {
+            continue;
+        }
+        let uses: Vec<_> = properties
+            .iter()
+            .filter(|(_, key, _)| key == "uses")
+            .collect();
+        if !uses.iter().any(|(_, _, value)| {
+            value
+                .trim_matches(['\'', '"'])
+                .to_ascii_lowercase()
+                .starts_with("oven-sh/setup-bun@")
+        }) {
+            continue;
+        }
+        setups += 1;
+        let with: Vec<_> = properties
+            .iter()
+            .filter(|(_, key, _)| key == "with")
+            .collect();
+        if uses.len() != 1 || with.len() != 1 || !with[0].2.is_empty() {
+            return Err(invalid());
+        }
+        let pins: Vec<_> = step[with[0].0 + 1..]
+            .iter()
+            .take_while(|(indent, _)| *indent > 8)
+            .filter(|(indent, _)| *indent == 10)
+            .filter_map(|(_, content)| yaml_mapping_key(content))
+            .filter(|(key, _)| key == "bun-version")
+            .collect();
+        if pins.len() != 1 || pins[0].1.trim_matches(['\'', '"']) != "1.4.2" {
+            return Err(invalid());
+        }
+    }
+    if setups == 0 {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 /// Asserts the `bun-test` lane's decidable properties only: that it exists, is
 /// gated on the router's own output, pins its Bun version, and does not open a
 /// second live apt lane. Each of those is a fact about the workflow text.
@@ -884,10 +968,8 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
         ));
     }
-    if !uncommented_line_contains(&block, "bun-version: \"1.4.2\"") {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must pin `bun-version: \"1.4.2\"` (KEL-194; KEL-77 lifecycle oracles). A floating `latest` silently changes the runtime under the suite."
-        ));
+    for job in ["bun-test", "check"] {
+        check_bun_setup_steps(text, job)?;
     }
     // Deliberately NOT checked here: that the lane actually executes the suite
     // over the router's selection. Whether a shell script runs a command is not
@@ -1839,6 +1921,9 @@ mod tests {
             "          target/product-status/product-status check .",
             "  check:",
             "    steps:",
+            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+            "        with:",
+            "          bun-version: '1.4.2'",
             "      - name: Check keld-ipc fuzz workspace",
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
@@ -2836,6 +2921,70 @@ mod tests {
                 check_bun_test_job(&changed).is_err(),
                 "unexpected runtime {version} must not satisfy the CI pin"
             );
+        }
+    }
+
+    #[test]
+    fn bun_step_pins_accept_named_actions_and_ignore_job_strategy() {
+        let workflow = valid_workflow()
+            .replace("  check:\n    steps:", "  check:\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n    steps:")
+            .replace("      - uses: oven-sh/setup-bun@", "      - name: install Bun\n        uses: oven-sh/setup-bun@");
+        let temp = complete_fixture();
+        temp.write(WORKFLOW, &workflow);
+        check(temp.path()).expect("only direct steps own action inputs");
+    }
+
+    #[test]
+    fn bun_pin_is_bound_to_the_action_input_not_job_text() {
+        let correct = "          bun-version: \"1.4.2\"\n";
+        for replacement in [
+            "          bun-version: latest\n",
+            "          # missing bun-version\n",
+            "        env:\n          bun-version: \"1.4.2\"\n",
+        ] {
+            let workflow = valid_workflow().replace(correct, replacement).replace(
+                "      - name: bun test\n",
+                "      - run: |\n          echo 'bun-version: \"1.4.2\"'\n      - name: bun test\n",
+            );
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &workflow);
+            let error = check(temp.path()).expect_err("unrelated text cannot pin an action");
+            assert!(error.contains("bun-test"), "{error}");
+            assert!(error.contains("1.4.2"), "{error}");
+        }
+    }
+
+    #[test]
+    fn every_bun_setup_in_both_jobs_requires_its_own_pin() {
+        for job in ["check", "bun-test"] {
+            let workflow = valid_workflow();
+            let block = workflow_job_block(&workflow, job).expect("fixture job");
+            for extra in [
+                "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
+                "      - name: another Bun setup\n        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
+            ] {
+                let temp = complete_fixture();
+                temp.write(
+                    WORKFLOW,
+                    &workflow.replace(&block, &format!("{block}{extra}")),
+                );
+                let error = check(temp.path()).expect_err("every actual setup must be pinned");
+                assert!(error.contains(job), "{error}");
+                assert!(error.contains("1.4.2"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn both_bun_jobs_require_a_setup_action() {
+        for job in ["check", "bun-test"] {
+            let workflow = valid_workflow();
+            let block = workflow_job_block(&workflow, job).expect("fixture job");
+            let changed = block.replace("oven-sh/setup-bun@", "some-other/action@");
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &workflow.replace(&block, &changed));
+            let error = check(temp.path()).expect_err("a version on another action is not Bun");
+            assert!(error.contains(job), "{error}");
         }
     }
 
