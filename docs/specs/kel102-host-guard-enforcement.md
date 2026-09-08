@@ -649,7 +649,7 @@ owners into T2 would create unused scaffolding or implement later tasks early.
       fixture root, fixed opened `keld.permissions.jsonc` handle, and decoded
       digest consumed by `KEL-102/T2`; T1b proves the durable no-flag host
       consumer. Later KEL-96 T2/T3 are landed but are not KEL-102 predecessors.
-- [ ] `KEL-102/T2`: Add the exact guard-owned loader and `run_guarded` API,
+- [x] `KEL-102/T2`: Add the exact guard-owned loader and `run_guarded` API,
       host-owned manifest resolution, private immutable `GuardSnapshot`, and
       typed fail-closed startup errors. Reuse KEL-131's landed bounded,
       duplicate-rejecting parser and 64 KiB retained-handle read; a verified
@@ -669,7 +669,17 @@ owners into T2 would create unused scaffolding or implement later tasks early.
       the injected retained-handle read failure, 27 exact KEL-96 boot classes,
       five post-selection policy byte classes, the full 16-test real-macOS
       no-flag suite, Windows cross-check, and 576/576 workspace tests. Landing
-      and the final execution artifact remain required before T3 becomes ready.
+      and the final execution artifact were both required before T3 could
+      become ready; both are satisfied. Landed evidence: PR #115 merged at
+      `b9ea8f843390b2229235bd694d7b3d581ea863dc`, whose shipping no-flag
+      `keld-host` calls `run_guarded`; passed `keld.execution-artifact/v1` with
+      `task_id=KEL-102/T2` in Linear comment
+      `800fc0fb-8ae2-4bac-8982-8d6dc157ae2f`; claim released in
+      `826f4c33-f358-4ae3-a90e-435623312ccf`. Satisfying T3's row in the
+      task-specific predecessor table below is necessary but not sufficient for
+      T3 dispatch: `docs/specs/kel133-kipc-receiver-semantics.md` adds that a
+      partial merge "cannot unlock KEL-130, KEL-102/T3, or KEL-97", and the
+      current execution frontier owns the remaining readiness call.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
       context. Core routes and passes the verified snapshot/principal/request;
