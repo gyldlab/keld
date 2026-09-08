@@ -52,6 +52,7 @@ const REQUIRED_CONSUMERS: &[&str] = &[
     "docs/onboarding/01-project-summary.md",
     "docs/onboarding/02-architecture-guide.md",
     "docs/onboarding/03-api-and-cli-surface.md",
+    "docs/onboarding/06-documentation-map.md",
     "docs/engineering/linear-roadmap-mapping.md",
 ];
 
@@ -542,6 +543,25 @@ fn resolve_public_file(root: &Path, relative: &str, line: usize) -> Result<PathB
     Ok(canonical)
 }
 
+fn is_root_roadmap(root: &Path, canonical: &Path) -> bool {
+    canonical.strip_prefix(root).is_ok_and(|relative| {
+        relative.components().count() == 1
+            && relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("ROADMAP.md"))
+    })
+}
+
+fn is_normative_target_path(path: &Path) -> bool {
+    ["docs/architecture", "docs/specs"]
+        .iter()
+        .any(|prefix| {
+            path.strip_prefix(prefix)
+                .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
+        })
+}
+
 fn run_git(root: &Path, args: &[&str], line: usize) -> Result<std::process::Output, String> {
     Command::new("git")
         .arg("-C")
@@ -754,15 +774,6 @@ fn validate_evidence_kind(
     git_checkout: bool,
 ) -> Result<(), String> {
     let path = evidence.source.replace('\\', "/");
-    if path
-        .trim_start_matches("./")
-        .eq_ignore_ascii_case("ROADMAP.md")
-    {
-        return Err(invalid(
-            record.line,
-            "ROADMAP.md is public planning narrative and cannot be current product-status evidence",
-        ));
-    }
     let owned = match record.kind {
         RecordKind::Crate => record
             .id
@@ -891,6 +902,15 @@ fn validate_records(root: &Path, records: &[Record]) -> Result<(), String> {
         let mut canonical_evidence = BTreeSet::new();
         for item in &record.evidence {
             let canonical = resolve_public_file(root, &item.source, record.line)?;
+            if is_root_roadmap(root, &canonical) {
+                return Err(invalid(
+                    record.line,
+                    format!(
+                        "evidence source `{}` resolves to ROADMAP.md; public planning narrative cannot be current product-status evidence",
+                        item.source
+                    ),
+                ));
+            }
             if !canonical_evidence.insert(canonical) {
                 return Err(invalid(
                     record.line,
@@ -903,7 +923,7 @@ fn validate_records(root: &Path, records: &[Record]) -> Result<(), String> {
             validate_evidence_kind(root, record, item, git_checkout)?;
         }
         if let Some(source) = &record.target_source {
-            if !source.starts_with("docs/architecture/") && !source.starts_with("docs/specs/") {
+            if !is_normative_target_path(Path::new(source)) {
                 return Err(invalid(
                     record.line,
                     format!(
@@ -911,7 +931,21 @@ fn validate_records(root: &Path, records: &[Record]) -> Result<(), String> {
                     ),
                 ));
             }
-            resolve_public_file(root, source, record.line)?;
+            let canonical = resolve_public_file(root, source, record.line)?;
+            let canonical_relative = canonical.strip_prefix(root).map_err(|_| {
+                invalid(
+                    record.line,
+                    format!("target_source `{source}` resolves outside the checkout"),
+                )
+            })?;
+            if !is_normative_target_path(canonical_relative) {
+                return Err(invalid(
+                    record.line,
+                    format!(
+                        "target_source `{source}` must resolve to docs/architecture or docs/specs"
+                    ),
+                ));
+            }
             if git_checkout {
                 validate_git_file_at(root, &record.last_verified_sha, source, record.line)?;
             }
@@ -1179,7 +1213,10 @@ fn visible_link_targets(contents: &str) -> Option<Vec<VisibleLinkTarget>> {
         } else {
             raw_target.split_whitespace().next().unwrap_or_default()
         };
-        let target = target.split('#').next().unwrap_or_default();
+        let target = target
+            .split(|character| matches!(character, '#' | '?'))
+            .next()
+            .unwrap_or_default();
         let image = rest[..start]
             .rfind('[')
             .is_some_and(|open| open > 0 && rest.as_bytes()[open - 1] == b'!');
@@ -1193,26 +1230,34 @@ fn visible_link_targets(contents: &str) -> Option<Vec<VisibleLinkTarget>> {
     Some(targets)
 }
 
+fn links_to_repository_path_result(
+    root: &Path,
+    consumer: &str,
+    contents: &str,
+    expected_relative: &str,
+) -> Result<bool, ()> {
+    let consumer_parent = Path::new(consumer)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let Ok(expected) = fs::canonicalize(root.join(expected_relative)) else {
+        return Ok(false);
+    };
+    let targets = visible_link_targets(contents).ok_or(())?;
+    Ok(targets.iter().any(|link| {
+        !link.image
+            && !link.target.contains("://")
+            && fs::canonicalize(root.join(consumer_parent).join(&link.slash_normalized))
+                .is_ok_and(|candidate| candidate == expected)
+    }))
+}
+
 fn links_to_repository_path(
     root: &Path,
     consumer: &str,
     contents: &str,
     expected_relative: &str,
 ) -> bool {
-    let consumer_parent = Path::new(consumer)
-        .parent()
-        .unwrap_or_else(|| Path::new(""));
-    let Ok(expected) = fs::canonicalize(root.join(expected_relative)) else {
-        return false;
-    };
-    visible_link_targets(contents).is_some_and(|targets| {
-        targets.iter().any(|link| {
-            !link.image
-                && !link.target.contains("://")
-                && fs::canonicalize(root.join(consumer_parent).join(&link.target))
-                    .is_ok_and(|candidate| candidate == expected)
-        })
-    })
+    links_to_repository_path_result(root, consumer, contents, expected_relative).unwrap_or(false)
 }
 
 fn links_to_product_status(root: &Path, consumer: &str, contents: &str) -> bool {
@@ -1223,17 +1268,72 @@ fn links_to_status_ledger(root: &Path, consumer: &str, contents: &str) -> bool {
     links_to_repository_path(root, consumer, contents, LEDGER_REL)
 }
 
-fn links_to_roadmap(contents: &str) -> Result<bool, ()> {
-    visible_link_targets(contents)
-        .map(|targets| {
-            targets.iter().any(|link| {
-                link.slash_normalized
-                    .rsplit('/')
-                    .next()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("ROADMAP.md"))
-            })
+fn has_visible_reference_definition_or_html_anchor(contents: &str) -> bool {
+    let visible = visible_markdown(contents);
+    let reference_definition = visible.lines().any(|line| {
+        let mut line = line.trim_start();
+        while let Some(after) = line.strip_prefix('>') {
+            line = after.trim_start();
+        }
+        line.strip_prefix('[').is_some_and(|after| {
+            after
+                .split_once("]:")
+                .is_some_and(|(label, target)| !label.is_empty() && !target.trim().is_empty())
         })
-        .ok_or(())
+    });
+    if reference_definition {
+        return true;
+    }
+
+    let lowercase = visible.to_ascii_lowercase();
+    let mut rest = lowercase.as_str();
+    while let Some(start) = rest.find("<a") {
+        let after = &rest[start + 2..];
+        if after
+            .chars()
+            .next()
+            .is_some_and(|character| character == '>' || character.is_whitespace())
+        {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+fn is_same_repo_source_url(target: &str) -> bool {
+    let lowercase = target.to_ascii_lowercase();
+    let Some(after_scheme) = lowercase
+        .strip_prefix("https://")
+        .or_else(|| lowercase.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    after_scheme.starts_with("github.com/gyldlab/keld/blob/")
+        || after_scheme.starts_with("github.com/gyldlab/keld/raw/")
+        || after_scheme.starts_with("raw.githubusercontent.com/gyldlab/keld/")
+}
+
+fn links_to_roadmap(root: &Path, consumer: &str, contents: &str) -> Result<bool, ()> {
+    if has_visible_reference_definition_or_html_anchor(contents) {
+        return Err(());
+    }
+    let targets = visible_link_targets(contents).ok_or(())?;
+    for link in targets.iter().filter(|link| !link.image) {
+        let external = link.target.contains("://");
+        if link.target.contains('%') && (!external || is_same_repo_source_url(&link.target)) {
+            return Err(());
+        }
+        if link
+            .slash_normalized
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case("ROADMAP.md"))
+        {
+            return Ok(true);
+        }
+    }
+    links_to_repository_path_result(root, consumer, contents, "ROADMAP.md")
 }
 
 fn skip_json_whitespace(bytes: &[u8], index: &mut usize) {
@@ -1575,7 +1675,7 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
     }
     for relative in ROADMAP_AUTHORITY_CONSUMERS {
         let contents = read_required(root, relative)?;
-        match links_to_roadmap(&contents) {
+        match links_to_roadmap(root, relative, &contents) {
             Ok(true) => {
                 return Err(format!(
                     "KELD-DOCS007: `{relative}` links public ROADMAP.md from an authority-bearing current-status surface. ROADMAP is planning narrative; point current status at `{OUTPUT_REL}`."
@@ -1795,6 +1895,10 @@ mod tests {
             "[package]\nname = \"keld-pack\"\nversion = \"0.0.1\"\nedition = \"2024\"\n",
         );
         temp.write(
+            "docs/architecture/06-runtime-and-tooling.md",
+            "# Runtime and tooling\n",
+        );
+        temp.write(
             "AGENTS.md",
             "# Agents\n\n[Product status source ledger](docs/engineering/product-status.tsv); [generated status view](docs/engineering/product-status.md).\n",
         );
@@ -1812,7 +1916,7 @@ mod tests {
         );
         temp.write(
             "docs/onboarding/06-documentation-map.md",
-            "# Documentation\n\n[public roadmap](../../ROADMAP.md)\n",
+            "# Documentation\n\n[status](../engineering/product-status.md)\n\n[public roadmap](../../ROADMAP.md)\n",
         );
         temp.write(
             "justfile",
@@ -2570,12 +2674,151 @@ mod tests {
     }
 
     #[test]
+    fn documentation_map_must_link_canonical_status() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/06-documentation-map.md",
+            "# Documentation\n\n[public roadmap](../../ROADMAP.md)\n",
+        );
+        expect_check_error(&temp, "usable Markdown link");
+    }
+
+    #[test]
     fn roadmap_authority_link_fails() {
         let temp = fixture();
         generate(temp.path()).expect("generate fixture");
         temp.write(
             "docs/onboarding/05-development-guide.md",
             "# Development\n\n[status](../engineering/product-status.md)\n\n[old status](../../ROADMAP.md)\n",
+        );
+        expect_check_error(&temp, "links public ROADMAP.md");
+    }
+
+    #[test]
+    fn roadmap_authority_query_link_fails() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[status](../engineering/product-status.md)\n\n[old status](../../ROADMAP.md?view=1)\n",
+        );
+        expect_check_error(&temp, "links public ROADMAP.md");
+    }
+
+    #[test]
+    fn roadmap_authority_percent_encoded_local_link_fails_closed() {
+        for target in [
+            "../../%52OADMAP.md",
+            "..%2F..%2FROADMAP.md",
+            "../../ROADMAP%2Emd",
+            "../../ROADMAP%",
+        ] {
+            let temp = fixture();
+            generate(temp.path()).expect("generate fixture");
+            temp.write(
+                "docs/onboarding/05-development-guide.md",
+                &format!(
+                    "# Development\n\n[status](../engineering/product-status.md)\n\n[old status]({target})\n"
+                ),
+            );
+            expect_check_error(&temp, "cannot parse");
+        }
+    }
+
+    #[test]
+    fn roadmap_authority_reference_link_fails_closed() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[status](../engineering/product-status.md)\n\n[old status][plan]\n\n[plan]: ../../ROADMAP.md\n",
+        );
+        expect_check_error(&temp, "cannot parse");
+    }
+
+    #[test]
+    fn roadmap_authority_raw_html_anchor_fails_closed() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[status](../engineering/product-status.md)\n\n<a href=\"../../ROADMAP.md\">old status</a>\n",
+        );
+        expect_check_error(&temp, "cannot parse");
+    }
+
+    #[test]
+    fn roadmap_authority_backslash_link_fails() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[status](../engineering/product-status.md)\n\n[old status](..\\..\\ROADMAP.md)\n",
+        );
+        expect_check_error(&temp, "links public ROADMAP.md");
+    }
+
+    #[test]
+    fn roadmap_authority_absolute_url_fails() {
+        for target in [
+            "https://github.com/gyldlab/keld/blob/main/ROADMAP.md",
+            "https://github.com/gyldlab/keld/blob/main/ROADMAP.md?view=1",
+        ] {
+            let temp = fixture();
+            generate(temp.path()).expect("generate fixture");
+            temp.write(
+                "docs/onboarding/05-development-guide.md",
+                &format!(
+                    "# Development\n\n[status](../engineering/product-status.md)\n\n[old status]({target})\n"
+                ),
+            );
+            expect_check_error(&temp, "links public ROADMAP.md");
+        }
+    }
+
+    #[test]
+    fn roadmap_authority_same_repo_absolute_percent_fails_closed() {
+        for target in [
+            "https://github.com/gyldlab/keld/blob/main/%52OADMAP.md",
+            "https://github.com/gyldlab/keld/blob/main/ROADMAP%2Emd",
+        ] {
+            let temp = fixture();
+            generate(temp.path()).expect("generate fixture");
+            temp.write(
+                "docs/onboarding/05-development-guide.md",
+                &format!(
+                    "# Development\n\n[status](../engineering/product-status.md)\n\n[old status]({target})\n"
+                ),
+            );
+            expect_check_error(&temp, "cannot parse");
+        }
+    }
+
+    #[test]
+    fn roadmap_authority_allows_external_percent_and_images() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[status](../engineering/product-status.md)\n\n[external](https://example.com/%52OADMAP.md)\n\n![image](../../ROADMAP.md)\n",
+        );
+        check(temp.path()).expect("external percent URL and image are not roadmap authority");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn roadmap_authority_symlink_alias_fails() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        std::os::unix::fs::symlink(
+            "../../ROADMAP.md",
+            temp.path().join("docs/onboarding/plan.md"),
+        )
+        .expect("create public roadmap alias");
+        temp.write(
+            "docs/onboarding/05-development-guide.md",
+            "# Development\n\n[status](../engineering/product-status.md)\n\n[old status](plan.md?view=1)\n",
         );
         expect_check_error(&temp, "links public ROADMAP.md");
     }
@@ -2646,6 +2889,50 @@ mod tests {
             "code:crates/keld-core/src/link.rs",
         );
         expect_check_error(&temp, "resolves outside the checkout");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_evidence_symlink_to_roadmap_fails() {
+        let (temp, _) = git_fixture();
+        let source = temp.path().join("crates/keld-core/src/lib.rs");
+        fs::remove_file(&source).expect("remove historical regular source");
+        std::os::unix::fs::symlink("../../../ROADMAP.md", &source)
+            .expect("replace source with current roadmap symlink");
+        temp.git(&["add", "crates/keld-core/src/lib.rs"]);
+        temp.git(&["commit", "--quiet", "-m", "replace source with roadmap symlink"]);
+
+        expect_check_error(&temp, "public planning narrative");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_target_source_symlink_to_roadmap_fails() {
+        let (temp, _) = git_fixture();
+        temp.replace_all(
+            LEDGER_REL,
+            "docs/architecture/01-overview.md",
+            "docs/architecture/06-runtime-and-tooling.md",
+        );
+        generate(temp.path()).expect("generate alternate normative target");
+        temp.git(&["add", LEDGER_REL, OUTPUT_REL]);
+        temp.git(&["commit", "--quiet", "-m", "use alternate normative target"]);
+
+        let source = temp
+            .path()
+            .join("docs/architecture/06-runtime-and-tooling.md");
+        fs::remove_file(&source).expect("remove historical normative source");
+        std::os::unix::fs::symlink("../../ROADMAP.md", &source)
+            .expect("replace target source with current roadmap symlink");
+        temp.git(&["add", "docs/architecture/06-runtime-and-tooling.md"]);
+        temp.git(&[
+            "commit",
+            "--quiet",
+            "-m",
+            "replace normative source with roadmap symlink",
+        ]);
+
+        expect_check_error(&temp, "must resolve to docs/architecture or docs/specs");
     }
 
     #[cfg(windows)]
