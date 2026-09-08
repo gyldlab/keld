@@ -745,6 +745,10 @@ fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
 }
 
 fn run_console_ctrl_c_case() {
+    // SAFETY: this disposable console observer may inherit nextest's Ctrl+C
+    // ignore attribute. Establish the ordinary terminal disposition before the
+    // CLI inherits it; null changes the attribute without installing a callback.
+    assert_ne!(unsafe { SetConsoleCtrlHandler(None, 0) }, 0);
     let fixture = ProductFixture::new();
     let control = TcpListener::bind(("127.0.0.1", 0)).expect("console control");
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("console beacon");
