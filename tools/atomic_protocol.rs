@@ -1,4 +1,4 @@
-//! KEL-145/KEL-148 documentary contract checks for atomic reasoning and merge authority.
+//! KEL-145/KEL-148/KEL-190 documentary contract checks for atomic reasoning and merge authority.
 //!
 //! Root `AGENTS.md` owns the policy. This checker only pins its mandatory stage markers
 //! and the narrower operational references. It is deliberately std-only and outside the
@@ -95,6 +95,9 @@ const INDEX_REQUIREMENTS: &[&str] = &[
 
 const MERGE_OWNER_REQUIREMENTS: &[&str] = &[
     "The repository-owner standing delegation requires the issue agent to merge a Keld PR without another approval question only after every predicate below passes.",
+    "Additional human approval is waived only when GitHub reports both the PR author and authenticated merger as `0monish` or `amishabenramani`; verify both immediately before merge.",
+    "GitHub's native allowance identifies only the merger.",
+    "Every other actor requires normal human review.",
     "Scope, winning claim, required approval artifacts, current base, dependencies and single-writer collisions are reconciled.",
     "Every owned acceptance criterion, including each required real OS/device observable, is passed rather than awaiting, failed or unrun.",
     "`just ci` and every applicable GitHub required check pass on the final tip.",
@@ -1031,6 +1034,33 @@ mod tests {
             replace_requirement(&temp, COORDINATION, requirement);
             let error = check(&temp.path).expect_err("removed merge predicate must fail");
             assert!(error.contains(requirement), "{error}");
+        }
+    }
+
+    #[test]
+    fn merge_identity_scope_and_fallback_are_enforced() {
+        for (from, to) in [
+            (
+                "both the PR author and authenticated merger",
+                "the authenticated merger",
+            ),
+            (
+                "`0monish` or `amishabenramani`",
+                "`0monish`, `amishabenramani`, or `another-actor`",
+            ),
+            ("verify both immediately before merge", "verify after merge"),
+            (
+                "Every other actor requires normal human review.",
+                "Every other actor may skip normal human review.",
+            ),
+        ] {
+            let temp = fixture();
+            let coordination = fs::read_to_string(temp.path.join(COORDINATION))
+                .expect("read coordination fixture")
+                .replacen(from, to, 1);
+            temp.write(COORDINATION, &coordination);
+            let error = check(&temp.path).expect_err("weakened merge identity rule must fail");
+            assert!(error.contains(COORDINATION), "{error}");
         }
     }
 

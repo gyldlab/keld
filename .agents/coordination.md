@@ -53,6 +53,11 @@ The repository-owner standing delegation requires the issue agent to merge a Kel
 without another approval question only after every predicate below passes.
 Default eligible merge: `merge-when-complete`.
 
+Additional human approval is waived only when GitHub reports both the PR author and
+authenticated merger as `0monish` or `amishabenramani`; verify both immediately before
+merge. GitHub's native allowance identifies only the merger. Every other actor requires
+normal human review.
+
 - Scope, winning claim, required approval artifacts, current base, dependencies and
   single-writer collisions are reconciled.
 - Every owned acceptance criterion, including each required real OS/device observable,

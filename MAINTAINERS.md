@@ -17,10 +17,14 @@ permissions are the live ownership record; this list records the founding team.
   and acceptance criteria, and identify the implementation owner. `triage` means
   a report still needs that review; `help wanted` and `good first issue` identify
   scoped work, not a promise of immediate assistance.
-- **Review:** a maintainer other than the author/latest pusher approves changes.
-  CODEOWNERS requests the team; required CI and applicable architecture/security
-  evidence must pass before merge. An agent review does not impersonate a human
-  approval.
+- **Review:** changes normally receive approval from a maintainer other than the
+  author/latest pusher. CODEOWNERS requests the team; required CI and applicable
+  architecture/security evidence must pass before merge. For PRs both authored and
+  merged through @0monish or @amishabenramani, the internal standing delegation may
+  waive an additional human approval only after every documented quality predicate
+  passes. GitHub's native allowance keys on the merger, so the agent separately verifies
+  both identities. Other actors keep normal review. Agent review remains technical
+  evidence and is never represented as human approval.
 - **Direction:** proposals and consequential decisions are discussed in public
   issues or pull requests and reflected in approved specifications. Private
   research is optional supporting material, not a prerequisite for contributing.
