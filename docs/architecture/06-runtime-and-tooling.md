@@ -45,6 +45,10 @@
 - **Windows no-flag primary (KEL-96/T4 Windows slice):** `keld dev` creates a
   fresh protected-current-user stage, launches `keld-host.exe` with no Keld
   flag, forwards logs and retains only the host handle plus stdin-v1 writer.
+  The host starts in a separate Windows process group with Ctrl+C disabled.
+  Interactive terminal Ctrl+C retains the CLI's native interrupt exit while
+  closing its lease, so the host can forward captured output and finish its
+  existing ordered shutdown. Closing the terminal itself is a distinct event.
   The host independently reads back the protected one-ACE DACL, validates the
   same closed boot/policy contract before resources, and consumes T8's one
   `PrimaryRoleSupervisor` with a pre-Ready recovery gate. One logical router

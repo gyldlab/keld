@@ -340,6 +340,11 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         .stderr(Stdio::inherit());
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     command.process_group(0);
+    // The terminal interrupts the CLI; its closed lease must let the host
+    // finish ordered shutdown and forward captured output. Windows starts a
+    // new process group with Ctrl+C disabled, matching the Unix separation.
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
     let host = command.spawn();
     let mut host = match host {
         Ok(host) => host,
