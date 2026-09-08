@@ -19,14 +19,22 @@ const COORDINATION: &str = ".agents/coordination.md";
 const REVIEW: &str = ".agents/review.md";
 const CI: &str = ".agents/ci.md";
 const INDEX: &str = ".agents/index.md";
+const CONTRIBUTING: &str = "CONTRIBUTING.md";
+const BUG_TEMPLATE: &str = ".github/ISSUE_TEMPLATE/bug.yml";
+const FEATURE_TEMPLATE: &str = ".github/ISSUE_TEMPLATE/feature.yml";
+const TEMPLATE_CONFIG: &str = ".github/ISSUE_TEMPLATE/config.yml";
 const JUSTFILE: &str = "justfile";
 const DEVELOPMENT_GUIDE: &str = "docs/onboarding/05-development-guide.md";
 const ROOT_HEADING: &str = "## Atomic problem-solving protocol (MUST)";
 const RETIRED_HEADING: &str = "Failure decomposition protocol (MUST)";
 const WORKFLOW_HEADING: &str = "## The loop (one issue, one agent, one concern)";
+const PUBLIC_INTAKE_HEADING: &str = "## Public contributions";
 const TESTING_HEADING: &str = "## Failure-first proof";
 const MERGE_HEADING: &str = "## Standing autonomous merge delegation";
 const MERGE_DEFAULT_PREFIX: &str = "Default eligible merge: ";
+const PROMPT_TRACKER_HANDOFF_REQUIREMENT: &str = "Handoffs MUST follow Prompt Tracker `docs/06-graph-engineering.md` for system/client/exact-model identity.";
+const CONTRIBUTING_LINK: &str =
+    "https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
 const INDEX_HEADING: &str = "## Task routing";
 const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |";
 const ENFORCEMENT_LINE_PREFIX: &str =
@@ -95,9 +103,8 @@ const INDEX_REQUIREMENTS: &[&str] = &[
 
 const MERGE_OWNER_REQUIREMENTS: &[&str] = &[
     "The repository-owner standing delegation requires the issue agent to merge a Keld PR without another approval question only after every predicate below passes.",
-    "Additional human approval is waived only when GitHub reports both the PR author and authenticated merger as `0monish` or `amishabenramani`; verify both immediately before merge.",
-    "GitHub's native allowance identifies only the merger.",
-    "Every other actor requires normal human review.",
+    "Waive extra human review only if GitHub reports author and merger as `0monish` or `amishabenramani`; verify both before merge.",
+    "Native bypass checks merger only; others need human review.",
     "Scope, winning claim, required approval artifacts, current base, dependencies and single-writer collisions are reconciled.",
     "Every owned acceptance criterion, including each required real OS/device observable, is passed rather than awaiting, failed or unrun.",
     "`just ci` and every applicable GitHub required check pass on the final tip.",
@@ -109,6 +116,17 @@ const MERGE_OWNER_REQUIREMENTS: &[&str] = &[
     "After merge, fetch main, verify the landed patch or tree and ancestor relation, post the execution artifact, mark the issue Done, release the claim and remove the clean worktree.",
 ];
 
+const PUBLIC_INTAKE_OWNER_REQUIREMENTS: &[&str] = &[
+    "This is Keld's canonical public-intake guide for external contributors.",
+    "You do not need access to Linear, private research, or an agent-memory service.",
+];
+
+const WORKFLOW_PUBLIC_INTAKE_REQUIREMENTS: &[&str] = &[
+    "External contributors follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md), the canonical public-intake owner.",
+    "Maintainers bridge accepted public scope into internal Linear linkage, spec and acceptance publication, claims, implementation and merge coordination.",
+    "The internal loop below binds maintainers and agents acting with maintainer authority; external contributors do not acquire that authority.",
+];
+
 const ROOT_MERGE_REQUIREMENT: &str = "Review gates require named independent security or architecture evidence under the standing repository-owner delegation in `.agents/coordination.md`; they do not require a human-only actor.";
 const WORKFLOW_MERGE_REQUIREMENTS: &[&str] = &[
     "Apply `.agents/coordination.md` § Standing autonomous merge delegation after the branch handoff.",
@@ -116,6 +134,24 @@ const WORKFLOW_MERGE_REQUIREMENTS: &[&str] = &[
 ];
 const REVIEW_MERGE_REQUIREMENT: &str = "The terminal merge decision and post-merge verification are owned by `.agents/coordination.md` § Standing autonomous merge delegation.";
 const CI_MERGE_REQUIREMENT: &str = "CI routing is an independently reviewed shared-file concern";
+
+fn canonical_merge_owner() -> String {
+    format!(
+        "{MERGE_HEADING}\n{}\n{MERGE_DEFAULT_PREFIX}`merge-when-complete`.\n{}\n{}\n- {}\n- {}\n- {}\n- {}\n- {}\n- {}\n{}\n{}\n{}",
+        MERGE_OWNER_REQUIREMENTS[0],
+        MERGE_OWNER_REQUIREMENTS[1],
+        MERGE_OWNER_REQUIREMENTS[2],
+        MERGE_OWNER_REQUIREMENTS[3],
+        MERGE_OWNER_REQUIREMENTS[4],
+        MERGE_OWNER_REQUIREMENTS[5],
+        MERGE_OWNER_REQUIREMENTS[6],
+        MERGE_OWNER_REQUIREMENTS[7],
+        MERGE_OWNER_REQUIREMENTS[8],
+        MERGE_OWNER_REQUIREMENTS[9],
+        MERGE_OWNER_REQUIREMENTS[10],
+        MERGE_OWNER_REQUIREMENTS[11],
+    )
+}
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {
     let path = root.join(relative);
@@ -496,9 +532,33 @@ fn check_autonomous_merge(root: &Path) -> Result<(), String> {
     let merge_rendered = section(&coordination_rendered, MERGE_HEADING, COORDINATION)?;
     let coordination_visible = binding_prose(&coordination);
     let merge_owner = section(&coordination_visible, MERGE_HEADING, COORDINATION)?;
+    require_normalized(
+        &coordination_visible,
+        PROMPT_TRACKER_HANDOFF_REQUIREMENT,
+        COORDINATION,
+    )?;
+    require_unique_normalized(
+        &coordination_visible,
+        PROMPT_TRACKER_HANDOFF_REQUIREMENT,
+        COORDINATION,
+    )?;
     for requirement in MERGE_OWNER_REQUIREMENTS {
         require_normalized(merge_owner, requirement, COORDINATION)?;
         require_unique_normalized(&coordination_visible, requirement, COORDINATION)?;
+    }
+    if merge_rendered
+        .lines()
+        .any(|line| line.trim_start().starts_with("### "))
+    {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{COORDINATION}` `{MERGE_HEADING}` must not hide active policy under a subheading. Keep one closed canonical owner."
+        ));
+    }
+    let canonical_merge = canonical_merge_owner();
+    if normalize_binding(merge_owner) != normalize_binding(&canonical_merge) {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{COORDINATION}` `{MERGE_HEADING}` contains extra, missing, moved, or contradictory binding prose. Restore its closed canonical rule set."
+        ));
     }
     let defaults = merge_rendered
         .lines()
@@ -538,6 +598,45 @@ fn check_autonomous_merge(root: &Path) -> Result<(), String> {
     require_normalized(&ci, CI_MERGE_REQUIREMENT, CI)?;
     require_unique_normalized(&ci, CI_MERGE_REQUIREMENT, CI)?;
 
+    Ok(())
+}
+
+fn check_public_intake(root: &Path) -> Result<(), String> {
+    let contributing = binding_prose(&read(root, CONTRIBUTING)?);
+    for requirement in PUBLIC_INTAKE_OWNER_REQUIREMENTS {
+        require_normalized(&contributing, requirement, CONTRIBUTING)?;
+        require_unique_normalized(&contributing, requirement, CONTRIBUTING)?;
+    }
+
+    let workflow = read(root, WORKFLOW)?;
+    let rendered = visible_markdown(&workflow);
+    let public = section(&rendered, PUBLIC_INTAKE_HEADING, WORKFLOW)?;
+    if public
+        .lines()
+        .any(|line| line.trim_start().starts_with("### "))
+    {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{WORKFLOW}` `{PUBLIC_INTAKE_HEADING}` must stay one compact owner link and maintainer boundary."
+        ));
+    }
+    let expected = format!(
+        "{PUBLIC_INTAKE_HEADING}\n{}",
+        WORKFLOW_PUBLIC_INTAKE_REQUIREMENTS.join("\n")
+    );
+    if normalize_binding(public) != normalize_binding(&expected) {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{WORKFLOW}` `{PUBLIC_INTAKE_HEADING}` duplicates or drifts from the `{CONTRIBUTING}` owner. Restore the canonical owner link and maintainer boundary."
+        ));
+    }
+
+    for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE, TEMPLATE_CONFIG] {
+        let text = read(root, consumer)?;
+        if text.matches(CONTRIBUTING_LINK).count() != 1 {
+            return Err(format!(
+                "ATOMIC-PROTOCOL: `{consumer}` must link the `{CONTRIBUTING}` owner exactly once."
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -602,6 +701,7 @@ fn check(root: &Path) -> Result<(), String> {
     check_root(&root_text)?;
     check_references(root)?;
     check_autonomous_merge(root)?;
+    check_public_intake(root)?;
     check_justfile_and_development_guide(root)
 }
 
@@ -677,20 +777,31 @@ mod tests {
         + "\n"
     }
 
+    fn fixture_coordination() -> String {
+        format!(
+            "# Coordination\n\n{PROMPT_TRACKER_HANDOFF_REQUIREMENT}\n\n{}\n\n## Next\n",
+            canonical_merge_owner()
+        )
+    }
+
     fn fixture() -> TempDir {
         let temp = TempDir::new();
         temp.write(ROOT, &valid_root());
         temp.write(
             WORKFLOW,
-            &format!("# Workflow\n\n## The loop (one issue, one agent, one concern)\n\n1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),\nroot `AGENTS.md` § Atomic problem-solving protocol. The same first comment MUST record the decision-bearing atoms: owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier.\n2. **Spec gate.** Larger than a bug fix and no spec? Write one from\n3. **Isolate.** Work separately.\n4. **Implement and coordinate.** Tests with the change (conformance entries *first* for\nA material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier.\n5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test\n7. **PR and handoff.** {} {}\n\n## Next\n", WORKFLOW_MERGE_REQUIREMENTS[0], WORKFLOW_MERGE_REQUIREMENTS[1]),
+            &format!("# Workflow\n\n{PUBLIC_INTAKE_HEADING}\n\n{}\n\n## The loop (one issue, one agent, one concern)\n\n1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),\nroot `AGENTS.md` § Atomic problem-solving protocol. The same first comment MUST record the decision-bearing atoms: owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier.\n2. **Spec gate.** Larger than a bug fix and no spec? Write one from\n3. **Isolate.** Work separately.\n4. **Implement and coordinate.** Tests with the change (conformance entries *first* for\nA material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier.\n5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test\n7. **PR and handoff.** {} {}\n\n## Next\n", WORKFLOW_PUBLIC_INTAKE_REQUIREMENTS.join("\n"), WORKFLOW_MERGE_REQUIREMENTS[0], WORKFLOW_MERGE_REQUIREMENTS[1]),
         );
+        temp.write(COORDINATION, &fixture_coordination());
         temp.write(
-            COORDINATION,
+            CONTRIBUTING,
             &format!(
-                "# Coordination\n\n{MERGE_HEADING}\n\n{MERGE_DEFAULT_PREFIX}`merge-when-complete`.\n{}\n\n## Next\n",
-                MERGE_OWNER_REQUIREMENTS.join("\n")
+                "# Contributing\n\n{}\n",
+                PUBLIC_INTAKE_OWNER_REQUIREMENTS.join("\n")
             ),
         );
+        for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE, TEMPLATE_CONFIG] {
+            temp.write(consumer, &format!("owner: {CONTRIBUTING_LINK}\n"));
+        }
         temp.write(
             REVIEW,
             &format!("# Review\n\n{REVIEW_MERGE_REQUIREMENT}\n"),
@@ -1040,19 +1151,13 @@ mod tests {
     #[test]
     fn merge_identity_scope_and_fallback_are_enforced() {
         for (from, to) in [
-            (
-                "both the PR author and authenticated merger",
-                "the authenticated merger",
-            ),
+            ("author and merger", "merger"),
             (
                 "`0monish` or `amishabenramani`",
                 "`0monish`, `amishabenramani`, or `another-actor`",
             ),
-            ("verify both immediately before merge", "verify after merge"),
-            (
-                "Every other actor requires normal human review.",
-                "Every other actor may skip normal human review.",
-            ),
+            ("verify both before merge", "verify after merge"),
+            ("others need human review", "others may skip human review"),
         ] {
             let temp = fixture();
             let coordination = fs::read_to_string(temp.path.join(COORDINATION))
@@ -1062,6 +1167,69 @@ mod tests {
             let error = check(&temp.path).expect_err("weakened merge identity rule must fail");
             assert!(error.contains(COORDINATION), "{error}");
         }
+
+        for coordination in [
+            fixture_coordination().replace(
+                "others need human review.",
+                "others need human review. Exception: `another-actor` may use the waiver.",
+            ),
+            fixture_coordination().replace(
+                "others need human review.",
+                "others need human review. For all other actors, human review is optional.",
+            ),
+            fixture_coordination().replace(
+                MERGE_OWNER_REQUIREMENTS[1],
+                &format!(
+                    "Waive extra human review whenever the merger is `0monish`.\n\n### Historical wording\n\n{}",
+                    MERGE_OWNER_REQUIREMENTS[1]
+                ),
+            ),
+        ] {
+            let temp = fixture();
+            temp.write(COORDINATION, &coordination);
+            let error = check(&temp.path)
+                .expect_err("additive or historical merge identity contradiction must fail");
+            assert!(error.contains(COORDINATION), "{error}");
+        }
+    }
+
+    #[test]
+    fn public_intake_owner_and_consumers_are_enforced() {
+        for requirement in PUBLIC_INTAKE_OWNER_REQUIREMENTS {
+            let temp = fixture();
+            replace_requirement(&temp, CONTRIBUTING, requirement);
+            let error = check(&temp.path).expect_err("missing public-intake owner rule must fail");
+            assert!(error.contains(CONTRIBUTING), "{error}");
+        }
+
+        for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE, TEMPLATE_CONFIG] {
+            let temp = fixture();
+            replace_requirement(&temp, consumer, CONTRIBUTING_LINK);
+            let error = check(&temp.path).expect_err("missing public-intake owner link must fail");
+            assert!(error.contains(consumer), "{error}");
+        }
+
+        let temp = fixture();
+        let contributing = fs::read_to_string(temp.path.join(CONTRIBUTING))
+            .expect("read contribution fixture")
+            .replace(
+                PUBLIC_INTAKE_OWNER_REQUIREMENTS[1],
+                "You must obtain private Linear, research, and agent-memory access.",
+            );
+        temp.write(CONTRIBUTING, &contributing);
+        let error = check(&temp.path).expect_err("inverted public-access rule must fail");
+        assert!(error.contains(CONTRIBUTING), "{error}");
+
+        let temp = fixture();
+        let workflow = fs::read_to_string(temp.path.join(WORKFLOW))
+            .expect("read workflow fixture")
+            .replace(
+                "\n\n## The loop",
+                " External contributors must also use private Linear.\n\n## The loop",
+            );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(&temp.path).expect_err("duplicated public policy must fail");
+        assert!(error.contains(WORKFLOW), "{error}");
     }
 
     #[test]
@@ -1072,6 +1240,7 @@ mod tests {
             (WORKFLOW, WORKFLOW_MERGE_REQUIREMENTS[1]),
             (REVIEW, REVIEW_MERGE_REQUIREMENT),
             (CI, CI_MERGE_REQUIREMENT),
+            (COORDINATION, PROMPT_TRACKER_HANDOFF_REQUIREMENT),
         ] {
             let temp = fixture();
             replace_requirement(&temp, path, requirement);
@@ -1111,7 +1280,7 @@ mod tests {
             .expect("read coordination fixture")
             .replace(
                 "\n## Next",
-                "\nHistorical explanation: human-decide was the retired default.\n\n## Next",
+                "\n## Historical\n\nHistorical explanation: human-decide was the retired default.\n\n## Next",
             );
         temp.write(COORDINATION, &coordination);
         check(&temp.path).expect("explanatory text must not become the active default");

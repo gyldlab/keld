@@ -1,5 +1,6 @@
 # Contributing to Keld
 
+This is Keld's canonical public-intake guide for external contributors.
 You can contribute through public GitHub issues and pull requests. You do not need
 access to Linear, private research, or an agent-memory service. Please follow the
 [Code of Conduct](CODE_OF_CONDUCT.md); [MAINTAINERS.md](MAINTAINERS.md) identifies

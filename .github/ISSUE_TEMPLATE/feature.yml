@@ -7,6 +7,7 @@ body:
     attributes:
       value: |
         Describe the user need and check existing issues and the public roadmap.
+        Follow the [contribution guide](https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md) for public scope and submission.
         Maintainers will establish scope and any required spec before implementation.
         No private tracker or research access is needed.
   - type: input

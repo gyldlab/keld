@@ -8,15 +8,11 @@ is in `.agents/review.md`.
 
 ## Public contributions
 
-External contributors follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md): discuss scope
-in a public GitHub issue, use a fork and a descriptive branch, and open a pull request.
-They do not need private Linear access, research access, an agent harness, or an
-`agent/kel-*` branch. Maintainers publish the accepted scope, spec and acceptance
-criteria on GitHub and handle internal Linear linkage and claims before taking over
-implementation or merging. Changes requiring a spec still need approval before
-implementation. Security, testing and independent-review gates remain required.
+External contributors follow [`CONTRIBUTING.md`](../../CONTRIBUTING.md), the canonical
+public-intake owner. Maintainers bridge accepted public scope into internal Linear
+linkage, spec and acceptance publication, claims, implementation and merge coordination.
 The internal loop below binds maintainers and agents acting with maintainer authority;
-external contributors and their tools use the public path without acquiring that authority.
+external contributors do not acquire that authority.
 
 ## The loop (one issue, one agent, one concern)
 

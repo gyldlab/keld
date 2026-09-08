@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Contributing to Keld
+    url: https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md
+    about: Read the public scope, build, test, and pull-request process.
   - name: Questions and ideas
     url: https://github.com/gyldlab/keld/discussions
     about: Ask about current Keld behavior, contribution scope, and future directions.

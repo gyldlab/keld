@@ -16,15 +16,15 @@ Observed 2026-09-07 UTC using the authenticated repository-owner GitHub API:
 
 ## Instruction change
 
-Public-intake owner: `docs/agents/workflow.md`, routed by implementation/coordination. `.agents/review.md` retains branch mechanics and now explicitly scopes its namespace rule to maintainer branches. `.agents/coordination.md` owns the narrower internal merge exception: both PR author and authenticated merger must be `0monish` or `amishabenramani`, and every quality predicate remains required. External contributors and their tools use public GitHub intake/forks without private access; maintainers preserve internal linkage, spec approval, claims, testing and review. No root/nested always instructions changed. CONTRIBUTING and forms consume that owner rather than copy the internal procedure. The public contributor rewrite originally prepared under KEL-178 is included here so the owner and consumer land together; its planning link uses public issue #167 rather than a not-yet-landed ROADMAP file.
+Public intake is owned by `CONTRIBUTING.md`. `docs/agents/workflow.md`, routed by implementation/coordination, links that owner and states only the maintainer transition into private linkage, claims and merge authority. The issue forms link CONTRIBUTING and retain field-specific prompts. `.agents/review.md` retains branch mechanics and now explicitly scopes its namespace rule to maintainer branches. `.agents/coordination.md` owns the narrower internal merge exception: both PR author and authenticated merger must be `0monish` or `amishabenramani`, and every quality predicate remains required. Its Prompt Tracker link consumes the existing task-handoff identity owner rather than copying that model policy. No root/nested always instructions changed. The public contributor rewrite originally prepared under KEL-178 is included here so the owner and consumer land together; its planning link uses public issue #167 rather than a not-yet-landed ROADMAP file.
 
 | Measurement | Before | After |
 |---|---:|---:|
-| UTF-8 bytes | 14703 | 15452 |
-| tiktoken 0.12.0 / o200k_base tokens | 3337 | 3479 |
+| UTF-8 bytes | 14703 | 15091 |
+| tiktoken 0.12.0 / o200k_base tokens | 3337 | 3405 |
 
 The branch-owner qualifier changes `.agents/review.md` from 1896 to 1907 bytes and 436 to 438 o200k_base tokens; its existing budget is unchanged.
-The merge-identity rule changes `.agents/coordination.md` from 3030 to 3311 bytes and 658 to 716 o200k_base tokens (cross-checked with pinned `js-tiktoken` 1.0.21); its routed cap changes from 3072 to 3328 under KEL-190. Automatic root/nested chains are unchanged.
+The merge-identity and Prompt Tracker owner-link rules change `.agents/coordination.md` from 3030 to 3326 bytes and 658 to 729 o200k_base tokens (cross-checked with pinned `js-tiktoken` 1.0.21); its routed cap changes from 3072 to 3328 under KEL-190. Automatic root/nested chains are unchanged.
 
 Rejected alternative: require every external contributor to obtain private Linear/research or a specific agent harness. Required significant-feature spec approval remains before implementation; public intake is not a gate bypass. Preserving explicit critical CODEOWNERS paths maintains the existing review map while changing the owner to the verified team.
 
