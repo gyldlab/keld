@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(windows)]
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -478,13 +478,6 @@ where
     }
 }
 
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
 fn shutdown_was_accepted(state: &AtomicBool) -> bool {
     state.load(Ordering::Acquire)
 }
@@ -664,7 +657,11 @@ impl Supervisor {
         loop {
             match self.events_rx.recv() {
                 Ok(SupervisorEvent::CrashLoopTripped) => {
-                    let err = lock_or_recover(&self.crash_loop_error).clone();
+                    let err = self
+                        .crash_loop_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone();
                     return SupervisorOutcome::CrashLoop(err.unwrap_or(RuntimeError::CrashLoop {
                         crashes: 0,
                         window_secs: 0,
@@ -673,17 +670,31 @@ impl Supervisor {
                     }));
                 }
                 Ok(SupervisorEvent::Failed { .. }) => {
-                    let err = lock_or_recover(&self.terminal_error).clone();
+                    let err = self
+                        .terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone();
                     return SupervisorOutcome::Failed(err.unwrap_or(RuntimeError::Lifecycle {
                         phase: "unknown",
                         source: std::io::Error::other("prepared child failed without diagnostic"),
                     }));
                 }
                 Ok(SupervisorEvent::Stopped) | Err(_) => {
-                    if let Some(error) = lock_or_recover(&self.crash_loop_error).clone() {
+                    if let Some(error) = self
+                        .crash_loop_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                    {
                         return SupervisorOutcome::CrashLoop(error);
                     }
-                    if let Some(error) = lock_or_recover(&self.terminal_error).clone() {
+                    if let Some(error) = self
+                        .terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                    {
                         return SupervisorOutcome::Failed(error);
                     }
                     return SupervisorOutcome::Stopped;
@@ -701,35 +712,51 @@ impl Supervisor {
         loop {
             match self.events_rx.try_recv() {
                 Ok(SupervisorEvent::CrashLoopTripped) => {
-                    let error = lock_or_recover(&self.crash_loop_error).clone().unwrap_or(
-                        RuntimeError::CrashLoop {
+                    let error = self
+                        .crash_loop_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                        .unwrap_or(RuntimeError::CrashLoop {
                             crashes: 0,
                             window_secs: 0,
                             last_exit_code: None,
                             stderr_tail: String::new(),
-                        },
-                    );
+                        });
                     return Some(SupervisorOutcome::CrashLoop(error));
                 }
                 Ok(SupervisorEvent::Failed { .. }) => {
-                    let error = lock_or_recover(&self.terminal_error).clone().unwrap_or(
-                        RuntimeError::Lifecycle {
+                    let error = self
+                        .terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                        .unwrap_or(RuntimeError::Lifecycle {
                             phase: "unknown",
                             source: std::io::Error::other(
                                 "prepared child failed without diagnostic",
                             ),
-                        },
-                    );
+                        });
                     return Some(SupervisorOutcome::Failed(error));
                 }
                 Ok(SupervisorEvent::Stopped) => return Some(SupervisorOutcome::Stopped),
                 Ok(_) => {}
                 Err(mpsc::TryRecvError::Empty) => return None,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    if let Some(error) = lock_or_recover(&self.crash_loop_error).clone() {
+                    if let Some(error) = self
+                        .crash_loop_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                    {
                         return Some(SupervisorOutcome::CrashLoop(error));
                     }
-                    if let Some(error) = lock_or_recover(&self.terminal_error).clone() {
+                    if let Some(error) = self
+                        .terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                    {
                         return Some(SupervisorOutcome::Failed(error));
                     }
                     return Some(SupervisorOutcome::Stopped);
@@ -748,20 +775,29 @@ impl Supervisor {
     /// (KEL-105/KEL-116).
     #[must_use]
     pub fn crash_ledger(&self) -> CrashLedger {
-        lock_or_recover(&self.crashes).clone()
+        self.crashes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Snapshot of stdout/stderr captured so far, across every spawn attempt.
     #[must_use]
     pub fn output(&self) -> CapturedOutput {
-        lock_or_recover(&self.output).clone()
+        self.output
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// OS process id of the currently running child, or `None` between
     /// restart attempts or after supervision has stopped.
     #[must_use]
     pub fn current_pid(&self) -> Option<u32> {
-        *lock_or_recover(&self.current_pid)
+        *self
+            .current_pid
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Marks a caller-accepted shutdown before its reply can make the child
@@ -858,12 +894,14 @@ fn supervise<P>(
             };
             let _ = child.kill();
             let _ = child.wait();
-            *lock_or_recover(current_pid) = None;
-            *lock_or_recover(terminal_error) = Some(terminal);
+            *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            *terminal_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
             return;
         }
-        *lock_or_recover(current_pid) = Some(pid);
+        *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = Some(pid);
         let _ = events_tx.send(SupervisorEvent::Started { pid, attempt });
         let capture_threads = match start_capture_threads(&mut child, output) {
             Ok(threads) => threads,
@@ -879,8 +917,10 @@ fn supervise<P>(
                 let _ = child.kill();
                 let _ = child.wait();
                 finish_capture_threads_after_direct_child(error.threads);
-                *lock_or_recover(current_pid) = None;
-                *lock_or_recover(terminal_error) = Some(terminal);
+                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                *terminal_error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
@@ -900,8 +940,10 @@ fn supervise<P>(
                     let _ = child.kill();
                     let _ = child.wait();
                     finish_capture_threads_after_direct_child(capture_threads);
-                    *lock_or_recover(current_pid) = None;
-                    *lock_or_recover(terminal_error) = Some(terminal);
+                    *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                    *terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
@@ -914,8 +956,10 @@ fn supervise<P>(
             let _ = child.kill();
             let _ = child.wait();
             finish_capture_threads_after_direct_child(capture_threads);
-            *lock_or_recover(current_pid) = None;
-            *lock_or_recover(terminal_error) = Some(terminal);
+            *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            *terminal_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
             return;
         }
@@ -928,7 +972,9 @@ fn supervise<P>(
             // precedes close/kill as architecture 06 requires.
             let self_terminated = wait_for_self_termination(&mut child);
             if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
-                *lock_or_recover(terminal_error) = Some(error);
+                *terminal_error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(error);
                 let _ = child.kill();
                 let _ = child.wait();
                 finish_capture_threads_after_direct_child(capture_threads);
@@ -938,7 +984,7 @@ fn supervise<P>(
                 {
                     record_self_termination(crash_ledger, output, pid, status.code());
                 }
-                *lock_or_recover(current_pid) = None;
+                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
@@ -946,11 +992,13 @@ fn supervise<P>(
             let wait_result = child.wait();
             finish_capture_threads_after_direct_child(capture_threads);
             if let Err(source) = wait_result {
-                *lock_or_recover(terminal_error) = Some(RuntimeError::Lifecycle {
+                *terminal_error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(RuntimeError::Lifecycle {
                     phase: "child shutdown wait",
                     source,
                 });
-                *lock_or_recover(current_pid) = None;
+                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
@@ -960,7 +1008,7 @@ fn supervise<P>(
             {
                 record_self_termination(crash_ledger, output, pid, status.code());
             }
-            *lock_or_recover(current_pid) = None;
+            *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
             let _ = events_tx.send(SupervisorEvent::Stopped);
             return;
         }
@@ -971,22 +1019,26 @@ fn supervise<P>(
                 #[cfg(not(windows))]
                 let restart_cause = RevocationCause::AdmissionFailed;
                 if let Err(error) = lease.revoke(restart_cause) {
-                    *lock_or_recover(terminal_error) = Some(error);
+                    *terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
                     let _ = child.kill();
                     let _ = child.wait();
                     finish_capture_threads_after_direct_child(capture_threads);
-                    *lock_or_recover(current_pid) = None;
+                    *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
                 let _ = child.kill();
                 if let Err(source) = child.wait() {
-                    *lock_or_recover(terminal_error) = Some(RuntimeError::Lifecycle {
+                    *terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(RuntimeError::Lifecycle {
                         phase: "child restart wait",
                         source,
                     });
                     finish_capture_threads_after_direct_child(capture_threads);
-                    *lock_or_recover(current_pid) = None;
+                    *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
@@ -996,12 +1048,12 @@ fn supervise<P>(
                 // provisioning on a process this supervisor does not own.
                 // KEL-78 remains the descendant reaping owner.
                 finish_capture_threads_after_direct_child(capture_threads);
-                *lock_or_recover(current_pid) = None;
+                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 None
             }
             WaitResult::Exited(status) => {
                 finish_capture_threads_after_direct_child(capture_threads);
-                *lock_or_recover(current_pid) = None;
+                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 let code = status.code();
                 restart_attempt.store(0, Ordering::Release);
                 let _ = events_tx.send(SupervisorEvent::Exited { pid, code });
@@ -1013,7 +1065,9 @@ fn supervise<P>(
                     record_self_termination(crash_ledger, output, pid, code);
                 }
                 if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
-                    *lock_or_recover(terminal_error) = Some(error);
+                    *terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
@@ -1037,9 +1091,14 @@ fn supervise<P>(
                 crashes: crash_count,
                 window_secs: policy.window_secs,
                 last_exit_code: code,
-                stderr_tail: lock_or_recover(output).stderr_tail(2000),
+                stderr_tail: output
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .stderr_tail(2000),
             };
-            *lock_or_recover(crash_loop_error) = Some(err);
+            *crash_loop_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(err);
             let _ = events_tx.send(SupervisorEvent::CrashLoopTripped);
             return;
         }
@@ -1056,7 +1115,9 @@ fn supervise<P>(
                 return;
             }
             Err(error) => {
-                *lock_or_recover(terminal_error) = Some(error);
+                *terminal_error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(error);
                 let _ = events_tx.send(SupervisorEvent::Failed {
                     attempt: attempt.saturating_add(1),
                 });
@@ -1074,7 +1135,9 @@ fn supervise<P>(
             Ok(next_prepared_child) if stop_was_requested(shutdown, accepted_shutdown) => {
                 let PreparedChild { lease, .. } = next_prepared_child;
                 if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
-                    *lock_or_recover(terminal_error) = Some(error);
+                    *terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 } else {
                     let _ = events_tx.send(SupervisorEvent::Stopped);
@@ -1086,7 +1149,9 @@ fn supervise<P>(
                     if stop_was_requested(shutdown, accepted_shutdown) {
                         let mut next_child = next_child;
                         if let Err(error) = next_lease.revoke(RevocationCause::Shutdown) {
-                            *lock_or_recover(terminal_error) = Some(error);
+                            *terminal_error
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner) = Some(error);
                             let _ = next_child.kill();
                             let _ = next_child.wait();
                             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
@@ -1101,13 +1166,17 @@ fn supervise<P>(
                     lease = next_lease;
                 }
                 Err(error) => {
-                    *lock_or_recover(terminal_error) = Some(error);
+                    *terminal_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
             },
             Err(error) => {
-                *lock_or_recover(terminal_error) = Some(error);
+                *terminal_error
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(error);
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
@@ -1311,7 +1380,9 @@ fn publish_capture_drain_budget(
     budget: &AtomicU64,
     iteration_lock: &Mutex<()>,
 ) {
-    let _iteration = lock_or_recover(iteration_lock);
+    let _iteration = iteration_lock
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let handle = handle.load(Ordering::Acquire);
     let available = if handle == 0 {
         0
@@ -1330,7 +1401,10 @@ struct CaptureHandleRetirement {
 #[cfg(windows)]
 impl Drop for CaptureHandleRetirement {
     fn drop(&mut self) {
-        let _iteration = lock_or_recover(&self.iteration_lock);
+        let _iteration = self
+            .iteration_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.handle.store(0, Ordering::Release);
     }
 }
@@ -1441,13 +1515,13 @@ fn record_self_termination(
     // describe the same point in the stream. Status zero retains no tail, so
     // its fixed-size record adds no hot-path allocation.
     let (stdout_len, stderr_tail) = {
-        let captured = lock_or_recover(output);
+        let captured = output.lock().unwrap_or_else(PoisonError::into_inner);
         (
             captured.stdout.len(),
             (exit_code != Some(0)).then(|| captured.stderr_tail(2000)),
         )
     };
-    let mut ledger = lock_or_recover(crash_ledger);
+    let mut ledger = crash_ledger.lock().unwrap_or_else(PoisonError::into_inner);
     ledger.self_termination_count = ledger.self_termination_count.saturating_add(1);
     ledger.last_self_termination = Some(SelfTerminationRecord {
         pid,
@@ -1481,7 +1555,7 @@ fn spawn_capture_thread(
                     Ok(0) | Err(_) => return,
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]);
-                        let mut guard = lock_or_recover(&output);
+                        let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
                         if is_stdout {
                             guard.stdout.push_str(&chunk);
                         } else {
@@ -1515,7 +1589,9 @@ fn spawn_capture_thread(
             };
             let mut buf = [0_u8; 4096];
             loop {
-                let iteration = lock_or_recover(&iteration_lock);
+                let iteration = iteration_lock
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 let remaining = budget.load(Ordering::Acquire);
                 if remaining == 0 {
                     return;
@@ -1542,7 +1618,7 @@ fn spawn_capture_thread(
                     Ok(0) | Err(_) => return,
                     Ok(n) => {
                         let chunk = String::from_utf8_lossy(&buf[..n]);
-                        let mut guard = lock_or_recover(&output);
+                        let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
                         if is_stdout {
                             guard.stdout.push_str(&chunk);
                         } else {
@@ -1631,7 +1707,10 @@ mod tests {
                 RevocationCause::SpawnFailed => "spawn-failed",
                 RevocationCause::WaitFailed => "wait-failed",
             };
-            lock_or_recover(&self.record).push(format!("revoke:{}:{cause}", self.attempt));
+            self.record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(format!("revoke:{}:{cause}", self.attempt));
             Ok(())
         }
     }
@@ -1679,7 +1758,10 @@ mod tests {
         type Lease = RecordingLease;
 
         fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
-            lock_or_recover(&self.record).push(format!("prepare:{attempt}"));
+            self.record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(format!("prepare:{attempt}"));
             let command = self.commands.remove(0);
             Ok(PreparedChild {
                 command: command.into(),
@@ -2026,7 +2108,7 @@ mod tests {
             SupervisorOutcome::Failed(error) => panic!("prepared lifecycle must not fail: {error}"),
         }
         assert_eq!(
-            *lock_or_recover(&record),
+            *record.lock().unwrap_or_else(PoisonError::into_inner),
             vec![
                 "prepare:1".to_owned(),
                 "revoke:1:exited".to_owned(),
@@ -2049,7 +2131,7 @@ mod tests {
         );
         assert!(matches!(result, Err(RuntimeError::Spawn(_))), "{result:?}");
         assert_eq!(
-            *lock_or_recover(&record),
+            *record.lock().unwrap_or_else(PoisonError::into_inner),
             vec!["prepare:1".to_owned(), "revoke:1:spawn-failed".to_owned()],
             "failed OS spawn must revoke its prepared lease"
         );
@@ -2176,11 +2258,13 @@ mod tests {
             "shutdown must win before g2 becomes observable"
         );
         assert!(
-            lock_or_recover(&record)
+            record
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
                 .iter()
                 .any(|entry| entry == "revoke:2:shutdown"),
             "prepared g2 lease must be revoked when shutdown wins: {:?}",
-            lock_or_recover(&record)
+            record.lock().unwrap_or_else(PoisonError::into_inner)
         );
     }
 
@@ -2213,7 +2297,7 @@ mod tests {
             SupervisorOutcome::Failed(error) => panic!("shutdown must not fail: {error}"),
         }
         assert_eq!(
-            *lock_or_recover(&record),
+            *record.lock().unwrap_or_else(PoisonError::into_inner),
             vec!["prepare:1".to_owned(), "revoke:1:exited".to_owned(),],
             "shutdown during backoff must not prepare a successor"
         );

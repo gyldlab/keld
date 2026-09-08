@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -133,7 +133,11 @@ fn report_test_handshake_entry(
     generation_deadline: Option<Instant>,
     peer_deadline: Instant,
 ) {
-    if let Some(witness) = lock_or_recover(witness).take() {
+    if let Some(witness) = witness
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+    {
         let _ = witness.entered.send(TestHandshakeEntry {
             entered_at: Instant::now(),
             generation_deadline,
@@ -144,7 +148,7 @@ fn report_test_handshake_entry(
 
 #[cfg(test)]
 fn wait_at_test_consume_gate(gate: &Mutex<Option<TestConsumeGate>>) {
-    if let Some(gate) = lock_or_recover(gate).take() {
+    if let Some(gate) = gate.lock().unwrap_or_else(PoisonError::into_inner).take() {
         let _ = gate.entered.send(());
         let _ = gate.release.recv();
     }
@@ -316,7 +320,11 @@ impl BootstrapListener {
     fn install_handshake_witness(&self, witness: TestHandshakeWitness) {
         #[cfg(unix)]
         {
-            let replaced = lock_or_recover(&self.handshake_witness).replace(witness);
+            let replaced = self
+                .handshake_witness
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .replace(witness);
             assert!(replaced.is_none(), "handshake witness already installed");
         }
         #[cfg(windows)]
@@ -325,7 +333,11 @@ impl BootstrapListener {
 
     #[cfg(all(test, unix))]
     fn install_before_consume_gate(&self, gate: TestConsumeGate) {
-        let replaced = lock_or_recover(&self.before_consume).replace(gate);
+        let replaced = self
+            .before_consume
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(gate);
         assert!(replaced.is_none(), "before-consume gate already installed");
     }
 
@@ -466,7 +478,10 @@ impl BootstrapListener {
             // retrying would drop legitimate peers forever while the host fault
             // that caused it stayed invisible. It propagates.
             let active_stream = stream.try_clone()?;
-            *lock_or_recover(&self.active_stream) = Some(active_stream);
+            *self
+                .active_stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(active_stream);
             let _active = ActiveHandshake {
                 active_stream: Arc::clone(&self.active_stream),
             };
@@ -521,7 +536,7 @@ impl BootstrapListener {
     fn try_accept(&self) -> io::Result<Option<BootstrapStream>> {
         #[cfg(unix)]
         {
-            let guard = lock_or_recover(&self.listener);
+            let guard = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(listener) = guard.as_ref() else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotConnected,
@@ -545,7 +560,7 @@ impl BootstrapListener {
         }
         #[cfg(windows)]
         {
-            let guard = lock_or_recover(&self.listener);
+            let guard = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(listener) = guard.as_ref() else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotConnected,
@@ -571,7 +586,11 @@ impl BootstrapListener {
         )
     )]
     fn close_endpoint(&self) -> io::Result<()> {
-        let listener = lock_or_recover(&self.listener).take();
+        let listener = self
+            .listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         self.listening.store(false, Ordering::Release);
         #[cfg(windows)]
         {
@@ -614,7 +633,12 @@ impl BootstrapCancellation {
         #[cfg(unix)]
         {
             self.stopping.store(true, Ordering::SeqCst);
-            if let Some(stream) = lock_or_recover(&self.active_stream).take() {
+            if let Some(stream) = self
+                .active_stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
                 let _ = stream.shutdown_app_link();
             }
             if !self.listening.load(Ordering::Acquire) {
@@ -652,14 +676,10 @@ struct ActiveHandshake {
 #[cfg(unix)]
 impl Drop for ActiveHandshake {
     fn drop(&mut self) {
-        *lock_or_recover(&self.active_stream) = None;
-    }
-}
-
-fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
+        *self
+            .active_stream
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
     }
 }
 
@@ -811,10 +831,15 @@ impl WindowsNamedPipeBootstrapListener {
     #[must_use]
     pub fn cancellation(&self) -> WindowsNamedPipeBootstrapCancellation {
         WindowsNamedPipeBootstrapCancellation {
-            server: lock_or_recover(&self.server).as_ref().map_or_else(
-                WindowsNamedPipeCanceller::empty,
-                WindowsNamedPipeServer::canceller,
-            ),
+            server: self
+                .server
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .map_or_else(
+                    WindowsNamedPipeCanceller::empty,
+                    WindowsNamedPipeServer::canceller,
+                ),
             stopping: Arc::clone(&self.stopping),
         }
     }
@@ -830,7 +855,10 @@ impl WindowsNamedPipeBootstrapListener {
         &self,
         observer: &dyn BootstrapRejectionObserver,
     ) -> io::Result<Option<WindowsNamedPipeBootstrapStream>> {
-        let _admission = lock_or_recover(&self.admission);
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         match self.accept_loop(None, APP_LINK_IO_DEADLINE, observer)? {
             WindowsNamedPipeBootstrapAdmission::Authenticated(stream) => Ok(Some(stream)),
             WindowsNamedPipeBootstrapAdmission::Cancelled
@@ -851,7 +879,10 @@ impl WindowsNamedPipeBootstrapListener {
         deadline: Instant,
         observer: &dyn BootstrapRejectionObserver,
     ) -> io::Result<WindowsNamedPipeBootstrapAdmission> {
-        let _admission = lock_or_recover(&self.admission);
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.accept_loop(Some(deadline), APP_LINK_IO_DEADLINE, observer)
     }
 
@@ -866,7 +897,10 @@ impl WindowsNamedPipeBootstrapListener {
         observer: &dyn BootstrapRejectionObserver,
     ) -> io::Result<WindowsNamedPipeBootstrapAdmission> {
         loop {
-            let server = lock_or_recover(&self.server)
+            let server = self
+                .server
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
                 .as_ref()
                 .cloned()
                 .ok_or_else(|| {
@@ -877,21 +911,41 @@ impl WindowsNamedPipeBootstrapListener {
                 })?;
             if self.stopping.load(Ordering::Acquire) {
                 server.close_terminal()?;
-                drop(lock_or_recover(&self.server).take());
+                drop(
+                    self.server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take(),
+                );
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 server.close_terminal()?;
-                drop(lock_or_recover(&self.server).take());
+                drop(
+                    self.server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take(),
+                );
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             }
             match server.accept_until(deadline)? {
                 WaitOutcome::Cancelled => {
-                    drop(lock_or_recover(&self.server).take());
+                    drop(
+                        self.server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
                     return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
                 WaitOutcome::DeadlineElapsed => {
-                    drop(lock_or_recover(&self.server).take());
+                    drop(
+                        self.server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
                     return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
                 }
                 WaitOutcome::PeerClosed => {
@@ -903,7 +957,12 @@ impl WindowsNamedPipeBootstrapListener {
             }
             if self.stopping.load(Ordering::Acquire) {
                 server.close_terminal()?;
-                drop(lock_or_recover(&self.server).take());
+                drop(
+                    self.server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take(),
+                );
                 return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
             }
             let handshake_started = Instant::now();
@@ -911,7 +970,12 @@ impl WindowsNamedPipeBootstrapListener {
                 peer_handshake_window(handshake_started, deadline, handshake_deadline)
             else {
                 server.close_terminal()?;
-                drop(lock_or_recover(&self.server).take());
+                drop(
+                    self.server
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take(),
+                );
                 return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
             };
             let mut stream = WindowsNamedPipeBootstrapStream(server.stream()?);
@@ -934,30 +998,55 @@ impl WindowsNamedPipeBootstrapListener {
                     if self.stopping.load(Ordering::Acquire) {
                         drop(stream);
                         server.close_terminal()?;
-                        drop(lock_or_recover(&self.server).take());
+                        drop(
+                            self.server
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .take(),
+                        );
                         return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                     }
                     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                         drop(stream);
                         server.close_terminal()?;
-                        drop(lock_or_recover(&self.server).take());
+                        drop(
+                            self.server
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .take(),
+                        );
                         return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
                     }
                     stream.0.set_absolute_deadline(None);
                     server.consume();
-                    drop(lock_or_recover(&self.server).take());
+                    drop(
+                        self.server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
                     return Ok(WindowsNamedPipeBootstrapAdmission::Authenticated(stream));
                 }
                 Ok(false) => {
                     drop(stream);
                     server.close_terminal()?;
-                    drop(lock_or_recover(&self.server).take());
+                    drop(
+                        self.server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
                     return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
                 Err(_) if self.stopping.load(Ordering::Acquire) => {
                     drop(stream);
                     server.close_terminal()?;
-                    drop(lock_or_recover(&self.server).take());
+                    drop(
+                        self.server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
                     return Ok(WindowsNamedPipeBootstrapAdmission::Cancelled);
                 }
                 Err(IpcError::Timeout)
@@ -965,7 +1054,12 @@ impl WindowsNamedPipeBootstrapListener {
                 {
                     drop(stream);
                     server.close_terminal()?;
-                    drop(lock_or_recover(&self.server).take());
+                    drop(
+                        self.server
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
                     return Ok(WindowsNamedPipeBootstrapAdmission::DeadlineElapsed);
                 }
                 Err(error) => {
@@ -982,7 +1076,9 @@ impl WindowsNamedPipeBootstrapListener {
         &self,
         inspect: impl FnOnce(&std::os::windows::io::OwnedHandle) -> io::Result<T>,
     ) -> io::Result<T> {
-        lock_or_recover(&self.server)
+        self.server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "bootstrap consumed"))?
             .inspect_owned_pipe(inspect)
@@ -990,26 +1086,37 @@ impl WindowsNamedPipeBootstrapListener {
 
     #[cfg(test)]
     fn is_connected(&self) -> bool {
-        lock_or_recover(&self.server)
+        self.server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .is_some_and(WindowsNamedPipeServer::is_connected)
     }
 
     #[cfg(test)]
     fn is_accept_pending(&self) -> bool {
-        lock_or_recover(&self.server)
+        self.server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .is_some_and(WindowsNamedPipeServer::is_accept_pending)
     }
 
     #[cfg(test)]
     fn install_before_consume_gate(&self, gate: TestConsumeGate) {
-        *lock_or_recover(&self.before_consume) = Some(gate);
+        *self
+            .before_consume
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(gate);
     }
 
     #[cfg(test)]
     fn install_handshake_witness(&self, witness: TestHandshakeWitness) {
-        let replaced = lock_or_recover(&self.handshake_witness).replace(witness);
+        let replaced = self
+            .handshake_witness
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(witness);
         assert!(replaced.is_none(), "handshake witness already installed");
     }
 
@@ -1023,8 +1130,14 @@ impl WindowsNamedPipeBootstrapListener {
         // CancelIoEx only requests cancellation. The admission owner keeps
         // every stack OVERLAPPED/buffer live until it observes completion;
         // do not close the pipe handle until that owner releases this guard.
-        let _admission = lock_or_recover(&self.admission);
-        let close_error = lock_or_recover(&self.server)
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let close_error = self
+            .server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
             .and_then(|server| server.close_terminal().err());
         close_error.or(cancel_error).map_or(Ok(()), Err)
@@ -1138,7 +1251,7 @@ mod named_pipe_tests {
     use std::io::{self, Read as _, Write as _};
     use std::os::windows::io::AsRawHandle as _;
     use std::process::{Child, Command, Output, Stdio};
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::{Arc, Mutex, PoisonError, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -1157,7 +1270,7 @@ mod named_pipe_tests {
     use super::{
         BootstrapRejection, BootstrapRejectionObserver, TestConsumeGate,
         WindowsNamedPipeBootstrapAdmission, WindowsNamedPipeBootstrapListener,
-        WindowsNamedPipeBootstrapStream, lock_or_recover,
+        WindowsNamedPipeBootstrapStream,
     };
 
     #[derive(Clone)]
@@ -1168,7 +1281,10 @@ mod named_pipe_tests {
 
     impl BootstrapRejectionObserver for RecordingObserver {
         fn rejected(&self, rejection: BootstrapRejection) {
-            lock_or_recover(&self.seen).push(rejection);
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(rejection);
             if let Some(notify) = &self.notify {
                 let _ = notify.send(rejection);
             }
@@ -1183,7 +1299,11 @@ mod named_pipe_tests {
     impl BootstrapRejectionObserver for BlockingObserver {
         fn rejected(&self, rejection: BootstrapRejection) {
             let _ = self.observed.send(rejection);
-            let _ = lock_or_recover(&self.release).recv();
+            let _ = self
+                .release
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv();
         }
     }
 
@@ -1355,7 +1475,10 @@ socket.end();
                 outcome,
                 WindowsNamedPipeBootstrapAdmission::Authenticated(_)
             ));
-            assert_eq!(*lock_or_recover(&seen), vec![expected]);
+            assert_eq!(
+                *seen.lock().unwrap_or_else(PoisonError::into_inner),
+                vec![expected]
+            );
             return;
         }
         assert_eq!(
@@ -1384,7 +1507,10 @@ socket.end();
             outcome,
             WindowsNamedPipeBootstrapAdmission::Authenticated(_)
         ));
-        assert_eq!(*lock_or_recover(&seen), vec![expected]);
+        assert_eq!(
+            *seen.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![expected]
+        );
     }
 
     #[test]
@@ -1468,7 +1594,10 @@ socket.end();
     fn shipping_client_waits_for_busy_instance_then_connects() {
         let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind");
         let endpoint = listener.endpoint().to_owned();
-        let server = lock_or_recover(&listener.server)
+        let server = listener
+            .server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .cloned()
             .expect("live server");
@@ -1514,7 +1643,10 @@ socket.end();
     fn busy_client_deadline_is_timeout_and_past_deadline_never_connects() {
         let listener = WindowsNamedPipeBootstrapListener::bind().expect("bind busy listener");
         let endpoint = listener.endpoint().to_owned();
-        let server = lock_or_recover(&listener.server)
+        let server = listener
+            .server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .cloned()
             .expect("live busy server");
@@ -1551,7 +1683,10 @@ socket.end();
         let timeout = WindowsNamedPipeServer::connect_client_until(available.endpoint(), past)
             .expect_err("past deadline must not open an available instance");
         assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
-        let available_server = lock_or_recover(&available.server)
+        let available_server = available
+            .server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .cloned()
             .expect("live available server");
@@ -1669,7 +1804,7 @@ socket.end();
             outcome,
             WindowsNamedPipeBootstrapAdmission::Authenticated(_)
         ));
-        let seen = lock_or_recover(&seen);
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!(*seen, vec![BootstrapRejection::HelloAuth]);
         assert_eq!(seen[0].code(), "KELD-IPC-007");
     }
@@ -1749,7 +1884,10 @@ socket.end();
             .join()
             .expect("join Bun echo server")
             .expect("serve Bun echo");
-        assert_eq!(*lock_or_recover(&seen), vec![BootstrapRejection::HelloAuth]);
+        assert_eq!(
+            *seen.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![BootstrapRejection::HelloAuth]
+        );
     }
 
     #[test]
@@ -1793,7 +1931,10 @@ socket.end();
             outcome,
             WindowsNamedPipeBootstrapAdmission::Authenticated(_)
         ));
-        assert_eq!(*lock_or_recover(&seen), vec![BootstrapRejection::Timeout]);
+        assert_eq!(
+            *seen.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![BootstrapRejection::Timeout]
+        );
     }
 
     #[test]
@@ -2377,8 +2518,8 @@ mod tests {
     use std::io::ErrorKind;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
-    use std::sync::Arc;
     use std::sync::mpsc;
+    use std::sync::{Arc, PoisonError};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -2395,7 +2536,10 @@ mod tests {
 
     impl BootstrapRejectionObserver for RecordingObserver {
         fn rejected(&self, rejection: BootstrapRejection) {
-            super::lock_or_recover(&self.seen).push(rejection);
+            self.seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(rejection);
         }
     }
 
@@ -2558,7 +2702,7 @@ mod tests {
         drop(role);
         server.join().expect("server join");
 
-        let seen = super::lock_or_recover(&seen);
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!(*seen, vec![BootstrapRejection::HelloAuth]);
         assert_eq!(seen[0].code(), "KELD-IPC-007");
     }
@@ -2608,7 +2752,7 @@ mod tests {
         drop(role);
         server.join().expect("server join");
 
-        let seen = super::lock_or_recover(&seen);
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(
             !seen.contains(&BootstrapRejection::HelloAuth),
             "a peer that sent no token must not be recorded as token failure, got {seen:?}"
