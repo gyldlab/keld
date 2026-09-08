@@ -11,9 +11,11 @@
   per Keld release (`keld.lock`); CLI downloads the pinned runtime once per machine
   (content-addressed cache), `keld-pack` embeds it per app at build. There are no
   parallel `KELD_LINK`, `KELD_SHM` or `KELD_CONTRACT` contracts.
-- Trimming: ship Bun as-is first (compressed ~25–35 MB inside installers); track
-  upstream size work; `runtime: "none"` mode omits it entirely (host-only apps score
-  Tauri-class sizes). A `runtime: "node"` escape hatch is deliberately **not** in v1 —
+- Trimming: ship Bun as-is first (its compressed size inside an installer is unmeasured
+  for the pinned Bun; the scoreboard records a summary-only zstd-19 figure of
+  16.8 MB for Bun 1.3.14 and architecture 01 §5 budgets 20,000,000 B for the whole
+  `runtime = bun` installer); track upstream size work; `runtime: "none"` mode omits it
+  entirely (host-only apps score Tauri-class sizes). A `runtime: "node"` escape hatch is deliberately **not** in v1 —
   Bun's Node-compat is the compat plan; revisit only if corpus data forces it.
 - **v0 (KEL-70/KEL-30):** `keld_runtime::Supervisor` provides exponential-backoff restart,
   crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one host-owned Bun

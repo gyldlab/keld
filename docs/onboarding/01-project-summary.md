@@ -163,7 +163,7 @@ hello-world app on an M-series Mac / mid-range Windows laptop:
 | Installer size (runtime = bun) | ≤ 20 MB | 85–150 MB |
 | Installer size (runtime = none) | ≤ 6 MB | — |
 | Cold start → first paint | ≤ 300 ms | 1–3 s |
-| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB |
+| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MiB (92,160 KiB) | 150–300 MB |
 | kipc small-message round trip p99 | ≤ 100 µs | ~ms-class |
 | kipc bulk throughput (shm lane) | ≥ 1 GB/s | n/a (copies) |
 | Update patch, 1-line JS change | ≤ 50 KB | full installer |

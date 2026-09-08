@@ -281,8 +281,10 @@ compromised keeps the host's threat model uniform).
   messages; everything else completes on I/O threads.
 - Frame header parse is branch-lean; struct layouts audited (`#[repr]`, size asserts in
   tests — the Bun port's "56-byte Path" lesson).
-- Benchmarks in `bench/ipc/`: small-call RTT, 64 KB/1 MB/64 MB bulk, 1M-msg soak with
-  backpressure, restart-storm. Budgets: RTT p99 ≤ 100 µs; bulk ≥ 1 GB/s; zero drops.
+- Benchmarks in `bench/ipc/`: small-call RTT, 64 KiB/1 MiB/16 MiB inline bulk (a
+  shared-memory lane, once one exists, is measured as its own lane), 1M-msg soak with
+  backpressure, restart-storm. Budgets: RTT p99 ≤ 100 µs; bulk ≥ 1 GB/s only when a shm
+  lane is enabled (architecture 01 §5); zero drops.
 
 ## 7. Failure & lifecycle semantics
 
