@@ -22,7 +22,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessHandleCount, OpenProcess, PROCESS_DUP_HANDLE,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
     WaitForSingleObject,
 };
@@ -35,6 +35,16 @@ const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetConsoleCtrlHandler(
+        handler: Option<unsafe extern "system" fn(u32) -> i32>,
+        add: i32,
+    ) -> i32;
+    fn GenerateConsoleCtrlEvent(event: u32, process_group: u32) -> i32;
+    fn GetConsoleProcessList(processes: *mut u32, capacity: u32) -> u32;
+}
 
 unsafe extern "system" {
     fn NtQuerySystemInformation(
@@ -701,6 +711,175 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
 }
 
 #[test]
+fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
+    // A separate hidden console keeps the real broadcast away from nextest and
+    // unrelated tests. Only the inner observer ignores Ctrl+C, after CLI spawn.
+    if std::env::var_os("KELD_T4_CONSOLE_CASE").is_none() {
+        let capture = tempfile::tempdir().expect("console test captures");
+        let stdout = capture.path().join("stdout");
+        let stderr = capture.path().join("stderr");
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath $env:KELD_T4_CONSOLE_EXE -ArgumentList @('shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup','--exact','--nocapture') -WindowStyle Hidden -RedirectStandardOutput $env:KELD_T4_CONSOLE_STDOUT -RedirectStandardError $env:KELD_T4_CONSOLE_STDERR -PassThru; $null=$p.Handle; if (!$p.WaitForExit(90000)) { $p.Kill(); throw 'isolated console regression timed out' }; if ($null -eq $p.ExitCode) { throw 'missing isolated console exit status' }; exit $p.ExitCode",
+            ])
+            .env("KELD_T4_CONSOLE_CASE", "1")
+            .env("KELD_T4_CONSOLE_PARENT", std::process::id().to_string())
+            .env("KELD_T4_CONSOLE_EXE", std::env::current_exe().expect("test executable"))
+            .env("KELD_T4_CONSOLE_STDOUT", &stdout)
+            .env("KELD_T4_CONSOLE_STDERR", &stderr)
+            .output()
+            .expect("start isolated console regression");
+        let stdout = fs::read_to_string(stdout).expect("console stdout");
+        let stderr = fs::read_to_string(stderr).expect("console stderr");
+        assert!(
+            output.status.success(),
+            "isolated console failed: {}\n{stdout}\n{stderr}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{stdout}");
+        return;
+    }
+    run_console_ctrl_c_case();
+}
+
+fn run_console_ctrl_c_case() {
+    // SAFETY: this disposable console observer may inherit nextest's Ctrl+C
+    // ignore attribute. Establish the ordinary terminal disposition before the
+    // CLI inherits it; null changes the attribute without installing a callback.
+    assert_ne!(unsafe { SetConsoleCtrlHandler(None, 0) }, 0);
+    let fixture = ProductFixture::new();
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("console control");
+    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("console beacon");
+    let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
+    fs::write(fixture.project.join("index.html"), format!(
+        "<!doctype html><title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+    )).expect("console renderer");
+    let helper = prepare_keld_dev_helper(&fixture);
+    let mut cli = Command::new(helper)
+        .args(["keld_dev_windows_helper", "--exact", "--nocapture"])
+        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
+        .env(
+            "KELD_T1B_CONTROL",
+            control
+                .local_addr()
+                .expect("control address")
+                .port()
+                .to_string(),
+        )
+        .env("KELD_T4_JOB_DESCENDANT", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("console CLI");
+    let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let host_pid =
+            wait_for_child_process(cli.id(), "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+        let sentinel_pid = wait_for_cleanup_sentinel(cli.id(), Instant::now() + PRODUCT_DEADLINE);
+        let (reader, _writer, bun_pid, _, descendant_pid) =
+            accept_ready_generation_with_descendant(&control, &mut cli);
+        expect_renderer_beacon(beacon, "console rendered state");
+        let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+        let host = open_process_for_wait(host_pid, false);
+        let bun = open_process_for_wait(bun_pid, false);
+        let descendant = open_process_for_wait(descendant_pid, false);
+        let sentinel = open_process_for_wait(sentinel_pid, false);
+        assert_console_broadcast_scope(cli.id(), host_pid);
+
+        // SAFETY: null selects the documented per-process ignore attribute. The CLI
+        // already inherited the enabled disposition; only this disposable observer
+        // changes. No callback or borrowed pointer crosses the call.
+        assert_ne!(unsafe { SetConsoleCtrlHandler(None, 1) }, 0);
+        // SAFETY: CTRL_C_EVENT (0), group 0 broadcasts to this isolated console.
+        // The parent test runner is attached to a different console.
+        assert_ne!(unsafe { GenerateConsoleCtrlEvent(0, 0) }, 0);
+        let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+        assert_process_signaled(&host, "Ctrl+C host");
+        assert_process_signaled(&bun, "Ctrl+C Bun");
+        assert_process_signaled(&descendant, "Ctrl+C descendant");
+        assert_process_signaled(&sentinel, "Ctrl+C sentinel");
+        wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+        drop(reader);
+        let mut host_status = 0;
+        // SAFETY: the retained, signaled process handle has query access and the
+        // output points to a live u32 for the duration of the call.
+        assert_ne!(
+            unsafe { GetExitCodeProcess(host.as_raw_handle().cast(), &raw mut host_status) },
+            0
+        );
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        cli.stdout
+            .take()
+            .expect("console stdout")
+            .read_to_string(&mut stdout)
+            .expect("read console stdout");
+        cli.stderr
+            .take()
+            .expect("console stderr")
+            .read_to_string(&mut stderr)
+            .expect("read console stderr");
+        println!(
+            "KELD_WINDOWS_CTRL_C cli={} host={host_pid} bun={bun_pid} descendant={descendant_pid} sentinel={sentinel_pid} cli_status={cli_status} host_status={host_status} stages=0 stdout={stdout:?} stderr={stderr:?}",
+            cli.id()
+        );
+        assert_eq!(
+            cli_status.code(),
+            Some(-1_073_741_510),
+            "native CLI interrupt classification"
+        );
+        assert_eq!(
+            host_status, 0,
+            "Ctrl+C must close the CLI lease and preserve the host shutdown tail; stdout={stdout:?}, stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains("KEL96_T2_FORWARDED_LOG"),
+            "host capture lost: {stdout:?}"
+        );
+        let relaunched = run_product_cycle(&fixture, "post-ctrl-c");
+        println!(
+            "KELD_WINDOWS_CTRL_C_RELAUNCH host={} bun={}",
+            relaunched.host_pid, relaunched.bun_pid
+        );
+    }));
+    if let Err(failure) = observation {
+        // Keep precondition failures from orphaning the terminal-facing helper.
+        // Killing this exact fixture child closes the existing host lease.
+        let _ = cli.kill();
+        let _ = cli.wait();
+        std::panic::resume_unwind(failure);
+    }
+}
+
+fn assert_console_broadcast_scope(cli_pid: u32, host_pid: u32) {
+    let mut processes = [0_u32; 64];
+    // SAFETY: the writable array holds exactly the advertised number of PIDs.
+    let count = unsafe { GetConsoleProcessList(processes.as_mut_ptr(), 64) };
+    assert!(
+        count > 0 && count <= 64,
+        "console census failed or exceeded capacity: {count}"
+    );
+    let attached = &processes[..usize::try_from(count).expect("bounded console count")];
+    let parent: u32 = std::env::var("KELD_T4_CONSOLE_PARENT")
+        .expect("outer test process identity")
+        .parse()
+        .expect("outer test PID");
+    assert!(
+        !attached.contains(&parent),
+        "broadcast would reach outer runner: {attached:?}"
+    );
+    assert!(
+        attached.contains(&std::process::id()),
+        "observer absent: {attached:?}"
+    );
+    assert!(attached.contains(&cli_pid), "CLI absent: {attached:?}");
+    assert!(attached.contains(&host_pid), "host absent: {attached:?}");
+    println!("KELD_WINDOWS_CTRL_C_CONSOLE outer={parent} attached={attached:?}");
+}
+
+#[test]
 fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches() {
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind host-death control");
@@ -878,9 +1057,12 @@ fn open_process_for_census(pid: u32) -> OwnedHandle {
 }
 
 fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
-    let access = PROCESS_SYNCHRONIZE | if terminate { PROCESS_TERMINATE } else { 0 };
-    // SAFETY: PID belongs to a live test-owned process. The access is wait plus
-    // optional host-only termination, and the returned handle is converted once.
+    let access = PROCESS_SYNCHRONIZE
+        | PROCESS_QUERY_LIMITED_INFORMATION
+        | if terminate { PROCESS_TERMINATE } else { 0 };
+    // SAFETY: PID belongs to a live test-owned process. Access permits wait and
+    // exit-status observation plus optional host-only termination. The returned
+    // handle is converted once.
     let raw = unsafe { OpenProcess(access, 0, pid) };
     assert!(
         !raw.is_null(),
