@@ -3,6 +3,9 @@
 Load for claims, worktrees, OS acceptance, or handoff.
 `docs/agents/workflow.md` owns lifecycle; review owns git.
 
+Handoffs MUST follow Prompt Tracker `docs/06-graph-engineering.md` for
+system/client/exact-model identity.
+
 ## Worktrees and ownership
 
 - Before adding one, map every worktree to its PR/claim. Remove and prune only clean
@@ -52,6 +55,10 @@ Research branches obey `.agents/research.md`.
 The repository-owner standing delegation requires the issue agent to merge a Keld PR
 without another approval question only after every predicate below passes.
 Default eligible merge: `merge-when-complete`.
+
+Waive extra human review only if GitHub reports author and merger as `0monish` or
+`amishabenramani`; verify both before merge. Native bypass checks merger only; others need
+human review.
 
 - Scope, winning claim, required approval artifacts, current base, dependencies and
   single-writer collisions are reconciled.
