@@ -20,7 +20,7 @@ Public-intake owner: `docs/agents/workflow.md`, routed by implementation/coordin
 
 | Measurement | Before | After |
 |---|---:|---:|
-| UTF-8 bytes | 14703 | 15453 |
+| UTF-8 bytes | 14703 | 15452 |
 | tiktoken 0.12.0 / o200k_base tokens | 3337 | 3479 |
 
 The branch-owner qualifier changes `.agents/review.md` from 1896 to 1907 bytes and 436 to 438 o200k_base tokens; its existing budget is unchanged.

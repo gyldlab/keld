@@ -14,7 +14,7 @@ They do not need private Linear access, research access, an agent harness, or an
 `agent/kel-*` branch. Maintainers publish the accepted scope, spec and acceptance
 criteria on GitHub and handle internal Linear linkage and claims before taking over
 implementation or merging. Changes requiring a spec still need approval before
-implementation. Security, testing and independent-review gates remain unchanged.
+implementation. Security, testing and independent-review gates remain required.
 The internal loop below binds maintainers and agents acting with maintainer authority;
 external contributors and their tools use the public path without acquiring that authority.
 

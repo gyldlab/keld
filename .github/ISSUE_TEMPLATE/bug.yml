@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Report a defect in current documented behavior. No private tracker access is needed.
-        Do not include unfixed security vulnerabilities or secrets; use private reporting.
+        Do not include unfixed security vulnerabilities or secrets; use [private reporting](https://github.com/gyldlab/keld/security/advisories/new).
         Maintainers will help identify scope and the regression test.
   - type: input
     id: linear
