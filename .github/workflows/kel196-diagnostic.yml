@@ -1,0 +1,75 @@
+name: KEL-196 hosted presentation diagnostic
+on:
+  push:
+    branches: [agent/kel-196-hosted-diagnostic]
+permissions:
+  contents: read
+jobs:
+  capture:
+    name: macOS historical source (trace ${{ matrix.trace }})
+    runs-on: macos-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        trace: ["off", "on"]
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: a95043b714bd447930796159d874d7978e766874
+          path: source
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.97.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: nextest
+      - name: Apply opt-in diagnostic only
+        if: matrix.trace == 'on'
+        working-directory: source
+        run: git apply --unidiff-zero ../diagnostic/tools/kel196/diagnostic.patch
+      - name: Prepare unchanged test binaries and external census
+        env:
+          KELD196_DIAGNOSTIC: ${{ matrix.trace == 'on' && '1' || '0' }}
+        run: |
+          mkdir -p artifacts
+          swiftc diagnostic/tools/kel196/census.swift -o artifacts/census
+          cd source
+          cargo test -p keld-host --no-run
+          {
+            git rev-parse HEAD
+            git diff --stat
+            sw_vers
+            rustc --version
+            bun --version
+          } > ../artifacts/provenance.txt
+      - name: Unchanged host CI test with paired observation
+        run: >-
+          python3 diagnostic/tools/kel196/capture.py
+          --source source --output artifacts --observer artifacts/census
+          --trace '${{ matrix.trace }}'
+          -- cargo nextest run -p keld-host --profile ci --no-tests=pass
+      - name: Retain evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kel196-macos-trace-${{ matrix.trace }}
+          path: |
+            artifacts/*.json
+            artifacts/*.jsonl
+            artifacts/*.log
+            artifacts/*.txt
+          if-no-files-found: error
+          retention-days: 14

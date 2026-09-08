@@ -1,0 +1,210 @@
+diff --git a/crates/keld-wv/src/wkwebview/mod.rs b/crates/keld-wv/src/wkwebview/mod.rs
+index d53891a..f4bd7bb 100644
+--- a/crates/keld-wv/src/wkwebview/mod.rs
++++ b/crates/keld-wv/src/wkwebview/mod.rs
+@@ -39,0 +40,31 @@ use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
++#[cfg(keld196)]
++unsafe extern "C" {
++    fn kel196_init();
++    fn kel196_sample(
++        window: *mut std::ffi::c_void,
++        phase: *const std::ffi::c_char,
++        visible: i32,
++        minimized: i32,
++        focused: i32,
++    );
++}
++
++#[cfg(keld196)]
++fn presentation_sample(window: &Window, phase: &std::ffi::CStr) {
++    use tao::platform::macos::WindowExtMacOS;
++    if std::env::var_os("KELD196_TRACE").as_deref() != Some(std::ffi::OsStr::new("1")) {
++        return;
++    }
++    // SAFETY: synchronous read-only NSWindow/CG queries on tao's main thread;
++    // the owned window and static phase string outlive this call.
++    unsafe {
++        kel196_sample(
++            window.ns_window(),
++            phase.as_ptr(),
++            i32::from(window.is_visible()),
++            i32::from(window.is_minimized()),
++            i32::from(window.is_focused()),
++        );
++    }
++}
++
+@@ -80,0 +112,7 @@ impl WkWebViewEngine {
++        #[cfg(keld196)]
++        if std::env::var_os("KELD196_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
++            // SAFETY: installs read-only notification observer on the main thread before AppKit construction.
++            unsafe {
++                kel196_init();
++            }
++        }
+@@ -104,0 +143,4 @@ impl WkWebViewEngine {
++        #[cfg(keld196)]
++        for view in views.values() {
++            presentation_sample(&view.window, c"before_run_return");
++        }
+@@ -105,0 +148,19 @@ impl WkWebViewEngine {
++            #[cfg(keld196)]
++            for view in views.values() {
++                let phase = match &event {
++                    Event::NewEvents(tao::event::StartCause::Init) => c"event_loop_init",
++                    Event::WindowEvent {
++                        event: WindowEvent::Focused(true),
++                        ..
++                    } => c"focused_true",
++                    Event::WindowEvent {
++                        event: WindowEvent::Focused(false),
++                        ..
++                    } => c"focused_false",
++                    Event::MainEventsCleared => c"main_events_cleared",
++                    Event::RedrawEventsCleared => c"redraw_events_cleared",
++                    Event::LoopDestroyed => c"loop_destroyed",
++                    _ => c"event_loop_callback",
++                };
++                presentation_sample(&view.window, phase);
++            }
+@@ -183,0 +245,4 @@ impl WkWebViewEngine {
++        #[cfg(keld196)]
++        for view in views.values() {
++            presentation_sample(&view.window, c"before_run_return");
++        }
+@@ -184,0 +250,19 @@ impl WkWebViewEngine {
++            #[cfg(keld196)]
++            for view in views.values() {
++                let phase = match &event {
++                    Event::NewEvents(tao::event::StartCause::Init) => c"event_loop_init",
++                    Event::WindowEvent {
++                        event: WindowEvent::Focused(true),
++                        ..
++                    } => c"focused_true",
++                    Event::WindowEvent {
++                        event: WindowEvent::Focused(false),
++                        ..
++                    } => c"focused_false",
++                    Event::MainEventsCleared => c"main_events_cleared",
++                    Event::RedrawEventsCleared => c"redraw_events_cleared",
++                    Event::LoopDestroyed => c"loop_destroyed",
++                    _ => c"event_loop_callback",
++                };
++                presentation_sample(&view.window, phase);
++            }
+@@ -261,0 +346,2 @@ impl WkWebViewEngine {
++        #[cfg(keld196)]
++        presentation_sample(&window, c"window_builder_returned");
+@@ -268,0 +355,2 @@ impl WkWebViewEngine {
++        #[cfg(keld196)]
++        presentation_sample(&window, c"webview_attached");
+diff --git a/crates/keld-wv/build.rs b/crates/keld-wv/build.rs
+new file mode 100644
+index 0000000..9feb7e7
+--- /dev/null
++++ b/crates/keld-wv/build.rs
+@@ -0,0 +1,42 @@
++//! Temporary KEL-196 diagnostic, compiled only by explicit debug opt-in.
++fn main() -> Result<(), Box<dyn std::error::Error>> {
++    println!("cargo:rustc-check-cfg=cfg(keld196)");
++    println!("cargo:rerun-if-env-changed=KELD196_DIAGNOSTIC");
++    println!("cargo:rerun-if-changed=kel196.m");
++    if std::env::var("PROFILE").as_deref() != Ok("debug")
++        || std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
++        || std::env::var("KELD196_DIAGNOSTIC").as_deref() != Ok("1")
++    {
++        return Ok(());
++    }
++    let out = std::env::var("OUT_DIR")?;
++    assert!(
++        std::process::Command::new("clang")
++            .args([
++                "-c",
++                "-fobjc-arc",
++                "-fblocks",
++                "kel196.m",
++                "-o",
++                &format!("{out}/kel196.o")
++            ])
++            .status()?
++            .success()
++    );
++    assert!(
++        std::process::Command::new("ar")
++            .args([
++                "crs",
++                &format!("{out}/libkel196.a"),
++                &format!("{out}/kel196.o")
++            ])
++            .status()?
++            .success()
++    );
++    println!("cargo:rustc-cfg=keld196");
++    println!("cargo:rustc-link-search=native={out}");
++    println!("cargo:rustc-link-lib=static=kel196");
++    println!("cargo:rustc-link-lib=framework=AppKit");
++    println!("cargo:rustc-link-lib=framework=CoreGraphics");
++    Ok(())
++}
+diff --git a/crates/keld-wv/kel196.m b/crates/keld-wv/kel196.m
+new file mode 100644
+index 0000000..5450998
+--- /dev/null
++++ b/crates/keld-wv/kel196.m
+@@ -0,0 +1,56 @@
++#import <AppKit/AppKit.h>
++#import <CoreGraphics/CoreGraphics.h>
++#include <time.h>
++#include <unistd.h>
++static __weak NSWindow *target;
++static int samples;
++static FILE *sink;
++static double origin;
++static double lastPeriodic;
++static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec/1e9; }
++static void sample(NSWindow *w, const char *phase, int tv, int tm, int tf) {
++  if (!sink || samples >= 512 || now()-origin > 30) return;
++  BOOL periodic = !strcmp(phase, "event_loop_callback") || !strcmp(phase, "main_events_cleared") || !strcmp(phase, "redraw_events_cleared");
++  if (periodic && now()-lastPeriodic < 0.1) return;
++  if (periodic) lastPeriodic = now();
++  ++samples;
++  double start = now();
++  @autoreleasepool {
++    NSArray *all = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID));
++    NSArray *screen = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
++    NSInteger wid = w ? w.windowNumber : -1;
++    NSMutableArray *rows = [NSMutableArray array];
++    BOOL member = NO;
++    for (NSDictionary *r in screen) if ([r[(id)kCGWindowOwnerPID] intValue] == getpid() && [r[(id)kCGWindowNumber] integerValue] == wid) member = YES;
++    for (NSDictionary *r in all) if ([r[(id)kCGWindowOwnerPID] intValue] == getpid()) [rows addObject:r];
++    NSDictionary *record = @{
++      @"phase":@(phase), @"pid":@(getpid()), @"window":@(wid), @"mono_s":@(start), @"elapsed_ms":@((start-origin)*1000),
++      @"tao_visible":@(tv), @"tao_minimized":@(tm), @"tao_focused":@(tf),
++      @"appkit_visible":@(w.isVisible), @"appkit_minimized":@(w.isMiniaturized), @"appkit_key":@(w.isKeyWindow), @"appkit_main":@(w.isMainWindow),
++      @"app_hidden":@(NSApp.isHidden), @"app_active":@(NSApp.isActive), @"activation_policy":@(NSApp.activationPolicy),
++      @"occlusion":@(w.occlusionState), @"on_active_space":@(w.isOnActiveSpace), @"alpha":@(w.alphaValue),
++      @"frame":NSStringFromRect(w.frame), @"title":w.title ?: @"", @"cg_all_null":@(all == nil), @"cg_screen_null":@(screen == nil),
++      @"cg_on_screen_member":@(member), @"cg_all_pid_rows":rows, @"read_ms":@((now()-start)*1000)
++    };
++    NSData *data = [NSJSONSerialization dataWithJSONObject:record options:NSJSONWritingSortedKeys error:NULL];
++    if (data) { fprintf(sink,"KEL196 %.*s\n", (int)data.length,(const char *)data.bytes); }
++  }
++}
++void kel196_init(void) {
++  origin = now();
++  const char *path = getenv("KELD196_TRACE_FILE");
++  sink = path ? fopen(path, "a") : stderr;
++  if (!sink) return;
++  if (path) setvbuf(sink, NULL, _IOLBF, 0);
++  [[NSNotificationCenter defaultCenter] addObserverForName:nil object:nil queue:nil usingBlock:^(NSNotification *n) {
++    if (![NSThread isMainThread]) return;
++    BOOL app = [n.name hasPrefix:@"NSApplication"];
++    BOOL win = [n.object isKindOfClass:[NSWindow class]] && [n.name hasPrefix:@"NSWindow"];
++    BOOL noise = [n.name containsString:@"Update"] || [n.name containsString:@"Layout"] || [n.name containsString:@"HighDynamicRange"];
++    if ((app || win) && !noise) sample(win ? n.object : target, n.name.UTF8String, -1,-1,-1);
++  }];
++}
++void kel196_sample(void *window, const char *phase, int visible, int minimized, int focused) {
++  target = (__bridge NSWindow *)window;
++  sample(target, phase, visible, minimized, focused);
++}
