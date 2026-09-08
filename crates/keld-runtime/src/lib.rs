@@ -2763,15 +2763,8 @@ mod tests {
 
     #[test]
     fn drop_reaps_a_long_running_child() {
-        #[cfg(unix)]
-        let long_running = "sleep 30";
-        #[cfg(windows)]
-        let long_running = "ping -n 31 127.0.0.1 >NUL";
-
-        let sup = Supervisor::start(RestartPolicy::default(), move || {
-            shell_command(long_running)
-        })
-        .expect("first spawn must succeed");
+        let sup = Supervisor::start(RestartPolicy::default(), long_running_command)
+            .expect("first spawn must succeed");
         let (pid, _) = recv_started(&sup);
         drop(sup);
 
