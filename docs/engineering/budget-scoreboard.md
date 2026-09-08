@@ -347,10 +347,12 @@ and `keld-host.exe` are `CONSOLE (3)`, `tauri-hello.exe` is `GUI (2)`.
 
 **The conhost measured here is `keld.exe`'s, not the shipping host's.** The Keld
 arm runs `keld dev`, and at that session's Keld `2a8e8a4` `keld dev` did not spawn
-`keld-host` — it *was* the host process (historical: since PR #111, 2026-08-29,
-`keld dev` stages and launches a no-flag `keld-host` that owns the window). A terminal tool having a console is correct, so this is not a product
-defect; it is a concrete consequence of the scope mismatch this document already
-discloses, a dev CLI flow measured against a packaged release exe. `keld-host`
+`keld-host` — it *was* the host process. Historical: since PR #122 (2026-08-31)
+Windows `keld dev` stages and launches a no-flag `keld-host` that owns the
+window (macOS did so from PR #111, 2026-08-29). A terminal tool having a console
+is correct, so this is not a product defect; it is a concrete consequence of the
+scope mismatch this document already discloses, a dev CLI flow measured against
+a packaged release exe. `keld-host`
 being console subsystem is a separate, forward-looking product question, and it
 is **not** what was measured here.
 
