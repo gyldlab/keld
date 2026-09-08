@@ -2792,9 +2792,22 @@ fn forward_direct_primary_output(supervisor: &PrimaryRoleSupervisor) -> Result<(
     io::stdout()
         .write_all(output.stdout.as_bytes())
         .map_err(|source| app_io("primary stdout forwarding", &source))?;
+    if let Some(notice) = keld_runtime::CapturedOutput::elision_notice(output.stdout_dropped_bytes)
+    {
+        io::stdout()
+            .write_all(notice.as_bytes())
+            .map_err(|source| app_io("primary stdout forwarding", &source))?;
+    }
     io::stderr()
         .write_all(output.stderr.as_bytes())
-        .map_err(|source| app_io("primary stderr forwarding", &source))
+        .map_err(|source| app_io("primary stderr forwarding", &source))?;
+    if let Some(notice) = keld_runtime::CapturedOutput::elision_notice(output.stderr_dropped_bytes)
+    {
+        io::stderr()
+            .write_all(notice.as_bytes())
+            .map_err(|source| app_io("primary stderr forwarding", &source))?;
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", windows))]
