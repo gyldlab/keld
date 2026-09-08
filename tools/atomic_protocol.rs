@@ -35,9 +35,13 @@ const MERGE_DEFAULT_PREFIX: &str = "Default eligible merge: ";
 const PROMPT_TRACKER_HANDOFF_REQUIREMENT: &str = "Handoffs MUST follow Prompt Tracker `docs/06-graph-engineering.md` for system/client/exact-model identity.";
 const CONTRIBUTING_LINK: &str =
     "https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
+const FORM_CONTRIBUTING_REQUIREMENT: &str = "Follow the [contribution guide](https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md) for public scope and submission.";
+#[cfg(test)]
 const FORM_CONTRIBUTING_LINE: &str = "        Follow the [contribution guide](https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md) for public scope and submission.";
+#[cfg(test)]
 const CONFIG_CONTRIBUTING_LINE: &str =
     "    url: https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
+const CONFIG_CONTRIBUTING_BLOCK: &str = "contact_links:\n  - name: Contributing to Keld\n    url: https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md\n    about: Read the public scope, build, test, and pull-request process.";
 const INDEX_HEADING: &str = "## Task routing";
 const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |";
 const ENFORCEMENT_LINE_PREFIX: &str =
@@ -224,6 +228,41 @@ fn visible_markdown(text: &str) -> String {
         visible.push('\n');
     }
     visible
+}
+
+fn yaml_markdown_scalars(text: &str) -> Vec<String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut scalars = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if *line != "  - type: markdown" {
+            continue;
+        }
+        let item_end = lines[index + 1..]
+            .iter()
+            .position(|candidate| candidate.starts_with("  - "))
+            .map_or(lines.len(), |offset| index + 1 + offset);
+        let Some(value_offset) = lines[index + 1..item_end]
+            .iter()
+            .position(|candidate| *candidate == "      value: |")
+        else {
+            continue;
+        };
+        let value_start = index + 1 + value_offset + 1;
+        let value_end = lines[value_start..item_end]
+            .iter()
+            .position(|candidate| {
+                !candidate.trim().is_empty()
+                    && candidate.len() - candidate.trim_start_matches(' ').len() < 8
+            })
+            .map_or(item_end, |offset| value_start + offset);
+        let scalar = lines[value_start..value_end]
+            .iter()
+            .map(|candidate| candidate.strip_prefix("        ").unwrap_or(candidate))
+            .collect::<Vec<_>>()
+            .join("\n");
+        scalars.push(scalar);
+    }
+    scalars
 }
 
 fn binding_prose(text: &str) -> String {
@@ -632,19 +671,29 @@ fn check_public_intake(root: &Path) -> Result<(), String> {
         ));
     }
 
-    for (consumer, active_line) in [
-        (BUG_TEMPLATE, FORM_CONTRIBUTING_LINE),
-        (FEATURE_TEMPLATE, FORM_CONTRIBUTING_LINE),
-        (TEMPLATE_CONFIG, CONFIG_CONTRIBUTING_LINE),
-    ] {
+    for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE] {
         let text = read(root, consumer)?;
-        if exact_line_offsets(&text, active_line).len() != 1
+        let visible = yaml_markdown_scalars(&text)
+            .into_iter()
+            .map(|scalar| visible_markdown(&scalar))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if normalized_occurrences(&visible, FORM_CONTRIBUTING_REQUIREMENT) != 1
             || text.matches(CONTRIBUTING_LINK).count() != 1
         {
             return Err(format!(
                 "ATOMIC-PROTOCOL: `{consumer}` must link the `{CONTRIBUTING}` owner exactly once."
             ));
         }
+    }
+    let config = read(root, TEMPLATE_CONFIG)?;
+    if exact_line_offsets(&config, "contact_links:").len() != 1
+        || config.matches(CONFIG_CONTRIBUTING_BLOCK).count() != 1
+        || config.matches(CONTRIBUTING_LINK).count() != 1
+    {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: `{TEMPLATE_CONFIG}` must keep the `{CONTRIBUTING}` owner as the first `contact_links` entry."
+        ));
     }
     Ok(())
 }
@@ -808,9 +857,15 @@ mod tests {
                 PUBLIC_INTAKE_OWNER_REQUIREMENTS.join("\n")
             ),
         );
-        temp.write(BUG_TEMPLATE, &format!("{FORM_CONTRIBUTING_LINE}\n"));
-        temp.write(FEATURE_TEMPLATE, &format!("{FORM_CONTRIBUTING_LINE}\n"));
-        temp.write(TEMPLATE_CONFIG, &format!("{CONFIG_CONTRIBUTING_LINE}\n"));
+        let form = format!(
+            "body:\n  - type: markdown\n    attributes:\n      value: |\n{FORM_CONTRIBUTING_LINE}\n"
+        );
+        temp.write(BUG_TEMPLATE, &form);
+        temp.write(FEATURE_TEMPLATE, &form);
+        temp.write(
+            TEMPLATE_CONFIG,
+            &format!("{CONFIG_CONTRIBUTING_BLOCK}\n"),
+        );
         temp.write(
             REVIEW,
             &format!("# Review\n\n{REVIEW_MERGE_REQUIREMENT}\n"),
@@ -1218,25 +1273,44 @@ mod tests {
             assert!(error.contains(consumer), "{error}");
         }
 
-        for (consumer, active_line) in [
-            (BUG_TEMPLATE, FORM_CONTRIBUTING_LINE),
-            (FEATURE_TEMPLATE, FORM_CONTRIBUTING_LINE),
-            (TEMPLATE_CONFIG, CONFIG_CONTRIBUTING_LINE),
-        ] {
+        for consumer in [BUG_TEMPLATE, FEATURE_TEMPLATE] {
             for replacement in [
                 format!("# {CONTRIBUTING_LINK}"),
                 format!("<!-- {CONTRIBUTING_LINK} -->"),
+                format!("        <!--\n{FORM_CONTRIBUTING_LINE}\n        -->"),
             ] {
                 let temp = fixture();
                 let text = fs::read_to_string(temp.path.join(consumer))
                     .expect("read public-intake consumer")
-                    .replace(active_line, &replacement);
+                    .replace(FORM_CONTRIBUTING_LINE, &replacement);
                 temp.write(consumer, &text);
                 let error = check(&temp.path)
                     .expect_err("commented public-intake owner link must not count");
                 assert!(error.contains(consumer), "{error}");
             }
+
+            let temp = fixture();
+            let text = fs::read_to_string(temp.path.join(consumer))
+                .expect("read public-intake consumer")
+                .replace(CONTRIBUTING_LINK, "https://github.com/gyldlab/keld/issues")
+                + &format!("\ndecoy: |\n{FORM_CONTRIBUTING_LINE}\n");
+            temp.write(consumer, &text);
+            let error = check(&temp.path)
+                .expect_err("a non-markdown literal-scalar link decoy must not count");
+            assert!(error.contains(consumer), "{error}");
         }
+
+        let temp = fixture();
+        let config = fs::read_to_string(temp.path.join(TEMPLATE_CONFIG))
+            .expect("read template config fixture")
+            .replace(
+                CONFIG_CONTRIBUTING_LINE,
+                "    url: https://github.com/gyldlab/keld/issues",
+            )
+            + &format!("\ndecoy: |\n{CONFIG_CONTRIBUTING_LINE}\n");
+        temp.write(TEMPLATE_CONFIG, &config);
+        let error = check(&temp.path).expect_err("a literal-scalar config decoy must not count");
+        assert!(error.contains(TEMPLATE_CONFIG), "{error}");
 
         let temp = fixture();
         let bug = fs::read_to_string(temp.path.join(BUG_TEMPLATE))
