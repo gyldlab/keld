@@ -67,7 +67,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::{
     CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
-    NavigationCompletedEventHandler, PermissionRequestedEventHandler, wait_with_pump,
+    NavigationCompletedEventHandler, NewWindowRequestedEventHandler,
+    PermissionRequestedEventHandler, wait_with_pump,
 };
 use windows::Win32::Foundation::{E_POINTER, E_UNEXPECTED, HWND, RECT};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
@@ -245,7 +246,7 @@ fn create_controller(
     })
 }
 
-/// Proof that the `keld-guard` permission handler is registered on a webview.
+/// Proof that media permissions and popup denial are registered on a webview.
 ///
 /// [`navigate_initial`] demands it, so "content ran before the guard existed"
 /// is a compile error rather than a review catch. Only
@@ -298,6 +299,23 @@ fn install_guarded_media_permissions(
     // events on the creating thread.
     let registered = unsafe { webview.add_PermissionRequested(&handler, &raw mut token) };
     registered.map_err(|err| WvError::Webview(format!("permission handler: {err}")))?;
+
+    // Windows WebView2 (KEL-168): an unhandled new-window request creates a
+    // popup outside Keld's principal, permission, and lifecycle accounting.
+    // v0 denies every popup; SetHandled(true) without NewWindow loads nothing.
+    // https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2newwindowrequestedeventargs#put_handled
+    let popup_handler = NewWindowRequestedEventHandler::create(Box::new(|_, args| {
+        let Some(args) = args else {
+            return Err(windows::core::Error::from(E_POINTER));
+        };
+        // SAFETY: WebView2 supplies live event args on the creating STA thread
+        // for this callback. SetHandled takes a BOOL by value (contract above).
+        unsafe { args.SetHandled(true) }
+    }));
+    // SAFETY: `webview` and the writable token are live on the creating STA.
+    // WebView2 retains the COM handler and invokes it on that same thread.
+    unsafe { webview.add_NewWindowRequested(&popup_handler, &raw mut token) }
+        .map_err(|err| WvError::Webview(format!("popup handler: {err}")))?;
     Ok(GuardInstalled(()))
 }
 

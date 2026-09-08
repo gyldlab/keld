@@ -24,11 +24,11 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
   - Linux (wry interim): WebKitGTK 2.52.6 and wry 0.56.1 default-deny an
     unhandled new request, but that fallback is not proof Keld evaluated the
     right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance remains mandatory.
-  - Windows (direct COM, KEL-65): agents MUST register the guarded
-    `add_PermissionRequested` handler before the first navigation — WebView2's
-    fallback is a user prompt (default-ask, not default-deny). The first
-    navigation MUST present the `GuardInstalled` proof; agents MUST NOT add a
-    second navigation path that bypasses it.
+  - Windows (direct COM, KEL-65): agents MUST register guarded
+    `add_PermissionRequested` and deny-all `add_NewWindowRequested` before
+    minting `GuardInstalled`; first navigation MUST require that proof. WebView2
+    defaults to media prompts and unguarded popups. Agents MUST NOT bypass
+    either handler or the first-navigation proof (KEL-168).
   Agents MUST NOT pass `AppProcess` to inherit `/app` media grants.
 - Architecture 01 §5 **first paint** is the KEL-64 external double-rAF image
   beacon on a pre-spawn monotonic clock — not wry `PageLoadEvent::Finished`,
