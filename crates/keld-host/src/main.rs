@@ -54,6 +54,12 @@ fn main() {
         }
         return;
     }
+    if (args.len() == 1 || args.iter().any(|arg| arg == "--hello"))
+        && let Err(error) = keld_core::prepare_webview_process()
+    {
+        eprintln!("{error}");
+        process::exit(1);
+    }
     if args.iter().any(|a| a == "--hello") {
         if let Some(flag) = keld_core::host_hello_unknown_arg(&args) {
             eprintln!(

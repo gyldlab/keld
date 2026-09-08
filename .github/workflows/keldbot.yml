@@ -148,7 +148,7 @@ jobs:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
           script: |
             // Squash-merge PR title ko hi final commit message banata hai, isliye title yahan lint hota hai —
-            // individual commits nahi. Types AGENTS.md § Commits & PRs se (source of truth) — dono jagah साथ update karo.
+            // individual commits nahi. Types .agents/ci.md § KeldBot se (source of truth) — dono jagah साथ update karo.
             const TYPES = ["feat", "fix", "docs", "test", "chore", "ci", "style", "build"];
             const TITLE_RE = new RegExp(`^(${TYPES.join("|")})(\\([\\w./-]+\\))?!?: .+`);
             const MARKER = "<!-- keldbot:title-check -->";
@@ -169,7 +169,7 @@ jobs:
               const commentBody =
                 `${MARKER}\n👋 The PR title doesn't match the conventional-commit format: \`type(scope): subject\`\n\n` +
                 `Allowed types: \`${TYPES.join("`, `")}\`. Example: \`feat(ipc): add shm channel\`. ` +
-                `Edit the title and I'll re-check automatically (AGENTS.md § Commits & PRs).`;
+                `Edit the title and I'll re-check automatically (.agents/ci.md § KeldBot).`;
 
               if (existing) {
                 await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });

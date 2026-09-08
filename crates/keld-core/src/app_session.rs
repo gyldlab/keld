@@ -1052,6 +1052,7 @@ fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppErr
 }
 
 /// Runs the validated no-flag host selection until ordered application exit.
+/// On Linux, process entry must call [`crate::prepare_webview_process`] first.
 ///
 /// # Errors
 ///
@@ -1106,6 +1107,7 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
 ///
 /// Policy preflight consumes the already-open KEL-96 permissions handle and
 /// decoded digest before the app can create a child, listener, or window.
+/// On Linux, process entry must call [`crate::prepare_webview_process`] first.
 ///
 /// # Errors
 ///
@@ -1475,11 +1477,9 @@ fn run_app_direct(
             Ok(())
         }
     };
-    // `WebKitGtkEngine::new` owns the Linux GPU safe-mode env mutation. It
-    // must run before the primary supervisor or any other session thread can
-    // concurrently read the process environment.
     #[cfg(target_os = "linux")]
-    let direct_engine = WebKitGtkEngine::new();
+    let direct_engine = WebKitGtkEngine::new()
+        .map_err(|source| app_detail("Linux GPU safe mode", source.to_string()))?;
     #[cfg(target_os = "linux")]
     let config = linux_strict_primary_config(&root, &entry_path)?;
     #[cfg(windows)]

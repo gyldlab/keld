@@ -447,11 +447,20 @@ pub struct EchoResponse {
 
 Echo is **ungated on purpose**: the frame goes from decode straight to handler.
 `keld-guard::evaluate` is not on this path. That is not the privileged-IPC story.
-`keld-guard::evaluate` takes a `Principal` and default-denies anything other than
-`AppProcess` (`KELD-GUARD006`); it is live for MCP `keld_permissions_explain`,
-webview camera/microphone capture (as the requesting `Webview` principal; missing
-identity and `AppProcess` are `KELD-GUARD007`), and privileged kipc via
-`dispatch_privileged` (KEL-69). Echo dispatch still does not call the guard.
+`keld-guard::evaluate` applies `app.*` grants only to `AppProcess`; another
+principal presented for those capabilities is `KELD-GUARD006`. The media
+wrapper first requires a minted `Webview`: missing identity or `AppProcess` is
+`KELD-GUARD007`, while that valid `Webview` reaches `evaluate` and is currently
+`KELD-GUARD006` until window-level grants exist. This path is live for MCP
+`keld_permissions_explain`, applicable new-request media callbacks, and
+privileged kipc via `dispatch_privileged` (KEL-69). Echo does not call the guard.
+[Wry 0.56.1 documents](https://docs.rs/wry/0.56.1/wry/struct.WebViewBuilder.html#method.with_permission_handler)
+that saved browser preferences can bypass its callback, and its pinned
+[`build.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs)
+cfg-removes the delegate below macOS 12 on debug hosts. Current v0 neither
+proves nor claims default denial for those cases; they block full KEL-132
+closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
+and oldest-supported-macOS evidence land.
 
 **FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
 `fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
@@ -467,9 +476,9 @@ It is not routed through `dispatch_privileged`: ready / last-window / quit ride
 the app-link the host already minted (`crates/keld-ipc/src/lifecycle.rs`).
 `@keld/electron` maps those onto `app.whenReady` / `window-all-closed` / `app.quit`.
 
-`keld-guard::evaluate` also runs for MCP `keld_permissions_explain` and for
-webview camera/microphone capture as the requesting webview principal (KEL-73);
-missing identity and `AppProcess` are `KELD-GUARD007`. Echo and other ungated
+`keld-guard::evaluate` also runs for MCP `keld_permissions_explain` and each
+applicable new-request webview media callback under the identity/code rule
+above (KEL-73); the saved-preference and older-macOS boundaries remain open. Echo and other ungated
 demo paths do not make the
 [`03` §1](../architecture/03-security.md) "every privileged operation passes the
 guard" property true of *all* IPC — only of the privileged channels that call
@@ -623,9 +632,10 @@ sections. Three honest observations about the gap:
 normative in [`03` §2](../architecture/03-security.md). v0 code is
 `parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
 `app.<group>.<action>`). Recorder and `keld doctor --permissions` are not this slice.
-Privileged kipc uses `dispatch_privileged` (KEL-69). Webview camera and
-microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59)
-as the requesting webview principal (KEL-73); `AppProcess` is `KELD-GUARD007`.
+Privileged kipc uses `dispatch_privileged` (KEL-69). Applicable new-request
+webview camera/microphone callbacks call `evaluate` (`web.camera` /
+`web.microphone`, KEL-59) under the identity/code rule above (KEL-73);
+saved-preference/KEL-135 and older-macOS boundaries remain open.
 
 **v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
 scope; symlink canonicalization is not in this slice. That is not an Allow.
@@ -726,6 +736,8 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-WV-005` | Navigation failed | `error.rs:49` |
 | `KELD-WV-006` | Script evaluation failed | `error.rs:54` |
 | `KELD-WV-007` | Unknown webview id | `error.rs:59` |
+| `KELD-WV-008` | WebView2 runtime unavailable | `keld-wv/src/error.rs` (`WvError::WebView2RuntimeMissing`) |
+| `KELD-WV-010` | Linux GPU safe-mode preparation failed | `keld-wv/src/error.rs` (`WvError::GpuSafeModePreparation`) |
 | `KELD-CLI-010` | `KELD_APP_LINK` unset in the app process | `templates/hello/src/main-body.ts` |
 | `KELD-CLI-020` | Invalid project name | `keld-cli/src/create.rs:28` |
 | `KELD-CLI-021` | Target directory already exists | `create.rs:34` |
@@ -742,8 +754,8 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 
 ### The "errors state the fix" rule, demonstrated
 
-`keld-wv` is the reference implementation, and its fix text is *tested* — `error.rs:74-118` asserts
-that each of the seven variants renders both its code and a fix hint, so a message that degrades to
+`keld-wv` is the reference implementation, and its fix text is *tested* — `error.rs` asserts
+that each of the nine variants renders both its code and a fix hint, so a message that degrades to
 a bare description fails CI:
 
 ```rust
@@ -1483,14 +1495,18 @@ manifest decoder.
    fetch-isolated per principal, remote-content windows get `channels: []` unless
    granted, navigation policy hooks (allow-list), devtools off in release unless
    `web.devtools: true`.
-   **v0:** camera and microphone requests are default-deny on all three live
-   backends: macOS and Linux (KEL-28) both install wry `with_permission_handler`
-   (`with_guarded_media_permissions`, shared helper); Windows registers the
-   `WebView2` `add_PermissionRequested` handler before the first navigation
-   (KEL-65 direct COM — the ordering is compile-enforced). All three evaluate
+   **v0:** new camera and microphone requests are explicitly default-denied by
+   Keld on Linux, Windows, and macOS 12+: macOS/Linux install wry
+   `with_permission_handler`; Windows registers WebView2
+   `add_PermissionRequested` before first navigation. The callbacks evaluate
    `web.camera` / `web.microphone` as the requesting `Principal::Webview`
-   (host-minted `WebviewId`, generation `0` until navigation rotation lands)
-   with requested resource `*` (no platform callback passes an origin).
+   (host-minted `WebviewId`, generation `0`). Wry exposes no origin; WebView2
+   exposes `Uri`, but Keld's v0 adapter currently reads only `PermissionKind`
+   and deliberately evaluates resource `*` without origin filtering. Pinned
+   wry does not consume the macOS callback below 12 on debug hosts, and saved
+   browser permission preferences can bypass
+   new-request callbacks; oldest-macOS proof and KEL-135 profile-backed
+   restart/revocation evidence remain open.
    Missing identity and `AppProcess` fail closed (`KELD-GUARD007`) so `/app`
    media grants cannot apply to a remote or other webview. A minted webview
    principal is still `KELD-GUARD006` until window-level grants exist. CSP
@@ -1764,14 +1780,39 @@ security updates. Verso/Servo remain later conformance candidates only when embe
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
 Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
-safe-mode. **Implemented (KEL-28):** `webkitgtk::probe_gpu_stack` detects
-NVIDIA + Wayland and sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` programmatically
-before any GTK/WebKit call — never by asking users to export env vars — and
-returns a `GpuSafeMode` apps can read (`is_degraded()` / `reason()`) as the
-structured degraded-rendering fact. **Not yet built:** a `keld doctor` line
+safe-mode. **Implemented (KEL-28/KEL-132):**
+`webkitgtk::prepare_gpu_safe_mode_process` detects NVIDIA + Wayland and, when
+needed, exact-self re-execs the shipping process with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` before any GTK/WebKit call — never by
+mutating a live multi-threaded environment or asking users to export env vars.
+The backend passes explicit `argv`/`envp` to Linux
+[`execve(2)`](https://man7.org/linux/man-pages/man2/execve.2.html); the same PID
+executes the replacement image and successful preparation does not return.
+Engine construction fails closed if process-entry preparation was skipped and
+returns a three-state `GpuSafeMode` (`Normal`, preparation required, or DMA-BUF
+disabled); `is_degraded()` is true only after the mitigation is applied. Apps
+can read that state and `reason()` as the structured degraded-rendering fact.
+**Not yet built:** a `keld doctor` line
 surfacing that result, and the fuller version-matrix probe in
 `docs/research/library/host-platforms/06-webview-reality.md`
 describes (today's probe is driver + session type only).
+
+Media permission installation is explicit for new requests on every live
+backend. macOS 12+ wry auto-grants when its handler is absent; pinned wry does
+not expose that delegate callback on older debug hosts, whose support boundary
+and real acceptance remain open. WebKitGTK 2.52.6 and wry 0.56.1 deny an
+unhandled Linux request by default, but that fallback is not evidence that
+Keld evaluated the correct webview principal and manifest. The interim wry
+backends therefore keep the raw builder inside a guard-installed witness
+through initial content/build. KEL-132's Linux proof binds one run nonce,
+process, executable, default manifest, minted principal, `keld-guard` decision,
+secure-localhost mock request, explicit WebKitGTK deny API, and top-level-window
+census. The successful GLib signal registration, callback decision, and deny
+API are observed on the process main thread. JavaScript denial alone is not
+sufficient provenance. Wry documents
+that saved browser permission preferences bypass its callback; KEL-135's
+ephemeral-dev and identity-bound persistent-store lifecycle is a prerequisite
+for the corresponding restart/revocation proof.
 
 ## 2. Renderer bridge contract (`window.keld`)
 
@@ -2168,10 +2209,12 @@ v0 live verbs: `create`, `dev`, `doctor`, `mcp`, `hello`, `ipc-echo`, `ipc-clien
 non-project-relative is `KELD-CLI-035`), and a webview info line on macOS,
 Windows, and Linux (all three live `WebEngine` backends as of KEL-28).
 Native-module DB, permission diffs, and `--web-compat` are
-not live. The Linux GPU-stack probe (`webkitgtk::probe_gpu_stack`, KEL-28) runs
-automatically at engine creation and applies NVIDIA+Wayland safe-mode
-internally; it is not yet its own `keld doctor` line — the `webview` check only
-reports backend availability, not safe-mode state. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
+not live. Linux process entry runs
+`webkitgtk::prepare_gpu_safe_mode_process` (KEL-28/KEL-132), which exact-self
+re-execs with NVIDIA+Wayland safe-mode before engine creation; the constructor
+fails closed if preparation was skipped. This is not yet its own `keld doctor`
+line — the `webview` check only reports backend availability, not safe-mode
+state. Unknown flags on live verbs with a closed flag set (`create`, `dev`,
 `doctor`, `hello`) are `KELD-CLI-044` (exit 2). `keld create` takes one project
 name; `--template` is not live (vanilla-ts hello only). `keld dev` takes no
 flags; `--watch` and `--inspect-ipc` are not live. Spec-named `build` /
@@ -2864,7 +2907,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-wv` | All | **Partial** — WKWebView, WebView2, and WebKitGTK backends exist; persistent profile identity, the destination engine policy, and the renderer bridge remain incomplete. | [code](../../crates/keld-wv/src/lib.rs), [test](../../crates/keld-wv/src/engine.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-27, KEL-28, KEL-65, KEL-135 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-ipc` | All | **Partial** — kipc framing, codecs, HELLO authentication, Unix bootstrap, and the Windows named-pipe app-link are implemented; channel registry and shared-memory lanes are absent. | [code](../../crates/keld-ipc/src/lib.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-30, KEL-101, KEL-133 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `crate.keld-native` | All | **Partial** — The scoped filesystem broker is guard-checked and live; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-native` | All | **Partial** — Scoped filesystem request handling is implemented, guard-checked, and wire-tested, but no production host caller is wired; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
 | `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, delta application, rollback, and feeds are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -3064,6 +3107,21 @@ and had no `with_permission_handler`. 0.56.1 adds the handler; Keld installs it
 and default-denies via `keld-guard` (`web.camera` / `web.microphone`). tao stays
 0.35.3: wry 0.56 `build` takes `raw_window_handle::HasWindowHandle`.
 
+**Update (2026-09-04, KEL-132).** The former source-string installation test
+passed even when the production wry installer returned its input unchanged.
+Both interim wry backends now keep the raw builder inside a guard-installed
+witness through initial content/build, and a fake invokes the exact installed
+callback.
+Linux's unhandled WebKitGTK/wry default is deny rather than a platform prompt;
+the real Linux proof therefore records the default manifest, minted principal,
+`keld-guard` decision, explicit deny API call, request/process nonce, and
+window census with mock camera/microphone devices. A JavaScript
+`NotAllowedError` alone is not Keld-policy provenance. Saved permission
+preferences bypass wry's new-request callback; KEL-135 owns their profile and
+restart/revocation lifecycle. Pinned wry also cfg-removes the delegate callback
+below macOS 12 on debug hosts, so oldest-supported-macOS acceptance remains
+open rather than inferred from Linux.
+
 **Destination (architecture 05 §1).** `keld-wv` is Keld's own `WebEngine` layer over
 WKWebView (**objc2**), WebView2 (**windows-rs** + WebView2 COM), and WebKitGTK
 (**webkit6/gtk4**). wry/tao stay as reference implementations and a quirks catalog.
@@ -3105,18 +3163,19 @@ feature flags needed for the hello slice), mirroring `wkwebview/mod.rs`
 structurally, with one deliberate deviation: `WebViewBuilderExtUnix::build_gtk`
 against the tao-owned GTK window, not the plain cross-platform `build()`, which
 wry's own docs say is X11-only. KEL-28's DoD requires Wayland too. One
-Linux-only addition crate `AGENTS.md` requires: `probe_gpu_stack()` detects
-NVIDIA + Wayland (`/proc/driver/nvidia/version` + `WAYLAND_DISPLAY`) and sets
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` on the process's own environment before any
-GTK/WebKit call — never by asking a developer to export a shell variable —
-mitigating the documented DMA-BUF crash/flicker class on `WebKitGTK` ≤ 2.54
-(tauri-apps/tauri#9394, #14924). Detection is split from the mutation
-(`detect_gpu_safe_mode`, pure, vs. `probe_gpu_stack`, which also applies it) so
-`keld doctor` can read the state later without side effects. Media-permission
+Linux-only addition crate `AGENTS.md` requires: pure
+`detect_gpu_safe_mode()` detects NVIDIA + Wayland
+(`/proc/driver/nvidia/version` + `WAYLAND_DISPLAY`), while KEL-132's
+`prepare_gpu_safe_mode_process()` exact-self re-execs process entry with
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` before any GTK/WebKit call. This avoids
+unsound live-process environment mutation and never asks a developer to export
+a shell variable, while preserving the documented DMA-BUF crash/flicker
+mitigation on `WebKitGTK` ≤ 2.54 (tauri-apps/tauri#9394, #14924). The pure
+detector lets `keld doctor` read the state later without side effects. Media-permission
 guard (KEL-59) reuses the existing wry helpers unchanged (`media.rs` widened
-from macOS-only to `any(macos, linux)`), since Linux's default without a
-handler is also "show the platform's own prompt," same category as the old
-Windows default.
+from macOS-only to `any(macos, linux)`). Later WebKitGTK 2.52.6/wry 0.56.1
+inspection corrected the original prompt claim: an unhandled Linux request is
+denied, but that fallback supplies no Keld principal/manifest provenance.
 
 Verification: compiled, clippy-clean, and 225 tests green (including live
 Bun↔Rust kipc integration) on real Ubuntu 26.04 (GTK3/WebKit2GTK 4.1 dev libs
@@ -3897,6 +3956,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: WebView2 runtime unavailable
 - fix: Install the Evergreen Runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. Keld will not download or execute an installer for you.
 
+## KELD-WV-010
+
+- crate: keld-wv
+- message: Linux GPU safe-mode preparation failed
+- fix: Launch through Keld's process entry before creating a webview; Keld exact-self re-execs with the mitigation, so do not mutate or export the process environment manually.
+
 ## KELD-CLI-010
 
 - crate: keld-cli
@@ -4003,13 +4068,25 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-cli
 - message: Owner-private no-flag boot staging failed
-- fix: Fix the named project input or host-copy integrity failure, then generate a fresh dev stage.
+- fix: Fix the named project or installation input, or the reported staging integrity failure, then generate a fresh owner-private dev stage.
 
 ## KELD-CLI-048
 
 - crate: keld-cli
 - message: The delegated staged host exited unsuccessfully
 - fix: Fix the preceding host diagnostic, then re-run `keld dev`.
+
+## KELD-CLI-049
+
+- crate: keld-cli
+- message: Project path is not owned by the invoking OS principal
+- fix: Move the project below a directory owned by the invoking user and correct the path's ownership before running Keld.
+
+## KELD-CLI-050
+
+- crate: keld-cli
+- message: Owner-private staged host could not be launched
+- fix: Verify `keld` and `keld-host` came from the same installation and the named staged path is executable. If cleanup also failed, remove only the named launch directory after confirming no staged process remains.
 
 ## KELD-MCP001
 
@@ -4190,6 +4267,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: Mermaid documentation tools
 - message: Mermaid documentation policy or pinned SVG rendering failed
 - fix: Add the required accessibility metadata and canonical palette, then run `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` with Docker available.
+
+## KELD-DOCS007
+
+- crate: product-status
+- message: Product-status ledger generation or contract validation failed
+- fix: Follow the emitted condition-specific repair, then run `just product-status-test`, `just product-status`, and `just product-status-check`.
 
 ## KELD-RUNTIME-001
 

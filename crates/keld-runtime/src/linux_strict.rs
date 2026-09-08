@@ -727,10 +727,11 @@ fn failed_child_stderr(child: &mut Child) -> String {
 
 /// Runs the fixed in-sandbox Landlock launcher role.
 ///
-/// This is called only by the `keld-linux-strict-launcher` binary after
+/// This is called by the runtime-owned `keld-linux-strict-launcher` boundary-test
+/// binary and the shipping `keld-role-launcher` beside `keld-host`, after
 /// Bubblewrap finished namespace/mount/seccomp setup. It applies the stacked
-/// Landlock layer, reports it through a launcher-only pipe, closes that
-/// capability, then replaces itself with the exact target.
+/// Landlock layer, reports it through a launcher-only pipe, closes that capability,
+/// then replaces itself with the exact target.
 ///
 /// # Errors
 ///

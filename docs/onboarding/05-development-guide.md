@@ -199,7 +199,7 @@ Where the tests live:
 | Echo payload round-trip | `crates/keld-ipc/src/echo.rs` |
 | Project-name validation, template file writing | `crates/keld-cli/src/create.rs` |
 | `WebviewSpec` default, `NavTarget` variants, `WvError` messages carry code + fix | `crates/keld-wv/src/{engine,error}.rs` |
-| GPU-stack probe applies safe-mode, never instructs env-var exports | `crates/keld-wv/src/webkitgtk/mod.rs` `probe_gpu_stack` |
+| GPU-stack preparation exact-self re-execs with safe-mode; no live env mutation or export instruction | `crates/keld-wv/src/webkitgtk/mod.rs` `prepare_gpu_safe_mode_process` |
 
 Two things to expect:
 

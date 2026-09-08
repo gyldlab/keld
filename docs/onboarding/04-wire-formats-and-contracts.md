@@ -375,11 +375,20 @@ pub struct EchoResponse {
 
 Echo is **ungated on purpose**: the frame goes from decode straight to handler.
 `keld-guard::evaluate` is not on this path. That is not the privileged-IPC story.
-`keld-guard::evaluate` takes a `Principal` and default-denies anything other than
-`AppProcess` (`KELD-GUARD006`); it is live for MCP `keld_permissions_explain`,
-webview camera/microphone capture (as the requesting `Webview` principal; missing
-identity and `AppProcess` are `KELD-GUARD007`), and privileged kipc via
-`dispatch_privileged` (KEL-69). Echo dispatch still does not call the guard.
+`keld-guard::evaluate` applies `app.*` grants only to `AppProcess`; another
+principal presented for those capabilities is `KELD-GUARD006`. The media
+wrapper first requires a minted `Webview`: missing identity or `AppProcess` is
+`KELD-GUARD007`, while that valid `Webview` reaches `evaluate` and is currently
+`KELD-GUARD006` until window-level grants exist. This path is live for MCP
+`keld_permissions_explain`, applicable new-request media callbacks, and
+privileged kipc via `dispatch_privileged` (KEL-69). Echo does not call the guard.
+[Wry 0.56.1 documents](https://docs.rs/wry/0.56.1/wry/struct.WebViewBuilder.html#method.with_permission_handler)
+that saved browser preferences can bypass its callback, and its pinned
+[`build.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs)
+cfg-removes the delegate below macOS 12 on debug hosts. Current v0 neither
+proves nor claims default denial for those cases; they block full KEL-132
+closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
+and oldest-supported-macOS evidence land.
 
 **FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
 `fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
@@ -395,9 +404,9 @@ It is not routed through `dispatch_privileged`: ready / last-window / quit ride
 the app-link the host already minted (`crates/keld-ipc/src/lifecycle.rs`).
 `@keld/electron` maps those onto `app.whenReady` / `window-all-closed` / `app.quit`.
 
-`keld-guard::evaluate` also runs for MCP `keld_permissions_explain` and for
-webview camera/microphone capture as the requesting webview principal (KEL-73);
-missing identity and `AppProcess` are `KELD-GUARD007`. Echo and other ungated
+`keld-guard::evaluate` also runs for MCP `keld_permissions_explain` and each
+applicable new-request webview media callback under the identity/code rule
+above (KEL-73); the saved-preference and older-macOS boundaries remain open. Echo and other ungated
 demo paths do not make the
 [`03` §1](../architecture/03-security.md) "every privileged operation passes the
 guard" property true of *all* IPC — only of the privileged channels that call
@@ -551,9 +560,10 @@ sections. Three honest observations about the gap:
 normative in [`03` §2](../architecture/03-security.md). v0 code is
 `parse_manifest` / `load_manifest` / `evaluate` in `keld-guard` (path scopes for
 `app.<group>.<action>`). Recorder and `keld doctor --permissions` are not this slice.
-Privileged kipc uses `dispatch_privileged` (KEL-69). Webview camera and
-microphone capture *do* call `evaluate` (`web.camera` / `web.microphone`, KEL-59)
-as the requesting webview principal (KEL-73); `AppProcess` is `KELD-GUARD007`.
+Privileged kipc uses `dispatch_privileged` (KEL-69). Applicable new-request
+webview camera/microphone callbacks call `evaluate` (`web.camera` /
+`web.microphone`, KEL-59) under the identity/code rule above (KEL-73);
+saved-preference/KEL-135 and older-macOS boundaries remain open.
 
 **v0 matcher:** `$VARS` match as **literals**; a `..` path segment is always out of
 scope; symlink canonicalization is not in this slice. That is not an Allow.
@@ -654,6 +664,8 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 | `KELD-WV-005` | Navigation failed | `error.rs:49` |
 | `KELD-WV-006` | Script evaluation failed | `error.rs:54` |
 | `KELD-WV-007` | Unknown webview id | `error.rs:59` |
+| `KELD-WV-008` | WebView2 runtime unavailable | `keld-wv/src/error.rs` (`WvError::WebView2RuntimeMissing`) |
+| `KELD-WV-010` | Linux GPU safe-mode preparation failed | `keld-wv/src/error.rs` (`WvError::GpuSafeModePreparation`) |
 | `KELD-CLI-010` | `KELD_APP_LINK` unset in the app process | `templates/hello/src/main-body.ts` |
 | `KELD-CLI-020` | Invalid project name | `keld-cli/src/create.rs:28` |
 | `KELD-CLI-021` | Target directory already exists | `create.rs:34` |
@@ -670,8 +682,8 @@ naming the failing value, `cause`, **`fix`** as an imperative next step, and a `
 
 ### The "errors state the fix" rule, demonstrated
 
-`keld-wv` is the reference implementation, and its fix text is *tested* — `error.rs:74-118` asserts
-that each of the seven variants renders both its code and a fix hint, so a message that degrades to
+`keld-wv` is the reference implementation, and its fix text is *tested* — `error.rs` asserts
+that each of the nine variants renders both its code and a fix hint, so a message that degrades to
 a bare description fails CI:
 
 ```rust

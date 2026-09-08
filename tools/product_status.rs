@@ -269,7 +269,7 @@ struct Record {
 
 fn invalid(line: usize, detail: impl AsRef<str>) -> String {
     format!(
-        "KELD-DOCS005: invalid product-status ledger at line {line}: {}. \
+        "KELD-DOCS007: invalid product-status ledger at line {line}: {}. \
          Fix `{LEDGER_REL}`, run `just product-status`, then rerun `just product-status-check`.",
         detail.as_ref()
     )
@@ -497,7 +497,7 @@ fn parse_ledger(contents: &str) -> Result<Vec<Record>, String> {
 fn canonical_root(root: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(root).map_err(|error| {
         format!(
-            "KELD-DOCS005: failed to resolve workspace root `{}`: {error}. Pass an existing checkout root.",
+            "KELD-DOCS007: failed to resolve workspace root `{}`: {error}. Pass an existing checkout root.",
             root.display()
         )
     })
@@ -915,7 +915,7 @@ fn load(root: &Path) -> Result<(PathBuf, Vec<Record>), String> {
     let root = canonical_root(root)?;
     let ledger = fs::read_to_string(root.join(LEDGER_REL)).map_err(|error| {
         format!(
-            "KELD-DOCS005: cannot read `{LEDGER_REL}`: {error}. Restore the ledger and rerun `just product-status-check`."
+            "KELD-DOCS007: cannot read `{LEDGER_REL}`: {error}. Restore the ledger and rerun `just product-status-check`."
         )
     })?;
     let records = parse_ledger(&ledger)?;
@@ -1008,7 +1008,7 @@ fn render(records: &[Record]) -> String {
 fn write_output(path: &Path, contents: &str) -> Result<(), String> {
     fs::write(path, contents).map_err(|error| {
         format!(
-            "KELD-DOCS005: failed to write generated output `{}`: {error}. Check checkout permissions.",
+            "KELD-DOCS007: failed to write generated output `{}`: {error}. Check checkout permissions.",
             path.display()
         )
     })
@@ -1022,14 +1022,14 @@ fn generate(root: &Path) -> Result<(), String> {
 fn check_generated(root: &Path, expected: &str) -> Result<(), String> {
     let actual = fs::read(root.join(OUTPUT_REL)).map_err(|error| {
         format!(
-            "KELD-DOCS004: generated output `{OUTPUT_REL}` is missing or unreadable: {error}. Run `just product-status` and commit it."
+            "KELD-DOCS007: generated output `{OUTPUT_REL}` is missing or unreadable: {error}. Run `just product-status` and commit it."
         )
     })?;
     if actual == expected.as_bytes() {
         Ok(())
     } else {
         Err(format!(
-            "KELD-DOCS004: generated output `{OUTPUT_REL}` is stale. Run `just product-status` and commit the result."
+            "KELD-DOCS007: generated output `{OUTPUT_REL}` is stale. Run `just product-status` and commit the result."
         ))
     }
 }
@@ -1037,7 +1037,7 @@ fn check_generated(root: &Path, expected: &str) -> Result<(), String> {
 fn read_required(root: &Path, relative: &str) -> Result<String, String> {
     fs::read_to_string(root.join(relative)).map_err(|error| {
         format!(
-            "KELD-DOCS005: required status consumer `{relative}` is unreadable: {error}. Restore it and rerun the check."
+            "KELD-DOCS007: required status consumer `{relative}` is unreadable: {error}. Restore it and rerun the check."
         )
     })
 }
@@ -1237,7 +1237,7 @@ fn expect_json_byte(bytes: &[u8], index: &mut usize, expected: u8) -> Result<(),
     skip_json_whitespace(bytes, index);
     if bytes.get(*index) != Some(&expected) {
         return Err(format!(
-            "KELD-DOCS004: malformed Cargo metadata near byte {}; expected `{}`",
+            "KELD-DOCS007: malformed Cargo metadata near byte {}; expected `{}`",
             *index,
             char::from(expected)
         ));
@@ -1253,27 +1253,27 @@ fn parse_plain_json_string(bytes: &[u8], index: &mut usize) -> Result<String, St
         match *byte {
             b'"' => {
                 let value = std::str::from_utf8(&bytes[start..*index]).map_err(|error| {
-                    format!("KELD-DOCS004: Cargo metadata string is not UTF-8: {error}")
+                    format!("KELD-DOCS007: Cargo metadata string is not UTF-8: {error}")
                 })?;
                 *index += 1;
                 return Ok(value.to_owned());
             }
             b'\\' => {
                 return Err(format!(
-                    "KELD-DOCS004: unexpected escaped Cargo metadata key/name near byte {}",
+                    "KELD-DOCS007: unexpected escaped Cargo metadata key/name near byte {}",
                     *index
                 ));
             }
             0..=0x1f => {
                 return Err(format!(
-                    "KELD-DOCS004: control byte in Cargo metadata string near byte {}",
+                    "KELD-DOCS007: control byte in Cargo metadata string near byte {}",
                     *index
                 ));
             }
             _ => *index += 1,
         }
     }
-    Err("KELD-DOCS004: unterminated Cargo metadata string".to_owned())
+    Err("KELD-DOCS007: unterminated Cargo metadata string".to_owned())
 }
 
 fn skip_json_string(bytes: &[u8], index: &mut usize) -> Result<(), String> {
@@ -1287,19 +1287,19 @@ fn skip_json_string(bytes: &[u8], index: &mut usize) -> Result<(), String> {
             b'\\' => {
                 *index += 2;
                 if *index > bytes.len() {
-                    return Err("KELD-DOCS004: truncated Cargo metadata escape".to_owned());
+                    return Err("KELD-DOCS007: truncated Cargo metadata escape".to_owned());
                 }
             }
             0..=0x1f => {
                 return Err(format!(
-                    "KELD-DOCS004: control byte in Cargo metadata string near byte {}",
+                    "KELD-DOCS007: control byte in Cargo metadata string near byte {}",
                     *index
                 ));
             }
             _ => *index += 1,
         }
     }
-    Err("KELD-DOCS004: unterminated Cargo metadata string".to_owned())
+    Err("KELD-DOCS007: unterminated Cargo metadata string".to_owned())
 }
 
 fn skip_json_value(bytes: &[u8], index: &mut usize) -> Result<(), String> {
@@ -1326,7 +1326,7 @@ fn skip_json_value(bytes: &[u8], index: &mut usize) -> Result<(), String> {
                     }
                     _ => {
                         return Err(format!(
-                            "KELD-DOCS004: malformed Cargo metadata object near byte {}",
+                            "KELD-DOCS007: malformed Cargo metadata object near byte {}",
                             *index
                         ));
                     }
@@ -1351,7 +1351,7 @@ fn skip_json_value(bytes: &[u8], index: &mut usize) -> Result<(), String> {
                     }
                     _ => {
                         return Err(format!(
-                            "KELD-DOCS004: malformed Cargo metadata array near byte {}",
+                            "KELD-DOCS007: malformed Cargo metadata array near byte {}",
                             *index
                         ));
                     }
@@ -1367,12 +1367,12 @@ fn skip_json_value(bytes: &[u8], index: &mut usize) -> Result<(), String> {
             }
             if *index == start {
                 return Err(format!(
-                    "KELD-DOCS004: missing Cargo metadata value near byte {start}"
+                    "KELD-DOCS007: missing Cargo metadata value near byte {start}"
                 ));
             }
             Ok(())
         }
-        None => Err("KELD-DOCS004: truncated Cargo metadata value".to_owned()),
+        None => Err("KELD-DOCS007: truncated Cargo metadata value".to_owned()),
     }
 }
 
@@ -1401,20 +1401,20 @@ fn parse_metadata_package(bytes: &[u8], index: &mut usize) -> Result<String, Str
             }
             _ => {
                 return Err(format!(
-                    "KELD-DOCS004: malformed Cargo package object near byte {}",
+                    "KELD-DOCS007: malformed Cargo package object near byte {}",
                     *index
                 ));
             }
         }
     }
-    let name = name.ok_or_else(|| "KELD-DOCS004: Cargo package has no name".to_owned())?;
+    let name = name.ok_or_else(|| "KELD-DOCS007: Cargo package has no name".to_owned())?;
     if name.is_empty()
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err(format!(
-            "KELD-DOCS004: Cargo emitted unsupported package name `{name}`"
+            "KELD-DOCS007: Cargo emitted unsupported package name `{name}`"
         ));
     }
     Ok(name)
@@ -1432,7 +1432,7 @@ fn parse_metadata_packages(bytes: &[u8], index: &mut usize) -> Result<BTreeSet<S
         let name = parse_metadata_package(bytes, index)?;
         if !names.insert(name.clone()) {
             return Err(format!(
-                "KELD-DOCS004: Cargo workspace oracle repeated package `{name}`"
+                "KELD-DOCS007: Cargo workspace oracle repeated package `{name}`"
             ));
         }
         skip_json_whitespace(bytes, index);
@@ -1444,7 +1444,7 @@ fn parse_metadata_packages(bytes: &[u8], index: &mut usize) -> Result<BTreeSet<S
             }
             _ => {
                 return Err(format!(
-                    "KELD-DOCS004: malformed Cargo packages array near byte {}",
+                    "KELD-DOCS007: malformed Cargo packages array near byte {}",
                     *index
                 ));
             }
@@ -1458,7 +1458,7 @@ fn package_names_from_metadata(bytes: &[u8]) -> Result<BTreeSet<String>, String>
     loop {
         skip_json_whitespace(bytes, &mut index);
         if bytes.get(index) == Some(&b'}') {
-            return Err("KELD-DOCS004: Cargo metadata has no packages array".to_owned());
+            return Err("KELD-DOCS007: Cargo metadata has no packages array".to_owned());
         }
         let key = parse_plain_json_string(bytes, &mut index)?;
         expect_json_byte(bytes, &mut index, b':')?;
@@ -1470,11 +1470,11 @@ fn package_names_from_metadata(bytes: &[u8]) -> Result<BTreeSet<String>, String>
         match bytes.get(index) {
             Some(b',') => index += 1,
             Some(b'}') => {
-                return Err("KELD-DOCS004: Cargo metadata has no packages array".to_owned());
+                return Err("KELD-DOCS007: Cargo metadata has no packages array".to_owned());
             }
             _ => {
                 return Err(format!(
-                    "KELD-DOCS004: malformed Cargo metadata root near byte {index}"
+                    "KELD-DOCS007: malformed Cargo metadata root near byte {index}"
                 ));
             }
         }
@@ -1498,17 +1498,17 @@ fn workspace_crate_names_with_cargo_home(
     }
     let metadata = metadata_command
         .output()
-        .map_err(|error| format!("KELD-DOCS004: cannot run Cargo workspace oracle: {error}"))?;
+        .map_err(|error| format!("KELD-DOCS007: cannot run Cargo workspace oracle: {error}"))?;
     if !metadata.status.success() {
         return Err(format!(
-            "KELD-DOCS004: Cargo workspace oracle failed: {}",
+            "KELD-DOCS007: Cargo workspace oracle failed: {}",
             String::from_utf8_lossy(&metadata.stderr).trim()
         ));
     }
     let names = package_names_from_metadata(&metadata.stdout)?;
     if names.is_empty() {
         return Err(
-            "KELD-DOCS004: Cargo.toml workspace has no explicit `crates/*` members.".to_owned(),
+            "KELD-DOCS007: Cargo.toml workspace has no explicit `crates/*` members.".to_owned(),
         );
     }
     Ok(names)
@@ -1517,10 +1517,10 @@ fn workspace_crate_names_with_cargo_home(
 fn check_root_repo_map(root: &Path, records: &[Record]) -> Result<(), String> {
     let agents = read_required(root, "AGENTS.md")?;
     if !links_to_status_ledger(root, "AGENTS.md", &agents) {
-        return Err("KELD-DOCS004: AGENTS.md must link directly to the canonical product-status source ledger. Reconcile that root consumer under its instruction key.".to_owned());
+        return Err("KELD-DOCS007: AGENTS.md must link directly to the canonical product-status source ledger. Reconcile that root consumer under its instruction key.".to_owned());
     }
     if !links_to_product_status(root, "AGENTS.md", &agents) {
-        return Err("KELD-DOCS004: AGENTS.md must link directly to the generated view of product status while naming the TSV as its source ledger. Reconcile that root consumer under its instruction key.".to_owned());
+        return Err("KELD-DOCS007: AGENTS.md must link directly to the generated view of product status while naming the TSV as its source ledger. Reconcile that root consumer under its instruction key.".to_owned());
     }
     let ledger = records
         .iter()
@@ -1529,7 +1529,7 @@ fn check_root_repo_map(root: &Path, records: &[Record]) -> Result<(), String> {
     let workspace = workspace_crate_names(root)?;
     if ledger != workspace {
         return Err(format!(
-            "KELD-DOCS004: product-status crate inventory is stale against Cargo workspace membership. Workspace={workspace:?}; Ledger={ledger:?}."
+            "KELD-DOCS007: product-status crate inventory is stale against Cargo workspace membership. Workspace={workspace:?}; Ledger={ledger:?}. Update `docs/engineering/product-status.tsv` so its crate ids exactly match the Cargo workspace, run `just product-status`, then run `just product-status-check`."
         ));
     }
     Ok(())
@@ -1560,7 +1560,7 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         let contents = read_required(root, relative)?;
         if !links_to_product_status(root, relative, &contents) {
             return Err(format!(
-                "KELD-DOCS004: status consumer `{relative}` does not contain a usable Markdown link to the canonical generated product status. Add the link or remove the duplicate status claim."
+                "KELD-DOCS007: status consumer `{relative}` does not contain a usable Markdown link to the canonical generated product status. Add the link or remove the duplicate status claim."
             ));
         }
     }
@@ -1569,20 +1569,20 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         match links_to_roadmap(&contents) {
             Ok(true) => {
                 return Err(format!(
-                    "KELD-DOCS005: `{relative}` still links gitignored ROADMAP.md from an authority-bearing status surface. Point it at `{OUTPUT_REL}`."
+                    "KELD-DOCS007: `{relative}` still links gitignored ROADMAP.md from an authority-bearing status surface. Point it at `{OUTPUT_REL}`."
                 ));
             }
             Ok(false) => {}
             Err(()) => {
                 return Err(format!(
-                    "KELD-DOCS005: `{relative}` contains visible Markdown links that the status checker cannot parse. Fix the malformed link before validating ROADMAP authority."
+                    "KELD-DOCS007: `{relative}` contains visible Markdown links that the status checker cannot parse. Fix the malformed link before validating ROADMAP authority."
                 ));
             }
         }
     }
     let doc_map = read_required(root, "docs/onboarding/06-documentation-map.md")?;
     if doc_map.contains(".claude/DEFINITION_OF_DONE.md") {
-        return Err("KELD-DOCS005: documentation map names ignored .claude/DEFINITION_OF_DONE.md as authority. Use tracked AGENTS/workflow contracts only.".to_owned());
+        return Err("KELD-DOCS007: documentation map names ignored .claude/DEFINITION_OF_DONE.md as authority. Use tracked AGENTS/workflow contracts only.".to_owned());
     }
     let justfile = read_required(root, "justfile")?;
     let ci_prerequisites = justfile
@@ -1590,7 +1590,7 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         .find_map(|line| line.strip_prefix("ci:"))
         .map(str::split_whitespace)
         .map(|values| values.collect::<Vec<_>>())
-        .ok_or_else(|| "KELD-DOCS005: justfile is missing the root `ci:` recipe.".to_owned())?;
+        .ok_or_else(|| "KELD-DOCS007: justfile is missing the root `ci:` recipe.".to_owned())?;
     let position = |name: &str| ci_prerequisites.iter().position(|value| *value == name);
     let (Some(status_test), Some(status_check), Some(llms_test), Some(llms_check)) = (
         position("product-status-test"),
@@ -1598,24 +1598,24 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         position("llms-test"),
         position("llms-check"),
     ) else {
-        return Err("KELD-DOCS004: justfile `ci` must include product-status-test, product-status-check, llms-test, and llms-check.".to_owned());
+        return Err("KELD-DOCS007: justfile `ci` must include product-status-test, product-status-check, llms-test, and llms-check. Add the missing prerequisites in that order, then run `just product-status-test` and `just product-status-check`.".to_owned());
     };
     if status_test > status_check || status_check > llms_test || llms_test > llms_check {
-        return Err("KELD-DOCS004: justfile `ci` must run product-status tests/check before llms tests/check.".to_owned());
+        return Err("KELD-DOCS007: justfile `ci` must run product-status tests/check before llms tests/check.".to_owned());
     }
     for (recipe, expected) in [
         ("product-status-test", JUST_STATUS_TEST_COMMANDS),
         ("product-status-check", JUST_STATUS_CHECK_COMMANDS),
     ] {
         let actual = just_recipe_commands(&justfile, recipe)
-            .ok_or_else(|| format!("KELD-DOCS004: justfile is missing `{recipe}` recipe body."))?;
+            .ok_or_else(|| format!("KELD-DOCS007: justfile is missing `{recipe}` recipe body."))?;
         if actual
             .iter()
             .map(String::as_str)
             .ne(expected.iter().copied())
         {
             return Err(format!(
-                "KELD-DOCS004: justfile `{recipe}` body must run the exact canonical status commands."
+                "KELD-DOCS007: justfile `{recipe}` body must run the exact canonical status commands."
             ));
         }
     }
@@ -1631,19 +1631,19 @@ fn check(root: &Path) -> Result<(), String> {
 fn run_cli() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or_else(|| {
-        "KELD-DOCS005: missing command. Run `product-status generate [workspace]` or `product-status check [workspace]`.".to_owned()
+        "KELD-DOCS007: missing command. Run `product-status generate [workspace]` or `product-status check [workspace]`.".to_owned()
     })?;
     let root = args
         .next()
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
     if args.next().is_some() {
-        return Err("KELD-DOCS005: too many arguments. Run `product-status generate [workspace]` or `product-status check [workspace]`.".to_owned());
+        return Err("KELD-DOCS007: too many arguments. Run `product-status generate [workspace]` or `product-status check [workspace]`.".to_owned());
     }
     match command.as_str() {
         "generate" => generate(&root),
         "check" => check(&root),
         _ => Err(format!(
-            "KELD-DOCS005: unknown command `{command}`. Use generate or check."
+            "KELD-DOCS007: unknown command `{command}`. Use generate or check."
         )),
     }
 }
@@ -1840,6 +1840,9 @@ mod tests {
 
     fn expect_check_error(temp: &TempDir, needle: &str) {
         let error = check(temp.path()).expect_err("mutation must fail");
+        assert!(error.starts_with("KELD-DOCS007:"), "{error}");
+        assert!(!error.contains("KELD-DOCS004"), "{error}");
+        assert!(!error.contains("KELD-DOCS005"), "{error}");
         assert!(error.contains(needle), "expected `{needle}` in `{error}`");
     }
 
@@ -1937,7 +1940,10 @@ mod tests {
         let temp = fixture();
         temp.remove_line_containing(LEDGER_REL, "crate.keld-core\t");
         generate(temp.path()).expect("generate missing-crate mutation");
-        expect_check_error(&temp, "stale against Cargo workspace membership");
+        let error = check(temp.path()).expect_err("missing crate row must fail");
+        assert!(error.starts_with("KELD-DOCS007:"), "{error}");
+        assert!(error.contains("Update `docs/engineering/product-status.tsv`"), "{error}");
+        assert!(error.contains("just product-status-check"), "{error}");
     }
 
     #[test]
@@ -2573,7 +2579,10 @@ mod tests {
         let temp = fixture();
         generate(temp.path()).expect("generate fixture");
         temp.replace("justfile", " product-status-test", "");
-        expect_check_error(&temp, "justfile `ci` must include");
+        let error = check(temp.path()).expect_err("missing CI prerequisite must fail");
+        assert!(error.starts_with("KELD-DOCS007:"), "{error}");
+        assert!(error.contains("Add the missing prerequisites"), "{error}");
+        assert!(error.contains("just product-status-check"), "{error}");
     }
 
     #[test]

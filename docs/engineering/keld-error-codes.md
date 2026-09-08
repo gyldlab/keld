@@ -115,6 +115,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: WebView2 runtime unavailable
 - fix: Install the Evergreen Runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. Keld will not download or execute an installer for you.
 
+## KELD-WV-010
+
+- crate: keld-wv
+- message: Linux GPU safe-mode preparation failed
+- fix: Launch through Keld's process entry before creating a webview; Keld exact-self re-execs with the mitigation, so do not mutate or export the process environment manually.
+
 ## KELD-CLI-010
 
 - crate: keld-cli
@@ -221,13 +227,25 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-cli
 - message: Owner-private no-flag boot staging failed
-- fix: Fix the named project input or host-copy integrity failure, then generate a fresh dev stage.
+- fix: Fix the named project or installation input, or the reported staging integrity failure, then generate a fresh owner-private dev stage.
 
 ## KELD-CLI-048
 
 - crate: keld-cli
 - message: The delegated staged host exited unsuccessfully
 - fix: Fix the preceding host diagnostic, then re-run `keld dev`.
+
+## KELD-CLI-049
+
+- crate: keld-cli
+- message: Project path is not owned by the invoking OS principal
+- fix: Move the project below a directory owned by the invoking user and correct the path's ownership before running Keld.
+
+## KELD-CLI-050
+
+- crate: keld-cli
+- message: Owner-private staged host could not be launched
+- fix: Verify `keld` and `keld-host` came from the same installation and the named staged path is executable. If cleanup also failed, remove only the named launch directory after confirming no staged process remains.
 
 ## KELD-MCP001
 
@@ -408,6 +426,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: Mermaid documentation tools
 - message: Mermaid documentation policy or pinned SVG rendering failed
 - fix: Add the required accessibility metadata and canonical palette, then run `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` with Docker available.
+
+## KELD-DOCS007
+
+- crate: product-status
+- message: Product-status ledger generation or contract validation failed
+- fix: Follow the emitted condition-specific repair, then run `just product-status-test`, `just product-status`, and `just product-status-check`.
 
 ## KELD-RUNTIME-001
 

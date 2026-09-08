@@ -6,7 +6,7 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
 - All engine/window mutations MUST run on the UI thread (today: tao's main-thread event loop; later: keld-core command queue). Agents MUST NOT touch platform handles from I/O or pool threads.
 - `WebEngine` trait changes MUST go through design review. Backends MUST stay within the trait API. Agents MUST NOT add a trait method until a live backend implements it in the same PR (root YAGNI).
 - Platform quirks MUST comment OS + version + source link; uncited workarounds MUST be reverted.
-- Linux: agents MUST probe the GPU stack and apply safe-mode before init — MUST NOT instruct env-var exports. Emit `degraded-rendering`. Implemented: `webkitgtk::detect_gpu_safe_mode` is the pure query (no env mutation, safe to call from `keld doctor` or tests); `webkitgtk::probe_gpu_stack` detects **and** applies the mitigation, and MUST be called exactly once, before any GTK/WebKit call — `WebKitGtkEngine::new` is the only sanctioned call site. Mitigates: NVIDIA proprietary driver + Wayland session on `WebKitGTK` ≤ 2.54 (no fix as of that release) → sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` on this process's own environment. Upstream: [tauri-apps/tauri#9394](https://github.com/tauri-apps/tauri/issues/9394), [#14924](https://github.com/tauri-apps/tauri/issues/14924). `WebKitGtkEngine::gpu_safe_mode()` exposes the result for `keld doctor`.
+- Linux: agents MUST probe the GPU stack and apply safe-mode before init — MUST NOT instruct env-var exports. Emit `degraded-rendering`. `webkitgtk::detect_gpu_safe_mode` is the pure query; `prepare_gpu_safe_mode_process` applies the mitigation by exact-self re-exec and MUST run only from a process-entry dispatcher before non-repeatable state. `WebKitGtkEngine::new` MUST fail closed before GTK/WebKit when preparation is missing. Mitigates NVIDIA proprietary driver + Wayland on `WebKitGTK` ≤ 2.54 by giving the replacement process `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Upstream: [tauri-apps/tauri#9394](https://github.com/tauri-apps/tauri/issues/9394), [#14924](https://github.com/tauri-apps/tauri/issues/14924). `gpu_safe_mode()` exposes the result for `keld doctor`.
 - Cross-engine diffs MUST go to the baseline matrix; polyfill pack + doctor smooth. Agents MUST NOT silently paper over them.
 - Tests MUST follow repository `.agents/testing.md`.
 - Camera/microphone capture MUST go through `keld-guard` (`web.camera` /
@@ -18,10 +18,12 @@ Spec: `docs/architecture/05-webview-and-native.md`. Platform truth: `docs/resear
   back to AppProcess. v0 `evaluate` still denies webview principals
   (`KELD-GUARD006`) until window-level grants exist — that is fail-closed,
   not a reason to present AppProcess. Per backend:
-  - macOS / Linux (wry interim): agents MUST NOT omit wry `with_permission_handler`
-    on a live `WebViewBuilder` — wry 0.56 auto-grants on macOS and shows
-    WebKitGTK's own prompt on Linux when the handler is `None`; neither is
-    default-deny.
+  - macOS 12+ (wry interim): agents MUST NOT omit wry `with_permission_handler`;
+    wry auto-grants new media requests when absent. Pinned wry cfg-removes its
+    delegate on older debug hosts; oldest-OS proof is open ([source](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs)).
+  - Linux (wry interim): WebKitGTK 2.52.6 and wry 0.56.1 default-deny an
+    unhandled new request, but that fallback is not proof Keld evaluated the
+    right principal/manifest ([source](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html)); explicit callback provenance remains mandatory.
   - Windows (direct COM, KEL-65): agents MUST register the guarded
     `add_PermissionRequested` handler before the first navigation — WebView2's
     fallback is a user prompt (default-ask, not default-deny). The first

@@ -3,14 +3,20 @@
 //! One policy, two install mechanisms:
 //!
 //! - **macOS + Linux (wry interim)**: wry's `with_permission_handler` is the
-//!   same builder call on both — omitting it means auto-grant on macOS
+//!   same builder call on both — omitting it means auto-grant on macOS 12+
 //!   (`WKPermissionDecision::Grant` in
 //!   [`wry_web_view_ui_delegate.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/wkwebview/class/wry_web_view_ui_delegate.rs))
-//!   or `WebKitGTK`'s own prompt on Linux
-//!   ([`connect_permission_request`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/webkitgtk/mod.rs#L585),
-//!   KEL-28) — different platform defaults, same wrong-for-Keld direction.
-//!   Keld installs `with_guarded_media_permissions` on both (cfg-gated, so no
-//!   intra-doc link). Vendored locally: `competitors/wry` @ this same commit.
+//!   while `WebKitGTK` 2.52.6 and wry 0.56.1 default-deny an unhandled Linux
+//!   request. The Linux fallback still cannot prove Keld evaluated the right
+//!   principal and manifest. Keld therefore installs an explicit guarded
+//!   callback on both through a build witness (cfg-gated, so no intra-doc
+//!   link). Wry cfg-removes that delegate method below macOS 12 on debug
+//!   hosts; oldest-supported-macOS proof remains open. Vendored locally:
+//!   `competitors/wry` @ this same commit.
+//!   `WebKitGTK`'s user-media default is documented by
+//!   [`UserMediaPermissionRequest`](https://webkitgtk.org/reference/webkit2gtk/stable/class.UserMediaPermissionRequest.html);
+//!   wry's OS gate is in its pinned
+//!   [`build.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/build.rs).
 //! - **Windows (direct COM, KEL-65)**: without a handler `WebView2` falls back
 //!   to its own user prompt — default-ask, not default-deny. The backend
 //!   registers `add_PermissionRequested` before the first navigation and maps
@@ -29,9 +35,16 @@
 //! (no capture start, no principal mint, no manifest write). Requested
 //! resource remains [`WEB_MEDIA_ORIGIN`] (`*`).
 
+#[cfg(all(target_os = "linux", debug_assertions))]
+use std::fs::OpenOptions;
+#[cfg(all(target_os = "linux", debug_assertions))]
+use std::io::Write;
+
 use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, evaluate};
 
 use crate::WebviewId;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::{engine::NavTarget, error::WvError};
 
 /// Capability id for camera capture (`getUserMedia` video).
 pub const WEB_CAMERA: &str = "web.camera";
@@ -162,46 +175,224 @@ pub fn wry_media_kind(kind: wry::PermissionKind) -> MediaPermission {
 }
 
 /// Guard decision for one wry permission request. Deny is fail-closed.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 #[must_use]
-pub fn media_permission_response(
+fn media_permission_response(
     manifest: &PermissionsManifest,
     principal: Principal,
     kind: wry::PermissionKind,
 ) -> wry::PermissionResponse {
-    if media_permission_allowed(manifest, Some(principal), wry_media_kind(kind)) {
+    let decision = wry_media_decision(manifest, principal, wry_media_kind(kind));
+    wry_response(decision.as_ref())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn wry_media_decision(
+    manifest: &PermissionsManifest,
+    principal: Principal,
+    kind: MediaPermission,
+) -> Option<Decision> {
+    kind.capability()
+        .map(|capability| media_permission_decision(manifest, Some(principal), capability))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn wry_response(decision: Option<&Decision>) -> wry::PermissionResponse {
+    if matches!(decision, Some(Decision::Allow)) {
         wry::PermissionResponse::Allow
     } else {
         wry::PermissionResponse::Deny
     }
 }
 
+/// Boxed callback the wry adapter installs before initial content.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) type WryPermissionCallback =
+    Box<dyn Fn(wry::PermissionKind) -> wry::PermissionResponse + Send + Sync + 'static>;
+
+/// Adapter boundary that turns an unguarded builder into a guarded witness.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) trait WryPermissionInstaller: Sized {
+    /// Witness type produced only after the callback is installed.
+    type Guarded;
+
+    /// Installs `callback` and returns the guarded witness.
+    fn install_permission_handler(self, callback: WryPermissionCallback) -> Self::Guarded;
+}
+
+/// Opaque witness retaining the wry builder after Keld installs its callback.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) struct GuardedWryBuilder<B> {
+    inner: B,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl WryPermissionInstaller for wry::WebViewBuilder<'_> {
+    type Guarded = GuardedWryBuilder<Self>;
+
+    fn install_permission_handler(self, callback: WryPermissionCallback) -> Self::Guarded {
+        GuardedWryBuilder {
+            inner: self.with_permission_handler(callback),
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
+    fn with_initial_target(self, target: &NavTarget) -> wry::WebViewBuilder<'a> {
+        match target {
+            NavTarget::Html(html) => self.inner.with_html(html),
+            NavTarget::Url(url) => self.inner.with_url(url),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
+    /// Applies initial content and performs the only Linux build operation
+    /// without exposing the guarded builder for callback replacement.
+    pub(crate) fn build_initial_gtk(
+        self,
+        target: &NavTarget,
+        window: &'a tao::window::Window,
+    ) -> Result<wry::WebView, WvError> {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+
+        let vbox = window.default_vbox().ok_or_else(|| {
+            WvError::Webview(String::from(
+                "tao window has no default GTK vbox (WindowBuilderExtUnix::with_default_vbox(false) was set)",
+            ))
+        })?;
+        self.with_initial_target(target)
+            .build_gtk(vbox)
+            .map_err(|error| WvError::Webview(error.to_string()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
+    /// Applies initial content and performs the only macOS build operation
+    /// without exposing the guarded builder for callback replacement.
+    pub(crate) fn build_initial_window(
+        self,
+        target: &NavTarget,
+        window: &'a tao::window::Window,
+    ) -> Result<wry::WebView, WvError> {
+        self.with_initial_target(target)
+            .build(window)
+            .map_err(|error| WvError::Webview(error.to_string()))
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn guarded_default_media_builder(
+    id: WebviewId,
+    on_page_load: impl Fn(wry::PageLoadEvent, String) + 'static,
+) -> GuardedWryBuilder<wry::WebViewBuilder<'static>> {
+    let builder = wry::WebViewBuilder::new();
+    #[cfg(debug_assertions)]
+    let builder = builder.with_devtools(true);
+    let builder = builder.with_on_page_load_handler(on_page_load);
+    with_guarded_media_permissions(builder, PermissionsManifest::default(), id)
+}
+
 /// Installs a default-deny media-capture handler backed by `keld-guard`.
 ///
-/// Omitting wry's handler means wry 0.56.1 auto-grants on macOS
+/// Omitting wry's handler means wry 0.56.1 auto-grants on macOS 12+
 /// ([`wry_web_view_ui_delegate.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/wkwebview/class/wry_web_view_ui_delegate.rs)
-/// returns `Grant` unconditionally) or shows `WebKitGTK`'s own prompt on Linux
-/// ([`webkitgtk/mod.rs`](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/webkitgtk/mod.rs#L642):
-/// an unhandled request "let[s] `WebKitGTK` show default prompt"). The
-/// manifest is the authority (`docs/architecture/03-security.md` §1), so
-/// `Deny` here is deliberate on both: default-deny, not default-ask.
+/// returns `Grant` unconditionally). Linux's unhandled default is already
+/// deny, but only this explicit callback proves the host evaluated a new
+/// request against the minted webview principal and immutable manifest. Saved
+/// browser permission preferences can bypass wry's callback; KEL-135 owns the
+/// required ephemeral-dev/persistent-profile lifecycle boundary. The manifest
+/// remains the authority (`docs/architecture/03-security.md` §1).
 ///
-/// `principal` MUST be the webview this builder will become. Presenting
-/// [`Principal::AppProcess`] is `KELD-GUARD007`, not an allow.
-///
-/// The `backends_install_guarded_handler` test asserts every live backend
-/// wires its platform mechanism; dropping the call silently restores the
-/// platform default. Windows registers `add_PermissionRequested` directly in
-/// `webview2/mod.rs` (`install_guarded_media_permissions`) since KEL-65.
+/// This helper accepts a [`WebviewId`], not an arbitrary [`Principal`], and
+/// mints the media principal itself. The opaque witness gates initial content
+/// and platform build. Windows keeps its fallible COM-specific
+/// `GuardInstalled` owner in `webview2/mod.rs`.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[must_use]
-pub fn with_guarded_media_permissions(
-    builder: wry::WebViewBuilder<'_>,
+pub(crate) fn with_guarded_media_permissions<I>(
+    installer: I,
     manifest: PermissionsManifest,
+    id: WebviewId,
+) -> I::Guarded
+where
+    I: WryPermissionInstaller,
+{
+    let principal = webview_media_principal(id);
+    let callback = Box::new(move |kind| {
+        let media_kind = wry_media_kind(kind);
+        let decision = wry_media_decision(&manifest, principal, media_kind);
+        let response = wry_response(decision.as_ref());
+        trace_linux_policy_decision(
+            principal,
+            media_kind,
+            decision.as_ref(),
+            response,
+            &manifest,
+        );
+        response
+    });
+    installer.install_permission_handler(callback)
+}
+
+#[cfg(all(target_os = "linux", debug_assertions))]
+fn trace_linux_policy_decision(
     principal: Principal,
-) -> wry::WebViewBuilder<'_> {
-    builder
-        .with_permission_handler(move |kind| media_permission_response(&manifest, principal, kind))
+    kind: MediaPermission,
+    decision: Option<&Decision>,
+    response: wry::PermissionResponse,
+    manifest: &PermissionsManifest,
+) {
+    let Some(path) = std::env::var_os("KELD_MEDIA_POLICY_TRACE") else {
+        return;
+    };
+    let Some(capability) = kind.capability() else {
+        return;
+    };
+    let decision = match decision {
+        Some(Decision::Allow) => "allow",
+        Some(Decision::Deny(reason)) => reason.code(),
+        None => return,
+    };
+    let response = match response {
+        wry::PermissionResponse::Allow => "allow",
+        wry::PermissionResponse::Deny => "deny",
+        wry::PermissionResponse::Default => "default",
+    };
+    let Principal::Webview { id, generation } = principal else {
+        return;
+    };
+    let nonce = std::env::var("KELD_MEDIA_NONCE").unwrap_or_else(|_| String::from("missing"));
+    let Ok(mut trace) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let manifest_fingerprint = format!("{manifest:?}")
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+        });
+    let _ = writeln!(
+        trace,
+        "policy nonce={nonce} capability={capability} principal=webview:{id}:{generation} manifest_fnv1a64={manifest_fingerprint:016x} decision={decision} response={response} pid={}",
+        std::process::id()
+    );
+}
+
+#[cfg(all(
+    any(target_os = "macos", target_os = "linux"),
+    not(all(target_os = "linux", debug_assertions))
+))]
+fn trace_linux_policy_decision(
+    _principal: Principal,
+    _kind: MediaPermission,
+    _decision: Option<&Decision>,
+    _response: wry::PermissionResponse,
+    _manifest: &PermissionsManifest,
+) {
 }
 
 #[cfg(test)]
@@ -352,74 +543,6 @@ mod tests {
         assert_eq!(MediaPermission::Other.capability(), None);
         assert_eq!(WEB_MEDIA_ORIGIN, "*");
     }
-
-    /// Every live backend must wire its platform's guarded handler. Dropping
-    /// the call is silent: macOS falls back to unconditional `Grant`, Windows
-    /// to a user prompt — neither is default-deny, and neither fails any other
-    /// test.
-    ///
-    /// Source-text assertions because the alternative is driving a live
-    /// `getUserMedia` request through a real webview, which needs a GUI session
-    /// and a camera. This at least fails loudly if the wiring is deleted.
-    #[test]
-    fn backends_install_guarded_handler() {
-        // macOS (wry interim): the builder must pass through the shared helper.
-        let wkwebview = include_str!("wkwebview/mod.rs");
-        assert!(
-            wkwebview.contains("with_guarded_media_permissions"),
-            "KEL-59: wkwebview omits the guarded handler, restoring wry's auto-grant"
-        );
-        assert!(
-            wkwebview.contains("webview_media_principal"),
-            "KEL-73: wkwebview must mint a webview principal, not fall back to AppProcess"
-        );
-        // The wry helper must still reach wry and the guard, or the backends
-        // above and below would be calling a no-op.
-        let helper = include_str!("media.rs");
-        assert!(
-            helper.contains("with_permission_handler"),
-            "KEL-59: the helper must call wry's permission handler, not a no-op wrapper"
-        );
-        assert!(
-            helper.contains("media_permission_response"),
-            "KEL-59: the handler must call media_permission_response, not a constant Allow"
-        );
-
-        // Linux (wry interim, KEL-28): same wry mechanism as macOS.
-        let webkitgtk = include_str!("webkitgtk/mod.rs");
-        assert!(
-            webkitgtk.contains("with_guarded_media_permissions"),
-            "KEL-28/KEL-59: webkitgtk omits the guarded handler, restoring `WebKitGTK`'s default prompt"
-        );
-        assert!(
-            webkitgtk.contains("webview_media_principal"),
-            "KEL-73: webkitgtk must mint a webview principal, not fall back to AppProcess"
-        );
-
-        // Windows (direct COM, KEL-65): the backend must register the guarded
-        // `PermissionRequested` handler and route it through the shared policy.
-        let webview2 = include_str!("webview2/mod.rs");
-        assert!(
-            webview2.contains("install_guarded_media_permissions"),
-            "KEL-59: webview2 omits the guarded handler, restoring WebView2's default prompt"
-        );
-        assert!(
-            webview2.contains("add_PermissionRequested"),
-            "KEL-59: webview2 guard must register the COM PermissionRequested handler"
-        );
-        assert!(
-            webview2.contains("media_permission_allowed"),
-            "KEL-59: webview2 guard must consult the shared policy, not a constant"
-        );
-        assert!(
-            webview2.contains("webview_media_principal"),
-            "KEL-73: webview2 must mint a webview principal, not fall back to AppProcess"
-        );
-        assert!(
-            webview2.contains("navigate_initial(&view.webview, &guard"),
-            "KEL-65: the first navigation must present the GuardInstalled proof"
-        );
-    }
 }
 
 /// `WebView2`-facing tests for the Windows kind mapping. Pure data — the COM
@@ -500,11 +623,33 @@ mod webview2_tests {
 /// Windows no longer links wry.
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod wry_tests {
+    use std::sync::{Arc, Mutex};
+
     use super::{
-        MediaPermission, WebviewId, media_permission_response, webview_media_principal,
-        with_guarded_media_permissions, wry_media_kind,
+        MediaPermission, WebviewId, WryPermissionCallback, WryPermissionInstaller,
+        media_permission_response, webview_media_principal, with_guarded_media_permissions,
+        wry_media_kind,
     };
     use keld_guard::parse_manifest;
+
+    struct FakeInstaller {
+        installed: Arc<Mutex<Option<WryPermissionCallback>>>,
+    }
+
+    struct FakeGuardInstalled;
+
+    impl WryPermissionInstaller for FakeInstaller {
+        type Guarded = FakeGuardInstalled;
+
+        fn install_permission_handler(self, callback: WryPermissionCallback) -> Self::Guarded {
+            let mut installed = match self.installed.lock() {
+                Ok(installed) => installed,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *installed = Some(callback);
+            FakeGuardInstalled
+        }
+    }
 
     fn view() -> keld_guard::Principal {
         webview_media_principal(WebviewId(1))
@@ -554,8 +699,36 @@ mod wry_tests {
         assert_ne!(
             media_permission_response(&empty, principal, wry::PermissionKind::Camera),
             wry::PermissionResponse::Default,
-            "Default continues the platform behaviour — macOS auto-grants, Linux/Windows prompt. \n             v0 must Deny on all three."
+            "Default delegates platform policy — macOS auto-grants and Linux defaults deny without Keld provenance. v0 must explicitly Deny on both."
         );
+    }
+
+    #[test]
+    fn adapter_installs_the_exact_default_deny_callback() {
+        let installed = Arc::new(Mutex::new(None));
+        let _guard = with_guarded_media_permissions(
+            FakeInstaller {
+                installed: Arc::clone(&installed),
+            },
+            parse_manifest("{}").expect("empty manifest"),
+            WebviewId(7),
+        );
+        let callback = installed
+            .lock()
+            .expect("fake callback slot")
+            .take()
+            .expect("adapter must install a callback");
+        for kind in [
+            wry::PermissionKind::Camera,
+            wry::PermissionKind::Microphone,
+            wry::PermissionKind::Other,
+        ] {
+            assert_eq!(
+                callback(kind),
+                wry::PermissionResponse::Deny,
+                "installed callback must explicitly deny {kind:?}"
+            );
+        }
     }
 
     #[test]
@@ -571,6 +744,5 @@ mod wry_tests {
             media_permission_response(&granted, principal, wry::PermissionKind::Microphone),
             wry::PermissionResponse::Deny
         );
-        let _ = with_guarded_media_permissions(wry::WebViewBuilder::new(), granted, principal);
     }
 }

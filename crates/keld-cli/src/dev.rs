@@ -28,6 +28,7 @@ use keld_runtime::RestartPolicy;
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
+use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
 use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
@@ -43,6 +44,15 @@ pub enum DevError {
     Doctor(String),
     /// Child process or thread failure.
     Io(io::Error),
+    /// The owner-private staged host could not be launched.
+    StagedHostLaunch {
+        /// Exact staged executable path passed to the OS.
+        path: PathBuf,
+        /// Primary process-spawn failure.
+        source: io::Error,
+        /// Secondary cleanup failure, when the launch directory could not be removed.
+        cleanup: Option<io::Error>,
+    },
     /// IPC or host failure surfaced as text.
     Runtime(String),
     /// The supervised app process died while the host owned the window
@@ -71,6 +81,29 @@ impl std::fmt::Display for DevError {
                 "KELD-CLI-030: dev session I/O error — {e}. \
                  Check that `bun` is on PATH and the project files are readable."
             ),
+            Self::StagedHostLaunch {
+                path,
+                source,
+                cleanup,
+            } => {
+                write!(
+                    f,
+                    "KELD-CLI-050: staged host launch failed for `{}` — {source}.",
+                    path.display()
+                )?;
+                if let Some(cleanup) = cleanup {
+                    let launch_root = path.parent().unwrap_or(path);
+                    write!(
+                        f,
+                        " Cleanup of `{}` also failed — {cleanup}.",
+                        launch_root.display()
+                    )?;
+                }
+                write!(
+                    f,
+                    " Verify that `keld` and `keld-host` came from the same installation and that the staged path is executable. If cleanup failed, remove only the named launch directory after confirming no staged process remains."
+                )
+            }
             Self::Runtime(msg) => write!(
                 f,
                 "KELD-CLI-031: dev session failed — {msg}. \
@@ -112,16 +145,44 @@ pub struct DevEchoResult {
     pub link: String,
 }
 
-/// Finds the project root containing `keld.config.ts`, starting at `cwd`.
-#[must_use]
-pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
+/// Finds an owner-controlled project root containing `keld.config.ts`, starting at `cwd`.
+///
+/// Discovery stops at the first ancestor not owned by the invoking OS principal.
+/// If that boundary itself contains a Keld config, the ownership fault is
+/// returned instead of being mistaken for an absent project.
+///
+/// # Errors
+///
+/// Returns [`ProjectOwnershipError`] (`KELD-CLI-049`) when a candidate project
+/// directory or its config is not owned by the invoking principal, or its
+/// owner cannot be inspected.
+pub fn find_project_root(cwd: &Path) -> Result<Option<PathBuf>, ProjectOwnershipError> {
+    find_project_root_with_owner_check(cwd, ensure_current_principal_owns)
+}
+
+fn find_project_root_with_owner_check<F>(
+    cwd: &Path,
+    mut owner_check: F,
+) -> Result<Option<PathBuf>, ProjectOwnershipError>
+where
+    F: FnMut(&Path) -> Result<(), ProjectOwnershipError>,
+{
     let mut dir = cwd.to_path_buf();
     loop {
-        if dir.join("keld.config.ts").is_file() {
-            return Some(dir);
+        let config = dir.join("keld.config.ts");
+        if let Err(error) = owner_check(&dir) {
+            return if config.is_file() {
+                Err(error)
+            } else {
+                Ok(None)
+            };
+        }
+        if config.is_file() {
+            owner_check(&config)?;
+            return Ok(Some(dir));
         }
         if !dir.pop() {
-            return None;
+            return Ok(None);
         }
     }
 }
@@ -178,6 +239,18 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
+}
+
+fn staged_host_launch_error(
+    path: PathBuf,
+    source: io::Error,
+    cleanup: Result<(), io::Error>,
+) -> DevError {
+    DevError::StagedHostLaunch {
+        path,
+        source,
+        cleanup: cleanup.err(),
+    }
 }
 
 /// Doctor checks, then one Bun IPC echo round-trip without opening a window.
@@ -257,7 +330,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
     #[cfg(windows)]
     let mut stage = stage;
     let stage_root = stage.root().to_owned();
-    let mut command = Command::new(stage.host());
+    let staged_host = stage.host().to_owned();
+    let mut command = Command::new(&staged_host);
     command
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
@@ -271,14 +345,8 @@ fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
         Ok(host) => host,
         Err(source) => {
             drop(stage);
-            if let Err(cleanup) = fs::remove_dir_all(&stage_root) {
-                return Err(DevError::Doctor(format!(
-                    "KELD-CLI-047: boot staging failed during host launch cleanup — \
-                     spawn failed: {source}; cleanup failed: {cleanup}. \
-                     Remove that owner-private nonce directory and retry."
-                )));
-            }
-            return Err(DevError::Io(source));
+            let cleanup = fs::remove_dir_all(&stage_root);
+            return Err(staged_host_launch_error(staged_host, source, cleanup));
         }
     };
     let lease_writer = host.stdin.take().ok_or_else(|| {
@@ -628,6 +696,43 @@ mod tests {
     }
 
     #[test]
+    fn staged_host_spawn_failure_names_host_path_not_bun() {
+        let path = PathBuf::from("/owner-private/stage/keld-host");
+        let error = staged_host_launch_error(
+            path.clone(),
+            io::Error::new(ErrorKind::PermissionDenied, "spawn denied"),
+            Ok(()),
+        );
+        let rendered = error.to_string();
+
+        assert!(rendered.starts_with("KELD-CLI-050"), "{rendered}");
+        assert!(rendered.contains(&path.display().to_string()), "{rendered}");
+        assert!(rendered.contains("spawn denied"), "{rendered}");
+        assert!(!rendered.contains("bun"), "{rendered}");
+        assert!(!rendered.contains("KELD-CLI-047"), "{rendered}");
+    }
+
+    #[test]
+    fn staged_host_cleanup_failure_is_context_not_a_second_primary_code() {
+        let error = staged_host_launch_error(
+            PathBuf::from("/owner-private/stage/keld-host"),
+            io::Error::new(ErrorKind::NotFound, "staged host missing"),
+            Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                "cleanup denied",
+            )),
+        );
+        let rendered = error.to_string();
+
+        assert_eq!(rendered.matches("KELD-CLI-").count(), 1, "{rendered}");
+        assert!(rendered.starts_with("KELD-CLI-050"), "{rendered}");
+        assert!(rendered.contains("staged host missing"), "{rendered}");
+        assert!(rendered.contains("cleanup denied"), "{rendered}");
+        assert!(!rendered.contains("bun"), "{rendered}");
+        assert!(!rendered.contains("KELD-CLI-047"), "{rendered}");
+    }
+
+    #[test]
     fn clean_supervision_still_surfaces_a_window_failure() {
         let err = window_phase_outcome(Ok(()), Err(DevError::Runtime("wv boom".to_owned())))
             .expect_err("a window fault must not be swallowed");
@@ -675,7 +780,9 @@ mod tests {
         fs::create_dir_all(root.join("src")).expect("src");
         fs::write(root.join("keld.config.ts"), "export default {}\n").expect("config");
         assert_eq!(
-            find_project_root(&root.join("src")).as_deref(),
+            find_project_root(&root.join("src"))
+                .expect("owned project discovery")
+                .as_deref(),
             Some(root.as_path())
         );
     }
@@ -683,7 +790,65 @@ mod tests {
     #[test]
     fn missing_config_is_none() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(find_project_root(dir.path()), None);
+        assert_eq!(find_project_root(dir.path()).expect("owned search"), None);
+    }
+
+    #[test]
+    fn find_project_root_skips_an_ancestor_owned_by_another_principal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let trusted_project = dir.path().join("trusted-project");
+        let foreign_boundary = trusted_project.join("foreign-boundary");
+        let cwd = foreign_boundary.join("nested");
+        fs::create_dir_all(&cwd).expect("nested cwd");
+        fs::write(
+            trusted_project.join("keld.config.ts"),
+            "export default {}\n",
+        )
+        .expect("higher trusted config");
+
+        let selected = find_project_root_with_owner_check(&cwd, |candidate| {
+            if candidate == foreign_boundary {
+                Err(ProjectOwnershipError::foreign(candidate.to_owned()))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("an unowned boundary without a config stops discovery cleanly");
+
+        assert_eq!(
+            selected, None,
+            "the walk must not skip a foreign boundary and adopt a higher config"
+        );
+    }
+
+    #[test]
+    fn find_project_root_rejects_a_foreign_candidate_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let foreign_project = dir.path().join("foreign-project");
+        let cwd = foreign_project.join("nested");
+        fs::create_dir_all(&cwd).expect("nested cwd");
+        fs::write(
+            foreign_project.join("keld.config.ts"),
+            "export default {}\n",
+        )
+        .expect("foreign config");
+
+        let error = find_project_root_with_owner_check(&cwd, |candidate| {
+            if candidate == foreign_project {
+                Err(ProjectOwnershipError::foreign(candidate.to_owned()))
+            } else {
+                Ok(())
+            }
+        })
+        .expect_err("a foreign candidate config must be an explicit ownership fault");
+
+        assert!(error.to_string().contains("KELD-CLI-049"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains(&foreign_project.display().to_string()),
+            "{error}"
+        );
     }
 
     #[test]

@@ -309,9 +309,11 @@ The honest reading of that diagram:
   caller: `keld_native::fs::{fs_read, fs_write}` (KEL-71) — a real kipc channel
   (`serve_fs_session`), guard-checked before any OS call, with real temp-file oracles
   proving allow/deny/`..`/non-`AppProcess` cases. Every other `keld-native` module is
-  still a name only. MCP `keld_permissions_explain` and the webview media-capture
-  handlers (all three OS backends) call `keld-guard::evaluate` directly, independent of
-  `dispatch_privileged`.
+  still a name only. MCP `keld_permissions_explain` and each applicable
+  new-request webview media callback call `keld-guard::evaluate` directly,
+  independent of `dispatch_privileged`. Pinned wry does not consume that
+  callback below macOS 12 on debug hosts, and saved browser permission
+  preferences remain a KEL-135 profile-lifecycle boundary.
 - **`keld-runtime` now supervises the Bun spawn (KEL-70).** `keld-cli/src/dev.rs`
   `run_dev_echo` spawns through `keld_runtime::Supervisor`, which restarts a crashed
   (non-zero exit) child with exponential backoff up to `RestartPolicy`'s defaults
@@ -571,7 +573,7 @@ Self::UnknownWebview { id } => write!(
 ),
 ```
 
-And the fix text is tested — `error.rs:74-118` asserts that all seven variants contain both their
+And the fix text is tested — `error.rs` asserts that all nine variants contain both their
 code and a fix hint, so a message that degrades to "not implemented" fails CI. `keld-cli` follows
 the same shape (`KELD-CLI-020` through `KELD-CLI-040`). The known gap: `keld-guard`'s `DenyReason`
 renders the capability and scope but not yet the manifest edit that would grant it, which
