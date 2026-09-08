@@ -2863,8 +2863,12 @@ mod tests {
         let mut captured = CapturedOutput::default();
         // Distinct, self-identifying lines: any concatenation of two halves is
         // detectable because a well-formed line has exactly one "|end" marker.
+        let mut written = 0_usize;
         for index in 0..40_000 {
-            captured.push_chunk(&format!("line-{index:06}-payload|end\n"), 28, true);
+            let line = format!("line-{index:06}-payload|end\n");
+            let raw_len = line.len();
+            written += raw_len;
+            captured.push_chunk(&line, raw_len, true);
         }
         assert!(captured.stdout_dropped_bytes > 0, "the test must elide");
         for line in captured.stdout.lines() {
@@ -2881,6 +2885,17 @@ mod tests {
                 "retained line is not one the child wrote: {line:?}"
             );
         }
+        assert_eq!(
+            captured.stdout_total_bytes, written,
+            "the total must equal what this test actually wrote, or the \
+             accounting under test is being measured against a fiction"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes
+                + captured.stdout_separator_bytes,
+            captured.stdout.len(),
+            "total, dropped, separators and retained must describe one stream"
+        );
     }
 
     /// Output with no newline in range has no line structure to cut on, so the
