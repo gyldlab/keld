@@ -873,6 +873,12 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{job}` must have at least one `oven-sh/setup-bun` step, and every such step must pin its own `with.bun-version` to `1.4.2`. Use direct block-style steps and inputs; unrelated job text is not a runtime pin."
         )
     };
+    let literal_key = |key: &str| {
+        !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    };
     let block = workflow_job_block(text, job).ok_or_else(invalid)?;
     let mut steps: Vec<Vec<(usize, &str)>> = Vec::new();
     let mut in_steps = false;
@@ -900,11 +906,13 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
     }
     let mut setups = 0;
     for step in steps {
+        let mut property_count = 0;
         let properties: Vec<_> = step
             .iter()
             .enumerate()
             .filter(|(index, (indent, _))| *index == 0 || *indent == 8)
             .filter_map(|(index, (_, content))| {
+                property_count += 1;
                 yaml_mapping_key(content).map(|(key, value)| (index, key, value))
             })
             .collect();
@@ -913,10 +921,27 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
         if properties.iter().any(|(_, key, _)| key == "run") {
             continue;
         }
+        // YAML aliases, tags, escaped keys and folded/escaped action values
+        // require decoding we do not own. Reject them instead of mistaking a
+        // setup-bun action for an unrelated step under this narrow grammar.
+        if properties.len() != property_count
+            || properties.iter().any(|(_, key, _)| !literal_key(key))
+        {
+            return Err(invalid());
+        }
         let uses: Vec<_> = properties
             .iter()
             .filter(|(_, key, _)| key == "uses")
             .collect();
+        if uses.iter().any(|(_, _, value)| {
+            let literal = value.trim_matches(['\'', '"']);
+            literal.is_empty()
+                || !literal.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '@' | ':')
+                })
+        }) {
+            return Err(invalid());
+        }
         if !uses.iter().any(|(_, _, value)| {
             value
                 .trim_matches(['\'', '"'])
@@ -933,11 +958,17 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
         if uses.len() != 1 || with.len() != 1 || !with[0].2.is_empty() {
             return Err(invalid());
         }
-        let pins: Vec<_> = step[with[0].0 + 1..]
+        let inputs = step[with[0].0 + 1..]
             .iter()
             .take_while(|(indent, _)| *indent > 8)
             .filter(|(indent, _)| *indent == 10)
-            .filter_map(|(_, content)| yaml_mapping_key(content))
+            .map(|(_, content)| yaml_mapping_key(content).ok_or_else(invalid))
+            .collect::<Result<Vec<_>, _>>()?;
+        if inputs.iter().any(|(key, _)| !literal_key(key)) {
+            return Err(invalid());
+        }
+        let pins: Vec<_> = inputs
+            .iter()
             .filter(|(key, _)| key == "bun-version")
             .collect();
         if pins.len() != 1 || pins[0].1.trim_matches(['\'', '"']) != "1.4.2" {
@@ -2962,6 +2993,10 @@ mod tests {
             for extra in [
                 "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
                 "      - name: another Bun setup\n        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
+                "      - name: folded Bun action\n        'uses': >-\n          oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
+                "      - uses: \"oven-sh/setup-b\\u0075n@0c5077e51419868618aeaa5fe8019c62421857d6\"\n        with:\n          bun-version: latest\n",
+                "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: '1.4.2'\n          \"bun-\\u0076ersion\": latest\n",
+                "      - ? uses\n        : oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
             ] {
                 let temp = complete_fixture();
                 temp.write(
