@@ -27,10 +27,12 @@ pub enum HelloSessionError {
         /// What the caller was waiting for.
         waiting_for: &'static str,
     },
-    /// The marker was never observed and the supervisor had elided output, so
-    /// the child may have printed it into the span that was dropped. Distinct
-    /// from [`Self::Timeout`] because the remedy is different: the marker must
-    /// move earlier, not the deadline later (KEL-134).
+    /// The marker was never observed within the deadline while the supervisor
+    /// had elided output. Ambiguous by construction: the child may have
+    /// printed the marker into the dropped span, or may simply not have
+    /// printed it yet. Distinct from [`Self::Timeout`] only so the caller
+    /// learns that elision is in play and that moving the marker earlier is a
+    /// remedy a longer deadline cannot supply (KEL-134).
     MarkerPossiblyElided {
         /// What the caller was waiting for.
         waiting_for: &'static str,
@@ -71,10 +73,12 @@ impl std::fmt::Display for HelloSessionError {
                 elided_bytes,
             } => write!(
                 f,
-                "KELD-CORE-034: never observed {waiting_for}, and the supervisor \
-                 elided {elided_bytes} bytes of child output to stay within its \
-                 capture bound. Print the marker before the app's bulk output, \
-                 or reduce that output; raising the timeout will not help."
+                "KELD-CORE-034: never observed {waiting_for} within the deadline, \
+                 and the supervisor elided {elided_bytes} bytes of child output to \
+                 stay within its capture bound. The marker may have been printed \
+                 into the elided span, or may not have been printed yet. Print it \
+                 before the app's bulk output, or reduce that output; if the app is \
+                 merely slow, a longer deadline may still succeed."
             ),
             Self::WindowPhase { cause } => write!(
                 f,
@@ -232,8 +236,9 @@ impl HostOwnedHelloSession {
             if remaining.is_zero() {
                 // A marker printed inside the pinned head can never be elided,
                 // so an absent marker plus a non-zero drop count means the
-                // child printed it too late to survive the capture bound
-                // (KEL-134). Say so instead of blaming the deadline.
+                // marker either landed in the elided span or has not been
+                // printed yet (KEL-134). Report both possibilities rather than
+                // blaming the deadline alone, which hides the first one.
                 if captured.stdout_dropped_bytes > 0 {
                     return Err(HelloSessionError::MarkerPossiblyElided {
                         waiting_for: "Bun stdout ready marker",
