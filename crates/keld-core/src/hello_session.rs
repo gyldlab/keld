@@ -206,9 +206,16 @@ impl HostOwnedHelloSession {
     /// Drains supervisor events so a crash-loop surfaces as
     /// [`HelloSessionError::Runtime`] instead of a hang.
     ///
+    /// Matches against the supervisor's retained transcript, which is bounded
+    /// (KEL-134). A marker printed within the pinned head stays findable for
+    /// the life of the session; one printed after the app's bulk output can be
+    /// elided before any poll observes it.
+    ///
     /// # Errors
     ///
-    /// Returns [`HelloSessionError::Timeout`] when `timeout` elapses, or
+    /// Returns [`HelloSessionError::Timeout`] when `timeout` elapses with no
+    /// output elided, [`HelloSessionError::MarkerPossiblyElided`] when it
+    /// elapses after the supervisor dropped output, or
     /// [`HelloSessionError::Runtime`] if supervision ends before the marker.
     pub fn wait_until_output_contains(
         &self,

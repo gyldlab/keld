@@ -322,12 +322,18 @@ pub struct CapturedOutput {
     pub stderr_total_bytes: usize,
     /// Stdout bytes elided from the middle to honour the retention bound.
     /// Invariant while the child writes valid UTF-8:
-    /// `stdout_total_bytes - stdout_dropped_bytes == stdout.len()`.
+    /// `stdout_total_bytes - stdout_dropped_bytes + stdout_separator_bytes == stdout.len()`.
     pub stdout_dropped_bytes: usize,
     /// Stderr bytes elided from the middle to honour the retention bound.
     /// Invariant while the child writes valid UTF-8:
-    /// `stderr_total_bytes - stderr_dropped_bytes == stderr.len()`.
+    /// `stderr_total_bytes - stderr_dropped_bytes + stderr_separator_bytes == stderr.len()`.
     pub stderr_dropped_bytes: usize,
+    /// `\n` separators inserted into `stdout` at an elision whose span held no
+    /// newline, so two line fragments cannot merge into one apparent line.
+    pub stdout_separator_bytes: usize,
+    /// `\n` separators inserted into `stderr` at an elision whose span held no
+    /// newline, so two line fragments cannot merge into one apparent line.
+    pub stderr_separator_bytes: usize,
 }
 
 impl CapturedOutput {
@@ -351,12 +357,17 @@ impl CapturedOutput {
     /// three-byte replacement character; counting the decoded length would
     /// overstate every ordering offset the ledger publishes.
     ///
-    /// Both cut points land on a **line** boundary where one exists within the
-    /// elided span, so the pinned head never has its trailing partial line
-    /// concatenated onto the tail's leading partial line — that would render a
-    /// line the child never printed. Where the span contains no newline the
-    /// cut falls back to a UTF-8 character boundary, which keeps the retained
-    /// transcript valid at the cost of splitting one very long line.
+    /// Both cut points land on a **line** boundary where one exists in range,
+    /// so the pinned head never has its trailing partial line concatenated
+    /// onto the tail's leading partial line — that would render a line the
+    /// child never printed.
+    ///
+    /// Output with no newline in range (a single very long line, or `\r`-only
+    /// progress output) has no line structure to cut on. There the cut falls
+    /// back to a UTF-8 character boundary and a single `\n` separator is
+    /// inserted, so the two fragments still cannot merge into one apparent
+    /// line. Separator bytes are counted in `separators` and are the only
+    /// reason `stream.len()` can exceed `total - dropped`.
     ///
     /// The pinned head is never evicted, so output a child printed before a
     /// flood still reaches the host.
@@ -364,6 +375,7 @@ impl CapturedOutput {
         stream: &mut String,
         total: &mut usize,
         dropped: &mut usize,
+        separators: &mut usize,
         chunk: &str,
         raw_len: usize,
     ) {
@@ -372,30 +384,34 @@ impl CapturedOutput {
         if stream.len() <= CAPTURE_MAX_RETAINED_BYTES {
             return;
         }
-        let head_end = Self::head_cut(stream);
+        let (head_end, head_is_line_aligned) = Self::head_cut(stream);
         let tail_start = Self::tail_cut(stream);
-        // Reachable when the elided span holds no newline and the byte-boundary
-        // walk pushes the head cut past the tail cut — a single line longer
-        // than the retained region. Skipping compaction there is deliberate:
-        // the alternative is splitting that line, and the ceiling is restored
-        // on the next chunk that introduces a boundary.
+        // Reachable when the retained region holds no newline after the head
+        // position and the character-boundary walk pushes the head cut past the
+        // tail cut — a single line longer than the retained region. Skipping
+        // compaction there would let that line defeat the ceiling, so the cut
+        // is taken at the character boundary instead and the separator below
+        // keeps the fragments distinct.
         if tail_start <= head_end {
             return;
         }
         stream.drain(head_end..tail_start);
         *dropped = dropped.saturating_add(tail_start - head_end);
+        if !head_is_line_aligned {
+            stream.insert(head_end, '\n');
+            *separators = separators.saturating_add(1);
+        }
     }
 
-    /// End of the pinned head: the byte after the first newline at or after
-    /// [`CAPTURE_HEAD_BYTES`], else the character boundary there.
+    /// End of the pinned head, and whether it lands just after a newline.
     ///
     /// The character boundary is resolved *before* slicing: `CAPTURE_HEAD_BYTES`
     /// can land inside a multi-byte character, and slicing there panics.
-    fn head_cut(stream: &str) -> usize {
+    fn head_cut(stream: &str) -> (usize, bool) {
         let from = Self::boundary_at_or_after(stream, CAPTURE_HEAD_BYTES);
         stream[from..]
             .find('\n')
-            .map_or(from, |offset| from + offset + 1)
+            .map_or((from, false), |offset| (from + offset + 1, true))
     }
 
     /// Start of the sliding tail: the byte after the first newline at or after
@@ -441,6 +457,7 @@ impl CapturedOutput {
                 &mut self.stdout,
                 &mut self.stdout_total_bytes,
                 &mut self.stdout_dropped_bytes,
+                &mut self.stdout_separator_bytes,
                 chunk,
                 raw_len,
             );
@@ -449,6 +466,7 @@ impl CapturedOutput {
                 &mut self.stderr,
                 &mut self.stderr_total_bytes,
                 &mut self.stderr_dropped_bytes,
+                &mut self.stderr_separator_bytes,
                 chunk,
                 raw_len,
             );
@@ -2821,12 +2839,14 @@ mod tests {
             "dropping output must be disclosed, not silent"
         );
         assert_eq!(
-            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes
+                + captured.stdout_separator_bytes,
             captured.stdout.len(),
-            "total, dropped and retained must describe one stream"
+            "total, dropped, separators and retained must describe one stream"
         );
         assert_eq!(
-            captured.stderr_total_bytes - captured.stderr_dropped_bytes,
+            captured.stderr_total_bytes - captured.stderr_dropped_bytes
+                + captured.stderr_separator_bytes,
             captured.stderr.len()
         );
         assert!(
@@ -2861,6 +2881,85 @@ mod tests {
                 "retained line is not one the child wrote: {line:?}"
             );
         }
+    }
+
+    /// Output with no newline in range has no line structure to cut on, so the
+    /// character-boundary fallback would splice two fragments into one
+    /// apparent line. A separator must keep them distinct. The realistic
+    /// trigger is a single huge `console.log(JSON.stringify(...))`.
+    #[test]
+    fn newline_free_output_is_separated_rather_than_spliced() {
+        let mut captured = CapturedOutput::default();
+        // One continuous line, far larger than the retained region.
+        let head_mark = "HEADSTART";
+        captured.push_chunk(head_mark, head_mark.len(), true);
+        let chunk = "a".repeat(4096);
+        for _ in 0..((CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 4) {
+            captured.push_chunk(&chunk, chunk.len(), true);
+        }
+        assert!(captured.stdout_dropped_bytes > 0, "the test must elide");
+        assert!(
+            captured.stdout_separator_bytes > 0,
+            "a newline-free elision must insert a separator: {captured:?}"
+        );
+        assert!(
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+            "separators must not defeat the ceiling: {}",
+            captured.stdout.len()
+        );
+        assert!(
+            captured.stdout.starts_with(head_mark),
+            "the pinned head must survive"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes
+                + captured.stdout_separator_bytes,
+            captured.stdout.len(),
+            "separators are the only slack in the invariant"
+        );
+    }
+
+    /// `\r`-only progress output has no `\n` at all, so it takes the same
+    /// fallback path.
+    #[test]
+    fn carriage_return_only_output_is_separated_rather_than_spliced() {
+        let mut captured = CapturedOutput::default();
+        let chunk = "progress\r".repeat(456);
+        for _ in 0..((CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 4) {
+            captured.push_chunk(&chunk, chunk.len(), true);
+        }
+        assert!(captured.stdout_dropped_bytes > 0, "the test must elide");
+        assert!(
+            captured.stdout_separator_bytes > 0,
+            "\\r is not a line terminator for this cut: {captured:?}"
+        );
+        assert!(
+            captured.stdout.contains('\n'),
+            "the separator must be present"
+        );
+    }
+
+    /// A single line longer than the retained region must not defeat the
+    /// memory ceiling. This exercises the `tail_start <= head_end` guard's
+    /// neighbourhood, which is otherwise unreachable.
+    #[test]
+    fn one_enormous_line_still_respects_the_ceiling() {
+        let mut captured = CapturedOutput::default();
+        let chunk = "z".repeat(4096);
+        for _ in 0..((CAPTURE_MAX_RETAINED_BYTES / chunk.len()) * 16) {
+            captured.push_chunk(&chunk, chunk.len(), true);
+        }
+        // No newline was ever written, so every compaction took the fallback.
+        assert!(
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+            "a newline-free flood must not grow without bound: {} retained after {} written",
+            captured.stdout.len(),
+            captured.stdout_total_bytes
+        );
+        assert!(
+            captured.stdout_total_bytes > CAPTURE_MAX_RETAINED_BYTES * 8,
+            "the test must actually flood"
+        );
     }
 
     /// The total counts bytes the child wrote, not the length of the lossy
@@ -2927,11 +3026,22 @@ mod tests {
         }
         assert!(captured.stdout_dropped_bytes > 0, "the test must truncate");
         assert!(
-            captured.stdout.chars().all(|c| c == '\u{20ac}'),
-            "a boundary-splitting cut would leave replacement characters"
+            captured
+                .stdout
+                .chars()
+                .all(|c| c == '\u{20ac}' || c == '\n'),
+            "a boundary-splitting cut would leave replacement characters; the \
+             only newline permitted is the inserted elision separator"
         );
         assert_eq!(
-            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout.matches('\n').count(),
+            captured.stdout_separator_bytes,
+            "this input has no newlines of its own, so every newline must be an \
+             accounted separator"
+        );
+        assert_eq!(
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes
+                + captured.stdout_separator_bytes,
             captured.stdout.len()
         );
     }
@@ -2967,7 +3077,8 @@ mod tests {
             "truncation must be disclosed: {captured:?}"
         );
         assert_eq!(
-            captured.stdout_total_bytes - captured.stdout_dropped_bytes,
+            captured.stdout_total_bytes - captured.stdout_dropped_bytes
+                + captured.stdout_separator_bytes,
             captured.stdout.len(),
             "the invariant must hold across a real capture thread"
         );
