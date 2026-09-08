@@ -22,9 +22,11 @@ wrapper or packaged application release to install yet.
 - Bun on `PATH`. **Use CI-pinned Bun 1.4.0 for `just ci` and the full workspace test
   gate.** The [Linux strict fixture](../../crates/keld-runtime/tests/linux_strict_boundary.rs)
   asserts that exact version. Record `bun --version` and `bun --revision` before a
-  run. Earlier Mac/Linux demos used Bun 1.4.2; the newer Ubuntu and Windows quick-start
-  observations used the pinned Bun 1.4.0. Only the pinned version satisfies the current
-  full gate. The scaffold has no package dependencies to install.
+  run. Some earlier demo observations used Bun 1.4.2; the newer
+  [Ubuntu](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871) and
+  [Windows](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+  quick-start observations used the pinned Bun 1.4.0. Only the pinned version satisfies
+  the current full gate. The scaffold has no package dependencies to install.
 - A desktop session and platform build prerequisites:
 
   | Platform | Prerequisites and qualification |
@@ -37,6 +39,9 @@ The Ubuntu build packages are recorded in the [CI workflow](../../.github/workfl
 A desktop session and the required Linux containment primitives are separate from
 compilation. If `dev` reports an unavailable security primitive, preserve its diagnostic
 and report the unsupported environment instead of disabling the check.
+Keld's strict Linux launch also requires `/usr/bin/bwrap` and a host policy that permits
+its unprivileged user-namespace containment; distribution policies differ, so preserve
+the exact diagnostic instead of weakening the host policy.
 
 On Linux, the [strict-launch path validator](../../crates/keld-runtime/src/linux_strict.rs)
 also checks trusted ancestry: directories must be real, root- or current-user-owned
@@ -54,7 +59,8 @@ stat -c '%U %a %n' .
 chmod 0700 .
 ```
 
-The recorded Linux run rejected its new `0775` worktree; narrowing that directory
+The [initial public Linux run](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
+rejected its new `0775` worktree; narrowing that directory
 alone to `0700` admitted launch. Other ancestor layouts still need the diagnostic's
 specific check. Do not recursively change permissions or alter shared/system
 ancestors to force acceptance.
@@ -88,11 +94,12 @@ cd hello-keld
 ../target/debug/keld dev
 ```
 
-On Windows, these are the source-checked PowerShell commands. The recorded Windows
-run used an interactive PowerShell session and verified build, create, doctor, the
-native window, captured shutdown output, Ctrl-C cleanup, and relaunch. A redirected
-PowerShell 5 pipeline or a shell/PTY that exits immediately is not that acceptance
-recipe. Start in the repository root:
+On Windows, these are the source-checked PowerShell commands. The
+[maintainer-recorded final-source Windows run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+used an interactive PowerShell session and verified the source build, native window,
+captured shutdown output, Ctrl-C cleanup, and relaunch. A redirected PowerShell 5
+pipeline or a shell/PTY that exits immediately is not that acceptance recipe. Start in
+the repository root:
 
 ```powershell
 .\target\debug\keld.exe create hello-keld
@@ -117,22 +124,26 @@ one. Expected behavior:
    ```
 
 4. Check that the host/Bun session and its nonce directory under `.keld/dev` are gone
-   before a new run. Ctrl-C cleanup was observed on the recorded Mac, Windows, and
-   Linux devices; it is a separate acceptance case from native window Close.
+   before a new run. The linked Windows and Ubuntu public records observed Ctrl-C
+   cleanup; it is a separate acceptance case from native window Close.
 
-**Normal-close acceptance is currently incomplete.** On physical Ubuntu/Wayland,
-clicking the stock app's Close button removed the renderer but left CLI, host, Bun,
-and the launch stage alive beyond an independent 20-second observation. Subsequent
-Ctrl-C cleaned them up; it did not fix normal Close. The
-[lifecycle issue](https://github.com/gyldlab/keld/issues/176) tracks the separate
-stock-app correction and its required native-close regression. The Mac probe exercised
-SIGINT rather than the Close button. The fresh Windows run also leaves its stock
-native-Close criterion incomplete; its passing Ctrl-C result does not replace it.
+**Normal-close acceptance is currently incomplete.** The
+[public Ubuntu/Wayland failure record](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
+reports that clicking the stock app's Close button removed the renderer but left CLI,
+host, Bun, and the launch stage alive beyond an independent 20-second observation.
+The later [Ubuntu quick-start refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
+verified Ctrl-C cleanup and relaunch but did not retry native Close. The
+[lifecycle issue](https://github.com/gyldlab/keld/issues/176) tracks the stock-app
+correction and its required native-close regression. No public Mac device record is
+cited here, so macOS native Close remains unverified. The
+[final-source Windows run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+also leaves stock native Close incomplete; its passing Ctrl-C result does not replace it.
 
-The newer Linux relaunch/early-interrupt probe on
-[PR #184](https://github.com/gyldlab/keld/pull/184) produced no `KELD-CORE` diagnostic
-and passed its cleanup/relaunch observables. That cancellation fix remains a separate
-unmerged candidate, so this documentation change does not claim it landed on `main`.
+The [newer Linux relaunch/early-interrupt record](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
+tested [PR #184](https://github.com/gyldlab/keld/pull/184) and produced no `KELD-CORE`
+diagnostic while passing cleanup/relaunch observables. That cancellation fix remains a
+separate unmerged candidate, so this documentation change does not claim it landed on
+`main`.
 
 The generated app is the canonical current example. Its `index.html` is the renderer;
 `src/main.ts` contains the app-link client and echo. It is not an Electron migration

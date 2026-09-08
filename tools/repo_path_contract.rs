@@ -47,7 +47,6 @@ pub(crate) fn escapes_public_repo(candidate: &Path) -> bool {
                 Component::Prefix(_) | Component::ParentDir | Component::RootDir
             )
         })
-        || normalized == "roadmap.md"
         || FORBIDDEN_PREFIXES
             .iter()
             .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))

@@ -27,7 +27,7 @@ do not establish release support:
 
 | Platform | Current app-session slice | Qualification still needed |
 |---|---|---|
-| macOS / WKWebView | Native window, app link, recovery, ordered cleanup | Complete strict profiles and release packaging |
+| macOS / WKWebView | Native window, app link, recovery, ordered Quit/CLI-loss cleanup | Stock app native Close remains unverified; complete strict profiles and release packaging |
 | Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock app native Close remains incomplete; remaining strict admission and release packaging |
 | Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Stock app native Close fails the latest Wayland acceptance; X11 product run, other distributions/architectures, release packaging |
 
@@ -49,16 +49,18 @@ cd hello-keld
 ```
 
 The expected result is a `hello-keld` window. Captured Bun output, including
-`IPC echo ok`, appears at shutdown. Source-pinned Windows and Ubuntu device runs
-verified build, create, doctor, the native window, Ctrl-C cleanup, and relaunch with
-Bun 1.4.0. Windows used an interactive PowerShell session. These interrupt runs do
-not pass the separate native-Close criterion.
+`IPC echo ok`, appears at shutdown. Maintainer-recorded, source-pinned public evidence
+covers the [Windows build/window/Ctrl-C/relaunch run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+and the [Ubuntu build/create/doctor/window/Ctrl-C/relaunch run](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871).
+Both used Bun 1.4.0; Windows used interactive PowerShell. These interrupt runs do not
+pass the separate native-Close criterion.
 
-**Known Linux lifecycle gap:** on the tested Ubuntu/Wayland candidate, native Close
-removes the renderer but leaves the host, Bun, and launch stage running. Ctrl-C
+**Known Linux lifecycle gap:** on the
+[tested Ubuntu/Wayland candidate](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917),
+native Close removes the renderer but leaves the host, Bun, and launch stage running. Ctrl-C
 cleaned up that session; this separate interrupt result does not pass normal-close
 acceptance. The [lifecycle issue](https://github.com/gyldlab/keld/issues/176) tracks
-the required stock-app fix. Both binaries are built from source; there is
+the required stock-app fix. The Rust executables are built from source; there is
 no npm installation or packaged app release yet.
 
 ## Evidence
@@ -73,6 +75,11 @@ no npm installation or packaged app release yet.
   establish a performance claim for a complete migrated application.
 - [CI](https://github.com/gyldlab/keld/actions/workflows/ci.yml): current automated
   checks. A CI run and a real desktop acceptance run are different evidence.
+- Public, source-pinned device records: [Windows/WebView2](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723),
+  [initial Ubuntu/WebKitGTK](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917),
+  and the [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871).
+  These maintainer-recorded observations preserve their platform limits and do not
+  establish acceptance for another OS, session type, or exit path.
 
 ## Roadmap
 

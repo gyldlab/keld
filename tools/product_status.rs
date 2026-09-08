@@ -47,6 +47,7 @@ const REQUIRED_NON_CRATE_IDS: &[&str] = &[
 
 const REQUIRED_CONSUMERS: &[&str] = &[
     "README.md",
+    "ROADMAP.md",
     "docs/architecture/01-overview.md",
     "docs/onboarding/01-project-summary.md",
     "docs/onboarding/02-architecture-guide.md",
@@ -60,7 +61,6 @@ const ROADMAP_AUTHORITY_CONSUMERS: &[&str] = &[
     "docs/onboarding/02-architecture-guide.md",
     "docs/onboarding/03-api-and-cli-surface.md",
     "docs/onboarding/05-development-guide.md",
-    "docs/onboarding/06-documentation-map.md",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -754,6 +754,15 @@ fn validate_evidence_kind(
     git_checkout: bool,
 ) -> Result<(), String> {
     let path = evidence.source.replace('\\', "/");
+    if path
+        .trim_start_matches("./")
+        .eq_ignore_ascii_case("ROADMAP.md")
+    {
+        return Err(invalid(
+            record.line,
+            "ROADMAP.md is public planning narrative and cannot be current product-status evidence",
+        ));
+    }
     let owned = match record.kind {
         RecordKind::Crate => record
             .id
@@ -1569,7 +1578,7 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
         match links_to_roadmap(&contents) {
             Ok(true) => {
                 return Err(format!(
-                    "KELD-DOCS007: `{relative}` still links gitignored ROADMAP.md from an authority-bearing status surface. Point it at `{OUTPUT_REL}`."
+                    "KELD-DOCS007: `{relative}` links public ROADMAP.md from an authority-bearing current-status surface. ROADMAP is planning narrative; point current status at `{OUTPUT_REL}`."
                 ));
             }
             Ok(false) => {}
@@ -1790,7 +1799,7 @@ mod tests {
             "# Agents\n\n[Product status source ledger](docs/engineering/product-status.tsv); [generated status view](docs/engineering/product-status.md).\n",
         );
         for relative in REQUIRED_CONSUMERS {
-            let link = if *relative == "README.md" {
+            let link = if matches!(*relative, "README.md" | "ROADMAP.md") {
                 "[status](docs/engineering/product-status.md)"
             } else {
                 "[status](../engineering/product-status.md)"
@@ -1803,7 +1812,7 @@ mod tests {
         );
         temp.write(
             "docs/onboarding/06-documentation-map.md",
-            "# Documentation\n\nTracked workflow only.\n",
+            "# Documentation\n\n[public roadmap](../../ROADMAP.md)\n",
         );
         temp.write(
             "justfile",
@@ -2271,13 +2280,13 @@ mod tests {
     #[test]
     fn roadmap_evidence_path_fails_even_when_present() {
         let temp = fixture();
-        temp.write("ROADMAP.md", "private roadmap\n");
+        temp.write("ROADMAP.md", "public planning narrative\n");
         temp.replace(
             LEDGER_REL,
             "code:crates/keld-core/src/lib.rs",
             "code:ROADMAP.md",
         );
-        expect_check_error(&temp, "outside the public tracked contract");
+        expect_check_error(&temp, "public planning narrative");
     }
 
     #[test]
@@ -2348,9 +2357,9 @@ mod tests {
     }
 
     #[test]
-    fn git_metadata_rejection_is_case_insensitive() {
+    fn public_path_policy_is_case_insensitive() {
         assert!(escapes_public_repo(Path::new(".GIT/config")));
-        assert!(escapes_public_repo(Path::new("RoadMap.md")));
+        assert!(!escapes_public_repo(Path::new("RoadMap.md")));
         assert!(escapes_public_repo(Path::new(
             "crates/keld-core/tests/CON.test.md"
         )));
@@ -2553,6 +2562,14 @@ mod tests {
     }
 
     #[test]
+    fn roadmap_must_link_canonical_status() {
+        let temp = fixture();
+        generate(temp.path()).expect("generate fixture");
+        temp.write("ROADMAP.md", "# Public planning narrative\n");
+        expect_check_error(&temp, "usable Markdown link");
+    }
+
+    #[test]
     fn roadmap_authority_link_fails() {
         let temp = fixture();
         generate(temp.path()).expect("generate fixture");
@@ -2560,7 +2577,7 @@ mod tests {
             "docs/onboarding/05-development-guide.md",
             "# Development\n\n[status](../engineering/product-status.md)\n\n[old status](../../ROADMAP.md)\n",
         );
-        expect_check_error(&temp, "still links gitignored ROADMAP.md");
+        expect_check_error(&temp, "links public ROADMAP.md");
     }
 
     #[test]

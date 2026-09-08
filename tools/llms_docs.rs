@@ -473,8 +473,14 @@ mod tests {
     }
 
     #[test]
-    fn unlisted_and_forbidden_sources_cannot_leak() {
+    fn unlisted_sources_stay_out_and_forbidden_sources_fail() {
         let temp = fixture();
+        assert!(
+            !SOURCES
+                .iter()
+                .any(|source| source.path.eq_ignore_ascii_case("ROADMAP.md")),
+            "ROADMAP must remain outside the curated production allowlist"
+        );
         temp.write("docs/research/secret.md", "RESEARCH_SENTINEL");
         temp.write("competitors/private.md", "COMPETITOR_SENTINEL");
         temp.write(".claude/private.md", "PRIVATE_SENTINEL");
@@ -502,14 +508,14 @@ mod tests {
         assert!(error.contains("authoritative docs corpus"), "{error}");
 
         let roadmap = [Source {
-            section: "Bad",
+            section: "Planning",
             title: "Roadmap",
             path: "ROADMAP.md",
-            description: "Must be rejected.",
+            description: "Public but outside the default curated corpus.",
         }];
-        let error = render(temp.path(), &roadmap).expect_err("gitignored roadmap must fail");
-        assert!(error.contains("KELD-DOCS003"), "{error}");
-        assert!(error.contains("ROADMAP.md"), "{error}");
+        let (_, explicit_full) =
+            render(temp.path(), &roadmap).expect("public roadmap may be explicitly rendered");
+        assert!(explicit_full.contains("ROADMAP_SENTINEL"));
     }
 
     #[cfg(unix)]
