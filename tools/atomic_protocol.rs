@@ -694,7 +694,7 @@ fn check_autonomous_merge(root: &Path) -> Result<(), String> {
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
-    let second_merge_owner = ["merge", "merging", "bypass", "waive", "waiver", "exception"]
+    let second_merge_owner = ["bypass", "waive", "waiver"]
         .iter()
         .any(|word| words.contains(word))
         || [
@@ -702,6 +702,14 @@ fn check_autonomous_merge(root: &Path) -> Result<(), String> {
             "without human",
             "review is optional",
             "approval is optional",
+            "review not required",
+            "approval not required",
+            "merge without",
+            "may merge",
+            "authorized to merge",
+            "merge exception",
+            "review exception",
+            "approval exception",
         ]
         .iter()
         .any(|phrase| outside_review.contains(phrase));
@@ -1399,10 +1407,25 @@ mod tests {
         let error = check(&temp.path).expect_err("a second merge-policy owner must fail");
         assert!(error.contains(MAINTAINERS), "{error}");
 
+        for rule in [
+            "Another actor may waive review.",
+            "Another actor can bypass human approval.",
+            "Another actor may merge without human review.",
+            "For another actor, approval is optional.",
+        ] {
+            let temp = fixture();
+            let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
+                .expect("read maintainer fixture")
+                + &format!("\n## Alternate policy\n\n{rule}\n");
+            temp.write(MAINTAINERS, &maintainers);
+            let error = check(&temp.path).expect_err("authorization prose outside owner must fail");
+            assert!(error.contains(MAINTAINERS), "{error}");
+        }
+
         let temp = fixture();
         let maintainers = fs::read_to_string(temp.path.join(MAINTAINERS))
             .expect("read maintainer fixture")
-            + "\n## Community\n\nMaintainers mentor contributors and record project direction publicly.\n";
+            + "\n## Community\n\nMaintainers merge community feedback into plans and document exception handling while reviewing proposals.\n";
         temp.write(MAINTAINERS, &maintainers);
         check(&temp.path).expect("unrelated maintainer prose remains allowed");
     }
