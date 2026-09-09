@@ -175,6 +175,30 @@ const CASES: &[Case] = &[
         expected: OUT_OF_SCOPE,
     },
     Case {
+        name: "url authority swallowed by single-slash scheme glob",
+        operation: "net.connect",
+        path: "https:/evil.example.com",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "url authority swallowed by triple-slash scheme glob",
+        operation: "net.connect",
+        path: "https:///evil.example.com",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "windows drive glob keeps path semantics",
+        operation: "shell.open",
+        path: "C://Users/app/x",
+        expected: ALLOW,
+    },
+    Case {
+        name: "windows drive glob does not reach another drive",
+        operation: "shell.open",
+        path: "E:/other/x",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
         name: "unknown operation",
         operation: "fs.delete",
         path: "/foo/bar/child",

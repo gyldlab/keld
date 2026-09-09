@@ -5,8 +5,8 @@
 //! The engine parses `keld.permissions.jsonc` and default-denies through
 //! [`evaluate`] for dotted capabilities (`fs.read`) against path and URL
 //! scopes. One matcher serves both: a `/**` prefix grant may cover hierarchy
-//! below the node it names, but never a scheme-qualified destination's own
-//! authority.
+//! below the destination it names, but it must name one, and it never reaches
+//! past that destination's own authority.
 //! [`evaluate`] requires a [`Principal`] and denies anything other than
 //! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
 //! principal. Strict-profile admission is exposed through [`admit`]. Repository
@@ -506,13 +506,15 @@ fn parse_manifest_at(
 /// or `prefix/` + remainder). A `..` path segment is always out of scope.
 /// `$VARS` are matched literally.
 ///
-/// A `/**` prefix grant covers what lies below the node it names, never the
-/// node's own authority: for a scheme-qualified `path`, the prefix must reach
-/// the end of the RFC 3986 authority. `"https://api.example.com/**"` therefore
-/// still covers that origin's subtree, while `"https://**"` and `"https:/**"`
-/// reach no host at all — a glob cannot hand the caller a destination the
-/// operator never named. Path scopes are unaffected. This is not URL
-/// normalization; see `docs/architecture/03-security.md` §2.
+/// Two rules keep a `/**` grant from handing over an authority. A grant that
+/// names only a scheme and separators (`"https://**"`, `"https:/**"`,
+/// `"https:///**"`, `"file:///**"`) matches nothing; and the prefix then matches
+/// only at a literal `/`, so `"https://api.example.com/**"` keeps its origin
+/// subtree while denying the longer authority `api.example.com.evil.test`.
+/// Path scopes keep their behaviour, a `C:/**` Windows drive glob included — a
+/// single character before the colon is a drive, not a scheme. This is not URL
+/// normalization, and a schemeless `//host/x` is matched as a path; see
+/// `docs/architecture/03-security.md` §2.
 ///
 /// The `Allow` path does not allocate (`json_pointer_for` and `Vec` are deny-only).
 #[must_use]
@@ -581,58 +583,50 @@ fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|segment| segment == "..")
 }
 
-/// Byte index at which `resource`'s authority component ends, or `None` when
-/// `resource` is not a scheme-qualified URI.
+/// Whether `prefix` names a scheme and separators but no destination — the
+/// `https:`, `https:/`, `https://`, `https:///`, `file:///` … family.
 ///
-/// RFC 3986 §3.2: the authority "is preceded by a double slash (`//`) and is
-/// terminated by the next slash (`/`), question mark (`?`), or number sign
-/// (`#`) character, or by the end of the URI". That span is the part of a
-/// destination the operator must have named themselves; everything after it is
-/// hierarchy a prefix grant may legitimately cover.
+/// Such a grant leaves the authority entirely to the caller, and which spelling
+/// actually reaches a host cannot be recovered from the resource: `https:/host`
+/// carries no `//`, so RFC 3986 §3.2 sees a path and an authority rule keyed on
+/// `://` never fires, yet WHATWG URL parsing — what a browser, `fetch` and a
+/// webview do — still reads `host` out of it. Refusing the *grant* closes every
+/// spelling at once, including ones no rule here anticipates.
 ///
-/// The `//` only introduces an authority when a real scheme precedes it —
-/// §3.1: `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, anchored at the
-/// start of the URI. Without that anchor a filesystem path that merely contains
-/// `://` (a cache entry named after a URL, say) would be read as a URI and lose
-/// its enclosing path grant.
-///
-/// This is deliberately not a URL parser. It answers one question — where the
-/// caller stops being able to choose — and normalization (case, default ports,
-/// percent-encoding, userinfo, IDN) remains the destination described in
-/// `docs/architecture/03-security.md` §2.
-fn authority_end(resource: &str) -> Option<usize> {
-    let scheme_end = resource.find("://")?;
-    let mut scheme = resource.get(..scheme_end)?.chars();
-    if !scheme.next()?.is_ascii_alphabetic()
-        || !scheme.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-    {
-        return None;
+/// A single character before the first colon is a Windows drive rather than a
+/// scheme (RFC 3986 §3.1 admits both: `scheme = ALPHA *( ALPHA / DIGIT / "+" /
+/// "-" / "." )`), so `C:/**` stays an ordinary path glob. The cost is that a
+/// one-letter scheme cannot express a URL grant; `docs/architecture/03-security.md`
+/// §2 records that.
+fn names_no_destination(prefix: &str) -> bool {
+    let Some(colon) = prefix.find(':') else {
+        return false;
+    };
+    if colon == 1 {
+        return false;
     }
-    let start = scheme_end + 3;
-    let end = resource[start..]
-        .find(['/', '?', '#'])
-        .map_or(resource.len(), |offset| start + offset);
-    Some(end)
+    prefix
+        .get(colon + 1..)
+        .is_some_and(|rest| rest.bytes().all(|byte| byte == b'/' || byte == b'\\'))
 }
 
 fn path_in_scope(path: &str, pattern: &str) -> bool {
     let Some(prefix) = pattern.strip_suffix("/**") else {
         return path == pattern;
     };
+    // A prefix grant covers what lies *below* the node it names, so it has to
+    // name one. Stripping `/**` off a scheme-qualified pattern can leave only a
+    // scheme and separators, at which point the caller picks the authority.
+    if names_no_destination(prefix) {
+        return false;
+    }
     if path == prefix {
         return true;
     }
-    if !(path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/')) {
-        return false;
-    }
-    // A prefix grant covers what lies *below* the node it names, so it must
-    // name a whole one. Stripping `/**` off a scheme-qualified pattern can land
-    // inside the authority delimiter — `"https://**"` leaves the prefix
-    // `"https:/"`, and the boundary byte checked above is then the second slash
-    // of `//` rather than a path separator. Requiring the prefix to reach the
-    // end of the authority keeps the choice of host with the operator, for
-    // every capability, without giving path scopes a second matcher.
-    authority_end(path).is_none_or(|end| prefix.len() >= end)
+    // The separator is what stops a longer sibling authority (or directory)
+    // riding the grant: `https://api.example.com/**` requires a `/` exactly
+    // where the grant ends, so `api.example.com.evil.test` never matches.
+    path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/')
 }
 
 #[cfg(test)]
@@ -842,16 +836,22 @@ mod tests {
         );
     }
 
-    /// Regression, KEL-208: a `/**` suffix is a *path* prefix wildcard, and applying
-    /// it to a URL scope used to strip the authority's own delimiter. `"https://**"`
-    /// became the prefix `"https:/"`, whose required boundary byte was then satisfied
-    /// by the second slash of `//`, so one grant reached every https authority the
-    /// operator never named. The single-slash spelling widens identically, so the
-    /// defect cannot be recognised from the pattern's trailing characters — only from
-    /// the authority the *resource* asks for (RFC 3986 §3.2).
+    /// Regression, KEL-208: a `/**` suffix is a *path* prefix wildcard, and
+    /// applying it to a URL scope left the caller holding the authority. Every
+    /// spelling below strips to a prefix that is a scheme and separators and
+    /// nothing else — `"https://**"` to `"https:/"`, `"https:/**"` to
+    /// `"https:"` — so the operator named no destination at all.
     ///
-    /// `origin_rooted_url_grant_still_covers_its_own_subtree` is the paired allow that
-    /// fails if this test were ever satisfied by denying everything.
+    /// The spellings are not interchangeable to a *resource* parser, which is
+    /// why the grant is what gets refused: `https:/evil.example.com` carries no
+    /// `//`, so RFC 3986 reads a path and an authority rule keyed on `://`
+    /// never fires, yet WHATWG URL parsing — a browser, `fetch`, a webview —
+    /// still reads the host out of it. Refusing the grant closes every
+    /// spelling at once, including ones no rule here anticipates.
+    ///
+    /// `origin_rooted_url_grant_still_covers_its_own_subtree` and
+    /// `a_windows_drive_glob_is_a_path_not_a_scheme` are the paired allows that
+    /// fail if this test were ever satisfied by denying everything.
     #[test]
     fn url_scope_glob_must_not_delegate_the_authority() {
         for (manifest_text, requested) in [
@@ -863,9 +863,25 @@ mod tests {
                 r#"{"app":{"net":{"connect":["https://**"]}}}"#,
                 "https://evil.example.com/steal?token=1",
             ),
+            // No `//` in the resource: an authority rule keyed on `://` cannot
+            // see this one, but a real URL parser reads `evil.example.com`.
+            (
+                r#"{"app":{"net":{"connect":["https:/**"]}}}"#,
+                "https:/evil.example.com",
+            ),
             (
                 r#"{"app":{"net":{"connect":["https:/**"]}}}"#,
                 "https://evil.example.com",
+            ),
+            // Extra separators: WHATWG ignores the surplus for a special
+            // scheme and still finds a host.
+            (
+                r#"{"app":{"net":{"connect":["https:///**"]}}}"#,
+                "https:///evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["https:///**"]}}}"#,
+                "https:////evil.example.com",
             ),
             (
                 r#"{"app":{"net":{"connect":["wss://**"]}}}"#,
@@ -874,6 +890,22 @@ mod tests {
             (
                 r#"{"app":{"net":{"connect":["file://**"]}}}"#,
                 "file:///etc/shadow",
+            ),
+            // The empty (local) authority is still an authority the grant does
+            // not name; `file:///etc/**` below is how you name one.
+            (
+                r#"{"app":{"net":{"connect":["file:///**"]}}}"#,
+                "file:///etc/shadow",
+            ),
+            // Not a valid RFC 3986 scheme, so no authority rule keyed on the
+            // scheme applies — the grant still names no destination.
+            (
+                r#"{"app":{"net":{"connect":["-a://**"]}}}"#,
+                "-a://any.host/x",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["a+b-c.d://**"]}}}"#,
+                "a+b-c.d://any.host/x",
             ),
         ] {
             let manifest = parse_manifest(manifest_text).expect("manifest");
@@ -886,25 +918,28 @@ mod tests {
         }
     }
 
-    /// The authority rule must not cost an origin-rooted grant the subtree it really
-    /// does grant. This is the paired allow for
-    /// `url_scope_glob_must_not_delegate_the_authority`; a matcher that denied every
-    /// scheme-qualified resource would pass that test and fail this one.
+    /// A grant may still name an authority and own everything under it. This is
+    /// a paired allow for `url_scope_glob_must_not_delegate_the_authority`; a
+    /// matcher that refused every scheme-qualified grant would pass that test
+    /// and fail this one.
     #[test]
     fn origin_rooted_url_grant_still_covers_its_own_subtree() {
-        let manifest =
-            parse_manifest(r#"{"app":{"net":{"connect":["https://api.myapp.com/**"]}}}"#)
-                .expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "net.connect", "https://api.myapp.com/v1"),
-            Decision::Allow,
-            "a grant whose prefix covers the whole authority still owns its subtree"
-        );
-        assert_eq!(
-            eval_app(&manifest, "net.connect", "https://api.myapp.com"),
-            Decision::Allow,
-            "the granted origin root itself stays in scope"
-        );
+        let manifest = parse_manifest(
+            r#"{"app":{"net":{"connect":["https://api.myapp.com/**","file:///etc/**"]}}}"#,
+        )
+        .expect("manifest");
+        for requested in [
+            "https://api.myapp.com/v1",
+            "https://api.myapp.com",
+            // `file:///etc` names the empty authority *and* a path under it.
+            "file:///etc/shadow",
+        ] {
+            assert_eq!(
+                eval_app(&manifest, "net.connect", requested),
+                Decision::Allow,
+                "a grant that names its authority still owns its subtree: {requested}"
+            );
+        }
         let sibling = eval_app(
             &manifest,
             "net.connect",
@@ -916,19 +951,48 @@ mod tests {
         );
     }
 
-    /// The authority rule keys off a real scheme, anchored at the start of the
-    /// resource (RFC 3986 §3.1). A filesystem path may itself contain `://` — a
-    /// cache entry named after a URL is the ordinary case — and it must keep the
-    /// enclosing path grant rather than be reinterpreted as a URI whose authority
-    /// the grant fails to cover. Denying it would be fail-closed and still wrong.
+    /// `C:` is a valid RFC 3986 scheme *and* the usual Windows drive. Reading it
+    /// as a scheme would classify `C://Users/app/x` — which Windows accepts — as
+    /// a URI whose authority is `Users`, and a `C:/**` grant would stop covering
+    /// it. A single character before the colon is therefore a drive letter.
+    #[test]
+    fn a_windows_drive_glob_is_a_path_not_a_scheme() {
+        let manifest =
+            parse_manifest(r#"{"app":{"fs":{"read":["C:/**","d:/data/**"]}}}"#).expect("manifest");
+        for requested in ["C:/Users/app/x", "C://Users/app/x", "d:/data//cache/x"] {
+            assert_eq!(
+                eval_app(&manifest, "fs.read", requested),
+                Decision::Allow,
+                "a drive-letter grant keeps plain path semantics: {requested}"
+            );
+        }
+        let outside = eval_app(&manifest, "fs.read", "E:/other/x");
+        assert!(
+            matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
+            "an ungranted drive is still out of scope: {outside:?}"
+        );
+    }
+
+    /// A filesystem path may itself contain `://` — a cache entry named after a
+    /// URL is the ordinary case — and it must keep the enclosing path grant.
+    /// Denying it would be fail-closed and still wrong.
+    ///
+    /// The drive-rooted resources matter as much as the `$VAR` ones: once the
+    /// host resolves `$APPDATA` (architecture 03 §2, destination), the resource
+    /// a Windows caller presents *starts with a letter*, which is the shape a
+    /// scheme check is most likely to misread.
     #[test]
     fn a_path_containing_a_scheme_separator_keeps_its_path_grant() {
-        let manifest = parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**","/var/cache/**"]}}}"#)
-            .expect("manifest");
+        let manifest = parse_manifest(
+            r#"{"app":{"fs":{"read":["$APPDATA/**","/var/cache/**","C:/Users/me/AppData/**","cache/**"]}}}"#,
+        )
+        .expect("manifest");
         for requested in [
             "$APPDATA/cache/https://example.com/index.html",
             "$APPDATA/https://a",
             "/var/cache/wss://sync.example/y",
+            "C:/Users/me/AppData/cache/https://example.com/index.html",
+            "cache/https://example.com/index.html",
         ] {
             assert_eq!(
                 eval_app(&manifest, "fs.read", requested),
@@ -937,7 +1001,7 @@ mod tests {
             );
         }
         // The same manifest still denies a genuine scheme-qualified destination,
-        // so the case above is not passing because everything is allowed.
+        // so the cases above are not passing because everything is allowed.
         let outside = eval_app(&manifest, "fs.read", "https://example.com/index.html");
         assert!(
             matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),

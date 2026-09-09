@@ -11,18 +11,27 @@
       ],
       "write": []
     },
-    // Permanent wildcard-swallow bypass fixture (KEL-208). The first three entries
-    // are hostile grants that a prefix matcher used to read as "every authority";
-    // the fourth is the legitimate origin-rooted grant they must not be confused
-    // with. A URL-valued capability is not wired in v0 — `evaluate` is capability
+    // Permanent wildcard-swallow bypass fixture (KEL-208). Every entry but the
+    // last strips to a prefix that is a scheme and separators and nothing else,
+    // so it names no destination; the separator count differs because a URL
+    // parser accepts all of these spellings for one host, while an authority
+    // rule keyed on `://` only sees some of them. The last entry is the
+    // legitimate origin-rooted grant they must not be confused with. A
+    // URL-valued capability is not wired in v0 — `evaluate` is capability
     // agnostic, so this pins the matcher contract the moment one is.
     "net": {
       "connect": [
         "https://**",
         "https:/**",
+        "https:///**",
         "wss://**",
         "https://api.example.com/**"
       ]
+    },
+    // `C:` is a valid RFC 3986 scheme and the usual Windows drive; a drive
+    // glob must keep plain path semantics rather than acquire an authority.
+    "shell": {
+      "open": ["C:/**"]
     }
   }
 }

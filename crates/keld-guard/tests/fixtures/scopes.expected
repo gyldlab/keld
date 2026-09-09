@@ -19,5 +19,9 @@ url authority swallowed by wss scheme glob: deny KELD-GUARD002 out_of_scope
 url origin prefix grant: allow
 url origin root itself: allow
 url sibling authority beyond origin prefix: deny KELD-GUARD002 out_of_scope
+url authority swallowed by single-slash scheme glob: deny KELD-GUARD002 out_of_scope
+url authority swallowed by triple-slash scheme glob: deny KELD-GUARD002 out_of_scope
+windows drive glob keeps path semantics: allow
+windows drive glob does not reach another drive: deny KELD-GUARD002 out_of_scope
 unknown operation: deny KELD-GUARD001 not_granted
 empty grant: deny KELD-GUARD001 not_granted
