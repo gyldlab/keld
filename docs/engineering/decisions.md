@@ -873,18 +873,20 @@ code — nothing in this change reads or checks the contract it describes.
 
 **Chosen (2026-09-08).** Architecture 01 §5.1 now fixes what every performance budget
 row measures: the census is the shipped app as the host owns it (host plus every
-supervised child, engine helpers and the dev CLI excluded); paint and RSS rows use the
-registry's fresh-process class with a clock armed before the packaged launch; the RSS
-counter stays the resident set with the private counter as a mandatory diagnostic;
+supervised child, engine helpers and the dev CLI excluded); paint uses the registry's
+fresh-process class with a clock armed before the packaged launch, while RSS has
+separate fresh-process and warm-cache classes after readiness; the RSS counter stays
+the resident set with the private counter as a mandatory diagnostic;
 memory units are binary and byte-size units decimal; kipc RTT is client-timed on the
 product Bun client with a pinned 6-byte small tier and a 1,024-byte representative tier;
 bulk throughput is not scoreable until a shared-memory lane exists; the dev-loop row is
 the first native window on the `NATIVE-WINDOW` contract; crash recovery has no budget.
 
 **Rejected.** Scoring the private counter instead of the resident set (it would change
-what the budget's word means and turn a ~76 MiB host into a ~27 MB pass); reading
-"90 MB" as decimal (the registry already encodes 92,160 KiB; the stricter reading is a
-future spec change, not an accident of notation); letting the harness's exactly-11
+what the budget's word means and turn a ~76 MiB host RSS observation into a smaller
+private-footprint number); retaining the former "90 MB" spelling as a decimal target
+(the registry already encodes 92,160 KiB; the stricter reading is a future spec change,
+not an accident of notation); letting the harness's exactly-11
 publication policy stand beside the registry's 30 (one owner); scoring the host-only
 `--hello` arm as the product's cold start (it has no Bun and no guardian); keeping
 architecture 02 §6's unconditional "≥ 1 GB/s" and 64 MB tier (inline frames cap at
