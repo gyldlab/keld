@@ -7,6 +7,7 @@ router="$repo_root/tools/ci_changes.sh"
 required="$repo_root/tools/ci_required.sh"
 
 "$required" test
+"$repo_root/tools/dependency_review_metadata.sh" test
 
 result_for_paths() {
     printf '%s\0' "$@" | "$router" classify

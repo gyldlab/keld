@@ -395,47 +395,6 @@ fn forbidden_workflow_control_key(text: &str) -> Option<String> {
     None
 }
 
-fn workflow_has_checkout_persist_credentials_false(text: &str) -> bool {
-    let mut checkout_indent = None;
-    let mut with_indent = None;
-
-    for line in text.lines() {
-        let Some((indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content.starts_with("- uses:") {
-            checkout_indent = content.contains("actions/checkout@").then_some(indent);
-            with_indent = None;
-            continue;
-        }
-        let Some(checkout) = checkout_indent else {
-            continue;
-        };
-        if indent <= checkout {
-            checkout_indent = None;
-            with_indent = None;
-            continue;
-        }
-        if content == "with:" {
-            with_indent = Some(indent);
-            continue;
-        }
-        if let Some(with) = with_indent {
-            if indent <= with {
-                with_indent = None;
-            } else if let Some(value) = content.strip_prefix("persist-credentials:") {
-                let value = value
-                    .trim()
-                    .trim_matches(|character| character == '\'' || character == '"');
-                if value == "false" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 fn workflow_has_checkout_fetch_depth_zero(text: &str) -> bool {
     let mut checkout_indent = None;
     let mut with_indent = None;
@@ -641,43 +600,43 @@ fn workflow_job_sequence_values(block: &str, key: &str) -> Option<Vec<String>> {
     sequence_indent.map(|_| values)
 }
 
-fn workflow_named_step_env_value(text: &str, step_name: &str, key: &str) -> Option<String> {
-    let expected_name = format!("- name: {step_name}");
-    let expected_key = format!("{key}:");
-    let mut step_indent = None;
-    let mut env_indent = None;
-
-    for line in text.lines() {
+fn workflow_named_step_mapping(
+    text: &str,
+    step_name: &str,
+    mapping: &str,
+) -> Option<Vec<(String, String)>> {
+    let block = workflow_direct_named_step_block(text, step_name)?;
+    let mut found = false;
+    let mut entries = Vec::new();
+    for line in block.lines().skip(1) {
         let Some((indent, content)) = yaml_content(line) else {
             continue;
         };
-        if step_indent.is_none() {
-            if content == expected_name {
-                step_indent = Some(indent);
+        if !found {
+            if indent == 8 {
+                let (key, value) = yaml_mapping_key(content)?;
+                if key == mapping {
+                    if !value.is_empty() {
+                        return None;
+                    }
+                    found = true;
+                }
             }
             continue;
         }
-        let step = step_indent?;
-        if indent <= step {
+        if indent <= 8 {
             break;
         }
-        if env_indent.is_none() {
-            if content == "env:" {
-                env_indent = Some(indent);
-            }
-            continue;
-        }
-        let env = env_indent?;
-        if indent <= env {
+        if indent != 10 {
             return None;
         }
-        if indent == env + 2 {
-            if let Some(value) = content.strip_prefix(&expected_key) {
-                return Some(value.trim().to_owned());
-            }
+        let (key, value) = yaml_mapping_key(content)?;
+        if entries.iter().any(|(existing, _)| existing == &key) {
+            return None;
         }
+        entries.push((key, value.trim_matches(['\'', '"']).to_owned()));
     }
-    None
+    found.then_some(entries)
 }
 
 fn workflow_named_step_shell_commands(text: &str, step_name: &str) -> Option<Vec<String>> {
@@ -1092,9 +1051,10 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Asserts the `bun-test` lane's decidable properties only: that it exists, is
-/// gated on the router's own output, pins its Bun version, and does not open a
-/// second live apt lane. Each of those is a fact about the workflow text.
+/// Asserts the `bun-test` lane's decidable properties and the exact Bun pin for
+/// every current Bun consumer: `check`, `bun-test`, and `hygiene`. The `bun-test`
+/// lane must exist, be gated on the router's own output, and avoid a second live
+/// apt lane. Each of those is a fact about the workflow text.
 ///
 /// What this deliberately does not assert — that the lane really runs the
 /// suites the router selected — is tracked in KEL-115, because it is a
@@ -1110,7 +1070,7 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
         ));
     }
-    for job in ["bun-test", "check"] {
+    for job in ["bun-test", "check", "hygiene"] {
         check_bun_setup_steps(text, job)?;
     }
     // Deliberately NOT checked here: that the lane actually executes the suite
@@ -1224,6 +1184,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "deny",
         "secrets",
         "hygiene",
+        "codeql",
+        "dependency-review",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1252,10 +1214,19 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_DENY", "${{ needs.changes.outputs.deny }}"),
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
+        ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+        (
+            "KELD_RESULT_DEPENDENCY_REVIEW",
+            "${{ needs['dependency-review'].result }}",
+        ),
     ] {
-        if workflow_named_step_env_value(&block, "Verify required CI results", key).as_deref()
-            != Some(expression)
-        {
+        if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
+            |entries| {
+                entries
+                    .iter()
+                    .any(|(name, value)| name == key && value == expression)
+            },
+        ) {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` `required` must bind `{key}: {expression}` in the evaluator step's `env` mapping. Do not let a missing or spoofed handoff erase the merge gate."
             ));
@@ -1268,7 +1239,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" ",
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
-        "\"$KELD_ROUTE_DOCS\""
+        "\"$KELD_ROUTE_DOCS\" \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1278,14 +1249,10 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 16-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 18-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
-    if !workflow_has_checkout_persist_credentials_false(&block) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` checkout must set `persist-credentials: false`; the merge-decision job needs repository bytes, not push authority."
-        ));
-    }
+
     Ok(())
 }
 
@@ -1564,10 +1531,8 @@ fn action_uses_unpinned(workflow: &str) -> Vec<(usize, String)> {
 }
 
 fn uses_spec(trimmed: &str) -> Option<&str> {
-    let rest = trimmed
-        .strip_prefix("- uses:")
-        .or_else(|| trimmed.strip_prefix("uses:"))?;
-    Some(rest.trim())
+    let (key, value) = yaml_mapping_key(trimmed)?;
+    (key == "uses").then_some(value)
 }
 
 fn uses_action_ref(spec: &str) -> &str {
@@ -1873,11 +1838,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    if !workflow_has_checkout_persist_credentials_false(&text) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` must set `persist-credentials: false` inside an `actions/checkout` `with:` mapping. An echoed or unrelated YAML value does not protect checkout credentials."
-        ));
-    }
+
     check_change_router_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
@@ -1897,18 +1858,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    let unpinned = action_uses_unpinned(&text);
-    if !unpinned.is_empty() {
-        let details: Vec<String> = unpinned
-            .iter()
-            .map(|(line, spec)| format!("line {line}: {spec}"))
-            .collect();
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has unpinned `uses:` entries (need a 40-char commit SHA). \
-             Pin each action and leave the tag in a trailing comment. Offenders: {}",
-            details.join("; ")
-        ));
-    }
+
     Ok(())
 }
 
@@ -1987,7 +1937,23 @@ fn run_cli() -> Result<(), String> {
         );
     }
     match command.as_str() {
-        "check" => check(&root),
+        "check" => {
+            check(&root)?;
+            let status = std::process::Command::new("bun")
+                .arg("--no-install")
+                .arg(root.join("tools/ci_workflow_security.ts"))
+                .arg("check")
+                .arg(&root)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .map_err(|error| format!("CI-HYGIENE: cannot run workflow semantic check: {error}. Install the repository Bun prerequisite and rerun just hygiene."))?;
+            if !status.success() {
+                return Err(format!(
+                    "CI-HYGIENE: workflow semantic check failed ({status}); restore the reported security contract before rerunning."
+                ));
+            }
+            Ok(())
+        }
         _ => Err(format!(
             "CI-HYGIENE: unknown command `{command}`. Use `check` to verify KEL-39 files."
         )),
@@ -2041,6 +2007,7 @@ mod tests {
     const PINNED_CHECKOUT: &str =
         "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n";
 
+    // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
     fn valid_workflow() -> String {
         [
             "name: CI",
@@ -2051,6 +2018,7 @@ mod tests {
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
             "          fetch-depth: 0",
+            "          persist-credentials: false",
             "      - name: Router contract tests",
             "        run: tools/ci_changes_test.sh",
             "      - name: Classify changed-path ownership",
@@ -2121,6 +2089,11 @@ mod tests {
             "    if: needs.changes.outputs.hygiene == 'true' || needs.changes.outputs.docs == 'true'",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          persist-credentials: false",
+            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
+            "        with:",
+            "          bun-version: \"1.4.2\"",
             "      - name: Atomic problem-solving protocol contract",
             "        run: |",
             "          mkdir -p target/atomic-protocol",
@@ -2157,6 +2130,8 @@ mod tests {
             "      - deny",
             "      - secrets",
             "      - hygiene",
+            "      - codeql",
+            "      - dependency-review",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -2179,6 +2154,8 @@ mod tests {
             "          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}",
             "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
             "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
+            "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
+            "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -2187,7 +2164,8 @@ mod tests {
             "            \"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" \\",
             "            \"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" \\",
             "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
-            "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\"",
+            "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
+            "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
             "",
         ]
         .join("\n")
@@ -2348,7 +2326,7 @@ mod tests {
             WORKFLOW,
             &valid_workflow().replacen(
                 "      - name: Atomic problem-solving protocol contract\n",
-                "",
+                "      - name: Removed atomic step\n",
                 1,
             ),
         );
@@ -2530,7 +2508,36 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("16-argument"), "{error}");
+        assert!(error.contains("18-argument"), "{error}");
+    }
+
+    #[test]
+    fn required_result_must_observe_security_jobs() {
+        for job in ["codeql", "dependency-review"] {
+            let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
+            let error = check_required_job(&workflow).expect_err("missing security job must fail");
+            assert!(error.contains(job), "{error}");
+        }
+    }
+
+    #[test]
+    fn required_result_must_receive_security_results_without_spoofing() {
+        for (key, expression) in [
+            ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
+            (
+                "KELD_RESULT_DEPENDENCY_REVIEW",
+                "${{ needs['dependency-review'].result }}",
+            ),
+        ] {
+            let workflow = valid_workflow().replacen(expression, "success", 1);
+            let error =
+                check_required_job(&workflow).expect_err("spoofed security result must fail");
+            assert!(error.contains(key), "{error}");
+            let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
+            let error =
+                check_required_job(&workflow).expect_err("unused security result must fail");
+            assert!(error.contains("18-argument"), "{error}");
+        }
     }
 
     #[test]
@@ -2886,8 +2893,8 @@ mod tests {
         let workflow = valid_workflow()
             .replacen("          fetch-depth: 0\n", "", 1)
             .replacen(
-                "          persist-credentials: false\n",
-                "          persist-credentials: false\n          fetch-depth: 0\n",
+                "  secrets:\n    steps:\n",
+                &format!("  secrets:\n    steps:\n{PINNED_CHECKOUT}        with:\n          persist-credentials: false\n          fetch-depth: 0\n"),
                 1,
             );
         temp.write(WORKFLOW, &workflow);
@@ -3098,8 +3105,8 @@ mod tests {
     }
 
     #[test]
-    fn every_bun_setup_in_both_jobs_requires_its_own_pin() {
-        for job in ["check", "bun-test"] {
+    fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
+        for job in ["check", "bun-test", "hygiene"] {
             let workflow = valid_workflow();
             let block = workflow_job_block(&workflow, job).expect("fixture job");
             for extra in [
@@ -3123,8 +3130,8 @@ mod tests {
     }
 
     #[test]
-    fn both_bun_jobs_require_a_setup_action() {
-        for job in ["check", "bun-test"] {
+    fn every_bun_consumer_requires_a_setup_action() {
+        for job in ["check", "bun-test", "hygiene"] {
             let workflow = valid_workflow();
             let block = workflow_job_block(&workflow, job).expect("fixture job");
             let changed = block.replace("oven-sh/setup-bun@", "some-other/action@");
@@ -3253,18 +3260,6 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("commented gate must not satisfy hygiene");
         assert!(error.contains("executable Mermaid gate"), "{error}");
-    }
-
-    #[test]
-    fn checkout_credentials_must_be_disabled_in_its_with_mapping() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "      persist-credentials: false\n",
-            "      # persist-credentials: false\n",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("comment must not satisfy checkout hardening");
-        assert!(error.contains("persist-credentials: false"), "{error}");
     }
 
     #[test]
@@ -4041,22 +4036,6 @@ foreach ($item in $items) {
         );
         let error = check(temp.path()).expect_err("workflow without gitleaks must fail");
         assert!(error.contains("gitleaks detect"), "{error}");
-    }
-
-    #[test]
-    fn unpinned_action_fails() {
-        let temp = complete_fixture();
-        let workflow = valid_workflow().replace(
-            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
-            "actions/checkout@v4",
-        );
-        temp.write(WORKFLOW, &workflow);
-        let error = check(temp.path()).expect_err("floating action tag must fail");
-        assert!(error.contains("unpinned"), "{error}");
-        assert!(
-            error.contains("@v4") || error.contains("checkout@v4"),
-            "{error}"
-        );
     }
 
     #[test]
