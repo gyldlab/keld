@@ -12,6 +12,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -532,6 +533,7 @@ impl RecoveryCycle {
         listener
             .set_nonblocking(true)
             .expect("nonblocking T3 fixture control");
+        let mut presentation = fixture.observe_initial_window();
         let child = Command::new(stage.host())
             .env("KELD_T1B_CONTROL", &control_path)
             .stdout(Stdio::piped())
@@ -556,7 +558,7 @@ impl RecoveryCycle {
             current: Some(current),
             process_groups: vec![first_group],
         };
-        let window = await_native_windows(host_pid, TITLE, 1);
+        let window = presentation.expect_initial(host_pid, "initial T3 native window");
         assert_eq!(window.len(), 1, "initial T3 native window: {window:?}");
         cycle.window = window;
         cycle
@@ -1062,6 +1064,7 @@ impl ShippingDevCycle {
         listener
             .set_nonblocking(true)
             .expect("nonblocking T2 fixture control");
+        let mut presentation = fixture.observe_initial_window();
         let cli = Command::new(helper)
             .args(["--exact", "keld_dev_helper_process", "--nocapture"])
             .process_group(0)
@@ -1126,10 +1129,7 @@ impl ShippingDevCycle {
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO1");
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO2");
         beacon.assert_exact();
-        assert_eq!(
-            await_native_windows_for(cycle.host_pid, TITLE, 1, name).len(),
-            1
-        );
+        assert_eq!(presentation.expect_initial(cycle.host_pid, name).len(), 1);
         assert!(native_windows(cli_pid, TITLE).is_empty());
         assert!(host_unix_sockets(cycle.host_pid) > 0);
         assert_eq!(host_unix_sockets(cli_pid), 0);
@@ -1327,6 +1327,7 @@ struct ProductFixture {
     project: PathBuf,
     link_source: String,
     harness: &'static str,
+    native_census: OnceLock<PathBuf>,
 }
 
 impl ProductFixture {
@@ -1345,7 +1346,15 @@ impl ProductFixture {
             project,
             link_source,
             harness: include_str!("fixtures/t1b_harness.ts"),
+            native_census: OnceLock::new(),
         }
+    }
+
+    fn observe_initial_window(&self) -> NativeWindowObserver {
+        let executable = self
+            .native_census
+            .get_or_init(|| compile_native_window_census(self.root.path()));
+        NativeWindowObserver::arm(executable)
     }
 
     fn stage(&self) -> keld_cli::boot::DevBootStage {
@@ -1421,6 +1430,7 @@ impl ProductFixture {
                 .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
                 .stdin(Stdio::piped());
         }
+        let presentation = self.observe_initial_window();
         let mut child = command.spawn().expect("launch staged no-flag host");
         let lease_writer = child.stdin.take();
         let host_pid = child.id();
@@ -1439,6 +1449,7 @@ impl ProductFixture {
             control_reader,
             control_writer: control,
             beacon: Some(beacon),
+            presentation: Some(presentation),
             group_gone: false,
         };
         let hello = cycle.next_line();
@@ -2033,18 +2044,23 @@ struct LiveCycle {
     control_reader: BufReader<UnixStream>,
     control_writer: UnixStream,
     beacon: Option<Beacon>,
+    presentation: Option<NativeWindowObserver>,
     group_gone: bool,
 }
 
 impl LiveCycle {
-    fn assert_live_product(&self) {
+    fn assert_live_product(&mut self) {
         assert_ne!(self.host_pid, self.guardian_pid);
         assert_ne!(self.guardian_pid, self.bun_pid);
         assert_eq!(parent_process(self.guardian_pid), self.host_pid);
         assert_eq!(parent_process(self.bun_pid), self.guardian_pid);
         assert_eq!(process_group(self.bun_pid), self.bun_pid);
         assert_eq!(process_group(self.descendant_pid), self.bun_pid);
-        let windows = await_native_windows(self.host_pid, TITLE, 1);
+        let windows = self
+            .presentation
+            .take()
+            .expect("prearmed initial-presentation observer")
+            .expect_initial(self.host_pid, "initial-presentation");
         assert_eq!(
             windows.len(),
             1,
@@ -2518,6 +2534,173 @@ print("\(info.pipeinfo.pipe_handle) \(info.pipeinfo.pipe_peerhandle)")
     (handle, peer)
 }
 
+fn compile_native_window_census(root: &Path) -> PathBuf {
+    let source = root.join("native-window-census.swift");
+    let executable = root.join("native-window-census");
+    fs::write(&source, include_str!("fixtures/native_window_census.swift"))
+        .expect("write native-window census");
+    let output = Command::new("/usr/bin/xcrun")
+        .args(["swiftc", "-O"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("compile native-window census");
+    assert!(output.status.success(), "compile native census: {output:?}");
+    executable
+}
+
+/// An external CoreGraphics observer is armed before spawn, when the target PID
+/// is not yet known. Only the authenticated PID supplied at the original check
+/// phase can consume its on-screen history, and those exact IDs must still live.
+struct NativeWindowObserver {
+    child: Option<Child>,
+    events: Receiver<Result<String, String>>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl NativeWindowObserver {
+    fn arm(executable: &Path) -> Self {
+        let mut child = Command::new(executable)
+            .args(["observe", TITLE, "1", &EVENT_DEADLINE.as_secs().to_string()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start prearmed native-window observer");
+        let stdout = child.stdout.take().expect("native-window observer stdout");
+        let (sender, events) = mpsc::sync_channel(2);
+        let reader = thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout);
+            // Exactly two bounded records: readiness and one result. A broken
+            // helper cannot grow the parent's buffer or block Drop on send.
+            for _ in 0..2 {
+                let mut line = String::new();
+                let result = match stdout.by_ref().take(257).read_line(&mut line) {
+                    Ok(0) => Err(String::from("native-window observer EOF")),
+                    Ok(bytes) if bytes > 256 || !line.ends_with('\n') => {
+                        Err(String::from("invalid native-window observer record"))
+                    }
+                    Ok(_) => Ok(line.trim_end().to_owned()),
+                    Err(error) => Err(error.to_string()),
+                };
+                let failed = result.is_err();
+                if sender.send(result).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        let observer = Self {
+            child: Some(child),
+            events,
+            reader: Some(reader),
+        };
+        assert_eq!(
+            observer.events.recv_timeout(EVENT_DEADLINE),
+            Ok(Ok(String::from("READY"))),
+            "native-window observer must be armed before host spawn"
+        );
+        observer
+    }
+
+    fn expect_initial(&mut self, pid: u32, observation: &str) -> Vec<u32> {
+        // Precollection has its own lifetime. The existing check-phase deadline
+        // starts here and includes command delivery, result reception and exit.
+        let deadline = Instant::now() + EVENT_DEADLINE;
+        writeln!(
+            self.child
+                .as_mut()
+                .expect("live native-window observer")
+                .stdin
+                .as_mut()
+                .expect("native-window observer command pipe"),
+            "{pid}"
+        )
+        .expect("bind native-window history to authenticated PID");
+        let event = self
+            .events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        assert!(
+            event.is_ok() && Instant::now() < deadline,
+            "CoreGraphics presentation ({observation}): {event:?}; target-PID rows: {}",
+            native_window_rows(pid)
+        );
+        let output = wait_child_output(
+            self.child
+                .take()
+                .expect("native-window observer exit owner"),
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        assert!(
+            output.status.success() && Instant::now() < deadline,
+            "CoreGraphics presentation ({observation}): {event:?}; {output:?}; target-PID rows: {}",
+            native_window_rows(pid)
+        );
+        let line = event
+            .expect("received native-window event")
+            .expect("native-window result");
+        let windows: Vec<u32> = line
+            .strip_prefix("WINDOWS ")
+            .expect("native-window identity record")
+            .split(',')
+            .map(|id| id.parse().expect("numeric native-window identity"))
+            .collect();
+        assert_eq!(windows.len(), 1, "initial native-window count");
+        windows
+    }
+}
+
+impl Drop for NativeWindowObserver {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+#[test]
+fn native_window_observer_history_retains_only_presented_live_identity() {
+    let root = tempfile::tempdir().expect("native-window history fixture");
+    let executable = compile_native_window_census(root.path());
+    let output = Command::new(executable)
+        .arg("history-regressions")
+        .output()
+        .expect("run fixed native-window history snapshots");
+    assert!(output.status.success(), "history regressions: {output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).starts_with("PASS native-window history:"));
+}
+
+#[test]
+fn native_window_observer_reaps_on_assertion_unwind_and_parent_eof() {
+    let root = tempfile::tempdir().expect("native-window cleanup fixture");
+    let executable = compile_native_window_census(root.path());
+    let observer = NativeWindowObserver::arm(&executable);
+    let pid = observer.child.as_ref().expect("observer child").id();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _observer = observer;
+        panic!("injected post-arm assertion failure");
+    }));
+    assert!(result.is_err(), "negative control must unwind");
+    await_process_gone(pid);
+
+    let mut observer = NativeWindowObserver::arm(&executable);
+    let child = observer.child.as_mut().expect("observer child");
+    let pid = child.id();
+    drop(child.stdin.take());
+    let output = wait_child_output(observer.child.take().expect("EOF observer"), EVENT_DEADLINE);
+    assert_eq!(output.status.code(), Some(2), "parent EOF: {output:?}");
+    assert_eq!(
+        observer.events.recv_timeout(EVENT_DEADLINE),
+        Ok(Err(String::from("native-window observer EOF")))
+    );
+    drop(observer);
+    await_process_gone(pid);
+}
+
 fn native_windows(pid: u32, title: &str) -> Vec<u32> {
     query_native_windows(
         pid,
@@ -2572,20 +2755,6 @@ print(String(data: data, encoding: .utf8)!)
     }
 }
 
-fn await_native_windows(pid: u32, title: &str, expected: usize) -> Vec<u32> {
-    await_native_windows_for(pid, title, expected, "initial-presentation")
-}
-
-fn await_native_windows_for(pid: u32, title: &str, expected: usize, observation: &str) -> Vec<u32> {
-    query_native_windows(
-        pid,
-        title,
-        NativeWindowScope::OnScreen,
-        NativeWindowExpectation::Count(expected),
-        observation,
-    )
-}
-
 /// Recovery preserves the already-observed native window identity. Visibility is
 /// a separate launch contract, so this check deliberately uses the all-window
 /// census while keeping the existing bounded observation deadline.
@@ -2612,7 +2781,6 @@ enum NativeWindowScope {
 #[derive(Clone, Copy)]
 enum NativeWindowExpectation<'a> {
     Snapshot,
-    Count(usize),
     Exact(&'a [u32]),
 }
 
@@ -2623,61 +2791,9 @@ fn query_native_windows(
     expectation: NativeWindowExpectation<'_>,
     observation: &str,
 ) -> Vec<u32> {
-    const SCRIPT: &str = r#"
-import CoreGraphics
-import Darwin
-import Foundation
-let wantedPID = Int(CommandLine.arguments[1])!
-let wantedTitle = CommandLine.arguments[2]
-let expectation = CommandLine.arguments[3]
-let deadline = Date().addingTimeInterval(Double(CommandLine.arguments[4])!)
-let scope = CommandLine.arguments[5]
-var seen = Set<UInt32>()
-while true {
-  let options: CGWindowListOption
-  if scope == "on-screen" {
-    options = [.optionOnScreenOnly, .excludeDesktopElements]
-  } else if scope == "all" {
-    options = [.excludeDesktopElements]
-  } else {
-    fatalError("unknown native-window scope")
-  }
-  let rows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as! [[String: Any]]
-  var found: [UInt32] = []
-  for row in rows {
-    let owner = (row[kCGWindowOwnerPID as String] as? NSNumber)?.intValue
-    let name = row[kCGWindowName as String] as? String
-    let layer = (row[kCGWindowLayer as String] as? NSNumber)?.intValue
-    if owner == wantedPID && name == wantedTitle && layer == 0 {
-      found.append((row[kCGWindowNumber as String] as! NSNumber).uint32Value)
-    }
-  }
-  seen.formUnion(found)
-  let matches: Bool
-  if expectation == "snapshot" {
-    matches = true
-  } else if expectation.hasPrefix("count:") {
-    matches = found.count == Int(expectation.dropFirst("count:".count))!
-  } else if expectation.hasPrefix("exact:") {
-    let ids = expectation.dropFirst("exact:".count).split(separator: ",").map { UInt32($0)! }.sorted()
-    matches = found.sorted() == ids
-  } else {
-    fatalError("unknown native-window expectation")
-  }
-  if matches {
-    for window in found { print(window) }
-    exit(0)
-  }
-  if Date() >= deadline {
-    fputs("native-window observed_ids=\(seen.sorted())\n", stderr)
-    exit(3)
-  }
-  sched_yield()
-}
-"#;
+    const SCRIPT: &str = include_str!("fixtures/native_window_census.swift");
     let expectation_arg = match expectation {
         NativeWindowExpectation::Snapshot => String::from("snapshot"),
-        NativeWindowExpectation::Count(value) => format!("count:{value}"),
         NativeWindowExpectation::Exact(windows) => format!(
             "exact:{}",
             windows
@@ -2697,6 +2813,7 @@ while true {
             "swift",
             "-e",
             SCRIPT,
+            "query",
             &pid.to_string(),
             title,
             &expectation_arg,
