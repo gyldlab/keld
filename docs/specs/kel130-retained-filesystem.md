@@ -14,16 +14,23 @@ Correction provenance: Linear assignment
 `01a0878c-2c0b-7f33-a765-0fbb1469e9d5` / SHA-256 `96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136`; independent
 root source and compiler refutation; formal cross-platform API review
 `01a0878c-2bf1-7a53-8f64-2c1e0c69cece` / SHA-256 `82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8`; Linear
-assignment `809b02eb-61d9-4886-94f0-c240b1eaedfb`; mode-stripping counterexample `mode-stripping-probe.json` / SHA-256 `089a4cade44541bb80486f6f9b150b555d839e4fefe0bbfc9eb6ca9a4c8b4914` and Linux `truncate(2)`.
+assignment `809b02eb-61d9-4886-94f0-c240b1eaedfb`; final f794 review artifacts:
+filesystem `ea8bb81a24d400ef9da2981f1285d9d8849ce99ae1a8a38cff82a66966822aca`,
+cross-platform API `98f03dd764df34871b6c4aa950c557a0b1c5581bfe205eb21efe2887b63c870a`,
+and evidence oracle `947294cccb1b2b6d03b137cdf2d7d193e02bcd9725b4762990497eca56606fef`;
+independent refutations `0fa66df525a64939129956e3174ab7174aa66b66c61f0881ddd5ecced1399fb1`,
+`4b3b7929ef1c0db6100b3db1069a9074a863a596c9c740ba96b37fb9b99628ad`,
+and `643e71b7c0e4b8c6749f2b8ec3966efd9f06741fb59cfff99ef995a4c1bebcd9`;
+mode-stripping counterexample `mode-stripping-probe.json` / SHA-256 `089a4cade44541bb80486f6f9b150b555d839e4fefe0bbfc9eb6ca9a4c8b4914` and Linux `truncate(2)`.
 Supersedes: payload `c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e`, spec `b3072e71baf7056e9a37f6acca2351c4d45aa6bc749c4eb4f7383d9cf8f21014`, and local
 commit `19ebf12a49f7d63c44610cdfec7dde37ef052f52`.
-Decision payload SHA-256: `9b9305ca5d7d485b2a040b9bc214c75b79569917768427c19b5cf1c8399c65f7`
+Decision payload SHA-256: `71410374514bfbde8a79fd479f33104a924b77372902db3911f0fe0b6cf465b6`
 
 Canonical decision payload (the digest covers this one minified UTF-8 line without
 the code fence or trailing newline):
 
 ```json
-{"schema":"keld.kel130-retained-filesystem-decisions/v1","issue_id":"KEL-130","task_id":"KEL-130/T0","status":"review-fixes-authorized","authoring_base":"bf78a10db350ba58830efc60a80eeb67fc996ebd","approval_continuity":"original-direct-approval-linear-comment-0a5d62c4-bound-payload-c565d143-and-spec-b3072e71;current-user-instruction-authorizes-executing-formal-filesystem-and-cross-platform-review-fixes-within-approved-folder-boundary-intent;no-claim-user-typed-revised-digest","supersedes":"payload-c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e;spec-b3072e71baf7056e9a37f6acca2351c4d45aa6bc749c4eb4f7383d9cf8f21014;commit-19ebf12a49f7d63c44610cdfec7dde37ef052f52","correction_provenance":"linear-assignment-b5cbd108-7a6a-42d1-818d-c2b8259bc7e5;filesystem-security-review-thread-01a0878c-2c0b-7f33-a765-0fbb1469e9d5-sha256-96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136;cross-platform-api-review-thread-01a0878c-2bf1-7a53-8f64-2c1e0c69cece-sha256-82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8;linear-assignment-809b02eb-61d9-4886-94f0-c240b1eaedfb;independent-root-source-and-compiler-refutation;mode-stripping-probe-sha256-089a4cade44541bb80486f6f9b150b555d839e4fefe0bbfc9eb6ca9a4c8b4914;linux-truncate-primary-contract","ownership":"host-session:keld-native-FsBroker-retains-scope-roots-and-per-call-files;keld-guard-matches;keld-ipc-dispatches;KEL-102/T3-integrates","scope":"absolute-utf8-literal-only;exact-or-terminal-glob;max-4096-path-bytes;max-64-per-capability;no-cwd-or-unexpanded-vars","scope_anchor":"one-ambient-open-selects-explicit-root-object;later-operations-use-retained-handle","exact_file":"retained-parent+leaf-slot;per-call-no-follow-regular-leaf;absent-may-be-created;final-symlink-or-reparse-denied;ordinary-slot-replacement-and-hardlink-object-rule-preserved","links":"subtree-only-internal-relative-symlinks-allowed-when-resolution-stays-beneath-retained-root;exact-final-links-denied;external-symlink-junction-unknown-reparse-and-mount-crossing-denied;all-platform-explicit-bounded-component-walker;linux-per-component-openat2-no-follow","hardlinks":"object-authority:in-scope-hardlink-authorizes-shared-object;all-aliases-observe-in-place-write;no-racy-link-count-isolation-claim","io":"regular-files-only;max-content-8388608;chunk-65536;max-total-post-link-components-256;max-links-40;read-limit-plus-one;write-open-no-truncate-then-same-handle-commit","write":"preserve-inode-owner-ordinary-acl-dacl-xattrs-hardlinks-under-os-inplace-semantics;permit-os-clearing-privilege-bits-and-security-xattrs;never-restore-stripped-privilege-metadata;new-file-success-is-commit;AlreadyExists-is-noeffect-002;no-atomic-replace-or-auto-retry;post-commit-failure-is-KELD-NATIVE-007-effect-may-have-occurred","deadline":"five-second-absolute-post-Allow-cooperative-budget;no-renewal;no-hard-per-kernel-call-preemption-claim","cancellation":"pre-commit-no-write-effect;read-partials-discarded;post-commit-effect-may-have-occurred;terminal-close-drop-only-after-broker-progress-resumes;wedged-synchronous-syscall-and-T3-wait-unbounded;KEL-133-outer-expiry-remains-IPC006","errors":"008-prepare-or-snapshot;004-request-shape;GUARD-deny;002-escape-race;003-object;005-006-precommit;007-postcommit;001-other-preeffect","api":"Decision-Allow-carries-private-ScopePermit;dispatch_privileged-borrows-permit-for-callback;callback-result-independent;no-public-broker-permit-or-index-input;opaque-nonclone-FsBroker-replaces-bare-path-free-functions;serve-session-requires-broker+verified+cancel;narrow-KEL102-D5-shape-amendment","dependency":"cap-std+cap-fs-ext=4.0.3@5cae39826c70e7da89cc821b825885e030d38f93+workspace-rustix=1.1.4;dependency-security-msrv-transitive-review-required","review_gates":"unsafe:none;public-api:required;permission-model:required;dependency:required;wire-protocol:none","review_status":"formal-filesystem-review-three-findings-and-cross-api-review-two-findings-survived-old-candidate;duplicate-permit-finding-plus-linux-component-bound-corrected;exact-corrected-rereview+evidence-oracle-pending;blanket-metadata-preservation-counterexample-corrected","task_order":"KEL-130/T0-corrected-rereview-and-artifact->KEL-130/T1a-tests-and-gates->T1b-broker->T1c-real-three-OS->T1d-one-landed-artifact->KEL-102/T3->KEL-140","acceptance":"deterministic-CI-state-and-mutation-controls+exact-alias-denial+first-match-scope-order+borrowed-permit-escape-compilefail+conditional-cancel-drop+post-link-component-256-pass-257-deny+separate-real-macOS-Windows-Linux-rows;fresh-allowed-operation-after-every-completed-hostile-case;privilege-metadata-strip-no-restore-negative-control","successors":"T0-or-partial-T1-never-unblocks-shipping;only-exact-passed-landed-KEL-130/T1-artifact-may-precede-KEL-102/T3"}
+{"schema":"keld.kel130-retained-filesystem-decisions/v1","issue_id":"KEL-130","task_id":"KEL-130/T0","status":"review-fixes-authorized","authoring_base":"bf78a10db350ba58830efc60a80eeb67fc996ebd","approval_continuity":"original-direct-approval-linear-comment-0a5d62c4-bound-payload-c565d143-and-spec-b3072e71;current-user-instruction-authorizes-executing-formal-filesystem-and-cross-platform-review-fixes-within-approved-folder-boundary-intent;no-claim-user-typed-revised-digest","supersedes":"payload-c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e;spec-b3072e71baf7056e9a37f6acca2351c4d45aa6bc749c4eb4f7383d9cf8f21014;commit-19ebf12a49f7d63c44610cdfec7dde37ef052f52","correction_provenance":"linear-assignment-b5cbd108-7a6a-42d1-818d-c2b8259bc7e5;filesystem-security-review-thread-01a0878c-2c0b-7f33-a765-0fbb1469e9d5-sha256-96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136;cross-platform-api-review-thread-01a0878c-2bf1-7a53-8f64-2c1e0c69cece-sha256-82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8;linear-assignment-809b02eb-61d9-4886-94f0-c240b1eaedfb;independent-root-source-and-compiler-refutation;mode-stripping-probe-sha256-089a4cade44541bb80486f6f9b150b555d839e4fefe0bbfc9eb6ca9a4c8b4914;linux-truncate-primary-contract;f794-filesystem-review-sha256-ea8bb81a24d400ef9da2981f1285d9d8849ce99ae1a8a38cff82a66966822aca;f794-cross-api-review-sha256-98f03dd764df34871b6c4aa950c557a0b1c5581bfe205eb21efe2887b63c870a;f794-evidence-review-sha256-947294cccb1b2b6d03b137cdf2d7d193e02bcd9725b4762990497eca56606fef;independent-root-refutation-all-distinct-findings;f794-security-refutation-sha256-0fa66df525a64939129956e3174ab7174aa66b66c61f0881ddd5ecced1399fb1;f794-api-refutation-sha256-4b3b7929ef1c0db6100b3db1069a9074a863a596c9c740ba96b37fb9b99628ad;f794-evidence-refutation-sha256-643e71b7c0e4b8c6749f2b8ec3966efd9f06741fb59cfff99ef995a4c1bebcd9","ownership":"host-session:keld-native-FsBroker-sole-value-retains-scope-roots-and-per-call-files;coordinator-owns-value;operation-and-session-views-borrow-only;actual-FsBroker-destructor+zero-owner-handle-census-defines-drop;keld-guard-matches;keld-ipc-dispatches;KEL-102/T3-integrates","scope":"absolute-utf8-literal-only;exact-or-terminal-glob;max-4096-path-bytes;max-64-per-capability;no-cwd-or-unexpanded-vars","scope_anchor":"one-ambient-open-selects-explicit-root-object;later-operations-use-retained-handle","exact_file":"retained-parent+leaf-slot;per-call-no-follow-regular-leaf;absent-may-be-created;final-symlink-or-reparse-denied;ordinary-slot-replacement-and-hardlink-object-rule-preserved","links":"subtree-only-internal-relative-symlinks-allowed-when-resolution-stays-beneath-retained-root;exact-final-links-denied;external-symlink-junction-unknown-reparse-and-mount-crossing-denied;all-platform-explicit-bounded-component-walker;linux-per-component-openat2-no-follow;windows-target-utf8-native-components-only;CurDir-noop-counted;Prefix+RootDir+drive-relative+rooted+ADS+reserved+device+nonutf8-denied-by-shared-component-rules-before-target-open","hardlinks":"object-authority:in-scope-hardlink-authorizes-shared-object;all-aliases-observe-in-place-write;no-racy-link-count-isolation-claim","io":"regular-files-only;max-content-8388608;chunk-65536;max-total-post-link-components-256;max-links-40;read-limit-plus-one;write-open-no-truncate-then-same-handle-commit","write":"preserve-inode-owner-ordinary-acl-dacl-xattrs-hardlinks-under-os-inplace-semantics;permit-os-clearing-privilege-bits-and-security-xattrs;never-restore-stripped-privilege-metadata;new-file-success-is-commit;AlreadyExists-is-noeffect-002;no-atomic-replace-or-auto-retry;post-commit-failure-is-KELD-NATIVE-007-effect-may-have-occurred;committed-bytes=sum-successful-content-write-return-lengths;excludes-create+truncate;no-durability+final-length+unknown-error-estimate","deadline":"five-second-absolute-post-Allow-cooperative-budget;no-renewal;no-hard-per-kernel-call-preemption-claim","cancellation":"observed-at-precommit-progress-check-no-write-effect;read-partials-discarded;post-commit-effect-may-have-occurred;terminal-close-drop-only-after-broker-progress-resumes;wedged-synchronous-syscall-and-T3-wait-unbounded;KEL-133-outer-expiry-remains-IPC006;post-return-effect-state-first;progress-cause-cancellation-before-deadline-before-returned-stage-error","errors":"008-prepare-or-snapshot;004-request-shape;GUARD-deny;002-escape-race;003-object;005-006-precommit;007-postcommit;001-other-preeffect","api":"Decision-Allow-carries-private-ScopePermit;dispatch_privileged-borrows-permit-for-callback;callback-result-independent;no-public-broker-permit-or-index-input;opaque-nonclone-FsBroker-replaces-bare-path-free-functions;serve-session-requires-broker+verified+cancel;narrow-KEL102-D5-shape-amendment","dependency":"cap-std+cap-fs-ext=4.0.3@5cae39826c70e7da89cc821b825885e030d38f93+workspace-rustix=1.1.4;dependency-security-msrv-transitive-review-required","review_gates":"unsafe:none;public-api:required;permission-model:required;dependency:required;wire-protocol:none","review_status":"f794-cross-api-zero-findings;f794-filesystem-and-evidence-findings-independently-refuted;seven-survive-and-corrected;explicit-revocation-rejected-with-owner-lifetime-clarified;exact-final-three-lens-rereview-pending","task_order":"KEL-130/T0-corrected-rereview-and-artifact->KEL-130/T1a-tests-and-gates->T1b-broker->T1c-real-three-OS->T1d-one-landed-artifact->KEL-102/T3->KEL-140","acceptance":"deterministic-CI-state-and-mutation-controls+exact-alias-denial+first-match-scope-order+borrowed-permit-escape-compilefail+conditional-cancel-drop+post-link-component-256-pass-257-deny+separate-real-macOS-Windows-Linux-rows;fresh-allowed-operation-after-every-completed-hostile-case;privilege-metadata-strip-no-restore-negative-control;windows-link-target-grammar;partial-prepare-unwind;cancel-before-deadline-and-stage-error-order;traced-successful-write-counts;per-OS-owner-handle-census;wrapper-retention-blocks-quiescence;exact-T1-artifact-validator-negative-fixtures","successors":"T0-or-partial-T1-never-unblocks-shipping;only-exact-passed-landed-KEL-130/T1-artifact-may-precede-KEL-102/T3","artifact_contract":"schema-keld.execution-artifact/v1;node-retained-filesystem;issue-KEL-130;task-KEL-130/T1;status-passed;exact-landed-T0-contract-head+blob+decision-digest;T1-landed-head-descendant-and-current-main-ancestor;T1a+T1b+T1c+T1d-passed;distinct-native-macOS+Windows+Linux-provenance-rows;authenticated-repository-owner-or-standing-delegate-publisher;evidence-byte-digests;T1a-owned-validator-rejects-each-substitution"}
 ```
 
 ## 1. Goal & non-goals
@@ -103,7 +110,10 @@ these exact bytes and the T0 artifact records the approval-continuity chain abov
    recorded handle and never combine it with the old path. KEL-102/T3 separately proves
    that its shipping caller invokes this preparation before any untrusted child,
    privileged listener, or window; that later ordering does not gate the KEL-130/T1
-   library artifact.
+   library artifact. Every provisional handle acquired during preparation remains
+   preparation-local. If a later scope is invalid or fails to open, all provisional and
+   deduplicated handle owners are synchronously released before `prepare` returns
+   `Err`; the owner-process handle census returns to its pre-call baseline.
 2. Given a request path longer than 4,096 UTF-8 bytes or containing NUL, request
    validation returns `KELD-NATIVE-004` before guard or filesystem entry. A `..`
    component remains the existing `KELD-GUARD002` decision; FS-specific guard
@@ -121,10 +131,12 @@ these exact bytes and the T0 artifact records the approval-continuity chain abov
    remain zero.
 4. Given a subtree scope and a relative symlink whose complete resolution remains
    beneath its retained root, a regular-file read and write succeed. Given an absolute
-   link, a link whose expansion escapes, a Windows junction/reparse target outside the
-   retained root, an unknown reparse tag, or a Linux bind/mount crossing, the operation
-   returns `KELD-NATIVE-002` or `003`; outside bytes and object identity remain
-   unchanged. This is not implemented by denying every link.
+   link or junction whose target is absolute, rooted, prefixed, drive-relative,
+   namespace/device/ADS-bearing, non-UTF-8, reserved, or escapes above/outside the
+   retained root, the operation returns `KELD-NATIVE-002` before a target open.
+   An unknown reparse tag, non-regular object, or mount/volume crossing returns
+   `KELD-NATIVE-003`. Outside bytes and object identity remain unchanged. This is not
+   implemented by denying every link.
 5. Given authorize-then-swap, parent rename/replacement, or component rename races, the
    operation either acts on the object reached through retained parent handles and an
    exact opened leaf handle or fails `KELD-NATIVE-002`; it never follows the replacement
@@ -133,8 +145,9 @@ these exact bytes and the T0 artifact records the approval-continuity chain abov
    retains its parent and leaf name, not an initial leaf object: each call opens the
    final leaf no-follow and authorizes whichever regular non-reparse object then occupies
    that slot. An absent-at-preparation leaf may later be created with create-new.
-   Replacing the leaf with any symlink or reparse point, including an internal alias to
-   a sibling, returns `KELD-NATIVE-002` or `003`. Ordinary file replacement and the
+   Replacing the leaf with any supported symlink/reparse alias, including an internal
+   alias to a sibling, returns `KELD-NATIVE-002`; an unknown reparse tag is `003`.
+   Ordinary file replacement and the
    explicit hard-link object rule remain unchanged.
 6. A filesystem scope grants objects reachable through its retained namespace. A hard
    link beneath that root is the same object as every alias: reads are allowed and an
@@ -178,12 +191,15 @@ these exact bytes and the T0 artifact records the approval-continuity chain abov
     same absolute instant is checked before and after resolution, metadata, open,
     truncate/create, and every chunk; progress never renews it. A virtual-clock reader
     and writer cross several chunks and prove expiry at the original instant.
-11. Deadline/cancellation before the first mutating syscall returns
+11. Deadline/cancellation observed at a pre-commit progress check returns
     `KELD-NATIVE-005`/`006` with no write-content effect; a read always discards partial
     bytes on either result. Once create-new succeeds or truncate/write has been invoked,
     I/O/cancellation/deadline result that is not a completed success returns
     `KELD-NATIVE-007` with committed/requested byte counts and an explicit
-    `effect-may-have-occurred` fix. No automatic retry, deletion, rollback, or success
+    `effect-may-have-occurred` fix. `committed_bytes` is only the sum of positive
+    lengths returned by successful content-write calls; it excludes create/truncate,
+    does not estimate bytes affected by a failed call, and promises neither durability
+    nor final file length. No automatic retry, deletion, rollback, or success
     is fabricated. Completion after the deadline is also `007`, even when all bytes are
     observed, because the timing contract failed after the commit point. Create-new
     `AlreadyExists` is the one explicit pre-commit exception because that OS result
@@ -204,17 +220,25 @@ these exact bytes and the T0 artifact records the approval-continuity chain abov
     begins only after every call returned. KEL-102/T3 separately owns stopping
     admissions, setting flags, waiting for in-flight terminal results, rejecting stale
     generations, and ordering broker drop; it must not report quiescence complete while
-    a call remains wedged.
+    a call remains wedged or any wrapper retains the actual broker value. `FsBroker`
+    is the sole root-handle owner moved into coordinator state; operation/session views
+    borrow it and own no root. Dropping one `Rc`/`Arc` wrapper is not broker drop:
+    only the actual `FsBroker` destructor plus a zero owner-process handle census
+    closes the revocation oracle.
 14. Real macOS, Windows, and Linux rows separately run ordinary read/new-write,
     subtree internal-link success, exact-file internal-alias denial, external
     symlink/reparse/junction escape, parent swap, mount/volume boundary where the
     platform supplies one, hard-link object semantics, special-file termination,
-    maximum/maximum-plus-one I/O, observed partial cancellation, conditional drop
-    census, and a fresh allowed operation after every completed hostile case. Cross-compilation,
+    maximum/maximum-plus-one I/O, observed partial cancellation, conditional drop,
+    owner-process handle baselines before preparation/after each returned call/after
+    actual broker destruction, and a fresh allowed operation after every completed
+    hostile case. Cross-compilation,
     hosted results from another OS, WSL, emulation, or mocks do not close another row.
 15. T0 and any partial T1 work leave the filesystem channel unreachable from the
-    shipping no-flag host. Only one landed KEL-130/T1 artifact covering all T1a–T1d and
-    the three real-OS rows may become a KEL-102/T3 predecessor. KEL-140 consumes the
+    shipping no-flag host. Only the exact KEL-130-owned validator described in section 6
+    may accept one landed KEL-130/T1 artifact covering T1a–T1d, the approved T0
+    head/blob/decision digest, landed ancestry, trusted publisher, evidence hashes, and
+    three distinct native-OS identities as a KEL-102/T3 predecessor. KEL-140 consumes the
     later passed KEL-102/T3 product route and replays these regressions through the
     renderer adapter; it does not duplicate the Rust broker.
 
@@ -234,8 +258,8 @@ authority; no new process, crash owner, or principal is introduced.
 | Memory/copy bound | `keld-native` content loop plus existing kipc envelope | regular file/request bytes → at most 8 MiB content and one bounded encoded frame | whole-file allocation or max+1 reply encoding | independent of clocks; a counting reader must stop at 8 MiB + 1 |
 | Operation clock | KEL-130 operation state | one post-Allow monotonic instant plus cancellation flag → success, no-effect timeout/cancel, or post-commit effect result | renewal, hidden retry, or false hard deadline | independent of KEL-133 clocks; advancing only the injected clock must expire the same operation |
 | Write effect | exact opened file handle | validated regular handle plus bounded bytes → in-place create/truncate/write result under OS metadata semantics | broker replaces metadata, restores stripped privilege, ambiently reopens, or reports partial effect as no-effect | independent of resolver after open; post-`set_len(0)` failure is `007`, while set-ID/security-xattr stripping is never restored |
-| Lifecycle | KEL-102/T3 coordinator consumes non-cloneable `FsBroker` | quiesce/peer loss plus returned in-flight calls → observed cancel, terminal results, closed handles | drop reported while a call/handle remains live | separate from operation outcome; a wedged syscall makes wait/drop unbounded, while rename denial must disappear after actual broker drop |
-| Evidence/artifacts | KEL-130/T1 publisher | exact final diff plus CI and three real-OS rows → one passed artifact | neighboring OS/KEL-133/library test represented as product proof | documentary readiness is independent; deleting any OS row or successor stop must prevent the artifact |
+| Lifecycle | KEL-102/T3 coordinator owns the sole `FsBroker` value | quiesce/peer loss plus returned calls and actual broker destruction → terminal results and zero owner handles | wrapper drop mistaken for broker drop, or stale/live handle survives | operations borrow non-owning views; wedged calls or retained wrappers block quiescence, and only the last-owner destructor restores the pre-prepare census |
+| Evidence/artifacts | KEL-130/T1 publisher plus KEL-102 predecessor validator | exact landed contract/T1 heads, task rows, evidence digests, trusted publisher and three distinct native OS rows → one passed artifact | stale, relabeled, unsigned-provenance, duplicate-OS or unlanded artifact accepted | T1a implements/reuses the validator and substitution fixtures before T1d may emit the terminal artifact |
 
 Process: `keld-host` owns the verified manifest and the only `FsBroker`. Memory: broker
 preflight holds at most 128 bounded grant records and deduplicated retained directory
@@ -243,7 +267,9 @@ capabilities; a read holds at most 8 MiB + 1 before encoding, while kipc owns it
 separate frame buffer/copy. I/O: all namespace traversal starts at a retained capability
 and all content I/O uses the returned file handle. Trust: request bytes select only a
 bounded relative suffix under the guard-selected grant. Lifecycle: roots live for one
-immutable policy/session generation; after a syscall returns, per-call handles close
+immutable policy/session generation. The coordinator owns that sole value and lends
+non-owning operation/session views; wrapping it extends the same trusted-host owner
+lifetime and cannot count as quiescence. After a syscall returns, per-call handles close
 before its terminal result. A syscall that never returns retains its handle and blocks
 drop without a time bound. Failure: every produced result declares whether write
 content definitely did not change or may have changed.
@@ -415,8 +441,12 @@ pub fn serve_fs_session<S: Read + Write>(
 These public names, inputs, ownership rules, and variant distinctions are part of the
 approval candidate. `FsPrepareError` always maps to `KELD-NATIVE-008`; its source is
 retained for diagnostics. The `FsError` variants map in order to the table below.
-`FsBroker` is opaque/non-cloneable, preparation consumes only the verified manifest,
-and the broker verifies the same manifest digest at each call. A caller cannot supply a
+`FsBroker` is opaque/non-cloneable and is the sole value that owns retained root
+handles. KEL-102/T3 moves it into coordinator state; `read`, `write`, and
+`serve_fs_session` borrow non-owning views. A trusted-host `Rc`/`Arc` wrapper does
+not create a second authority, but it extends actual broker lifetime and therefore
+prevents quiescence/zero-census until its last owner drops. Preparation consumes only
+the verified manifest, and the broker verifies the same manifest digest at each call. A caller cannot supply a
 root or deadline. The borrowed `AtomicBool` is owned and set by the harness today and
 by KEL-102/T3's in-flight coordinator later; KEL-130 only reads it, so it cannot grant
 or extend authority. `serve_fs_session` has no manifest-only/bare-path overload or
@@ -443,7 +473,9 @@ operating system may resolve the allowed spelling case insensitively only after 
 A subtree scope is one normalized root plus terminal `/**` (`/**` and `C:/**` name
 volume roots); an exact scope is one normalized file spelling. This parser is part of
 `keld-guard`'s FS-specific scope owner and is consumed by preparation; native code does
-not reimplement it.
+not reimplement it. The implementation factors these rules into one guard-owned
+component-rule source consumed by scope, request, and link-target validation; it does
+not create a second native basename/device policy or a broad general-purpose parser.
 
 For `root/**`, preparation makes one ambient OS open of the manifest-named `root` and
 retains the resulting directory capability. For an exact `root/file` scope, it opens
@@ -478,7 +510,16 @@ every consumed link counts toward 40. For each component the walker performs
 capability-relative no-follow metadata. A supported subtree link is read once through
 the retained parent, its relative target components are pushed onto the worklist,
 `..` pops one retained directory but cannot pop the grant root, and an absolute target
-is `002`. No platform delegates whole-path link expansion to an opaque kernel call.
+is `002`. A Windows link target is decoded as UTF-8 and parsed with native
+components before any target open: `Normal`, `ParentDir`, and `CurDir` are the only
+accepted kinds; `CurDir` is a counted no-op, `ParentDir` cannot pop the retained
+root, and each `Normal` value is revalidated by the shared trailing-dot/space,
+colon/ADS, reserved-device, NUL, and basename rules before being passed as one
+handle-relative name. `Prefix` and `RootDir` reject even when Rust reports the whole
+path non-absolute, covering `C:escape`, `\escape`, UNC and NT/device spellings.
+Non-UTF-8 targets reject. Both `/` and `\` are interpreted only by native
+component parsing; no string replacement creates new separators. No platform delegates
+whole-path link expansion to an opaque kernel call.
 
 Linux opens each non-link component relative to the current retained directory with
 safe `rustix::openat2`, `O_NOFOLLOW`, and
@@ -560,8 +601,15 @@ subsequent writes target that handle. There is no check-path-reopen, delete-befo
 rename, temp replacement, rollback, or automatic retry.
 
 The broker converts five seconds to one checked absolute monotonic instant immediately
-after Allow. It checks cancellation and remaining time around every broker-controlled
-stage and chunk. It cannot claim to interrupt a synchronous kernel call: Linux documents
+after Allow. One shared progress-check function is used around every broker-controlled
+stage and chunk. Before a stage it loads cancellation first, then reads the clock; a
+simultaneously true flag and expired deadline is cancellation (`006` before commit,
+`007/WriteInterruption::Cancelled` after commit). After a stage returns, the broker
+first records its success/error, acknowledged byte count, and whether create succeeded
+or a mutating call crossed the effect boundary; `AlreadyExists` is the named no-effect
+case. It then selects one cause in this order: observed cancellation, expired deadline,
+returned stage error. The already-recorded effect state decides `005`/`006` versus
+`007`, so cause precedence cannot erase an uncertain/post-commit effect. It cannot claim to interrupt a synchronous kernel call: Linux documents
 that closing an fd from another thread may leave the blocked call running, and Microsoft
 documents that even `CancelIoEx` may race with normal completion and requires completion
 inspection. Until such a syscall returns, setting the flag creates no terminal
@@ -584,18 +632,31 @@ Consequently:
 | retained-resolution escape or namespace race | `KELD-NATIVE-002` | no content effect; move the target beneath the granted root or use a direct approved scope |
 | non-regular, mount/volume crossing, or unsupported reparse object | `KELD-NATIVE-003` | no content effect; use a local regular file under one retained filesystem root |
 | request path/content/component/link-expansion bound exceeded | `KELD-NATIVE-004` | no content effect; shorten the request or use at most 8 MiB |
-| deadline observed before write commit, or any read deadline | `KELD-NATIVE-005` | no write-content effect / no read bytes exposed; diagnose the filesystem and issue a fresh request only if safe |
-| cancellation observed before write commit, or any read cancellation | `KELD-NATIVE-006` | no write-content effect / no read bytes exposed; wait for a fresh session/generation |
+| deadline observed at a pre-commit progress check, or any read deadline | `KELD-NATIVE-005` | no write-content effect / no read bytes exposed; diagnose the filesystem and issue a fresh request only if safe |
+| cancellation observed at a pre-commit progress check, or any read cancellation | `KELD-NATIVE-006` | no write-content effect / no read bytes exposed; wait for a fresh session/generation |
 | failure, cancellation, or expiry after create-new succeeds or truncate/write begins | `KELD-NATIVE-007` | target may be empty/partial/complete; message includes committed/requested counts; inspect or rewrite explicitly, never auto-retry |
 | invalid/unserviceable fs grant, scope-open failure, or snapshot mismatch | `KELD-NATIVE-008` | no app resource/operation is admitted; repair the absolute scope or use the same verified snapshot, then start a fresh session |
 
 Precedence is closed: KEL-133 frame/envelope/codec failure occurs before this API;
 broker preparation and snapshot mismatch are `008`; request path/content shape is
-`004` before guard; guard Deny keeps its guard code; post-Allow traversal/type checks
-are `002`/`003`; then deadline/cancellation is `005`/`006` before the write commit
-and `007` after it; other OS errors are `001` before mutation and `007` after. Scope
+`004` before guard; guard Deny keeps its guard code. After Allow, link target escape,
+invalid target grammar, exact-leaf alias, or namespace race is `002`; unknown reparse,
+non-regular object, or mount/volume crossing is `003`; component/link/content limits
+are `004`. On return, effect state is fixed first: create success or invoking an
+uncertain mutating call is post-commit, while `AlreadyExists` is explicitly no-effect.
+Cause priority is cancellation, then deadline, then the returned stage error. The
+result is `006` then `005` then exact `001`/`002`/`003`/`004` while
+pre-effect, or `007/Cancelled` then `007/Deadline` then `007/Io` after effect.
+KEL-133's outer `IPC006` remains the outer owner's earlier published result. Scope
 count, duplicate, syntax, or open failure is only preparation `008`, never request
 `004`. A create-new `AlreadyExists` race is the named `002` no-effect exception.
+
+`committed_bytes` is derived independently from the traced sequence of successful
+content-write return lengths. Truncate/create contributes zero; an immediate or later
+write error contributes no estimate for that failed call; a complete write followed by
+final cancellation/deadline reports the full requested count. The final file contents
+remain a separate sentinel oracle and may disagree with this acknowledged-progress
+count after an effect-unknown error.
 
 Each new error keeps the existing `CallError { code, message }` wire shape and has one
 registry entry plus exact code/message/fix tests. `KELD-NATIVE-007` is conservative:
@@ -767,20 +828,35 @@ Must not touch:
 No T1a–T1c partial commit, branch, or merged library state is a predecessor. Only the
 single landed T1d artifact can release later routing.
 
+The T1 terminal artifact is accepted only by the KEL-130-owned validator first added
+with negative fixtures in T1a and reused by KEL-102/T3. It requires
+`schema=keld.execution-artifact/v1`, `node_id=retained-filesystem`,
+`issue_id=KEL-130`, `task_id=KEL-130/T1`, and `status=passed`; the exact landed T0
+contract head/blob and canonical decision digest; a T1 `landed_head` descended from
+that T0 head and independently proven ancestral to current Keld main; explicit passed
+`T1a`, `T1b`, `T1c`, and `T1d` rows; and three evidence rows with distinct
+`macOS`, `Windows`, and `Linux` native device identities, source head, OS/build,
+command, exit status, observable, and raw-evidence SHA-256. Publication is trusted only
+when the Linear artifact author is an authenticated repository owner or standing
+delegate authorized for the winning KEL-130 claim; this is provenance validation, not
+an invented PKI signature. Missing/substituted fields, evidence digests, task rows,
+publisher authority, duplicated OS identity, wrong/unlanded head, or wrong contract
+blob/digest all reject.
+
 ## 7. Test plan
 
 | Acceptance | Test and independent oracle |
 |---|---|
-| 1–3 | Bounded manifest/scope tables, handle-inheritance child census, overlapping-scope permit index, and dispatch entry counters. Before/during-anchor substitutions prove preparation records exactly one complete root identity and later ignores the old spelling. A compile-fail fixture returns/stores `&ScopePermit` from the callback; a compile-pass control reads its index inside the callback. Mutating Allow to return the wrong index, accepting the escape fixture, or invoking the closure on Deny must fail. |
-| 4–5 | Real temp trees with different marker bytes and file identities; a subtree internal relative link passes, while external link/junction/mount and parent/component substitutions either deny or remain bound to the retained object. A mounted subtree containing a link back to the root must still fail at the acquired mount component. Exact-file rows cover existing `a`, absent-then-created `a`, ordinary replacement `a`, and both internal `a -> b` and escaping aliases as denied with both sentinels unchanged. An overlap fixture orders exact before subtree and observes alias denial, then orders subtree before exact and observes internal-link success without fallback. Mutation to ambient `canonicalize` plus `std::fs::open` must change/read the outside sentinel and fail. |
+| 1–3 | Bounded manifest/scope tables, handle-inheritance child census, overlapping-scope permit index, and dispatch entry counters. Preparation with valid first/failing second scopes, plus a deduplicated-root variant, must synchronously restore the owner-process handle baseline and permit Windows rename/delete before returning `008`; leaking the first handle fails. Before/during-anchor substitutions prove one complete root identity. Compile-fail returns/stores `&ScopePermit`; compile-pass reads its index. Wrong-index or Deny-closure mutations fail. |
+| 4–5 | Real temp trees with distinct bytes/identities: subtree internal link passes; absolute/rooted/prefixed/drive-relative/UNC/NT/device/ADS/reserved/non-UTF-8/above-root/outside targets return exactly `002` before target open; unknown reparse and mount/volume crossing return exactly `003`. Windows includes `C:escape`, `\escape`, `safe:stream`, `CON`, both native separators, counted `CurDir`, and zero-target-open/outside-sentinel controls. Exact-file internal/external aliases are `002`; overlap order remains first-match with no fallback. Ambient-canonicalize mutation must expose the outside sentinel and fail. |
 | 6 | Real hard link with OS file-id equality; read exact bytes, write once, and observe the same bytes through both names. A test text assertion prevents an outside-alias non-effect claim. |
 | 7 | Directory, FIFO, Unix socket, device where safely available, Windows reserved device and unknown intermediate/leaf reparse fixtures. Substitute a special object between metadata and open. Parent-controlled completion/status and zero content-I/O/truncate counters are the oracle; a timeout is only the kill switch. |
 | 8 | Counting readers/writers at zero, 8 MiB, 8 MiB + 1, 4,096 path bytes and plus one, and 40 link expansions and plus one. On every platform, a short lexical request whose internal link expands to exactly 256 total processed components succeeds, while 257 returns `004`; bypassing the explicit worklist must fail that negative control. Record maximum allocation/read count and exact frame encoding. Removing a limit must consume/process beyond its boundary and fail. |
 | 9 | Seed owner, ordinary mode/DACL/ACL/xattr, hard links, and content where the OS supports observation; write in place and assert the same file identity, owner, hard-link relation, contents, and metadata the OS preserves. A Linux negative control starts with set-ID and, where available, security-capability metadata, proves the OS strips it on truncate/write, and fails any broker mutation that restores it with chmod/chown/setxattr. New-file race inserts a leaf after NotFound and must return `002` unchanged. An atomic-replace mutation must fail identity/metadata checks. |
-| 10–12 | Injected monotonic clock and progress adapter, with multiple partial chunks and distinct deadline/cancel points. Before-commit results assert unchanged bytes; after-commit results assert `007`, counts and actual partial/full state. A deadline-renewal mutation must exceed the original virtual instant and fail. Real special-file tests prove no blocking content call; no elapsed test claims kernel-call preemption. |
-| 13 | A controlled blocking-call fixture sets cancellation while the call is inside the syscall and proves no terminal/drop claim is emitted; after the fixture releases the syscall, the next progress point observes cancellation, returns the correct effect class, closes the handle, and only then permits broker/root drop. KEL-130 child-process tests also check descendant inheritance, prove Windows rename/delete after actual drop, and complete a fresh broker operation. Closing a copied fd/handle, retaining a broker clone, or asserting a hard wedged-call deadline must fail. KEL-102/T3 later owns the separate stale-generation/quiescence integration oracle and does not gate T1. |
-| 14 | Separate signed macOS, Windows and Linux result rows bind OS/build, source/head, commands, raw output, negative controls and fresh-operation follow-ups. Each row is passed only on its own system. |
-| 15 | Repository/route assertion proves no `keld-core`/`keld-host` FS registration and later predecessor checks require exact `KEL-130/T1` passed artifact. A partial-task artifact or T0 digest must fail. |
+| 10–12 | Injected clock/progress and traced-writer adapters cover partial chunks, each adjacent precedence pair, and simultaneous conditions. After a call, effect state is recorded before cause; cause order is cancellation, deadline, returned error. A pre-set cancel at the expired instant is `006` pre-effect and `007/Cancelled` post-effect; deadline beats a simultaneous returned error without changing effect class; uncertain mutation failure remains `007`; `AlreadyExists` never becomes `007`. External write-return traces derive committed counts: zero after truncate plus first-write failure, sum after partial progress, no estimate for failed-call effects, and requested count after full writes plus late cancel/deadline. Swapped-precedence/off-by-one mutations fail; file sentinel remains independent. |
+| 13 | A controlled blocked call proves no terminal/drop until released; afterward cancellation returns the exact effect class and closes the call handle. Every OS uses an isolated owner-process handle census: pre-prepare baseline; unchanged no-grant/error baseline; prepared-root baseline after every returned call; pre-prepare baseline after actual broker destruction. Windows also uses rename/delete. Retaining one non-inheritable call/root handle fails each applicable row. Rc and applicable Arc controls prove dropping one wrapper neither closes handles nor permits quiescence; last-owner drop does. |
+| 14 | Three provenance-bound native rows use distinct macOS/Windows/Linux device identities and bind OS/build, exact source head, command, exit, observable, raw evidence and SHA-256. Duplicate identity, wrong digest, or another OS cannot close a row; no cryptographic-signature claim is inferred. |
+| 15 | The T1a-owned artifact validator accepts one exact valid terminal artifact and rejects, one field at a time, wrong schema/node/issue/task/status, T0 contract head/blob or decision digest, T1 landed ancestry, missing T1a–T1d row, missing/duplicated native OS identity, wrong evidence digest, and unauthenticated/non-delegated publisher. Route assertions still prove no early host registration. |
 
 Every critical test binds to one atom and an independent oracle. Races use barriers,
 opened-handle identity and child processes rather than sleeps. Tests use fresh temp
@@ -790,9 +866,11 @@ writer and a wrong read target must make the harness fail.
 
 T0 validation is documentary: Markdown structure/link checks and an exact query that
 fails when the owner partition, borrowed-permit non-escape, absolute-scope rule,
-subtree internal-link positive, exact-alias denial and first-match ordering, hard-link
-object ruling, post-link 256/257 component boundary, other limits, write commit point/effect
-class, conditional cancellation/drop,
+subtree internal-link positive, closed Windows link-target grammar, exact-alias denial
+and first-match ordering, partial-preparation unwind, hard-link object ruling, post-link
+256/257 component boundary, other limits, write commit/effect and acknowledged-byte
+semantics, total cancel/deadline/error precedence, conditional cancellation/drop,
+per-OS owner-handle censuses, exact terminal-artifact validation,
 cooperative deadline limitation, three real-OS rows, atomic T1 artifact, or successor
 stop is removed. T0 does not claim product tests or OS passes. T1 runs `just ci`, the full
 mapped suite, dependency/security gates, and the real-OS matrix.
@@ -822,9 +900,9 @@ Required independent draft lenses and status:
 
 | Lens | Required reviewer evidence | Independent refuter | Status |
 |---|---|---|---|
-| filesystem security | Codex thread `01a0878c-2c0b-7f33-a765-0fbb1469e9d5`, admitted read-only/no-network review of exact old spec SHA `b3072e71…`; artifact SHA-256 `96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136` | `/root`, independent source/contract analysis plus owned-versus-borrowed Rust compiler probes | three findings survived against the old candidate and are corrected here; exact corrected rereview pending |
-| cross-platform API | Codex thread `01a0878c-2bf1-7a53-8f64-2c1e0c69cece`, admitted read-only/no-network review of exact old spec SHA `b3072e71...`; artifact SHA-256 `82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8` | `/root`, exact rustix API analysis plus the Windows cap-std/fs-ext compile-and-run control | owned-permit finding duplicates `FS-CONTRACT-002`; Linux component-bound finding survived and is corrected here; exact corrected rereview pending |
-| evidence oracle | every corrected AC has one independent falsifier, exact OS class, negative control and cleanup proof | different admitted identity assumes each claimed pass is false and checks the artifact path | pending on corrected candidate |
+| filesystem security | final f794 thread `01a087d1-1e55-7cf1-b578-6770902c9059`, review SHA-256 `ea8bb81a24d400ef9da2981f1285d9d8849ce99ae1a8a38cff82a66966822aca` | `/root`, refutation SHA-256 `0fa66df525a64939129956e3174ab7174aa66b66c61f0881ddd5ecced1399fb1`, including Windows target and Rc-owner probes | FS-SEC-001/003/004 survive and are corrected; FS-SEC-002 explicit revocation is rejected, with actual-last-owner wording/oracle clarified; exact rereview pending |
+| cross-platform API | final f794 thread `01a087d1-1e61-7d03-8760-8f232e4048b0`, review SHA-256 `98f03dd764df34871b6c4aa950c557a0b1c5581bfe205eb21efe2887b63c870a` | `/root`, source/API refutation SHA-256 `4b3b7929ef1c0db6100b3db1069a9074a863a596c9c740ba96b37fb9b99628ad` | zero findings; limitations closed by narrow source reads and the existing Windows API probe, without claiming T1 OS rows |
+| evidence oracle | final f794 thread `01a087d9-e72a-73b1-b0ee-89a641f52be2`, review SHA-256 `947294cccb1b2b6d03b137cdf2d7d193e02bcd9725b4762990497eca56606fef` | `/root`, refutation SHA-256 `643e71b7c0e4b8c6749f2b8ec3966efd9f06741fb59cfff99ef995a4c1bebcd9` | EO-001–004 survive and are corrected; exact rereview pending |
 
 Advisory finding ledger (these reviews improve the draft but do not satisfy formal
 admission):
@@ -846,11 +924,22 @@ admission):
 | `API-001` | admitted thread `01a0878c-2bf1-7a53-8f64-2c1e0c69cece`; owned permit escapes the callback | `/root`, same compiler controls as `FS-CONTRACT-002` | `survives` against `b3072e71...`; duplicate corrected by the callback borrow, exact rereview pending |
 | `API-002` | same admitted thread; whole-path Linux `openat2` cannot observe components introduced by internal links | `/root`, rustix returns only an fd/error; shared explicit worklist plus per-component no-follow `openat2` preserves 256/40 and confinement | `survives` against `b3072e71...`; corrected here, exact rereview pending |
 | `META-CONTRACT-001` | `/root`, Linux `truncate(2)` plus unprivileged container counterexample: same-fd truncate/write changed mode 04755 to 0755 | `/root/fs_contract`, exact blanket-promise inspection; OS-managed privilege stripping is a security reduction and restoring it would widen authority | `survives`; corrected to preserve only OS-preserved metadata and forbid restoration, exact rereview pending |
+| `FS-SEC-001` | f794 filesystem thread; Windows link targets lacked a closed namespace grammar | `/root`, native `Path` probe proves drive-relative/rooted forms are non-absolute yet expose Prefix/RootDir; shared guard component rules close it | `survives`; corrected, exact rereview pending |
+| `FS-SEC-002` | f794 filesystem thread; `Rc`/`Arc` can extend broker allocation lifetime | `/root`, trusted host owns the only value and the direct Rc probe proves last-owner drop, not wrapper drop, is the existing census/rename boundary | explicit revocation defect `rejected`; owner/view/quiescence wording and negative control clarified |
+| `FS-SEC-003` | f794 filesystem thread; partial preparation unwind was not observable | `/root`, RAII expectation is not a contract oracle; valid-first/failing-second and dedupe variants are required | `survives`; corrected, exact rereview pending |
+| `FS-SEC-004` | f794 filesystem thread; simultaneous cancellation/deadline precedence missing | `/root`, shared state transition now fixes effect first and cause as cancel > deadline > returned error | `survives`; corrected, exact rereview pending |
+| `EO-001` | f794 evidence thread; 002/003 and collision classifications were not total | `/root`, exact target/object codes plus effect-first/cause-order matrix | `survives`; corrected, exact rereview pending |
+| `EO-002` | f794 evidence thread; `committed_bytes` lacked external meaning | `/root`, successful write-return lengths are independently traceable without durability/final-length inference | `survives`; corrected, exact rereview pending |
+| `EO-003` | f794 evidence thread; descendant/rename/fresh-call checks miss Unix and non-inheritable leaks | `/root`, isolated owner-process baselines and deliberate retained-handle mutations close every OS row | `survives`; corrected, exact rereview pending |
+| `EO-004` | f794 evidence thread; terminal predecessor fields and publisher trust were incomplete | `/root`, exact T1a-owned validator contract and field-substitution fixtures now frozen | `survives`; corrected, exact rereview pending |
 
-The filesystem-security and cross-platform API reviewers were admitted with
-enforced read-only filesystem, no command network, no-push checkout, rejected approvals,
-zero active MCP tools, and no dynamic external tools. They found five entries in the old
-exact bytes: the permit finding duplicated across lenses, plus exact-alias,
+The f794 filesystem-security, cross-platform API, and evidence-oracle reviewers
+were admitted with enforced read-only filesystem, no command network, no-push checkout, rejected approvals,
+zero active MCP tools, and no dynamic external tools. The f794 cross-platform lens
+reported zero findings; filesystem and evidence lenses reported eight. Independent
+refutation kept seven distinct corrections/clarifications and rejected explicit
+revocation as unnecessary for the trusted-host owner. Earlier reviews found five
+entries in the old exact bytes: the permit finding duplicated across lenses, plus exact-alias,
 conditional-cancellation, and Linux expanded-component defects. The independent
 refuter confirmed each distinct defect and the current candidate corrects them. This is
 not a pass on the corrected bytes. Each final finding continues to use guard/36's
@@ -870,7 +959,9 @@ language or retained-handle claims are not performance evidence.
 
 ## 10. Open questions
 
-There is no remaining user-owned semantic choice in these review corrections. Exact-leaf
+There is no remaining user-owned semantic choice in these review corrections,
+including the f794 ownership, path-target, unwind, precedence, progress-count,
+handle-census, and artifact-validation closures. Exact-leaf
 no-follow is required by default-deny destination scope; the callback borrow is the
 smallest compiler-proved non-escape repair; and conditional cancellation/drop removes a
 guarantee the selected cooperative architecture cannot provide.
