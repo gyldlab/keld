@@ -582,7 +582,7 @@ fn path_has_dotdot(path: &str) -> bool {
 }
 
 /// Byte index at which `resource`'s authority component ends, or `None` when
-/// `resource` is not scheme-qualified.
+/// `resource` is not a scheme-qualified URI.
 ///
 /// RFC 3986 §3.2: the authority "is preceded by a double slash (`//`) and is
 /// terminated by the next slash (`/`), question mark (`?`), or number sign
@@ -590,12 +590,25 @@ fn path_has_dotdot(path: &str) -> bool {
 /// destination the operator must have named themselves; everything after it is
 /// hierarchy a prefix grant may legitimately cover.
 ///
+/// The `//` only introduces an authority when a real scheme precedes it —
+/// §3.1: `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, anchored at the
+/// start of the URI. Without that anchor a filesystem path that merely contains
+/// `://` (a cache entry named after a URL, say) would be read as a URI and lose
+/// its enclosing path grant.
+///
 /// This is deliberately not a URL parser. It answers one question — where the
 /// caller stops being able to choose — and normalization (case, default ports,
 /// percent-encoding, userinfo, IDN) remains the destination described in
 /// `docs/architecture/03-security.md` §2.
 fn authority_end(resource: &str) -> Option<usize> {
-    let start = resource.find("://")? + 3;
+    let scheme_end = resource.find("://")?;
+    let mut scheme = resource.get(..scheme_end)?.chars();
+    if !scheme.next()?.is_ascii_alphabetic()
+        || !scheme.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return None;
+    }
+    let start = scheme_end + 3;
     let end = resource[start..]
         .find(['/', '?', '#'])
         .map_or(resource.len(), |offset| start + offset);
@@ -900,6 +913,35 @@ mod tests {
         assert!(
             matches!(sibling, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a longer sibling authority must not ride the origin grant: {sibling:?}"
+        );
+    }
+
+    /// The authority rule keys off a real scheme, anchored at the start of the
+    /// resource (RFC 3986 §3.1). A filesystem path may itself contain `://` — a
+    /// cache entry named after a URL is the ordinary case — and it must keep the
+    /// enclosing path grant rather than be reinterpreted as a URI whose authority
+    /// the grant fails to cover. Denying it would be fail-closed and still wrong.
+    #[test]
+    fn a_path_containing_a_scheme_separator_keeps_its_path_grant() {
+        let manifest = parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**","/var/cache/**"]}}}"#)
+            .expect("manifest");
+        for requested in [
+            "$APPDATA/cache/https://example.com/index.html",
+            "$APPDATA/https://a",
+            "/var/cache/wss://sync.example/y",
+        ] {
+            assert_eq!(
+                eval_app(&manifest, "fs.read", requested),
+                Decision::Allow,
+                "an embedded `://` must not turn a path into a URI: {requested}"
+            );
+        }
+        // The same manifest still denies a genuine scheme-qualified destination,
+        // so the case above is not passing because everything is allowed.
+        let outside = eval_app(&manifest, "fs.read", "https://example.com/index.html");
+        assert!(
+            matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
+            "a real URI is still outside the path grants: {outside:?}"
         );
     }
 
