@@ -421,12 +421,31 @@ impl HostOwnedHelloSession {
                 if !captured.stdout.contains(needle) {
                     return false;
                 }
-                recovered_termination_baseline(
-                    &captured.stdout,
-                    captured.stdout_dropped_bytes,
-                    needle,
-                    &supervisor.crash_ledger(),
-                )
+                // Lossy decoding can expand byte offsets, including when a
+                // valid UTF-8 scalar crosses capture reads. Elision accounting
+                // preserves the cumulative decoded size, so equality proves
+                // that no expansion occurred. Otherwise grant no recovery
+                // credit, even if only output after the marker was lossy.
+                let offsets_preserved = captured
+                    .stdout_total_bytes
+                    .checked_add(captured.stdout_separator_bytes)
+                    .zip(
+                        captured
+                            .stdout
+                            .len()
+                            .checked_add(captured.stdout_dropped_bytes),
+                    )
+                    .is_some_and(|(raw, decoded)| raw == decoded);
+                if offsets_preserved {
+                    recovered_termination_baseline(
+                        &captured.stdout,
+                        captured.stdout_dropped_bytes,
+                        needle,
+                        &supervisor.crash_ledger(),
+                    )
+                } else {
+                    RecoveredTerminations::default()
+                }
             }
         };
         if !self.ready_recorded.swap(true, Ordering::SeqCst) {
@@ -600,6 +619,47 @@ mod tests {
                 stdout_len,
             }),
         }
+    }
+
+    #[test]
+    fn unregistered_lossy_marker_does_not_forgive_post_ready_exit() {
+        use super::HostOwnedHelloSession;
+        use keld_runtime::{RestartPolicy, Supervisor};
+        use std::process::Command;
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::time::Duration;
+
+        let supervisor = Supervisor::start(RestartPolicy::default(), || {
+            let mut command = Command::new("bun");
+            command.args([
+                "-e",
+                "require('node:fs').writeSync(1, Buffer.from([255,82,69,65,68,89]));",
+            ]);
+            command
+        })
+        .expect("start invalid-UTF8 diagnostic child");
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
+        let captured = supervisor.output();
+        assert_eq!(captured.stdout, "\u{fffd}READY");
+        assert_eq!(captured.stdout_total_bytes, 6);
+        let session = HostOwnedHelloSession {
+            server: None,
+            supervisor: Some(supervisor),
+            link: String::new(),
+            ready_recorded: AtomicBool::new(false),
+            recovered_self_terminations: AtomicU32::new(0),
+            recovered_crashes: AtomicU32::new(0),
+        };
+        session
+            .wait_until_output_contains("READY", Duration::from_secs(1))
+            .expect("legacy retained-text observation still works");
+        assert!(
+            session.shutdown().is_err(),
+            "decoded offset must not forgive post-ready exit"
+        );
     }
 
     #[test]
