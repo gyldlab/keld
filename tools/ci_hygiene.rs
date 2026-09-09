@@ -173,9 +173,17 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         "running_under_msys() {",
         "docker_host_path() {",
         "prepare_docker_output_dir() {",
+        "windows_native_command() {",
+        "MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \"$@\"",
+        "restore_windows_owner_only_dacl() {",
+        "for command in cygpath whoami.exe powershell.exe; do",
+        "identity=$(windows_native_command whoami.exe /user /fo csv /nh) || {",
+        "function Set-KeldOwnerOnlyDacl($item) {",
+        "windows_native_command powershell.exe -NoProfile -NonInteractive -Command \"$powershell_script\"; then",
         "restore_docker_output_dir() {",
         "if ! running_under_msys; then",
         "\"$render_parent\"/keld-mermaid-render.*) ;;",
+        "restore_windows_owner_only_dacl \"$path\"",
         "cleanup() {",
         "local cleanup_status=$?",
         "local cleanup_failed=0",
@@ -191,9 +199,17 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         running,
         docker_path,
         prepare,
+        native_command,
+        native_conversion,
+        native_restore,
+        native_tools,
+        native_identity,
+        native_dacl_function,
+        native_powershell,
         restore,
         restore_guard,
         restore_allowlist,
+        native_call,
         cleanup,
         cleanup_status,
         cleanup_failed,
@@ -215,9 +231,17 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         running,
         docker_path,
         prepare,
+        native_command,
+        native_conversion,
+        native_restore,
+        native_tools,
+        native_identity,
+        native_dacl_function,
+        native_powershell,
         restore,
         restore_guard,
         restore_allowlist,
+        native_call,
         cleanup,
         cleanup_status,
         cleanup_failed,
@@ -232,9 +256,17 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         running?,
         docker_path?,
         prepare?,
+        native_command?,
+        native_conversion?,
+        native_restore?,
+        native_tools?,
+        native_identity?,
+        native_dacl_function?,
+        native_powershell?,
         restore?,
         restore_guard?,
         restore_allowlist?,
+        native_call?,
         cleanup?,
         cleanup_status?,
         cleanup_failed?,
@@ -246,12 +278,31 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         render_path?,
         exclusion?,
     );
+    for line in [
+        "$acl.SetAccessRuleProtection($true, $false)",
+        "foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }",
+        "$ownerRule = New-Object @ownerRuleParams",
+    ] {
+        if shell_line_position(&lines, line).is_none() {
+            return Err(format!(
+                "CI-HYGIENE: `{MERMAID_RENDERER}` is missing native owner-only DACL operation `{line}`. Restore protected inheritance, removal of prior explicit grants, and the one-SID replacement rule."
+            ));
+        }
+    }
     if !(running < docker_path
         && docker_path < prepare
-        && prepare < restore
+        && prepare < native_command
+        && native_command < native_conversion
+        && native_conversion < native_restore
+        && native_restore < native_tools
+        && native_tools < native_identity
+        && native_identity < native_dacl_function
+        && native_dacl_function < native_powershell
+        && native_powershell < restore
         && restore < restore_guard
         && restore_guard < restore_allowlist
-        && restore_allowlist < cleanup
+        && restore_allowlist < native_call
+        && native_call < cleanup
         && cleanup < cleanup_status
         && cleanup_status < cleanup_failed
         && cleanup_failed < disable_exit_trap
@@ -285,7 +336,7 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
             .any(|index| docker_path < *index && *index < prepare)
         || !cygpath.is_some_and(|index| docker_path < index && index < prepare)
         || !chmod.is_some_and(|index| prepare < index && index < restore)
-        || !restore_chmod.is_some_and(|index| restore < index && index < cleanup)
+        || !restore_chmod.is_some_and(|index| restore < index && index < native_call)
         || !docker_run.is_some_and(|index| exclusion < index)
     {
         return Err(format!(
@@ -3488,6 +3539,7 @@ mod tests {
         docker: &str,
         chmod: Option<&str>,
         remove: Option<&str>,
+        native_dacl: Option<&str>,
     ) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
         use std::process::Command;
@@ -3522,7 +3574,15 @@ mod tests {
         temp.write("bin/uname", "#!/usr/bin/env bash\nprintf 'MSYS_NT-10.0\\n'\n");
         temp.write(
             "bin/cygpath",
-            "#!/usr/bin/env bash\n[[ \"$1\" == '-am' ]] || exit 64\nprintf '%s\\n' \"$2\"\n",
+            "#!/usr/bin/env bash\n[[ \"$1\" == '-am' || \"$1\" == '-aw' ]] || exit 64\nprintf '%s\\n' \"$2\"\n",
+        );
+        temp.write(
+            "bin/whoami.exe",
+            "#!/usr/bin/env bash\nprintf '\"fixture\",\"S-1-5-21-1\"\\r\\n'\n",
+        );
+        temp.write(
+            "bin/powershell.exe",
+            native_dacl.unwrap_or("#!/usr/bin/env bash\nexit 0\n"),
         );
         temp.write(
             "bin/chmod",
@@ -3533,7 +3593,7 @@ mod tests {
         if let Some(remove) = remove {
             temp.write("bin/rm", remove);
         }
-        for shim in ["docker", "uname", "cygpath", "chmod"] {
+        for shim in ["docker", "uname", "cygpath", "whoami.exe", "powershell.exe", "chmod"] {
             let path = temp.path().join("bin").join(shim);
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
                 .expect("shim executable");
@@ -3582,6 +3642,7 @@ mod tests {
             "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
             None,
             None,
+            None,
         );
         let output = run_msys_renderer_fixture(&temp, &checkout);
         assert_eq!(output.status.code(), Some(1));
@@ -3623,6 +3684,7 @@ mod tests {
                 "#!/usr/bin/env bash\nmode=$1\nshift\n[[ \"${1:-}\" == -- ]] && shift\nif [[ \"$mode\" == 0700 ]]; then exit 44; fi\nexec /bin/chmod \"$mode\" \"$@\"\n",
             ),
             None,
+            None,
         );
         let output = run_msys_renderer_fixture(&temp, &checkout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3643,6 +3705,24 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn mermaid_renderer_does_not_claim_owner_only_when_native_dacl_restoration_fails() {
+        let temp = TempDir::new();
+        let checkout = write_msys_renderer_fixture(
+            &temp,
+            "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image|rm) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrun) exit 42 ;;\n*) exit 99 ;;\nesac\n",
+            None,
+            None,
+            Some("#!/usr/bin/env bash\nexit 45\n"),
+        );
+        let output = run_msys_renderer_fixture(&temp, &checkout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr.contains("owner-only restoration failed"), "{stderr}");
+        assert!(!stderr.contains("with owner-only host access"), "{stderr}");
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn mermaid_renderer_restores_output_when_success_cleanup_cannot_remove_it() {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -3652,6 +3732,7 @@ mod tests {
             "#!/usr/bin/env bash\ncase \"$1\" in\ninfo|image) exit 0 ;;\ncontext) printf 'unix:///unused-kel152.sock\\n' ;;\nrm) exit 0 ;;\nrun)\n  out=''\n  shift\n  while [[ $# -gt 0 ]]; do\n    if [[ \"$1\" == --volume ]]; then\n      case \"$2\" in *:/out) out=\"${2%:/out}\" ;; esac\n      shift 2\n    else\n      shift\n    fi\n  done\n  [[ -n \"$out\" ]] || exit 64\n  printf '<svg><title>fixture</title><desc>fixture</desc></svg>' >\"$out/fixture.svg\"\n  ;;\n*) exit 99 ;;\nesac\n",
             None,
             Some("#!/usr/bin/env bash\nexit 66\n"),
+            None,
         );
         let output = run_msys_renderer_fixture(&temp, &checkout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3748,6 +3829,9 @@ mod tests {
         for (old, replacement) in [
             ("if ! running_under_msys; then", "if false; then"),
             ("\"$render_parent\"/keld-mermaid-render.*) ;;", "*) ;;"),
+            ("restore_windows_owner_only_dacl \"$path\"", "true"),
+            ("MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'", "true"),
+            ("$acl.SetAccessRuleProtection($true, $false)", "true"),
             (
                 "chmod 0700 -- \"$path\" || {",
                 "chmod 0777 -- \"$path\" || {",
