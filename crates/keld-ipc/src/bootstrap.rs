@@ -1701,32 +1701,119 @@ socket.end();
 
     #[test]
     fn pending_accept_cancellation_completes_and_joins() {
-        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("bind"));
+        prove_pending_accept_cancellation(false).expect("pending cancellation");
+    }
+
+    #[test]
+    fn pending_accept_cancellation_with_package_acl_completes_and_joins() {
+        prove_pending_accept_cancellation(true).expect("package ACL pending cancellation");
+    }
+
+    fn prove_pending_accept_cancellation(package_acl: bool) -> io::Result<()> {
+        let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind()?);
+        if package_acl {
+            // Descriptor-only fixture: actual LPAC identity is proved in runtime tests.
+            let original = listener.inspect_pipe_handle(|handle| {
+                Ok(GetSecurityInfo(
+                    handle,
+                    SeObjectType::SE_KERNEL_OBJECT,
+                    SecurityInformation::Dacl,
+                )?
+                .as_sddl()?
+                .to_string_lossy()
+                .into_owned())
+            })?;
+            let expected = format!("{original}(A;;0x12019b;;;S-1-15-2-1-2-3-4-5-6-7)");
+            let descriptor: windows_permissions::LocalBox<windows_permissions::SecurityDescriptor> =
+                expected.parse()?;
+            windows_permissions::wrappers::SetNamedSecurityInfo(
+                listener.endpoint(),
+                SeObjectType::SE_FILE_OBJECT,
+                SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+                None,
+                None,
+                Some(
+                    descriptor
+                        .dacl()
+                        .ok_or_else(|| io::Error::other("missing fixture DACL"))?,
+                ),
+                None,
+            )?;
+            listener.inspect_pipe_handle(|handle| {
+                let observed = GetSecurityInfo(
+                    handle,
+                    SeObjectType::SE_KERNEL_OBJECT,
+                    SecurityInformation::Dacl,
+                )?;
+                // SetNamedSecurityInfo can add SE_DACL_AUTO_INHERITED. Compare
+                // authority-bearing ACEs and require protection independently.
+                assert!(observed.as_sddl()?.to_string_lossy().starts_with("D:P"));
+                let actual = observed
+                    .dacl()
+                    .ok_or_else(|| io::Error::other("missing readback DACL"))?;
+                let intended = descriptor
+                    .dacl()
+                    .ok_or_else(|| io::Error::other("missing fixture DACL"))?;
+                assert_eq!(actual.len(), 2);
+                for index in 0..2 {
+                    let actual = actual
+                        .get_ace(index)
+                        .ok_or_else(|| io::Error::other("missing readback ACE"))?;
+                    let intended = intended
+                        .get_ace(index)
+                        .ok_or_else(|| io::Error::other("missing fixture ACE"))?;
+                    assert_eq!(actual.sid(), intended.sid());
+                    assert_eq!(actual.ace_type(), intended.ace_type());
+                    assert_eq!(actual.flags(), intended.flags());
+                    assert_eq!(actual.mask(), intended.mask());
+                }
+                Ok(())
+            })?;
+        }
         let cancellation = listener.cancellation();
         let worker_listener = Arc::clone(&listener);
+        let (completed, completion) = mpsc::channel();
+        let admission_deadline = Instant::now() + Duration::from_secs(5);
         let worker = thread::spawn(move || {
-            worker_listener.accept_authenticated_until(
-                Instant::now() + Duration::from_secs(30),
-                &super::NoopRejectionObserver,
-            )
+            let outcome = worker_listener
+                .accept_authenticated_until(admission_deadline, &super::NoopRejectionObserver);
+            let _ = completed.send(());
+            outcome
         });
         let pending_deadline = Instant::now() + Duration::from_secs(1);
-        while !listener.is_accept_pending() {
-            assert!(
-                Instant::now() < pending_deadline,
-                "server never entered overlapped pending accept"
-            );
+        while !listener.is_accept_pending() && Instant::now() < pending_deadline {
             thread::yield_now();
         }
-        cancellation.cancel().expect("cancel pending accept");
+        // This witness is set only after ConnectNamedPipe reports ERROR_IO_PENDING.
+        let was_pending = listener.is_accept_pending();
+        let completion_deadline = (Instant::now() + Duration::from_secs(2)).min(admission_deadline);
+        let cancelled = cancellation.cancel();
+        let completed_promptly =
+            completion.recv_timeout(completion_deadline.saturating_duration_since(Instant::now()));
+        let completed_at = Instant::now();
+        // Join even on an oracle failure; the independent admission deadline bounds cleanup.
         let outcome = worker
             .join()
-            .expect("join accept worker")
-            .expect("admission");
+            .map_err(|_| io::Error::other("accept worker panicked"))?;
+        assert!(
+            was_pending,
+            "server never entered overlapped pending accept"
+        );
+        cancelled?;
+        completed_promptly.map_err(|error| {
+            io::Error::other(format!(
+                "cancellation must finish before admission deadline: {error}"
+            ))
+        })?;
+        assert!(
+            completed_at < completion_deadline,
+            "synchronous cancel exceeded completion deadline"
+        );
         assert!(matches!(
-            outcome,
+            outcome?,
             WindowsNamedPipeBootstrapAdmission::Cancelled
         ));
+        Ok(())
     }
 
     #[test]
