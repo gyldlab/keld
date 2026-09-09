@@ -414,17 +414,23 @@ fn section<'a>(text: &'a str, heading: &str, path: &str) -> Result<&'a str, Stri
 fn direct_section<'a>(text: &'a str, heading: &str, path: &str) -> Result<&'a str, String> {
     let canonical_section = section(text, heading, path)?;
     let mut offset = 0_usize;
+    let mut previous_line_is_nonempty = false;
     for line in canonical_section.split_inclusive('\n') {
         let trimmed = line.trim_start();
         let marker_width = trimmed.bytes().take_while(|byte| *byte == b'#').count();
-        let is_nested_heading = marker_width >= 3
+        let is_new_heading = marker_width >= 1
             && trimmed
                 .as_bytes()
                 .get(marker_width)
                 .is_some_and(u8::is_ascii_whitespace);
-        if offset != 0 && is_nested_heading {
+        let setext = line.trim();
+        let is_setext_heading = previous_line_is_nonempty
+            && !setext.is_empty()
+            && setext.bytes().all(|byte| byte == b'=' || byte == b'-');
+        if offset != 0 && (is_new_heading || is_setext_heading) {
             return Ok(&canonical_section[..offset]);
         }
+        previous_line_is_nonempty = !setext.is_empty();
         offset += line.len();
     }
     Ok(canonical_section)
@@ -1625,27 +1631,34 @@ mod tests {
     }
 
     #[test]
-    fn current_documentation_consumer_directive_cannot_move_to_a_nested_history_heading() {
-        for (path, requirement) in [
-            (
-                DEPENDENCIES,
-                CURRENT_DOCUMENTATION_DEPENDENCIES_REQUIREMENTS[0],
-            ),
-            (DOCS, CURRENT_DOCUMENTATION_DOCS_REQUIREMENTS[1]),
-            (TESTING, CURRENT_DOCUMENTATION_TESTING_REQUIREMENTS[1]),
+    fn current_documentation_consumer_directive_cannot_move_to_a_historical_heading() {
+        for historical_heading in [
+            "### Historical receipt requirement",
+            "# Historical receipt requirement",
+            "Historical receipt requirement\n---",
         ] {
-            let temp = fixture();
-            let source = fs::read_to_string(temp.path.join(path)).expect("read consumer fixture");
-            let moved = source
-                .replacen(requirement, "historical directive omitted", 1)
-                .replace(
-                    "## Next",
-                    &format!("### Historical receipt requirement\n\n{requirement}\n\n## Next"),
-                );
-            temp.write(path, &moved);
-            let error = check(&temp.path)
-                .expect_err("nested historical directive must not satisfy the consumer binding");
-            assert!(error.contains(requirement), "{error}");
+            for (path, requirement) in [
+                (
+                    DEPENDENCIES,
+                    CURRENT_DOCUMENTATION_DEPENDENCIES_REQUIREMENTS[0],
+                ),
+                (DOCS, CURRENT_DOCUMENTATION_DOCS_REQUIREMENTS[1]),
+                (TESTING, CURRENT_DOCUMENTATION_TESTING_REQUIREMENTS[1]),
+            ] {
+                let temp = fixture();
+                let source =
+                    fs::read_to_string(temp.path.join(path)).expect("read consumer fixture");
+                let moved = source
+                    .replacen(requirement, "historical directive omitted", 1)
+                    .replace(
+                        "## Next",
+                        &format!("{historical_heading}\n\n{requirement}\n\n## Next"),
+                    );
+                temp.write(path, &moved);
+                let error = check(&temp.path)
+                    .expect_err("historical directive must not satisfy the consumer binding");
+                assert!(error.contains(requirement), "{error}");
+            }
         }
     }
 
