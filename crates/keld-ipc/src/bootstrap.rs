@@ -1761,11 +1761,10 @@ socket.end();
         let cancellation = listener.cancellation();
         let worker_listener = Arc::clone(&listener);
         let (completed, completion) = mpsc::channel();
+        let admission_deadline = Instant::now() + Duration::from_secs(5);
         let worker = thread::spawn(move || {
-            let outcome = worker_listener.accept_authenticated_until(
-                Instant::now() + Duration::from_secs(5),
-                &super::NoopRejectionObserver,
-            );
+            let outcome = worker_listener
+                .accept_authenticated_until(admission_deadline, &super::NoopRejectionObserver);
             let _ = completed.send(());
             outcome
         });
@@ -1775,8 +1774,11 @@ socket.end();
         }
         // This witness is set only after ConnectNamedPipe reports ERROR_IO_PENDING.
         let was_pending = listener.is_accept_pending();
+        let completion_deadline = (Instant::now() + Duration::from_secs(2)).min(admission_deadline);
         let cancelled = cancellation.cancel();
-        let completed_promptly = completion.recv_timeout(Duration::from_secs(2));
+        let completed_promptly =
+            completion.recv_timeout(completion_deadline.saturating_duration_since(Instant::now()));
+        let completed_at = Instant::now();
         // Join even on an oracle failure; the independent admission deadline bounds cleanup.
         let outcome = worker.join().expect("join accept worker");
         assert!(
@@ -1785,6 +1787,10 @@ socket.end();
         );
         cancelled?;
         completed_promptly.expect("cancellation must finish before admission deadline");
+        assert!(
+            completed_at < completion_deadline,
+            "synchronous cancel exceeded completion deadline"
+        );
         assert!(matches!(
             outcome?,
             WindowsNamedPipeBootstrapAdmission::Cancelled
