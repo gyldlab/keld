@@ -711,16 +711,21 @@ fn require_current_documentation_consumer(
 
 fn check_current_documentation_receipts(root: &Path) -> Result<(), String> {
     let research = read(root, RESEARCH)?;
+    let research_rendered = visible_markdown(&research);
     let research_visible = binding_prose(&research);
-    let receipt = section(&research_visible, CURRENT_DOCUMENTATION_HEADING, RESEARCH)?;
+    let receipt = binding_prose(direct_section(
+        &research_rendered,
+        CURRENT_DOCUMENTATION_HEADING,
+        RESEARCH,
+    )?);
     for requirement in CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS {
-        require_normalized(receipt, requirement, RESEARCH)?;
+        require_normalized(&receipt, requirement, RESEARCH)?;
         require_unique_normalized(&research_visible, requirement, RESEARCH)?;
     }
 
     let coordination = read(root, COORDINATION)?;
     let coordination_visible = visible_markdown(&coordination);
-    let receipt = section(
+    let receipt = direct_section(
         &coordination_visible,
         CURRENT_DOCUMENTATION_HEADING,
         COORDINATION,
@@ -1674,6 +1679,39 @@ mod tests {
             + "\n";
         temp.write(COORDINATION, &coordination);
         let error = check(&temp.path).expect_err("historical receipt field must not satisfy owner");
+        assert!(error.contains(field), "{error}");
+    }
+
+    #[test]
+    fn receipt_owner_requirements_cannot_move_to_a_nested_history_heading() {
+        let temp = fixture();
+        let requirement = CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS[0];
+        let research = fs::read_to_string(temp.path.join(RESEARCH))
+            .expect("read research fixture")
+            .replacen(requirement, "historical requirement omitted", 1)
+            .replace(
+                "## Next",
+                &format!("### Historical receipt requirement\n\n{requirement}\n\n## Next"),
+            );
+        temp.write(RESEARCH, &research);
+        let error = check(&temp.path)
+            .expect_err("nested historical research requirement must not satisfy its owner");
+        assert!(error.contains(requirement), "{error}");
+
+        let temp = fixture();
+        let field = CURRENT_DOCUMENTATION_RECEIPT_FIELDS[2];
+        let coordination = fs::read_to_string(temp.path.join(COORDINATION))
+            .expect("read coordination fixture")
+            .replacen(field, "historical field omitted", 1)
+            .replace(
+                "## Standing autonomous merge delegation",
+                &format!(
+                    "### Historical receipt requirement\n\n{field}\n\n## Standing autonomous merge delegation"
+                ),
+            );
+        temp.write(COORDINATION, &coordination);
+        let error = check(&temp.path)
+            .expect_err("nested historical coordination field must not satisfy its owner");
         assert!(error.contains(field), "{error}");
     }
 
