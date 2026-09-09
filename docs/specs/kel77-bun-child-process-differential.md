@@ -155,16 +155,25 @@ Non-goals:
   - Compatibility fallback: `not required` — no prior runtime-differential harness exists.
   - Performance claim: none made, none retained.
 
-### 4.2 Why this gate stays green today and still detects regressions
+### 4.2 Regression-oracle scope and recorded qualification
 
-An assertion-free recorder would violate `.agents/testing.md`. The harness therefore
-gates on two things that are both true on Bun 1.4.0 and both falsifiable:
+An assertion-free recorder would violate `.agents/testing.md`. The Bun 1.4.0 result
+below is historical evidence. KEL-194's full required hosted CI passed with the current
+Bun 1.4.2 pin at
+[`8d74f50`](https://github.com/gyldlab/keld/commit/8d74f50e11c236e51b20410c7dee3f26c089a1ed);
+the [CI run](https://github.com/gyldlab/keld/actions/runs/34297786884) includes the
+final `CI required` gate. That verifies the current CI pin, not this slice's dedicated
+Windows or Linux execution evidence: §1 and §4.6 continue to limit that claim to macOS
+arm64, and T3 remains the follow-up for per-platform expectations. The harness gates on
+two falsifiable properties:
 
 1. **Specified contracts both arms honor are asserted for both arms, unconditionally**
    (cases 1–5, and the drained variant of case 6). These are stable, cited Node contracts.
    If either runtime regresses on exit codes, signal names, `'close'`-after-`'exit'`
    ordering, spawn-failure ordering, or `kill()` after `'exit'`, CI goes red. That is a
-   genuine compat regression on the runtime Keld ships and should stop a release.
+   genuine compat regression on the current runtime pin and should stop a release. Every
+   execution records its exact runtime revision and platform, so a later result cannot
+   inherit the historical Bun 1.4.0 verdict.
 2. **Unspecified paths are never asserted as conformance** (case 6 abrupt variant). The
    observed byte counts are recorded because they are buffer-size dependent and may
    legitimately differ per OS; only the specified drained path is asserted.
