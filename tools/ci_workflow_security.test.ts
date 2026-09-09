@@ -5,7 +5,12 @@ import { delimiter, dirname, join } from "node:path";
 import { checkWorkflowSecurity } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
-type Fixture = { jobs: Record<string, { steps: Step[]; strategy?: { matrix: Record<string, unknown> } }> };
+type FixtureJob = {
+  steps: Step[];
+  permissions?: Record<string, unknown>;
+  strategy?: { matrix: Record<string, unknown> };
+};
+type Fixture = { jobs: Record<string, FixtureJob> };
 const source = readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8");
 const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 
@@ -51,6 +56,18 @@ test("CodeQL matrix coverage is independent of row order", () => {
   const f = fixture();
   (f.jobs.codeql!.strategy!.matrix.include as Step[]).reverse();
   expect(() => check(f)).not.toThrow();
+});
+
+test("CodeQL permissions retain only read content and SARIF-upload authority", () => {
+  for (const mutation of ["missing", "security-events-read", "contents-write", "extra"] as const) {
+    const f = fixture();
+    const permissions = f.jobs.codeql!.permissions!;
+    if (mutation === "missing") delete f.jobs.codeql!.permissions;
+    if (mutation === "security-events-read") permissions["security-events"] = "read";
+    if (mutation === "contents-write") permissions.contents = "write";
+    if (mutation === "extra") permissions.actions = "read";
+    expect(() => check(f)).toThrow("CodeQL job permissions");
+  }
 });
 
 for (const style of ["block", "flow", "alias"] as const) {
@@ -228,6 +245,9 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
     const skipped = run(source.replace("      - name: Analyze and upload CodeQL results\n", "      - name: Analyze and upload CodeQL results\n        if: false\n"));
     expect(skipped.exitCode).not.toBe(0);
     expect(new TextDecoder().decode(skipped.stderr)).toContain("conditions or unknown controls");
+    const weakenedUpload = run(source.replace("      security-events: write", "      security-events: read"));
+    expect(weakenedUpload.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(weakenedUpload.stderr)).toContain("CodeQL job permissions");
     expect(run(source, { ...runtimeEnv, PATH: temporary }).exitCode).not.toBe(0);
     rmSync(join(checkoutRoot, "tools/ci_workflow_security.ts"));
     expect(run(source).exitCode).not.toBe(0);

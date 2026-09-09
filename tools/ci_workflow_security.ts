@@ -125,6 +125,9 @@ export function checkWorkflowSecurity(source: string): void {
   const dependencies = stepsByJob.get("dependency-review");
   if (!codeql || !dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const codeqlJob = mapping(jobs.codeql, "jobs.codeql");
+  inputsMatch(mapping(codeqlJob.permissions, "CodeQL job permissions"), {
+    contents: "read", "security-events": "write",
+  }, "CodeQL job permissions");
   const strategy = mapping(codeqlJob.strategy, "CodeQL strategy");
   const matrix = mapping(strategy.matrix, "CodeQL matrix");
   exactKeys(matrix, ["include"], "CodeQL matrix");
