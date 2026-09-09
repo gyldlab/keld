@@ -3248,7 +3248,7 @@ mod tests {
             "a newline-free elision must insert a separator: {captured:?}"
         );
         assert!(
-            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES,
             "separators must not defeat the ceiling: {}",
             captured.stdout.len()
         );
@@ -3296,7 +3296,7 @@ mod tests {
         }
         // No newline was ever written, so every compaction took the fallback.
         assert!(
-            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+            captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES,
             "a newline-free flood must not grow without bound: {} retained after {} written",
             captured.stdout.len(),
             captured.stdout_total_bytes
@@ -3520,6 +3520,11 @@ mod tests {
         let target_bytes = CAPTURE_MAX_RETAINED_BYTES * 200;
         let rss_growth_ceiling = 32 * 1024 * 1024;
         let baseline_rss = process_rss_bytes();
+        #[cfg(unix)]
+        assert!(
+            baseline_rss.is_some(),
+            "Unix RSS baseline must be available"
+        );
 
         let sup = Supervisor::start(RestartPolicy::default(), move || {
             chatty_helper_command(target_bytes)
@@ -3534,13 +3539,15 @@ mod tests {
             let captured = sup.output();
             peak_retained = peak_retained.max(captured.stdout.len());
             assert!(
-                captured.stdout.len()
-                    <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+                captured.stdout.len() <= CAPTURE_MAX_RETAINED_BYTES,
                 "retained stdout exceeded the ceiling mid-soak at sample {samples}: {} > {}",
                 captured.stdout.len(),
-                CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes
+                CAPTURE_MAX_RETAINED_BYTES
             );
-            if let (Some(baseline), Some(now)) = (baseline_rss, process_rss_bytes()) {
+            let current_rss = process_rss_bytes();
+            #[cfg(unix)]
+            assert!(current_rss.is_some(), "Unix RSS sample must be available");
+            if let (Some(baseline), Some(now)) = (baseline_rss, current_rss) {
                 peak_rss_growth = peak_rss_growth.max(now.saturating_sub(baseline));
             }
             samples += 1;
@@ -3572,7 +3579,7 @@ mod tests {
             "the soak must sample while the child is live, not once at the end"
         );
         assert!(
-            peak_retained <= CAPTURE_MAX_RETAINED_BYTES + captured.stdout_separator_bytes,
+            peak_retained <= CAPTURE_MAX_RETAINED_BYTES,
             "peak retained stdout exceeded the ceiling: {peak_retained}"
         );
         assert!(
@@ -3580,6 +3587,10 @@ mod tests {
             "a soak past the ceiling must have elided output: {captured:?}"
         );
 
+        eprintln!(
+            "capture-soak samples={samples} bytes={} peak_retained={peak_retained} baseline_rss={baseline_rss:?} peak_rss_growth={peak_rss_growth}",
+            captured.stdout_total_bytes
+        );
         if baseline_rss.is_some() {
             assert!(
                 peak_rss_growth <= rss_growth_ceiling,
