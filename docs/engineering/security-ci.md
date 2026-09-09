@@ -12,10 +12,10 @@ The CodeQL matrix must include Rust, JavaScript/TypeScript and Actions exactly
 once. Exclusions and additional matrix axes are refused so a successful job cannot
 silently represent fewer scan categories; row order does not affect admission.
 Block, flow and aliased steps are inspected as objects. Missing, malformed,
-multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.0's
+multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.2's
 parser uses the last value for duplicate keys; this check does not claim to reject
 duplicate-key syntax or prove full equivalence to GitHub's YAML implementation.
-The selected parser controls run in CI against pinned Bun 1.4.0. See
+The selected parser controls run in CI against pinned Bun 1.4.2. See
 [Bun's YAML documentation](https://bun.com/docs/runtime/yaml) for its conformance limits.
 
 | Check | Input and coverage | Limits |

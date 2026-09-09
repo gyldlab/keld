@@ -1051,9 +1051,10 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Asserts the `bun-test` lane's decidable properties only: that it exists, is
-/// gated on the router's own output, pins its Bun version, and does not open a
-/// second live apt lane. Each of those is a fact about the workflow text.
+/// Asserts the `bun-test` lane's decidable properties and the exact Bun pin for
+/// every current Bun consumer: `check`, `bun-test`, and `hygiene`. The `bun-test`
+/// lane must exist, be gated on the router's own output, and avoid a second live
+/// apt lane. Each of those is a fact about the workflow text.
 ///
 /// What this deliberately does not assert — that the lane really runs the
 /// suites the router selected — is tracked in KEL-115, because it is a
@@ -1069,7 +1070,7 @@ fn check_bun_test_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
         ));
     }
-    for job in ["bun-test", "check"] {
+    for job in ["bun-test", "check", "hygiene"] {
         check_bun_setup_steps(text, job)?;
     }
     // Deliberately NOT checked here: that the lane actually executes the suite
@@ -2090,6 +2091,9 @@ mod tests {
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
             "          persist-credentials: false",
+            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
+            "        with:",
+            "          bun-version: \"1.4.2\"",
             "      - name: Atomic problem-solving protocol contract",
             "        run: |",
             "          mkdir -p target/atomic-protocol",
@@ -2322,7 +2326,7 @@ mod tests {
             WORKFLOW,
             &valid_workflow().replacen(
                 "      - name: Atomic problem-solving protocol contract\n",
-                "",
+                "      - name: Removed atomic step\n",
                 1,
             ),
         );
@@ -3101,8 +3105,8 @@ mod tests {
     }
 
     #[test]
-    fn every_bun_setup_in_both_jobs_requires_its_own_pin() {
-        for job in ["check", "bun-test"] {
+    fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
+        for job in ["check", "bun-test", "hygiene"] {
             let workflow = valid_workflow();
             let block = workflow_job_block(&workflow, job).expect("fixture job");
             for extra in [
@@ -3126,8 +3130,8 @@ mod tests {
     }
 
     #[test]
-    fn both_bun_jobs_require_a_setup_action() {
-        for job in ["check", "bun-test"] {
+    fn every_bun_consumer_requires_a_setup_action() {
+        for job in ["check", "bun-test", "hygiene"] {
             let workflow = valid_workflow();
             let block = workflow_job_block(&workflow, job).expect("fixture job");
             let changed = block.replace("oven-sh/setup-bun@", "some-other/action@");
