@@ -26,8 +26,8 @@
         "https:///**",
         "wss://**",
         "a://**",
-        "https:\\\\/**",
-        "https:\\t//**",
+        "https:\\/**",
+        "https:\t//**",
         "https://api.example.com/**"
       ]
     },

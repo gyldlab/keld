@@ -5,8 +5,10 @@
 //! The engine parses `keld.permissions.jsonc` and default-denies through
 //! [`evaluate`] for dotted capabilities (`fs.read`) against path and URL
 //! scopes. One matcher serves both: a `/**` prefix grant may cover hierarchy
-//! below the destination it names, but it must name one, and it never reaches
-//! past that destination's own authority.
+//! below the destination it names, but it must name one, so no glob grants
+//! "any host" for a multi-character scheme. The residuals that carve out of
+//! that — one-letter schemes, schemeless references, percent-encoded `..` —
+//! are listed in `docs/architecture/03-security.md` §2.
 //! [`evaluate`] requires a [`Principal`] and denies anything other than
 //! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
 //! principal. Strict-profile admission is exposed through [`admit`]. Repository
@@ -511,10 +513,12 @@ fn parse_manifest_at(
 /// `"https:///**"`, `"file:///**"`) matches nothing; and the prefix then matches
 /// only at a literal `/`, so `"https://api.example.com/**"` keeps its origin
 /// subtree while denying the longer authority `api.example.com.evil.test`.
-/// Path scopes keep their behaviour, a `C:/**` Windows drive glob included — a
-/// single character before the colon is a drive, not a scheme. This is not URL
-/// normalization, and a schemeless `//host/x` is matched as a path; see
-/// `docs/architecture/03-security.md` §2.
+/// A `C:/**` Windows drive glob keeps working — a single character before the
+/// colon is a drive, not a scheme — but the doubled-separator spellings
+/// `C://**` and `C:///**` do carry separators and are refused, so "path scopes
+/// are untouched" would be too strong. This is not URL normalization, and a
+/// schemeless `//host/x` is matched as a path; `docs/architecture/03-security.md`
+/// §2 lists every residual.
 ///
 /// The `Allow` path does not allocate (`json_pointer_for` and `Vec` are deny-only).
 #[must_use]
@@ -593,15 +597,20 @@ fn path_has_dotdot(path: &str) -> bool {
 /// webview do — still reads `host` out of it. Refusing the *grant* closes those
 /// spellings together instead of chasing that divergence per resource. The
 /// separator set follows the same source: `/` and `\` are interchangeable for a
-/// special scheme, and tab/LF/CR are stripped from a URL before parsing.
+/// special scheme, and tab/LF/CR are stripped from a URL before parsing. The
+/// implementation is deliberately wider than that citation — it takes any ASCII
+/// whitespace — because over-refusing a grant that names nothing costs nothing.
 ///
 /// Two shapes are deliberately **not** treated as a scheme, because reading them
 /// as one would silently disarm an ordinary path grant:
 ///
 /// - anything with a path separator before the colon. RFC 3986 §3.1 anchors a
 ///   scheme at the start of the reference, so `$APPDATA/cache/https:` names a
-///   directory and `\?\C:` names a drive behind the Windows device prefix that
-///   `fs::canonicalize` returns.
+///   directory, `/srv/backup:` names one too, and `\\?\C:` names a drive behind a
+///   Windows device prefix. (Separately, and predating this rule: a grant using
+///   backslash separators cannot glob at all, because the `/**` suffix and the
+///   match anchor are both forward-slash. `fs::canonicalize` returns
+///   `\\?\C:\…`, so such a path needs a forward-slash grant to be globbable.)
 /// - a bare `X:` — a drive root, so `C:/**` keeps covering the drive. The
 ///   exemption stops there: `X:/` and `X://` carry separators, so `a://**` is
 ///   refused like any other scheme glob. What remains is that `C:/**` and
@@ -1023,6 +1032,33 @@ mod tests {
         );
     }
 
+    /// The documented residual, pinned so it cannot drift in either direction.
+    ///
+    /// `C:/**` and `a:/**` are the same bytes: a letter, a colon, `/**`. The
+    /// drive-letter carve-out therefore has to let both through, so a one-letter
+    /// scheme's `X:/**` is a path glob and *does* reach `a://host` — the one
+    /// shape architecture 03 §2 records as not covered. Widening the carve-out
+    /// to `X:/` or `X://` would silently reopen `a://**`, and removing it would
+    /// silently break every Windows drive-root grant; this test fails either way.
+    #[test]
+    fn a_one_letter_scheme_glob_is_a_path_glob_and_that_is_the_documented_residual() {
+        let manifest =
+            parse_manifest(r#"{"app":{"net":{"connect":["a:/**"]}}}"#).expect("manifest");
+        assert_eq!(
+            eval_app(&manifest, "net.connect", "a://evil.example.com"),
+            Decision::Allow,
+            "a one-letter scheme is indistinguishable from a drive root, so this              stays a path glob — architecture 03 §2 records it as the residual"
+        );
+        // The moment the scheme is longer than one character the ambiguity is
+        // gone, and the same shape is refused.
+        let two = parse_manifest(r#"{"app":{"net":{"connect":["ab:/**"]}}}"#).expect("manifest");
+        let denied = eval_app(&two, "net.connect", "ab://evil.example.com");
+        assert!(
+            matches!(denied, Decision::Deny(DenyReason::OutOfScope { .. })),
+            "a multi-character scheme glob is closed: {denied:?}"
+        );
+    }
+
     /// A filesystem path may itself contain `://` — a cache entry named after a
     /// URL is the ordinary case — and it must keep the enclosing path grant.
     /// Denying it would be fail-closed and still wrong.
@@ -1062,9 +1098,9 @@ mod tests {
     /// A colon that is not in scheme position must not disarm a grant. RFC 3986
     /// §3.1 anchors a scheme at the start of the reference, so a separator
     /// before the colon means there is no scheme: these name a directory or a
-    /// drive. `\\?\\C:` in particular is the shape `fs::canonicalize`
-    /// returns on Windows, which architecture 03 §2 names as the destination for
-    /// scope matching, so a grant written that way has to keep working.
+    /// drive. The `\\?\C:` device prefix is covered because a Windows path can
+    /// legitimately carry a colon that is not a scheme; note this is the
+    /// forward-slash spelling, since a backslash grant cannot glob at all.
     #[test]
     fn a_colon_outside_scheme_position_still_names_a_destination() {
         for (manifest_text, requested) in [
