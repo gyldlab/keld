@@ -199,6 +199,36 @@ const CASES: &[Case] = &[
         expected: OUT_OF_SCOPE,
     },
     Case {
+        name: "one letter scheme glob with separators",
+        operation: "net.connect",
+        path: "a://evil.example.com",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "backslash scheme glob",
+        operation: "net.connect",
+        path: "https:\\/evil.example.com",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "tab separated scheme glob",
+        operation: "net.connect",
+        path: "https:\t//evil.example.com",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "colon outside scheme position keeps its path grant",
+        operation: "fs2.read",
+        path: "/srv/backup:/x",
+        expected: ALLOW,
+    },
+    Case {
+        name: "windows device prefixed drive grant",
+        operation: "fs2.read",
+        path: "\\\\?\\C:/Users/x",
+        expected: ALLOW,
+    },
+    Case {
         name: "unknown operation",
         operation: "fs.delete",
         path: "/foo/bar/child",

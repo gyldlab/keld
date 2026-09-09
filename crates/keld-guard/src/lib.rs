@@ -590,24 +590,44 @@ fn path_has_dotdot(path: &str) -> bool {
 /// actually reaches a host cannot be recovered from the resource: `https:/host`
 /// carries no `//`, so RFC 3986 §3.2 sees a path and an authority rule keyed on
 /// `://` never fires, yet WHATWG URL parsing — what a browser, `fetch` and a
-/// webview do — still reads `host` out of it. Refusing the *grant* closes every
-/// spelling at once, including ones no rule here anticipates.
+/// webview do — still reads `host` out of it. Refusing the *grant* closes those
+/// spellings together instead of chasing that divergence per resource. The
+/// separator set follows the same source: `/` and `\` are interchangeable for a
+/// special scheme, and tab/LF/CR are stripped from a URL before parsing.
 ///
-/// A single character before the first colon is a Windows drive rather than a
-/// scheme (RFC 3986 §3.1 admits both: `scheme = ALPHA *( ALPHA / DIGIT / "+" /
-/// "-" / "." )`), so `C:/**` stays an ordinary path glob. The cost is that a
-/// one-letter scheme cannot express a URL grant; `docs/architecture/03-security.md`
-/// §2 records that.
+/// Two shapes are deliberately **not** treated as a scheme, because reading them
+/// as one would silently disarm an ordinary path grant:
+///
+/// - anything with a path separator before the colon. RFC 3986 §3.1 anchors a
+///   scheme at the start of the reference, so `$APPDATA/cache/https:` names a
+///   directory and `\?\C:` names a drive behind the Windows device prefix that
+///   `fs::canonicalize` returns.
+/// - a bare `X:` — a drive root, so `C:/**` keeps covering the drive. The
+///   exemption stops there: `X:/` and `X://` carry separators, so `a://**` is
+///   refused like any other scheme glob. What remains is that `C:/**` and
+///   `a:/**` are the same string, so a one-letter scheme's `X:/**` is a path
+///   glob; `docs/architecture/03-security.md` §2 records that, and the wider
+///   `X://**` and every multi-letter scheme are closed.
 fn names_no_destination(prefix: &str) -> bool {
     let Some(colon) = prefix.find(':') else {
         return false;
     };
-    if colon == 1 {
+    if prefix
+        .bytes()
+        .take(colon)
+        .any(|byte| byte == b'/' || byte == b'\\')
+    {
         return false;
     }
-    prefix
-        .get(colon + 1..)
-        .is_some_and(|rest| rest.bytes().all(|byte| byte == b'/' || byte == b'\\'))
+    if !prefix
+        .bytes()
+        .skip(colon + 1)
+        .all(|byte| byte == b'/' || byte == b'\\' || byte.is_ascii_whitespace())
+    {
+        return false;
+    }
+    // A bare drive root (`C:`) still names a destination; `C:/` and `C://` do not.
+    colon != 1 || prefix.len() > colon + 1
 }
 
 fn path_in_scope(path: &str, pattern: &str) -> bool {
@@ -907,6 +927,36 @@ mod tests {
                 r#"{"app":{"net":{"connect":["a+b-c.d://**"]}}}"#,
                 "a+b-c.d://any.host/x",
             ),
+            // `\` is interchangeable with `/` to a URL parser for a special
+            // scheme, and tab/LF/CR are stripped from a URL before parsing, so
+            // those spellings name no destination either.
+            (
+                r#"{"app":{"net":{"connect":["https:\\/**"]}}}"#,
+                "https:\\/evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["https:\\\\/**"]}}}"#,
+                "https:\\\\/evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["https:\t//**"]}}}"#,
+                "https:\t//evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["https:\n//**"]}}}"#,
+                "https:\n//evil.example.com",
+            ),
+            // A one-letter scheme gets the drive-letter exemption only for a
+            // bare `X:`. `X://` carries separators, so it is refused like any
+            // other scheme glob.
+            (
+                r#"{"app":{"net":{"connect":["a://**"]}}}"#,
+                "a://evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["z:///**"]}}}"#,
+                "z:///evil.example.com",
+            ),
         ] {
             let manifest = parse_manifest(manifest_text).expect("manifest");
             let decision = eval_app(&manifest, "net.connect", requested);
@@ -1006,6 +1056,47 @@ mod tests {
         assert!(
             matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a real URI is still outside the path grants: {outside:?}"
+        );
+    }
+
+    /// A colon that is not in scheme position must not disarm a grant. RFC 3986
+    /// §3.1 anchors a scheme at the start of the reference, so a separator
+    /// before the colon means there is no scheme: these name a directory or a
+    /// drive. `\\?\\C:` in particular is the shape `fs::canonicalize`
+    /// returns on Windows, which architecture 03 §2 names as the destination for
+    /// scope matching, so a grant written that way has to keep working.
+    #[test]
+    fn a_colon_outside_scheme_position_still_names_a_destination() {
+        for (manifest_text, requested) in [
+            (
+                r#"{"app":{"fs":{"read":["$APPDATA/cache/https:/**"]}}}"#,
+                "$APPDATA/cache/https://example.com/index.html",
+            ),
+            (
+                r#"{"app":{"fs":{"read":["/srv/backup:/**"]}}}"#,
+                "/srv/backup:/x",
+            ),
+            (r#"{"app":{"fs":{"read":["/C:/**"]}}}"#, "/C:/Users/x"),
+            (
+                r#"{"app":{"fs":{"read":["\\\\?\\C:/**"]}}}"#,
+                "\\\\?\\C:/Users/x",
+            ),
+            (r#"{"app":{"fs":{"read":["//?/C:/**"]}}}"#, "//?/C:/Users/x"),
+        ] {
+            let manifest = parse_manifest(manifest_text).expect("manifest");
+            assert_eq!(
+                eval_app(&manifest, "fs.read", requested),
+                Decision::Allow,
+                "{manifest_text} names a destination and must still cover {requested}"
+            );
+        }
+        // A grant whose colon *is* in scheme position stays refused, so the
+        // cases above are not passing because the rule was switched off.
+        let scheme = parse_manifest(r#"{"app":{"fs":{"read":["https:/**"]}}}"#).expect("manifest");
+        let denied = eval_app(&scheme, "fs.read", "https:/evil.example.com");
+        assert!(
+            matches!(denied, Decision::Deny(DenyReason::OutOfScope { .. })),
+            "a scheme-position colon is still refused: {denied:?}"
         );
     }
 

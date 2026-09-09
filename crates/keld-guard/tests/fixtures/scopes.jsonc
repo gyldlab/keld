@@ -25,8 +25,17 @@
         "https:/**",
         "https:///**",
         "wss://**",
+        "a://**",
+        "https:\\\\/**",
+        "https:\\t//**",
         "https://api.example.com/**"
       ]
+    },
+    // A colon outside scheme position names a directory, not a URL: these are
+    // ordinary path grants and must keep working (RFC 3986 3.1 anchors a
+    // scheme at the start of the reference).
+    "fs2": {
+      "read": ["/srv/backup:/**", "\\\\?\\C:/**"]
     },
     // `C:` is a valid RFC 3986 scheme and the usual Windows drive; a drive
     // glob must keep plain path semantics rather than acquire an authority.
