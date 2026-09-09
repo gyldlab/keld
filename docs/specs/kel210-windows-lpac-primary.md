@@ -1,10 +1,12 @@
 # Spec: Windows LPAC primary-role integration
 
-Status: draft
+Status: T1 limited qualification approved; later product slices remain draft
 Linear: KEL-210 · Owner: GYLDLAB · Updated: 2026-09-09
 
-This draft is not implementation approval. It is the concrete successor contract
-needed to connect the existing Windows LPAC mechanism to the existing supervised
+On 2026-09-09 the repository owner approved the limited Windows testing scope
+(Linear approval/claim dfaecc67-da02-49e2-8157-8612ad7370d8). This approves T1
+qualification only; it is not approval of later product implementation. The successor
+contract connects the existing Windows LPAC mechanism to the existing supervised
 primary. The current default pipe rejects a zero-capability AppContainer created
 through the LPAC preparation path before HELLO, while the same client image with its
 ordinary token can open the pipe
@@ -170,9 +172,11 @@ changes are part of T1 without a named approved requirement.
 ## 6. Tasks
 
 - [x] T0a: current-policy composition test; record the real denial and normal controls.
-- [ ] T0b: review this contract, isolate the exact pipe-mode decision and record approval.
-- [ ] T1: explicit LPAC pipe-mode qualification only; preserve the existing default;
-      real intended/wrong-package/normal-user/HELLO/readback/cancellation evidence.
+- [x] T0b: approve the limited T1 qualification scope; owner approval is recorded above.
+      Later implementation signatures and product integration are not approved by it.
+- [x] T1: test-only explicit package pipe-policy qualification; default unchanged;
+      intended/wrong-package/ordinary client, real Bun HELLO/echo, descriptor readback,
+      cancellation and fresh-launch evidence obtained. No shipping constructor added.
 - [ ] T2: shared Windows prepared-child adapter and generation-owned leases, with
       synthetic and actual Bun initial/restart/cancel/host-death proof. No product wiring.
 - [ ] T3: approved exact resource staging/preflight and shared admission integration;
@@ -220,10 +224,64 @@ admission predicates pass. Do not remove enforcement to meet a startup budget.
 
 ## 10. Open decisions before approval
 
-1. Approve the bounded T1 explicit per-generation LPAC pipe policy qualification,
-   preserving current-user-only defaults, with exact descriptor/namespace evidence
-   before product use. The current test does not settle those external semantics.
+1. The bounded T1 qualification is approved and exercised below. Product use still
+   needs an exact approved constructor/ownership contract and the later tasks.
 2. Freeze the public signature/resource ownership after T1 evidence; no inherited
    handle or profile-selection schema is silently chosen here.
 3. Resolve KEL-107's shared admission owner before ordinary startup or a Strict claim.
    This is a dependency, not permission to create a parallel admission implementation.
+
+## 11. Approved T1 qualification evidence - 2026-09-09
+
+The native Windows test uses only owned objects. It qualifies the existing global
+endpoint shape and exact client mask; it does not implement a public LPAC constructor.
+
+| Descriptor cell | Intended configured-LPAC client | Different package | Ordinary same-image owner |
+|---|---|---|---|
+| Current user only, medium label | Denied | Denied | Opens |
+| Current user + exact package, medium label | Opens | Denied | Opens |
+| Current user only, low label | Denied | Denied | Opens |
+| Current user + exact package, low label | Opens | Denied | Opens |
+
+All 24 cases (four cells, three clients, two fresh repetitions) matched exact descriptor
+readback. The matrix uses protected DACLs and `S:AI` mandatory-label metadata. The OS
+added `AI` on the first unprotected-SACL attempt; requesting a protected SACL instead
+failed with error 1314. No privilege was enabled. The final fixture fixes the observed
+metadata explicitly and checks every ACE and label through exact readback.
+
+For authenticated transport, the test binds the real bootstrap listener, verifies its
+original one-user DACL, and changes only that owned object's DACL through an owner
+handle before starting clients. Exact readback requires one additional intended package
+ACE and preserves the original label. This explicit test setup is not the proposed
+shipping constructor and must not become a runtime ACL-modification fallback.
+
+The unchanged checked-in Bun template client and existing Rust bootstrap/echo session
+then run with actual Bun artifact SHA-256
+`15277c59ccd6c6c20f8dc9716c2b59c1776320d606b6a8658f70be8799519ca4`.
+Wrong-token attempts reach the existing verifier and are rejected; the intended token
+completes HELLO and two distinct typed echo round trips. Candidate cancellation closes
+the endpoint and joins the worker before the admission deadline. A new complete setup
+passes again. All owned child processes are reaped before profile/resource release.
+
+The existing `windows_lpac_boundary.rs` supplies the independent functional opt-out
+oracle. Original preparation passes; temporarily disabling only the opt-out bit causes
+`all_packages_denied=false` and fails the real AAP-granted-file assertion; restoring
+exact source bytes restores the pass. This functional observation is independent of
+the configured flag. The direct token-query error 87 remains a real limitation and is
+not hidden behind a successful fallback query.
+
+Decision supported by this evidence: retain the existing global endpoint shape and
+integrity label for the next constructor design, with an explicit exact-package DACL
+mode. Neither a lower label nor inherited-client-handle transport is required by these
+observations. Published defaults remain unchanged. Evidence does not cover product
+resource staging, successor generation ownership, host-death teardown or complete
+Strict admission; T2/T3/T4 and KEL-107 continue to own those predicates.
+
+Evidence directory: `target/kel210-evidence/t1`. Primary references, retrieved
+2026-09-09: [AppContainer access model](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer),
+[named-pipe access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights),
+[CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createnamedpipew),
+[ConnectNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe),
+and [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
+Platform documentation supplies the API contracts; the tests supply the device-specific
+observations above. No unrun operating system is qualified.
