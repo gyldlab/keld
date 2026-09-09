@@ -1,15 +1,29 @@
 # Spec: retained filesystem resources and bounded operations
 Status: draft
 Linear: KEL-130 · Owner: GYLDLAB · Updated: 2026-09-09
-Decision state: missing-approval
+Decision state: review-fixes-authorized; corrected candidate awaiting exact rereview
 Authoring base: `bf78a10db350ba58830efc60a80eeb67fc996ebd`
-Decision payload SHA-256: `c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e`
+Approval continuity: direct user approval in Linear comment
+`0a5d62c4-12f5-4e63-867d-a52c222ed6d4` bound the original
+`c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e` payload and
+`b3072e71baf7056e9a37f6acca2351c4d45aa6bc749c4eb4f7383d9cf8f21014` spec. The current user instruction authorizes executing the
+formal filesystem and cross-platform review fixes within that folder-boundary intent; it does not
+claim the user typed or separately authenticated this revised digest.
+Correction provenance: Linear assignment
+`b5cbd108-7a6a-42d1-818d-c2b8259bc7e5`; formal filesystem-security review
+`01a0878c-2c0b-7f33-a765-0fbb1469e9d5` / SHA-256 `96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136`; independent
+root source and compiler refutation; formal cross-platform API review
+`01a0878c-2bf1-7a53-8f64-2c1e0c69cece` / SHA-256 `82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8`; Linear
+assignment `809b02eb-61d9-4886-94f0-c240b1eaedfb`; mode-stripping counterexample `mode-stripping-probe.json` / SHA-256 `089a4cade44541bb80486f6f9b150b555d839e4fefe0bbfc9eb6ca9a4c8b4914` and Linux `truncate(2)`.
+Supersedes: payload `c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e`, spec `b3072e71baf7056e9a37f6acca2351c4d45aa6bc749c4eb4f7383d9cf8f21014`, and local
+commit `19ebf12a49f7d63c44610cdfec7dde37ef052f52`.
+Decision payload SHA-256: `9b9305ca5d7d485b2a040b9bc214c75b79569917768427c19b5cf1c8399c65f7`
 
 Canonical decision payload (the digest covers this one minified UTF-8 line without
 the code fence or trailing newline):
 
 ```json
-{"schema":"keld.kel130-retained-filesystem-decisions/v1","issue_id":"KEL-130","task_id":"KEL-130/T0","status":"missing-approval","authoring_base":"bf78a10db350ba58830efc60a80eeb67fc996ebd","ownership":"host-session:keld-native-FsBroker-retains-scope-roots-and-per-call-files;keld-guard-matches;keld-ipc-dispatches;KEL-102/T3-integrates","scope":"absolute-utf8-literal-only;exact-or-terminal-glob;max-4096-path-bytes;max-64-per-capability;no-cwd-or-unexpanded-vars","scope_anchor":"one-ambient-open-selects-explicit-root-object;later-operations-use-retained-handle","exact_file":"retained-parent+leaf-slot;per-call-object;absent-may-be-created;internal-link-must-stay-beneath-parent","links":"internal-relative-symlinks-allowed-only-when-resolution-stays-beneath-retained-root;external-symlink-junction-unknown-reparse-and-mount-crossing-denied;mac-win-safe-bounded-component-walker","hardlinks":"object-authority:in-scope-hardlink-authorizes-shared-object;all-aliases-observe-in-place-write;no-racy-link-count-isolation-claim","io":"regular-files-only;max-content-8388608;chunk-65536;max-components-256;max-links-40;read-limit-plus-one;write-open-no-truncate-then-same-handle-commit","write":"preserve-inode-owner-mode-acl-dacl-xattrs-hardlinks;new-file-success-is-commit;AlreadyExists-is-noeffect-002;no-atomic-replace-or-auto-retry;post-commit-failure-is-KELD-NATIVE-007-effect-may-have-occurred","deadline":"five-second-absolute-post-Allow-cooperative-budget;no-renewal;no-hard-per-kernel-call-preemption-claim","cancellation":"pre-commit-no-write-effect;read-partials-discarded;post-commit-effect-may-have-occurred;KEL-102/T3-quiesces-and-waits;KEL-133-outer-expiry-remains-IPC006","errors":"008-prepare-or-snapshot;004-request-shape;GUARD-deny;002-escape-race;003-object;005-006-precommit;007-postcommit;001-other-preeffect","api":"Decision-Allow-carries-private-ScopePermit;dispatch_privileged-passes-permit;opaque-nonclone-FsBroker-replaces-bare-path-free-functions;serve-session-requires-broker+verified+cancel;narrow-KEL102-D5-shape-amendment","dependency":"cap-std+cap-fs-ext=4.0.3@5cae39826c70e7da89cc821b825885e030d38f93+workspace-rustix=1.1.4;dependency-security-msrv-transitive-review-required","review_gates":"unsafe:none;public-api:required;permission-model:required;dependency:required;wire-protocol:none","review_status":"advisory-filesystem+cross-api-findings-refuted-after-correction;formal-three-lens-review-pending-unenforced-L2-isolation+missing-evidence-reviewer","task_order":"KEL-130/T0-approval->KEL-130/T1a-tests-and-gates->T1b-broker->T1c-real-three-OS->T1d-one-landed-artifact->KEL-102/T3->KEL-140","acceptance":"deterministic-CI-state-and-mutation-controls+separate-real-macOS-Windows-Linux-rows;fresh-allowed-operation-after-every-hostile-case","successors":"T0-or-partial-T1-never-unblocks-shipping;only-exact-passed-landed-KEL-130/T1-artifact-may-precede-KEL-102/T3"}
+{"schema":"keld.kel130-retained-filesystem-decisions/v1","issue_id":"KEL-130","task_id":"KEL-130/T0","status":"review-fixes-authorized","authoring_base":"bf78a10db350ba58830efc60a80eeb67fc996ebd","approval_continuity":"original-direct-approval-linear-comment-0a5d62c4-bound-payload-c565d143-and-spec-b3072e71;current-user-instruction-authorizes-executing-formal-filesystem-and-cross-platform-review-fixes-within-approved-folder-boundary-intent;no-claim-user-typed-revised-digest","supersedes":"payload-c565d143d9956657bf61c3a84da1919dfc425f350bc9e69979a0cc90f24cdf8e;spec-b3072e71baf7056e9a37f6acca2351c4d45aa6bc749c4eb4f7383d9cf8f21014;commit-19ebf12a49f7d63c44610cdfec7dde37ef052f52","correction_provenance":"linear-assignment-b5cbd108-7a6a-42d1-818d-c2b8259bc7e5;filesystem-security-review-thread-01a0878c-2c0b-7f33-a765-0fbb1469e9d5-sha256-96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136;cross-platform-api-review-thread-01a0878c-2bf1-7a53-8f64-2c1e0c69cece-sha256-82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8;linear-assignment-809b02eb-61d9-4886-94f0-c240b1eaedfb;independent-root-source-and-compiler-refutation;mode-stripping-probe-sha256-089a4cade44541bb80486f6f9b150b555d839e4fefe0bbfc9eb6ca9a4c8b4914;linux-truncate-primary-contract","ownership":"host-session:keld-native-FsBroker-retains-scope-roots-and-per-call-files;keld-guard-matches;keld-ipc-dispatches;KEL-102/T3-integrates","scope":"absolute-utf8-literal-only;exact-or-terminal-glob;max-4096-path-bytes;max-64-per-capability;no-cwd-or-unexpanded-vars","scope_anchor":"one-ambient-open-selects-explicit-root-object;later-operations-use-retained-handle","exact_file":"retained-parent+leaf-slot;per-call-no-follow-regular-leaf;absent-may-be-created;final-symlink-or-reparse-denied;ordinary-slot-replacement-and-hardlink-object-rule-preserved","links":"subtree-only-internal-relative-symlinks-allowed-when-resolution-stays-beneath-retained-root;exact-final-links-denied;external-symlink-junction-unknown-reparse-and-mount-crossing-denied;all-platform-explicit-bounded-component-walker;linux-per-component-openat2-no-follow","hardlinks":"object-authority:in-scope-hardlink-authorizes-shared-object;all-aliases-observe-in-place-write;no-racy-link-count-isolation-claim","io":"regular-files-only;max-content-8388608;chunk-65536;max-total-post-link-components-256;max-links-40;read-limit-plus-one;write-open-no-truncate-then-same-handle-commit","write":"preserve-inode-owner-ordinary-acl-dacl-xattrs-hardlinks-under-os-inplace-semantics;permit-os-clearing-privilege-bits-and-security-xattrs;never-restore-stripped-privilege-metadata;new-file-success-is-commit;AlreadyExists-is-noeffect-002;no-atomic-replace-or-auto-retry;post-commit-failure-is-KELD-NATIVE-007-effect-may-have-occurred","deadline":"five-second-absolute-post-Allow-cooperative-budget;no-renewal;no-hard-per-kernel-call-preemption-claim","cancellation":"pre-commit-no-write-effect;read-partials-discarded;post-commit-effect-may-have-occurred;terminal-close-drop-only-after-broker-progress-resumes;wedged-synchronous-syscall-and-T3-wait-unbounded;KEL-133-outer-expiry-remains-IPC006","errors":"008-prepare-or-snapshot;004-request-shape;GUARD-deny;002-escape-race;003-object;005-006-precommit;007-postcommit;001-other-preeffect","api":"Decision-Allow-carries-private-ScopePermit;dispatch_privileged-borrows-permit-for-callback;callback-result-independent;no-public-broker-permit-or-index-input;opaque-nonclone-FsBroker-replaces-bare-path-free-functions;serve-session-requires-broker+verified+cancel;narrow-KEL102-D5-shape-amendment","dependency":"cap-std+cap-fs-ext=4.0.3@5cae39826c70e7da89cc821b825885e030d38f93+workspace-rustix=1.1.4;dependency-security-msrv-transitive-review-required","review_gates":"unsafe:none;public-api:required;permission-model:required;dependency:required;wire-protocol:none","review_status":"formal-filesystem-review-three-findings-and-cross-api-review-two-findings-survived-old-candidate;duplicate-permit-finding-plus-linux-component-bound-corrected;exact-corrected-rereview+evidence-oracle-pending;blanket-metadata-preservation-counterexample-corrected","task_order":"KEL-130/T0-corrected-rereview-and-artifact->KEL-130/T1a-tests-and-gates->T1b-broker->T1c-real-three-OS->T1d-one-landed-artifact->KEL-102/T3->KEL-140","acceptance":"deterministic-CI-state-and-mutation-controls+exact-alias-denial+first-match-scope-order+borrowed-permit-escape-compilefail+conditional-cancel-drop+post-link-component-256-pass-257-deny+separate-real-macOS-Windows-Linux-rows;fresh-allowed-operation-after-every-completed-hostile-case;privilege-metadata-strip-no-restore-negative-control","successors":"T0-or-partial-T1-never-unblocks-shipping;only-exact-passed-landed-KEL-130/T1-artifact-may-precede-KEL-102/T3"}
 ```
 
 ## 1. Goal & non-goals
@@ -71,8 +85,9 @@ Non-goals:
 The target contract implements architecture 03's stated destination that resolution
 precedes the OS effect. T1 must update architecture 03 and 05 to describe the selected
 retained-resource implementation, and architecture 02/06 only where their current-state
-text needs the KEL-130/KEL-102 ownership edge. T0 remains a draft proposal until the
-decision payload is directly approved.
+text needs the KEL-130/KEL-102 ownership edge. The original exact candidate was directly
+approved. This corrected candidate remains a draft until all three formal lenses review
+these exact bytes and the T0 artifact records the approval-continuity chain above.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -98,9 +113,12 @@ decision payload is directly approved.
    unexpanded `$VAR`, broker preparation returns `KELD-NATIVE-008` before any app
    resource. It never resolves a relative spelling against process cwd.
 3. Given a valid request, the shared KEL-133 receiver validates and decodes it first;
-   `dispatch_privileged` then calls the sole `keld-guard::evaluate` and passes an
-   unforgeable matched-scope permit to its closure. A guard Deny preserves its original
-   `KELD-GUARD-*` code/text, and resolver/open/read/write/truncate counters remain zero.
+   `dispatch_privileged` then calls the sole `keld-guard::evaluate` and borrows an
+   opaque matched-scope permit into its closure. The closure result cannot borrow that
+   permit; compile-fail tests reject returning or storing it, while a compile-pass
+   control may read its grant index during the callback. A guard Deny preserves its
+   original `KELD-GUARD-*` code/text, and resolver/open/read/write/truncate counters
+   remain zero.
 4. Given a subtree scope and a relative symlink whose complete resolution remains
    beneath its retained root, a regular-file read and write succeed. Given an absolute
    link, a link whose expansion escapes, a Windows junction/reparse target outside the
@@ -112,10 +130,12 @@ decision payload is directly approved.
    exact opened leaf handle or fails `KELD-NATIVE-002`; it never follows the replacement
    ambient path. The test must observe file identity, returned bytes, and both inside
    and outside sentinels rather than infer safety from an error. An exact-file grant
-   retains its parent and leaf name, not an initial leaf object: each call authorizes
-   whichever regular object then occupies that slot, including an internal symlink
-   target that remains beneath the parent capability; an absent-at-preparation leaf may
-   later be created. Replacement with an escaping link denies.
+   retains its parent and leaf name, not an initial leaf object: each call opens the
+   final leaf no-follow and authorizes whichever regular non-reparse object then occupies
+   that slot. An absent-at-preparation leaf may later be created with create-new.
+   Replacing the leaf with any symlink or reparse point, including an internal alias to
+   a sibling, returns `KELD-NATIVE-002` or `003`. Ordinary file replacement and the
+   explicit hard-link object rule remain unchanged.
 6. A filesystem scope grants objects reachable through its retained namespace. A hard
    link beneath that root is the same object as every alias: reads are allowed and an
    in-place write is visible through all aliases. The broker must not promise
@@ -131,17 +151,23 @@ decision payload is directly approved.
    harness kill bound; a regular-file control still succeeds.
 8. `MAX_FS_CONTENT_BYTES` is 8 MiB, `MAX_FS_PATH_BYTES` is 4,096,
    `MAX_FS_COMPONENTS` is 256, `MAX_FS_SYMLINK_EXPANSIONS` is 40, and
-   `FS_IO_CHUNK_BYTES` is 64 KiB. A read checks handle metadata, then reads at most
-   limit-plus-one through the exact handle; zero, maximum, and a concurrently grown
-   maximum-plus-one file return exact bytes/exact `KELD-NATIVE-004` without allocating
-   or encoding the remainder. A write payload over the content limit fails before
-   guard/filesystem entry and leaves the target unchanged. The existing 16 MiB kipc
-   envelope remains the earlier outer bound.
+   `FS_IO_CHUNK_BYTES` is 64 KiB. The component count covers every component actually
+   processed after internal-link targets are expanded on every platform, not only the
+   lexical request; a beneath-root expansion totaling 256 succeeds and 257 returns
+   `KELD-NATIVE-004`. A read checks handle metadata, then reads at most limit-plus-one
+   through the exact handle; zero, maximum, and a concurrently grown maximum-plus-one
+   file return exact bytes/exact `KELD-NATIVE-004` without allocating or encoding the
+   remainder. A write payload over the content limit fails before guard/filesystem
+   entry and leaves the target unchanged. The existing 16 MiB kipc envelope remains
+   the earlier outer bound.
 9. Existing-file write opens the resolved regular object without truncation, verifies
    type/mount on that same handle, then uses `set_len(0)` and 64 KiB writes on that
-   handle. It preserves the file identity, owner, mode, DACL/ACL, xattrs, and hard-link
-   relationships to the extent the OS preserves them for in-place truncation. New-file
-   write uses create-new relative to the retained parent; the OS-defined
+   handle. In-place operation preserves file identity, owner, hard-link relationships,
+   and ordinary DACL/ACL/xattrs only to the extent the OS preserves them. The OS may
+   clear privilege bits such as set-user-ID/set-group-ID or security xattrs/capability
+   metadata when size/content changes. The broker accepts that security reduction and
+   must never use chown/chmod/setxattr or an equivalent to restore stripped privilege
+   metadata. New-file write uses create-new relative to the retained parent; the OS-defined
    `AlreadyExists` result proves creation did not occur and returns
    `KELD-NATIVE-002` without retry. Success is the new-file commit point. Any other
    create result whose effect is not independently known uses the conservative `007`
@@ -169,18 +195,22 @@ decision payload is directly approved.
     remains outside this contract and would require a separately approved cancellable
     OS-I/O or killable-process architecture.
 13. On cancellation, a KEL-130 operation observes its supplied cancellation flag at
-    every progress point, reports the exact terminal result, closes its per-call handle,
-    and permits the non-cloneable broker and retained roots to drop. No raw handle is
-    sent to Bun or a webview. The KEL-130/T1 test proves the old root can be
-    renamed/deleted on Windows after broker drop and a fresh broker completes an allowed
-    operation. KEL-102/T3 separately owns stopping admissions, setting flags, waiting
-    for in-flight terminal results, rejecting stale generations, and ordering broker
-    drop during shipping session quiescence.
+    each broker-controlled progress point. Once control returns from any synchronous
+    syscall and reaches such a point, it reports the exact terminal result and closes
+    its per-call handle before return. Setting the flag does not itself bound a wedged
+    syscall: while that call has not returned, its handle remains live, no terminal
+    result exists, and KEL-102/T3's in-flight wait and broker/root drop are unbounded.
+    No raw handle is sent to Bun or a webview. The KEL-130/T1 drop/fresh-broker oracle
+    begins only after every call returned. KEL-102/T3 separately owns stopping
+    admissions, setting flags, waiting for in-flight terminal results, rejecting stale
+    generations, and ordering broker drop; it must not report quiescence complete while
+    a call remains wedged.
 14. Real macOS, Windows, and Linux rows separately run ordinary read/new-write,
-    internal-link success, external symlink/reparse/junction escape, parent swap,
-    mount/volume boundary where the platform supplies one, hard-link object semantics,
-    special-file termination, maximum/maximum-plus-one I/O, partial cancellation, drop
-    census, and a fresh allowed operation after every hostile case. Cross-compilation,
+    subtree internal-link success, exact-file internal-alias denial, external
+    symlink/reparse/junction escape, parent swap, mount/volume boundary where the
+    platform supplies one, hard-link object semantics, special-file termination,
+    maximum/maximum-plus-one I/O, observed partial cancellation, conditional drop
+    census, and a fresh allowed operation after every completed hostile case. Cross-compilation,
     hosted results from another OS, WSL, emulation, or mocks do not close another row.
 15. T0 and any partial T1 work leave the filesystem channel unreachable from the
     shipping no-flag host. Only one landed KEL-130/T1 artifact covering all T1a–T1d and
@@ -198,13 +228,13 @@ authority; no new process, crash owner, or principal is introduced.
 | Atom | Owner and boundary | Inputs → outputs | Failure and direct observable | Independence and first falsifier |
 |---|---|---|---|---|
 | Resource identity | `keld-native::FsBroker`, one host session | verified scope plus trusted absolute path → retained root/parent and per-call exact file handle | ambient reopen or replacement object → file-id/sentinel mismatch | independent of byte limits; swapping a parent after preparation must not redirect the operation |
-| Authorization binding | `keld-guard::evaluate` plus `dispatch_privileged` | principal, capability, requested string → Deny or opaque matched-scope permit | second matcher or permit/path mismatch → wrong root selected | resolver cannot mint a permit; changing the matched array index must fail overlap-scope tests |
-| Traversal | platform adapter under `FsBroker` | permit, retained root, bounded relative components → exact handle or typed escape/type failure | symlink/junction/mount escape → outside bytes/identity exposed | independent of guard syntax; replacing the target with an external alias must fail without an outside effect |
+| Authorization binding | `keld-guard::evaluate` plus `dispatch_privileged` | principal, capability, requested string → Deny or callback-borrowed matched-scope permit | second matcher, escaped permit, or permit/path mismatch → wrong root selected | resolver cannot mint or retain a permit; compile-fail escape and wrong-index overlap mutations must fail |
+| Traversal | platform adapter under `FsBroker` | borrowed permit, retained root, bounded relative components → exact handle or typed escape/type failure | symlink/junction/mount escape or exact-leaf alias → outside/unmatched bytes exposed | independent of guard syntax; exact leaves never follow, while subtree links must remain beneath their retained root |
 | Scope semantics | `keld-guard` syntax; KEL-130 object meaning | exact or terminal `/**` absolute UTF-8 scope → exact-file parent or subtree root capability | cwd, `$VAR`, device namespace, duplicate or unbounded scope accepted | independent of OS traversal; a relative scope must fail preparation on all platforms |
 | Memory/copy bound | `keld-native` content loop plus existing kipc envelope | regular file/request bytes → at most 8 MiB content and one bounded encoded frame | whole-file allocation or max+1 reply encoding | independent of clocks; a counting reader must stop at 8 MiB + 1 |
 | Operation clock | KEL-130 operation state | one post-Allow monotonic instant plus cancellation flag → success, no-effect timeout/cancel, or post-commit effect result | renewal, hidden retry, or false hard deadline | independent of KEL-133 clocks; advancing only the injected clock must expire the same operation |
-| Write effect | exact opened file handle | validated regular handle plus bounded bytes → in-place create/truncate/write result | metadata replacement, ambient reopen, or partial result reported as no-effect | independent of resolver after open; a failure after `set_len(0)` must be `007` and retain observable partial state |
-| Lifecycle | KEL-102/T3 coordinator consumes non-cloneable `FsBroker` | quiesce/peer loss plus in-flight calls → cancel, terminal results, closed handles | stale call or inherited/leaked handle survives | separate from operation outcome; held-directory rename denial must disappear after broker drop |
+| Write effect | exact opened file handle | validated regular handle plus bounded bytes → in-place create/truncate/write result under OS metadata semantics | broker replaces metadata, restores stripped privilege, ambiently reopens, or reports partial effect as no-effect | independent of resolver after open; post-`set_len(0)` failure is `007`, while set-ID/security-xattr stripping is never restored |
+| Lifecycle | KEL-102/T3 coordinator consumes non-cloneable `FsBroker` | quiesce/peer loss plus returned in-flight calls → observed cancel, terminal results, closed handles | drop reported while a call/handle remains live | separate from operation outcome; a wedged syscall makes wait/drop unbounded, while rename denial must disappear after actual broker drop |
 | Evidence/artifacts | KEL-130/T1 publisher | exact final diff plus CI and three real-OS rows → one passed artifact | neighboring OS/KEL-133/library test represented as product proof | documentary readiness is independent; deleting any OS row or successor stop must prevent the artifact |
 
 Process: `keld-host` owns the verified manifest and the only `FsBroker`. Memory: broker
@@ -213,9 +243,10 @@ capabilities; a read holds at most 8 MiB + 1 before encoding, while kipc owns it
 separate frame buffer/copy. I/O: all namespace traversal starts at a retained capability
 and all content I/O uses the returned file handle. Trust: request bytes select only a
 bounded relative suffix under the guard-selected grant. Lifecycle: roots live for one
-immutable policy/session generation and per-call handles close before terminal result.
-Failure: every result declares whether write content definitely did not change or may
-have changed.
+immutable policy/session generation; after a syscall returns, per-call handles close
+before its terminal result. A syscall that never returns retains its handle and blocks
+drop without a time bound. Failure: every produced result declares whether write
+content definitely did not change or may have changed.
 
 ### Scope compiler and guard permit
 
@@ -282,7 +313,7 @@ pub fn dispatch_privileged<T>(
     principal: Principal,
     operation: &str,
     resource: &str,
-    handler: impl FnOnce(ScopePermit) -> T,
+    handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason>;
 ```
 
@@ -293,13 +324,17 @@ current manifest order. `path_scopes` exposes only those validated descriptors s
 `FsBroker::prepare` can retain the same entries; it does not evaluate a request.
 Duplicate strings and more than 64 entries for either
 `fs.read` or `fs.write` make broker preparation fail closed. `ScopePermit` has no public
-constructor and is consumed during the closure. Media and test callers accept and
-ignore the permit; they do not gain a second policy path.
+constructor. `dispatch_privileged` owns it and lends `&ScopePermit` only for the
+callback; the result type is independent of that borrow. The public broker API accepts
+neither a permit nor a grant index. Its private resolver reads the index only inside the
+callback after the broker verifies the presented snapshot digest. Returning the numeric
+index is metadata, not reusable authority. Media and test callers borrow and ignore the
+permit; they do not gain a second policy path.
 
-If approved, this is a narrow shape amendment to KEL-102 D5, not a second
+This is a narrow shape amendment to KEL-102 D5, not a second
 authorization owner: `dispatch_privileged` remains the sole production caller of
 `evaluate` and the only guard-before-handler boundary, while its already-authorized
-closure additionally receives the permit produced by that same evaluation. T1 must
+closure additionally borrows the permit produced by that same evaluation. T1 must
 update the KEL-102 spec's exact API prose in the same PR as the code so the approved
 specs do not drift. It does not change KEL-102's task order or make T3 reachable.
 
@@ -419,34 +454,50 @@ scope anchor is resolved by that one OS open and the resulting object becomes th
 explicit grant root; there is no later canonical path check or reopen. A race during
 that open may select either object the OS resolves, but preparation records one handle
 identity and every later call remains bound to it. This anchor rule is distinct from an
-alias below the retained root, which must stay beneath it. Overlapping grants remain
-separate guard entries, while identical retained directories may share one host-owned
-internal handle owner. A request uses the `ScopePermit` index to select exactly one
-retained grant and derives its relative suffix without consulting the filesystem.
+alias below the retained root. Overlapping grants remain separate guard entries, while
+identical retained directories may share one host-owned internal handle owner. The
+existing first manifest entry whose lexical scope matches remains final: resolution
+failure never retries or falls through to a later overlapping grant. Thus an exact
+entry before a subtree entry denies a final alias, while a subtree entry selected first
+may follow an internal link only when the lexical request matched that subtree and the
+complete resolution stays beneath its retained root. A request uses the borrowed
+`ScopePermit` index to select exactly one retained grant and derives its relative
+suffix without consulting the filesystem.
 
 The authority is object based after preparation. Renaming a retained root does not
-retarget it; replacing the old path does not affect the capability. Relative symlinks
-may be followed when their complete resolution remains beneath the capability. Absolute
-or escaping symlinks and Windows external junctions fail.
+retarget it; replacing the old path does not affect the capability. Exact-file final
+leaves are always opened no-follow and reject every symlink/reparse form. Relative
+symlinks beneath subtree grants may be followed when their complete resolution remains
+beneath the capability. Absolute or escaping symlinks and Windows external junctions
+fail.
 
-Linux uses safe `rustix::openat2` relative to the retained `Dir` fd with
-`RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV` for every existing final
-open and every parent acquisition; new-file creation is relative to that retained
-parent. `ENOSYS`, seccomp `EPERM`, or inability to enforce `NO_XDEV` is a fail-closed
-platform-availability result, not a path-based fallback.
+All three platform adapters use one explicit bounded component worklist and a stack
+of retained directory handles beginning at the selected grant root. Every popped
+component counts toward the 256 total, including components inserted from link targets;
+every consumed link counts toward 40. For each component the walker performs
+capability-relative no-follow metadata. A supported subtree link is read once through
+the retained parent, its relative target components are pushed onto the worklist,
+`..` pops one retained directory but cannot pop the grant root, and an absolute target
+is `002`. No platform delegates whole-path link expansion to an opaque kernel call.
 
-macOS and Windows use one shared bounded walker built only from safe public cap-std
-operations; it does not call `Dir::canonicalize` and then trust/reopen an ambient path.
-The walker keeps a stack of `Dir` handles beginning at the retained grant root and a
-bounded component worklist. For each component it calls capability-relative
-`symlink_metadata` without following the leaf. A supported link is read once through
-`Dir::read_link`; its relative target components are pushed onto the worklist, `..`
-pops one retained directory but cannot pop the grant root, and an absolute target is
-`002`. A non-link intermediate component is opened with
-`cap_fs_ext::DirExt::open_dir_nofollow`, retained on the stack, and checked
-immediately. The final non-link is opened with `Dir::open_with` and the public
-`cap_fs_ext::OpenOptionsFollowExt::follow(FollowSymlinks::No)`; Unix adds nonblocking
-mode. If a component
+Linux opens each non-link component relative to the current retained directory with
+safe `rustix::openat2`, `O_NOFOLLOW`, and
+`RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV`; it then retains/checks
+the returned descriptor before processing the next component. New-file creation is
+relative to the retained final parent. A metadata-to-open substitution with a link
+fails no-follow rather than hiding extra expansion from the counters. `ENOSYS`, seccomp
+`EPERM`, or inability to enforce `NO_XDEV` is a fail-closed platform-availability
+result, not a path-based fallback.
+
+macOS and Windows implement the same worklist with safe public cap-std operations; they
+do not call `Dir::canonicalize` and then trust/reopen an ambient path. A non-link
+intermediate component is opened with
+`cap_fs_ext::DirExt::open_dir_nofollow`, retained on the stack, and checked immediately. For a subtree grant, a supported final link is expanded
+under the same bounded worklist.
+Every non-link final object, and every final leaf under an exact grant, is opened with
+`Dir::open_with` and the public
+`cap_fs_ext::OpenOptionsFollowExt::follow(FollowSymlinks::No)`; an exact final link is
+rejected rather than expanded. Unix adds nonblocking mode. If a component
 changes between metadata and read/open, the captured link target or the newly opened
 object is still resolved from the retained parent, or the no-follow open fails; there
 is no ambient retry.
@@ -461,7 +512,8 @@ remaining walk. The common Keld limits are 40 link expansions and 256 total proc
 components; crossing either is `004`. This is the smallest extra policy cap-std does
 not expose: it reuses its safe handle-relative open/read-link primitives while adding
 Keld's per-component mount and unknown-reparse decisions. It permits stable internal
-links and requires no Keld production `unsafe`.
+links only for subtree grants, rejects final aliases for exact grants, and requires no
+Keld production `unsafe`.
 
 Hard links do not traverse a path and have no portable origin. The scope therefore
 grants an object that is reachable under the retained root; all names for that object
@@ -469,8 +521,10 @@ observe the same in-place write. Link-count rejection is not selected because it
 check races later link creation and would advertise isolation it cannot prove. Atomic
 temp replacement is also not selected: it would change the current overwrite contract,
 inode identity, owner/mode/DACL/ACL/xattrs and hard-link behavior, and a new file may
-inherit broader parent security metadata. A future copy/replace API must be a distinct
-public contract rather than a hidden security patch.
+inherit broader parent security metadata. In-place truncation can independently strip
+OS-managed privilege bits or security xattrs; Keld preserves that reduction and never
+regrants it. A future copy/replace API must be a distinct public contract rather than a
+hidden security patch.
 
 ### I/O, error, deadline, and cancellation contract
 
@@ -510,10 +564,15 @@ after Allow. It checks cancellation and remaining time around every broker-contr
 stage and chunk. It cannot claim to interrupt a synchronous kernel call: Linux documents
 that closing an fd from another thread may leave the blocked call running, and Microsoft
 documents that even `CancelIoEx` may race with normal completion and requires completion
-inspection. KEL-133 transport/frame/session/call expiry remains outer
-`KELD-IPC-006`: the later session coordinator cancels the broker, discards its internal
-terminal value, and closes the link under KEL-133 rather than sending a
-`KELD-NATIVE-005/006` reply in its place. The native `005` is only this broker's own
+inspection. Until such a syscall returns, setting the flag creates no terminal
+result, closes no call handle, and provides no bound for KEL-102/T3's wait or broker
+drop. Once control reaches the next broker progress point, the broker checks the flag
+and deadline before any further effect and applies the table below. KEL-133
+transport/frame/session/call expiry remains outer `KELD-IPC-006`: the later session
+coordinator cancels the broker and closes the link, but still waits for any in-flight
+filesystem call to return before it can discard that call's internal terminal value or
+drop the broker. It does not send a `KELD-NATIVE-005/006` reply in place of the outer
+expiry. The native `005` is only this broker's own
 five-second budget on an otherwise live admitted call; native `006` is explicit
 session/quiescence cancellation before the outer owner publishes its result.
 Consequently:
@@ -555,11 +614,11 @@ remains clear at the final observation.
 | `keld_core::app_session::open_relative_file` | retained Unix `openat/O_NOFOLLOW` loader and a narrower owner-private Windows path walk | reuse its tested invariants/oracles, not its private function: it is read-only, rejects every link, assumes an owner-private Windows tree, and lives in the upward crate |
 | `std::fs::read/write` | current simple broker | refuse: whole-file read, ambient path reopen, eager truncate, no resource/deadline owner |
 | canonicalize-check-reopen | produces a path, not a retained authority | refuse: rename/symlink TOCTOU remains |
-| deny every symlink/reparse point | closes the observed fixture but breaks valid internal links | refuse: use beneath-root capability resolution; reject only escapes/unsupported reparse forms |
+| deny every symlink/reparse point | closes the observed fixture but breaks valid subtree-internal links | refuse globally: use beneath-root capability resolution for subtree grants; exact final leaves deliberately use no-follow and deny aliases |
 | link-count rejection | detects some pre-existing hard links | refuse: races new hard links and confuses one object with its aliases |
-| atomic temp replacement | can preserve old bytes on partial write | refuse for `fs.write`: changes inode/security/xattr/hard-link semantics; requires a separate API contract |
+| atomic temp replacement | can preserve old bytes on partial write | refuse for `fs.write`: changes inode/security/xattr/hard-link semantics; in-place OS privilege stripping remains allowed and is never restored; replacement requires a separate API contract |
 | custom raw-FFI three-platform resolver | could expose every native flag | refuse: duplicates complex open/link policy and would require new `keld-native` unsafe authority |
-| `cap-std` / `cap-fs-ext` 4.0.3 | Bytecode Alliance capability `Dir`, safe handle-relative open/read-link operations on Linux/macOS/Windows; Windows uses root-relative `NtCreateFile` and non-delete-shared directory handles; the extension exposes safe cross-platform handle identity | select as the primitive; Keld's one bounded macOS/Windows walker adds only per-component mount/reparse policy that upstream does not expose, while Linux adds `NO_XDEV` through safe rustix |
+| `cap-std` / `cap-fs-ext` 4.0.3 | Bytecode Alliance capability `Dir`, safe handle-relative open/read-link operations on Linux/macOS/Windows; Windows uses root-relative `NtCreateFile` and non-delete-shared directory handles; the extension exposes safe cross-platform handle identity | select as the primitive; Keld's shared all-platform worklist owns component/link bounds, macOS/Windows add per-component mount/reparse checks, and Linux uses per-component no-follow `openat2` with `NO_XDEV` |
 
 The selected exact upstream tag is `bytecodealliance/cap-std@v4.0.3`
 (`5cae39826c70e7da89cc821b825885e030d38f93`). Downloaded crate SHA-256 is
@@ -601,14 +660,18 @@ behavior and cannot close the real-Windows T1 row.
   tag `5cae39826c70e7da89cc821b825885e030d38f93`, retrieved 2026-09-09;
   [Linux `openat2(2)`](https://man7.org/linux/man-pages/man2/openat2.2.html), Linux
   man-pages current page retrieved 2026-09-09;
+  [Linux `truncate(2)`](https://man7.org/linux/man-pages/man2/truncate.2.html), which
+  permits clearing set-user-ID/set-group-ID on size change, retrieved 2026-09-09;
   [Microsoft `CancelIoEx`](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex),
   retrieved 2026-09-09; [Linux `close(2)`](https://man7.org/linux/man-pages/man2/close.2.html),
   retrieved 2026-09-09; [cap-std Windows device advisory](https://github.com/bytecodealliance/cap-std/security/advisories/GHSA-hxf5-99xg-86hw),
   retrieved 2026-09-09.
 - Supported claim: cap-std 4.0.3 provides retained-directory, beneath-root relative
-  operations and permits internal symlinks while rejecting escapes; Linux `openat2`
-  supplies `BENEATH`, `NO_MAGICLINKS`, and `NO_XDEV`; neither cross-thread close nor a
-  Windows cancellation request proves a hard completion instant for arbitrary blocked
+  operations and explicit read-link/no-follow primitives; Linux `openat2` supplies
+  per-component `BENEATH`, `NO_MAGICLINKS`, and `NO_XDEV` confinement but no
+  post-expansion component count; in-place truncation may clear OS-managed privilege
+  metadata and Keld must not restore it; neither cross-thread close nor a Windows
+  cancellation request proves a hard completion instant for arbitrary blocked
   I/O; cap-std 4.0.3 is beyond the named Windows device-spelling fix.
 - Fallback/blocker: dependency/public/permission approval and exact final dependency
   resolution remain required. Linux cannot fall back when `NO_XDEV` is unavailable.
@@ -619,8 +682,8 @@ behavior and cannot close the real-Windows T1 row.
 No manifest schema field or capability id changes. `app.fs.read` and `app.fs.write`
 remain exact-string or terminal-`/**` arrays. T1 adds fail-closed preparation rules for
 the live filesystem consumer: absolute UTF-8 literals only, at most 64 entries per
-capability, no duplicates, and no unexpanded `$VAR`. This is a permission-model change
-and needs direct approval.
+capability, no duplicates, and no unexpanded `$VAR`. This permission-model change is
+within the original owner-intent approval and still requires exact corrected review.
 
 ### Wire/protocol changes
 
@@ -644,9 +707,10 @@ separate wire-protocol decision.
   cases are dependency-admission tests. Reject reserved devices, ADS, UNC and NT
   namespace inputs. The committed 2026-09-09 junction observation is the failing
   baseline only.
-- Linux: direct safe `rustix::openat2` adds `RESOLVE_NO_XDEV` to cap-std's beneath/no-
-  magic-link model and fails closed when unavailable. A real mount-namespace fixture
-  supplies a bind-mount escape and a same-root internal-symlink control.
+- Linux: the shared explicit worklist counts post-link components and uses safe
+  per-component no-follow `rustix::openat2` with `RESOLVE_NO_XDEV`; it fails closed
+  when unavailable. A real mount-namespace fixture supplies a bind-mount escape, a
+  same-root internal-symlink control, and expanded 256-pass/257-deny rows.
 
 ## 5. Boundaries
 
@@ -677,9 +741,9 @@ Must not touch:
 
 - [ ] **T0 contract freeze:** this reviewable candidate records the exact
   owner/API/scope/object/I/O/deadline/error/test choices, canonical decision payload,
-  and review status. It remains unchecked at `missing-approval` until all required
-  findings/refutations and direct human approval bind the final payload and spec blob;
-  no product or generated-doc publication is claimed.
+  and review status. It remains a `review-fixes-authorized` draft until all required
+  findings/refutations cover the corrected bytes and the approval-continuity provenance
+  binds the final payload/spec blob; no product or generated-doc publication is claimed.
 - [ ] **T1a–T1d, one atomic implementation PR and one terminal artifact:**
   - T1a: land failing Windows junction plus portable authorize-then-swap, permit-owner,
     size/special-file/deadline state tests; add the approved dependencies and public
@@ -707,14 +771,14 @@ single landed T1d artifact can release later routing.
 
 | Acceptance | Test and independent oracle |
 |---|---|
-| 1–3 | Bounded manifest/scope tables, handle-inheritance child census, overlapping-scope permit index, and dispatch entry counters. Before/during-anchor substitutions prove preparation records exactly one complete root identity and later ignores the old spelling. Mutating Allow to return the wrong index or invoking the closure on Deny must fail. |
-| 4–5 | Real temp trees with different marker bytes and file identities; internal relative link passes, external link/junction/mount and parent/component substitutions either deny or remain bound to the retained object. A mounted subtree containing a link back to the root must still fail at the acquired mount component. Exact-file rows cover existing `a`, absent-then-created `a`, replacement `a`, `a -> b` within its retained parent, and `a` escaping that parent. Mutation to ambient `canonicalize` plus `std::fs::open` must change/read the outside sentinel and fail. |
+| 1–3 | Bounded manifest/scope tables, handle-inheritance child census, overlapping-scope permit index, and dispatch entry counters. Before/during-anchor substitutions prove preparation records exactly one complete root identity and later ignores the old spelling. A compile-fail fixture returns/stores `&ScopePermit` from the callback; a compile-pass control reads its index inside the callback. Mutating Allow to return the wrong index, accepting the escape fixture, or invoking the closure on Deny must fail. |
+| 4–5 | Real temp trees with different marker bytes and file identities; a subtree internal relative link passes, while external link/junction/mount and parent/component substitutions either deny or remain bound to the retained object. A mounted subtree containing a link back to the root must still fail at the acquired mount component. Exact-file rows cover existing `a`, absent-then-created `a`, ordinary replacement `a`, and both internal `a -> b` and escaping aliases as denied with both sentinels unchanged. An overlap fixture orders exact before subtree and observes alias denial, then orders subtree before exact and observes internal-link success without fallback. Mutation to ambient `canonicalize` plus `std::fs::open` must change/read the outside sentinel and fail. |
 | 6 | Real hard link with OS file-id equality; read exact bytes, write once, and observe the same bytes through both names. A test text assertion prevents an outside-alias non-effect claim. |
 | 7 | Directory, FIFO, Unix socket, device where safely available, Windows reserved device and unknown intermediate/leaf reparse fixtures. Substitute a special object between metadata and open. Parent-controlled completion/status and zero content-I/O/truncate counters are the oracle; a timeout is only the kill switch. |
-| 8 | Counting readers/writers at zero, 8 MiB, 8 MiB + 1, 4,096 path bytes and plus one, 256 components and plus one, and 40 link expansions and plus one. Record maximum allocation/read count and exact frame encoding. Removing a limit must consume/process beyond its boundary and fail. |
-| 9 | Seed owner/mode/ACL/xattr where the OS supports observation, write in place, assert exact same file identity/security metadata and contents. New-file race inserts a leaf after NotFound and must return `002` without changing it. An atomic-replace mutation must fail identity/metadata checks. |
+| 8 | Counting readers/writers at zero, 8 MiB, 8 MiB + 1, 4,096 path bytes and plus one, and 40 link expansions and plus one. On every platform, a short lexical request whose internal link expands to exactly 256 total processed components succeeds, while 257 returns `004`; bypassing the explicit worklist must fail that negative control. Record maximum allocation/read count and exact frame encoding. Removing a limit must consume/process beyond its boundary and fail. |
+| 9 | Seed owner, ordinary mode/DACL/ACL/xattr, hard links, and content where the OS supports observation; write in place and assert the same file identity, owner, hard-link relation, contents, and metadata the OS preserves. A Linux negative control starts with set-ID and, where available, security-capability metadata, proves the OS strips it on truncate/write, and fails any broker mutation that restores it with chmod/chown/setxattr. New-file race inserts a leaf after NotFound and must return `002` unchanged. An atomic-replace mutation must fail identity/metadata checks. |
 | 10–12 | Injected monotonic clock and progress adapter, with multiple partial chunks and distinct deadline/cancel points. Before-commit results assert unchanged bytes; after-commit results assert `007`, counts and actual partial/full state. A deadline-renewal mutation must exceed the original virtual instant and fail. Real special-file tests prove no blocking content call; no elapsed test claims kernel-call preemption. |
-| 13 | KEL-130 child-process tests hold and release broker roots, check descendant inheritance, prove Windows rename/delete after drop, and complete a fresh broker operation. Closing a copied fd/handle or retaining a broker clone must fail census/drop assertions. KEL-102/T3 later owns the separate stale-generation/quiescence integration oracle and does not gate T1. |
+| 13 | A controlled blocking-call fixture sets cancellation while the call is inside the syscall and proves no terminal/drop claim is emitted; after the fixture releases the syscall, the next progress point observes cancellation, returns the correct effect class, closes the handle, and only then permits broker/root drop. KEL-130 child-process tests also check descendant inheritance, prove Windows rename/delete after actual drop, and complete a fresh broker operation. Closing a copied fd/handle, retaining a broker clone, or asserting a hard wedged-call deadline must fail. KEL-102/T3 later owns the separate stale-generation/quiescence integration oracle and does not gate T1. |
 | 14 | Separate signed macOS, Windows and Linux result rows bind OS/build, source/head, commands, raw output, negative controls and fresh-operation follow-ups. Each row is passed only on its own system. |
 | 15 | Repository/route assertion proves no `keld-core`/`keld-host` FS registration and later predecessor checks require exact `KEL-130/T1` passed artifact. A partial-task artifact or T0 digest must fail. |
 
@@ -725,10 +789,12 @@ alone. The Windows baseline replays both existing negative controls: an always-d
 writer and a wrong read target must make the harness fail.
 
 T0 validation is documentary: Markdown structure/link checks and an exact query that
-fails when the owner partition, permit single-owner, absolute-scope rule, internal-link
-positive, hard-link object ruling, limits, write commit point/effect class, cooperative
-deadline limitation, three real-OS rows, atomic T1 artifact, or successor stop is
-removed. T0 does not claim product tests or OS passes. T1 runs `just ci`, the full
+fails when the owner partition, borrowed-permit non-escape, absolute-scope rule,
+subtree internal-link positive, exact-alias denial and first-match ordering, hard-link
+object ruling, post-link 256/257 component boundary, other limits, write commit point/effect
+class, conditional cancellation/drop,
+cooperative deadline limitation, three real-OS rows, atomic T1 artifact, or successor
+stop is removed. T0 does not claim product tests or OS passes. T1 runs `just ci`, the full
 mapped suite, dependency/security gates, and the real-OS matrix.
 
 ## 8. Review gates triggered
@@ -737,11 +803,13 @@ mapped suite, dependency/security gates, and the real-OS matrix.
   the dependency/security gate. Any new `keld-native` unsafe requires a separate
   owner/instruction update and direct approval.
 - public API: yes. `Decision::Allow(ScopePermit)`, path-scope iteration,
-  `dispatch_privileged`'s closure, opaque `FsBroker`, new bounds, and replacement of
-  bare-path `fs_read/fs_write/serve_fs_session` require approval and conformance review.
-- permission model: yes. The matched grant becomes an execution permit; the broker
-  refuses relative/unexpanded/unsupported scopes, limits scope count, defines internal
-  symlink/mount/hard-link object semantics, and retains roots for one snapshot.
+  `dispatch_privileged`'s borrowed-permit closure, opaque `FsBroker`, new bounds, and
+  replacement of bare-path `fs_read/fs_write/serve_fs_session` require approval and
+  conformance review.
+- permission model: yes. The matched grant is borrowed only during dispatch; the broker
+  refuses relative/unexpanded/unsupported scopes, limits scope count, distinguishes
+  exact no-follow leaves from subtree-internal links, defines mount/hard-link object
+  semantics, and retains roots for one snapshot.
 - dependency addition: yes. Exact `cap-std` and `cap-fs-ext` 4.0.3 plus direct use
   of the existing workspace `rustix` 1.1.4 pin require license, advisory, MSRV,
   transitive-version, target-build, size and alternatives review. No dependency is
@@ -754,9 +822,9 @@ Required independent draft lenses and status:
 
 | Lens | Required reviewer evidence | Independent refuter | Status |
 |---|---|---|---|
-| filesystem security | `/root/fs_design_check`, advisory read-only review of hostile root/symlink/junction/mount/hard-link/race and write-effect model against code/upstream sources | `/root/lpac_design_check` independently re-read each finding and the corrected APIs/falsifiers | advisory findings resolved; formal review pending because read-only/external-write isolation was not enforced |
-| cross-platform API | `/root/lpac_design_check`, advisory read-only API/dependency/platform review including MSRV and cap-std limitations | `/root/fs_design_check` independently re-read every finding against the revised draft and upstream source | advisory findings resolved; formal review pending because read-only/external-write isolation was not enforced |
-| evidence oracle | every AC has one independent falsifier, exact OS class, negative control and cleanup proof | different identity assumes each claimed pass is false and checks the artifact path | pending: no third distinct reviewer was available under the thread cap, and no read-only isolation was enforceable |
+| filesystem security | Codex thread `01a0878c-2c0b-7f33-a765-0fbb1469e9d5`, admitted read-only/no-network review of exact old spec SHA `b3072e71…`; artifact SHA-256 `96e100c570cc52f864c6d6eb25c2ffa0f81806532e5a57ff342d02cc65fca136` | `/root`, independent source/contract analysis plus owned-versus-borrowed Rust compiler probes | three findings survived against the old candidate and are corrected here; exact corrected rereview pending |
+| cross-platform API | Codex thread `01a0878c-2bf1-7a53-8f64-2c1e0c69cece`, admitted read-only/no-network review of exact old spec SHA `b3072e71...`; artifact SHA-256 `82598a31fa735cfe39276e16af2f6ac83d2a3986d73b867f7f3ccb7db9d4acb8` | `/root`, exact rustix API analysis plus the Windows cap-std/fs-ext compile-and-run control | owned-permit finding duplicates `FS-CONTRACT-002`; Linux component-bound finding survived and is corrected here; exact corrected rereview pending |
+| evidence oracle | every corrected AC has one independent falsifier, exact OS class, negative control and cleanup proof | different admitted identity assumes each claimed pass is false and checks the artifact path | pending on corrected candidate |
 
 Advisory finding ledger (these reviews improve the draft but do not satisfy formal
 admission):
@@ -767,18 +835,27 @@ admission):
 | `FS-ADV-002` | `/root/fs_design_check`, filesystem-security; final-device equality missed mount-cross-and-back history | `/root/lpac_design_check`, two refutation rounds; final round verified per-component `DirExt::open_dir_nofollow`, immediate `dev` checks and the crossing-and-return falsifier | `rejected` on revised draft |
 | `FS-ADV-003` | `/root/fs_design_check`, filesystem-security; unknown intermediate Windows reparse had no safe inspection hook | `/root/lpac_design_check`, two refutation rounds; final round verified no-follow acquisition plus exact-handle reparse inspection and substitution falsifier | `rejected` on revised draft |
 | `FS-ADV-004` | `/root/fs_design_check`, filesystem-security; create-new `AlreadyExists -> 002` contradicted the invoked-mutation `007` rule | `/root/lpac_design_check`, exact-error refutation; OS-proven no-creation `AlreadyExists` is now the sole named exception and other uncertain create failures remain `007` | `rejected` on revised draft |
-| `FS-ADV-005` | `/root/fs_design_check`, filesystem-security; exact-file grant ambiguously mixed a retained file with an absent leaf | `/root/lpac_design_check`, authority refutation; parent-plus-leaf slot, per-call object, absent-create, internal-link and escaping-replacement cases are now explicit | `rejected` on revised draft |
+| `FS-ADV-005` | `/root/fs_design_check`, filesystem-security; exact-file grant ambiguously mixed a retained file with an absent leaf | `/root/lpac_design_check`, authority refutation selected parent-plus-leaf slot and internal links | superseded by formal `FS-CONTRACT-001`: the internal exact-link rule widened authority and survives against the old draft |
 | `API-ADV-001` | `/root/lpac_design_check`, cross-platform API; stable Windows volume/reparse API was absent | `/root/fs_design_check`, upstream-source refutation plus local Rust 1.97 compile receipt; cap-fs-ext handle metadata and no-follow APIs are named exactly | `rejected` on revised draft; behavior remains T1 evidence |
 | `API-ADV-002` | `/root/lpac_design_check`, cross-platform API; future crate dependency arrow was reversed | `/root/fs_design_check`, Cargo-direction refutation; task now names `keld-core -> keld-native` | `rejected` on revised draft |
 | `API-ADV-003` | `/root/lpac_design_check`, cross-platform API; session signature, prepare/snapshot failures and error precedence were not frozen | `/root/fs_design_check`, exact-signature/variant/table refutation against revised text | `rejected` on revised draft |
 | `API-ADV-004` | `/root/lpac_design_check`, dependency evidence; `rustix-linux-procfs` was absent from the transitive inventory | `/root/fs_design_check`, upstream Cargo manifest refutation; inventory now names it | `rejected` on revised draft |
+| `FS-CONTRACT-001` | admitted thread `01a0878c-2c0b-7f33-a765-0fbb1469e9d5`; exact-file internal alias reaches an unmatched sibling despite exact lexical grant | `/root`, guard destination rule plus overlap analysis; no-follow exact leaf is required while subtree links remain bounded | `survives` against `b3072e71…`; corrected here, exact rereview pending |
+| `FS-CONTRACT-002` | same admitted thread; owned `ScopePermit` can be returned from `FnOnce(ScopePermit) -> T` | `/root`, `permit-owned.rs` compiled while `permit-borrowed-escape.rs` failed and `permit-borrowed-valid.rs` passed | `survives` against `b3072e71…`; corrected to a callback borrow, exact rereview pending |
+| `FS-CONTRACT-003` | same admitted thread; cancellation promised terminal/drop although one synchronous syscall can remain wedged | `/root`, AC12/AC13 and lifecycle refutation; no terminal value or drop exists until control returns | `survives` against `b3072e71…`; corrected to conditional terminal/drop, exact rereview pending |
+| `API-001` | admitted thread `01a0878c-2bf1-7a53-8f64-2c1e0c69cece`; owned permit escapes the callback | `/root`, same compiler controls as `FS-CONTRACT-002` | `survives` against `b3072e71...`; duplicate corrected by the callback borrow, exact rereview pending |
+| `API-002` | same admitted thread; whole-path Linux `openat2` cannot observe components introduced by internal links | `/root`, rustix returns only an fd/error; shared explicit worklist plus per-component no-follow `openat2` preserves 256/40 and confinement | `survives` against `b3072e71...`; corrected here, exact rereview pending |
+| `META-CONTRACT-001` | `/root`, Linux `truncate(2)` plus unprivileged container counterexample: same-fd truncate/write changed mode 04755 to 0755 | `/root/fs_contract`, exact blanket-promise inspection; OS-managed privilege stripping is a security reduction and restoring it would widen authority | `survives`; corrected to preserve only OS-preserved metadata and forbid restoration, exact rereview pending |
 
-The current agent harness exposes canonical filesystem and external-write tools to
-reviewers; a clean status or prompt instruction does not enforce L2 read-only isolation.
-Therefore no independent review pass is claimed in this draft. The writer may correct
-findings, but each final finding must use guard/36's schema: id; reviewer
-identity/session+lens+evidence; different refuter identity/context+evidence; verdict
-`survives`, `rejected`, or `unresolved`.
+The filesystem-security and cross-platform API reviewers were admitted with
+enforced read-only filesystem, no command network, no-push checkout, rejected approvals,
+zero active MCP tools, and no dynamic external tools. They found five entries in the old
+exact bytes: the permit finding duplicated across lenses, plus exact-alias,
+conditional-cancellation, and Linux expanded-component defects. The independent
+refuter confirmed each distinct defect and the current candidate corrects them. This is
+not a pass on the corrected bytes. Each final finding continues to use guard/36's
+schema: id; reviewer identity/session+lens+evidence; different refuter
+identity/context+evidence; verdict `survives`, `rejected`, or `unresolved`.
 
 ## 9. Perf impact
 
@@ -793,24 +870,16 @@ language or retained-handle claims are not performance evidence.
 
 ## 10. Open questions
 
-Direct human approval is required for the exact canonical payload and reviewed spec
-blob. In particular the approver must accept or replace these linked decisions:
+There is no remaining user-owned semantic choice in these review corrections. Exact-leaf
+no-follow is required by default-deny destination scope; the callback borrow is the
+smallest compiler-proved non-escape repair; and conditional cancellation/drop removes a
+guarantee the selected cooperative architecture cannot provide.
 
-1. object authority: an in-scope hard link authorizes the shared object and in-place
-   writes are visible through every alias;
-2. write compatibility: preserve inode/security/xattr/hard-link semantics and surface
-   post-commit partial/in-doubt `007`, instead of silently changing `fs.write` to atomic
-   replacement;
-3. deadline strength: five-second non-renewable cooperative progress budget with no
-   unverifiable hard per-kernel-call preemption claim;
-4. scope support: absolute UTF-8 literal paths only until separately approved host
-   `$VAR` expansion, with a 64-entry-per-capability preparation bound;
-5. platform/dependency API: cap-std/cap-fs-ext 4.0.3 plus Linux rustix
-   `openat2 NO_XDEV`, the public matched-permit/opaque-broker break, and the review
-   gates in §8, including the narrow KEL-102 D5 signature amendment;
-6. task/artifact order and the full CI + real macOS/Windows/Linux acceptance matrix.
-
-Approval cannot be inferred from the older KEL-130/KEL-133 partition, a label, an
-agent summary, or approval of KEL-102. Until all three review lenses are admitted,
-findings/refutations are resolved, and a human-authenticated source approves the exact
-digest/spec blob, the outcome remains `missing-approval`; T1 must not start.
+The original direct approval remains the owner-intent source for the unchanged hard-link
+object rule, in-place write compatibility including OS-managed privilege stripping
+without restoration, cooperative deadline strength, absolute
+literal scope support, selected dependencies/review gates, and task/OS matrix. The
+current user instruction separately authorizes executing the required formal review
+repairs. Artifact provenance must preserve both sources and must not claim the user typed
+the revised digest. All three formal lenses must review these exact corrected bytes and
+resolve/refute their findings before T0 can publish or T1 can start.
