@@ -23,6 +23,8 @@ url authority swallowed by single-slash scheme glob: deny KELD-GUARD002 out_of_s
 url authority swallowed by triple-slash scheme glob: deny KELD-GUARD002 out_of_scope
 windows drive glob keeps path semantics: allow
 windows drive glob does not reach another drive: deny KELD-GUARD002 out_of_scope
+backslash at the grant boundary is not the anchor: deny KELD-GUARD002 out_of_scope
+forward slash at the grant boundary is the anchor: allow
 one letter scheme glob with separators: deny KELD-GUARD002 out_of_scope
 backslash scheme glob: deny KELD-GUARD002 out_of_scope
 tab separated scheme glob: deny KELD-GUARD002 out_of_scope

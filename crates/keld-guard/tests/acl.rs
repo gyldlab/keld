@@ -199,6 +199,18 @@ const CASES: &[Case] = &[
         expected: OUT_OF_SCOPE,
     },
     Case {
+        name: "backslash at the grant boundary is not the anchor",
+        operation: "anchor.read",
+        path: r"/foo/bar\\child",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "forward slash at the grant boundary is the anchor",
+        operation: "anchor.read",
+        path: "/foo/bar/child",
+        expected: ALLOW,
+    },
+    Case {
         name: "one letter scheme glob with separators",
         operation: "net.connect",
         path: "a://evil.example.com",

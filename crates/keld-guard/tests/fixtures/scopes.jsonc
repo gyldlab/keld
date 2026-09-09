@@ -12,13 +12,17 @@
       "write": []
     },
     // Permanent wildcard-swallow bypass fixture (KEL-208). Every entry but the
-    // last strips to a prefix that is a scheme and separators and nothing else,
-    // so it names no destination; the separator count differs because a URL
-    // parser accepts all of these spellings for one host, while an authority
-    // rule keyed on `://` only sees some of them. The last entry is the
-    // legitimate origin-rooted grant they must not be confused with. A
-    // URL-valued capability is not wired in v0 — `evaluate` is capability
-    // agnostic, so this pins the matcher contract the moment one is.
+    // last strips to a prefix that is a scheme followed only by separators or
+    // ASCII whitespace, so it names no destination. This list is a spelling
+    // inventory: a URL parser reads one host from all of them, while an
+    // authority rule keyed on `://` sees only some. Rows here are NOT
+    // individually load-bearing — `https:/**` subsumes the longer `https:`
+    // spellings once the rule is off, so per-spelling pinning lives in the
+    // `url_scope_glob_must_not_delegate_the_authority` table in lib.rs, which
+    // gives each its own manifest. The last entry is the legitimate
+    // origin-rooted grant they must not be confused with. A URL-valued
+    // capability is not wired in v0 — `evaluate` is capability agnostic, so
+    // this pins the matcher contract the moment one is.
     "net": {
       "connect": [
         "https://**",
@@ -47,6 +51,12 @@
     // glob must keep plain path semantics rather than acquire an authority.
     "shell": {
       "open": ["C:/**"]
+    },
+    // The anchor byte is `/` and only `/`: a backslash at the grant boundary
+    // is out of scope. Nothing else pins that, and accepting `\\` there would
+    // be a silent widening.
+    "anchor": {
+      "read": ["/foo/bar/**"]
     }
   }
 }

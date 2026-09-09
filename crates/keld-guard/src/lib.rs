@@ -509,7 +509,8 @@ fn parse_manifest_at(
 /// `$VARS` are matched literally.
 ///
 /// Two rules keep a `/**` grant from handing over an authority. A grant that
-/// names only a scheme and separators (`"https://**"`, `"https:/**"`,
+/// names only a scheme, separators and ASCII whitespace (`"https://**"`,
+/// `"https:/**"`,
 /// `"https:///**"`, `"file:///**"`) matches nothing; and the prefix then matches
 /// only at a literal `/`, so `"https://api.example.com/**"` keeps its origin
 /// subtree while denying the longer authority `api.example.com.evil.test`.
@@ -608,11 +609,12 @@ fn path_has_dotdot(path: &str) -> bool {
 ///   scheme at the start of the reference, so `$APPDATA/cache/https:` names a
 ///   directory, `/srv/backup:` names one too, and `\\?\C:` names a drive behind a
 ///   Windows device prefix. (Separately, and predating this rule: the `/**`
-///   suffix and the match anchor are both forward-slash, so a grant whose
-///   *separators before* `/**` are backslashes still globs — `C:\Users/**` and
-///   `\\?\C:/**` both work — while one ending in `\**` does not glob at all.
-///   `fs::canonicalize` returns an all-backslash path, so it needs its trailing
-///   separator written as `/` to be globbable.)
+///   suffix and the anchor byte are both forward-slash. A grant may contain
+///   backslashes — `C:\Users/**` strips fine — but the *resource* must present
+///   `/` at the grant boundary, so an all-backslash path such as the
+///   `\\?\C:\Users\x` that `fs::canonicalize` returns matches only at the
+///   root node, never below it. Spelling the grant with `/` does not change
+///   that; it is a matcher limitation, not a remedy.)
 /// - a bare `X:` — a drive root, so `C:/**` keeps covering the drive. The
 ///   exemption stops there: `X:/` and `X://` carry separators, so `a://**` is
 ///   refused like any other scheme glob. What remains is that `C:/**` and

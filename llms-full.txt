@@ -1583,12 +1583,14 @@ manifest decoder.
   and two rules stop it handing over an **authority** the operator never named.
   *A grant must name a destination:* if stripping `/**` leaves a scheme followed
   only by separators or ASCII whitespace — `"https://**"`, `"https:/**"`,
-  `"https:///**"`, `"file:///**"`, `"https:<TAB>//**"` — the grant matches nothing.
+  `"https:///**"`, `"file:///**"`, and the same spellings with a literal tab,
+  newline or carriage return after the colon — the grant matches nothing.
   Those spellings are refused together because they are not interchangeable to a
   parser: `https:/host` carries no `//`, so RFC 3986 reads a path, yet WHATWG URL
   parsing — a browser, `fetch`, a webview — still reads the host out of it, and it
-  strips tab/LF/CR before parsing at all. The rule takes any ASCII whitespace,
-  which is wider than that and only ever refuses more. *A grant must not reach past the authority it does name:* for a
+  strips tab/LF/CR before parsing at all. The rule takes the WHATWG ASCII
+  whitespace set (space, tab, LF, FF, CR), which is wider than that and only
+  ever refuses more; vertical tab is not in it, and no URL parser accepts it. *A grant must not reach past the authority it does name:* for a
   scheme-qualified destination the grant must name the authority itself, and the
   prefix then matches only at a literal `/` separator.
   So `"https://api.myapp.com/**"` covers that origin's subtree and still denies the
@@ -1601,7 +1603,7 @@ manifest decoder.
   `$APPDATA/cache/https:/**`, `/srv/backup:/**`, `/C:/**` and `\\?\C:/**` all stay
   ordinary path globs. **A bare `X:` is a drive root**, so `C:/**` covers the
   drive; that exemption stops at the colon, so `a://**` is refused like any other
-  scheme glob — but `C:/**` and `a:/**` are the same string, so a one-letter
+  scheme glob — but `C:/**` and `a:/**` are the same *shape*, so a one-letter
   scheme's `X:/**` is a path glob — one of the two shapes the guarantee above does
   not cover, the other being the schemeless `/**` and `//**` below. The
   doubled-separator drive spellings `C://**`, `C:///**`, `C:\/**` and `C:\\/**`
