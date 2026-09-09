@@ -15,11 +15,15 @@
     // last strips to a prefix that is a scheme followed only by separators or
     // ASCII whitespace, so it names no destination. This list is a spelling
     // inventory: a URL parser reads one host from all of them, while an
-    // authority rule keyed on `://` sees only some. Rows here are NOT
-    // individually load-bearing — `https:/**` subsumes the longer `https:`
-    // spellings once the rule is off, so per-spelling pinning lives in the
-    // `url_scope_glob_must_not_delegate_the_authority` table in lib.rs, which
-    // gives each its own manifest. The last entry is the legitimate
+    // authority rule keyed on `://` sees only some. No row here is *required*
+    // for the suite to catch a regression: the
+    // `url_scope_glob_must_not_delegate_the_authority` table in lib.rs gives
+    // every spelling its own manifest. Within this list the subsumption is
+    // only partial — `https:/**` also matches the `//` spellings once the
+    // rule is off, because they share the `/` anchor byte, but not the `\\`
+    // or tab rows, whose anchor byte differs; those two are the only rows
+    // here that pin their own byte in the post-colon set. The last entry is
+    // the legitimate
     // origin-rooted grant they must not be confused with. A URL-valued
     // capability is not wired in v0 — `evaluate` is capability agnostic, so
     // this pins the matcher contract the moment one is.

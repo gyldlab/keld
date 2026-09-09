@@ -201,7 +201,7 @@ const CASES: &[Case] = &[
     Case {
         name: "backslash at the grant boundary is not the anchor",
         operation: "anchor.read",
-        path: r"/foo/bar\\child",
+        path: r"/foo/bar\child",
         expected: OUT_OF_SCOPE,
     },
     Case {
