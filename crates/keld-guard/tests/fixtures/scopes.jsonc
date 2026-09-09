@@ -10,6 +10,57 @@
         "/foo/*literal*/bar"
       ],
       "write": []
+    },
+    // Permanent wildcard-swallow bypass fixture (KEL-208). Every entry but the
+    // last strips to a prefix that is a scheme followed only by separators or
+    // ASCII whitespace, so it names no destination. This list is a spelling
+    // inventory: a URL parser reads one host from all of them, while an
+    // authority rule keyed on `://` sees only some. No row here is *required*
+    // for the suite to catch a regression: the
+    // `url_scope_glob_must_not_delegate_the_authority` table in lib.rs gives
+    // every spelling its own manifest. Within this list the subsumption is
+    // only partial — `https:/**` also matches the `//` spellings once the
+    // rule is off, because they share the `/` anchor byte, but not the `\\`
+    // or tab rows, whose anchor byte differs; those two are the only rows
+    // here that pin their own byte in the post-colon set. The last entry is
+    // the legitimate
+    // origin-rooted grant they must not be confused with. A URL-valued
+    // capability is not wired in v0 — `evaluate` is capability agnostic, so
+    // this pins the matcher contract the moment one is.
+    "net": {
+      "connect": [
+        "https://**",
+        "https:/**",
+        "wss://**",
+        "a://**",
+        "https:\\/**",
+        "https:\t//**",
+        "https://api.example.com/**"
+      ]
+    },
+    // A colon outside scheme position names a directory, not a URL: these are
+    // ordinary path grants and must keep working (RFC 3986 3.1 anchors a
+    // scheme at the start of the reference).
+    "fs2": {
+      "read": ["/srv/backup:/**", "\\\\?\\C:/**"]
+    },
+    // `https:///**` shares a decision with the two shorter spellings whenever
+    // they sit in one grant list, so it gets its own capability: in `net` it
+    // would record a deny it did not cause, and deleting it would change
+    // nothing. Here it is the only grant, so the row is load-bearing.
+    "net_triple_slash": {
+      "connect": ["https:///**"]
+    },
+    // `C:` is a valid RFC 3986 scheme and the usual Windows drive; a drive
+    // glob must keep plain path semantics rather than acquire an authority.
+    "shell": {
+      "open": ["C:/**"]
+    },
+    // The anchor byte is `/` and only `/`: a backslash at the grant boundary
+    // is out of scope. Nothing else pins that, and accepting `\\` there would
+    // be a silent widening.
+    "anchor": {
+      "read": ["/foo/bar/**"]
     }
   }
 }
