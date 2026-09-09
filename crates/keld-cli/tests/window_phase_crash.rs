@@ -64,7 +64,7 @@ use std::fs;
 use std::process::Command;
 
 use keld_cli::create::create_project;
-use keld_cli::dev::{run_dev_with_window, start_dev_session};
+use keld_cli::dev::{run_dev_with_window, start_dev_session_with_stdout_markers};
 use std::time::{Duration, Instant};
 
 /// Stderr the fixture emits before it is killed, so the assertion that the
@@ -298,8 +298,9 @@ fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
     )
     .expect("write generation-aware fixture");
 
-    let session = start_dev_session(&root).expect("start host-owned session");
     let ready = format!("{name}: main process ready (IPC echo ok)");
+    let session = start_dev_session_with_stdout_markers(&root, &[&ready, "kel105-generation-2"])
+        .expect("start host-owned session");
     session
         .wait_until_output_contains(&ready, Duration::from_secs(30))
         .expect("the stock template must complete HELLO + CALL");
@@ -372,7 +373,9 @@ fn an_app_that_dies_after_reporting_ready_fails_the_run() {
     )
     .expect("write die-after-ready fixture");
 
-    let session = start_dev_session(&root).expect("start host-owned session");
+    let ready = format!("{name}: main process ready (IPC echo ok)");
+    let session = start_dev_session_with_stdout_markers(&root, &[&ready, "kel105-generation-2"])
+        .expect("start host-owned session");
 
     // Await generation 2 WITHOUT `wait_until_output_contains`: that call is the
     // thing under test, and using it here would record the baseline early and
@@ -384,7 +387,6 @@ fn an_app_that_dies_after_reporting_ready_fails_the_run() {
     // Now the host looks for the ready marker for the first time — exactly the
     // ordering the product hits when an app dies immediately after reporting
     // ready.
-    let ready = format!("{name}: main process ready (IPC echo ok)");
     session
         .wait_until_output_contains(&ready, Duration::from_secs(30))
         .expect("generation 1's ready line is still in captured stdout");
