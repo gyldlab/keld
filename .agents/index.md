@@ -28,6 +28,7 @@ do not silently choose the less restrictive rule.
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |
 | Add/change Mermaid under private research or synthesize external evidence | [`docs.md`](docs.md), [`testing.md`](testing.md), and [`research.md`](research.md) |
 | Needs a paste prompt or external-research pack; or would otherwise invent a new prompt taxonomy | [`research.md`](research.md) and Prompt Tracker (`0monish/prompt-tracker` / local `keld-agent-prompts`) |
+| Material decision depends on current external OS/platform command, SDK/API, runtime, or external-tool semantics | [`research.md`](research.md) § Current-documentation receipt; [`testing.md`](testing.md) when behavior is exercised |
 | Material decision needs current external facts, sentiment, unpublished changes, or cross-source synthesis and local/primary evidence is insufficient | [`research.md`](research.md) |
 | Local docs, code, tests, and Prompt Tracker still cannot answer a material question | [`memory.md`](memory.md) for MemPalace and untrusted-lead rules |
 | Add, bump, remove, migrate, or make a current-version claim about a Cargo or Bun dependency | [`dependencies.md`](dependencies.md) |

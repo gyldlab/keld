@@ -13,9 +13,10 @@ additions trigger the root gate and its independent evidence requirement.
    never what is current upstream.
 2. Read the selected version's upstream release notes or changelog and source tag.
    For a major bump, read the official migration guide before editing manifests.
-3. Retrieve current, version-specific API documentation with Context7 when available.
-   Context7 aids retrieval; it does not replace registry metadata, upstream releases,
-   source, or a migration guide.
+3. Apply [`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt)
+   to every current API or runtime semantic claim. It owns Context7 discovery, official
+   confirmation, fallback, and the reviewable receipt; the registry and upstream sources
+   above remain required dependency evidence.
 4. Check Keld's Rust toolchain/MSRV, Bun/runtime assumptions, supported targets,
    enabled features, license, maintenance state, and relevant advisories.
 5. Record the candidate version, release date, primary URLs, breaking changes,

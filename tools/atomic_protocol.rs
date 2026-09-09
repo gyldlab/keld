@@ -14,6 +14,7 @@ use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
 
 const ROOT: &str = "AGENTS.md";
 const WORKFLOW: &str = "docs/agents/workflow.md";
+const RESEARCH: &str = ".agents/research.md";
 const TESTING: &str = ".agents/testing.md";
 const COORDINATION: &str = ".agents/coordination.md";
 const REVIEW: &str = ".agents/review.md";
@@ -46,6 +47,9 @@ const CONFIG_CONTRIBUTING_LINE: &str =
     "    url: https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md";
 const CONFIG_CONTRIBUTING_BLOCK: &str = "contact_links:\n  - name: Contributing to Keld\n    url: https://github.com/gyldlab/keld/blob/main/CONTRIBUTING.md\n    about: Read the public scope, build, test, and pull-request process.";
 const INDEX_HEADING: &str = "## Task routing";
+const CURRENT_DOCUMENTATION_HEADING: &str = "## Current-documentation receipt";
+const CURRENT_DOCUMENTATION_ROUTE: &str =
+    "Material decision depends on current external OS/platform command, SDK/API, runtime, or external-tool semantics";
 const DEVELOPMENT_GUIDE_CI_ROW: &str = "| `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |";
 const ENFORCEMENT_LINE_PREFIX: &str =
     "Enforcement: `just atomic-protocol` validates the canonical stages";
@@ -109,6 +113,38 @@ const TESTING_REQUIREMENTS: &[&str] = &[
 const INDEX_REQUIREMENTS: &[&str] = &[
     "Any non-trivial design, diagnosis, review, or implementation",
     "Root `AGENTS.md` § Atomic problem-solving protocol",
+];
+
+const CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS: &[&str] = &[
+    "Before deciding a material claim that depends on current external OS/platform-command, SDK/API, runtime, or external-tool semantics",
+    "It does not apply to a pure local refactor whose decision does not rely on external semantics.",
+    "When Context7 is available, resolve the relevant library and make a narrow query before deciding.",
+    "Context7 is discovery, never the authority.",
+    "Confirm every material claim with a current official primary source:",
+    "If Context7 is unavailable or its query fails, record the exact failure",
+    "If no relevant Context7 library applies, record that reason as not-applicable; primary confirmation is still required.",
+    "leave the claim unknown or block the decision;",
+    "Do not place private source text or sensitive queries there.",
+];
+
+const CURRENT_DOCUMENTATION_COORDINATION_REQUIREMENTS: &[&str] = &[
+    "For each material external semantic selected by",
+    "record these exact fields under the required receipt heading in the relevant Linear decision, OS handoff, or branch handoff.",
+    "A pure local refactor does not need one.",
+];
+
+const CURRENT_DOCUMENTATION_RECEIPT_FIELDS: &[&str] = &[
+    "- Applicability: applied:<external semantic> | not-applicable:<pure-local reason>",
+    "- Context7: used:<library ID; query; retrieval date> | not-applicable:<reason> | unavailable:<exact tool failure>",
+    "- Official primary: <URL or immutable source; applicable version/tag; retrieval date>",
+    "- Supported claim: <exact decision-bearing claim>",
+    "- Fallback/blocker: none | <unknown or blocked decision and next action>",
+];
+
+const CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS: &[&str] = &[
+    "When a material decision depends on current external OS/platform-command, SDK/API, runtime, or external-tool semantics, create the receipt owned by",
+    "Pure local refactors do not need the receipt.",
+    "status, handoff, and current-documentation receipt rules owned by `.agents/coordination.md`",
 ];
 
 const MERGE_OWNER_REQUIREMENTS: &[&str] = &[
@@ -596,6 +632,84 @@ fn check_references(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_current_documentation_receipts(root: &Path) -> Result<(), String> {
+    let research = read(root, RESEARCH)?;
+    let research_visible = binding_prose(&research);
+    let receipt = section(
+        &research_visible,
+        CURRENT_DOCUMENTATION_HEADING,
+        RESEARCH,
+    )?;
+    for requirement in CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS {
+        require_normalized(receipt, requirement, RESEARCH)?;
+        require_unique_normalized(&research_visible, requirement, RESEARCH)?;
+    }
+
+    let coordination = read(root, COORDINATION)?;
+    let coordination_visible = visible_markdown(&coordination);
+    let receipt = section(
+        &coordination_visible,
+        CURRENT_DOCUMENTATION_HEADING,
+        COORDINATION,
+    )?;
+    for requirement in CURRENT_DOCUMENTATION_COORDINATION_REQUIREMENTS {
+        require_normalized(receipt, requirement, COORDINATION)?;
+        require_unique_normalized(&coordination_visible, requirement, COORDINATION)?;
+    }
+    for field in CURRENT_DOCUMENTATION_RECEIPT_FIELDS {
+        if !normalize(receipt).contains(&normalize(field)) {
+            return Err(format!(
+                "ATOMIC-PROTOCOL: coordination must retain receipt field {field} in its canonical section."
+            ));
+        }
+        if normalized_occurrences(&coordination, field) != 1 {
+            return Err(format!(
+                "ATOMIC-PROTOCOL: coordination must retain receipt field {field} exactly once."
+            ));
+        }
+    }
+
+    let index = read(root, INDEX)?;
+    let index_visible = visible_markdown(&index);
+    let routing = section(&index_visible, INDEX_HEADING, INDEX)?;
+    let route_is_in_table = routing.lines().any(|line| {
+        line.trim().starts_with('|')
+            && line.contains(CURRENT_DOCUMENTATION_ROUTE)
+            && line.contains("research.md")
+            && line.contains("Current-documentation receipt")
+            && line.contains("testing.md")
+    });
+    if !route_is_in_table || normalized_occurrences(&index_visible, CURRENT_DOCUMENTATION_ROUTE) != 1 {
+        return Err(format!(
+            "ATOMIC-PROTOCOL: index must route {CURRENT_DOCUMENTATION_ROUTE} to the research receipt and testing inside its canonical table."
+        ));
+    }
+
+    let workflow = read(root, WORKFLOW)?;
+    let workflow_visible = binding_prose(&workflow);
+    let workflow_loop = section(&workflow_visible, WORKFLOW_HEADING, WORKFLOW)?;
+    let pickup = line_block(
+        workflow_loop,
+        "1. **Pick up and refresh.**",
+        Some("2. **Spec gate.**"),
+        WORKFLOW,
+    )?;
+    for requirement in &CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS[..2] {
+        require_normalized(pickup, requirement, WORKFLOW)?;
+        require_unique_normalized(&workflow_visible, requirement, WORKFLOW)?;
+    }
+    let implementation = line_block(
+        workflow_loop,
+        "4. **Implement and coordinate.**",
+        Some("5. **Verify**"),
+        WORKFLOW,
+    )?;
+    let requirement = CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS[2];
+    require_normalized(implementation, requirement, WORKFLOW)?;
+    require_unique_normalized(&workflow_visible, requirement, WORKFLOW)?;
+    Ok(())
+}
+
 fn check_autonomous_merge(root: &Path) -> Result<(), String> {
     let root_text = read(root, ROOT)?;
     let root_visible = binding_prose(&root_text);
@@ -845,6 +959,7 @@ fn check(root: &Path) -> Result<(), String> {
     let root_text = read(root, ROOT)?;
     check_root(&root_text)?;
     check_references(root)?;
+    check_current_documentation_receipts(root)?;
     check_autonomous_merge(root)?;
     check_public_intake(root)?;
     check_justfile_and_development_guide(root)
@@ -922,10 +1037,26 @@ mod tests {
         + "\n"
     }
 
+    fn fixture_research() -> String {
+        format!(
+            "# Research\n\n{CURRENT_DOCUMENTATION_HEADING}\n\n{}\n\n## Next\n",
+            CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS.join("\n")
+        )
+    }
+
+    fn fixture_current_documentation_receipt() -> String {
+        format!(
+            "{CURRENT_DOCUMENTATION_HEADING}\n\n{}\n\n{}\n",
+            CURRENT_DOCUMENTATION_COORDINATION_REQUIREMENTS.join("\n"),
+            CURRENT_DOCUMENTATION_RECEIPT_FIELDS.join("\n"),
+        )
+    }
+
     fn fixture_coordination() -> String {
         format!(
-            "# Coordination\n\n{PROMPT_TRACKER_HANDOFF_REQUIREMENT}\n\n{}\n\n## Next\n",
-            canonical_merge_owner()
+            "# Coordination\n\n{PROMPT_TRACKER_HANDOFF_REQUIREMENT}\n\n{}\n{}\n\n## Next\n",
+            fixture_current_documentation_receipt(),
+            canonical_merge_owner(),
         )
     }
 
@@ -936,7 +1067,28 @@ mod tests {
             WORKFLOW,
             &format!("# Workflow\n\n{PUBLIC_INTAKE_HEADING}\n\n{}\n\n## The loop (one issue, one agent, one concern)\n\n1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),\nroot `AGENTS.md` § Atomic problem-solving protocol. The same first comment MUST record the decision-bearing atoms: owner, boundary and inputs/outputs, failure mode, observable contract, independence from the other atoms, and first falsifier.\n2. **Spec gate.** Larger than a bug fix and no spec? Write one from\n3. **Isolate.** Work separately.\n4. **Implement and coordinate.** Tests with the change (conformance entries *first* for\nA material-decision comment MUST also record every atom changed or added by the decision, its independence edges and first falsifier.\n5. **Verify** (the gate from root `AGENTS.md`): fmt + clippy `-D warnings` + full test\n7. **PR and handoff.** {} {}\n\n## Next\n", WORKFLOW_PUBLIC_INTAKE_REQUIREMENTS.join("\n"), WORKFLOW_MERGE_REQUIREMENTS[0], WORKFLOW_MERGE_REQUIREMENTS[1]),
         );
+        let workflow = fs::read_to_string(temp.path.join(WORKFLOW)).expect("read workflow fixture");
+        let workflow = workflow
+            .replacen(
+                "and first falsifier.\n2. **Spec gate.**",
+                &format!(
+                    "and first falsifier.\n{}\n{}\n2. **Spec gate.**",
+                    CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS[0],
+                    CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS[1],
+                ),
+                1,
+            )
+            .replacen(
+                "and first falsifier.\n5. **Verify**",
+                &format!(
+                    "and first falsifier.\n{}\n5. **Verify**",
+                    CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS[2],
+                ),
+                1,
+            );
+        temp.write(WORKFLOW, &workflow);
         temp.write(COORDINATION, &fixture_coordination());
+        temp.write(RESEARCH, &fixture_research());
         temp.write(
             CONTRIBUTING,
             &format!(
@@ -972,6 +1124,15 @@ mod tests {
         temp.write(
             INDEX,
             "# Index\n\n## Task routing\n\n| Task or path | Read |\n|---|---|\n| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol. |\n\n## Next\n",
+        );
+        temp.write(
+            INDEX,
+            &format!(
+                "# Index\n\n## Task routing\n\n| Task or path | Read |\n|---|---|\n| {} | {} |\n| {} | research.md Current-documentation receipt; testing.md when behavior is exercised |\n\n## Next\n",
+                INDEX_REQUIREMENTS[0],
+                INDEX_REQUIREMENTS[1],
+                CURRENT_DOCUMENTATION_ROUTE,
+            ),
         );
         temp.write(
             JUSTFILE,
@@ -1294,6 +1455,43 @@ mod tests {
                 assert!(error.contains(requirement), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn current_documentation_receipt_bindings_fail_when_removed() {
+        for (path, requirements) in [
+            (RESEARCH, CURRENT_DOCUMENTATION_RESEARCH_REQUIREMENTS),
+            (COORDINATION, CURRENT_DOCUMENTATION_COORDINATION_REQUIREMENTS),
+            (WORKFLOW, CURRENT_DOCUMENTATION_WORKFLOW_REQUIREMENTS),
+            (COORDINATION, CURRENT_DOCUMENTATION_RECEIPT_FIELDS),
+        ] {
+            for requirement in requirements {
+                let temp = fixture();
+                replace_requirement(&temp, path, requirement);
+                let error = check(&temp.path).expect_err("removed receipt binding must fail");
+                assert!(error.contains(requirement), "{error}");
+            }
+        }
+
+        let temp = fixture();
+        replace_requirement(&temp, INDEX, CURRENT_DOCUMENTATION_ROUTE);
+        let error = check(&temp.path).expect_err("removed current-documentation route must fail");
+        assert!(error.contains("index"), "{error}");
+    }
+
+    #[test]
+    fn receipt_field_moved_to_history_does_not_satisfy_the_canonical_section() {
+        let temp = fixture();
+        let field = CURRENT_DOCUMENTATION_RECEIPT_FIELDS[2];
+        let coordination = fs::read_to_string(temp.path.join(COORDINATION))
+            .expect("read coordination fixture")
+            .replacen(field, "historical field omitted", 1)
+            + "\n## Historical receipt\n\n"
+            + field
+            + "\n";
+        temp.write(COORDINATION, &coordination);
+        let error = check(&temp.path).expect_err("historical receipt field must not satisfy owner");
+        assert!(error.contains(field), "{error}");
     }
 
     #[test]
