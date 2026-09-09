@@ -3407,7 +3407,9 @@ mod tests {
     #[test]
     fn supervised_self_termination_returns_while_host_writer_is_still_live() {
         let (reader, writer) = liveness_pipe();
+        let (pid_tx, pid_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_secs(5);
         let worker = std::thread::spawn(move || {
             let result = run_supervised_with_registration(
                 reader,
@@ -3415,22 +3417,34 @@ mod tests {
                 io::sink(),
                 || {
                     let mut command = Command::new("/bin/sh");
-                    command.args(["-c", "exit 0"]);
+                    command.args(["-c", "kill -STOP $$; exit 0"]);
                     Ok(command)
                 },
-                |_| Ok(()),
+                move |pid| pid_tx.send(pid).map_err(io::Error::other),
                 || Ok(()),
             );
             done_tx.send(result).expect("report guardian result");
         });
-
-        let error = done_rx
-            .recv_timeout(Duration::from_secs(5))
+        // Enrollment must precede the exit under test. Confirm the shell has
+        // actually stopped so an early SIGCONT cannot race its SIGSTOP.
+        let pid = pid_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("self-terminating child registered");
+        await_stopped_child(pid, deadline);
+        kill(
+            Pid::from_raw(i32::try_from(pid).expect("pid fits i32")),
+            Signal::SIGCONT,
+        )
+        .expect("let registered child exit zero");
+        let result = done_rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        // The result must arrive with the writer live; close it before asserting
+        // so a failed observation still lets the guardian clean up its child.
+        drop(writer);
+        worker.join().expect("guardian worker joins");
+        let error = result
             .expect("self-termination must wake the guardian while host is live")
             .expect_err("unrequested status-zero exit is fatal");
         assert!(error.to_string().contains("KELD-RUNTIME-012"), "{error}");
-        drop(writer);
-        worker.join().expect("guardian worker joins");
     }
 
     #[test]
@@ -3459,24 +3473,7 @@ mod tests {
             .expect("stopped child registered");
 
         let stopped_deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let output = Command::new("/bin/ps")
-                .args(["-o", "state=", "-p", &pid.to_string()])
-                .output()
-                .expect("inspect accepted-Quit child state");
-            if String::from_utf8(output.stdout)
-                .expect("process state is UTF-8")
-                .trim()
-                .starts_with('T')
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < stopped_deadline,
-                "accepted-Quit child never stopped"
-            );
-            std::thread::yield_now();
-        }
+        await_stopped_child(pid, stopped_deadline);
 
         writer.write_all(b"Q").expect("accept Quit before reply");
         assert_eq!(
@@ -3508,6 +3505,24 @@ mod tests {
             .expect("accepted Quit is a clean supervised shutdown");
         assert_eq!(report.1.self_termination_count, 0);
         worker.join().expect("guardian worker joins");
+    }
+
+    fn await_stopped_child(pid: u32, deadline: Instant) {
+        loop {
+            let output = Command::new("/bin/ps")
+                .args(["-o", "state=", "-p", &pid.to_string()])
+                .output()
+                .expect("inspect stopped child state");
+            if String::from_utf8(output.stdout)
+                .expect("process state is UTF-8")
+                .trim()
+                .starts_with('T')
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "child never stopped");
+            std::thread::yield_now();
+        }
     }
 
     struct AckSender(mpsc::Sender<[u8; SUPERVISED_QUIT_ACK.len()]>);
