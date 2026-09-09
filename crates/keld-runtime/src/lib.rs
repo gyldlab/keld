@@ -348,8 +348,8 @@ impl CapturedOutput {
     }
 
     /// Appends `chunk`, counts `raw_len` bytes against the total, and elides
-    /// the middle back to [`CAPTURE_RETENTION_BYTES`] once the buffer exceeds
-    /// the slack ceiling.
+    /// the middle within [`CAPTURE_MAX_RETAINED_BYTES`] once the buffer exceeds
+    /// that ceiling. Line-boundary preservation may consume compaction slack.
     ///
     /// `raw_len` is the byte count the child actually wrote. It is passed
     /// separately because `chunk` has already been through
@@ -386,15 +386,9 @@ impl CapturedOutput {
         }
         let (head_end, head_is_line_aligned) = Self::head_cut(stream);
         let tail_start = Self::tail_cut(stream);
-        // Reachable when the retained region holds no newline after the head
-        // position and the character-boundary walk pushes the head cut past the
-        // tail cut — a single line longer than the retained region. Skipping
-        // compaction there would let that line defeat the ceiling, so the cut
-        // is taken at the character boundary instead and the separator below
-        // keeps the fragments distinct.
-        if tail_start <= head_end {
-            return;
-        }
+        // The head search is capped at MAX - TAIL. Since compaction only
+        // runs above MAX, tail_cut starts strictly after that cap; these cuts
+        // cannot overlap. A line-free head falls back to its UTF-8 boundary.
         stream.drain(head_end..tail_start);
         *dropped = dropped.saturating_add(tail_start - head_end);
         if !head_is_line_aligned {
@@ -409,19 +403,26 @@ impl CapturedOutput {
     /// can land inside a multi-byte character, and slicing there panics.
     fn head_cut(stream: &str) -> (usize, bool) {
         let from = Self::boundary_at_or_after(stream, CAPTURE_HEAD_BYTES);
-        stream[from..]
-            .find('\n')
+        let limit = CAPTURE_MAX_RETAINED_BYTES - CAPTURE_TAIL_BYTES;
+        // Search bytes so the upper bound need not be a UTF-8 boundary. A
+        // newline is ASCII; its following byte is always a character boundary.
+        stream.as_bytes()[from..limit]
+            .iter()
+            .position(|byte| *byte == b'\n')
             .map_or((from, false), |offset| (from + offset + 1, true))
     }
 
-    /// Start of the sliding tail: the byte after the first newline at or after
-    /// the tail window, else the character boundary there. Same boundary-first
+    /// Start of the sliding tail: the byte after the first nonterminal newline
+    /// at or after the tail window, else the character boundary there. Same boundary-first
     /// rule as [`Self::head_cut`].
     fn tail_cut(stream: &str) -> usize {
         let from =
             Self::boundary_at_or_after(stream, stream.len().saturating_sub(CAPTURE_TAIL_BYTES));
         stream[from..]
             .find('\n')
+            // Cutting after an EOF newline would discard the entire recent
+            // tail. Preserve its character-aligned suffix in that case.
+            .filter(|offset| from + offset + 1 < stream.len())
             .map_or(from, |offset| from + offset + 1)
     }
 
@@ -2853,6 +2854,46 @@ mod tests {
             captured.stdout.len() >= CAPTURE_RETENTION_BYTES,
             "compaction must keep the retention target, not empty the tail"
         );
+    }
+
+    #[test]
+    fn capture_late_newline_cannot_defeat_the_retention_ceiling() {
+        for is_stdout in [true, false] {
+            let mut captured = CapturedOutput::default();
+            let chunk = "x".repeat(4096);
+            for _ in 0..(CAPTURE_MAX_RETAINED_BYTES / chunk.len()) {
+                captured.push_chunk(&chunk, chunk.len(), is_stdout);
+            }
+            let terminated = format!("{}\n", "y".repeat(4095));
+            for _ in 0..100 {
+                captured.push_chunk(&terminated, terminated.len(), is_stdout);
+                let (stream, total, dropped, separators) = if is_stdout {
+                    (
+                        &captured.stdout,
+                        captured.stdout_total_bytes,
+                        captured.stdout_dropped_bytes,
+                        captured.stdout_separator_bytes,
+                    )
+                } else {
+                    (
+                        &captured.stderr,
+                        captured.stderr_total_bytes,
+                        captured.stderr_dropped_bytes,
+                        captured.stderr_separator_bytes,
+                    )
+                };
+                assert!(
+                    stream.len() <= CAPTURE_MAX_RETAINED_BYTES,
+                    "retained {} exceeds {}",
+                    stream.len(),
+                    CAPTURE_MAX_RETAINED_BYTES
+                );
+                assert_eq!(total - dropped + separators, stream.len());
+                assert!(stream.starts_with(&"x".repeat(CAPTURE_HEAD_BYTES)));
+                assert!(stream.ends_with(&terminated));
+                assert!(dropped > 0);
+            }
+        }
     }
 
     /// Splicing the head's trailing partial line onto the tail's leading
