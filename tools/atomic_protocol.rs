@@ -411,6 +411,25 @@ fn section<'a>(text: &'a str, heading: &str, path: &str) -> Result<&'a str, Stri
     Ok(&text[start..end])
 }
 
+fn direct_section<'a>(text: &'a str, heading: &str, path: &str) -> Result<&'a str, String> {
+    let canonical_section = section(text, heading, path)?;
+    let mut offset = 0_usize;
+    for line in canonical_section.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let marker_width = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+        let is_nested_heading = marker_width >= 3
+            && trimmed
+                .as_bytes()
+                .get(marker_width)
+                .is_some_and(u8::is_ascii_whitespace);
+        if offset != 0 && is_nested_heading {
+            return Ok(&canonical_section[..offset]);
+        }
+        offset += line.len();
+    }
+    Ok(canonical_section)
+}
+
 fn require_normalized(haystack: &str, needle: &str, path: &str) -> Result<(), String> {
     if normalize_binding(haystack).contains(&normalize_binding(needle)) {
         return Ok(());
@@ -674,10 +693,11 @@ fn require_current_documentation_consumer(
     requirements: &[&str],
 ) -> Result<(), String> {
     let text = read(root, path)?;
+    let rendered = visible_markdown(&text);
+    let canonical_section = binding_prose(direct_section(&rendered, heading, path)?);
     let visible = binding_prose(&text);
-    let canonical_section = section(&visible, heading, path)?;
     for requirement in requirements {
-        require_normalized(canonical_section, requirement, path)?;
+        require_normalized(&canonical_section, requirement, path)?;
         require_unique_normalized(&visible, requirement, path)?;
     }
     Ok(())
@@ -1602,6 +1622,31 @@ mod tests {
         temp.write(INDEX, &moved);
         let error = check(&temp.path).expect_err("out-of-table route row must fail");
         assert!(error.contains("index must route"), "{error}");
+    }
+
+    #[test]
+    fn current_documentation_consumer_directive_cannot_move_to_a_nested_history_heading() {
+        for (path, requirement) in [
+            (
+                DEPENDENCIES,
+                CURRENT_DOCUMENTATION_DEPENDENCIES_REQUIREMENTS[0],
+            ),
+            (DOCS, CURRENT_DOCUMENTATION_DOCS_REQUIREMENTS[1]),
+            (TESTING, CURRENT_DOCUMENTATION_TESTING_REQUIREMENTS[1]),
+        ] {
+            let temp = fixture();
+            let source = fs::read_to_string(temp.path.join(path)).expect("read consumer fixture");
+            let moved = source
+                .replacen(requirement, "historical directive omitted", 1)
+                .replace(
+                    "## Next",
+                    &format!("### Historical receipt requirement\n\n{requirement}\n\n## Next"),
+                );
+            temp.write(path, &moved);
+            let error = check(&temp.path)
+                .expect_err("nested historical directive must not satisfy the consumer binding");
+            assert!(error.contains(requirement), "{error}");
+        }
     }
 
     #[test]
