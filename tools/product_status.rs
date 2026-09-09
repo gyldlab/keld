@@ -1684,7 +1684,7 @@ fn check_consumers(root: &Path, records: &[Record]) -> Result<(), String> {
             Ok(false) => {}
             Err(()) => {
                 return Err(format!(
-                    "KELD-DOCS007: `{relative}` contains visible Markdown links that the status checker cannot parse. Fix the malformed link before validating ROADMAP authority."
+                    "KELD-DOCS007: `{relative}` contains a link form that the status checker cannot parse or resolve: malformed inline syntax, a reference definition, an HTML anchor, or a percent-encoded local or same-repository source target. Use plain inline Markdown links so ROADMAP authority can be validated."
                 ));
             }
         }
