@@ -23,7 +23,6 @@
       "connect": [
         "https://**",
         "https:/**",
-        "https:///**",
         "wss://**",
         "a://**",
         "https:\\/**",
@@ -36,6 +35,13 @@
     // scheme at the start of the reference).
     "fs2": {
       "read": ["/srv/backup:/**", "\\\\?\\C:/**"]
+    },
+    // `https:///**` shares a decision with the two shorter spellings whenever
+    // they sit in one grant list, so it gets its own capability: in `net` it
+    // would record a deny it did not cause, and deleting it would change
+    // nothing. Here it is the only grant, so the row is load-bearing.
+    "net_triple_slash": {
+      "connect": ["https:///**"]
     },
     // `C:` is a valid RFC 3986 scheme and the usual Windows drive; a drive
     // glob must keep plain path semantics rather than acquire an authority.

@@ -518,7 +518,7 @@ fn parse_manifest_at(
 /// `C://**` and `C:///**` do carry separators and are refused, so "path scopes
 /// are untouched" would be too strong. This is not URL normalization, and a
 /// schemeless `//host/x` is matched as a path; `docs/architecture/03-security.md`
-/// §2 lists every residual.
+/// §2 carries the residual list.
 ///
 /// The `Allow` path does not allocate (`json_pointer_for` and `Vec` are deny-only).
 #[must_use]
@@ -607,14 +607,16 @@ fn path_has_dotdot(path: &str) -> bool {
 /// - anything with a path separator before the colon. RFC 3986 §3.1 anchors a
 ///   scheme at the start of the reference, so `$APPDATA/cache/https:` names a
 ///   directory, `/srv/backup:` names one too, and `\\?\C:` names a drive behind a
-///   Windows device prefix. (Separately, and predating this rule: a grant using
-///   backslash separators cannot glob at all, because the `/**` suffix and the
-///   match anchor are both forward-slash. `fs::canonicalize` returns
-///   `\\?\C:\…`, so such a path needs a forward-slash grant to be globbable.)
+///   Windows device prefix. (Separately, and predating this rule: the `/**`
+///   suffix and the match anchor are both forward-slash, so a grant whose
+///   *separators before* `/**` are backslashes still globs — `C:\Users/**` and
+///   `\\?\C:/**` both work — while one ending in `\**` does not glob at all.
+///   `fs::canonicalize` returns an all-backslash path, so it needs its trailing
+///   separator written as `/` to be globbable.)
 /// - a bare `X:` — a drive root, so `C:/**` keeps covering the drive. The
 ///   exemption stops there: `X:/` and `X://` carry separators, so `a://**` is
 ///   refused like any other scheme glob. What remains is that `C:/**` and
-///   `a:/**` are the same string, so a one-letter scheme's `X:/**` is a path
+///   `a:/**` are the same *shape*, so a one-letter scheme's `X:/**` is a path
 ///   glob; `docs/architecture/03-security.md` §2 records that, and the wider
 ///   `X://**` and every multi-letter scheme are closed.
 fn names_no_destination(prefix: &str) -> bool {
@@ -867,9 +869,12 @@ mod tests {
 
     /// Regression, KEL-208: a `/**` suffix is a *path* prefix wildcard, and
     /// applying it to a URL scope left the caller holding the authority. Every
-    /// spelling below strips to a prefix that is a scheme and separators and
-    /// nothing else — `"https://**"` to `"https:/"`, `"https:/**"` to
-    /// `"https:"` — so the operator named no destination at all.
+    /// spelling below strips to a prefix that is a scheme followed only by
+    /// separators or ASCII whitespace — `"https://**"` to `"https:/"`,
+    /// `"https:/**"` to `"https:"` — so the operator named no destination at
+    /// all. Whitespace counts because a URL parser strips tab/LF/CR outright;
+    /// the rule takes any ASCII whitespace, which is wider than that and only
+    /// ever refuses more.
     ///
     /// The spellings are not interchangeable to a *resource* parser, which is
     /// why the grant is what gets refused: `https:/evil.example.com` carries no
@@ -926,12 +931,16 @@ mod tests {
                 r#"{"app":{"net":{"connect":["file:///**"]}}}"#,
                 "file:///etc/shadow",
             ),
-            // Not a valid RFC 3986 scheme, so no authority rule keyed on the
-            // scheme applies — the grant still names no destination.
+            // `-a` is not a valid RFC 3986 scheme (§3.1 requires a leading
+            // ALPHA), so a rule keyed on scheme validity would skip it. This
+            // rule is keyed on the grant naming nothing, so it does not.
             (
                 r#"{"app":{"net":{"connect":["-a://**"]}}}"#,
                 "-a://any.host/x",
             ),
+            // `a+b-c.d` *is* a valid scheme — `ALPHA *( ALPHA / DIGIT / "+" /
+            // "-" / "." )` — which is why it belongs here: the exotic but legal
+            // spellings must be refused just like `https`.
             (
                 r#"{"app":{"net":{"connect":["a+b-c.d://**"]}}}"#,
                 "a+b-c.d://any.host/x",
@@ -1034,12 +1043,16 @@ mod tests {
 
     /// The documented residual, pinned so it cannot drift in either direction.
     ///
-    /// `C:/**` and `a:/**` are the same bytes: a letter, a colon, `/**`. The
-    /// drive-letter carve-out therefore has to let both through, so a one-letter
-    /// scheme's `X:/**` is a path glob and *does* reach `a://host` — the one
-    /// shape architecture 03 §2 records as not covered. Widening the carve-out
-    /// to `X:/` or `X://` would silently reopen `a://**`, and removing it would
-    /// silently break every Windows drive-root grant; this test fails either way.
+    /// `C:/**` and `a:/**` are the same *shape* — one character, a colon, `/**`
+    /// — so the drive-letter carve-out has to let both through, and a one-letter
+    /// scheme's `X:/**` is therefore a path glob that *does* reach `a://host`.
+    /// Architecture 03 §2 records it, alongside schemeless `/**` and `//**`, as
+    /// a shape the guarantee does not cover.
+    ///
+    /// This test pins the *removal* direction: deleting the carve-out breaks
+    /// every Windows drive-root grant and fails here. The *widening* direction
+    /// is pinned by `url_scope_glob_must_not_delegate_the_authority` instead,
+    /// because widening reopens `a://**`, which this test does not assert.
     #[test]
     fn a_one_letter_scheme_glob_is_a_path_glob_and_that_is_the_documented_residual() {
         let manifest =
@@ -1047,7 +1060,7 @@ mod tests {
         assert_eq!(
             eval_app(&manifest, "net.connect", "a://evil.example.com"),
             Decision::Allow,
-            "a one-letter scheme is indistinguishable from a drive root, so this              stays a path glob — architecture 03 §2 records it as the residual"
+            "a one-letter scheme is indistinguishable from a drive root, so it \n             stays a path glob — architecture 03 §2 records it as the residual"
         );
         // The moment the scheme is longer than one character the ambiguity is
         // gone, and the same shape is refused.

@@ -182,7 +182,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "url authority swallowed by triple-slash scheme glob",
-        operation: "net.connect",
+        operation: "net_triple_slash.connect",
         path: "https:///evil.example.com",
         expected: OUT_OF_SCOPE,
     },

@@ -1581,12 +1581,14 @@ manifest decoder.
 - **Path and URL scopes** share one vetted-pattern matcher in the host (no regex
   injection). A `/**` suffix grants the node it names plus the hierarchy below it,
   and two rules stop it handing over an **authority** the operator never named.
-  *A grant must name a destination:* if stripping `/**` leaves only a scheme and
-  separators — `"https://**"`, `"https:/**"`, `"https:///**"`, `"file:///**"` —
-  the grant matches nothing. Those spellings are refused together because they are
-  not interchangeable to a parser: `https:/host` carries no `//`, so RFC 3986 reads
-  a path, yet WHATWG URL parsing — a browser, `fetch`, a webview — still reads the
-  host out of it. *A grant must not reach past the authority it does name:* for a
+  *A grant must name a destination:* if stripping `/**` leaves a scheme followed
+  only by separators or ASCII whitespace — `"https://**"`, `"https:/**"`,
+  `"https:///**"`, `"file:///**"`, `"https:<TAB>//**"` — the grant matches nothing.
+  Those spellings are refused together because they are not interchangeable to a
+  parser: `https:/host` carries no `//`, so RFC 3986 reads a path, yet WHATWG URL
+  parsing — a browser, `fetch`, a webview — still reads the host out of it, and it
+  strips tab/LF/CR before parsing at all. The rule takes any ASCII whitespace,
+  which is wider than that and only ever refuses more. *A grant must not reach past the authority it does name:* for a
   scheme-qualified destination the grant must name the authority itself, and the
   prefix then matches only at a literal `/` separator.
   So `"https://api.myapp.com/**"` covers that origin's subtree and still denies the
@@ -1600,11 +1602,14 @@ manifest decoder.
   ordinary path globs. **A bare `X:` is a drive root**, so `C:/**` covers the
   drive; that exemption stops at the colon, so `a://**` is refused like any other
   scheme glob — but `C:/**` and `a:/**` are the same string, so a one-letter
-  scheme's `X:/**` is a path glob, and it is the one shape the guarantee above
-  does not cover. The doubled-separator drive spellings `C://**` and `C:///**` do
-  carry separators and are therefore inert; write `C:/**`. **A relative grant
+  scheme's `X:/**` is a path glob — one of the two shapes the guarantee above does
+  not cover, the other being the schemeless `/**` and `//**` below. The
+  doubled-separator drive spellings `C://**`, `C:///**`, `C:\/**` and `C:\\/**`
+  all carry separators and are therefore inert; write `C:/**`. **A relative grant
   whose first segment ends in a colon** (`cache:/**`) is read as a scheme and is
-  inert; write `./cache:/**` or use a `$VAR`. **A schemeless reference has no
+  inert. The fix is to put something before the colon: `./cache:/**` or
+  `$APPDATA/cache:/**` both work, while `$CACHE:/**` does not — a `$VAR` helps
+  only as a prefix, not as a replacement for the colon-bearing segment. **A schemeless reference has no
   scheme to anchor to** and is matched as a path, so `/**` and `//**` are path
   globs carrying no authority guarantee — and on Windows that is not only a URL
   concern, since `//host/share/…` is a resolvable UNC path. **The separator is
