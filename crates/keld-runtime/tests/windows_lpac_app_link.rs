@@ -355,6 +355,34 @@ fn run_normal_client(executable: &Path, endpoint: &str) -> String {
 }
 
 #[test]
+fn descriptor_comparison_normalizes_sid_aliases_without_losing_authority() {
+    // SDDL accepts numeric SIDs and aliases; the native serializer chooses its
+    // spelling independently of ConvertSidToStringSid (for example LA on CI).
+    let numeric = "D:P(A;;0x12019b;;;S-1-5-18)S:AI(ML;;NW;;;ME)";
+    let symbolic = "D:P(A;;0x12019b;;;SY)S:AI(ML;;NW;;;ME)";
+    let actual = descriptor_sddl(&descriptor_from_sddl(symbolic));
+    assert_ne!(actual, numeric, "literal comparison is not SID equivalence");
+    assert_eq!(canonical_sddl(numeric), actual);
+    assert_ne!(
+        canonical_sddl("D:P(A;;0x12019b;;;S-1-5-21-1-2-3-500)"),
+        canonical_sddl("D:P(A;;0x12019b;;;S-1-5-21-4-5-6-500)"),
+        "the same account RID in different domains remains different authority"
+    );
+    for different in [
+        "D:P(A;;0x12019b;;;BU)S:AI(ML;;NW;;;ME)",
+        "D:P(A;;0x12019f;;;SY)S:AI(ML;;NW;;;ME)",
+        "D:P(A;;0x12019b;;;SY)S:AI(ML;;NW;;;LW)",
+        "D:(A;;0x12019b;;;SY)S:AI(ML;;NW;;;ME)",
+    ] {
+        assert_ne!(
+            canonical_sddl(different),
+            actual,
+            "trustee, rights, label and DACL protection remain exact"
+        );
+    }
+}
+
+#[test]
 fn candidate_package_acl_and_integrity_labels_are_independently_qualified() {
     let user = current_user_sid();
     for repetition in 0..2 {
@@ -385,11 +413,12 @@ fn candidate_package_acl_and_integrity_labels_are_independently_qualified() {
                     String::new()
                 };
                 let sddl = format!("D:P(A;;0x12019b;;;{user}){package_ace}S:AI(ML;;NW;;;{label})");
+                let expected = canonical_sddl(&sddl);
                 for client in ["intended", "wrong", "ordinary"] {
                     let (pipe, endpoint) = candidate_pipe(&sddl);
                     let readback = pipe_descriptor(&pipe);
                     assert_eq!(
-                        readback, sddl,
+                        readback, expected,
                         "actual descriptor must equal this matrix cell"
                     );
                     let output = if client == "ordinary" {
@@ -525,7 +554,15 @@ fn pipe_descriptor(pipe: &OwnedHandle) -> String {
         0,
         "read actual pipe descriptor"
     );
-    let descriptor = LocalAllocation(descriptor);
+    descriptor_sddl(&LocalAllocation(descriptor))
+}
+
+fn canonical_sddl(sddl: &str) -> String {
+    descriptor_sddl(&descriptor_from_sddl(sddl))
+}
+
+fn descriptor_sddl(descriptor: &LocalAllocation) -> String {
+    let information = DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
     let mut text = std::ptr::null_mut();
     // SAFETY: valid returned descriptor, writable string output; same information set.
     assert_ne!(
@@ -761,7 +798,7 @@ fn grant_fixture_pipe(listener: &WindowsNamedPipeBootstrapListener, package: &st
     // SAFETY: successful CreateFile returns one new owning handle.
     let pipe = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
     let before = pipe_descriptor(&pipe);
-    let current = format!("D:P(A;;0x12019b;;;{})", current_user_sid());
+    let current = canonical_sddl(&format!("D:P(A;;0x12019b;;;{})", current_user_sid()));
     assert!(before.starts_with(&current));
     assert_eq!(
         before.matches("(A;").count(),
