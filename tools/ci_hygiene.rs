@@ -176,8 +176,8 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         "windows_native_command() {",
         "MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' \"$@\"",
         "restore_windows_owner_only_dacl() {",
-        "for command in cygpath whoami.exe powershell.exe; do",
-        "identity=$(windows_native_command whoami.exe /user /fo csv /nh) || {",
+        "for command in cygpath powershell.exe; do",
+        "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()",
         "function Set-KeldOwnerOnlyDacl($item) {",
         "windows_native_command powershell.exe -NoProfile -NonInteractive -Command \"$powershell_script\"; then",
         "restore_docker_output_dir() {",
@@ -279,6 +279,7 @@ fn check_mermaid_msys_structure(renderer: &str) -> Result<(), String> {
         exclusion?,
     );
     for line in [
+        "try { $ownerSid = $identity.User } finally { $identity.Dispose() }",
         "$acl.SetAccessRuleProtection($true, $false)",
         "foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }",
         "$ownerRule = New-Object @ownerRuleParams",
@@ -3533,6 +3534,71 @@ mod tests {
         );
     }
 
+    #[test]
+    #[cfg(windows)]
+    fn mermaid_native_dacl_does_not_depend_on_path_whoami() {
+        use std::process::Command;
+
+        let temp = TempDir::new();
+        let parent = temp.path().join("target");
+        let output_dir = parent.join("keld-mermaid-render.fixture");
+        fs::create_dir_all(output_dir.join("child")).expect("retained directory fixture");
+        fs::write(output_dir.join("child/diagnostic.txt"), "diagnostic")
+            .expect("retained file fixture");
+        // Exercise the owning script with real Windows ACL APIs. A colliding GNU-shaped
+        // executable must not supply identity to the native restoration process.
+        let renderer = include_str!("mermaid_render_check.sh");
+        let start = renderer.find("running_under_msys() {").expect("MSYS owner");
+        let end = renderer
+            .find("\ndocker info >/dev/null")
+            .expect("helper boundary");
+        let script = format!(
+            "set -euo pipefail\n{}\nrender_parent=$(cd \"$1\" && pwd -P)\nwhoami.exe() {{ echo 'GNU whoami rejects Windows arguments' >&2; return 64; }}\nrestore_docker_output_dir \"$render_parent/keld-mermaid-render.fixture\"\n",
+            &renderer[start..end]
+        );
+        let output = Command::new("bash")
+            .args(["-c", &script, "kel152-native-test"])
+            .arg(&parent)
+            .output()
+            .expect("execute native restoration");
+        assert!(
+            output.status.success(),
+            "native restoration failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let oracle = r#"
+$ErrorActionPreference = 'Stop'
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$root = Get-Item -LiteralPath $env:KELD_TEST_OUTPUT
+$items = @($root) + @(Get-ChildItem -LiteralPath $root.FullName -Recurse -Force)
+if ($items.Count -ne 3) { throw 'incomplete native census' }
+foreach ($item in $items) {
+    $acl = Get-Acl -LiteralPath $item.FullName
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1) { throw 'DACL not protected single-owner' }
+    $rule = $rules[0]
+    $inheritance = if ($item.PSIsContainer) { 3 } else { 0 }
+    if ($rule.IdentityReference -ne $sid -or $rule.IsInherited -or
+        $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne 'FullControl' -or
+        [int]$rule.InheritanceFlags -ne $inheritance -or [int]$rule.PropagationFlags -ne 0) {
+        throw 'native ACE differs from owner-only contract'
+    }
+}
+'native DACL census: 3/3'
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", oracle])
+            .env("KELD_TEST_OUTPUT", &output_dir)
+            .output()
+            .expect("read native DACL inventory");
+        assert!(
+            output.status.success(),
+            "native DACL oracle failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("native DACL census: 3/3"));
+    }
+
     #[cfg(unix)]
     fn write_msys_renderer_fixture(
         temp: &TempDir,
@@ -3571,14 +3637,17 @@ mod tests {
         fs::write(checkout.join(MERMAID_CONFIG), "{}\n").expect("renderer config");
         temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
         temp.write("bin/docker", docker);
-        temp.write("bin/uname", "#!/usr/bin/env bash\nprintf 'MSYS_NT-10.0\\n'\n");
+        temp.write(
+            "bin/uname",
+            "#!/usr/bin/env bash\nprintf 'MSYS_NT-10.0\\n'\n",
+        );
         temp.write(
             "bin/cygpath",
             "#!/usr/bin/env bash\n[[ \"$1\" == '-am' || \"$1\" == '-aw' ]] || exit 64\nprintf '%s\\n' \"$2\"\n",
         );
         temp.write(
             "bin/whoami.exe",
-            "#!/usr/bin/env bash\nprintf '\"fixture\",\"S-1-5-21-1\"\\r\\n'\n",
+            "#!/usr/bin/env bash\necho 'GNU whoami rejects Windows arguments' >&2\nexit 64\n",
         );
         temp.write(
             "bin/powershell.exe",
@@ -3593,10 +3662,16 @@ mod tests {
         if let Some(remove) = remove {
             temp.write("bin/rm", remove);
         }
-        for shim in ["docker", "uname", "cygpath", "whoami.exe", "powershell.exe", "chmod"] {
+        for shim in [
+            "docker",
+            "uname",
+            "cygpath",
+            "whoami.exe",
+            "powershell.exe",
+            "chmod",
+        ] {
             let path = temp.path().join("bin").join(shim);
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .expect("shim executable");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("shim executable");
         }
         for shim in ["rm"] {
             let path = temp.path().join("bin").join(shim);
@@ -3649,6 +3724,11 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("failed-render output retained"),
             "missing retained-output receipt: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("with owner-only host access"),
+            "native restoration must not depend on PATH whoami: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         let retained = retained_render_dirs(&checkout);
@@ -3814,10 +3894,7 @@ mod tests {
             MERMAID_RENDERER,
             &read(temp.path(), MERMAID_RENDERER)
                 .expect("renderer fixture")
-                .replace(
-                    "if restore_docker_output_dir \"$render_dir\"; then",
-                    "",
-                ),
+                .replace("if restore_docker_output_dir \"$render_dir\"; then", ""),
         );
         let error =
             check(temp.path()).expect_err("retained output must return to owner-only access");

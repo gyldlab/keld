@@ -98,10 +98,8 @@ windows_native_command() {
 restore_windows_owner_only_dacl() {
   local path=$1
   local native_path
-  local identity
-  local owner_sid
   local powershell_script
-  for command in cygpath whoami.exe powershell.exe; do
+  for command in cygpath powershell.exe; do
     command -v "$command" >/dev/null 2>&1 || {
       echo "KELD-DOCS006: \`$command\` is required to restore the native Windows DACL for retained Docker output. Repair Git for Windows/Windows system tools, then rerun." >&2
       return 1
@@ -111,23 +109,12 @@ restore_windows_owner_only_dacl() {
     echo "KELD-DOCS006: cannot convert retained Docker output '$path' to a native Windows path for DACL restoration." >&2
     return 1
   }
-  identity=$(windows_native_command whoami.exe /user /fo csv /nh) || {
-    echo "KELD-DOCS006: cannot determine the invoking Windows SID for retained Docker output restoration." >&2
-    return 1
-  }
-  identity=${identity//$'\r'/}
-  owner_sid=${identity##*,}
-  owner_sid=${owner_sid#\"}
-  owner_sid=${owner_sid%\"}
-  [[ "$owner_sid" =~ ^S-[0-9-]+$ ]] || {
-    echo "KELD-DOCS006: cannot parse the invoking Windows SID for retained Docker output restoration." >&2
-    return 1
-  }
   powershell_script='
 $ErrorActionPreference = "Stop"
 $root = Get-Item -LiteralPath $env:KELD_MERMAID_DACL_PATH -Force
 if (-not $root.PSIsContainer) { throw "retained output is not a directory" }
-$ownerSid = New-Object System.Security.Principal.SecurityIdentifier($env:KELD_MERMAID_DACL_SID)
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+try { $ownerSid = $identity.User } finally { $identity.Dispose() }
 $rights = [System.Security.AccessControl.FileSystemRights]::FullControl
 $propagation = [System.Security.AccessControl.PropagationFlags]::None
 $allow = [System.Security.AccessControl.AccessControlType]::Allow
@@ -154,7 +141,7 @@ function Set-KeldOwnerOnlyDacl($item) {
 }
 Set-KeldOwnerOnlyDacl $root
 '
-  if ! KELD_MERMAID_DACL_PATH="$native_path" KELD_MERMAID_DACL_SID="$owner_sid" \
+  if ! KELD_MERMAID_DACL_PATH="$native_path" \
     windows_native_command powershell.exe -NoProfile -NonInteractive -Command "$powershell_script"; then
     echo "KELD-DOCS006: cannot install an exact owner-only native Windows DACL on retained Docker output '$path'. Repair its native DACL before inspection or removal." >&2
     return 1
