@@ -975,6 +975,9 @@ findings on the exact normative candidate. The current metadata-only freeze chan
 normative contract byte. Root independently bound the source, packet, review disposition,
 and validation records named above. These static reviews did not run the future T1 native
 OS matrix and do not satisfy the required landed T0 or terminal T1 artifact.
+Each final finding continues to use guard/36's
+schema: id; reviewer identity/session+lens+evidence; different refuter
+identity/context+evidence; verdict `survives`, `rejected`, or `unresolved`.
 
 ## 9. Perf impact
 
