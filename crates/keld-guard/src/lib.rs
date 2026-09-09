@@ -3,7 +3,10 @@
 //! Normative spec: `docs/architecture/03-security.md`.
 //!
 //! The engine parses `keld.permissions.jsonc` and default-denies through
-//! [`evaluate`] for dotted capabilities (`fs.read`) against path/host scopes.
+//! [`evaluate`] for dotted capabilities (`fs.read`) against path and URL
+//! scopes. One matcher serves both: a `/**` prefix grant may cover hierarchy
+//! below the node it names, but never a scheme-qualified destination's own
+//! authority.
 //! [`evaluate`] requires a [`Principal`] and denies anything other than
 //! [`Principal::AppProcess`] so `app` scopes cannot be applied to a webview
 //! principal. Strict-profile admission is exposed through [`admit`]. Repository
@@ -503,6 +506,14 @@ fn parse_manifest_at(
 /// or `prefix/` + remainder). A `..` path segment is always out of scope.
 /// `$VARS` are matched literally.
 ///
+/// A `/**` prefix grant covers what lies below the node it names, never the
+/// node's own authority: for a scheme-qualified `path`, the prefix must reach
+/// the end of the RFC 3986 authority. `"https://api.example.com/**"` therefore
+/// still covers that origin's subtree, while `"https://**"` and `"https:/**"`
+/// reach no host at all — a glob cannot hand the caller a destination the
+/// operator never named. Path scopes are unaffected. This is not URL
+/// normalization; see `docs/architecture/03-security.md` §2.
+///
 /// The `Allow` path does not allocate (`json_pointer_for` and `Vec` are deny-only).
 #[must_use]
 pub fn evaluate(
@@ -570,14 +581,45 @@ fn path_has_dotdot(path: &str) -> bool {
     path.split(['/', '\\']).any(|segment| segment == "..")
 }
 
+/// Byte index at which `resource`'s authority component ends, or `None` when
+/// `resource` is not scheme-qualified.
+///
+/// RFC 3986 §3.2: the authority "is preceded by a double slash (`//`) and is
+/// terminated by the next slash (`/`), question mark (`?`), or number sign
+/// (`#`) character, or by the end of the URI". That span is the part of a
+/// destination the operator must have named themselves; everything after it is
+/// hierarchy a prefix grant may legitimately cover.
+///
+/// This is deliberately not a URL parser. It answers one question — where the
+/// caller stops being able to choose — and normalization (case, default ports,
+/// percent-encoding, userinfo, IDN) remains the destination described in
+/// `docs/architecture/03-security.md` §2.
+fn authority_end(resource: &str) -> Option<usize> {
+    let start = resource.find("://")? + 3;
+    let end = resource[start..]
+        .find(['/', '?', '#'])
+        .map_or(resource.len(), |offset| start + offset);
+    Some(end)
+}
+
 fn path_in_scope(path: &str, pattern: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("/**") {
-        if path == prefix {
-            return true;
-        }
-        return path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/');
+    let Some(prefix) = pattern.strip_suffix("/**") else {
+        return path == pattern;
+    };
+    if path == prefix {
+        return true;
     }
-    path == pattern
+    if !(path.starts_with(prefix) && path.as_bytes().get(prefix.len()) == Some(&b'/')) {
+        return false;
+    }
+    // A prefix grant covers what lies *below* the node it names, so it must
+    // name a whole one. Stripping `/**` off a scheme-qualified pattern can land
+    // inside the authority delimiter — `"https://**"` leaves the prefix
+    // `"https:/"`, and the boundary byte checked above is then the second slash
+    // of `//` rather than a path separator. Requiring the prefix to reach the
+    // end of the authority keeps the choice of host with the operator, for
+    // every capability, without giving path scopes a second matcher.
+    authority_end(path).is_none_or(|end| prefix.len() >= end)
 }
 
 #[cfg(test)]
@@ -850,7 +892,11 @@ mod tests {
             Decision::Allow,
             "the granted origin root itself stays in scope"
         );
-        let sibling = eval_app(&manifest, "net.connect", "https://api.myapp.com.evil.test/v1");
+        let sibling = eval_app(
+            &manifest,
+            "net.connect",
+            "https://api.myapp.com.evil.test/v1",
+        );
         assert!(
             matches!(sibling, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a longer sibling authority must not ride the origin grant: {sibling:?}"
