@@ -787,6 +787,76 @@ mod tests {
         );
     }
 
+    /// Regression, KEL-208: a `/**` suffix is a *path* prefix wildcard, and applying
+    /// it to a URL scope used to strip the authority's own delimiter. `"https://**"`
+    /// became the prefix `"https:/"`, whose required boundary byte was then satisfied
+    /// by the second slash of `//`, so one grant reached every https authority the
+    /// operator never named. The single-slash spelling widens identically, so the
+    /// defect cannot be recognised from the pattern's trailing characters — only from
+    /// the authority the *resource* asks for (RFC 3986 §3.2).
+    ///
+    /// `origin_rooted_url_grant_still_covers_its_own_subtree` is the paired allow that
+    /// fails if this test were ever satisfied by denying everything.
+    #[test]
+    fn url_scope_glob_must_not_delegate_the_authority() {
+        for (manifest_text, requested) in [
+            (
+                r#"{"app":{"net":{"connect":["https://**"]}}}"#,
+                "https://evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["https://**"]}}}"#,
+                "https://evil.example.com/steal?token=1",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["https:/**"]}}}"#,
+                "https://evil.example.com",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["wss://**"]}}}"#,
+                "wss://attacker.example/ws",
+            ),
+            (
+                r#"{"app":{"net":{"connect":["file://**"]}}}"#,
+                "file:///etc/shadow",
+            ),
+        ] {
+            let manifest = parse_manifest(manifest_text).expect("manifest");
+            let decision = eval_app(&manifest, "net.connect", requested);
+            assert!(
+                matches!(decision, Decision::Deny(DenyReason::OutOfScope { .. })),
+                "{manifest_text} must not authorize the unnamed authority in \
+                 {requested}: {decision:?}"
+            );
+        }
+    }
+
+    /// The authority rule must not cost an origin-rooted grant the subtree it really
+    /// does grant. This is the paired allow for
+    /// `url_scope_glob_must_not_delegate_the_authority`; a matcher that denied every
+    /// scheme-qualified resource would pass that test and fail this one.
+    #[test]
+    fn origin_rooted_url_grant_still_covers_its_own_subtree() {
+        let manifest =
+            parse_manifest(r#"{"app":{"net":{"connect":["https://api.myapp.com/**"]}}}"#)
+                .expect("manifest");
+        assert_eq!(
+            eval_app(&manifest, "net.connect", "https://api.myapp.com/v1"),
+            Decision::Allow,
+            "a grant whose prefix covers the whole authority still owns its subtree"
+        );
+        assert_eq!(
+            eval_app(&manifest, "net.connect", "https://api.myapp.com"),
+            Decision::Allow,
+            "the granted origin root itself stays in scope"
+        );
+        let sibling = eval_app(&manifest, "net.connect", "https://api.myapp.com.evil.test/v1");
+        assert!(
+            matches!(sibling, Decision::Deny(DenyReason::OutOfScope { .. })),
+            "a longer sibling authority must not ride the origin grant: {sibling:?}"
+        );
+    }
+
     #[test]
     fn allow_fails_if_deny_inverted() {
         let manifest =

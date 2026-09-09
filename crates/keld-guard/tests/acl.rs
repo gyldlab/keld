@@ -139,6 +139,42 @@ const CASES: &[Case] = &[
         expected: ALLOW,
     },
     Case {
+        name: "url authority swallowed by scheme glob",
+        operation: "net.connect",
+        path: "https://evil.example.com",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "url authority swallowed by scheme glob with path",
+        operation: "net.connect",
+        path: "https://evil.example.com/steal",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "url authority swallowed by wss scheme glob",
+        operation: "net.connect",
+        path: "wss://attacker.example/ws",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
+        name: "url origin prefix grant",
+        operation: "net.connect",
+        path: "https://api.example.com/v1",
+        expected: ALLOW,
+    },
+    Case {
+        name: "url origin root itself",
+        operation: "net.connect",
+        path: "https://api.example.com",
+        expected: ALLOW,
+    },
+    Case {
+        name: "url sibling authority beyond origin prefix",
+        operation: "net.connect",
+        path: "https://api.example.com.evil.test/v1",
+        expected: OUT_OF_SCOPE,
+    },
+    Case {
         name: "unknown operation",
         operation: "fs.delete",
         path: "/foo/bar/child",

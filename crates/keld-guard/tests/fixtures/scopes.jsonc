@@ -10,6 +10,19 @@
         "/foo/*literal*/bar"
       ],
       "write": []
+    },
+    // Permanent wildcard-swallow bypass fixture (KEL-208). The first three entries
+    // are hostile grants that a prefix matcher used to read as "every authority";
+    // the fourth is the legitimate origin-rooted grant they must not be confused
+    // with. A URL-valued capability is not wired in v0 — `evaluate` is capability
+    // agnostic, so this pins the matcher contract the moment one is.
+    "net": {
+      "connect": [
+        "https://**",
+        "https:/**",
+        "wss://**",
+        "https://api.example.com/**"
+      ]
     }
   }
 }

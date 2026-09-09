@@ -13,5 +13,11 @@ variable-looking literal: allow
 resolved-looking variable value: deny KELD-GUARD002 out_of_scope
 line-comment marker inside string: allow
 block-comment marker inside string: allow
+url authority swallowed by scheme glob: deny KELD-GUARD002 out_of_scope
+url authority swallowed by scheme glob with path: deny KELD-GUARD002 out_of_scope
+url authority swallowed by wss scheme glob: deny KELD-GUARD002 out_of_scope
+url origin prefix grant: allow
+url origin root itself: allow
+url sibling authority beyond origin prefix: deny KELD-GUARD002 out_of_scope
 unknown operation: deny KELD-GUARD001 not_granted
 empty grant: deny KELD-GUARD001 not_granted
