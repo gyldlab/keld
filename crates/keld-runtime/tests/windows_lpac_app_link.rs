@@ -650,7 +650,7 @@ fn observe_bun_hello(bun_source: &Path, digest: &str, repetition: u32) {
         .to_string_lossy();
     let profile = WindowsLpacProfile::create(OsStr::new(&format!("keld210-bun-{suffix}")))
         .expect("fresh Bun profile");
-    prove_candidate_cancellation(&profile.sid_string().expect("package SID"));
+    prove_candidate_pre_cancellation(&profile.sid_string().expect("package SID"));
     let listener = Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("real bootstrap"));
     let link = listener.app_link();
     let descriptor = grant_fixture_pipe(&listener, &profile.sid_string().expect("package SID"));
@@ -810,16 +810,16 @@ fn grant_fixture_pipe(listener: &WindowsNamedPipeBootstrapListener, package: &st
     actual
 }
 
-fn prove_candidate_cancellation(package: &str) {
+fn prove_candidate_pre_cancellation(package: &str) {
     let listener =
         Arc::new(WindowsNamedPipeBootstrapListener::bind().expect("cancellation fixture"));
     grant_fixture_pipe(&listener, package);
-    let (server, _finished, _seen) = start_bootstrap_worker(&listener);
-    let started = Instant::now();
-    server
-        .cancellation
+    listener
+        .cancellation()
         .cancel()
-        .expect("cancel candidate admission");
+        .expect("pre-cancel candidate admission");
+    let started = Instant::now();
+    let (server, _finished, _seen) = start_bootstrap_worker(&listener);
     assert!(
         !server.finish(),
         "cancelled admission must not authenticate"

@@ -259,8 +259,11 @@ The unchanged checked-in Bun template client and existing Rust bootstrap/echo se
 then run with actual Bun artifact SHA-256
 `15277c59ccd6c6c20f8dc9716c2b59c1776320d606b6a8658f70be8799519ca4`.
 Wrong-token attempts reach the existing verifier and are rejected; the intended token
-completes HELLO and two distinct typed echo round trips. Candidate cancellation closes
-the endpoint and joins the worker before the admission deadline. A new complete setup
+completes HELLO and two distinct typed echo round trips. Candidate pre-cancellation closes
+the endpoint and joins the worker before the admission deadline. Separately, the IPC
+owner test observes native pending accept under the exact-package DACL fixture before
+cancelling, requires completion before the independent admission deadline, and joins
+the worker. That descriptor-only fixture does not prove LPAC identity. A new complete setup
 passes again. All owned child processes are reaped before profile/resource release.
 
 The existing `windows_lpac_boundary.rs` supplies the independent functional opt-out
