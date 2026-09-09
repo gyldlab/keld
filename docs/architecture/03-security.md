@@ -72,9 +72,9 @@ manifest decoder.
   "app": {                                 // grants for the Bun app process
     "fs":      { "read": ["$APPDATA/**", "$DOCUMENTS/MyApp/**"], "write": ["$APPDATA/**"] },
     "net":     { "connect": ["https://api.myapp.com", "wss://sync.myapp.com"] },
-    "shell":   { "open": ["https://*"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
+    "shell":   { "open": ["https://docs.myapp.com/**"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
     "system":  ["clipboard.read", "clipboard.write", "notifications", "tray", "global-shortcuts"],
-    "secrets": ["keychain:myapp/*"]
+    "secrets": ["keychain:myapp/**"]
   },
   "windows": {
     "main":  { "channels": ["notes.*", "el:*"], "web": { "csp": "default" } },
@@ -84,11 +84,26 @@ manifest decoder.
 }
 ```
 
-- **Path scopes** use the vetted-pattern matcher in the host (no regex injection).
+- **Path and URL scopes** share one vetted-pattern matcher in the host (no regex
+  injection). A `/**` suffix grants the node it names plus the hierarchy below it.
+  It never grants that node's own **authority**: for a scheme-qualified
+  destination the prefix must reach the end of the RFC 3986 §3.2 authority (the
+  span after `//`, ended by `/`, `?`, `#` or the end of the string). So
+  `"https://api.myapp.com/**"` covers that origin's subtree and still denies the
+  longer sibling `api.myapp.com.evil.test`, while `"https://**"` and
+  `"https:/**"` reach no host at all. **There is deliberately no glob that grants
+  "any host"** — a wildcard must not choose a destination the operator never
+  named, so name the origins. `**` is the only wildcard a path or URL scope has;
+  a lone `*` matches literally. (Channel grants are a separate, not-yet-live
+  vocabulary — see below.)
   **Destination:** `$VARS` resolved by the host, then symlink/`..` traversal
   normalized after resolution — the classic scope-bypass bugs are test fixtures.
+  URL scopes additionally become origin-aware (case folding, default ports,
+  percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
+  is a byte comparison, so spell destinations exactly as the host will send them.
   **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
-  not in this slice.
+  not in this slice. The authority rule above **is** live in `keld-guard`
+  (KEL-208); no URL-valued capability is wired to it yet.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of
