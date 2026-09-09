@@ -2126,22 +2126,16 @@ mod tests {
             &["prefixsuffix", "prefix"],
             move || {
                 let first = factory_calls.fetch_add(1, Ordering::SeqCst) == 0;
-                #[cfg(unix)]
-                let write = if first {
-                    "printf prefix"
-                } else {
-                    "printf suffix"
-                };
-                #[cfg(windows)]
-                let write = if first {
-                    "<nul set /p \"=prefix\""
-                } else {
-                    "<nul set /p \"=suffix\""
-                };
-                shell_command(&joined_steps(&[
-                    write,
-                    if first { "exit 1" } else { "exit 0" },
-                ]))
+                let mut command = Command::new("bun");
+                command.args([
+                    "-e",
+                    if first {
+                        "require('node:fs').writeSync(1,'prefix');process.exit(1)"
+                    } else {
+                        "require('node:fs').writeSync(1,'suffix');process.exit(0)"
+                    },
+                ]);
+                command
             },
         )
         .expect("spawn first generation");
