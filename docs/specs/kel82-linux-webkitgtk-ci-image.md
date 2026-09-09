@@ -84,7 +84,11 @@ No architecture or product boundary changes.
    lock or verifier inputs change, then both relevant call sites execute and their
    result/applicability reaches `CI required`. The Ubuntu `check` bundle step is
    unconditional whenever `rust=true`; `webkitgtk` continues to select packages, not
-   whether dependency verification runs.
+   whether dependency verification runs. The router sets both `rust=true` and
+   `gui=true` for workflow, router, evaluator and `ci/linux-webkitgtk/**` changes
+   (including locks, subjects, schemas and verifier tests). `linux-gui-smoke`
+   consumes `changes.outputs.gui`; `CI required` treats either selected consumer
+   being skipped as failure. `webkitgtk` remains a package-selection output.
 8. Given the installed bundle in `linux-gui-smoke`, when the job runs, then the existing
    release host build, media-guard build, Xvfb/fluxbox controls, titled window and clean
    close/process checks run without an oracle or command reduction.
@@ -172,7 +176,7 @@ Required `bundle.lock.json` fields are:
 
 ```text
 resolver = { image, digest, architecture: "amd64", tool_versions }
-archive = { snapshot_utc, sources[], indexes[], source_packages[] }
+archive = { snapshot_id, snapshot_utc, sources[], indexes[], source_packages[] }
 archive.sources[] = { uri, suites[], components[], architecture, signed_by }
 archive.sources[].signed_by = { keyring_package, version, file_sha256, fingerprints[] }
 archive.indexes[] = { source_uri, suite, component, architecture, inrelease_sha256,
@@ -218,7 +222,28 @@ libsoup-3.0-dev pkg-config xvfb xauth fluxbox wmctrl x11-utils xdotool bubblewra
 
 The compiler/linker remain declared `ubuntu-24.04` host prerequisites and are checked
 before installation; `build-essential` is not allowed to drag a frozen libc toolchain
-over the mutable runner.
+over the mutable runner. Before the apt solver runs, preflight resolves `cc`, `c++`,
+`ld`, `ar`, and `make` to executable files, records their real paths, SHA-256 and
+version output, and requires the Ubuntu GCC 13 / GNU binutils 2.42 / GNU Make 4.3
+host toolchain (patch/package revisions are recorded, not frozen). Both compiler
+`-dumpmachine` results must be `x86_64-linux-gnu`; cross-toolchain overrides fail.
+In a fresh temporary directory it compiles, links and executes C11 and C++17 probes
+using system headers/libc/libstdc++, checks ELF64 little-endian x86-64 output and
+zero exit, then removes the probes. `ar` must create/list an archive and `make` must
+build that same probe. Every probe has a 30-second kill switch; a missing command,
+wrong family/major/target, missing development headers/libraries, nonzero exit or
+expiry is `KELD-CIIMG-007` before package mutation. These are proposed admission
+requirements to qualify on the two hosted image revisions in AC4, not a claim that
+an unmeasured runner passes. Install rechecks tool hashes and the host package-state
+hash against preflight; changed inputs require a fresh preflight, never a retry.
+
+`archive.snapshot_id` is a required UTC calendar-valid `YYYYMMDDTHHMMSSZ` string;
+`snapshot_utc` is the same instant serialized as `YYYY-MM-DDTHH:MM:SSZ`.
+Each source URI is exactly `https://snapshot.ubuntu.com/ubuntu/<snapshot_id>/`;
+`source_uri` in every index must match that source. No query, fragment, userinfo,
+encoded path, moving alias, live archive fallback or redirect outside the same
+snapshot prefix is accepted. The timestamp form follows the linked Ubuntu snapshot
+service documentation. Lock validation rejects mismatched IDs before fetching bytes.
 
 Snapshot sources contain only reviewed official Ubuntu URIs, `noble`,
 `noble-updates`, and `noble-security`, with `main`/`universe`; proposed/backports and
@@ -281,7 +306,10 @@ ci-image.sh subject transition --before <subjects.json> --after <subjects.json> 
 ci-image.sh freshness check --receipt-out <json>
 ```
 
-Receipts use the same canonical JSON rules and this closed result union:
+Receipts use the same canonical JSON rules. `result` below applies to every
+receipt except freshness, whose explicitly separate `freshness_result` union includes
+`stale`. Validators dispatch on the exact schema identifier; stale is invalid in
+all other receipts:
 
 ```text
 result = { status: "passed" }
@@ -290,7 +318,7 @@ keld.linux-ci-lock-receipt/v1 = { action: "lock-check", lock_sha256,
   input_sha256, resolver_digest, snapshot_utc, result }
 keld.linux-ci-host-receipt/v1 = { action: "host-preflight" | "host-install",
   lock_sha256, subject_digest, image_os, image_version, network_sources,
-  plan, installed_roots, dependency_versions, preflight_receipt_sha256,
+  plan, toolchain, installed_roots, dependency_versions, preflight_receipt_sha256,
   started_at, completed_at, result }
 keld.linux-ci-subject-verify-receipt/v1 = { action: "subject-verify",
   mode: "current" | "candidate-publication" | "candidate-qualification"
@@ -302,14 +330,16 @@ keld.linux-ci-build-receipt/v1 = { action: "bundle-build", lock_sha256,
   manifest_sha256, payload_tree_sha256, spdx_sha256, config_digest,
   layer_digest, manifest_digest, output_path, result }
 keld.linux-ci-freshness-receipt/v1 = { action: "freshness-check",
-  checked_at, snapshot_utc, security_indexes[], stale_sources[],
-  result: { status: "passed" }
+  checked_at, snapshot_utc, lock_sha256, subject_digest, workflow_run,
+  security_indexes[], stale_sources[], result: freshness_result }
+freshness_result = { status: "passed" }
         | { status: "stale", code: "KELD-CIIMG-008", failed_predicate }
-        | { status: "rejected", code: "KELD-CIIMG-00N", failed_predicate } }
+        | { status: "rejected", code: "KELD-CIIMG-00N", failed_predicate }
 keld.linux-ci-subject-transition-receipt/v1 = { action: "subject-transition",
   before_sha256, after_sha256, transitions[],
   rollback_pointer_change: null | { from: null | digest, to: null | digest },
   qualification_receipts[], census_receipt_sha256: null | sha256,
+  freshness_receipt_sha256: null | sha256,
   github_run: null | github_run, result }
 transitions[] = { digest, from, to, effective_at }
 qualification_receipts[] = { job: "ubuntu-check" | "linux-gui-smoke",
@@ -323,9 +353,82 @@ qualification = null | { event_name: "pull_request", repository: "gyldlab/keld",
   workflow_sha256, run_id, run_attempt, job }
 ```
 
+### Nested receipt types and empty values
+
+The following are closed records; all listed fields are required. `string` means a
+nonempty UTF-8 string; `sha256` is 64 lowercase hexadecimal characters, `digest` is
+`sha256:` followed by that hash, `commit` is 40 lowercase hexadecimal characters,
+`timestamp` is UTC `YYYY-MM-DDTHH:MM:SSZ`, and IDs/counts/exit codes are integers
+(counts and IDs nonnegative). Paths are normalized absolute host paths or relative
+bundle paths as named below; relative paths reject `..`, backslashes and symlinks.
+Versions are complete Debian version strings where package versions are named.
+Booleans are JSON booleans. No implicit defaults, extra properties or arbitrary maps
+are permitted. `failed_predicate` is a nonempty public diagnostic string; codes are
+exactly the eight codes in the error table, not the literal `00N` placeholder.
+
+```text
+package_version = { name: string, architecture: "amd64" | "all", version: string }
+plan = { before_dpkg_sha256: sha256, actions: package_action[] }
+package_action = { name: string, architecture: "amd64" | "all",
+  before_version: null | string, after_version: string,
+  operation: "install" | "upgrade" | "keep", essential: boolean,
+  deb_sha256: null | sha256 }
+toolchain = { target: "x86_64-linux-gnu", tools: tool_identity[], probes: probe[] }
+tool_identity = { name: "cc" | "c++" | "ld" | "ar" | "make",
+  path: string, sha256: sha256, version_output: string, target: null | string }
+probe = { name: "c11" | "cxx17" | "archive" | "make", exit_code: integer,
+  output_sha256: sha256 }
+attestation_evidence = { subject_digest: digest, bundle_sha256: sha256,
+  issuer: string, repository: string, workflow_path: string,
+  source_ref: string, source_commit: commit, signer_digest: commit,
+  predicate_type: string, predicate_sha256: sha256, verified: boolean }
+reference = { ref: string, commit: commit, path: string, digest: digest }
+security_index = { source_uri: string, suite: "noble-security",
+  component: "main" | "universe", architecture: "amd64",
+  inrelease_sha256: sha256, packages_sha256: sha256, sources_sha256: sha256 }
+stale_source = { name: string, locked_version: string, current_version: string,
+  index_identity: string, reason: "newer-version" | "changed-source-stanza"
+    | "changed-binary-stanza" | "changed-package-file" }
+workflow_run = { repository: "gyldlab/keld", workflow_path: string,
+  workflow_sha256: sha256, source_commit: commit, run_id: integer,
+  run_attempt: integer, event_name: "schedule" | "workflow_dispatch" }
+```
+
+`installed_roots` and `dependency_versions` contain `package_version` records sorted
+uniquely by `(name, architecture)`; their versions must match the actual post-install
+package database. `plan.actions` has the same key; `keep` requires equal before/after
+versions and null `deb_sha256`; other operations require the locked `.deb` hash.
+`network_sources` is a sorted unique string array of enabled apt network-source URIs
+and must be empty for a passed host receipt. Tool identities sort by name and cover
+exactly the five commands; compiler targets are required, others null. Probe names
+sort uniquely and cover all four checks with exit_code zero on pass.
+`provenance` and `sbom` each use `attestation_evidence`, with the respective expected
+SLSA/SPDX predicate and all identity fields checked against `subjects.json`.
+`references` contains `reference` records sorted by `(ref, commit, path, digest)`;
+visibility is `"public" | "private" | "internal"`, linked_repository is a string,
+and anonymous_pull is boolean. `security_indexes` and `stale_sources` use the above
+records with the previously specified sort keys. Index identity names exactly one
+signed security index; returned source names must belong to the locked source closure.
+`qualification.job` is `"ubuntu-check" | "linux-gui-smoke"`; its IDs are positive
+integers and its hashes/commits/timestamps use the scalar types above. Transition
+`from`/`to` are `"candidate" | "current" | "previous" | "retired" | "denied"`;
+legality is separately checked against the lifecycle, including orthogonal denial.
+
+For every schema, a passed result requires all applicable evidence populated;
+nonapplicable records/scalars are null and arrays are empty. Host preflight uses
+empty installed/dependency arrays and null preflight hash; install requires a non-null
+hash. A rejected result may set unestablished evidence to null/empty, never claim a
+fabricated successful identity; applicable populated records still undergo full type
+validation. Freshness passed/stale requires non-null lock/subject/run identity and
+security indexes; stale additionally requires nonempty stale_sources and code 008.
+Ordinary verification has null qualification; candidate-qualification requires it.
+A non-promotion transition has null freshness hash; promotion requires that hash.
+T2 must encode these per-action success/rejection constraints in its schemas before
+implementation receipts can satisfy any acceptance row.
+
 Receipt schemas are closed discriminated unions: unknown actions/fields fail, and fields
-not meaningful to an action must be empty. `host-preflight` forbids installed roots,
-dependency versions and `preflight_receipt_sha256`; `host-install` requires them and a
+not meaningful to an action must be empty. `host-preflight` requires empty installed-root and
+dependency-version arrays and a null `preflight_receipt_sha256`; `host-install` requires them and a
 passed same-lock/same-host preflight receipt, then re-evaluates the plan. Subject census
 has no verification mode and requires visibility, linked repository, anonymous pull and
 references. Subject verify requires provenance/SBOM and a verification mode. Candidate
@@ -424,15 +527,25 @@ attestations for a denied digest are deleted and verified absent as cleanup, but
 later attestation cannot override deny-before-network enforcement. Physical registry
 deletion is best effort and never the trust oracle.
 
-Promotion first verifies the current `noble-security` InRelease → Packages/Sources hash
-chain as authentication, then compares only the canonical source and binary records/file
-hashes reachable from locked `archive.source_packages[]` using Debian version ordering. An
-unrelated source update may change whole-index hashes without making Keld stale. A
-relevant newer source version or same-version stanza/binary/file change is stale. A
-separate daily scheduled workflow repeats that read-only check with
-`contents: read` and explicit `packages: none`, `attestations: none`, and
-`id-token: none`; it cannot call or dispatch the publisher. It emits a failing
-freshness receipt and does not write GitHub or Linear state. The KEL coordinator uses
+The single read-only freshness workflow owns all current `noble-security`
+metadata acquisition. It runs daily and via `workflow_dispatch` before promotion,
+with `contents: read` and explicit `packages: none`, `attestations: none`, and
+`id-token: none`; it cannot call or dispatch the publisher. It authenticates the
+InRelease → Packages/Sources hash chain, then compares only source/binary stanzas and
+file hashes reachable from the locked source closure using Debian version ordering.
+Unrelated index updates remain green. A relevant newer version or same-version
+stanza/binary/file change emits stale with code 008. It downloads no package payloads.
+
+Promotion consumes that workflow's immutable artifact and records its SHA-256 in
+`freshness_receipt_sha256`; it does not fetch security indexes itself. T3c checks via
+the GitHub API that the receipt came from the protected main freshness workflow at
+the reviewed workflow hash/source commit, matching run ID/attempt and a successful
+job. It checks exact lock hash and candidate digest, and requires passed status and
+`0 <= promotion_time - checked_at <= 24h`. It rejects a future, expired, stale,
+rejected, missing or mismatched receipt; rechecking means invoking the same freshness
+workflow, never introducing another reader. The workflow's output includes the signed
+metadata bytes and their hash chain for offline provenance verification by promotion.
+The KEL coordinator uses
 the receipt to open or update one `keld.linux-ci-rotation/v1` record:
 
 ```text
@@ -462,8 +575,9 @@ substitution or silent waiver is permitted.
   router/evaluator/hygiene tests and `.agents/ci.md` with instruction-budget,
   semantic-eval and prompt-trace evidence. No stale `ubuntu-latest` may remain inside
   the final `check` or `linux-gui-smoke` blocks; unrelated generic jobs may retain it.
-- T5: rotation/retirement/denial subject transitions, a separate read-only freshness
-  workflow, retention/cleanup logic and consumer/rotation documentation.
+- T3a also introduces the single read-only freshness workflow needed by T3c.
+- T5: rotation/retirement/denial subject transitions, daily freshness exercise,
+  retention/cleanup logic and consumer/rotation documentation.
 - Must not touch product crates, Cargo dependencies, macOS/Windows execution, MSRV
   placement, Bun/package-manager pins, wire protocol, permissions, release/update
   artifacts, or test deadlines/assertions.
@@ -478,7 +592,8 @@ substitution or silent waiver is permitted.
   schemas, snapshot resolver, canonical lock/SPDX/OCI builder, verifier and negative
   controls. Prove two clean builds and host preflight locally. Do not publish or edit CI.
 - [ ] **T3a — protected first publication:** after CI writers release, add the
-  main-only publisher workflow and predicted candidate digest. Merge triggers
+  main-only publisher workflow, separate read-only freshness workflow and predicted
+  candidate digest. Merge triggers
   an exact build, SLSA/SPDX attestations and private first publication; any digest
   mismatch stops.
 - [ ] **T3b — public publication record:** package admin makes the subject public and repository
@@ -488,7 +603,9 @@ substitution or silent waiver is permitted.
   PR whose pull-request-only qualification mode accepts only the locked candidate.
   Run exact hosted Ubuntu check, strict and GUI rows; do not merge.
 - [ ] **T3c — promote the qualified subject:** record the exact T4a head/run evidence,
-  fill `qualified_at`, move candidate to current and merge the subject-state PR.
+  require the bound passing freshness receipt from T3a's workflow (dispatch it
+  after candidate publication), fill `qualified_at`, move candidate to current and
+  merge the subject-state PR.
 - [ ] **T4b — current-only consumers:** rebase T4a on T3c; remove candidate mode; make
   the Ubuntu `check` verifier/install unconditional
   for `rust=true`; move its matrix value, all Ubuntu conditions and GUI runner to
@@ -498,7 +615,7 @@ substitution or silent waiver is permitted.
 - [ ] **T5 — rotation, freshness and removal:** run one
   candidate/current/previous/retired cycle,
   one denied-but-still-pullable cycle, attestation deletion, 30-day/reference census
-  enforcement, separate read-only daily freshness workflow, 72-hour coordinator-record
+  enforcement, daily runs of the existing freshness workflow, 72-hour coordinator-record
   boundaries, unavailable/corrupt/skip/retry fallback mutations, preferred rollback
   set/use/clear, cold timing receipts and best-effort GHCR cleanup.
 
@@ -507,18 +624,18 @@ substitution or silent waiver is permitted.
 | AC | Owner, test and independent mutation |
 |---|---|
 | 1 | CI census unit: package publisher=1, metadata-only freshness reader=1, offline consumers=2, MSRV/other acquisition=0; add a second package download or third install site and fail |
-| 2 | Lock/schema unit: canonical parse plus exact roots, source/binary versions, source URI/pocket/key/InRelease/Packages/Sources/closure/file hashes; independently alter order, duplicate keys, and the binary `(source_name, source_version, source_index_identity)` edge |
+| 2 | Lock/schema unit: canonical parse plus exact roots, source/binary versions, source URI/snapshot_id/timestamp agreement/pocket/key/InRelease/Packages/Sources/closure/file hashes; independently alter order, duplicate keys, and the binary `(source_name, source_version, source_index_identity)` edge |
 | 3 | Reproducibility integration: generate SPDX only from the named input projection, then manifest/payload/OCI; two clean builds compare every byte/descriptor; enable live source or mutate timestamp/tool/arch/file metadata |
-| 4 | Host-preflight subprocess on two recorded `ubuntu-24.04` image revisions: sources disabled, no mutation sentinel; inject downgrade, removal, Essential replacement, missing deb and conflict |
+| 4 | Host-preflight subprocess on two recorded `ubuntu-24.04` image revisions: sources disabled, no mutation sentinel; inject downgrade, removal, Essential replacement, missing deb and conflict; remove or spoof each compiler/linker command, target, version, probe and receipt field; assert no package mutation |
 | 5 | Host-install integration: local-only repository network trace, exact-root receipt, `dpkg --audit` and offline dependency result; allow network or change one root/version and fail before compile sentinel |
 | 6 | Existing Linux strict process tests plus executable package/hash receipt; remove sysctl/bwrap, mutate path, or run default nested container and require the named failure |
-| 7 | Router/workflow/evaluator contract: every owned path runs both consumers as applicable and `CI required` observes result; assert the check matrix, every Ubuntu-specific condition and GUI runner use `ubuntu-24.04`; remove/invert each step/result edge and reject a stale consumer-side `ubuntu-latest` |
+| 7 | Router/workflow/evaluator contract: every owned path runs both consumers as applicable and `CI required` observes result; assert the check matrix, every Ubuntu-specific condition and GUI runner use `ubuntu-24.04`; force gui=false for each bundle/workflow/router/evaluator input and fail; remove/invert each step/result edge and reject a stale consumer-side `ubuntu-latest` |
 | 8 | Existing media interposer + `linux_gui_smoke.sh` title/control/cleanup process oracle; delete each existing command/oracle and fail |
 | 9 | Attestation conformance: verify SLSA and SPDX separately with exact issuer/repo/workflow/ref/source/signer/subject, then hash the signer commit's workflow blob against `publisher_workflow_sha256`; one wrong-field mutation per predicate |
 | 10 | Post-publish hosted check: package API visibility, repository association and empty-config anonymous digest pull are three separate assertions; private/unlinked/authenticated-only controls fail |
 | 11 | Required-result failure matrix: tag, unknown/unavailable/corrupt/unlinked/unattested/denied/cached subject, candidate-publication mode used by a consumer, candidate outside T4a or with spoofed repo/base/PR/head/checkout/workflow/run/attempt/job, arbitrary/unpointed/expired rollback, network source, retry, `continue-on-error` and selected skip each fail before mutation/compile; T3c re-derives the passing run through GitHub |
 | 12 | State-machine/transition-receipt unit plus Git/reference integration: unavailable candidate fields, null publication field promoted current, missing/duplicate consumer qualification receipt, mismatched GitHub run/check identity, two promotions inside 30 days retaining both previous entries, previous dropped without retired record/receipt, invalid transition, preferred rollback set/use/clear with the same hosted consumers, denied/expired/retired/unavailable pointer rejection, denied-before-pull even with a new valid attestation, non-main ref, reference remaining, early retirement, attestation cleanup and >5k/no-registry-delete paths |
-| 13 | Publisher and read-only daily freshness integration: authenticate whole current security indexes, compare only reachable source/binary stanzas and file hashes, keep an unrelated-index-update control green, and emit a stale receipt plus `KELD-CIIMG-008`; injected-clock records cover T+71:59:59, exact 72h with/without response, T+72:00:01, repeat without reset, blocker-stays-red, replacement resolution and later-new-update origin |
+| 13 | Single freshness workflow plus offline promotion verification: reject second metadata reader, stale-as-shared-result, malformed nested records, unknown fields, wrong lock/digest/workflow/run, missing signature bytes, future/expired receipt; authenticate whole current security indexes, compare only reachable source/binary stanzas and file hashes, keep an unrelated-index-update control green, and emit a stale receipt plus `KELD-CIIMG-008`; injected-clock records cover T+71:59:59, exact 72h with/without response, T+72:00:01, repeat without reset, blocker-stays-red, replacement resolution and later-new-update origin |
 
 Tests use file/process/network conditions rather than sleeps. Local Docker proves bundle
 and preflight behavior; only hosted Ubuntu proves runner identity, workflow permissions,
