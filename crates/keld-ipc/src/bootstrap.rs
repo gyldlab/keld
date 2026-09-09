@@ -1732,7 +1732,11 @@ socket.end();
                 SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
                 None,
                 None,
-                Some(descriptor.dacl().expect("fixture DACL")),
+                Some(
+                    descriptor
+                        .dacl()
+                        .ok_or_else(|| io::Error::other("missing fixture DACL"))?,
+                ),
                 None,
             )?;
             listener.inspect_pipe_handle(|handle| {
@@ -1744,12 +1748,20 @@ socket.end();
                 // SetNamedSecurityInfo can add SE_DACL_AUTO_INHERITED. Compare
                 // authority-bearing ACEs and require protection independently.
                 assert!(observed.as_sddl()?.to_string_lossy().starts_with("D:P"));
-                let actual = observed.dacl().expect("readback DACL");
-                let intended = descriptor.dacl().expect("fixture DACL");
+                let actual = observed
+                    .dacl()
+                    .ok_or_else(|| io::Error::other("missing readback DACL"))?;
+                let intended = descriptor
+                    .dacl()
+                    .ok_or_else(|| io::Error::other("missing fixture DACL"))?;
                 assert_eq!(actual.len(), 2);
                 for index in 0..2 {
-                    let actual = actual.get_ace(index).expect("readback ACE");
-                    let intended = intended.get_ace(index).expect("fixture ACE");
+                    let actual = actual
+                        .get_ace(index)
+                        .ok_or_else(|| io::Error::other("missing readback ACE"))?;
+                    let intended = intended
+                        .get_ace(index)
+                        .ok_or_else(|| io::Error::other("missing fixture ACE"))?;
                     assert_eq!(actual.sid(), intended.sid());
                     assert_eq!(actual.ace_type(), intended.ace_type());
                     assert_eq!(actual.flags(), intended.flags());
@@ -1780,13 +1792,19 @@ socket.end();
             completion.recv_timeout(completion_deadline.saturating_duration_since(Instant::now()));
         let completed_at = Instant::now();
         // Join even on an oracle failure; the independent admission deadline bounds cleanup.
-        let outcome = worker.join().expect("join accept worker");
+        let outcome = worker
+            .join()
+            .map_err(|_| io::Error::other("accept worker panicked"))?;
         assert!(
             was_pending,
             "server never entered overlapped pending accept"
         );
         cancelled?;
-        completed_promptly.expect("cancellation must finish before admission deadline");
+        completed_promptly.map_err(|error| {
+            io::Error::other(format!(
+                "cancellation must finish before admission deadline: {error}"
+            ))
+        })?;
         assert!(
             completed_at < completion_deadline,
             "synchronous cancel exceeded completion deadline"
