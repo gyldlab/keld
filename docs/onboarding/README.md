@@ -11,14 +11,15 @@ wrapper or packaged application release to install yet.
 - Git and Rust installed through rustup. The checked-in
   [rust-toolchain.toml](../../rust-toolchain.toml) selects the compiler and components;
   Cargo uses the committed lockfile in the commands below.
-- Bun on `PATH`. **Use CI-pinned Bun 1.4.0 for `just ci` and the full workspace test
+- Bun on `PATH`. **Use CI-pinned Bun 1.4.2 for `just ci` and the full workspace test
   gate.** The [Linux strict fixture](../../crates/keld-runtime/tests/linux_strict_boundary.rs)
   asserts that exact version. Record `bun --version` and `bun --revision` before a
   run. Some earlier demo observations used Bun 1.4.2; the newer
   [Ubuntu](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871) and
   [Windows](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
-  quick-start observations used the pinned Bun 1.4.0. Only the pinned version satisfies
-  the current full gate. The scaffold has no package dependencies to install.
+  quick-start observations used the then-pinned Bun 1.4.0. Those dated observations
+  do not establish a current full-gate result. The scaffold has no package
+  dependencies to install.
 - A desktop session and platform build prerequisites:
 
   | Platform | Prerequisites and qualification |
@@ -161,11 +162,11 @@ the same output directory. A successful `doctor` alone is not a desktop acceptan
 Start with [CONTRIBUTING.md](../../CONTRIBUTING.md). Install `just`, `cargo-nextest`,
 and `cargo-deny` for the complete local gate; its Mermaid renderer also requires a
 running Docker-compatible engine. The exact gate inventory belongs to the
-[justfile](../../justfile). Put the CI-pinned Bun 1.4.0 binary on this shell's `PATH`
+[justfile](../../justfile). Put the CI-pinned Bun 1.4.2 binary on this shell's `PATH`
 without replacing another project's global runtime, then verify the selected version:
 
 ```bash
-bun --version   # must report 1.4.0 for the full gate
+bun --version   # must report 1.4.2 for the full gate
 bun --revision
 just ci
 ```

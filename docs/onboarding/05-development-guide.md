@@ -25,7 +25,7 @@ For the complete verification gate, also install:
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
 | Docker-compatible engine | Runs the digest-pinned Mermaid renderer for `just ci` |
 
-Use the pinned Rust toolchain and **Bun 1.4.0 for the full workspace gate**, matching
+Use the pinned Rust toolchain and **Bun 1.4.2 for the full workspace gate**, matching
 CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
 a demo observed with Bun 1.4.2 is separate evidence. The
 [quick-start prerequisites](README.md#prerequisites) also explain Linux trusted-checkout

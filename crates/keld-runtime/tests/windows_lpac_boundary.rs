@@ -384,7 +384,7 @@ fn prove_bun_artifact_starts_under_lpac(
         .expect("read Bun LPAC output");
     assert_eq!(exit, 0, "Bun LPAC process failed; output: {observed}");
     assert!(
-        observed.contains("BUN_LPAC_OK 1.4.0"),
+        observed.contains("BUN_LPAC_OK 1.4.2"),
         "unexpected Bun LPAC output: {observed}"
     );
     print_bun_evidence(profile, &revision, &artifact_digest, census.len());

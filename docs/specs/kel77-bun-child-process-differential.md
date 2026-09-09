@@ -3,6 +3,11 @@
 Status: approved
 Linear: KEL-77 · Owner: GYLDLAB · Updated: 2026-08-21 (Bun 1.4.0 CI pin + kill-after-exit rebaseline)
 
+Current CI pin (KEL-194, owner-approved 2026-09-08): **Bun 1.4.2**. This supersedes
+the earlier CI-pin instructions below; Bun 1.4.0 observations remain historical
+evidence. All child-process oracles, failure semantics and revision recording stay
+unchanged. [Selected release](https://bun.com/blog/bun-v1.4.2).
+
 ## 1. Goal & non-goals
 
 Keld ships a pinned Bun and supervises Bun children (architecture 06 §1), and the
@@ -27,7 +32,8 @@ Non-goals:
   is owned by KEL-74; this harness is a producer only.
 - Performance numbers of any kind. Semantic parity first (KEL-77 acceptance).
 - Any change to `keld-guard`, kipc frames, or the permission model. T1/T2 did not
-  edit CI; this follow-up pins `oven-sh/setup-bun` to exact `1.4.0` (never `latest`).
+  edit CI; the 2026-08-21 follow-up pinned `oven-sh/setup-bun` to exact `1.4.0`.
+  The current-pin note above supersedes that historical version; never use `latest`.
 - Windows and Linux *execution*. The harness is written to be OS-portable and records
   the platform it ran on; this slice claims macOS arm64 results only.
 
@@ -166,7 +172,7 @@ gates on two things that are both true on Bun 1.4.0 and both falsifiable:
 (The 1.3.x `kill()`-after-exit defect was pinned as an explicit fail until Bun 1.4
 fixed it; the fail pin was then deleted and case 5 joined the shared-pass corpus.)
 
-Deliberately *not* built: a revision-keyed baseline table. CI pins Bun to exact `1.4.0`
+Deliberately *not* built: a revision-keyed baseline table. CI pins Bun to the exact version named above
 via `oven-sh/setup-bun` `bun-version`; the Node version is still whatever the runner
 ships. A revision-keyed table for Node would spend most of its life unbaselined and
 would emit `unknown` for nearly every cell — machinery that weakens the gate instead of
@@ -339,6 +345,6 @@ Blocking human decisions before Status: approved.
 2. ~~**T2 is blocked, deliberately.**~~ **Resolved 2026-08-19:** KEL-74 merged as
    `8ff4cd6`. T2 serializes through `parse_evidence` on that freeze. `operation.kind`
    remains `primary_workflow` (named constant). No `runtime_semantics` fork.
-3. ~~**Baseline versus pinned Bun.**~~ **Resolved 2026-08-21:** CI pins
+3. ~~**Baseline versus pinned Bun.**~~ **Resolved 2026-08-21:** CI was pinned
    `oven-sh/setup-bun` to exact `1.4.0`. Do not float `latest`. Node on the runner
    still floats; revisions remain recorded per cell.
