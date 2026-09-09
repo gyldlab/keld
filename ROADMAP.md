@@ -19,9 +19,14 @@ and a limited Electron lifecycle facade. The [quick-start](docs/onboarding/READM
 runs that slice. Native services, the wider compatibility surface, migration, packaging,
 and updates remain incomplete; consult the ledger for each component's exact scope.
 
-The latest device acceptance also leaves current work open: the stock application's
-native Close fails on tested Ubuntu/Wayland even though SIGINT cleanup succeeds;
-Windows candidate requalification awaits an existing endpoint-security prerequisite.
+Maintainer-recorded public acceptance leaves current work open: the
+[initial Ubuntu/Wayland run](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
+found that stock native Close fails even though SIGINT cleanup succeeds; the
+[refreshed Ubuntu candidate](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
+passed its separate Ctrl-C/relaunch rows without retrying native Close. The
+[final-source Windows run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+passed build, native window, interactive Ctrl-C output/cleanup, and relaunch, while
+stock native Close remains incomplete.
 The [quick-start](docs/onboarding/README.md#run-the-current-demo) preserves those
 separate results. Resolve the lifecycle regression and complete admitted platform
 acceptance before treating the demo as release-ready.
