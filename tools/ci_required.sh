@@ -35,8 +35,8 @@ require_routed_result() {
 }
 
 check_results() {
-    if [[ "$#" -ne 16 ]]; then
-        fail "expected 9 job results plus 7 router outputs, got $#; restore the required job's complete needs and applicability handoff."
+    if [[ "$#" -ne 18 ]]; then
+        fail "expected 9 routed/core job results, 7 router outputs, and 2 security job results, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
 
@@ -60,6 +60,8 @@ check_results() {
             return 1
             ;;
     esac
+    require_success "CodeQL analysis and upload" "${17}" || return 1
+    require_success "dependency review" "${18}" || return 1
 }
 
 expect_pass() {
@@ -81,35 +83,48 @@ expect_fail() {
 self_test() {
     expect_pass "all applicable jobs succeed" \
         success success success success success success success success success \
-        true true true true true true true
+        true true true true true true true success success
     expect_pass "router-proven inapplicable jobs skip" \
         success skipped skipped skipped skipped skipped skipped success skipped \
-        false false false false false false false
+        false false false false false false false success success
 
     expect_fail "missing gitleaks is not green" \
         success skipped skipped skipped skipped skipped skipped skipped skipped \
-        false false false false false false false
+        false false false false false false false success success
     expect_fail "cancelled gitleaks is not green" \
         success skipped skipped skipped skipped skipped skipped cancelled skipped \
-        false false false false false false false
+        false false false false false false false success success
     expect_fail "failed selected test is not green" \
         success success failure skipped skipped success skipped success success \
-        true false false true false true false
+        true false false true false true false success success
     expect_fail "selected job cannot disappear as skipped" \
         success skipped skipped skipped skipped skipped skipped success skipped \
-        true false false false false false false
+        true false false false false false false success success
     expect_fail "unselected job cannot silently run" \
         success success skipped skipped skipped skipped skipped success skipped \
-        false false false false false false false
+        false false false false false false false success success
     expect_fail "invalid router output is not evidence" \
         success skipped skipped skipped skipped skipped skipped success skipped \
-        missing false false false false false false
+        missing false false false false false false success success
     expect_fail "cancelled router cannot skip everything green" \
         cancelled skipped skipped skipped skipped skipped skipped success skipped \
-        false false false false false false false
+        false false false false false false false success success
     expect_fail "missing result handoff is rejected" \
         success skipped skipped skipped skipped skipped skipped success skipped \
-        false false false false false false
+        false false false false false false success success
+
+    local result
+    for result in skipped cancelled failure missing ''; do
+        expect_fail "CodeQL '$result' is not analysis evidence" \
+            success skipped skipped skipped skipped skipped skipped success skipped \
+            false false false false false false false "$result" success
+        expect_fail "dependency review '$result' is not evidence" \
+            success skipped skipped skipped skipped skipped skipped success skipped \
+            false false false false false false false success "$result"
+    done
+    expect_fail "old handoff cannot omit both security jobs" \
+        success skipped skipped skipped skipped skipped skipped success skipped \
+        false false false false false false false
 
     echo "ci-required contract tests ok"
 }
@@ -128,7 +143,7 @@ case "${1:-}" in
         self_test
         ;;
     *)
-        fail "unknown or missing command '${1:-}'. Use 'check' with 9 job results and 7 router outputs, or 'test'."
+        fail "unknown or missing command '${1:-}'. Use 'check' with 9 core job results, 7 router outputs, and 2 security job results, or 'test'."
         exit 1
         ;;
 esac

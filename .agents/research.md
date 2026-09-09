@@ -21,6 +21,29 @@ prompts live in Prompt Tracker (`0monish/prompt-tracker`) under the existing cat
 tree. Website Deep Research pastes follow that repo’s `docs/05-deep-research-host.md`
 and `prompts/SHARED/` chrome. This playbook still owns the escalation trigger below.
 
+## Current-documentation receipt
+
+Before deciding a material claim that depends on current external OS/platform-command,
+SDK/API, runtime, or external-tool semantics, use this playbook's receipt. It does not
+apply to a pure local refactor whose decision does not rely on external semantics.
+
+1. **Discover.** When Context7 is available, resolve the relevant library and make a
+   narrow query before deciding. Record the library ID, query, and retrieval date.
+   Context7 is discovery, never the authority.
+2. **Confirm.** Confirm every material claim with a current official primary source:
+   owning vendor/platform documentation, a release or migration guide, an immutable
+   upstream source tag, or a normative standard. Record the URL or immutable source
+   reference, applicable version/tag, retrieval date, and exact supported claim.
+3. **Handle gaps truthfully.** If Context7 is unavailable or its query fails, record the
+   exact failure and continue only when primary confirmation exists. If no relevant
+   Context7 library applies, record that reason as not-applicable; primary confirmation
+   is still required. If no current, unambiguous primary source is available, leave the
+   claim unknown or block the decision; local reproduction may demonstrate behavior but
+   cannot turn an unsupported external claim into documented fact.
+4. **Leave the record.** Use the `## Current-documentation receipt` template in
+   [`coordination.md`](coordination.md) on the relevant Linear decision, OS handoff,
+   or branch handoff. Do not place private source text or sensitive queries there.
+
 ## Escalation trigger
 
 Agents MUST ask the user to run one copy-ready external-research prompt only when all
@@ -55,10 +78,9 @@ uncertainty.
   environment context, and model-generated diagrams are leads only. They MUST NOT be
   promoted into a diagram's factual edge or number until the source ledger or executable
   artifact is restored.
-- For unfamiliar Mermaid syntax, use Context7 when available to locate current material,
-  then confirm against [official Mermaid documentation](https://mermaid.js.org/) before authoring.
-  Record the official page used in the research source ledger; Context7 output is not
-  the cited authority.
+- For unfamiliar Mermaid syntax, apply [the current-documentation receipt](#current-documentation-receipt)
+  before authoring. Record the official [Mermaid documentation](https://mermaid.js.org/)
+  page in the research source ledger; Context7 output is not the cited authority.
 - The render report MUST name the exact stable renderer version and actual result. Keep
   generated SVG/PNG/PDF output temporary unless the rendered file is an intentionally
   reviewed research artifact; do not commit generated pictures merely to prove parsing.

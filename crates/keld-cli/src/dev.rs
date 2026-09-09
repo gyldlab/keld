@@ -131,7 +131,8 @@ impl From<keld_core::HelloSessionError> for DevError {
             keld_core::HelloSessionError::WindowPhase { .. } => Self::WindowPhase(rendered),
             keld_core::HelloSessionError::Io(_)
             | keld_core::HelloSessionError::Runtime(_)
-            | keld_core::HelloSessionError::Timeout { .. } => Self::Runtime(rendered),
+            | keld_core::HelloSessionError::Timeout { .. }
+            | keld_core::HelloSessionError::MarkerPossiblyElided { .. } => Self::Runtime(rendered),
         }
     }
 }
@@ -264,20 +265,32 @@ fn staged_host_launch_error(
 /// ready marker never appears.
 pub fn run_dev_echo(project_root: &Path) -> Result<DevEchoResult, DevError> {
     doctor_or_err(project_root)?;
-    let session = HostOwnedHelloSession::start(
+    let session = HostOwnedHelloSession::start_with_stdout_markers(
         project_root,
         project_root.join("src/main.ts"),
         RestartPolicy::default(),
+        &["ipc-echo ok:", "main process ready"],
     )?;
     // Observable wire contract: HELLO + CALL/REPLY printed by the child.
     // Stock template also prints `{name}: main process ready`; crash-recovery
     // fixtures may only print `ipc-echo ok:`, so the second wait stays optional.
     session.wait_until_output_contains("ipc-echo ok:", Duration::from_secs(30))?;
     let _ = session.wait_until_output_contains("main process ready", Duration::from_secs(5));
-    let stdout = session.output().stdout;
-    let stderr = session.output().stderr;
+    let captured = session.output();
+    let stdout = captured.stdout.clone();
+    let stderr = captured.stderr.clone();
     io::stdout().write_all(stdout.as_bytes())?;
+    if let Some(notice) =
+        keld_runtime::CapturedOutput::elision_notice(captured.stdout_dropped_bytes)
+    {
+        io::stdout().write_all(notice.as_bytes())?;
+    }
     io::stderr().write_all(stderr.as_bytes())?;
+    if let Some(notice) =
+        keld_runtime::CapturedOutput::elision_notice(captured.stderr_dropped_bytes)
+    {
+        io::stderr().write_all(notice.as_bytes())?;
+    }
     let link = session.link().to_owned();
     // The windowless echo contract is complete once the observable reply was
     // captured. A child that then ends itself with status zero is still
@@ -579,20 +592,32 @@ where
     W: FnOnce(&str, &str) -> Result<(), DevError>,
 {
     doctor_or_err(project_root)?;
-    let session = HostOwnedHelloSession::start(
-        project_root,
-        project_root.join("src/main.ts"),
-        RestartPolicy::default(),
-    )?;
     let ready = format!(
         "{}: main process ready (IPC echo ok)",
         hello_title_for_project(project_root)
     );
+    let session = HostOwnedHelloSession::start_with_stdout_markers(
+        project_root,
+        project_root.join("src/main.ts"),
+        RestartPolicy::default(),
+        &[&ready],
+    )?;
     session.wait_until_output_contains(&ready, Duration::from_secs(30))?;
-    let stdout = session.output().stdout;
-    let stderr = session.output().stderr;
+    let captured = session.output();
+    let stdout = captured.stdout.clone();
+    let stderr = captured.stderr.clone();
     io::stdout().write_all(stdout.as_bytes())?;
+    if let Some(notice) =
+        keld_runtime::CapturedOutput::elision_notice(captured.stdout_dropped_bytes)
+    {
+        io::stdout().write_all(notice.as_bytes())?;
+    }
     io::stderr().write_all(stderr.as_bytes())?;
+    if let Some(notice) =
+        keld_runtime::CapturedOutput::elision_notice(captured.stderr_dropped_bytes)
+    {
+        io::stderr().write_all(notice.as_bytes())?;
+    }
 
     // Window phase while echo listener + Bun are still live.
     let title = hello_title_for_project(project_root);
@@ -633,11 +658,23 @@ fn window_phase_outcome(
 ///
 /// Returns [`DevError`] when doctor checks fail or the session cannot start.
 pub fn start_dev_session(project_root: &Path) -> Result<HostOwnedHelloSession, DevError> {
+    start_dev_session_with_stdout_markers(project_root, &[])
+}
+
+/// Starts a diagnostic session with known stdout markers observed before truncation.
+///
+/// # Errors
+/// Returns [`DevError`] if doctor, marker registration or session setup fails.
+pub fn start_dev_session_with_stdout_markers(
+    project_root: &Path,
+    markers: &[&str],
+) -> Result<HostOwnedHelloSession, DevError> {
     doctor_or_err(project_root)?;
-    HostOwnedHelloSession::start(
+    HostOwnedHelloSession::start_with_stdout_markers(
         project_root,
         project_root.join("src/main.ts"),
         RestartPolicy::default(),
+        markers,
     )
     .map_err(DevError::from)
 }

@@ -153,6 +153,7 @@ mermaid-render-check:
 
 # KEL-39: CODEOWNERS, templates, Action SHA pin, .github not gitignored.
 hygiene:
+    bun --no-install test tools/ci_workflow_security.test.ts
     mkdir -p target/ci-hygiene
     rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
     target/ci-hygiene/ci-hygiene-test

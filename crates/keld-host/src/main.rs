@@ -213,9 +213,15 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
             "KELD-CORE-037: supervised Bun guardian failed — {error}. Fix the Bun app failure and relaunch the no-flag host."
         )
     })?;
+    let stdout_notice = keld_runtime::CapturedOutput::elision_notice(report.stdout_dropped_bytes)
+        .unwrap_or_default();
+    let stderr_notice = keld_runtime::CapturedOutput::elision_notice(report.stderr_dropped_bytes)
+        .unwrap_or_default();
     std::io::stderr()
         .write_all(report.stdout.as_bytes())
+        .and_then(|()| std::io::stderr().write_all(stdout_notice.as_bytes()))
         .and_then(|()| std::io::stderr().write_all(report.stderr.as_bytes()))
+        .and_then(|()| std::io::stderr().write_all(stderr_notice.as_bytes()))
         .map_err(|source| format!("KELD-CORE-037: guardian stderr failed — {source}. Retry."))?;
     Ok(())
 }
