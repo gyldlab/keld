@@ -679,9 +679,9 @@ owners into T2 would create unused scaffolding or implement later tasks early.
       task-specific predecessor table below is necessary but not sufficient for
       T3 dispatch: execution frontier `237-execution-frontier-refuted`
       (research `8c1d9466d5fc8860f91d3fba9c000b483b17974f`) lists three further
-      predicates, none of them met at that pin — `KEL-130/T1` landed, which
-      KEL-130 has not started; a `keld-native` -> `keld-core` dependency
-      review; and that frontier naming `KEL-102/T3` ready.
+      predicates, none of them met at that pin: `KEL-130/T1` must land, and
+      KEL-130 has not started; a `keld-native` -> `keld-core` dependency review
+      must pass; and that frontier must name `KEL-102/T3` ready.
 - [ ] `KEL-102/T3`: Wire the v0 authenticated app link through `keld-core` to
       the live `keld-native::fs` broker with a host-derived `AppProcess`
       context. Core routes and passes the verified snapshot/principal/request;
