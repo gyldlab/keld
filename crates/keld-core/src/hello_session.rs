@@ -152,6 +152,21 @@ impl HostOwnedHelloSession {
         bun_main: PathBuf,
         policy: RestartPolicy,
     ) -> Result<Self, HelloSessionError> {
+        Self::start_with_stdout_markers(project_root, bun_main, policy, &[])
+    }
+
+    /// Starts a diagnostic session with stdout markers registered before spawn.
+    /// Registered markers retain their first raw-byte match across transcript
+    /// truncation and restarts; unregistered waits inspect retained text only.
+    ///
+    /// # Errors
+    /// Returns an error if marker registration, listener setup or spawning fails.
+    pub fn start_with_stdout_markers(
+        project_root: &Path,
+        bun_main: PathBuf,
+        policy: RestartPolicy,
+        markers: &[&str],
+    ) -> Result<Self, HelloSessionError> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let server = EchoServer::start(&ready_tx)?;
         ready_rx
@@ -161,7 +176,7 @@ impl HostOwnedHelloSession {
         let link_for_child = link.clone();
         let project_root = project_root.to_path_buf();
 
-        let supervisor = Supervisor::start(policy, move || {
+        let supervisor = Supervisor::start_with_stdout_markers(policy, markers, move || {
             let mut cmd = Command::new("bun");
             cmd.arg("run")
                 .arg(&bun_main)
@@ -206,10 +221,10 @@ impl HostOwnedHelloSession {
     /// Drains supervisor events so a crash-loop surfaces as
     /// [`HelloSessionError::Runtime`] instead of a hang.
     ///
-    /// Matches against the supervisor's retained transcript, which is bounded
-    /// (KEL-134). A marker printed within the pinned head stays findable for
-    /// the life of the session; one printed after the app's bulk output can be
-    /// elided before any poll observes it.
+    /// Markers registered by [`Self::start_with_stdout_markers`] are observed
+    /// as raw UTF-8 bytes before truncation and retain their first match. A partial
+    /// match cannot span child generations. Other needles search only the bounded,
+    /// lossy retained transcript and may have been elided before this wait.
     ///
     /// # Errors
     ///
@@ -230,13 +245,7 @@ impl HostOwnedHelloSession {
         let deadline = Instant::now() + timeout;
         loop {
             let captured = supervisor.output();
-            if captured.stdout.contains(needle) {
-                self.mark_ready(
-                    supervisor,
-                    &captured.stdout,
-                    captured.stdout_dropped_bytes,
-                    needle,
-                );
+            if self.mark_ready(supervisor, &captured, needle) {
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -246,7 +255,9 @@ impl HostOwnedHelloSession {
                 // marker either landed in the elided span or has not been
                 // printed yet (KEL-134). Report both possibilities rather than
                 // blaming the deadline alone, which hides the first one.
-                if captured.stdout_dropped_bytes > 0 {
+                if captured.stdout_dropped_bytes > 0
+                    && supervisor.stdout_marker_offset(needle).is_none()
+                {
                     return Err(HelloSessionError::MarkerPossiblyElided {
                         waiting_for: "Bun stdout ready marker",
                         elided_bytes: captured.stdout_dropped_bytes,
@@ -277,13 +288,7 @@ impl HostOwnedHelloSession {
                 }
                 Some(SupervisorEvent::Stopped) => {
                     let captured = supervisor.output();
-                    if captured.stdout.contains(needle) {
-                        self.mark_ready(
-                            supervisor,
-                            &captured.stdout,
-                            captured.stdout_dropped_bytes,
-                            needle,
-                        );
+                    if self.mark_ready(supervisor, &captured, needle) {
                         return Ok(());
                     }
                     return Err(HelloSessionError::Runtime(
@@ -396,26 +401,41 @@ impl HostOwnedHelloSession {
     /// recovered crash (KEL-70 AC1/AC3) from an app that ended after becoming
     /// live (KEL-105/KEL-116).
     ///
-    /// First transition only. [`Self::wait_until_output_contains`] matches
-    /// against the retained transcript, whose pinned head keeps an early
-    /// marker findable for the life of the session, so a later call for a
-    /// marker the app already printed returns immediately — re-baselining there would absorb a
-    /// self-termination that happened after the app was live and report it as
-    /// recovered.
-    ///
-    /// `stdout` is the exact buffer the marker was found in, and it is read
-    /// *before* the ledger on purpose: the ledger only grows, so a termination
-    /// that lands in between makes the comparison stricter, never looser.
-    fn mark_ready(&self, supervisor: &Supervisor, stdout: &str, dropped: usize, needle: &str) {
-        if self.ready_recorded.swap(true, Ordering::SeqCst) {
-            return;
+    /// First successful wait only. Registered markers use immutable first-match
+    /// raw offsets; other needles use the retained transcript conservatively.
+    /// A later wait must not absorb a post-ready death into a new baseline.
+    /// The observed offset/transcript is read before the monotonically growing
+    /// ledger so a concurrent termination cannot earn extra recovery credit.
+    fn mark_ready(
+        &self,
+        supervisor: &Supervisor,
+        captured: &keld_runtime::CapturedOutput,
+        needle: &str,
+    ) -> bool {
+        let recovered = match supervisor.stdout_marker_offset(needle) {
+            Some(Some(offset)) => {
+                recovered_termination_baseline_at(offset, &supervisor.crash_ledger())
+            }
+            Some(None) => return false,
+            None => {
+                if !captured.stdout.contains(needle) {
+                    return false;
+                }
+                recovered_termination_baseline(
+                    &captured.stdout,
+                    captured.stdout_dropped_bytes,
+                    needle,
+                    &supervisor.crash_ledger(),
+                )
+            }
+        };
+        if !self.ready_recorded.swap(true, Ordering::SeqCst) {
+            self.recovered_crashes
+                .store(recovered.crashes, Ordering::SeqCst);
+            self.recovered_self_terminations
+                .store(recovered.all, Ordering::SeqCst);
         }
-        let recovered =
-            recovered_termination_baseline(stdout, dropped, needle, &supervisor.crash_ledger());
-        self.recovered_crashes
-            .store(recovered.crashes, Ordering::SeqCst);
-        self.recovered_self_terminations
-            .store(recovered.all, Ordering::SeqCst);
+        true
     }
 }
 
@@ -456,7 +476,13 @@ fn recovered_termination_baseline(
     if dropped > 0 && marker_end > keld_runtime::CAPTURE_HEAD_BYTES {
         return RecoveredTerminations::default();
     }
-    let marker_offset = marker_end;
+    recovered_termination_baseline_at(marker_end, ledger)
+}
+
+fn recovered_termination_baseline_at(
+    marker_offset: usize,
+    ledger: &CrashLedger,
+) -> RecoveredTerminations {
     RecoveredTerminations {
         crashes: if marker_offset > ledger.stdout_len_at_last_crash {
             ledger.count
@@ -574,6 +600,50 @@ mod tests {
                 stdout_len,
             }),
         }
+    }
+
+    #[test]
+    fn registered_marker_survives_flood_before_first_wait() {
+        use super::HostOwnedHelloSession;
+        use keld_runtime::{RestartPolicy, Supervisor};
+        use std::process::Command;
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::time::Duration;
+
+        let supervisor = Supervisor::start_with_stdout_markers(
+            RestartPolicy::default(), &["first-marker", "second-marker"], || {
+                let mut command = Command::new("bun");
+                command.args(["-e", "const {writeSync}=require('node:fs'); writeSync(1,'x'.repeat(131072)); writeSync(1,'first-marker'); writeSync(1,'y'.repeat(2097152)); writeSync(1,'second-marker');"]);
+                command
+            },
+        ).expect("start marker flood child");
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
+        let captured = supervisor.output();
+        assert!(captured.stdout_dropped_bytes > 0);
+        assert!(
+            !captured.stdout.contains("first-marker"),
+            "marker must actually be elided"
+        );
+        let session = HostOwnedHelloSession {
+            server: None,
+            supervisor: Some(supervisor),
+            link: String::new(),
+            ready_recorded: AtomicBool::new(false),
+            recovered_self_terminations: AtomicU32::new(0),
+            recovered_crashes: AtomicU32::new(0),
+        };
+        session
+            .wait_until_output_contains("first-marker", Duration::from_secs(1))
+            .expect("registered marker survives completed flood before first wait");
+        session
+            .wait_until_output_contains("second-marker", Duration::from_secs(1))
+            .expect("secondary registered marker is observable");
+        session
+            .wait_until_output_contains("first-marker", Duration::from_secs(1))
+            .expect("original marker remains observable after secondary wait");
     }
 
     #[test]

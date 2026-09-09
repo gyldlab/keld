@@ -10,7 +10,12 @@ use std::process::Command;
 use std::time::Duration;
 
 use keld_cli::create::create_project;
-use keld_cli::dev::start_dev_session;
+use keld_cli::dev::start_dev_session_with_stdout_markers;
+
+const MARKERS: &[&str] = &[
+    "concurrent-ready",
+    "ipc-echo ok: message=\"after-window\" count=2",
+];
 
 const KIPC_TS: &str = include_str!("../templates/hello/src/kipc.ts");
 
@@ -68,7 +73,8 @@ try {{
     let main = [KIPC_TS, body.as_str()].concat();
     fs::write(root.join("src/main.ts"), main).expect("overwrite main");
 
-    let session = start_dev_session(&root).expect("start host-owned session");
+    let session =
+        start_dev_session_with_stdout_markers(&root, MARKERS).expect("start host-owned session");
     session
         .wait_until_output_contains("concurrent-ready", Duration::from_secs(30))
         .expect("first HELLO+CALL ready");

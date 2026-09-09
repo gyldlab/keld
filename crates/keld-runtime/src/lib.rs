@@ -292,8 +292,9 @@ pub const CAPTURE_MAX_RETAINED_BYTES: usize =
 /// `stdout` and `stderr` are **bounded transcripts**, not whole streams: at
 /// most [`CAPTURE_MAX_RETAINED_BYTES`] per stream is retained, as a pinned
 /// head of [`CAPTURE_HEAD_BYTES`] followed by a sliding tail. Only the middle
-/// is elided, so an early ready marker or first error survives an arbitrarily
-/// long later flood.
+/// is elided. Text wholly inside the pinned head survives later floods, but
+/// arbitrary markers may be dropped. Use [`Supervisor::start_with_stdout_markers`]
+/// for diagnostic markers whose first observation must survive elision.
 ///
 /// The `*_total_bytes` counters record everything the child wrote and never
 /// reset across restart generations, so an ordering fact taken from them stays
@@ -703,7 +704,7 @@ fn shutdown_was_accepted(state: &AtomicBool) -> bool {
 #[derive(Debug)]
 pub struct Supervisor {
     events_rx: Receiver<SupervisorEvent>,
-    output: Arc<Mutex<CapturedOutput>>,
+    output: Arc<Mutex<CaptureState>>,
     current_pid: Arc<Mutex<Option<u32>>>,
     crash_loop_error: Arc<Mutex<Option<RuntimeError>>>,
     crashes: Arc<Mutex<CrashLedger>>,
@@ -714,6 +715,107 @@ pub struct Supervisor {
     #[cfg(any(target_os = "linux", windows))]
     restart_attempt: Arc<AtomicU32>,
     thread: Option<JoinHandle<()>>,
+}
+
+/// Capture-owned marker state shares the transcript lock and raw-byte clock.
+#[derive(Debug)]
+struct CaptureState {
+    transcript: CapturedOutput,
+    markers: Vec<StdoutMarker>,
+}
+
+#[derive(Debug)]
+struct StdoutMarker {
+    bytes: Vec<u8>,
+    prefix: Vec<usize>,
+    matched: usize,
+    first_end: Option<usize>,
+}
+
+impl CaptureState {
+    fn new(markers: &[&str]) -> Result<Self, RuntimeError> {
+        if markers.len() > 32
+            || markers
+                .iter()
+                .map(|marker| marker.len())
+                .try_fold(0_usize, usize::checked_add)
+                .is_none_or(|total| total > 4096)
+            || markers
+                .iter()
+                .enumerate()
+                .any(|(index, marker)| marker.is_empty() || markers[..index].contains(marker))
+        {
+            return Err(RuntimeError::Lifecycle {
+                phase: "stdout marker registration",
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "register at most 32 unique nonempty stdout markers totaling at most 4096 UTF-8 bytes",
+                ),
+            });
+        }
+        let markers = markers
+            .iter()
+            .map(|marker| {
+                let bytes = marker.as_bytes().to_vec();
+                let mut prefix = vec![0; bytes.len()];
+                let mut matched = 0;
+                for index in 1..bytes.len() {
+                    while matched > 0 && bytes[index] != bytes[matched] {
+                        matched = prefix[matched - 1];
+                    }
+                    if bytes[index] == bytes[matched] {
+                        matched += 1;
+                    }
+                    prefix[index] = matched;
+                }
+                StdoutMarker {
+                    bytes,
+                    prefix,
+                    matched: 0,
+                    first_end: None,
+                }
+            })
+            .collect();
+        Ok(Self {
+            transcript: CapturedOutput::default(),
+            markers,
+        })
+    }
+
+    fn begin_generation(&mut self) {
+        for marker in &mut self.markers {
+            marker.matched = 0;
+        }
+    }
+
+    fn push_raw(&mut self, bytes: &[u8], is_stdout: bool) {
+        if is_stdout {
+            for marker in &mut self.markers {
+                if marker.first_end.is_some() {
+                    continue;
+                }
+                for (index, byte) in bytes.iter().enumerate() {
+                    while marker.matched > 0 && *byte != marker.bytes[marker.matched] {
+                        marker.matched = marker.prefix[marker.matched - 1];
+                    }
+                    if *byte == marker.bytes[marker.matched] {
+                        marker.matched += 1;
+                    }
+                    if marker.matched == marker.bytes.len() {
+                        marker.first_end = Some(
+                            self.transcript
+                                .stdout_total_bytes
+                                .saturating_add(index)
+                                .saturating_add(1),
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+        self.transcript
+            .push_chunk(&String::from_utf8_lossy(bytes), bytes.len(), is_stdout);
+    }
 }
 
 impl Supervisor {
@@ -729,16 +831,55 @@ impl Supervisor {
     /// # Errors
     ///
     /// Returns [`RuntimeError::Spawn`] if the very first spawn attempt fails.
-    pub fn start<F>(policy: RestartPolicy, mut command_factory: F) -> Result<Self, RuntimeError>
+    pub fn start<F>(policy: RestartPolicy, command_factory: F) -> Result<Self, RuntimeError>
     where
         F: FnMut() -> Command + Send + 'static,
     {
-        Self::start_prepared(
+        Self::start_with_stdout_markers(policy, &[], command_factory)
+    }
+
+    /// Starts supervision with raw stdout markers registered before the first spawn.
+    ///
+    /// Accepts at most 32 unique, nonempty markers totaling at most 4096 UTF-8
+    /// bytes. Matches span reads, but never child generations. First-match raw
+    /// byte end offsets survive transcript elision and restarts. Registration
+    /// allocates bounded matcher state; matching adds no per-read allocation.
+    ///
+    /// # Errors
+    /// Returns [`RuntimeError::Lifecycle`] with phase `stdout marker registration`
+    /// and an `InvalidInput` source for invalid markers, before calling the factory.
+    /// First-spawn failures are returned as [`RuntimeError::Spawn`].
+    pub fn start_with_stdout_markers<F>(
+        policy: RestartPolicy,
+        markers: &[&str],
+        mut command_factory: F,
+    ) -> Result<Self, RuntimeError>
+    where
+        F: FnMut() -> Command + Send + 'static,
+    {
+        Self::start_prepared_with_capture(
             policy,
             CommandPreparer {
                 factory: move || command_factory(),
             },
+            CaptureState::new(markers)?,
         )
+    }
+
+    /// Returns the immutable first raw-byte end offset of a registered marker.
+    ///
+    /// Outer `None` means unregistered; `Some(None)` means not yet observed.
+    /// Offsets share [`CrashLedger::stdout_len_at_last_crash`]'s coordinate,
+    /// not indices into the retained or lossily decoded transcript.
+    #[must_use]
+    pub fn stdout_marker_offset(&self, marker: &str) -> Option<Option<usize>> {
+        self.output
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .markers
+            .iter()
+            .find(|entry| entry.bytes == marker.as_bytes())
+            .map(|entry| entry.first_end)
     }
 
     /// Starts supervision from a fresh prepared-child factory.
@@ -753,10 +894,21 @@ impl Supervisor {
     where
         P: ChildPreparer,
     {
+        Self::start_prepared_with_capture(policy, preparer, CaptureState::new(&[])?)
+    }
+
+    fn start_prepared_with_capture<P>(
+        policy: RestartPolicy,
+        preparer: P,
+        capture: CaptureState,
+    ) -> Result<Self, RuntimeError>
+    where
+        P: ChildPreparer,
+    {
         let (events_tx, events_rx) = mpsc::channel();
         let (preparer_tx, preparer_rx) = mpsc::sync_channel::<P>(0);
         let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<(), RuntimeError>>(0);
-        let output = Arc::new(Mutex::new(CapturedOutput::default()));
+        let output = Arc::new(Mutex::new(capture));
         let current_pid = Arc::new(Mutex::new(None));
         let crash_loop_error = Arc::new(Mutex::new(None));
         let crashes = Arc::new(Mutex::new(CrashLedger::default()));
@@ -995,6 +1147,7 @@ impl Supervisor {
         self.output
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .transcript
             .clone()
     }
 
@@ -1080,7 +1233,7 @@ fn supervise<P>(
     mut child: Child,
     mut lease: P::Lease,
     events_tx: &Sender<SupervisorEvent>,
-    output: &Arc<Mutex<CapturedOutput>>,
+    output: &Arc<Mutex<CaptureState>>,
     current_pid: &Arc<Mutex<Option<u32>>>,
     crash_loop_error: &Arc<Mutex<Option<RuntimeError>>>,
     crash_ledger: &Arc<Mutex<CrashLedger>>,
@@ -1302,6 +1455,7 @@ fn supervise<P>(
                 stderr_tail: output
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
+                    .transcript
                     .stderr_tail(2000),
             };
             *crash_loop_error
@@ -1417,7 +1571,7 @@ struct CaptureStartError {
 #[allow(clippy::too_many_lines)] // one transaction must return every partial thread/handle/budget when the second capture spawn fails
 fn start_capture_threads(
     child: &mut Child,
-    output: &Arc<Mutex<CapturedOutput>>,
+    output: &Arc<Mutex<CaptureState>>,
 ) -> Result<CaptureThreads, CaptureStartError> {
     #[cfg(windows)]
     let stdout_budget = Arc::new(AtomicU64::new(u64::MAX));
@@ -1427,6 +1581,10 @@ fn start_capture_threads(
     let stdout_lock = Arc::new(Mutex::new(()));
     #[cfg(windows)]
     let stderr_lock = Arc::new(Mutex::new(()));
+    output
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .begin_generation();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     #[cfg(windows)]
@@ -1715,7 +1873,7 @@ fn wait_for_self_termination(child: &mut Child) -> Option<std::process::ExitStat
 /// disagree.
 fn record_self_termination(
     crash_ledger: &Arc<Mutex<CrashLedger>>,
-    output: &Arc<Mutex<CapturedOutput>>,
+    output: &Arc<Mutex<CaptureState>>,
     pid: u32,
     exit_code: Option<i32>,
 ) {
@@ -1728,8 +1886,8 @@ fn record_self_termination(
             // Total bytes written, not the retained tail: the retained tail is
             // bounded (KEL-134) and would make this ordering point go backwards
             // once older output is dropped.
-            captured.stdout_total_bytes,
-            (exit_code != Some(0)).then(|| captured.stderr_tail(2000)),
+            captured.transcript.stdout_total_bytes,
+            (exit_code != Some(0)).then(|| captured.transcript.stderr_tail(2000)),
         )
     };
     let mut ledger = crash_ledger.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1753,7 +1911,7 @@ fn record_self_termination(
 #[cfg(not(windows))]
 fn spawn_capture_thread(
     mut reader: impl Read + Send + 'static,
-    output: Arc<Mutex<CapturedOutput>>,
+    output: Arc<Mutex<CaptureState>>,
     name: &'static str,
     is_stdout: bool,
 ) -> std::io::Result<JoinHandle<()>> {
@@ -1765,9 +1923,8 @@ fn spawn_capture_thread(
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => return,
                     Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buf[..n]);
                         let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        guard.push_chunk(&chunk, n, is_stdout);
+                        guard.push_raw(&buf[..n], is_stdout);
                     }
                 }
             }
@@ -1777,7 +1934,7 @@ fn spawn_capture_thread(
 #[cfg(windows)]
 fn spawn_capture_thread(
     mut reader: impl Read + Send + 'static,
-    output: Arc<Mutex<CapturedOutput>>,
+    output: Arc<Mutex<CaptureState>>,
     name: &'static str,
     is_stdout: bool,
     handle: Arc<AtomicUsize>,
@@ -1824,9 +1981,8 @@ fn spawn_capture_thread(
                 match reader.read(&mut buf[..read_len]) {
                     Ok(0) | Err(_) => return,
                     Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buf[..n]);
                         let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        guard.push_chunk(&chunk, n, is_stdout);
+                        guard.push_raw(&buf[..n], is_stdout);
                         let _ =
                             budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                                 (current != u64::MAX).then_some(current.saturating_sub(n as u64))
@@ -1891,6 +2047,145 @@ fn wait_backoff_or_stop(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn stdout_markers_match_raw_splits_overlap_and_keep_first_end() {
+        let mut state = CaptureState::new(&["ababac", "é", "pending"]).expect("valid markers");
+        state.push_raw(b"ababab", true);
+        state.push_raw(&[b'a', b'c', 0xc3], true);
+        state.push_raw(&[0xa9], true);
+        state.push_raw(b"ababac", true);
+        assert_eq!(state.markers[0].first_end, Some(8));
+        assert_eq!(state.markers[1].first_end, Some(10));
+        assert_eq!(state.markers[2].first_end, None);
+        assert_eq!(state.transcript.stdout_total_bytes, 16);
+        assert!(
+            !state.transcript.stdout.contains('é'),
+            "lossy transcript is not the matching oracle"
+        );
+    }
+
+    #[test]
+    fn stdout_markers_survive_elision_but_never_join_generations() {
+        let mut state = CaptureState::new(&["READY", "split"]).expect("valid markers");
+        let padding = vec![b'x'; 4096];
+        for _ in 0..32 {
+            state.push_raw(&padding, true);
+        }
+        state.push_raw(b"READYspli", true);
+        state.begin_generation();
+        state.push_raw(b"t", true);
+        for _ in 0..256 {
+            state.push_raw(&padding, true);
+        }
+        assert!(
+            !state.transcript.stdout.contains("READY"),
+            "regression must actually elide marker"
+        );
+        assert_eq!(state.markers[0].first_end, Some(131_077));
+        assert_eq!(state.markers[1].first_end, None);
+        state.push_raw(b"split", false);
+        assert_eq!(
+            state.markers[1].first_end, None,
+            "stderr cannot satisfy stdout"
+        );
+        state.push_raw(b"split", true);
+        assert_eq!(state.markers[1].first_end, Some(1_179_663));
+    }
+
+    #[test]
+    fn stdout_marker_registration_rejects_invalid_input_before_factory() {
+        let oversized = "x".repeat(4097);
+        for markers in [
+            vec![""],
+            vec!["a", "a"],
+            vec!["x"; 33],
+            vec![oversized.as_str()],
+        ] {
+            let error =
+                Supervisor::start_with_stdout_markers(RestartPolicy::default(), &markers, || {
+                    panic!("invalid registration must not invoke command factory")
+                })
+                .expect_err("invalid markers");
+            assert!(
+                matches!(error, RuntimeError::Lifecycle { phase: "stdout marker registration", source } if source.kind() == std::io::ErrorKind::InvalidInput)
+            );
+        }
+        assert!(CaptureState::new(&[&"x".repeat(4096)]).is_ok());
+        let names: Vec<String> = (0..32).map(|index| format!("marker-{index}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert!(CaptureState::new(&refs).is_ok());
+    }
+
+    #[test]
+    fn stdout_marker_cannot_span_real_child_generations() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let factory_calls = Arc::clone(&calls);
+        let sup = Supervisor::start_with_stdout_markers(
+            RestartPolicy::default(),
+            &["prefixsuffix", "prefix"],
+            move || {
+                let first = factory_calls.fetch_add(1, Ordering::SeqCst) == 0;
+                #[cfg(unix)]
+                let write = if first {
+                    "printf prefix"
+                } else {
+                    "printf suffix"
+                };
+                #[cfg(windows)]
+                let write = if first {
+                    "<nul set /p \"=prefix\""
+                } else {
+                    "<nul set /p \"=suffix\""
+                };
+                shell_command(&joined_steps(&[
+                    write,
+                    if first { "exit 1" } else { "exit 0" },
+                ]))
+            },
+        )
+        .expect("spawn first generation");
+        assert!(matches!(sup.wait_for_outcome(), SupervisorOutcome::Stopped));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            sup.output().stdout,
+            "prefixsuffix",
+            "both real children must write exact raw fragments"
+        );
+        assert_eq!(sup.crash_ledger().self_termination_count, 2);
+        assert_eq!(sup.crash_ledger().count, 1);
+        assert_eq!(
+            sup.stdout_marker_offset("prefix"),
+            Some(Some(6)),
+            "first-generation evidence must survive restart"
+        );
+        assert_eq!(
+            sup.stdout_marker_offset("prefixsuffix"),
+            Some(None),
+            "distinct child streams must not form a marker"
+        );
+    }
+
+    #[test]
+    fn stdout_marker_public_api_observes_real_child_and_crash_clock() {
+        let sup = Supervisor::start_with_stdout_markers(
+            RestartPolicy::default(),
+            &["out-marker", "absent"],
+            || shell_command("echo out-marker"),
+        )
+        .expect("spawn marker child");
+        assert!(matches!(sup.wait_for_outcome(), SupervisorOutcome::Stopped));
+        assert_eq!(sup.stdout_marker_offset("out-marker"), Some(Some(10)));
+        assert_eq!(sup.stdout_marker_offset("absent"), Some(None));
+        assert_eq!(sup.stdout_marker_offset("unregistered"), None);
+        assert!(
+            sup.crash_ledger()
+                .last_self_termination
+                .expect("child exited")
+                .stdout_len
+                >= 10
+        );
+    }
 
     #[derive(Clone)]
     struct RecordingLease {
