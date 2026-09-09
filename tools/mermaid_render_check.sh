@@ -85,9 +85,85 @@ prepare_docker_output_dir() {
   fi
 }
 
+# Keep native Windows commands outside Git Bash's argument conversion boundary.
+windows_native_command() {
+  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$@"
+}
+
+# Git Bash's `noacl` mount can accept chmod while leaving the native DACL broad.
+# Restore one protected DACL for the invoking SID after the output path passed
+# the caller's checkout-local validation. Each reparse point is refused before
+# it is traversed or modified, and every retained file/directory gets the same
+# owner-only rule.
+restore_windows_owner_only_dacl() {
+  local path=$1
+  local native_path
+  local identity
+  local owner_sid
+  local powershell_script
+  for command in cygpath whoami.exe powershell.exe; do
+    command -v "$command" >/dev/null 2>&1 || {
+      echo "KELD-DOCS006: \`$command\` is required to restore the native Windows DACL for retained Docker output. Repair Git for Windows/Windows system tools, then rerun." >&2
+      return 1
+    }
+  done
+  native_path=$(cygpath -aw "$path") || {
+    echo "KELD-DOCS006: cannot convert retained Docker output '$path' to a native Windows path for DACL restoration." >&2
+    return 1
+  }
+  identity=$(windows_native_command whoami.exe /user /fo csv /nh) || {
+    echo "KELD-DOCS006: cannot determine the invoking Windows SID for retained Docker output restoration." >&2
+    return 1
+  }
+  identity=${identity//$'\r'/}
+  owner_sid=${identity##*,}
+  owner_sid=${owner_sid#\"}
+  owner_sid=${owner_sid%\"}
+  [[ "$owner_sid" =~ ^S-[0-9-]+$ ]] || {
+    echo "KELD-DOCS006: cannot parse the invoking Windows SID for retained Docker output restoration." >&2
+    return 1
+  }
+  powershell_script='
+$ErrorActionPreference = "Stop"
+$root = Get-Item -LiteralPath $env:KELD_MERMAID_DACL_PATH -Force
+if (-not $root.PSIsContainer) { throw "retained output is not a directory" }
+$ownerSid = New-Object System.Security.Principal.SecurityIdentifier($env:KELD_MERMAID_DACL_SID)
+$rights = [System.Security.AccessControl.FileSystemRights]::FullControl
+$propagation = [System.Security.AccessControl.PropagationFlags]::None
+$allow = [System.Security.AccessControl.AccessControlType]::Allow
+function Set-KeldOwnerOnlyDacl($item) {
+  if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "reparse point refused: $($item.FullName)"
+  }
+  if ($item -is [System.IO.DirectoryInfo]) {
+    foreach ($child in $item.EnumerateFileSystemInfos()) { Set-KeldOwnerOnlyDacl $child }
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  } else {
+    $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+  }
+  $acl = Get-Acl -LiteralPath $item.FullName
+  $acl.SetAccessRuleProtection($true, $false)
+  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
+  $ownerRuleParams = @{
+    TypeName = "System.Security.AccessControl.FileSystemAccessRule"
+    ArgumentList = @($ownerSid, $rights, $inheritance, $propagation, $allow)
+  }
+  $ownerRule = New-Object @ownerRuleParams
+  [void]$acl.AddAccessRule($ownerRule)
+  Set-Acl -LiteralPath $item.FullName -AclObject $acl
+}
+Set-KeldOwnerOnlyDacl $root
+'
+  if ! KELD_MERMAID_DACL_PATH="$native_path" KELD_MERMAID_DACL_SID="$owner_sid" \
+    windows_native_command powershell.exe -NoProfile -NonInteractive -Command "$powershell_script"; then
+    echo "KELD-DOCS006: cannot install an exact owner-only native Windows DACL on retained Docker output '$path'. Repair its native DACL before inspection or removal." >&2
+    return 1
+  fi
+}
+
 # A failed render is intentionally retained for diagnosis. Undo the temporary
-# broad mode before returning it to the invoking user; do not apply chmod to an
-# unvalidated path or alter the mktemp-owned Unix path.
+# broad mode before returning it to the invoking user; do not alter the
+# mktemp-owned Unix path or claim owner-only access without native DACL success.
 restore_docker_output_dir() {
   local path=$1
   if ! running_under_msys; then
@@ -100,10 +176,15 @@ restore_docker_output_dir() {
       return 1
       ;;
   esac
+  [[ -d "$path" && ! -L "$path" ]] || {
+    echo "KELD-DOCS006: refused to restore permissions on missing or symlinked retained Docker output '$path'. Remove it manually after inspection." >&2
+    return 1
+  }
   chmod 0700 -- "$path" || {
     echo "KELD-DOCS006: cannot restore owner-only access on retained Docker output '$path'. Repair its Windows ACL before inspecting or removing it." >&2
     return 1
   }
+  restore_windows_owner_only_dacl "$path"
 }
 
 docker info >/dev/null 2>&1 || {
