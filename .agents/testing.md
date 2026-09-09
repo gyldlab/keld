@@ -66,10 +66,9 @@ evidence only when a plausible defect can make it fail.
 - Run `just mermaid-test` and `just mermaid-check` for every diagram change. These prove
   the repository validator and structural policy; they do not replace the actual render
   required below.
-- Before using syntax the author has not already rendered in this repository, the author
-  SHOULD use Context7 when available to locate current material and MUST confirm the
-  syntax in the current official Mermaid docs. Context7 is discovery; official Mermaid
-  docs are the primary syntax authority and remain sufficient when the connector is absent.
+- Before using unfamiliar Mermaid syntax, apply
+  [`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt).
+  The official Mermaid docs are the primary syntax authority; Context7 remains discovery.
 - Every added or changed Mermaid block MUST pass `just mermaid-render-check`. It uses the
   official [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)
   11.16.0 GHCR image pinned by immutable OCI digest, with the checkout read-only,
