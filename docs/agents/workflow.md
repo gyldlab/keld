@@ -45,6 +45,11 @@ external contributors do not acquire that authority.
    Before implementation, compare the issue/paste pin with `origin/main`: inspect
    `git log <pin>..origin/main`, newly landed `docs/research` notes, and open PRs. Record
    that delta in this first Linear comment. A stale pin is a defect, not an excuse.
+   When a material decision depends on current external OS/platform-command, SDK/API,
+   runtime, or external-tool semantics, create the receipt owned by
+   [`.agents/research.md` § Current-documentation receipt](../../.agents/research.md#current-documentation-receipt)
+   using the [`.agents/coordination.md` template](../../.agents/coordination.md#current-documentation-receipt).
+   Pure local refactors do not need the receipt.
    For non-trivial work, that same first comment MUST record the decision-bearing atoms
    required by root `AGENTS.md` § Atomic problem-solving protocol. Record each atom's
    owner, boundary and inputs/outputs, failure mode, observable contract, independence
@@ -71,7 +76,8 @@ external contributors do not acquire that authority.
    blocker, supersession or another active owner, stop the overlap, record the conflict
    on the agent's own issue (or handoff), and notify the human/orchestrator; a worktree
    does not authorize competing architecture decisions. Apply the attempt, evidence,
-   status, and handoff rules owned by `.agents/coordination.md` to every OS criterion.
+   status, handoff, and current-documentation receipt rules owned by `.agents/coordination.md`
+   to every applicable OS or external-semantic criterion.
 5. **Verify**. `just ci` is the exact full local gate; format, warning-denied clippy, and
    the full workspace test suite are its mandatory core Rust subset. Also run the spec's
    test plan. Diagram changes additionally run

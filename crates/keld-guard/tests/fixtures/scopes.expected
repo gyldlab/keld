@@ -13,5 +13,22 @@ variable-looking literal: allow
 resolved-looking variable value: deny KELD-GUARD002 out_of_scope
 line-comment marker inside string: allow
 block-comment marker inside string: allow
+url authority swallowed by scheme glob: deny KELD-GUARD002 out_of_scope
+url authority swallowed by scheme glob with path: deny KELD-GUARD002 out_of_scope
+url authority swallowed by wss scheme glob: deny KELD-GUARD002 out_of_scope
+url origin prefix grant: allow
+url origin root itself: allow
+url sibling authority beyond origin prefix: deny KELD-GUARD002 out_of_scope
+url authority swallowed by single-slash scheme glob: deny KELD-GUARD002 out_of_scope
+url authority swallowed by triple-slash scheme glob: deny KELD-GUARD002 out_of_scope
+windows drive glob keeps path semantics: allow
+windows drive glob does not reach another drive: deny KELD-GUARD002 out_of_scope
+backslash at the grant boundary is not the anchor: deny KELD-GUARD002 out_of_scope
+forward slash at the grant boundary is the anchor: allow
+one letter scheme glob with separators: deny KELD-GUARD002 out_of_scope
+backslash scheme glob: deny KELD-GUARD002 out_of_scope
+tab separated scheme glob: deny KELD-GUARD002 out_of_scope
+colon outside scheme position keeps its path grant: allow
+windows device prefixed drive grant: allow
 unknown operation: deny KELD-GUARD001 not_granted
 empty grant: deny KELD-GUARD001 not_granted

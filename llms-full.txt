@@ -1602,9 +1602,9 @@ manifest decoder.
   "app": {                                 // grants for the Bun app process
     "fs":      { "read": ["$APPDATA/**", "$DOCUMENTS/MyApp/**"], "write": ["$APPDATA/**"] },
     "net":     { "connect": ["https://api.myapp.com", "wss://sync.myapp.com"] },
-    "shell":   { "open": ["https://*"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
+    "shell":   { "open": ["https://docs.myapp.com/**"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
     "system":  ["clipboard.read", "clipboard.write", "notifications", "tray", "global-shortcuts"],
-    "secrets": ["keychain:myapp/*"]
+    "secrets": ["keychain:myapp/**"]
   },
   "windows": {
     "main":  { "channels": ["notes.*", "el:*"], "web": { "csp": "default" } },
@@ -1614,11 +1614,59 @@ manifest decoder.
 }
 ```
 
-- **Path scopes** use the vetted-pattern matcher in the host (no regex injection).
+- **Path and URL scopes** share one vetted-pattern matcher in the host (no regex
+  injection). A `/**` suffix grants the node it names plus the hierarchy below it,
+  and two rules stop it handing over an **authority** the operator never named.
+  *A grant must name a destination:* if stripping `/**` leaves a scheme followed
+  only by separators or ASCII whitespace — `"https://**"`, `"https:/**"`,
+  `"https:///**"`, `"file:///**"`, and the same spellings with a literal tab,
+  newline or carriage return after the colon — the grant matches nothing.
+  Those spellings are refused together because they are not interchangeable to a
+  parser: `https:/host` carries no `//`, so RFC 3986 reads a path, yet WHATWG URL
+  parsing — a browser, `fetch`, a webview — still reads the host out of it, and it
+  strips tab/LF/CR before parsing at all. The rule takes the WHATWG ASCII
+  whitespace set (space, tab, LF, FF, CR), which is wider than that and only
+  ever refuses more; vertical tab is not in it, and no URL parser accepts it. *A grant must not reach past the authority it does name:* for a
+  scheme-qualified destination the grant must name the authority itself, and the
+  prefix then matches only at a literal `/` separator.
+  So `"https://api.myapp.com/**"` covers that origin's subtree and still denies the
+  longer sibling `api.myapp.com.evil.test`. **No glob grants "any host" for a
+  multi-character scheme** — name the origins. `**` is the only wildcard a path or
+  URL scope has; a lone `*` matches literally. (Channel grants are a separate,
+  not-yet-live vocabulary — see below.)
+  Residuals, stated rather than left to be discovered. **A colon starts a scheme
+  only at the very start of the grant** (RFC 3986 §3.1), so
+  `$APPDATA/cache/https:/**`, `/srv/backup:/**`, `/C:/**` and `\\?\C:/**` all stay
+  ordinary path globs. **A bare `X:` is a drive root**, so `C:/**` covers the
+  drive; that exemption stops at the colon, so `a://**` is refused like any other
+  scheme glob — but `C:/**` and `a:/**` are the same *shape*, so a one-letter
+  scheme's `X:/**` is a path glob — one of the two shapes the guarantee above does
+  not cover, the other being the schemeless `/**` and `//**` below. The
+  doubled-separator drive spellings `C://**`, `C:///**`, `C:\/**` and `C:\\/**`
+  all carry separators and are therefore inert; write `C:/**`. **A relative grant
+  whose first segment ends in a colon** (`cache:/**`) is read as a scheme and is
+  inert. The fix is to put something before the colon: `./cache:/**` or
+  `$APPDATA/cache:/**` both work, while `$CACHE:/**` does not — a `$VAR` helps
+  only as a prefix, not as a replacement for the colon-bearing segment. **A schemeless reference has no
+  scheme to anchor to** and is matched as a path, so `/**` and `//**` are path
+  globs carrying no authority guarantee — and on Windows that is not only a URL
+  concern, since `//host/share/…` is a resolvable UNC path. **The separator is
+  required literally**, so a grant ending at an origin does not cover that origin
+  written with a port, query or fragment (`https://api.myapp.com:443/v1`,
+  `…?q=1`, `…#f`): spell the destination the way the host will send it, port
+  included. **A grant that names no destination is inert rather than rejected** —
+  it loads, then authorises nothing, and no deny text or `keld doctor` check says
+  so yet (KEL-212). Finally, the `..` rejection below is a literal-segment check:
+  a percent-encoded `%2e%2e` is *not* decoded in v0, so it is rejected only once
+  URL scopes become origin-aware.
   **Destination:** `$VARS` resolved by the host, then symlink/`..` traversal
   normalized after resolution — the classic scope-bypass bugs are test fixtures.
+  URL scopes additionally become origin-aware (case folding, default ports,
+  percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
+  is a byte comparison, so spell destinations exactly as the host will send them.
   **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
-  not in this slice.
+  not in this slice. The authority rule above **is** live in `keld-guard`
+  (KEL-208); no URL-valued capability is wired to it yet.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of

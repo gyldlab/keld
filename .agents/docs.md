@@ -19,8 +19,9 @@ Load for agent-docs, generated docs, Mermaid, or public documentation changes.
 - Every block has `accTitle` and `accDescr`. Labels carry current/target and
   framework/showcase meaning without relying on color; surrounding prose names source of
   truth and any implementation gap.
-- Use stable repository/GitHub syntax. For unfamiliar syntax, Context7 MAY locate current
-  material, but official Mermaid docs remain the authority.
+- Use stable repository/GitHub syntax. For unfamiliar Mermaid syntax, apply
+  [`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt);
+  official Mermaid docs remain the authority.
 
 ## Shared semantic palette
 

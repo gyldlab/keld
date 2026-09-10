@@ -54,6 +54,7 @@ jobs:
       # router falls back to all lanes when either commit is unavailable.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
@@ -84,6 +85,8 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
@@ -105,6 +108,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
@@ -162,7 +167,7 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: nextest
       - name: test
@@ -245,6 +250,8 @@ jobs:
     if: needs.changes.outputs.gui == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
@@ -286,6 +293,8 @@ jobs:
     if: needs.changes.outputs.msrv == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
@@ -311,6 +320,8 @@ jobs:
     if: needs.changes.outputs.deny == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
           toolchain: 1.97.1
@@ -327,6 +338,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Install gitleaks 8.30.1
         run: |
@@ -356,6 +368,9 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
       - name: Atomic problem-solving protocol contract
         run: |
           mkdir -p target/atomic-protocol
@@ -376,6 +391,7 @@ jobs:
           mkdir -p target/ci-hygiene
           rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
           target/ci-hygiene/ci-hygiene-test
+          bun --no-install test tools/ci_workflow_security.test.ts
       - name: Check this checkout
         if: needs.changes.outputs.hygiene == 'true'
         run: |
@@ -401,6 +417,80 @@ jobs:
         if: needs.changes.outputs.docs == 'true'
         run: tools/mermaid_render_check.sh
 
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            os: macos-latest
+          - language: javascript-typescript
+            os: ubuntu-latest
+          - language: actions
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        if: matrix.language == 'rust'
+        with:
+          toolchain: 1.97.1
+      # Rust none mode still executes build.rs/proc macros. Keep this on hosted
+      # pull_request runners without secrets or repository write permission.
+      # macOS avoids another GTK apt lane; this is not all-OS containment proof.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - name: Analyze and upload CodeQL results
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
+        with:
+          category: /language:${{ matrix.language }}
+          upload: always
+          skip-queries: false
+          wait-for-processing: true
+
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject incomplete dependency metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KELD_DEPENDENCY_REPOSITORY: ${{ github.repository }}
+          KELD_DEPENDENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          KELD_DEPENDENCY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          tools/dependency_review_metadata.sh test
+          tools/dependency_review_metadata.sh check "$KELD_DEPENDENCY_REPOSITORY" "$KELD_DEPENDENCY_BASE" "$KELD_DEPENDENCY_HEAD"
+      # GitHub's supported manifest graph is the oracle. bun.lock transitive
+      # coverage is not implied; see docs/engineering/security-ci.md.
+      - name: Review dependency vulnerabilities
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fail-on-severity: low
+          fail-on-scopes: runtime, development, unknown
+          vulnerability-check: true
+          license-check: false # Cargo license policy remains owned by deny.toml.
+          comment-summary-in-pr: never
+          retry-on-snapshot-warnings: false
+          warn-only: false
+          show-openssf-scorecard: false
+
   required:
     name: CI required
     if: ${{ always() }}
@@ -414,6 +504,8 @@ jobs:
       - deny
       - secrets
       - hygiene
+      - codeql
+      - dependency-review
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -438,6 +530,8 @@ jobs:
           KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}
           KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}
           KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}
+          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}
+          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -456,4 +550,6 @@ jobs:
             "$KELD_ROUTE_MSRV" \
             "$KELD_ROUTE_DENY" \
             "$KELD_ROUTE_HYGIENE" \
-            "$KELD_ROUTE_DOCS"
+            "$KELD_ROUTE_DOCS" \
+            "$KELD_RESULT_CODEQL" \
+            "$KELD_RESULT_DEPENDENCY_REVIEW"

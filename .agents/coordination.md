@@ -31,6 +31,19 @@ gets this handoff:
 - Ticket status: In Progress | Blocked
 ```
 
+## Current-documentation receipt
+
+For each material external semantic selected by
+[`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt),
+record these exact fields under the required receipt heading in the relevant Linear
+decision, OS handoff, or branch handoff. A pure local refactor does not need one.
+
+- Applicability: applied:<external semantic> | not-applicable:<pure-local reason>
+- Context7: used:<library ID; query; retrieval date> | not-applicable:<reason> | unavailable:<exact tool failure>
+- Official primary: <URL or immutable source; applicable version/tag; retrieval date>
+- Supported claim: <exact decision-bearing claim>
+- Fallback/blocker: none | <unknown or blocked decision and next action>
+
 ## Branch handoff
 
 Every used branch gets one Linear block before its owner finishes:
