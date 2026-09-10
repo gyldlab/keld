@@ -396,14 +396,25 @@ workflow_run = { repository: "gyldlab/keld", workflow_path: string,
 
 `installed_roots` and `dependency_versions` contain `package_version` records sorted
 uniquely by `(name, architecture)`; their versions must match the actual post-install
-package database. `plan.actions` has the same key; `keep` requires equal before/after
-versions and null `deb_sha256`; other operations require the locked `.deb` hash.
+package database. `plan.actions` has the same key. `install` requires
+`before_version=null`, an absent package in the preflight package database, the
+locked `after_version`, and the locked `.deb` hash. `upgrade` requires a non-null
+`before_version` matching that database, a locked `after_version` strictly greater
+under Debian version ordering, and the locked `.deb` hash. `keep` requires non-null
+before/after versions equal under Debian version ordering, matching the installed
+version, and null `deb_sha256`. An equal-version upgrade, downgrade, reinstall
+labelled install, missing before-version for upgrade/keep, or inconsistent hash
+is rejected with `KELD-CIIMG-004` before host mutation.
 `network_sources` is a sorted unique string array of enabled apt network-source URIs
 and must be empty for a passed host receipt. Tool identities sort by name and cover
 exactly the five commands; compiler targets are required, others null. Probe names
 sort uniquely and cover all four checks with exit_code zero on pass.
 `provenance` and `sbom` each use `attestation_evidence`, with the respective expected
 SLSA/SPDX predicate and all identity fields checked against `subjects.json`.
+Every passed subject-verification or qualification receipt requires both records
+to contain `verified: true`. Populated identity fields alone do not establish
+verification. `verified: false` in either record contradicts a passed result and
+must be rejected before qualification or promotion.
 `references` contains `reference` records sorted by `(ref, commit, path, digest)`;
 visibility is `"public" | "private" | "internal"`, linked_repository is a string,
 and anonymous_pull is boolean. `security_indexes` and `stale_sources` use the above
