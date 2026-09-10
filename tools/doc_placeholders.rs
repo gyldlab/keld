@@ -29,8 +29,31 @@ use markdown_contract::{fence_marker, without_struck_text};
 const SCANNED_DIRS: &[&str] = &["docs", ".agents"];
 /// Individual files scanned at the repository root.
 const SCANNED_FILES: &[&str] = &["llms.txt", "llms-full.txt", "AGENTS.md", "README.md"];
-/// Skipped: a nested private checkout with its own contracts.
-const SKIPPED_PREFIX: &str = "docs/research";
+/// Directory names never scanned.
+///
+/// Mirrors `should_skip_dir` in `tools/agent_context.rs` and adds the research
+/// worktrees, which land as `docs/keld-research-<n>-<slug>` siblings of the nested
+/// `docs/research` checkout. They are untracked private material: scanning them
+/// produced 385 findings against another agent's notes, and a gate that fires on
+/// content the repository does not own is a gate somebody switches off. Extracting
+/// this set into `tools/repo_path_contract.rs` alongside its two current users is
+/// the DRY end state; it is parked because that file is the instruction-budget
+/// checker's dependency and widening this PR into instruction governance is a
+/// separate concern.
+const SKIPPED_DIRS: &[&str] = &[
+    ".bun",
+    ".git",
+    "competitors",
+    "node_modules",
+    "research",
+    "target",
+];
+/// Prefix of a research worktree directory name.
+const SKIPPED_DIR_PREFIX: &str = "keld-research-";
+
+fn should_skip_dir(name: &str) -> bool {
+    SKIPPED_DIRS.contains(&name) || name.starts_with(SKIPPED_DIR_PREFIX)
+}
 
 /// Template slots documents are allowed to write.
 ///
@@ -159,10 +182,11 @@ fn collect_markdown(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
         let entry =
             entry.map_err(|error| format!("DOC-PLACEHOLDERS: cannot read `{dir:?}`: {error}"))?;
         let path = entry.path();
-        if relative_path(root, &path).starts_with(SKIPPED_PREFIX) {
-            continue;
-        }
         if path.is_dir() {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            if should_skip_dir(name) {
+                continue;
+            }
             collect_markdown(root, &path, out)?;
         } else if path.extension().is_some_and(|ext| ext == "md") {
             out.push(path);
@@ -334,6 +358,26 @@ mod tests {
     fn non_identifier_braces_are_ignored() {
         let (findings, _) = scan("docs/x.md", "use {} and {:?} and { spaced } freely", &known());
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// Untracked research worktrees sit under `docs/` and are not this repository's
+    /// prose. Scanning them produced 385 findings against another agent's notes.
+    #[test]
+    fn research_worktrees_and_build_output_are_not_scanned() {
+        for name in [
+            "research",
+            "keld-research-232-competitor-field-refresh",
+            "target",
+            "node_modules",
+            ".git",
+            ".bun",
+            "competitors",
+        ] {
+            assert!(should_skip_dir(name), "`{name}` must not be scanned");
+        }
+        for name in ["architecture", "agents", "engineering", "onboarding", "specs"] {
+            assert!(!should_skip_dir(name), "`{name}` must be scanned");
+        }
     }
 
     #[test]

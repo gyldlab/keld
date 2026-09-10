@@ -267,6 +267,17 @@ fn load_fixture(name: &str) -> PermissionsManifest {
     load_manifest(&path).expect("checked ACL fixture must load")
 }
 
+/// The one rendering of a decision as snapshot text.
+///
+/// `assert_case` and `decision_snapshot` both emit it — the asserting path for the
+/// checked-in matrix, the comparing path for a reduced fixture — so it has one owner.
+fn decision_text(decision: &Decision) -> String {
+    match decision {
+        Decision::Allow => "allow".to_owned(),
+        Decision::Deny(reason) => format!("deny {} {}", reason.code(), reason.kind()),
+    }
+}
+
 fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
     let actual = evaluate(manifest, Principal::AppProcess, case.operation, case.path);
     match (case.expected, actual) {
@@ -291,7 +302,7 @@ fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
                 "{} returned the wrong denial variant: {reason:?}",
                 case.name
             );
-            format!("deny {} {}", reason.code(), reason.kind())
+            decision_text(&Decision::Deny(reason))
         }
         (ExpectedDecision::Allow, actual) => {
             assert_eq!(
@@ -338,12 +349,14 @@ fn fixture_decision_matrix_matches_authority_contract() {
 fn decision_snapshot(manifest: &PermissionsManifest) -> Vec<String> {
     CASES
         .iter()
-        .map(
-            |case| match evaluate(manifest, Principal::AppProcess, case.operation, case.path) {
-                Decision::Allow => "allow".to_owned(),
-                Decision::Deny(reason) => format!("deny {} {}", reason.code(), reason.kind()),
-            },
-        )
+        .map(|case| {
+            decision_text(&evaluate(
+                manifest,
+                Principal::AppProcess,
+                case.operation,
+                case.path,
+            ))
+        })
         .collect()
 }
 
