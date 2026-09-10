@@ -1,32 +1,30 @@
 ---
 name: instruction-review
-description: Review changes to AGENTS.md, agent playbooks/workflow, agent skills or assembly config, and instruction budget/checker files for context bloat, routing drift, duplicate ownership, truncation, and missing eval evidence.
+description: Review agent instructions, skills, assembly config and checkers for ownership, routing, budgets, truncation and missing eval evidence.
 ---
 
 # Agent instruction review
 
-Review the exact diff; do not rewrite policy unless the user also asks for fixes.
+Review the exact diff; edit policy only when authorized.
 
-1. Read root `AGENTS.md`, `.agents/instructions.md`, `.agents/index.md`, and
-   `.agents/instruction-budget.tsv`. Load only changed routed owners after that.
-2. Run `just agent-context`, `just atomic-protocol`, `just llms-test`, and
-   `just llms-check`; any failure blocks. Do not raise a budget, weaken a rule/test, or
-   add a route merely to make the check green.
-3. Verify every changed normative rule has one owner, correct `always|routed|evidence`
-   class, exact trigger, updated consumers, before/after bytes and pinned-token count,
-   representative eval, negative control, and rollback.
-4. For `always` changes, run `codex debug prompt-input` at repository root and every
-   nested AGENTS directory. Confirm the complete root and expected nested marker are
-   present, no chain exceeds budget, and output is not cut mid-rule.
-5. Attack the change with missing-route, duplicate-owner, class-drift, hollow/override,
-   renamed-file, max+1-byte, hidden/quoted/HTML-decoy, stale-manifest, and mandatory
-   full-evidence cases.
-6. Report findings by severity with path/evidence. Refuse approval on any over-budget
-   automatic chain, unknown instruction file, absent routed owner, duplicated policy,
-   missing semantic eval, or unexplained budget increase.
+1. Read root `AGENTS.md`, `.agents/instructions.md`, `.agents/index.md` and
+   `.agents/instruction-budget.tsv`; then only changed routed owners.
+2. Run `just agent-context`, `just atomic-protocol`, `just llms-test` and
+   `just llms-check`. Failures block; never inflate budgets or weaken checks.
+3. Verify one owner per rule, load class, exact trigger, consumers, before/after bytes
+   and pinned tokens, representative eval, negative control and rollback.
+4. For `always` changes, run `codex debug prompt-input` at root and every nested AGENTS
+   directory; verify complete expected markers, chain budgets and no truncation.
+5. Attack missing-route, duplicate-owner, class-drift, hollow/override, renamed-file,
+   max+1-byte, hidden/quoted/HTML-decoy, stale-manifest and mandatory full-evidence cases.
+6. Report severity/path/evidence. Reject unknown files, missing owners/routes/evals,
+   over-budget chains and unexplained growth. Lower tokens count only when contracts pass.
 
-For `.codex` assembly changes, also report enabled server/tool delta and actual schema or
-prompt trace; a short config file is not evidence that the exposed tool surface is cheap.
+For assembly changes, record enabled server/tool delta and an actual prompt/tool trace;
+config size is not schema-token cost. Hooks count as enforced only when trusted and
+exercised on the named client; CI or a standalone handler test cannot prove loading.
 
-Token savings count only when representative tasks still satisfy security, process,
-OS, review, and verification contracts. Prompt caching is not a context-budget proof.
+At protocol changes and closeout after a protocol failure, audit the affected
+owner/route/gate chain. Replay lost scope, untracked findings, false remote receipts,
+partial-parent completion, unsafe cleanup and untrusted hooks. Separate procedural
+controls from exercised automation; route defects through workflow closeout.
