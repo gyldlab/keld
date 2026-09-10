@@ -198,24 +198,14 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
         move |app_link| {
-            cleanup_validation
-                .as_ref()
-                .map_err(|error| guardian_entry_error(error.clone()))?;
-            let reopened = reopen_validated_entry(&root, &entry, expected_dev, expected_ino)?;
-            // Advisory same-user dev-boundary check: retain the exact reopened
-            // identity until immediately before Supervisor invokes spawn, then
-            // close it. Bun resolves the name afterward, so this does not claim
-            // release-grade resistance to a same-user replacement in that
-            // residual window; the signed-container successor must close it.
-            drop(reopened);
-            let mut command = Command::new("bun");
-            command
-                .arg("run")
-                .arg(root.join(&entry))
-                .current_dir(&root)
-                .env("KELD_APP_LINK", app_link)
-                .stdin(Stdio::null());
-            Ok(command)
+            guardian_bun_command(
+                &cleanup_validation,
+                &root,
+                &entry,
+                expected_dev,
+                expected_ino,
+                app_link,
+            )
         },
         std::io::stdout(),
     );
@@ -244,6 +234,35 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         .and_then(|()| std::io::stderr().write_all(stderr_notice.as_bytes()))
         .map_err(|source| format!("KELD-CORE-037: guardian stderr failed — {source}. Retry."))?;
     cleanup_failure.map_or(Ok(()), Err)
+}
+
+#[cfg(target_os = "macos")]
+fn guardian_bun_command(
+    cleanup_validation: &Result<PathBuf, String>,
+    root: &Path,
+    entry: &Path,
+    expected_dev: u64,
+    expected_ino: u64,
+    app_link: &str,
+) -> Result<Command, keld_runtime::RuntimeError> {
+    cleanup_validation
+        .as_ref()
+        .map_err(|error| guardian_entry_error(error.clone()))?;
+    let reopened = reopen_validated_entry(root, entry, expected_dev, expected_ino)?;
+    // Advisory same-user dev-boundary check: retain the exact reopened
+    // identity until immediately before Supervisor invokes spawn, then
+    // close it. Bun resolves the name afterward, so this does not claim
+    // release-grade resistance to a same-user replacement in that
+    // residual window; the signed-container successor must close it.
+    drop(reopened);
+    let mut command = Command::new("bun");
+    command
+        .arg("run")
+        .arg(root.join(entry))
+        .current_dir(root)
+        .env("KELD_APP_LINK", app_link)
+        .stdin(Stdio::null());
+    Ok(command)
 }
 
 #[cfg(target_os = "macos")]
@@ -317,7 +336,10 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    use super::{dev_stage_cleanup_root_for, reconcile_guardian_result, reopen_validated_entry};
+    use super::{
+        dev_stage_cleanup_root_for, guardian_bun_command, reconcile_guardian_result,
+        reopen_validated_entry,
+    };
 
     #[test]
     fn successful_guardian_report_survives_cleanup_failure() {
@@ -327,6 +349,48 @@ mod tests {
 
         assert_eq!(report, "captured output");
         assert_eq!(cleanup_failure.as_deref(), Some("cleanup failed"));
+    }
+
+    #[test]
+    fn failed_stage_validation_refuses_the_bun_command_with_a_valid_entry() {
+        let temp = tempfile::tempdir().expect("stage-gate fixture");
+        let entry = temp.path().join("entry.ts");
+        fs::write(&entry, "console.log('must not run');\n").expect("entry fixture");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        let relative = std::path::Path::new("entry.ts");
+
+        // The entry identity is deliberately valid, so a refusal here is
+        // attributable to the stage result alone and not to the inode check.
+        let error = guardian_bun_command(
+            &Err(String::from(
+                "KELD-CORE-037: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
+            )),
+            temp.path(),
+            relative,
+            identity.dev(),
+            identity.ino(),
+            "/tmp/link#token",
+        )
+        .expect_err("failed stage validation must refuse the Bun command");
+        assert!(
+            error
+                .to_string()
+                .contains("guardian stage argument does not match its validated executable stage"),
+            "{error}"
+        );
+
+        // Negative control: identical inputs with a validated stage still
+        // produce the command, so the refusal is not an unrelated failure.
+        let command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            relative,
+            identity.dev(),
+            identity.ino(),
+            "/tmp/link#token",
+        )
+        .expect("validated stage must still produce the Bun command");
+        assert_eq!(command.get_program(), "bun");
     }
 
     #[test]
