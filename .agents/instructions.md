@@ -1,7 +1,7 @@
 # Agent-instruction authoring protocol
 
 Load for protocol failure or changes to AGENTS, playbooks, workflow/templates, skills,
-`.codex` assembly, instruction inventory/checkers or CI enforcement.
+harness assembly, instruction inventory/checkers or CI enforcement.
 
 ## Load classes and ownership
 
@@ -24,7 +24,7 @@ Before editing, record:
 
 MUST NOT raise an `always` budget to make a check green. Budget changes require named
 Linear scope, measured semantic benefit, before/after eval and independent instruction
-review. Caching does not prevent truncation. `.codex/config.toml` is assembly: justify
+review. Caching does not prevent truncation. Harness config is assembly: justify
 each server/tool, eager/routed status and prompt/tool trace; bytes are not schema tokens.
 
 ## Feedback and repair
