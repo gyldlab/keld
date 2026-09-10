@@ -16,6 +16,21 @@ body:
       label: Related issue (optional)
       description: Public issue/PR link or an existing KEL-n if known. Leave blank otherwise.
       placeholder: KEL-00
+  - type: input
+    id: commit
+    attributes:
+      label: Keld commit
+      description: Output of `git rev-parse HEAD`, or the tag or installed version you ran. State unknown if you cannot determine it.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS/architecture
+      description: Operating system with version, and CPU architecture.
+      placeholder: macOS 26.5, arm64
+    validations:
+      required: true
   - type: textarea
     id: expected
     attributes:
@@ -34,7 +49,15 @@ body:
     id: reproduce
     attributes:
       label: Reproduce
-      description: Commands and platform (OS + version). Bind port 0 / temp dirs if relevant.
+      description: Exact commands and steps. Bind port 0 / temp dirs if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: tools
+    attributes:
+      label: Relevant tool versions
+      description: Output of `rustc --version` and `cargo --version` for Rust reports, `cargo nextest --version` for workspace tests, and `bun --revision` for Bun-dependent behavior. State not applicable when none apply.
+      render: shell
     validations:
       required: true
   - type: textarea
