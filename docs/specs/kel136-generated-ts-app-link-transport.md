@@ -52,7 +52,8 @@ already required by KEL-133 criterion 10's later consumer.
    and no second `receiver-semantics-v0.tsv` exists.
 8. Given `tsc --strict` and the committed Bun 1.4.2 / TypeScript 7.0.2 lockfile,
    when `just typescript` / the CI Bun lane run, then they pass and public sources
-   contain no `any`.
+   contain no `any`. A new package lockfile MUST copy `@keld/electron`'s resolved
+   `@types/node@26.4.1`; regenerating can pick 22.x and fail `tsc --strict`.
 9. Existing lifecycle API tests (`@keld/electron`) and echo golden-vector tests
    (hello `kipc.test.ts`) remain separate from the shared transport tests.
 10. Given a `Ready` Event then an Echo Reply on one HELLO'd stream, when
