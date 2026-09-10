@@ -374,6 +374,37 @@ fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
     drop((harness_stale, far_end));
 }
 
+/// KEL-222: an empty census must prove the process still has a descriptor table.
+///
+/// `lsof` exits 0 with no rows for a live process owning no Unix socket and also for
+/// one whose table has already been torn down on the way out, and zero is the
+/// *passing* value for the CLI. [`unix_descriptors`] therefore corroborates an empty
+/// census with [`process_has_open_descriptors`]. The exiting window cannot be entered
+/// on demand, so what is pinned here is the corroboration: it answers yes for a live
+/// process and no for one that is gone. A stub that always answers yes fails this
+/// test, and the census then accepts teardown as evidence.
+#[test]
+fn unix_descriptor_census_requires_a_live_descriptor_table() {
+    assert!(
+        process_has_open_descriptors(std::process::id()),
+        "this harness is running, so it has a descriptor table"
+    );
+    let child = Command::new("/usr/bin/true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch a fixture that exits immediately");
+    let pid = child.id();
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "fixture failed: {output:?}");
+    await_process_gone(pid);
+    assert!(
+        !process_has_open_descriptors(pid),
+        "{pid} has exited and been reaped, so it has no descriptor table"
+    );
+}
+
 /// KEL-222: owning no Unix descriptor is an empty census, not a census failure.
 ///
 /// Zero is the *passing* value for the CLI, so the census must distinguish "this
@@ -2817,16 +2848,60 @@ struct UnixDescriptor {
     identity: String,
 }
 
+/// The `ps` state letters for `pid`, or why they could not be read.
+fn process_state(pid: u32) -> String {
+    let output = Command::new("/bin/ps")
+        .args(["-o", "state=", "-p", &pid.to_string()])
+        .output()
+        .expect("inspect process state");
+    let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if state.is_empty() {
+        format!("unreadable (ps exit {:?})", output.status.code())
+    } else {
+        state
+    }
+}
+
+/// Whether `lsof` can still see any open descriptor at all on `pid`.
+///
+/// Not restricted to Unix sockets, and not parsed: `cwd` and the mapped executable
+/// count, so any process whose descriptor table exists answers yes. That makes this
+/// the corroboration an empty Unix census needs — see [`unix_descriptors`].
+fn process_has_open_descriptors(pid: u32) -> bool {
+    let output = Command::new("/usr/sbin/lsof")
+        .args(["-n", "-P", "-p", &pid.to_string(), "-Ff"])
+        .output()
+        .expect("enumerate open descriptors");
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.starts_with('f'))
+}
+
 /// Every Unix-domain descriptor open on `pid`.
 ///
-/// `lsof` exits 1 when it cannot report on the pid at all — because it cannot be
-/// located, or cannot be inspected. Being unable to report is distinct from
-/// having nothing to report: a live process that owns no Unix descriptor exits 0
-/// with no rows, so an empty census is a result and not an error (measured on
-/// macOS `lsof` 4.91; its `DIAGNOSTICS` text does not promise this, so the
-/// behaviour is measured rather than specified). Censusing a pid that has already
-/// exited does fail here, which is the intent: treating that as an empty census
-/// would let an ownership assertion pass vacuously against a dead process.
+/// `lsof` exits 1 when it cannot report on the pid at all. Measured on macOS `lsof`
+/// 4.91, that covers a pid that never existed, a zombie, and a pid owned by another
+/// user — the last with empty stderr, so an uninspectable process cannot masquerade
+/// as a clean one.
+///
+/// Exiting 0 with no rows does *not* mean the same thing twice over, and that is the
+/// trap this function has to close. A live process owning no Unix socket reports it
+/// that way, and so does a process in the window after `exit` but before it becomes
+/// a zombie, when its descriptor table is already gone but its proc entry is not.
+/// Zero is the *passing* value for the CLI, so the two must not be conflated:
+/// measured, an unguarded census returned an empty result in 32 of 300 racing trials
+/// for a target that provably owned a listener it had opened itself — a silent false
+/// pass of exactly the assertion this oracle exists to make.
+///
+/// So an empty census has to prove the process still has a table to be empty of.
+/// [`process_has_open_descriptors`] is that proof, and it is not circular: it asks a
+/// wider question than the census does, and `cwd` and the mapped executable answer
+/// it for any live process. Measured across 83 racing trials that produced an empty
+/// Unix census, it rejected all 83, and it stayed silent for live processes both with
+/// and without Unix sockets. The race cannot be reproduced deterministically, so
+/// [`unix_descriptor_census_requires_a_live_descriptor_table`] pins the corroboration
+/// itself rather than the window.
 fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
     let output = Command::new("/usr/sbin/lsof")
         .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Fdfn"])
@@ -2834,7 +2909,8 @@ fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
         .expect("enumerate Unix descriptors");
     assert!(
         output.status.success(),
-        "lsof Unix descriptors for {pid}: {output:?}"
+        "lsof cannot report Unix descriptors for {pid} in state {}: {output:?}",
+        process_state(pid)
     );
     let rendered = String::from_utf8(output.stdout).expect("lsof output UTF-8");
     let mut descriptor = None;
@@ -2842,9 +2918,22 @@ fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
     let mut descriptors = Vec::new();
     for line in rendered.lines() {
         if let Some(fd) = line.strip_prefix('f') {
+            // A record `lsof` starts and never names would otherwise be dropped
+            // without a word, and dropping a target's descriptor is the direction
+            // that passes. No real `lsof` output has done this; it is not left to
+            // chance because the cost of being wrong is silence.
+            assert!(
+                descriptor.is_none(),
+                "lsof left descriptor {descriptor:?} of {pid} unnamed: {rendered:?}"
+            );
             descriptor = Some(fd.to_owned());
             socket = None;
         } else if let Some(address) = line.strip_prefix('d') {
+            // Two empty addresses would compare equal and excuse each other.
+            assert!(
+                address.starts_with("0x"),
+                "lsof gave {pid} a socket address that is not one: {address:?}"
+            );
             socket = Some(address.to_owned());
         } else if let Some(name) = line.strip_prefix('n') {
             descriptors.push(UnixDescriptor {
@@ -2855,6 +2944,18 @@ fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
                 identity: name.to_owned(),
             });
         }
+    }
+    assert!(
+        descriptor.is_none(),
+        "lsof left the last descriptor of {pid} unnamed: {rendered:?}"
+    );
+    if descriptors.is_empty() {
+        assert!(
+            process_has_open_descriptors(pid),
+            "{pid} has no descriptor table in state {}, so an empty Unix census is \
+             teardown rather than evidence",
+            process_state(pid)
+        );
     }
     descriptors
 }
