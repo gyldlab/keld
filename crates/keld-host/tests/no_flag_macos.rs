@@ -383,6 +383,10 @@ fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
 /// on demand, so what is pinned here is the corroboration: it answers yes for a live
 /// process and no for one that is gone. A stub that always answers yes fails this
 /// test, and the census then accepts teardown as evidence.
+///
+/// This test does not call [`unix_descriptors`] or [`accept_empty_unix_census`].
+/// Deleting the empty-result reject therefore stays green here;
+/// [`empty_unix_census_rejects_a_reaped_pid`] is the load-bearing path.
 #[test]
 fn unix_descriptor_census_requires_a_live_descriptor_table() {
     assert!(
@@ -402,6 +406,45 @@ fn unix_descriptor_census_requires_a_live_descriptor_table() {
     assert!(
         !process_has_open_descriptors(pid),
         "{pid} has exited and been reaped, so it has no descriptor table"
+    );
+}
+
+/// KEL-222: the empty-census reject must fail a test when it is deleted.
+///
+/// [`unix_descriptor_census_requires_a_live_descriptor_table`] pins
+/// [`process_has_open_descriptors`] itself and never reaches
+/// [`accept_empty_unix_census`]. Measured on this tip before the extraction:
+/// deleting the `if descriptors.is_empty()` corroboration in [`unix_descriptors`]
+/// left all seven `unix_descriptor_census_*` tests green. This test calls the
+/// reject on a reaped pid so that mutation is a red suite. The live-harness call
+/// without `catch_unwind` makes an always-panic stub fail too.
+///
+/// [`unix_descriptors`] on the same reaped pid must also panic. That is the
+/// earlier `lsof` exit-1 assert, not the empty-result corroboration: a reaped
+/// pid never reaches the empty-result path. It is kept so treating exit 1 as an
+/// empty census cannot land silently.
+#[test]
+fn empty_unix_census_rejects_a_reaped_pid() {
+    accept_empty_unix_census(std::process::id());
+    let child = Command::new("/usr/bin/true")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch a fixture that exits immediately");
+    let pid = child.id();
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "fixture failed: {output:?}");
+    await_process_gone(pid);
+    let rejected = std::panic::catch_unwind(|| accept_empty_unix_census(pid));
+    assert!(
+        rejected.is_err(),
+        "empty census of reaped {pid} must be rejected, not accepted as evidence"
+    );
+    let census = std::panic::catch_unwind(|| unix_descriptors(pid));
+    assert!(
+        census.is_err(),
+        "unix_descriptors({pid}) of a reaped pid must panic"
     );
 }
 
@@ -2878,6 +2921,21 @@ fn process_has_open_descriptors(pid: u32) -> bool {
             .any(|line| line.starts_with('f'))
 }
 
+/// Accept an empty Unix-descriptor census only if `pid` still has a table.
+///
+/// This is the load-bearing empty-result reject. [`unix_descriptors`] calls it
+/// when `lsof -U` returns no rows. [`empty_unix_census_rejects_a_reaped_pid`]
+/// calls it on a reaped pid, so deleting this function's assert — or replacing
+/// it with a no-op — turns that test red.
+fn accept_empty_unix_census(pid: u32) {
+    assert!(
+        process_has_open_descriptors(pid),
+        "{pid} has no descriptor table in state {}, so an empty Unix census is \
+         teardown rather than evidence",
+        process_state(pid)
+    );
+}
+
 /// Every Unix-domain descriptor open on `pid`.
 ///
 /// `lsof` exits 1 when it cannot report on the pid at all. Measured on macOS `lsof`
@@ -2901,7 +2959,10 @@ fn process_has_open_descriptors(pid: u32) -> bool {
 /// Unix census, it rejected all 83, and it stayed silent for live processes both with
 /// and without Unix sockets. The race cannot be reproduced deterministically, so
 /// [`unix_descriptor_census_requires_a_live_descriptor_table`] pins the corroboration
-/// itself rather than the window.
+/// helper. [`empty_unix_census_rejects_a_reaped_pid`] pins the reject itself:
+/// [`accept_empty_unix_census`] on a reaped pid must panic. The exiting window still
+/// cannot be entered on demand, so a reaped-pid [`unix_descriptors`] panic is the
+/// earlier `lsof` exit-1 assert, not this empty-result path.
 fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
     let output = Command::new("/usr/sbin/lsof")
         .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Fdfn"])
@@ -2950,12 +3011,7 @@ fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
         "lsof left the last descriptor of {pid} unnamed: {rendered:?}"
     );
     if descriptors.is_empty() {
-        assert!(
-            process_has_open_descriptors(pid),
-            "{pid} has no descriptor table in state {}, so an empty Unix census is \
-             teardown rather than evidence",
-            process_state(pid)
-        );
+        accept_empty_unix_census(pid);
     }
     descriptors
 }
