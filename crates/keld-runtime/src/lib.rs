@@ -4339,16 +4339,12 @@ mod tests {
         let supervisor = Supervisor::start_prepared(
             RestartPolicy::default(),
             FailingRevokePreparer {
-                command: Some(shell_command(&joined_steps(&[
-                    "echo shutdown-dual-cleanup-failure",
-                    long_running_shell_step(),
-                ]))),
+                command: Some(long_running_command()),
                 inject_capture_failure: true,
             },
         )
         .expect("child must spawn");
         let _ = recv_started(&supervisor);
-        await_supervisor_stdout(&supervisor, "shutdown-dual-cleanup-failure");
 
         supervisor.shutdown();
         assert!(matches!(
@@ -4366,16 +4362,12 @@ mod tests {
         let supervisor = Supervisor::start_prepared(
             RestartPolicy::default(),
             FailingRevokePreparer {
-                command: Some(shell_command(&joined_steps(&[
-                    "echo restart-dual-cleanup-failure",
-                    long_running_shell_step(),
-                ]))),
+                command: Some(long_running_command()),
                 inject_capture_failure: true,
             },
         )
         .expect("child must spawn");
         let (_, attempt) = recv_started(&supervisor);
-        await_supervisor_stdout(&supervisor, "restart-dual-cleanup-failure");
 
         supervisor.restart_generation(attempt);
         assert!(matches!(
@@ -4503,28 +4495,6 @@ mod tests {
         {
             steps.join(" & ")
         }
-    }
-
-    fn long_running_shell_step() -> &'static str {
-        #[cfg(unix)]
-        {
-            "sleep 5"
-        }
-        #[cfg(windows)]
-        {
-            "ping -n 6 127.0.0.1 >NUL"
-        }
-    }
-
-    fn await_supervisor_stdout(supervisor: &Supervisor, marker: &str) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if supervisor.output().stdout.contains(marker) {
-                return;
-            }
-            thread::yield_now();
-        }
-        panic!("supervisor stdout did not publish marker {marker:?}");
     }
 
     fn recv_started(sup: &Supervisor) -> (u32, u32) {
