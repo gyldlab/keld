@@ -3825,13 +3825,14 @@ mod tests {
                 rustix::event::kqueue::EventFlags::ADD | rustix::event::kqueue::EventFlags::ONESHOT,
                 std::ptr::null_mut(),
             );
+            let mut no_events: [rustix::event::kqueue::Event; 0] = [];
             // SAFETY: EVFILT_PROC identifies the already-live PID and contains
             // no borrowed file descriptor. `queue` remains owned by `Self`.
             unsafe {
                 rustix::event::kqueue::kevent(
                     &queue,
                     &[registration],
-                    Vec::<rustix::event::kqueue::Event>::new(),
+                    &mut no_events,
                     Some(Duration::ZERO),
                 )
             }
@@ -3841,13 +3842,15 @@ mod tests {
 
         #[allow(unsafe_code)] // test-only wait on the owned kqueue registered in `new`
         fn wait_for_exit(&self) -> std::io::Result<()> {
+            let mut event_storage =
+                [std::mem::MaybeUninit::<rustix::event::kqueue::Event>::uninit()];
             // SAFETY: the changelist is empty and `self.queue` owns the only
             // kqueue descriptor; the registered EVFILT_PROC contains no fd.
-            let events = unsafe {
+            let (events, _) = unsafe {
                 rustix::event::kqueue::kevent(
                     &self.queue,
                     &[],
-                    Vec::<rustix::event::kqueue::Event>::with_capacity(1),
+                    &mut event_storage,
                     Some(Duration::from_secs(10)),
                 )
             }
