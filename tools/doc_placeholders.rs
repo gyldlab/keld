@@ -61,7 +61,8 @@ fn should_skip_dir(name: &str) -> bool {
 /// prose — a stale entry is as much a defect as an unlisted one, because it lets the
 /// next leaked variable name hide behind a name nobody uses any more.
 const KNOWN_PLACEHOLDERS: &[&str] = &[
-    "channel", "digest", "id", "kind", "N", "name", "owner", "panel", "passed", "path", "repo",
+    "channel", "digest", "id", "kind", "N", "name", "owner", "panel", "passed", "path", "port",
+    "repo", "tenantid",
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -86,6 +87,13 @@ fn placeholders(line: &str) -> Vec<(String, usize)> {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'{' {
+            index += 1;
+            continue;
+        }
+        // `\u{0}` is a Unicode escape, not a template slot. The brace belongs to the
+        // escape, so what sits inside it was never a substitution site, and naming it in
+        // KNOWN_PLACEHOLDERS would blind this gate to a genuine `{0}` format leak.
+        if index >= 2 && bytes[index - 1] == b'u' && bytes[index - 2] == b'\\' {
             index += 1;
             continue;
         }
@@ -382,6 +390,23 @@ mod tests {
         for name in ["architecture", "agents", "engineering", "onboarding", "specs"] {
             assert!(!should_skip_dir(name), "`{name}` must be scanned");
         }
+    }
+
+    /// `\u{0}` is how the keld-auth spec writes the reserved NUL sentinel. The brace is
+    /// part of the escape; reading `{0}` as a slot both misreads the text and would push
+    /// `"0"` into KNOWN_PLACEHOLDERS, where it would hide a genuine `{0}` format leak.
+    #[test]
+    fn unicode_escapes_are_not_template_slots() {
+        assert_eq!(placeholders(r"a \u{0}unresolved b"), Vec::new());
+        assert_eq!(placeholders(r"`\u{1F}` and `\u{7F}`"), Vec::new());
+        let (findings, _) = scan(
+            "docs/x.md",
+            r"the sentinel `\u{0}unresolved` is reserved",
+            &known(),
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+        // A brace merely following a `u` is still a slot: only the escape is exempt.
+        assert_eq!(placeholders("menu{unknown}"), vec![("unknown".to_owned(), 4)]);
     }
 
     #[test]
