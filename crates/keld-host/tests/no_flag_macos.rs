@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
@@ -25,6 +25,13 @@ const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const TITLE: &str = "KEL96 T1b Fixture";
 const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
 const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
+/// What `lsof` reports for a Unix socket that is neither bound nor connected.
+///
+/// This is a placeholder, not an identity: every unbound socket on the machine
+/// reports it, so unlike a `sun_path` or a peer address it can never establish
+/// that two descriptors are the same kernel object (measured on macOS `lsof`
+/// 4.91).
+const ANONYMOUS_UNIX_SOCKET: &str = "->(none)";
 const EVENT_DEADLINE: Duration = Duration::from_secs(15);
 const PROCESS_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -41,18 +48,25 @@ fn keld_dev_helper_process() {
     keld_cli::dev::run_dev(Path::new(&project)).expect("shipping keld dev helper");
 }
 
-/// Fixture child for [`unix_descriptor_census_charges_only_self_opened_sockets`].
+/// Fixture child for the Unix-descriptor census tests.
 ///
 /// Opens exactly one Unix listener of its own, then holds the Unix descriptor
 /// the harness passed down as stdin until the harness closes the far end. That
 /// read is the release signal, so the census always observes a live process
 /// instead of racing its exit. Returns immediately when the harness did not
 /// select it, like [`keld_dev_helper_process`].
+///
+/// `KELD_T2_CENSUS_ANONYMOUS_SOCKET` additionally opens an unbound socket, which
+/// `lsof` reports without an identity. It is opened before the listener so that
+/// the listener's path, which is what the harness waits on, still marks the point
+/// where every descriptor this fixture owns is open.
 #[test]
 fn unix_descriptor_census_fixture_process() {
     let Some(owned) = std::env::var_os("KELD_T2_CENSUS_OWNED_SOCKET") else {
         return;
     };
+    let _anonymous = std::env::var_os("KELD_T2_CENSUS_ANONYMOUS_SOCKET")
+        .map(|_| UnixDatagram::unbound().expect("census fixture unbound Unix socket"));
     let _owned = UnixListener::bind(Path::new(&owned)).expect("census fixture Unix listener");
     let mut released = Vec::new();
     std::io::stdin()
@@ -128,6 +142,70 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
     let status = child.wait().expect("reap census fixture");
     assert!(status.success(), "census fixture failed: {status:?}");
     await_process_gone(child_pid);
+}
+
+/// KEL-222: an unbound Unix socket is charged to whoever opened it, because the
+/// census cannot prove it was inherited.
+///
+/// `lsof` reports every unbound Unix socket with the same placeholder instead of
+/// a `sun_path` or a peer address, so that string cannot show that two
+/// descriptors are the same kernel object. Subtracting it would let a process
+/// that opened its own anonymous socket look clean whenever the harness happened
+/// to hold one too — a silent loss of detection power in exactly the direction
+/// this issue exists to close. The expected placeholder is written literally
+/// here, so this test pins the observed `lsof` output rather than agreeing with
+/// whatever constant the census uses.
+#[test]
+fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
+    let harness_anonymous = UnixDatagram::unbound().expect("harness unbound Unix socket");
+    assert!(
+        unix_socket_identities(std::process::id())
+            .iter()
+            .any(|identity| identity == "->(none)"),
+        "harness holds no anonymous Unix socket, so this test collides with nothing"
+    );
+
+    let fixture = tempfile::tempdir().expect("census fixture root");
+    let owned_path = fixture.path().join("owned.sock");
+    let owned_identity = owned_path.to_str().expect("UTF-8 fixture path").to_owned();
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "unix_descriptor_census_fixture_process"])
+        .env("KELD_T2_CENSUS_OWNED_SOCKET", &owned_path)
+        .env("KELD_T2_CENSUS_ANONYMOUS_SOCKET", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch Unix-descriptor census fixture");
+    let child_pid = child.id();
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    while !owned_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "census fixture never bound its own Unix listener"
+        );
+        thread::yield_now();
+    }
+
+    let observed = unix_socket_identities(child_pid);
+    assert!(
+        observed.iter().any(|identity| identity == "->(none)"),
+        "fixture opened no anonymous Unix socket, so there is nothing to attribute: {observed:?}"
+    );
+    let mut charged = self_opened_unix_sockets(child_pid);
+    charged.sort();
+    let mut expected = vec!["->(none)".to_owned(), owned_identity];
+    expected.sort();
+    assert_eq!(
+        charged, expected,
+        "census must charge the child the anonymous socket it opened itself: {observed:?}"
+    );
+
+    drop(child.stdin.take().expect("census fixture release lease"));
+    let status = child.wait().expect("reap census fixture");
+    assert!(status.success(), "census fixture failed: {status:?}");
+    await_process_gone(child_pid);
+    drop(harness_anonymous);
 }
 
 /// KEL-222: owning no Unix descriptor is an empty census, not a census failure.
@@ -2598,9 +2676,22 @@ fn unix_socket_identities(pid: u32) -> Vec<String> {
 /// so the raw count charges the CLI for descriptors it never opened (KEL-222).
 /// The harness is their only ancestor, so its own live descriptor table bounds
 /// everything they can have inherited: whatever survives subtracting it was
-/// opened by `pid`. Two live sockets never share an identity — a `sun_path` is
-/// exclusive while bound and a kernel address is unique while open — so the
-/// subtraction can only ever discount the very descriptor that was inherited.
+/// opened by `pid`.
+///
+/// Subtracting is only safe for a *named* identity: a `sun_path` names the socket
+/// bound to it and every peer accepted on it, and a peer address is unique while
+/// both ends are open, so removing one discounts the inherited descriptor rather
+/// than a coincidental twin. An unbound socket has no identity at all — `lsof`
+/// reports every one of them as [`ANONYMOUS_UNIX_SOCKET`] — so it is never
+/// subtracted and is always charged to `pid`. That keeps an anonymous socket the
+/// process opened itself visible; the cost is charging one it merely inherited,
+/// which fails loudly instead of passing silently.
+///
+/// One residual is inherent to naming a socket by its path: a descriptor stays
+/// bound to its `sun_path` after that path is unlinked, so a harness holding a
+/// stale-bound descriptor could absorb a censused process that rebinds the same
+/// path. This harness binds only fixture paths under its own temporary directory
+/// and never a product session path, so it cannot construct that collision.
 ///
 /// Removing one harness identity per match keeps this a multiset operation,
 /// because a listener and each peer it accepted report the same `sun_path`, and
@@ -2613,6 +2704,10 @@ fn self_opened_unix_sockets(pid: u32) -> Vec<String> {
     let mut inherited = unix_socket_identities(std::process::id());
     let mut opened = Vec::new();
     for identity in unix_socket_identities(pid) {
+        if identity == ANONYMOUS_UNIX_SOCKET {
+            opened.push(identity);
+            continue;
+        }
         match inherited.iter().position(|held| *held == identity) {
             Some(index) => {
                 inherited.swap_remove(index);
