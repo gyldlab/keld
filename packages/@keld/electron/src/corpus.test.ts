@@ -16,6 +16,8 @@ import { describe, expect, test } from "bun:test";
 import {
   FrameKind,
   FrameReader,
+  HEADER_LEN,
+  MAX_FRAME_LEN,
   RECEIVE_POLICIES,
   type ReceivePolicy,
   echoReplyWaiter,
@@ -24,14 +26,12 @@ import {
   primaryAppReceiver,
   privilegedCallReceiver,
   validateReceivedHeader,
-} from "./link";
+} from "../../kipc/src/transport.ts";
 
 const CORPUS_PATH = join(
   import.meta.dir,
   "../../../../crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
 );
-const HEADER_LEN = 16;
-const MAX_FRAME_LEN = 16 * 1024 * 1024;
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
 const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";

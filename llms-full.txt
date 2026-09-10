@@ -732,11 +732,14 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes six files (`crates/keld-cli/src/template.rs`):
-`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, and `.gitignore`.
-The generated `src/main.ts` is self-contained: `template.rs` composes the hand-written,
-golden-vector-tested client source with `src/main-body.ts`. The generated `src/kipc.ts` is a tiny
-compatibility re-export from `src/main.ts`, not a second wire implementation. The repository's
+`keld create <name>` writes seven files (`crates/keld-cli/src/template.rs`):
+`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`, `src/main.ts`,
+`src/kipc.ts`, and `.gitignore`.
+The generated `src/kipc-transport.ts` is the embedded canonical transport
+(`packages/@keld/kipc/src/transport.ts`). The generated `src/main.ts` composes the
+hand-written, golden-vector-tested echo adapter with `src/main-body.ts`. The generated
+`src/kipc.ts` is a tiny compatibility re-export from `src/main.ts`, not a second wire
+implementation. The repository's
 `src/kipc.test.ts` is deliberately not emitted. The config is this, in full, with `{{name}}`
 substituted at scaffold time:
 
@@ -758,13 +761,15 @@ sections. Three honest observations about the gap:
    strict `keld.boot.json`; the no-flag host never evaluates TypeScript.
    `find_project_root` still walks up looking for the source file and `keld
    doctor` confirms the required inputs. Other keys are not a config schema yet.
-2. **`entry` and `renderer` are staged inputs.** The compiler copies both
-   contained project-relative files into a fresh owner-private root. The host
-   starts Bun from the descriptor's validated `entry` and loads the validated
-   renderer bytes as inline HTML. `keld hello` still uses `HELLO_HTML`.
+2. **`entry`, `renderer`, and the kipc transport sidecar are staged inputs.** The
+   compiler copies the contained project-relative entry and renderer, and when
+   `src/kipc-transport.ts` exists it copies that file too so Bun can resolve the
+   embedded KEL-136 transport from the staged `src/main.ts`. The host starts Bun
+   from the descriptor's validated `entry` and loads the validated renderer bytes
+   as inline HTML. `keld hello` still uses `HELLO_HTML`.
 3. **`defineConfig` cannot exist yet**, because `@keld/cli` has no code.
-   `@keld/electron` is live under `packages/` (KEL-72); the other `@keld/*`
-   packages are still absent.
+   `@keld/kipc` and `@keld/electron` are live under `packages/`; the other
+   `@keld/*` packages are still absent.
 
 ### The permission manifest
 
@@ -1328,10 +1333,15 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   always leaves trailing bytes a `String` decode rejects — so a mixed rollout
   fails deterministically rather than mis-reporting: `KELD-IPC-003` from
   `keld_ipc::codec::decode`, surfaced by `@keld/electron` as `KELD-IPC-005`
-  ("not a CallError"). The generated hello scaffold
-  (`crates/keld-cli/templates/hello/src/kipc.ts`, embedded into the generated
-  self-contained `src/main.ts` entry) speaks only the ungated echo
-  channel and does not decode `ERR` payloads.
+  ("not a CallError"). The generated hello scaffold embeds
+  `packages/@keld/kipc/src/transport.ts` as `src/kipc-transport.ts` and concatenates
+  the echo adapter (`crates/keld-cli/templates/hello/src/kipc.ts`) into
+  `src/main.ts`. The boot compiler stages `src/kipc-transport.ts` when present.
+  `@keld/electron` imports that same transport. `DirectedReader` parks
+  lifecycle Events while an Echo Reply is awaited so a host `Ready` cannot
+  fail stock echo (KEL-185 consumes Quit on this same stream later). The
+  scaffold speaks only the ungated echo channel and does not decode `ERR`
+  payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
   requires `kind=HELLO`, zero flags/channel/correlation, and declared payload
@@ -2598,11 +2608,14 @@ parent-death coupling: the Bun leader and descendant disappear, the live CLI
 removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
 strict-profile admission matrix remain separately owned and evidenced by
 KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
-The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is the
-hand-written, wire-exact v0 client embedded into the generated self-contained
-`src/main.ts` entry (postcard framing, one `HELLO` per connection, then N
-`CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
-`@keld/schema` codegen (KEL-13) is not built, so this is the actual
+The Bun side speaks kipc directly — `packages/@keld/kipc/src/transport.ts` is the
+one TypeScript framing/HELLO/deadline/write owner (KEL-136). `keld create` embeds
+that file as `src/kipc-transport.ts`; the hello echo adapter and `@keld/electron`
+lifecycle adapter import it. `DirectedReader` on that transport parks lifecycle
+Events while waiting for Echo Reply so stock echo survives a preceding `Ready`.
+The non-release boot compiler copies that sidecar
+into the owner-private stage when present so `keld dev` Bun can resolve it. `keld gen` / `@keld/schema` codegen (KEL-13) is not
+built, so this shared transport plus the echo adapter is the actual
 "Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
 useful standalone; the template no longer shells out to it.

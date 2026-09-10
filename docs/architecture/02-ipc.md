@@ -125,10 +125,15 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   always leaves trailing bytes a `String` decode rejects — so a mixed rollout
   fails deterministically rather than mis-reporting: `KELD-IPC-003` from
   `keld_ipc::codec::decode`, surfaced by `@keld/electron` as `KELD-IPC-005`
-  ("not a CallError"). The generated hello scaffold
-  (`crates/keld-cli/templates/hello/src/kipc.ts`, embedded into the generated
-  self-contained `src/main.ts` entry) speaks only the ungated echo
-  channel and does not decode `ERR` payloads.
+  ("not a CallError"). The generated hello scaffold embeds
+  `packages/@keld/kipc/src/transport.ts` as `src/kipc-transport.ts` and concatenates
+  the echo adapter (`crates/keld-cli/templates/hello/src/kipc.ts`) into
+  `src/main.ts`. The boot compiler stages `src/kipc-transport.ts` when present.
+  `@keld/electron` imports that same transport. `DirectedReader` parks
+  lifecycle Events while an Echo Reply is awaited so a host `Ready` cannot
+  fail stock echo (KEL-185 consumes Quit on this same stream later). The
+  scaffold speaks only the ungated echo channel and does not decode `ERR`
+  payloads.
 - **HELLO payload (v2):** exactly 32 bytes — the session token minted by the host
   (KEL-60). It is raw bytes, not postcard. Before token comparison, the receiver
   requires `kind=HELLO`, zero flags/channel/correlation, and declared payload

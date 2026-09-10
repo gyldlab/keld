@@ -321,7 +321,13 @@ impl PrimaryFixture {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../keld-cli/templates/hello/src/kipc.ts"),
             dir.join("kipc.ts"),
         )
-        .expect("copy kipc.ts");
+        .expect("copy hello echo adapter");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packages/@keld/kipc/src/transport.ts"),
+            dir.join("kipc-transport.ts"),
+        )
+        .expect("copy canonical kipc transport");
         fs::write(dir.join("role.ts"), ROLE_SCRIPT).expect("write role fixture");
         let control = TcpListener::bind(("127.0.0.1", 0)).expect("bind control listener");
         let control_port = control.local_addr().expect("control address").port();

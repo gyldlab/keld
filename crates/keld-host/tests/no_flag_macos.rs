@@ -1866,7 +1866,13 @@ impl ProductFixture {
             .and_then(Path::parent)
             .expect("keld-host crate beneath workspace");
         let link_source = fs::read_to_string(repo.join("packages/@keld/electron/src/link.ts"))
-            .expect("reuse canonical KEL-72 TypeScript link owner");
+            .expect("reuse canonical KEL-72 TypeScript link owner")
+            .replace("../../kipc/src/transport.ts", "./kipc-transport.ts");
+        fs::copy(
+            repo.join("packages/@keld/kipc/src/transport.ts"),
+            project.join("src/kipc-transport.ts"),
+        )
+        .expect("canonical kipc transport beside the concatenated LifecycleLink");
         Self {
             root,
             project,

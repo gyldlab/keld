@@ -2211,10 +2211,24 @@ fn wait_for_child_process(parent_pid: u32, name: &str, deadline: Instant) -> u32
         {
             return pid;
         }
-        assert!(
-            Instant::now() < deadline,
-            "delegated child `{name}` did not appear under {parent_pid}"
-        );
+        if Instant::now() >= deadline {
+            let dump = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &format!(
+                        "Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | ForEach-Object {{ $_.Name + ' pid=' + $_.ProcessId + ' ' + $_.CommandLine }}"
+                    ),
+                ])
+                .output()
+                .expect("dump delegated children");
+            panic!(
+                "delegated child `{name}` did not appear under {parent_pid}; parent_alive={}; children:\n{}",
+                process_exists(parent_pid),
+                String::from_utf8_lossy(&dump.stdout)
+            );
+        }
         thread::park_timeout(Duration::from_millis(20));
     }
 }
@@ -2330,12 +2344,15 @@ impl ProductFixture {
         )
         .expect("product config");
         fs::write(
+            project.join("src/kipc-transport.ts"),
+            include_str!("../../../packages/@keld/kipc/src/transport.ts"),
+        )
+        .expect("canonical kipc transport");
+        let link = include_str!("../../../packages/@keld/electron/src/link.ts")
+            .replace("../../kipc/src/transport.ts", "./kipc-transport.ts");
+        fs::write(
             project.join("src/main.ts"),
-            format!(
-                "{}{}",
-                include_str!("../../../packages/@keld/electron/src/link.ts"),
-                include_str!("fixtures/t1b_harness.ts")
-            ),
+            format!("{}{}", link, include_str!("fixtures/t1b_harness.ts")),
         )
         .expect("product entry");
         fs::write(

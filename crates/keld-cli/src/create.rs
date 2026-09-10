@@ -224,7 +224,11 @@ mod tests {
     fn writes_expected_file_contents() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = create_project(dir.path(), "demo").expect("create");
-        assert_eq!(file_count(&root), 6, "hello template is exactly six files");
+        assert_eq!(
+            file_count(&root),
+            7,
+            "hello template is exactly seven files"
+        );
 
         let config = fs::read_to_string(root.join("keld.config.ts")).expect("config");
         assert!(config.contains("name: \"demo\""), "{config}");
@@ -251,10 +255,23 @@ mod tests {
             main.contains("export async function echoRoundtrip"),
             "{main}"
         );
-        assert!(main.contains("Bun.connect"), "{main}");
+        assert!(
+            main.contains("from \"./kipc-transport.ts\""),
+            "echo adapter must import the embedded canonical transport: {main}"
+        );
         assert!(
             !main.contains("from \"./kipc\""),
-            "the configured entry must be self-contained after staging: {main}"
+            "the configured entry must not import the compatibility facade: {main}"
+        );
+        let transport =
+            fs::read_to_string(root.join("src/kipc-transport.ts")).expect("kipc-transport");
+        assert!(
+            transport.contains("Bun.connect"),
+            "canonical transport owns the socket connect: {transport}"
+        );
+        assert!(
+            transport.contains("export class FrameReader"),
+            "generated transport must be the implementation, not the in-repo shim: {transport}"
         );
         assert!(
             !main.contains("ipc-client"),

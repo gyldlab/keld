@@ -368,11 +368,14 @@ parent-death coupling: the Bun leader and descendant disappear, the live CLI
 removes its exact stage, and a fresh Wayland launch succeeds. LPAC and the wider
 strict-profile admission matrix remain separately owned and evidenced by
 KEL-78; KEL-96 consumes only the landed per-OS mechanisms.
-The Bun side speaks kipc directly — `templates/hello/src/kipc.ts` is the
-hand-written, wire-exact v0 client embedded into the generated self-contained
-`src/main.ts` entry (postcard framing, one `HELLO` per connection, then N
-`CALL`/`REPLY` via `AppLinkSession`). `keld gen` /
-`@keld/schema` codegen (KEL-13) is not built, so this is the actual
+The Bun side speaks kipc directly — `packages/@keld/kipc/src/transport.ts` is the
+one TypeScript framing/HELLO/deadline/write owner (KEL-136). `keld create` embeds
+that file as `src/kipc-transport.ts`; the hello echo adapter and `@keld/electron`
+lifecycle adapter import it. `DirectedReader` on that transport parks lifecycle
+Events while waiting for Echo Reply so stock echo survives a preceding `Ready`.
+The non-release boot compiler copies that sidecar
+into the owner-private stage when present so `keld dev` Bun can resolve it. `keld gen` / `@keld/schema` codegen (KEL-13) is not
+built, so this shared transport plus the echo adapter is the actual
 "Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
 useful standalone; the template no longer shells out to it.

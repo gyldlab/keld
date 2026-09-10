@@ -1,0 +1,21 @@
+{
+  "name": "@keld/kipc",
+  "version": "0.0.1",
+  "packageManager": "bun@1.4.2",
+  "type": "module",
+  "description": "Canonical TypeScript kipc v0 app-link transport (KEL-136)",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/transport.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "7.0.2"
+  }
+}

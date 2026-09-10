@@ -24,6 +24,10 @@ pub const HELLO_TEMPLATE: &[TemplateFile] = &[
         contents: include_str!("../templates/hello/index.html"),
     },
     TemplateFile {
+        path: "src/kipc-transport.ts",
+        contents: include_str!("../../../packages/@keld/kipc/src/transport.ts"),
+    },
+    TemplateFile {
         path: "src/main.ts",
         contents: concat!(
             include_str!("../templates/hello/src/kipc.ts"),
@@ -45,10 +49,11 @@ pub const HELLO_TEMPLATE: &[TemplateFile] = &[
 mod tests {
     use super::HELLO_TEMPLATE;
 
-    /// `kipc.test.ts`, the wire client source, and `main-body.ts` are
+    /// `kipc.test.ts`, the in-repo transport shim, and `main-body.ts` are
     /// scaffold-internal sources, not separately copied app files.
     /// `HELLO_TEMPLATE` is an explicit allow-list (not a directory glob) so
-    /// the client and app body can be composed into one staged entry while the
+    /// the echo adapter and app body can be composed into one staged entry,
+    /// the canonical transport is embedded as `src/kipc-transport.ts`, and the
     /// historical `src/kipc.ts` import path remains a tiny re-export facade.
     #[test]
     fn template_does_not_embed_test_files() {
@@ -86,5 +91,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn template_embeds_canonical_transport_not_the_in_repo_shim() {
+        let file = HELLO_TEMPLATE
+            .iter()
+            .find(|file| file.path == "src/kipc-transport.ts")
+            .expect("keld create must emit the canonical transport");
+        assert_eq!(
+            file.contents,
+            include_str!("../../../packages/@keld/kipc/src/transport.ts"),
+            "embedded transport must be the one @keld/kipc source, not a second copy"
+        );
+        assert!(
+            file.contents.contains("export class FrameReader"),
+            "generated app must receive the transport implementation"
+        );
+        let shim = include_str!("../templates/hello/src/kipc-transport.ts");
+        assert!(
+            shim.contains("packages/@keld/kipc/src/transport.ts"),
+            "in-repo hello tests re-export the canonical file"
+        );
+        assert!(
+            !shim.contains("export class FrameReader"),
+            "the in-repo shim must not be a second FrameReader"
+        );
+    }
+
+    #[test]
+    fn template_writes_seven_scaffold_files() {
+        assert_eq!(
+            HELLO_TEMPLATE.len(),
+            7,
+            "keld create emits config, package, html, transport, main, kipc facade, gitignore"
+        );
     }
 }

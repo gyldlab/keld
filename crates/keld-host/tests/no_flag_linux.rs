@@ -541,7 +541,8 @@ impl ProductFixture {
             project.join("src/main.ts"),
             format!(
                 "{}{}",
-                include_str!("../../../packages/@keld/electron/src/link.ts"),
+                include_str!("../../../packages/@keld/electron/src/link.ts")
+                    .replace("../../kipc/src/transport.ts", "./kipc-transport.ts"),
                 include_str!("fixtures/t1b_harness.ts")
             ),
         )
