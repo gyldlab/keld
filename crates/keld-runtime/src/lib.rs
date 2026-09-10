@@ -2287,7 +2287,19 @@ fn wait_backoff_or_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::io::Write as _;
+    #[cfg(windows)]
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    #[cfg(windows)]
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
     use std::path::{Path, PathBuf};
+    #[cfg(windows)]
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
 
     #[test]
     fn stdout_markers_match_raw_splits_overlap_and_keep_first_end() {
@@ -4002,7 +4014,10 @@ mod tests {
             RestartPolicy::default(),
             RecordingPreparer {
                 record: Arc::clone(&record),
-                commands: vec![shell_command("echo exit-before-capture-failure; exit 17")],
+                commands: vec![shell_command(&joined_steps(&[
+                    "echo exit-before-capture-failure",
+                    "exit 17",
+                ]))],
                 inject_capture_failure: true,
             },
         )
