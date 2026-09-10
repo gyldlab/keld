@@ -4,6 +4,8 @@ Load this playbook only for a material decision that may depend on current exter
 evidence.
 
 `docs/research/` is a nested `0monish/keld-research` checkout, not a Keld index entry.
+Session completion and finding-to-ticket routing follow
+[`workflow.md` ? Session continuity and closeout](../docs/agents/workflow.md#session-continuity-and-closeout).
 Research edits MUST commit inside it and push with `just research-push` (or nested git
 push) in the same turn; on access failure warn plainly. MUST NOT stage it from Keld root.
 
