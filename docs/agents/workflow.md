@@ -14,6 +14,43 @@ linkage, spec and acceptance publication, claims, implementation and merge coord
 The internal loop below binds maintainers and agents acting with maintainer authority;
 external contributors do not acquire that authority.
 
+## Session continuity and closeout
+
+This section owns non-trivial task completion, including research-only audits, reviews,
+cleanup and resumed sessions. Before work, save objectives, findings and owned resources
+at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Registered
+`UserPromptSubmit` supplies that exact path and the per-turn receipt path. Receipts use
+the same baseline `session_id` and a separate `turn_id`. Retain original task inventory
+across turns; steering MUST NOT silently erase/recreate it. At scope changes, milestones
+and resume, reconcile conversation, current Linear and resources; steering adds work
+unless the user cancels/replaces it. A merged follow-up MUST NOT erase its originating audit objective.
+
+Before completion or handoff:
+
+- Every material finding MUST have a disposition: implemented with evidence, tracked
+  on its owning issue with finding and next acceptance check, independently refuted
+  with evidence, or blocked with owner and exact next action. Search/dedupe first;
+  local reports or unrelated ticket URLs are insufficient.
+- Within authorized scope, persist Linear findings/acceptance updates this session,
+  then re-fetch and verify their content. Preserve other claims; comment evidence on
+  actively owned issues. Publication/tool blockers retain the exact pending update;
+  never fabricate a receipt.
+- Reconcile original objectives, applicable gates, review/merge/publication and
+  parent/subtask status. Coordination owns resource disposition and actual cleanup.
+  Unresolved work requires a bounded handoff; MUST NOT label the whole session complete.
+- Run `just session-closeout <receipt>` after the final state change. Preserve receipt,
+  baseline and hashed evidence. `tools/session_closeout.py` owns the receipt format.
+  Reconcile baseline against conversation/tool history; the validator cannot discover
+  omitted work or authenticate an agent-written remote receipt. Independently re-read
+  remote updates and resource state before accepting the result.
+
+Interruptions preserve inventory/next action; refresh on resume before acting.
+Prior receipts do not prove new-turn completion; checked handoff is not implementation.
+CI checks validator/policy, not live Linear or local cleanup. Activate only for
+non-trivial work, never standalone factual questions. Hook enforcement requires client
+support, registration trusted through its UI and exercised activation. Without activation,
+claim no enforcement; report unsupported/untrusted clients.
+
 ## The loop (one issue, one agent, one concern)
 
 1. **Pick up and refresh.** Fetch the Linear issue (team KELD, current milestone first),
@@ -28,18 +65,10 @@ external contributors do not acquire that authority.
    it MUST record the ownership conflict on its own Linear issue (or the handoff if
    Linear is unavailable) and notify the human/orchestrator.
    That first comment MUST open with an `## Agent claim` block (template below).
-   The claim is posted **before any edit**, not after the work starts: a claim that
-   only becomes visible once a branch exists cannot stop a second device from
-   starting the same issue, which is how two agents discover each other at merge
-   instead of at pickup.
-   Posting is not atomic, so posting alone does not win the issue. After posting,
-   the agent MUST re-fetch the issue's comments and check for a competing claim it
-   could not have seen when it read: two agents can both read an unclaimed issue and
-   both post. **The earliest claim by Linear's own `createdAt` wins** — a
-   server-assigned order both agents observe identically, rather than either agent's
-   local clock. A later claimant MUST record the conflict on its own issue and stop
-   **before its first edit**. If two claims carry the same timestamp, neither
-   proceeds: that is a human arbitration, not a coin flip.
+   Post the claim **before any edit**, then MUST re-fetch comments for competing
+   claims: posting alone does not win. **The earliest claim by Linear's own `createdAt` wins**.
+   A later claimant MUST record the conflict on its own issue and stop
+   **before its first edit**. Tied timestamps stop both claimants for human arbitration.
    Classify every acceptance criterion through `.agents/coordination.md`; when a real
    OS/device criterion applies, include that owner's initial `## OS acceptance` record.
    Before implementation, compare the issue/paste pin with `origin/main`: inspect
@@ -97,16 +126,12 @@ external contributors do not acquire that authority.
    performance claim based only on language choice blocks the PR until the root cause is
    fixed.
    When CodeRabbit has not reviewed the current head commit (`.agents/review.md`), an
-   adversarial isolated-context review is **mandatory**, not optional, and it MUST
-   have all four of these or it is theatre:
+   adversarial isolated-context review is **mandatory**, with all four requirements:
    - **Isolated context.** Reviewers get the diff and the repo, and MUST NOT be given the
-     author's rationale. A reviewer handed the reasoning grades the explanation instead of
-     the code.
-   - **A claim is not evidence.** A comment, commit message or PR body states what the
-     author believes and is the thing under test. Reviewers verify behaviour by running it,
-     and MAY mutate a file to test a hypothesis provided they restore it and confirm.
-   - **One named lens each**, so coverage is deliberate rather than several reviewers
-     re-finding the same thing.
+     author's rationale.
+   - **A claim is not evidence.** Verify comments, commit messages and PR claims by
+     running behavior. Reviewers MAY mutate files to test hypotheses, then restore and confirm.
+   - **One named lens each** for deliberate coverage.
    - **An independent refuter per finding**, whose default position is that the claim is
      wrong. What survives refutation is what gets reported.
 7. **PR and handoff.** Refresh Linear once more, then rebase onto `origin/main` first
@@ -152,28 +177,17 @@ after the claim — one record of availability, not two.
 - An agent MUST NOT begin work on an issue carrying an **unexpired** claim from another
   agent or device. It MUST record the conflict on its own issue and stop.
 - **Overlapping `Expected paths` on a single-writer file is a conflict even across
-  different issues**, and it carries the same duty: the second agent MUST stop and record
-  the conflict on its own issue rather than proceeding because the ticket number differs.
-  Overlap on any *other* path is not a stop — § Parallelism rules already governs it, and
-  first PR to green wins while later PRs rebase. This bullet narrows nothing there; it
-  only says that the single-writer set is claimed in Linear rather than discovered at
-  merge.
-- Overlap on an ordinary file is still worth declaring, because the failure it warns about
-  is not the loud one. Git reports a textual conflict and no work is lost. The silent case
-  is two agents editing *different regions* of one file, both merging cleanly, and the
-  combined result being wrong — a rule and its exception, a check and the test that pins
-  it. Seeing the overlap in a claim is what prompts the second agent to read the first
-  agent's diff before assuming a clean rebase is a correct one.
+  different issues**: the second agent MUST stop and record the conflict on its issue.
+  Other-path overlap follows Parallelism rules: first PR to green wins; later PRs
+  rebase. Declare ordinary-file overlap and read the other diff: changes to separate
+  regions can merge cleanly but conflict semantically.
 - A claim past `Claim expires` is free. The next agent MAY take the issue and MUST say
   in its own claim that it did.
 - `Claim expires` MUST be at most 24h ahead, and an agent MUST NOT extend it except by
-  refreshing while actually working. Without a ceiling the expiry rule guarantees
-  nothing: a crashed session that wrote a far-future timestamp would hold the board for
-  as long as it named.
+  refreshing while actually working.
 - A human MAY revoke any claim at any time by saying so on the issue. Revocation takes
   effect immediately, regardless of the expiry, and the next agent records that it took
-  a revoked claim. This is the override for a wedged or misbehaving agent that is still
-  refreshing.
+  a revoked claim.
 - `Single-writer files/keys needed` MUST be empty unless that agent is the designated
   writer for the shared file/key (see § Parallelism rules). Claiming one does not grant it.
 - The claim MUST be refreshed at each substantial milestone, alongside the progress

@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod markdown_contract;
+mod session_protocol;
 use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
 
 const ROOT: &str = "AGENTS.md";
@@ -181,7 +182,7 @@ const MERGE_OWNER_REQUIREMENTS: &[&str] = &[
     "The PR is mergeable and contains only the reviewed issue scope.",
     "A narrower explicit `do-not-merge`, missing approval artifact, or proposal whose acceptance is the decision itself overrides this delegation.",
     "This delegation authorizes only Keld PR merge; it does not authorize scope expansion, deployment, release, publication, production mutation, account administration or another repository.",
-    "After merge, fetch main, verify the landed patch or tree and ancestor relation, post the execution artifact, mark the issue Done, release the claim and remove the clean worktree.",
+    "After merge, fetch main, verify the landed patch or tree and ancestor relation, post the execution artifact, complete only the owned acceptance unit, reconcile remaining parent criteria before marking its issue Done, release the claim and remove the clean worktree.",
 ];
 
 const PUBLIC_INTAKE_OWNER_REQUIREMENTS: &[&str] = &[
@@ -1057,6 +1058,7 @@ fn check_justfile_and_development_guide(root: &Path) -> Result<(), String> {
 }
 
 fn check(root: &Path) -> Result<(), String> {
+    session_protocol::check(root)?;
     let root_text = read(root, ROOT)?;
     check_root(&root_text)?;
     check_references(root)?;
@@ -1102,8 +1104,8 @@ mod tests {
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-    struct TempDir {
-        path: PathBuf,
+    pub(super) struct TempDir {
+        pub(super) path: PathBuf,
     }
 
     impl TempDir {
@@ -1182,7 +1184,7 @@ mod tests {
         )
     }
 
-    fn fixture() -> TempDir {
+    pub(super) fn fixture() -> TempDir {
         let temp = TempDir::new();
         temp.write(ROOT, &valid_root());
         temp.write(
@@ -1260,6 +1262,7 @@ mod tests {
             DEVELOPMENT_GUIDE,
             &format!("# Development\n\n{DEVELOPMENT_GUIDE_CI_ROW}\n"),
         );
+        session_protocol::seed_fixture(&temp.path);
         temp
     }
 

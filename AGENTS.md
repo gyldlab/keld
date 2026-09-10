@@ -142,9 +142,9 @@ Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
 ## Rust, TypeScript, and naming
 
 - Rust lints are workspace-owned. A new `allow` needs inline justification.
-- Production `unsafe` is limited to sanctioned path owners: `keld-wv` backends,
-  `keld-runtime` Windows/Linux containment modules, and reviewed `keld-ipc::windows_named_pipe`;
-  future `keld-ipc` shm is reserved. Each denies `unsafe_op_in_unsafe_fn` and
+- Production `unsafe` is limited to the exact sanctioned paths and operations owned by
+  the nearest crate `AGENTS.md`; that owner is the single allowlist, not a crate-wide
+  permission. Each denies `unsafe_op_in_unsafe_fn` and
   carries local `// SAFETY:` proofs. A new production path requires an issue-scoped
   root/nested owner update plus independent `unsafe` gate evidence on the exact
   final diff; tests follow their nearest owner.
@@ -165,7 +165,8 @@ Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
   `keld dev` + recorder; release refuses it.
 - Perf claims use attributed reproducible measurements; >5% regression needs a written
   waiver and benchmarks. Budgets: architecture 01 §5.
-- Threat models remain in the `keld-guard` and `keld-update` crate documentation.
+- Threat-model location and current/target status follow the owning crate documentation;
+  `crates/keld-guard/AGENTS.md` points to architecture 03. Do not claim an absent document exists.
 - PRs list these five review gates (or `none`): `unsafe`, public API, permission model,
   dependency addition, wire protocol. Review gates require named independent security
   or architecture evidence under the standing repository-owner delegation in

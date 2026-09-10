@@ -87,6 +87,8 @@ const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "target/agent-context/agent-context-test",
     "rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
     "target/agent-context/agent-context check .",
+    "python3 -B tools/test_session_closeout.py",
+    "python3 -B tools/test_session_closeout_hook.py",
 ];
 
 const PRODUCT_STATUS_COMMANDS: &[&str] = &[
@@ -2108,6 +2110,8 @@ mod tests {
             "          target/agent-context/agent-context-test",
             "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
             "          target/agent-context/agent-context check .",
+            "          python3 -B tools/test_session_closeout.py",
+            "          python3 -B tools/test_session_closeout_hook.py",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
             "      - run: rustc --edition=2024 --test tools/product_status.rs",
             "      - run: product-status check .",
@@ -2445,6 +2449,8 @@ mod tests {
             "          target/agent-context/agent-context-test\n",
             "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context\n",
             "          target/agent-context/agent-context check .\n",
+            "          python3 -B tools/test_session_closeout.py\n",
+            "          python3 -B tools/test_session_closeout_hook.py\n",
         );
         temp.write(WORKFLOW, &valid_workflow().replacen(context_step, "", 1));
         let error = check(temp.path()).expect_err("missing context gate must fail");
@@ -2463,6 +2469,29 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("echoed context gate must fail");
         assert!(error.contains("without wrappers"), "{error}");
+    }
+
+    #[test]
+    fn hosted_closeout_suites_cannot_be_omitted_or_echoed() {
+        for command in [
+            "python3 -B tools/test_session_closeout.py",
+            "python3 -B tools/test_session_closeout_hook.py",
+        ] {
+            for replacement in [
+                String::new(),
+                format!("echo {command}"),
+                format!("{command} || true"),
+            ] {
+                let temp = complete_fixture();
+                temp.write(
+                    WORKFLOW,
+                    &valid_workflow().replacen(command, &replacement, 1),
+                );
+                let error =
+                    check(temp.path()).expect_err("missing or swallowed closeout tests must fail");
+                assert!(error.contains("without wrappers"), "{error}");
+            }
+        }
     }
 
     #[test]

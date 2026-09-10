@@ -93,6 +93,8 @@ agent-context:
     target/agent-context/agent-context-test
     rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
     target/agent-context/agent-context check .
+    python -B tools/test_session_closeout.py
+    python -B tools/test_session_closeout_hook.py
 
 # Generate the canonical Current/Target/Evidence status view.
 product-status:
@@ -360,3 +362,7 @@ hooks-install:
     git -C "$ROOT" config core.hooksPath "$HOOKS_DIR"
     echo "hooks-install: installed reviewed reminder hooks at $HOOKS_DIR (local)."
     echo "hooks-install: checkout/merge will not execute working-tree code."
+
+# Validate the actual session receipt; this is local/remote-evidence admission, not CI.
+session-closeout receipt:
+    python -B tools/session_closeout.py check "{{receipt}}"
