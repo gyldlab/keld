@@ -232,14 +232,7 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
             "KELD-CORE-037: supervised Bun guardian failed — {error}. Fix the Bun app failure and relaunch the no-flag host."
         )
     });
-    let report = match (report, cleanup) {
-        (Ok(report), Ok(())) => report,
-        (Err(primary), Ok(())) => return Err(primary),
-        (Ok(_), Err(cleanup)) => return Err(cleanup),
-        (Err(primary), Err(cleanup)) => {
-            return Err(format!("{primary} Additional cleanup failure: {cleanup}"));
-        }
-    };
+    let (report, cleanup_failure) = reconcile_guardian_result(report, cleanup)?;
     let stdout_notice = keld_runtime::CapturedOutput::elision_notice(report.stdout_dropped_bytes)
         .unwrap_or_default();
     let stderr_notice = keld_runtime::CapturedOutput::elision_notice(report.stderr_dropped_bytes)
@@ -250,7 +243,22 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         .and_then(|()| std::io::stderr().write_all(report.stderr.as_bytes()))
         .and_then(|()| std::io::stderr().write_all(stderr_notice.as_bytes()))
         .map_err(|source| format!("KELD-CORE-037: guardian stderr failed — {source}. Retry."))?;
-    Ok(())
+    cleanup_failure.map_or(Ok(()), Err)
+}
+
+#[cfg(target_os = "macos")]
+fn reconcile_guardian_result<T>(
+    report: Result<T, String>,
+    cleanup: Result<(), String>,
+) -> Result<(T, Option<String>), String> {
+    match (report, cleanup) {
+        (Ok(report), Ok(())) => Ok((report, None)),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(report), Err(cleanup)) => Ok((report, Some(cleanup))),
+        (Err(primary), Err(cleanup)) => {
+            Err(format!("{primary} Additional cleanup failure: {cleanup}"))
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -309,7 +317,17 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    use super::{dev_stage_cleanup_root_for, reopen_validated_entry};
+    use super::{dev_stage_cleanup_root_for, reconcile_guardian_result, reopen_validated_entry};
+
+    #[test]
+    fn successful_guardian_report_survives_cleanup_failure() {
+        let (report, cleanup_failure) =
+            reconcile_guardian_result(Ok("captured output"), Err(String::from("cleanup failed")))
+                .expect("successful report must remain available for diagnostics");
+
+        assert_eq!(report, "captured output");
+        assert_eq!(cleanup_failure.as_deref(), Some("cleanup failed"));
+    }
 
     #[test]
     fn dev_stage_cleanup_accepts_only_the_exact_private_nonce_layout() {
