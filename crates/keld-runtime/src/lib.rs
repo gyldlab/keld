@@ -1236,6 +1236,17 @@ where
     }
 }
 
+fn cleanup_error_by_priority(
+    primary_error: Option<RuntimeError>,
+    revocation_error: Option<RuntimeError>,
+    capture_error: Option<RuntimeError>,
+) -> Option<RuntimeError> {
+    // A failed revoke means generation authority may remain live, so it owns
+    // the terminal result. Capture retirement is next because an inherited
+    // pipe holder can otherwise keep a supervisor-owned reader alive.
+    revocation_error.or(capture_error).or(primary_error)
+}
+
 #[allow(clippy::too_many_arguments)] // internal worker; grouping into a struct would not reduce coupling
 #[allow(clippy::too_many_lines)] // one lifecycle state machine keeps lease/child ownership transitions contiguous
 fn supervise<P>(
@@ -1278,23 +1289,26 @@ fn supervise<P>(
         let capture_threads = match start_capture_threads(&mut child, output) {
             Ok(threads) => threads,
             Err(error) => {
-                let terminal = RuntimeError::Lifecycle {
+                let primary_error = RuntimeError::Lifecycle {
                     phase: "capture thread",
                     source: error.source,
                 };
-                let terminal = match lease.revoke(RevocationCause::CaptureFailed) {
-                    Ok(()) => terminal,
-                    Err(revocation_error) => revocation_error,
-                };
+                #[cfg(test)]
+                let injected_capture_error = lease.injected_capture_retirement_failure();
+                #[cfg(not(test))]
+                let injected_capture_error = None;
+                let revocation_error = lease.revoke(RevocationCause::CaptureFailed).err();
                 let _ = child.kill();
                 let _ = child.wait();
-                let terminal =
+                let capture_error =
                     capture_finish_error(finish_capture_threads_after_direct_child(error.threads))
-                        .unwrap_or(terminal);
+                        .or(injected_capture_error);
+                let terminal =
+                    cleanup_error_by_priority(Some(primary_error), revocation_error, capture_error);
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 *terminal_error
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
+                    .unwrap_or_else(PoisonError::into_inner) = terminal;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
@@ -1303,42 +1317,50 @@ fn supervise<P>(
             match wait_or_shutdown(&mut child, &mut lease, shutdown, restart_attempt, attempt) {
                 Ok(wait) => wait,
                 Err(error) => {
-                    let terminal = RuntimeError::Lifecycle {
+                    let primary_error = RuntimeError::Lifecycle {
                         phase: "child wait",
                         source: error,
                     };
-                    let terminal = match lease.revoke(RevocationCause::WaitFailed) {
-                        Ok(()) => terminal,
-                        Err(revocation_error) => revocation_error,
-                    };
+                    #[cfg(test)]
+                    let injected_capture_error = lease.injected_capture_retirement_failure();
+                    #[cfg(not(test))]
+                    let injected_capture_error = None;
+                    let revocation_error = lease.revoke(RevocationCause::WaitFailed).err();
                     let _ = child.kill();
                     let _ = child.wait();
-                    let terminal = capture_finish_error(finish_capture_threads_after_direct_child(
-                        capture_threads,
-                    ))
-                    .unwrap_or(terminal);
+                    let capture_error = capture_finish_error(
+                        finish_capture_threads_after_direct_child(capture_threads),
+                    )
+                    .or(injected_capture_error);
+                    let terminal = cleanup_error_by_priority(
+                        Some(primary_error),
+                        revocation_error,
+                        capture_error,
+                    );
                     *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     *terminal_error
                         .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
+                        .unwrap_or_else(PoisonError::into_inner) = terminal;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
             };
         if let WaitResult::LeaseFailed(error) = wait {
-            let terminal = match lease.revoke(RevocationCause::AdmissionFailed) {
-                Ok(()) => error,
-                Err(revocation_error) => revocation_error,
-            };
+            #[cfg(test)]
+            let injected_capture_error = lease.injected_capture_retirement_failure();
+            #[cfg(not(test))]
+            let injected_capture_error = None;
+            let revocation_error = lease.revoke(RevocationCause::AdmissionFailed).err();
             let _ = child.kill();
             let _ = child.wait();
-            let terminal =
+            let capture_error =
                 capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
-                    .unwrap_or(terminal);
+                    .or(injected_capture_error);
+            let terminal = cleanup_error_by_priority(Some(error), revocation_error, capture_error);
             *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
             *terminal_error
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
+                .unwrap_or_else(PoisonError::into_inner) = terminal;
             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
             return;
         }
@@ -1350,48 +1372,31 @@ fn supervise<P>(
             // unrequested self-termination (KEL-116). Revocation still
             // precedes close/kill as architecture 06 requires.
             let self_terminated = wait_for_self_termination(&mut child);
-            if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
+            #[cfg(test)]
+            let injected_capture_error = lease.injected_capture_retirement_failure();
+            #[cfg(not(test))]
+            let injected_capture_error = None;
+            let revocation_error = lease.revoke(RevocationCause::Shutdown).err();
+            let _ = child.kill();
+            let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
+                phase: "child shutdown wait",
+                source,
+            });
+            let capture_error =
+                capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
+                    .or(injected_capture_error);
+            if let Some(error) =
+                cleanup_error_by_priority(wait_error, revocation_error, capture_error)
+            {
                 *terminal_error
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                let _ = child.kill();
-                let _ = child.wait();
-                if let Some(error) =
-                    capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
-                {
-                    *terminal_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                }
                 let accepted = shutdown_was_accepted(accepted_shutdown);
                 if let Some(status) = self_terminated
                     && !accepted
                 {
                     record_self_termination(crash_ledger, output, pid, status.code());
                 }
-                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                return;
-            }
-            let _ = child.kill();
-            let wait_result = child.wait();
-            if let Some(error) =
-                capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
-            {
-                *terminal_error
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                return;
-            }
-            if let Err(source) = wait_result {
-                *terminal_error
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(RuntimeError::Lifecycle {
-                    phase: "child shutdown wait",
-                    source,
-                });
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
@@ -1412,38 +1417,26 @@ fn supervise<P>(
                 let restart_cause = RevocationCause::LinkFailed;
                 #[cfg(not(windows))]
                 let restart_cause = RevocationCause::AdmissionFailed;
-                if let Err(error) = lease.revoke(restart_cause) {
+                #[cfg(test)]
+                let injected_capture_error = lease.injected_capture_retirement_failure();
+                #[cfg(not(test))]
+                let injected_capture_error = None;
+                let revocation_error = lease.revoke(restart_cause).err();
+                let _ = child.kill();
+                let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
+                    phase: "child restart wait",
+                    source,
+                });
+                let capture_error = capture_finish_error(
+                    finish_capture_threads_after_direct_child(capture_threads),
+                )
+                .or(injected_capture_error);
+                if let Some(error) =
+                    cleanup_error_by_priority(wait_error, revocation_error, capture_error)
+                {
                     *terminal_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    if let Some(error) = capture_finish_error(
-                        finish_capture_threads_after_direct_child(capture_threads),
-                    ) {
-                        *terminal_error
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                    }
-                    *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                    return;
-                }
-                let _ = child.kill();
-                if let Err(source) = child.wait() {
-                    *terminal_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(RuntimeError::Lifecycle {
-                        phase: "child restart wait",
-                        source,
-                    });
-                    if let Some(error) = capture_finish_error(
-                        finish_capture_threads_after_direct_child(capture_threads),
-                    ) {
-                        *terminal_error
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                    }
                     *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
@@ -1453,16 +1446,6 @@ fn supervise<P>(
                 // the direct child was reaped. Joining cannot then block
                 // successor provisioning on a process this supervisor does
                 // not own. KEL-78 remains the descendant reaping owner.
-                if let Some(error) =
-                    capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
-                {
-                    *terminal_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                    *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                    return;
-                }
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 None
             }
@@ -1489,7 +1472,7 @@ fn supervise<P>(
                 // may remain live. Capture retirement is still attempted first,
                 // and neither failure may erase the already-observed exit fact
                 // or its durable ledger record.
-                if let Some(error) = revoke_error.or(capture_error) {
+                if let Some(error) = cleanup_error_by_priority(None, revoke_error, capture_error) {
                     *terminal_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner) = Some(error);
@@ -2469,9 +2452,19 @@ mod tests {
         }
     }
 
-    struct FailingRevokeLease;
+    struct FailingRevokeLease {
+        inject_capture_failure: bool,
+    }
 
     impl GenerationLease for FailingRevokeLease {
+        fn injected_capture_retirement_failure(&self) -> Option<RuntimeError> {
+            self.inject_capture_failure
+                .then(|| RuntimeError::Lifecycle {
+                    phase: "capture retirement",
+                    source: std::io::Error::other("injected capture retirement failure"),
+                })
+        }
+
         fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
             Err(RuntimeError::Lifecycle {
                 phase: "test revoke",
@@ -2531,6 +2524,7 @@ mod tests {
 
     struct FailingRevokePreparer {
         command: Option<Command>,
+        inject_capture_failure: bool,
     }
 
     struct ShutdownExitPreparer {
@@ -2596,7 +2590,9 @@ mod tests {
             })?;
             Ok(PreparedChild {
                 command: command.into(),
-                lease: FailingRevokeLease,
+                lease: FailingRevokeLease {
+                    inject_capture_failure: self.inject_capture_failure,
+                },
             })
         }
     }
@@ -4107,6 +4103,7 @@ mod tests {
             RestartPolicy::default(),
             FailingRevokePreparer {
                 command: Some(shell_command("exit 0")),
+                inject_capture_failure: false,
             },
         )
         .expect("child must spawn");
@@ -4136,6 +4133,59 @@ mod tests {
                 .is_some_and(|record| record.exit_code == Some(0)),
             "{ledger:?}"
         );
+    }
+
+    #[test]
+    fn shutdown_revocation_failure_wins_over_capture_retirement_failure() {
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            FailingRevokePreparer {
+                command: Some(shell_command(&joined_steps(&[
+                    "echo shutdown-dual-cleanup-failure",
+                    long_running_shell_step(),
+                ]))),
+                inject_capture_failure: true,
+            },
+        )
+        .expect("child must spawn");
+        let _ = recv_started(&supervisor);
+        await_supervisor_stdout(&supervisor, "shutdown-dual-cleanup-failure");
+
+        supervisor.shutdown();
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "test revoke",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn requested_restart_revocation_failure_wins_over_capture_retirement_failure() {
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            FailingRevokePreparer {
+                command: Some(shell_command(&joined_steps(&[
+                    "echo restart-dual-cleanup-failure",
+                    long_running_shell_step(),
+                ]))),
+                inject_capture_failure: true,
+            },
+        )
+        .expect("child must spawn");
+        let (_, attempt) = recv_started(&supervisor);
+        await_supervisor_stdout(&supervisor, "restart-dual-cleanup-failure");
+
+        supervisor.restart_generation(attempt);
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "test revoke",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -4254,6 +4304,28 @@ mod tests {
         {
             steps.join(" & ")
         }
+    }
+
+    fn long_running_shell_step() -> &'static str {
+        #[cfg(unix)]
+        {
+            "sleep 5"
+        }
+        #[cfg(windows)]
+        {
+            "ping -n 6 127.0.0.1 >NUL"
+        }
+    }
+
+    fn await_supervisor_stdout(supervisor: &Supervisor, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if supervisor.output().stdout.contains(marker) {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("supervisor stdout did not publish marker {marker:?}");
     }
 
     fn recv_started(sup: &Supervisor) -> (u32, u32) {
