@@ -32,12 +32,14 @@ def fields(value, required, optional=()):
     require(value.keys() <= set(required) | set(optional), "unknown fields")
 
 
-def meaningful(value):
-    require(isinstance(value, str) and len(value.strip()) >= 3, "empty or short text")
-    require(value.strip().lower() not in {"todo", "tbd", "none", "n/a", "placeholder", "..."},
+def meaningful(value, *, reject_marker_prefix=False):
+    require(isinstance(value, str) and bool(value.strip()), "empty text")
+    text = value.strip()
+    require(text.lower() not in {"todo", "tbd", "none", "n/a", "placeholder", "..."},
             "placeholder text")
-    require(not re.search(r"\b(?:TODO|TBD|PLACEHOLDER)\b|<[^>]+>", value, re.IGNORECASE),
-            "placeholder text")
+    require(not re.fullmatch(r"<[^>]+>", text), "placeholder text")
+    if reject_marker_prefix:
+        require(not re.match(r"(?:TODO|TBD|PLACEHOLDER)\b", text, re.IGNORECASE), "placeholder text")
 
 
 def absolute(value):
@@ -57,7 +59,7 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique_object)
 
 
-def evidence(value):
+def evidence(value, *, allow_empty=False):
     fields(value, {"path", "sha256"})
     path = absolute(value["path"])
     require(isinstance(value["sha256"], str) and
@@ -68,7 +70,7 @@ def evidence(value):
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     require(digest.hexdigest() == value["sha256"], "evidence hash mismatch: " + str(path))
-    require(path.stat().st_size > 0, "empty evidence file")
+    require(allow_empty or path.stat().st_size > 0, "empty evidence file")
     return path
 
 
@@ -91,34 +93,73 @@ def rows(value, empty=False):
 
 
 def blocked(row):
-    meaningful(row.get("owner"))
-    meaningful(row.get("next_action"))
+    meaningful(row.get("owner"), reject_marker_prefix=True)
+    meaningful(row.get("next_action"), reject_marker_prefix=True)
+
+
+def registered_worktrees(common):
+    result = subprocess.run(["git", "--git-dir", str(common), "worktree", "list", "--porcelain", "-z"],
+                            check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    return {os.path.normcase(os.path.abspath(entry[len("worktree "):]))
+            for entry in result.stdout.split("\0") if entry.startswith("worktree ")}
+
+
+def repository_context(receipt, baseline):
+    """Return (proven common Git directory, checkout exists); no remote/provenance claim."""
+    repo = absolute(receipt["repo"])
+    has_common = "git_common_dir" in baseline
+    require(has_common == ("source_ref" in baseline), "baseline requires common directory and source ref together")
+    live = repo.is_dir()
+    if live:
+        result = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute",
+                                 "--git-common-dir", "--show-toplevel", "HEAD"],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        lines = result.stdout.splitlines()
+        require(len(lines) == 3 and Path(lines[1]).resolve() == repo.resolve(), "repository root mismatch")
+        require(lines[2] == receipt["head"], "stale git HEAD")
+        common = Path(lines[0]).resolve()
+        if has_common:
+            require(absolute(baseline["git_common_dir"]).resolve() == common, "baseline common directory mismatch")
+    else:
+        require(not os.path.lexists(repo) and has_common, "removed repository requires retained source metadata")
+        common = absolute(baseline["git_common_dir"]).resolve()
+    if has_common:
+        ref = baseline["source_ref"]
+        require(isinstance(ref, str) and ref.startswith("refs/heads/"), "source_ref must name a retained branch")
+        subprocess.run(["git", "check-ref-format", ref], check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        result = subprocess.run(["git", "--git-dir", str(common), "rev-parse", "--verify", ref],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        require(result.stdout.strip() == receipt["head"], "retained source ref changed")
+    if not live:
+        require(any(isinstance(row, dict) and row.get("status") == "removed" and
+                    absolute(row.get("path")).resolve() == repo.resolve() for row in receipt["resources"]),
+                "removed repository needs exact removed resource receipt")
+        require(os.path.normcase(os.path.abspath(repo)) not in registered_worktrees(common),
+                "removed repository remains registered worktree")
+    return common, live
 
 
 def check(receipt_path):
     """Raise Invalid/OSError on rejected evidence, otherwise return the declared outcome."""
     receipt = read_json(Path(receipt_path))
     fields(receipt, {"schema", "session_id", "repo", "head", "baseline", "objectives",
-                     "findings", "findings_review", "resources", "checks", "outcome"}, {"turn_id"})
+                     "findings", "findings_review", "resources", "checks", "outcome"},
+           {"turn_id", "preserved_untracked"})
     require(receipt["schema"] == "keld.session-closeout/v1", "unsupported receipt schema")
     meaningful(receipt["session_id"])
     if "turn_id" in receipt:
         require(isinstance(receipt["turn_id"], str) and
                 re.fullmatch(r"[A-Za-z0-9_-]{1,128}", receipt["turn_id"]), "invalid turn_id")
     repo = absolute(receipt["repo"])
-    require(repo.is_dir(), "repository missing")
     require(isinstance(receipt["head"], str) and
             re.fullmatch(r"[0-9a-f]{40}", receipt["head"]), "invalid git HEAD")
-    result = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel", "HEAD"],
-                            check=True, capture_output=True, text=True, timeout=30)
-    lines = result.stdout.splitlines()
-    require(len(lines) == 2 and Path(lines[0]).resolve() == repo.resolve(), "repository root mismatch")
-    require(lines[1] == receipt["head"], "stale git HEAD")
     baseline = read_json(evidence(receipt["baseline"]))
-    fields(baseline, {"schema", "session_id", "repo", "objectives", "findings", "resources", "checks", "untracked"})
+    fields(baseline, {"schema", "session_id", "repo", "objectives", "findings", "resources", "checks", "untracked"},
+           {"git_common_dir", "source_ref"})
     require(baseline["schema"] == "keld.session-baseline/v1", "unsupported baseline schema")
     require(baseline["session_id"] == receipt["session_id"], "baseline session mismatch")
     require(absolute(baseline["repo"]).resolve() == repo.resolve(), "baseline repository mismatch")
+    common, live = repository_context(receipt, baseline)
     for section in ("objectives", "findings", "resources"):
         current = rows(receipt[section], empty=section != "objectives")
         original = baseline[section]
@@ -155,6 +196,22 @@ def check(receipt_path):
                 "invalid untracked SHA256")
         require(path not in untracked_files, "duplicate baseline untracked path")
         untracked_files[path] = item["sha256"]
+    preserved = receipt.get("preserved_untracked", [])
+    require(isinstance(preserved, list), "preserved_untracked must be a list")
+    preserved_paths = set()
+    for item in preserved:
+        fields(item, {"path", "evidence"})
+        path = item["path"]
+        require(isinstance(path, str) and path in untracked_files, "unknown preserved untracked path")
+        require(path not in preserved_paths, "duplicate preserved untracked path")
+        preserved_paths.add(path)
+        fields(item["evidence"], {"path", "sha256"})
+        external = absolute(item["evidence"]["path"]).resolve()
+        require(not external.is_relative_to(repo.resolve()), "preserved copy must be outside task checkout")
+        require(item["evidence"]["sha256"] == untracked_files[path], "preserved untracked digest mismatch")
+        evidence(item["evidence"], allow_empty=True)
+    if not live:
+        require(preserved_paths == untracked_files.keys(), "preserved untracked coverage mismatch")
 
     unresolved = False
     for row in receipt["objectives"]:
@@ -189,10 +246,7 @@ def check(receipt_path):
             blocked(row)
             unresolved = True
 
-    worktrees = subprocess.run(["git", "-C", str(repo), "worktree", "list", "--porcelain", "-z"],
-                               check=True, capture_output=True, text=True, timeout=30)
-    registered = {os.path.normcase(os.path.abspath(entry[len("worktree "):]))
-                  for entry in worktrees.stdout.split("\0") if entry.startswith("worktree ")}
+    registered = registered_worktrees(common)
     paths = set()
     for row in receipt["resources"]:
         fields(row, {"id", "path", "status", "reason"}, {"owner", "next_action"})
@@ -230,13 +284,15 @@ def check(receipt_path):
             unresolved = True
     require(receipt["outcome"] in {"complete", "handoff"}, "invalid outcome")
     require(set(required_checks) <= names, "dropped baseline checks")
-    census = subprocess.run(["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
-                            check=True, capture_output=True, text=True, timeout=30)
-    current_untracked = set(census.stdout.rstrip("\0").split("\0")) - {""}
+    current_untracked = set()
+    if live:
+        census = subprocess.run(["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        current_untracked = set(census.stdout.rstrip("\0").split("\0")) - {""}
     new_untracked = current_untracked - untracked_files.keys()
     require(receipt["outcome"] != "complete" or not new_untracked,
             "unexplained untracked files: " + repr(sorted(new_untracked)))
-    if receipt["outcome"] == "complete":
+    if live and receipt["outcome"] == "complete":
         require(current_untracked == untracked_files.keys(), "untracked inventory changed")
         for relative, expected in untracked_files.items():
             path = repo / relative
@@ -253,9 +309,12 @@ def check(receipt_path):
                 for chunk in iter(lambda: source.read(1024 * 1024), b""):
                     digest.update(chunk)
             require(digest.hexdigest() == expected, "untracked file hash mismatch: " + relative)
-    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
-                            check=True, capture_output=True, text=True, timeout=30)
-    if status.stdout.strip():
+    dirty = False
+    if live:
+        status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+                                check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        dirty = bool(status.stdout.strip())
+    if dirty:
         unfinished = (any(row["status"] != "complete" for row in receipt["objectives"]) or
                       any(row["status"] != "passed" for row in checks))
         require(receipt["outcome"] == "handoff" and unfinished,

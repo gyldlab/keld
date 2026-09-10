@@ -167,9 +167,9 @@ the same output directory. A successful `doctor` alone is not a desktop acceptan
 
 ## Contribute and verify
 
-Start with [CONTRIBUTING.md](../../CONTRIBUTING.md). Install `just`, `cargo-nextest`,
-and `cargo-deny` for the complete local gate; its Mermaid renderer also requires a
-running Docker-compatible engine. The exact gate inventory belongs to the
+Start with [CONTRIBUTING.md](../../CONTRIBUTING.md). Install the verification tools
+listed in the [development guide](05-development-guide.md#1-prerequisites), including
+Python and a running Docker-compatible engine. The exact gate inventory belongs to the
 [justfile](../../justfile). Put the CI-pinned Bun 1.4.2 binary on this shell's `PATH`
 without replacing another project's global runtime, then verify the selected version:
 
