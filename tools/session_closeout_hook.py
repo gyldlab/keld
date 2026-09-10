@@ -141,7 +141,7 @@ def write_atomic(path, value):
 
 
 def cursor_response(payload):
-    """Request at most one repair per conversation; Cursor has no terminal block."""
+    """Request a bounded repair from Cursor's stop cycle; no terminal block."""
     try:
         session_closeout.require(isinstance(payload, dict), "hook input must be an object")
         event = payload.get("hook_event_name")

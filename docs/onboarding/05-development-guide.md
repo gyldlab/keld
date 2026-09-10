@@ -500,7 +500,7 @@ Review commands before enabling them. Do not install these project handlers glob
 |---|---|---|---|
 | Codex | tracked `.codex/hooks.json` | session_id / turn_id | block once; repeated failure terminates with explicit handoff |
 | Claude Code >=2.1.196 | `.claude/settings.local.json` | session_id / prompt_id | block once; repeated failure terminates with explicit handoff |
-| Cursor | `.cursor/hooks.json` | conversation_id / generation_id | one repair follow-up per conversation; no terminal admission guarantee |
+| Cursor | `.cursor/hooks.json` | conversation_id / generation_id | bounded repair follow-up; no terminal admission guarantee |
 
 Claude/Cursor registration is generated locally for the OS. Their documented schemas
 have no Codex `commandWindows` override. Keep machine-specific registration out of
@@ -514,10 +514,12 @@ receives a session-start pointer and refreshes a small `current.json` before eac
 under the Git common directory's session namespace. It contains IDs and receipt
 instructions, never prompts or transcripts, and does not activate a task by itself.
 The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
-The repair limit is per conversation, not per task; start a new conversation after it
-is consumed. Follow-up event ordering still requires native qualification.
-Aborted/error Cursor turns do not start repair work; exhausted follow-up attempts remain
-unverified and report a handoff in hook diagnostics.
+The adapter requests repair only when the native `loop_count` is zero and configures
+`loop_limit: 1`. Interactive CLI 2026.09.08-6caf4ff on Windows/Linux reset the count on
+later user generations, so this is not a conversation-wide repair budget. Its automatic
+follow-up did not emit another registered prompt/stop event in these tests; completion
+after that follow-up is unverified. Aborted/error payloads request no repair; if an
+exhausted stop reaches the adapter, its diagnostics require a handoff.
 
 Use the native Cursor registration without also importing these Claude hooks through
 Cursor's optional third-party configuration compatibility. Such duplicate loading is
@@ -530,8 +532,12 @@ nor native activation. After upgrades, exercise a factual inactive turn, an acti
 missing receipt, a valid receipt and a second fresh prompt. Follow-up tests must be
 bounded and must not allow a stale receipt to establish completion.
 
-Qualification for KEL-216 is recorded on its Linear issue. Windows and Linux subprocess
-results, native client events and macOS availability are separate evidence categories.
+KEL-216 records the adapter baseline; KEL-217 records native qualification. Interactive
+Cursor CLI 2026.09.08-6caf4ff on Windows/Linux exercised inactive, missing, valid and
+stale-generation receipts. Windows required leading UTF-8 transport BOM handling.
+Headless `--print` runs observed only `sessionStart`, so completion is not qualified
+there. Cursor desktop hook loading/third-party duplication and native macOS clients
+remain unverified. CLI evidence does not establish desktop support.
 Unsupported versions or unexercised clients use the manual `just session-closeout`
 workflow and must not be described as automatically enforced.
 
