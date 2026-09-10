@@ -111,6 +111,52 @@ class CloseoutTests(unittest.TestCase):
         self.write()
         self.assertEqual(checker.check(self.path), "handoff")
 
+    def test_just_receipt_path_is_data_not_shell_source(self):
+        just = shutil.which('just')
+        if not just:
+            self.skipTest('Just executable is required for the local recipe probe')
+        original = Path(__file__).resolve().parent.parent / 'justfile'
+        (self.repo / 'justfile').write_bytes(original.read_bytes())
+        (self.repo / 'tools').mkdir()
+        (self.repo / 'tools/session_closeout.py').write_text(
+            'import sys; print(sys.argv[-1])', encoding='utf-8')
+        literal = str(self.root / 'receipt$(printf CORRUPTED).json')
+        result = subprocess.run([just, '--justfile', str(self.repo / 'justfile'),
+                                 'session-closeout', literal], cwd=self.repo,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), literal)
+
+    def test_unicode_checkout_path_uses_git_utf8_metadata(self):
+        renamed = self.root / 'repo-\u00e9'
+        self.repo.rename(renamed)
+        self.repo = renamed
+        self.receipt['repo'] = str(renamed)
+        baseline = json.loads(self.baseline.read_text(encoding='utf-8'))
+        baseline['repo'] = str(renamed)
+        self.baseline.write_text(json.dumps(baseline), encoding='utf-8')
+        self.receipt['baseline'] = self.proof(self.baseline)
+        self.write()
+        self.assertEqual(checker.check(self.path), 'complete')
+
+    def test_short_stable_ids_are_valid(self):
+        baseline = json.loads(self.baseline.read_text(encoding='utf-8'))
+        baseline['objectives'][0]['id'] = 'fs'
+        self.receipt['objectives'][0]['id'] = 'fs'
+        self.baseline.write_text(json.dumps(baseline), encoding='utf-8')
+        self.receipt['baseline'] = self.proof(self.baseline)
+        self.write()
+        self.assertEqual(checker.check(self.path), 'complete')
+
+    def test_literal_task_terms_are_not_missing_values(self):
+        for text in ('Remove TODO markers', 'Audit the doc-placeholder-checker',
+                     str(self.root / 'doc-placeholder-checker'), 'Handle <script> elements'):
+            with self.subTest(text=text):
+                checker.meaningful(text)
+        for text in ('', 'TODO', 'TBD', '<owner>', '...'):
+            with self.subTest(marker=text), self.assertRaises(checker.Invalid):
+                checker.meaningful(text)
+
     def test_new_untracked_file_rejects_complete_but_known_baseline_is_preserved(self):
         extra = self.repo / "forgotten-source.txt"
         extra.write_text("new work", encoding="utf-8")
@@ -171,7 +217,7 @@ class CloseoutTests(unittest.TestCase):
 
     def test_tracked_finding_needs_owner_and_real_followup(self):
         self.receipt["findings"][0].pop("owner")
-        self.reject("empty or short text")
+        self.reject("empty text")
         self.receipt["findings"][0]["owner"] = "<owner>"
         self.reject("placeholder text")
         self.receipt["findings"][0]["owner"] = "TODO assign lifecycle owner"
@@ -195,6 +241,122 @@ class CloseoutTests(unittest.TestCase):
         self.git("worktree", "prune")
         self.write()
         self.assertEqual(checker.check(self.path), "complete")
+
+    def removed_task_receipt(self):
+        task = self.root / "owned-task"
+        self.git("worktree", "add", "-b", "task-closeout", str(task), "HEAD")
+        baseline = json.loads(self.baseline.read_text(encoding="utf-8"))
+        baseline.update(repo=str(task), git_common_dir=str(self.repo / ".git"),
+                        source_ref="refs/heads/task-closeout")
+        baseline["resources"].append({"id": "task", "path": str(task)})
+        self.baseline.write_text(json.dumps(baseline), encoding="utf-8")
+        self.receipt.update(repo=str(task), baseline=self.proof(self.baseline))
+        self.receipt["resources"].append({"id": "task", "path": str(task), "status": "removed",
+                                          "reason": "Owned task source retained in named branch"})
+        return task
+
+    def test_removed_task_receipt_retains_source_proof(self):
+        task = self.removed_task_receipt()
+        self.git("worktree", "remove", str(task))
+        self.write()
+        self.assertEqual(checker.check(self.path), "complete")
+
+    def removed_task_with_original_notes(self, content=b"Original user-owned notes\n"):
+        task = self.removed_task_receipt()
+        notes = task / "user-notes.txt"
+        notes.write_bytes(content)
+        baseline = json.loads(self.baseline.read_text(encoding="utf-8"))
+        baseline["untracked"] = [{"path": "user-notes.txt", "sha256": self.proof(notes)["sha256"]}]
+        self.baseline.write_text(json.dumps(baseline), encoding="utf-8")
+        self.receipt["baseline"] = self.proof(self.baseline)
+        preserved = self.root / "preserved-notes.txt"
+        preserved.write_bytes(notes.read_bytes())
+        notes.unlink()
+        self.git("worktree", "remove", str(task))
+        return preserved
+
+    def test_removed_task_cannot_lose_baseline_untracked_bytes(self):
+        self.removed_task_with_original_notes()
+        self.reject("preserved untracked coverage mismatch")
+
+    def test_removed_task_accepts_only_exact_external_preservation(self):
+        preserved = self.removed_task_with_original_notes()
+        self.receipt["preserved_untracked"] = [{"path": "user-notes.txt", "evidence": self.proof(preserved)}]
+        self.write()
+        self.assertEqual(checker.check(self.path), "complete")
+        preserved.write_bytes(b"Changed bytes\n")
+        self.reject("evidence hash mismatch")
+        self.receipt["preserved_untracked"][0]["evidence"] = self.proof(preserved)
+        self.reject("preserved untracked digest mismatch")
+
+    def test_removed_task_preserves_empty_files_without_empty_proofs(self):
+        preserved = self.removed_task_with_original_notes(b'')
+        self.receipt['preserved_untracked'] = [{'path': 'user-notes.txt', 'evidence': self.proof(preserved)}]
+        self.write()
+        self.assertEqual(checker.check(self.path), 'complete')
+        with self.assertRaisesRegex(checker.Invalid, 'empty evidence file'):
+            checker.evidence(self.proof(preserved))
+
+    def test_preserved_untracked_rejects_duplicates_and_internal_copy(self):
+        preserved = self.removed_task_with_original_notes()
+        row = {"path": "user-notes.txt", "evidence": self.proof(preserved)}
+        self.receipt["preserved_untracked"] = [row, copy.deepcopy(row)]
+        self.reject("duplicate preserved untracked path")
+        self.receipt["preserved_untracked"] = [row]
+        row["evidence"]["path"] = str(Path(self.receipt["repo"]) / "archived.txt")
+        self.reject("preserved copy must be outside task checkout")
+
+    def test_external_preservation_does_not_waive_live_original_bytes(self):
+        source = self.repo / "user-notes.txt"
+        source.write_bytes(b"Original user-owned notes\n")
+        preserved = self.root / "preserved-notes.txt"
+        preserved.write_bytes(source.read_bytes())
+        baseline = json.loads(self.baseline.read_text(encoding="utf-8"))
+        baseline["untracked"] = [{"path": "user-notes.txt", "sha256": self.proof(source)["sha256"]}]
+        self.baseline.write_text(json.dumps(baseline), encoding="utf-8")
+        self.receipt["baseline"] = self.proof(self.baseline)
+        self.receipt["preserved_untracked"] = [{"path": "user-notes.txt", "evidence": self.proof(preserved)}]
+        source.unlink()
+        self.reject("untracked inventory changed")
+
+    def test_removed_task_requires_metadata_and_removed_disposition(self):
+        task = self.removed_task_receipt()
+        self.git("worktree", "remove", str(task))
+        baseline = json.loads(self.baseline.read_text(encoding="utf-8"))
+        for field in ("git_common_dir", "source_ref"):
+            altered = dict(baseline)
+            altered.pop(field)
+            self.baseline.write_text(json.dumps(altered), encoding="utf-8")
+            self.receipt["baseline"] = self.proof(self.baseline)
+            self.reject("requires common directory and source ref together")
+        self.baseline.write_text(json.dumps(baseline), encoding="utf-8")
+        self.receipt["baseline"] = self.proof(self.baseline)
+        self.receipt["resources"][-1]["status"] = "retained"
+        self.reject("needs exact removed resource")
+
+    def test_removed_task_rejects_stale_registration_and_changed_ref(self):
+        task = self.removed_task_receipt()
+        self.assertEqual(task.resolve().parent, self.root)
+        shutil.rmtree(task)
+        self.reject("remains registered worktree")
+        self.git("worktree", "prune")
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                 "commit", "--allow-empty", "-m", "new source", "--quiet")
+        self.git("update-ref", "refs/heads/task-closeout", self.git("rev-parse", "HEAD"))
+        self.reject("retained source ref changed")
+
+    def test_live_task_binds_common_directory_and_valid_ref(self):
+        self.removed_task_receipt()
+        baseline = json.loads(self.baseline.read_text(encoding="utf-8"))
+        baseline["git_common_dir"] = str(self.root)
+        self.baseline.write_text(json.dumps(baseline), encoding="utf-8")
+        self.receipt["baseline"] = self.proof(self.baseline)
+        self.reject("common directory mismatch")
+        baseline["git_common_dir"] = str(self.repo / ".git")
+        baseline["source_ref"] = "HEAD"
+        self.baseline.write_text(json.dumps(baseline), encoding="utf-8")
+        self.receipt["baseline"] = self.proof(self.baseline)
+        self.reject("must name a retained branch")
 
     def test_untracked_symlink_requires_handoff(self):
         source = self.repo / "existing.py"
@@ -241,7 +403,7 @@ class CloseoutTests(unittest.TestCase):
                 self.write()
                 self.assertEqual(checker.check(self.path), "handoff")
                 row.pop("next_action")
-                self.reject("empty or short text")
+                self.reject("empty text")
 
     def test_baseline_hash_binds_inventory(self):
         self.baseline.write_text("{}", encoding="utf-8")

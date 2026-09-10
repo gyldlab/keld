@@ -20,6 +20,7 @@ For the complete verification gate, also install:
 
 | Tool | Purpose |
 |---|---|
+| Python 3.9+ | Standard-library session verification; `python` on Windows, `python3` elsewhere |
 | `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
 | `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |

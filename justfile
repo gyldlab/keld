@@ -5,6 +5,9 @@
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
 
+# Windows installs expose python; Unix hosts need not provide that alias.
+python_command := if os() == "windows" { "python" } else { "python3" }
+
 # Open the current platform hello backend (Phase 1 slice).
 hello:
     cargo run -p keld-host -- --hello
@@ -93,8 +96,8 @@ agent-context:
     target/agent-context/agent-context-test
     rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
     target/agent-context/agent-context check .
-    python -B tools/test_session_closeout.py
-    python -B tools/test_session_closeout_hook.py
+    {{python_command}} -B tools/test_session_closeout.py
+    {{python_command}} -B tools/test_session_closeout_hook.py
 
 # Generate the canonical Current/Target/Evidence status view.
 product-status:
@@ -365,4 +368,6 @@ hooks-install:
 
 # Validate the actual session receipt; this is local/remote-evidence admission, not CI.
 session-closeout receipt:
-    python -B tools/session_closeout.py check "{{receipt}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/session_closeout.py check "$1"

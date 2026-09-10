@@ -32,7 +32,7 @@ def response(payload):
         result = subprocess.run(
             ["git", "-C", str(cwd), "rev-parse", "--path-format=absolute",
              "--git-common-dir", "--show-toplevel"],
-            check=True, capture_output=True, text=True, timeout=30)
+            check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
         lines = result.stdout.splitlines()
         session_closeout.require(len(lines) == 2, "cannot identify checkout")
         common, root = (Path(line) for line in lines)
@@ -49,18 +49,22 @@ def response(payload):
                     "Do not activate for a standalone factual question. While activated, save this turn's "
                     "keld.session-closeout/v1 receipt at "
                     + str(receipt_path) + "; session_id must be " + binding + "; turn_id must be " + ids[1] + ". "
-                    "Receipt repo must be " + str(root) + ". This hook verifies local evidence only.")}}
+                    "Use the task checkout as repo, in the same Git repository as " + str(root) +
+                    ". Before cleanup, retain baseline git_common_dir and source_ref (refs/heads/branch). "
+                    "This hook verifies local evidence only.")}}
         if not os.path.lexists(baseline_path):
             return {"systemMessage": "No activated Keld task; closeout enforcement not claimed."}
         receipt = session_closeout.read_json(receipt_path)
         session_closeout.require(isinstance(receipt, dict) and receipt.get("session_id") == binding and receipt.get("turn_id") == ids[1],
                                 "receipt belongs to another session or turn")
-        session_closeout.require(session_closeout.absolute(receipt.get("repo")).resolve() == root.resolve(),
-                                "receipt belongs to another checkout")
         baseline_ref = receipt.get("baseline", {})
         session_closeout.require(isinstance(baseline_ref, dict) and
                                 session_closeout.absolute(baseline_ref.get("path")).resolve() == baseline_path.resolve(),
                                 "receipt does not consume the activated baseline")
+        baseline = session_closeout.read_json(session_closeout.evidence(baseline_ref))
+        task_common, _ = session_closeout.repository_context(receipt, baseline)
+        session_closeout.require(task_common.resolve() == common.resolve(),
+                                "receipt belongs to another Git repository")
         outcome = session_closeout.check(receipt_path)
         return {"systemMessage": "Local closeout evidence accepted: " + outcome +
                 ". Remote state and inventory completeness are not authenticated."}
@@ -77,6 +81,7 @@ def response(payload):
 def configuration():
     """Generate the reviewed registration; hashes prevent executing changed repo code.
 
+    Install only as repository .codex/hooks.json, never as a global user hook.
     Refresh with: python -B tools/session_closeout_hook.py --print-config
     Base64 only transports multiline Python through both native shells; it is not trust.
     """
@@ -84,7 +89,7 @@ def configuration():
              for name in ('session_closeout', 'session_closeout_hook')]
     bootstrap = """import hashlib,json,pathlib,subprocess,sys,types
 try:
- root=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip())
+ root=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True,encoding='utf-8').strip())
  specs=SPECS
  blobs=[(name,(root/'tools'/(name+'.py')).read_bytes(),digest) for name,digest in specs]
  if any(hashlib.sha256(blob).hexdigest()!=digest for name,blob,digest in blobs):

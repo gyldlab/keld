@@ -43,6 +43,12 @@ class HookTests(unittest.TestCase):
         import re
         import os
         import shutil
+        renamed = self.fixture.root / 'repo-\u00e9'
+        self.repo.rename(renamed)
+        self.repo = renamed
+        self.fixture.repo = renamed
+        self.payload['cwd'] = str(renamed)
+        self.receipt_path = renamed / '.git/keld-closeout/session_214/turn-1.json'
         root = Path(__file__).resolve().parent.parent
         config = json.loads((root / '.codex/hooks.json').read_text(encoding='utf-8'))
         self.assertEqual(config, hook.configuration())
@@ -74,6 +80,37 @@ class HookTests(unittest.TestCase):
         self.assertIs(result['continue'], False)
         self.assertIn('source changed', result['stopReason'])
         self.assertNotIn('UNTRUSTED_SOURCE_EXECUTED', result['stopReason'])
+
+    def test_main_session_accepts_sibling_task_and_removed_task_but_not_foreign_repo(self):
+        fixture = self.fixture
+        task = fixture.root / 'task-worktree'
+        fixture.git('worktree', 'add', '-b', 'task-branch', str(task))
+        self.publish()
+        baseline_path = self.receipt_path.parent / 'baseline.json'
+        baseline = json.loads(baseline_path.read_text(encoding='utf-8'))
+        baseline.update(repo=str(task), git_common_dir=str(self.repo / '.git'),
+                        source_ref='refs/heads/task-branch', resources=[{'id': 'task', 'path': str(task)}])
+        baseline_path.write_text(json.dumps(baseline), encoding='utf-8')
+        receipt = json.loads(self.receipt_path.read_text(encoding='utf-8'))
+        receipt.update(repo=str(task), baseline=fixture.proof(baseline_path),
+                       resources=[{'id': 'task', 'path': str(task), 'status': 'retained',
+                                   'reason': 'Active owned task checkout'}])
+        self.receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+        self.assertIn('accepted: complete', hook.response(self.payload)['systemMessage'])
+        fixture.git('worktree', 'remove', str(task))
+        receipt['resources'][0].update(status='removed', reason='Clean task checkout removed by Git')
+        self.receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+        self.assertIn('accepted: complete', hook.response(self.payload)['systemMessage'])
+        foreign = fixtures.CloseoutTests()
+        foreign.setUp()
+        self.addCleanup(foreign.doCleanups)
+        baseline.update(repo=str(foreign.repo), git_common_dir=str(foreign.repo / '.git'),
+                        source_ref=foreign.git('symbolic-ref', 'HEAD'), resources=[])
+        baseline_path.write_text(json.dumps(baseline), encoding='utf-8')
+        receipt.update(repo=str(foreign.repo), head=foreign.receipt['head'], resources=[],
+                       baseline=fixture.proof(baseline_path))
+        self.receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+        self.assertIn('another Git repository', hook.response(self.payload)['reason'])
 
     def test_inactive_factual_turn_has_no_fabricated_inventory(self):
         result = self.cli(json.dumps(self.payload))
@@ -111,7 +148,7 @@ class HookTests(unittest.TestCase):
         receipt["session_id"] = "session_214"
         receipt["repo"] = str(self.repo.parent)
         self.receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-        self.assertIn("another checkout", hook.response(self.payload)["reason"])
+        self.assertEqual(hook.response(self.payload)["decision"], "block")
 
     def test_subdirectory_and_prompt_point_to_fixed_receipt_without_prompt_storage(self):
         nested = self.repo / "nested"
