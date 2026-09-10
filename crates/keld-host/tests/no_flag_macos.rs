@@ -100,7 +100,7 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
         .try_clone()
         .expect("duplicate the leaked descriptor for the child");
 
-    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+    let child = Command::new(std::env::current_exe().expect("current test executable"))
         .args(["--exact", "unix_descriptor_census_fixture_process"])
         .env("KELD_T2_CENSUS_OWNED_SOCKET", &owned_path)
         .stdin(Stdio::from(OwnedFd::from(inherited)))
@@ -126,7 +126,7 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
         "fixture leaked no harness Unix descriptor into the child: {observed:?}"
     );
     assert_eq!(
-        self_opened_unix_sockets(child_pid),
+        unix_sockets_not_inherited_from_harness(child_pid),
         vec![owned_identity],
         "census must charge the child only the listener it bound itself: {observed:?}"
     );
@@ -135,26 +135,31 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
     // own copy and the listener until scope end, so the leaked identity stays in
     // the harness table for the whole census above.
     drop(far_end);
-    let status = child.wait().expect("reap census fixture");
-    assert!(status.success(), "census fixture failed: {status:?}");
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "census fixture failed: {output:?}");
     await_process_gone(child_pid);
 }
 
-/// KEL-222: a second descriptor on an inherited socket is still inherited.
+/// KEL-222: a copy of a socket the harness does not hold is charged.
 ///
-/// `dup`, `exec` and fd-passing all give one kernel socket several descriptors.
-/// Every one of them is the socket the harness holds, so none of them is something
-/// the censused process opened, however many there are. This pins that: the child
-/// receives the same accepted socket twice, on stdin and on stdout, while the
-/// harness holds exactly one descriptor for it, and must still be charged only the
-/// listener it bound itself. A census that removed one harness address per match
-/// would charge the second copy and fail here.
+/// A target holding two descriptors on a socket the harness holds once looks the
+/// same to `lsof` whether it `dup`ed an inherited descriptor or opened the socket
+/// itself and passed a copy up over `SCM_RIGHTS`. The census charges the extra
+/// copy, because the dangerous reading of an ambiguous picture is the one where a
+/// process opened an app link. This pins that choice using the half of the
+/// ambiguity that needs no `SCM_RIGHTS` support to build. A census that excused
+/// every copy of a harness-held address charges nothing here and passes.
+///
+/// Fixture integrity is checked by socket address, and the harness's own copy is
+/// counted rather than assumed: by name alone this fixture would look correct
+/// while handing down two *different* sockets that share one `sun_path`, and it
+/// would then be testing nothing.
 ///
 /// The second copy lands on stderr rather than stdout because the child's test
 /// harness writes its result line to stdout after the harness has closed the
 /// socket's far end, which would fail the child on `EPIPE`.
 #[test]
-fn unix_descriptor_census_charges_no_extra_copy_of_an_inherited_socket() {
+fn unix_descriptor_census_charges_a_copy_the_harness_does_not_hold() {
     let fixture = tempfile::tempdir().expect("census fixture root");
     let leaked_path = fixture.path().join("leaked.sock");
     let owned_path = fixture.path().join("owned.sock");
@@ -166,6 +171,10 @@ fn unix_descriptor_census_charges_no_extra_copy_of_an_inherited_socket() {
     let (harness_copy, _) = leaked_listener
         .accept()
         .expect("accept harness leak socket");
+    // The listener reports the same `sun_path` as the peer it accepted, so leaving
+    // it open makes this fixture's own integrity check ambiguous — the very
+    // ambiguity the census refuses to resolve by name.
+    drop(leaked_listener);
     let first = harness_copy
         .try_clone()
         .expect("duplicate the leaked descriptor for the child");
@@ -173,7 +182,7 @@ fn unix_descriptor_census_charges_no_extra_copy_of_an_inherited_socket() {
         .try_clone()
         .expect("duplicate the leaked descriptor a second time");
 
-    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+    let child = Command::new(std::env::current_exe().expect("current test executable"))
         .args(["--exact", "unix_descriptor_census_fixture_process"])
         .env("KELD_T2_CENSUS_OWNED_SOCKET", &owned_path)
         // stdin and stderr, not stdout: the test harness writes its result line to
@@ -193,31 +202,49 @@ fn unix_descriptor_census_charges_no_extra_copy_of_an_inherited_socket() {
         thread::yield_now();
     }
 
-    // The fixture is only meaningful while the child really holds two descriptors
-    // on the one socket the harness holds once.
-    let observed = unix_socket_identities(child_pid);
-    let copies = observed
+    // The fixture only means anything while the child holds two descriptors on one
+    // socket and the harness holds exactly one.
+    let harness_copies: Vec<String> = unix_descriptors(std::process::id())
+        .into_iter()
+        .filter(|descriptor| descriptor.identity == leaked_identity)
+        .map(|descriptor| descriptor.socket)
+        .collect();
+    assert_eq!(
+        harness_copies.len(),
+        1,
+        "harness must hold exactly one descriptor on the leaked socket: {harness_copies:?}"
+    );
+    let leaked_socket = harness_copies
+        .into_iter()
+        .next()
+        .expect("the harness copy just counted");
+    let child_table = unix_descriptors(child_pid);
+    let copies = child_table
         .iter()
-        .filter(|identity| **identity == leaked_identity)
+        .filter(|descriptor| descriptor.socket == leaked_socket)
         .count();
+    let rendered: Vec<String> = child_table
+        .iter()
+        .map(|descriptor| {
+            format!(
+                "f{} d{} n{}",
+                descriptor.descriptor, descriptor.socket, descriptor.identity
+            )
+        })
+        .collect();
     assert_eq!(
         copies, 2,
-        "fixture did not receive the inherited socket twice: {observed:?}"
+        "fixture did not receive one socket twice: {rendered:?}"
     );
     assert_eq!(
-        harness_unix_sockets().len(),
-        unix_descriptors(std::process::id()).len(),
-        "harness census disagrees with itself"
-    );
-    assert_eq!(
-        self_opened_unix_sockets(child_pid),
-        vec![owned_identity],
-        "census must charge only the listener the child bound itself: {observed:?}"
+        unix_sockets_not_inherited_from_harness(child_pid),
+        vec![leaked_identity, owned_identity],
+        "census must charge the copy the harness does not hold: {rendered:?}"
     );
 
     drop(far_end);
-    let status = child.wait().expect("reap census fixture");
-    assert!(status.success(), "census fixture failed: {status:?}");
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "census fixture failed: {output:?}");
     await_process_gone(child_pid);
 }
 
@@ -269,7 +296,7 @@ fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
         observed.iter().any(|identity| identity == "->(none)"),
         "fixture opened no anonymous Unix socket, so there is nothing to attribute: {observed:?}"
     );
-    let mut charged = self_opened_unix_sockets(child_pid);
+    let mut charged = unix_sockets_not_inherited_from_harness(child_pid);
     charged.sort();
     let mut expected = vec!["->(none)".to_owned(), owned_identity];
     expected.sort();
@@ -279,8 +306,8 @@ fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
     );
 
     drop(child.stdin.take().expect("census fixture release lease"));
-    let status = child.wait().expect("reap census fixture");
-    assert!(status.success(), "census fixture failed: {status:?}");
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "census fixture failed: {output:?}");
     await_process_gone(child_pid);
     drop(harness_anonymous);
 }
@@ -335,14 +362,14 @@ fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
         "fixture did not rebind the released path: {observed:?}"
     );
     assert_eq!(
-        self_opened_unix_sockets(child_pid),
+        unix_sockets_not_inherited_from_harness(child_pid),
         vec![shared_identity],
         "census must charge the listener the child bound itself: {observed:?}"
     );
 
     drop(child.stdin.take().expect("census fixture release lease"));
-    let status = child.wait().expect("reap census fixture");
-    assert!(status.success(), "census fixture failed: {status:?}");
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "census fixture failed: {output:?}");
     await_process_gone(child_pid);
     drop((harness_stale, far_end));
 }
@@ -381,26 +408,34 @@ fn unix_descriptor_census_of_a_process_without_unix_descriptors_is_empty() {
         .spawn()
         .expect("launch descriptor-free census fixture");
     let child_pid = child.id();
-    let mut ready = String::new();
-    BufReader::new(child.stdout.take().expect("census fixture readiness pipe"))
-        .read_line(&mut ready)
-        .expect("await census fixture readiness");
+    // A fixture that never reports must fail this test, not hang it.
+    let readiness = child.stdout.take().expect("census fixture readiness pipe");
+    let (sender, reported) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut line = String::new();
+        let _ = sender.send(BufReader::new(readiness).read_line(&mut line).map(|_| line));
+    });
+    let ready = reported
+        .recv_timeout(PROCESS_DEADLINE)
+        .expect("descriptor-free fixture reports readiness within its deadline")
+        .expect("read descriptor-free fixture readiness");
     assert_eq!(ready.trim_end(), "READY");
+    reader.join().expect("readiness reader joins");
 
     let observed = unix_socket_identities(child_pid);
     assert!(
         observed.is_empty(),
         "descriptor-free fixture still owns Unix descriptors: {observed:?}"
     );
-    let opened = self_opened_unix_sockets(child_pid);
+    let opened = unix_sockets_not_inherited_from_harness(child_pid);
     assert!(
         opened.is_empty(),
         "descriptor-free fixture was charged Unix descriptors: {opened:?}"
     );
 
     drop(child.stdin.take().expect("census fixture release lease"));
-    let status = child.wait().expect("reap descriptor-free census fixture");
-    assert!(status.success(), "census fixture failed: {status:?}");
+    let output = wait_child_output(child, PROCESS_DEADLINE);
+    assert!(output.status.success(), "census fixture failed: {output:?}");
     await_process_gone(child_pid);
 }
 
@@ -1496,13 +1531,14 @@ impl ShippingDevCycle {
         assert_eq!(presentation.expect_initial(cycle.host_pid, name).len(), 1);
         assert!(native_windows(cli_pid, TITLE).is_empty());
         assert!(
-            !self_opened_unix_sockets(cycle.host_pid).is_empty(),
-            "host owns no Unix app-link descriptor it opened itself"
+            !unix_sockets_not_inherited_from_harness(cycle.host_pid).is_empty(),
+            "host owns no Unix app-link descriptor of its own"
         );
-        let cli_sockets = self_opened_unix_sockets(cli_pid);
+        let cli_sockets = unix_sockets_not_inherited_from_harness(cli_pid);
         assert!(
             cli_sockets.is_empty(),
-            "CLI {cli_pid} owns Unix descriptors it opened itself: {cli_sockets:?}"
+            "CLI {cli_pid} owns Unix descriptors it did not inherit from this harness: \
+             {cli_sockets:?}"
         );
         if name == "t2-cli" {
             assert_lease_descriptor_ownership(
@@ -2438,11 +2474,11 @@ impl LiveCycle {
             "exact host-owned native window: {windows:?}"
         );
         assert!(
-            !self_opened_unix_sockets(self.host_pid).is_empty(),
+            !unix_sockets_not_inherited_from_harness(self.host_pid).is_empty(),
             "host owns no authenticated Unix app-link descriptor"
         );
         assert!(
-            !self_opened_unix_sockets(self.bun_pid).is_empty(),
+            !unix_sockets_not_inherited_from_harness(self.bun_pid).is_empty(),
             "Bun owns no authenticated Unix app-link descriptor"
         );
         assert!(
@@ -2839,7 +2875,8 @@ fn harness_unix_sockets() -> Vec<String> {
         .collect()
 }
 
-/// The Unix-domain descriptors `pid` opened itself, named for a human.
+/// The Unix-domain descriptors open on `pid` that it did not inherit from this
+/// harness, named for a human.
 ///
 /// A raw `lsof -U` count is not an oracle for app-link ownership. A Unix socket
 /// the launching shell left without `FD_CLOEXEC` reaches every process under test
@@ -2855,38 +2892,65 @@ fn harness_unix_sockets() -> Vec<String> {
 /// prevent. An address is unique among live sockets and `exec` preserves it, so a
 /// match means the same kernel object.
 ///
-/// Membership, not multiset removal. `dup`, `exec` and fd-passing give one socket
-/// several descriptors, and every one of them is the socket the harness holds, so
-/// a second copy is still not something `pid` opened. Removing one address per
-/// match would charge `pid` for `dup`ing a descriptor it merely inherited, which
-/// is a false failure. Nothing is lost: opening a socket always creates a new
-/// kernel object, whose address the harness cannot already hold.
+/// One harness descriptor excuses one target descriptor, not every copy of it.
+/// Counting is not a refinement here, it is the whole choice: a target holding two
+/// descriptors on a socket the harness holds once is the same picture to `lsof`
+/// whether the target `dup`ed something it inherited or opened the socket itself
+/// and passed a copy up. Both are constructible, and neither happens in this
+/// product — nothing here passes descriptors over `SCM_RIGHTS`, and a shell leak
+/// reaches harness and child alike so their counts match and nothing is charged.
+/// Given an ambiguous picture the count rule takes the reading that fails loudly:
+/// excusing every copy silently absolves a socket the target may have opened, and
+/// that silence is the defect KEL-222 exists to remove. It costs a loud
+/// over-charge in the `dup` reading, which is investigable.
 ///
-/// The harness table is read on both sides of the target census and an address
-/// must appear in both to be excused. macOS reissues a freed socket address
-/// immediately and deterministically, so a single harness census could otherwise
-/// excuse a socket `pid` opened after the harness closed the previous tenant of
-/// that address — measured as total, not occasional, when it happens. Requiring
-/// both removes the window rather than relying on the harness closing nothing.
+/// The harness table is read on both sides of the target census, and only what
+/// both readings agree on can excuse anything. macOS reissues freed socket
+/// addresses heavily — 74 of 90 stream-pair addresses returned across three
+/// consecutive runs, and 16 to 27 of 45 for unbound datagrams — so one reading
+/// would excuse a socket `pid` opened at an address whose previous tenant the
+/// harness had just closed. Agreement costs a wider window in which a harness
+/// close over-charges a genuinely inherited descriptor, which is again the loud
+/// direction. Neither behaviour can be pinned without a test whose timing decides
+/// the result, so both are argued from measurement rather than asserted by a test.
 ///
-/// This is an upper bound on what `pid` opened, and deliberately so. `pid` is not
-/// always a direct child — Bun is the guardian's child, so the host or guardian
-/// could inject a descriptor the harness never held, and it would be charged to
-/// Bun. Over-charging is the safe direction for the assertion this oracle owns,
-/// "the CLI opened none", which can then only fail. It is *not* safe for the
-/// positive "this process opened one" assertions, which need to name the app link
-/// rather than count anything; that gap is real and is tracked separately.
-fn self_opened_unix_sockets(pid: u32) -> Vec<String> {
+/// What survives is what `pid` did not inherit *from this harness*, which is why
+/// the name says that and not "opened itself". The two coincide only for a direct
+/// child, whose whole ancestry is the harness: that is the CLI, and the CLI owning
+/// none is the assertion this oracle exists for. For a deeper descendant they
+/// diverge — Bun is the guardian's child, so an intermediate ancestor can pass
+/// down a socket the harness never held, and a grandchild handed a `socketpair`
+/// that way is charged both of its ends. That over-charges, which is safe for "the
+/// CLI owns none" and unsafe for the positive "this process owns one" assertions,
+/// since an injected descriptor satisfies them. Closing it needs those assertions
+/// to name the app link instead of counting anything, and is recorded on KEL-222
+/// rather than half-done here.
+fn unix_sockets_not_inherited_from_harness(pid: u32) -> Vec<String> {
     let before = harness_unix_sockets();
     let observed = unix_descriptors(pid);
-    let after = harness_unix_sockets();
-    observed
-        .into_iter()
-        .filter(|descriptor| {
-            !(before.contains(&descriptor.socket) && after.contains(&descriptor.socket))
-        })
-        .map(|descriptor| descriptor.identity)
-        .collect()
+    let mut after = harness_unix_sockets();
+    // One entry per socket both readings agree the harness held, and no more
+    // copies of it than the second reading still shows.
+    let mut inheritable = Vec::new();
+    for address in before {
+        if let Some(index) = after.iter().position(|held| *held == address) {
+            after.swap_remove(index);
+            inheritable.push(address);
+        }
+    }
+    let mut charged = Vec::new();
+    for descriptor in observed {
+        match inheritable
+            .iter()
+            .position(|held| *held == descriptor.socket)
+        {
+            Some(index) => {
+                inheritable.swap_remove(index);
+            }
+            None => charged.push(descriptor.identity),
+        }
+    }
+    charged
 }
 
 fn lsof_stdin(pid: u32) -> String {
