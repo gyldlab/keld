@@ -6,13 +6,15 @@
 //! live in `docs/engineering/product-status.tsv`.
 
 use std::io::Read;
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 use std::io::Write as _;
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
+#[cfg(all(unix, test))]
+use std::sync::atomic::AtomicU8;
 #[cfg(windows)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -1627,6 +1629,30 @@ struct UnixCaptureControl {
     budget: Arc<AtomicU64>,
     iteration_lock: Arc<Mutex<()>>,
     done: Arc<AtomicBool>,
+    #[cfg(test)]
+    faults: Arc<UnixCaptureFaults>,
+}
+
+#[cfg(all(unix, test))]
+#[derive(Default)]
+struct UnixCaptureFaults {
+    poll_interruptions: AtomicU8,
+    read_interruptions: AtomicU8,
+    wake_interruptions: AtomicU8,
+    fionread_interruptions: AtomicU8,
+    poll_calls: AtomicU8,
+    read_calls: AtomicU8,
+    wake_calls: AtomicU8,
+    fionread_calls: AtomicU8,
+}
+
+#[cfg(all(unix, test))]
+fn consume_test_interruption(counter: &AtomicU8) -> bool {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
 }
 
 struct CaptureStartError {
@@ -1882,22 +1908,37 @@ fn retire_unix_capture(control: Option<&UnixCaptureControl>) -> std::io::Result<
         .iteration_lock
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    let available = match rustix::io::ioctl_fionread(&control.reader) {
+    let available = match rustix::io::retry_on_intr(|| {
+        #[cfg(test)]
+        {
+            control.faults.fionread_calls.fetch_add(1, Ordering::AcqRel);
+            if consume_test_interruption(&control.faults.fionread_interruptions) {
+                return Err(rustix::io::Errno::INTR);
+            }
+        }
+        rustix::io::ioctl_fionread(&control.reader)
+    }) {
         Ok(available) => available,
         Err(error) => {
             control.budget.store(0, Ordering::Release);
-            let mut wake = &control.wake;
-            let _ = wake.write(&[1]);
+            let _ = rustix::io::retry_on_intr(|| rustix::io::write(&control.wake, &[1]));
             return Err(std::io::Error::from(error));
         }
     };
     control.budget.store(available, Ordering::Release);
-    let mut wake = &control.wake;
-    match wake.write(&[1]) {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+    match rustix::io::retry_on_intr(|| {
+        #[cfg(test)]
+        {
+            control.faults.wake_calls.fetch_add(1, Ordering::AcqRel);
+            if consume_test_interruption(&control.faults.wake_interruptions) {
+                return Err(rustix::io::Errno::INTR);
+            }
+        }
+        rustix::io::write(&control.wake, &[1])
+    }) {
+        Ok(_) | Err(rustix::io::Errno::AGAIN) => Ok(()),
         Err(_) if control.done.load(Ordering::Acquire) => Ok(()),
-        Err(error) => Err(error),
+        Err(error) => Err(std::io::Error::from(error)),
     }
 }
 
@@ -2076,10 +2117,31 @@ fn spawn_capture_thread(
     name: &'static str,
     is_stdout: bool,
 ) -> std::io::Result<(JoinHandle<std::io::Result<()>>, UnixCaptureControl)> {
-    let reader = Arc::new(std::fs::File::from(reader.into()));
-    let flags = rustix::fs::fcntl_getfl(&reader).map_err(std::io::Error::from)?;
-    rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK)
-        .map_err(std::io::Error::from)?;
+    #[cfg(test)]
+    {
+        spawn_capture_thread_with_faults(
+            reader,
+            output,
+            name,
+            is_stdout,
+            Arc::new(UnixCaptureFaults::default()),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        spawn_capture_thread_with_faults(reader, output, name, is_stdout)
+    }
+}
+
+#[cfg(unix)]
+fn spawn_capture_thread_with_faults(
+    reader: impl Into<OwnedFd>,
+    output: Arc<Mutex<CaptureState>>,
+    name: &'static str,
+    is_stdout: bool,
+    #[cfg(test)] faults: Arc<UnixCaptureFaults>,
+) -> std::io::Result<(JoinHandle<std::io::Result<()>>, UnixCaptureControl)> {
+    let reader = prepare_unix_capture_reader(reader)?;
     let (wake_reader, wake) = UnixStream::pair()?;
     set_close_on_exec(&wake_reader)?;
     set_close_on_exec(&wake)?;
@@ -2091,6 +2153,8 @@ fn spawn_capture_thread(
     let worker_budget = Arc::clone(&budget);
     let worker_lock = Arc::clone(&iteration_lock);
     let worker_done = Arc::clone(&done);
+    #[cfg(test)]
+    let worker_faults = Arc::clone(&faults);
     let thread = thread::Builder::new()
         .name(format!("keld-runtime-capture-{name}"))
         .spawn(move || {
@@ -2105,7 +2169,17 @@ fn spawn_capture_thread(
                         rustix::event::PollFd::new(&worker_reader, rustix::event::PollFlags::IN),
                         rustix::event::PollFd::new(&wake_reader, rustix::event::PollFlags::IN),
                     ];
-                    rustix::event::poll(&mut ready, None).map_err(std::io::Error::from)?;
+                    rustix::io::retry_on_intr(|| {
+                        #[cfg(test)]
+                        {
+                            worker_faults.poll_calls.fetch_add(1, Ordering::AcqRel);
+                            if consume_test_interruption(&worker_faults.poll_interruptions) {
+                                return Err(rustix::io::Errno::INTR);
+                            }
+                        }
+                        rustix::event::poll(&mut ready, None)
+                    })
+                    .map_err(std::io::Error::from)?;
                     let _iteration = worker_lock.lock().unwrap_or_else(PoisonError::into_inner);
                     let remaining = worker_budget.load(Ordering::Acquire);
                     if remaining == 0 {
@@ -2115,7 +2189,24 @@ fn spawn_capture_thread(
                         .unwrap_or(buf.len())
                         .min(buf.len());
                     let mut borrowed_reader = &*worker_reader;
-                    match borrowed_reader.read(&mut buf[..read_len]) {
+                    let read_result = loop {
+                        #[cfg(test)]
+                        let result = {
+                            worker_faults.read_calls.fetch_add(1, Ordering::AcqRel);
+                            if consume_test_interruption(&worker_faults.read_interruptions) {
+                                Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                            } else {
+                                borrowed_reader.read(&mut buf[..read_len])
+                            }
+                        };
+                        #[cfg(not(test))]
+                        let result = borrowed_reader.read(&mut buf[..read_len]);
+                        match result {
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                            result => break result,
+                        }
+                    };
+                    match read_result {
                         Ok(0) => return Ok(()),
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                         Err(error) => return Err(error),
@@ -2145,8 +2236,19 @@ fn spawn_capture_thread(
             budget,
             iteration_lock,
             done,
+            #[cfg(test)]
+            faults,
         },
     ))
+}
+
+#[cfg(unix)]
+fn prepare_unix_capture_reader(reader: impl Into<OwnedFd>) -> std::io::Result<Arc<std::fs::File>> {
+    let reader = Arc::new(std::fs::File::from(reader.into()));
+    let flags = rustix::fs::fcntl_getfl(&reader).map_err(std::io::Error::from)?;
+    rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK)
+        .map_err(std::io::Error::from)?;
+    Ok(reader)
 }
 
 #[cfg(unix)]
@@ -3714,22 +3816,22 @@ mod tests {
                 .map_err(|_| std::io::Error::other("descendant PID exceeds i32"))?;
             let pid = rustix::process::Pid::from_raw(raw_pid)
                 .ok_or_else(|| std::io::Error::other("invalid descendant PID"))?;
-            let queue = rustix::event::kqueue().map_err(std::io::Error::from)?;
-            let registration = rustix::event::Event::new(
-                rustix::event::EventFilter::Proc {
+            let queue = rustix::event::kqueue::kqueue().map_err(std::io::Error::from)?;
+            let registration = rustix::event::kqueue::Event::new(
+                rustix::event::kqueue::EventFilter::Proc {
                     pid,
-                    flags: rustix::event::ProcessEvents::EXIT,
+                    flags: rustix::event::kqueue::ProcessEvents::EXIT,
                 },
-                rustix::event::EventFlags::ADD | rustix::event::EventFlags::ONESHOT,
+                rustix::event::kqueue::EventFlags::ADD | rustix::event::kqueue::EventFlags::ONESHOT,
                 std::ptr::null_mut(),
             );
             // SAFETY: EVFILT_PROC identifies the already-live PID and contains
             // no borrowed file descriptor. `queue` remains owned by `Self`.
             unsafe {
-                rustix::event::kevent(
+                rustix::event::kqueue::kevent(
                     &queue,
                     &[registration],
-                    Vec::<rustix::event::Event>::new(),
+                    Vec::<rustix::event::kqueue::Event>::new(),
                     Some(Duration::ZERO),
                 )
             }
@@ -3742,10 +3844,10 @@ mod tests {
             // SAFETY: the changelist is empty and `self.queue` owns the only
             // kqueue descriptor; the registered EVFILT_PROC contains no fd.
             let events = unsafe {
-                rustix::event::kevent(
+                rustix::event::kqueue::kevent(
                     &self.queue,
                     &[],
-                    Vec::<rustix::event::Event>::with_capacity(1),
+                    Vec::<rustix::event::kqueue::Event>::with_capacity(1),
                     Some(Duration::from_secs(10)),
                 )
             }
@@ -3853,6 +3955,100 @@ mod tests {
         ));
         let captured = fixture.supervisor().output();
         fixture.release_descendant_and_assert_late_excluded(&captured);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_capture_retries_interrupted_poll_and_read_on_live_pipe() {
+        let (reader, mut writer) = UnixStream::pair().expect("native capture pipe");
+        writer
+            .write_all(b"eintr-payload")
+            .expect("seed live capture pipe");
+        let output = Arc::new(Mutex::new(
+            CaptureState::new(&[]).expect("empty marker set"),
+        ));
+        let faults = Arc::new(UnixCaptureFaults::default());
+        faults.poll_interruptions.store(1, Ordering::Release);
+        faults.read_interruptions.store(1, Ordering::Release);
+        let (worker, control) =
+            spawn_capture_thread_with_faults(reader, Arc::clone(&output), "eintr", true, faults)
+                .expect("spawn capture worker");
+
+        await_capture_bytes(&output, b"eintr-payload");
+        retire_unix_capture(Some(&control)).expect("retire after interrupted capture operations");
+        join_capture_thread(Some(worker), "eintr").expect("join interrupted capture worker");
+        assert_eq!(control.faults.poll_interruptions.load(Ordering::Acquire), 0);
+        assert_eq!(control.faults.read_interruptions.load(Ordering::Acquire), 0);
+        assert!(control.faults.poll_calls.load(Ordering::Acquire) >= 2);
+        assert_eq!(control.faults.read_calls.load(Ordering::Acquire), 2);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_capture_retirement_retries_interrupted_fionread_and_wake() {
+        let (reader, writer) = UnixStream::pair().expect("native capture pipe");
+        let output = Arc::new(Mutex::new(
+            CaptureState::new(&[]).expect("empty marker set"),
+        ));
+        let (worker, control) = spawn_capture_thread(reader, output, "retirement-eintr", true)
+            .expect("spawn capture worker");
+        await_atomic_at_least(&control.faults.poll_calls, 1, "capture worker entered poll");
+        control
+            .faults
+            .fionread_interruptions
+            .store(1, Ordering::Release);
+        control
+            .faults
+            .wake_interruptions
+            .store(1, Ordering::Release);
+
+        retire_unix_capture(Some(&control)).expect("retire after interrupted control operations");
+        join_capture_thread(Some(worker), "retirement-eintr")
+            .expect("wake joins worker while pipe writer remains live");
+        assert_eq!(control.faults.fionread_calls.load(Ordering::Acquire), 2);
+        assert_eq!(control.faults.wake_calls.load(Ordering::Acquire), 2);
+        assert_eq!(
+            control
+                .faults
+                .fionread_interruptions
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(control.faults.wake_interruptions.load(Ordering::Acquire), 0);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    fn await_capture_bytes(output: &Arc<Mutex<CaptureState>>, expected: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if output
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .transcript
+                .stdout
+                .as_bytes()
+                .windows(expected.len())
+                .any(|window| window == expected)
+            {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("capture worker did not publish expected bytes");
+    }
+
+    #[cfg(unix)]
+    fn await_atomic_at_least(counter: &AtomicU8, expected: u8, description: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if counter.load(Ordering::Acquire) >= expected {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("timed out waiting for {description}");
     }
 
     #[cfg(unix)]
