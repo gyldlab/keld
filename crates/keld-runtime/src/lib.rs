@@ -2603,6 +2603,19 @@ mod tests {
             }
         }
         fixture.assert_parent_armed();
+        complete_natural_exit_capture_fixture(
+            &mut fixture,
+            parent_pid,
+            holder_observation.is_some(),
+        );
+    }
+
+    #[cfg(windows)]
+    fn complete_natural_exit_capture_fixture(
+        fixture: &mut CaptureFixtureCleanup,
+        parent_pid: u32,
+        fail_after_successor: bool,
+    ) {
         let parent = open_observed_process(parent_pid, "direct parent");
         fixture.release_parent();
         assert_process_exited(&parent, "direct parent");
@@ -2619,9 +2632,10 @@ mod tests {
             "capture retirement did not permit the successor while the pipe holder remained alive: {successor:?}"
         );
         assert_process_running(fixture.holder(), "pipe holder after successor");
-        if holder_observation.is_some() {
-            panic!("intentional failure after parent exit and successor observation");
-        }
+        assert!(
+            !fail_after_successor,
+            "intentional failure after parent exit and successor observation"
+        );
         let captured_at_successor = fixture.supervisor().output();
         assert!(
             captured_at_successor
@@ -2829,14 +2843,7 @@ mod tests {
             &secret,
         );
         let missing_role = std::env::var("KELD_RUNTIME_CAPTURE_MISSING_ROLE").ok();
-        if missing_role.as_deref() != Some("PARENT") {
-            let mut stream = connect_capture_control(&control);
-            write_capture_control_line(&mut stream, "PARENT", std::process::id(), &secret);
-            if missing_role.is_some() {
-                return;
-            }
-            wait_capture_control_byte(&mut stream, b'E', "parent exit release");
-        } else {
+        if missing_role.as_deref() == Some("PARENT") {
             wait_capture_control_byte(
                 &mut holder_spawned_stream,
                 b'E',
@@ -2844,6 +2851,12 @@ mod tests {
             );
             return;
         }
+        let mut stream = connect_capture_control(&control);
+        write_capture_control_line(&mut stream, "PARENT", std::process::id(), &secret);
+        if missing_role.is_some() {
+            return;
+        }
+        wait_capture_control_byte(&mut stream, b'E', "parent exit release");
         println!("direct-parent-stdout");
         std::io::stdout()
             .flush()
