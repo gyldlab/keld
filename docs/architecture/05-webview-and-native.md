@@ -173,8 +173,10 @@ TS in `@keld/api` → (optionally) an Electron-compat facade. No module ships wi
 three OS implementations or an explicit documented gap.
 
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
-`process` or `pty` rows below, and neither has implementation. KEL-76 must approve and
-ship real behavior rather than adding placeholder identifiers.
+`process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must
+approve and ship real behavior for `process`/`pty` rather than adding placeholder
+identifiers; `auth` is approved under `docs/specs/keld-auth.md` (KEL-89) and ships only
+through that spec's ordered tasks.
 
 | Module | Scope v0.x | Electron facade |
 |---|---|---|
@@ -193,6 +195,7 @@ ship real behavior rather than adding placeholder identifiers.
 | `fs+` | scoped fs ops via broker (watch included — notify crate), drag-out, recent docs | strict-profile virtual Node-fs/watcher facade; raw access only in an explicit sandbox-off legacy tier |
 | `secrets` | keychain/DPAPI/libsecret | `safeStorage` |
 | `deeplink` | protocol registration + single-instance handoff | `app.setAsDefaultProtocolClient` |
+| `auth` (approved spec, not live) | host-owned OAuth/OIDC public-client flows — OS broker → host custom scheme → loopback + PKCE; `auth.begin` / `auth.token` grants scoped to a profile's declared issuer literal, from a closed host-side v0 profile table; refresh tokens never cross kipc; the per-application OAuth client id is operator-authored in `keld.config.ts` and reaches the host on the boot descriptor, which in v0 only `keld dev` produces; extends `deeplink` and `secrets`; contract: `docs/specs/keld-auth.md` (KEL-89) | none today; a future compat shim may map onto `auth.*` |
 | `autostart` | login items / registry / .desktop | `app.setLoginItemSettings` |
 | `dock/taskbar` | badge, progress, bounce, jump lists, thumbbar | `app.dock`, `setProgressBar` |
 | `capture` (Tier 3) | window/screen capture via ScreenCaptureKit / Graphics.Capture / PipeWire | `desktopCapturer` |
