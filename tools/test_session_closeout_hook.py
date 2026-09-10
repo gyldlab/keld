@@ -290,13 +290,13 @@ class HookTests(unittest.TestCase):
             os.chdir(previous)
 
     def test_generated_native_commands_execute_and_fail_before_untrusted_source(self):
-        renamed = self.fixture.root / 'repo space-\u00e9'
+        renamed = self.fixture.root / 'repo space-\u00e9-\u6d4b'
         self.repo.rename(renamed)
         self.repo = renamed
         source_root = Path(__file__).resolve().parent.parent
         (self.repo / 'tools').mkdir()
         checker = self.repo / 'tools/session_closeout.py'
-        for harness in ('claude', 'cursor'):
+        for harness in ('codex', 'claude', 'cursor'):
             with self.subTest(harness=harness):
                 for name in ('session_closeout', 'session_closeout_hook'):
                     shutil.copyfile(source_root / 'tools' / (name + '.py'),
@@ -306,6 +306,12 @@ class HookTests(unittest.TestCase):
                     handler = config['hooks']['Stop'][0]['hooks'][0]
                     command = [handler['command'], *handler['args']]
                     payload = {'session_id': 'native', 'prompt_id': 'p', 'cwd': str(self.repo),
+                               'hook_event_name': 'Stop'}
+                elif harness == 'codex':
+                    handler = config['hooks']['Stop'][0]['hooks'][0]
+                    shell = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command'] if os.name == 'nt' else ['sh', '-c']
+                    command = shell + [handler['commandWindows'] if os.name == 'nt' else handler['command']]
+                    payload = {'session_id': 'native', 'turn_id': 'p', 'cwd': str(self.repo),
                                'hook_event_name': 'Stop'}
                 else:
                     handler = config['hooks']['stop'][0]
@@ -317,9 +323,12 @@ class HookTests(unittest.TestCase):
                 def invoke(raw):
                     return subprocess.run(command, cwd=self.repo, input=raw, capture_output=True,
                                           text=True, encoding='utf-8', timeout=60)
-                answer = invoke(json.dumps(payload))
+                answer = invoke(json.dumps(payload, ensure_ascii=False))
                 self.assertEqual(answer.returncode, 0, answer.stderr)
-                self.assertNotIn('decision', json.loads(answer.stdout))
+                if harness in ('codex', 'claude'):
+                    self.assertIn('No activated Keld task', json.loads(answer.stdout)['systemMessage'])
+                else:
+                    self.assertEqual(json.loads(answer.stdout), {})
                 if harness == 'cursor':
                     malformed = invoke('not JSON')
                     self.assertNotEqual(malformed.returncode, 0)
@@ -352,6 +361,21 @@ class HookTests(unittest.TestCase):
             self.assertEqual(list(outside.iterdir()), [])
         finally:
             os.chdir(previous)
+
+    def test_invalid_utf8_is_rejected_before_native_event_dispatch(self):
+        for harness in ('codex', 'claude', 'cursor'):
+            with self.subTest(harness=harness):
+                result = subprocess.run(
+                    [sys.executable, '-B', str(Path(hook.__file__)), '--harness', harness],
+                    input=b'{"unused":"\xff"}', capture_output=True, timeout=30)
+                if harness == 'cursor':
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'utf-8', result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0)
+                    answer = json.loads(result.stdout)
+                    self.assertIs(answer['continue'], False)
+                    self.assertIn('utf-8', answer['stopReason'])
 
 
 if __name__ == "__main__":

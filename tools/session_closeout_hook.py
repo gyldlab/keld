@@ -250,7 +250,9 @@ def main():
         print(json.dumps(configuration(args.harness, args.platform), indent=2))
         return 0
     try:
-        payload = json.load(sys.stdin, object_pairs_hook=session_closeout.unique_object)
+        # Native clients send UTF-8 JSON; Windows pipe encoding may be cp1252.
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"),
+                             object_pairs_hook=session_closeout.unique_object)
     except (ValueError, OSError) as error:
         failure = {"continue": False, "stopReason": "Invalid closeout hook input: " + str(error),
                    "systemMessage": "HANDOFF REQUIRED; session completion is not established."}
