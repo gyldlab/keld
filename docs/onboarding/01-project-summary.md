@@ -65,7 +65,7 @@ head-to-head matrix in [`docs/research/library/compatibility-competitors/00-land
 
 | Framework | Architecture | The specific failure Keld targets |
 |---|---|---|
-| **Electron** | Node.js main process + bundled Chromium renderers | Privileged JS **in-process** with window ownership → 85–150 MB installers, 150–300 MB idle, checklist security |
+| **Electron** | Node.js main process + bundled Chromium renderers | Privileged JS **in-process** with window ownership → vendor-reported 85–150 MB installers and 150–300 MB idle, checklist security |
 | **Tauri 2** | Rust main process + system webviews (wry/tao) | Native ownership is correct, but there is no JS main process and app devs need a Rust toolchain → adoption cliff |
 | **Electrobun** | Bun main + Zig native host + system webviews | JS main process exists, but it *owns* the native layer → no privilege separation, shared fate |
 | **Deno Desktop** | `deno desktop` subcommand, runtime in-process with the webview | Same shared-address-space problem; permissions are compile-time flags with no runtime enforcement |
@@ -154,8 +154,8 @@ steady-state allocation — the lesson taken from Bun's Rust rewrite
 ## What "success" means: the performance budgets
 
 Keld's claims are numbers with benchmarks attached, or they don't get made ("a number
-without a benchmark is marketing" — principle #7). These are the CI-gated budgets from
-[`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5, measured on a
+without a benchmark is marketing" — principle #7). These are future-CI target budgets
+from [`docs/architecture/01-overview.md`](../architecture/01-overview.md) §5 for a
 hello-world app on an M-series Mac / mid-range Windows laptop:
 
 | Metric | Budget | Electron baseline |
@@ -163,7 +163,7 @@ hello-world app on an M-series Mac / mid-range Windows laptop:
 | Installer size (runtime = bun) | ≤ 20 MB | 85–150 MB |
 | Installer size (runtime = none) | ≤ 6 MB | — |
 | Cold start → first paint | ≤ 300 ms | 1–3 s |
-| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB |
+| Idle RSS, 1 window (host + guardian + Bun; WebKit XPCs excluded) | ≤ 90 MiB (92,160 KiB) | vendor-reported 150–300 MB |
 | kipc small-message round trip p99 | ≤ 100 µs | ~ms-class |
 | kipc bulk throughput (shm lane) | ≥ 1 GB/s | n/a (copies) |
 | Update patch, 1-line JS change | ≤ 50 KB | full installer |

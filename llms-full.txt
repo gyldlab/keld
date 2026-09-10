@@ -1125,7 +1125,7 @@ Windows laptop. They are not current product measurements or live CI gates.
 | Installer size (runtime = bun) | ≤ 20 MB | 85–150 MB |
 | Installer size (runtime = none) | ≤ 6 MB | — |
 | Cold start → first paint | ≤ 300 ms | 1–3 s |
-| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB |
+| Idle RSS, 1 window (host + guardian + Bun; WebKit XPCs excluded) | ≤ 90 MiB | vendor-reported 150–300 MB |
 | kipc small-message round trip p99 | ≤ 100 µs | ~ms-class |
 | kipc bulk throughput (when a shm lane is enabled) | ≥ 1 GB/s | n/a (copies) |
 | Update patch, 1-line JS change | ≤ 50 KB | full installer |
@@ -1135,8 +1135,45 @@ Windows laptop. They are not current product measurements or live CI gates.
 evidence in `docs/engineering/budget-scoreboard.md` are measurements. Once the harness
 lands, valid regressions greater than 5% fail the PR or require a written waiver.
 
-Windows/WebView2 cold start → first paint currently misses its ≤ 300 ms row by ~1.6x
-(~470–510 ms measured), and that gap is not Keld's own cost: `CreateCoreWebView2Controller`
+### 5.1 Budget semantics (KEL-129 ruling, 2026-09-08)
+
+Every row above, once it is scoreable, is measured against the shipped hello app —
+never a diagnostic slice. Three rows carry no live budget yet and say so in their own
+cell: bulk throughput has no shared-memory lane, the update patch has no bytes-kind
+registry id, and crash recovery has no architecture 01 §5 number. These readings
+define the budgets that the `gyldlab/keld-benches` metric registry
+(`schema/metrics.v1.json`, blob `a7da1075` at `01df1d8`) encodes; the registry stays
+the machine-readable source for metric ids, oracles, and cache classes. Where the
+registry differs today it is the defect and a keld-benches change must follow: its
+`MEM-IDLE` note scores the main process only, `DISK` inherits a 30-sample class,
+`PACK-UPDATE` is a duration, and `NATIVE-WINDOW` carries no budget. Research note 234
+(`docs/research/library/quality-evidence/performance/`) records why each atom needed
+a ruling. Keld memory metrics use binary units (MiB, KiB); bytes on disk and on the
+wire use decimal units (MB, KB, GB/s). A cited external source may retain its original
+unit spelling, but that quotation does not define a Keld metric.
+
+| Row | Census | Clock and cache class | Statistic and unit |
+|---|---|---|---|
+| Cold start → first paint | the product boot as the host owns it: `keld-host` and its supervised family (on macOS the guardian re-exec and the Bun primary; the window is created only after the authenticated HELLO). A host-only `--hello` arm is an engine-class diagnostic, never the score. | one monotonic clock armed before the host process is spawned (the `.app` launch once keld-pack ships one; until then the spawn of the staged `keld-host`) to the registry `PAINT-OPPORTUNITY` beacon; the future gate scores `fresh-process`, and `boot-cold` is reported separately | median with a bootstrap CI over the registry sample policy (30 valid samples per class); milliseconds |
+| Idle RSS, 1 window (host + guardian + Bun; WebKit XPCs excluded) | keld-owned processes only: the host and its supervised family (the macOS guardian re-exec, the Bun primary, named roles). Engine helpers (WebKit, WebView2, WebKitGTK) and dev-loop helpers spawned by the CLI (the `keld` process, the Windows stage-cleanup sentinel) are excluded and reported as separate diagnostics. | condition-based stability after the window is ready (registry `MEM-IDLE`), never a fixed sleep; `fresh-process` and `warm-cache` are separate document classes and MUST NOT be pooled | resident set (`ps` RSS or working set) is the named counter; private footprint is a mandatory companion lane and the reproducibility control, because the Bun child's working set has been observed not to reproduce across sessions while private bytes did: a keld-owned resident-sum change above the 5% regression threshold between otherwise matched runs (same OS, fixture, binary, and cache class) is INCONCLUSIVE, not a pass or a fail; the unit is binary: 90 MiB = 92,160 KiB |
+| Installer size (either runtime mode) | the compressed download artifact per keld-pack format (macOS `.dmg`, Windows NSIS and MSI, Linux `.deb`, `.rpm`, AppImage), including the embedded Bun when `runtime = bun`; every delivered format is its own lane and each must meet the budget; installed bytes and the bare host executable are diagnostics | one document per lane (registry `DISK`); deterministic size: one sample plus one reproducibility rebuild, which the registry must encode in place of its sampled class | decimal MB: 20,000,000 B and 6,000,000 B |
+| kipc small-message round trip p99 | the product Bun client (`keld create` `kipc.ts` / `AppLinkSession`) against the shipping host app link; handshake excluded and reported separately | the calling process's own monotonic clock around each CALL→REPLY, with the timing fixture bound to its committed source hash; this is the one client-timed metric class, so the harness contract's spawn-clock rule applies to spawn and paint metrics and its IPC hook clause must say so; `fresh-process` and `warm-cache`; at least 20 sessions × 100,000 calls | small = the codec's pinned echo vector `{message: "kipc", count: 3}` (6-byte payload, 22-byte frame); representative = 1,024-byte payload (1,040-byte frame); p99 from the session-block bootstrap with the upper CI bound compared to 100 µs |
+| kipc bulk throughput | not scoreable until a shared-memory lane exists behind an approved spec; inline socket throughput is an `IPC-BULK` diagnostic | `warm-cache`; 64 KiB / 1 MiB / 16 MiB inline tiers | one-way payload bytes validated end to end; decimal GB/s = 1,000,000,000 B/s |
+| Update patch, 1-line JS change | the bytes a client downloads: the delta over the canonical content stream (architecture 06 §4a) plus `updates.json` and its detached signature (06 §4); no registry id exists yet (`PACK-UPDATE` is a duration), so a bytes-kind id must be added before a document can be published | deterministic; one sample plus one reproducibility repeat | decimal KB: 50,000 B |
+| `keld dev` cold to window | the first on-screen native window owned by the `keld dev` session (registry `NATIVE-WINDOW`); presentation policy, not paint | clock armed at the shell spawn of `keld dev`; `fresh-process`; release binaries only | median with a bootstrap CI over 30 valid samples; milliseconds |
+| Child crash and recovery | no budget in this table; the registry `CRASH-RECOVERY` interval (kill → revoke → fresh HELLO → first successful call) is a diagnostic; native-window identity and document continuity are both recorded; a `SIGKILL` arm is required. Architecture 06 §5's warm-restart target has different cache and continuity semantics and is not this row's budget. | `fresh-process`; 30 independent cycles per arm | median and p90 with bootstrap CIs; milliseconds |
+
+Windows and Linux use these same scored census, unit, cache, and statistic rules. A
+platform specification MAY add a platform-specific observable or state that it cannot
+observe the contract, but MUST NOT silently narrow or expand the scored census. For
+sampled metrics (paint, memory, IPC, recovery) the registry sample policy governs
+publication, and a harness policy that requires a different sample count is a harness
+defect, not a second rule. For deterministic sizes (installer, update patch) the policy
+is one sample plus one reproducibility rebuild.
+
+Windows/WebView2: the host-only `--hello` diagnostic reads ~470–510 ms against the
+≤ 300 ms row (a diagnostic under §5.1, not a row result; the product-boot arm is
+unmeasured), and that gap is not Keld's own cost: `CreateCoreWebView2Controller`
 boots a Chromium process and is, per Microsoft, "the bulk of starting a WebView2 control"
 (WebView2Feedback #1536) — Keld's attributable overhead is 3–6 ms (environment creation).
 A controlled same-session A/B isolated and refuted the one remaining Keld-owned hypothesis
@@ -1447,8 +1484,10 @@ compromised keeps the host's threat model uniform).
   messages; everything else completes on I/O threads.
 - Frame header parse is branch-lean; struct layouts audited (`#[repr]`, size asserts in
   tests — the Bun port's "56-byte Path" lesson).
-- Benchmarks in `bench/ipc/`: small-call RTT, 64 KB/1 MB/64 MB bulk, 1M-msg soak with
-  backpressure, restart-storm. Budgets: RTT p99 ≤ 100 µs; bulk ≥ 1 GB/s; zero drops.
+- Benchmarks in `bench/ipc/`: small-call RTT, 64 KiB/1 MiB/16 MiB inline bulk (a
+  shared-memory lane, once one exists, is measured as its own lane), 1M-msg soak with
+  backpressure, restart-storm. Budgets: RTT p99 ≤ 100 µs; bulk ≥ 1 GB/s only when a shm
+  lane is enabled (architecture 01 §5); zero drops.
 
 ## 7. Failure & lifecycle semantics
 
@@ -2156,10 +2195,13 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   per Keld release (`keld.lock`); CLI downloads the pinned runtime once per machine
   (content-addressed cache), `keld-pack` embeds it per app at build. There are no
   parallel `KELD_LINK`, `KELD_SHM` or `KELD_CONTRACT` contracts.
-- Trimming: ship Bun as-is first (compressed ~25–35 MB inside installers); track
-  upstream size work; `runtime: "none"` mode omits it entirely (host-only apps score
-  Tauri-class sizes). A `runtime: "node"` escape hatch is deliberately **not** in v1 —
-  Bun's Node-compat is the compat plan; revisit only if corpus data forces it.
+- Trimming: ship Bun as-is first (its compressed size inside an installer is unmeasured
+  for the pinned Bun; the scoreboard records a summary-only zstd-19 figure of
+  16.8 MB for Bun 1.3.14 and architecture 01 §5 budgets 20,000,000 B for the whole
+  `runtime = bun` installer); track upstream size work; `runtime: "none"` mode omits it
+  entirely (host-only apps score Tauri-class sizes). A `runtime: "node"` escape hatch is
+  deliberately **not** in v1 — Bun's Node-compat is the compat plan; revisit only if
+  corpus data forces it.
 - **v0 (KEL-70/KEL-30):** `keld_runtime::Supervisor` provides exponential-backoff restart,
   crash-loop breaking (3 crashes/30 s), and stdout/stderr capture for one host-owned Bun
   child co-lived with the hello window via `keld_core::HostOwnedHelloSession`. It does not provide role identity, per-role grants, link binding, strict OS
@@ -4015,6 +4057,40 @@ code — nothing in this change reads or checks the contract it describes.
 
 ---
 
+## 15. Budget semantics ruled, not measured (KEL-129)
+
+**Chosen (2026-09-08).** Architecture 01 §5.1 now fixes what every performance budget
+row measures: the census is the shipped app as the host owns it (host plus every
+supervised child, engine helpers and the dev CLI excluded); paint uses the registry's
+fresh-process class with a clock armed before the packaged launch, while RSS has
+separate fresh-process and warm-cache classes after readiness; the RSS counter stays
+the resident set with the private counter as a mandatory diagnostic;
+memory units are binary and byte-size units decimal; kipc RTT is client-timed on the
+product Bun client with a pinned 6-byte small tier and a 1,024-byte representative tier;
+bulk throughput is not scoreable until a shared-memory lane exists; the dev-loop row is
+the first native window on the `NATIVE-WINDOW` contract; crash recovery has no budget.
+
+**Rejected.** Scoring the private counter instead of the resident set (it would change
+what the budget's word means and turn a ~76 MiB host RSS observation into a smaller
+private-footprint number); retaining the former "90 MB" spelling as a decimal target
+(the registry already encodes 92,160 KiB; the stricter reading is a future spec change,
+not an accident of notation); letting the harness's exactly-11
+publication policy stand beside the registry's 30 (one owner); scoring the host-only
+`--hello` arm as the product's cold start (it has no Bun and no guardian); keeping
+architecture 02 §6's unconditional "≥ 1 GB/s" and 64 MB tier (inline frames cap at
+16 MiB and the row is shm-conditional).
+
+**Why.** Research note 234 classified all nine macOS rows `measurement-blocked` because
+each carried at least one undecided semantic atom; no experiment can close a row whose
+census or unit is unowned. Ruling the semantics is the smallest change that makes the
+KEL-129 experiments scoreable. No measurement, pass, or optimization is claimed.
+
+**Evidence.** `docs/architecture/01-overview.md` §5.1; keld-research
+`library/quality-evidence/performance/234-macos-budget-feasibility.md` §4.4/§4.5;
+keld-benches `schema/metrics.v1.json`.
+
+---
+
 ## Related tracked docs
 
 | Need | Document |
@@ -4696,9 +4772,10 @@ Competitor apps live in [`gyldlab/keld-benches`](https://github.com/gyldlab/keld
 not this monorepo.
 
 **Read latency and memory as different tables.** Architecture 01 §5 budgets
-cold start → first paint (≤ 300 ms) and idle RSS (≤ 90 MB) separately. A
-memory figure is never a paint pass/fail. A paint-opportunity proxy is never
-an idle-RSS pass/fail.
+cold start → first paint (≤ 300 ms) and idle RSS (≤ 90 MiB) separately. Keld
+memory metrics use KiB and MiB; historical external quotations retain their source
+labels and are not Keld budget units. A memory figure is never a paint pass/fail. A
+paint-opportunity proxy is never an idle-RSS pass/fail.
 
 ## What is not first paint
 
@@ -4730,8 +4807,9 @@ not comparable to macOS WK numbers).
 | **devtools CLI** | `keld` binary — not an app installer | `keld` | n/a |
 
 `runtime: "none"` budget (≤ 6 MB) = host + wrapping vs Tauri / Native Swift.
-`runtime: "bun"` budget (≤ 20 MB) must show Bun as its own lane. Spec 06 quotes
-compressed Bun ~25–35 MB — report both if packing exceeds 20 MB.
+`runtime: "bun"` budget (≤ 20 MB) must show Bun as its own lane. The pinned Bun's
+compressed package lane is unmeasured; retain any historical version-and-compressor
+figure as a diagnostic, never as a packaged-size verdict.
 
 ## Spec budgets (architecture 01 §5)
 
@@ -4744,17 +4822,17 @@ this scoreboard does not publish a ≤ 300 ms pass/fail label.
 |---|---|---|---|
 | Installer (runtime = bun) | ≤ 20 MB | 85–150 MB | N/A — Bun not packed |
 | Installer (runtime = none) | ≤ 6 MB | — | N/A — no `.app` / DMG |
-| Cold start → first paint | ≤ 300 ms | 1–3 s | **macOS WK, untraced double-rAF proxy:** last recorded `--publish` median **342.911 ms** (Keld `5ba4672`, benches recipe [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b); raw JSON not in keld-benches git). **Not** traced-arm beacon 352.211 ms. **Not** gyldlab/keld#10 `PageLoadEvent::Finished`. **Not** RSS. **Windows WebView2:** **469 ms** (2026-08-15 direct-COM, [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab632f023488227fcb5e7b44009df899653/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab632f023488227fcb5e7b44009df899653)); architecture 01 §5 records the Chromium controller-creation floor. Measurement only, not a scoreboard pass/fail. |
-| Idle RSS, 1 window (sum of keld processes) | ≤ 90 MB | 150–300 MB | **72.6–77.8 MiB** host-only @ Keld `b93ebb6` (under budget; no Bun; WebKit XPCs excluded). Coalition (host+WebKit helpers) is a different column — see Memory |
-| kipc small-message p99 | ≤ 100 µs | ~ms-class | **Windows Bun↔Rust diagnostic (KEL-99, 2026-08-23, Keld `1609dbd`):** fresh-process p50 **47.6 µs** / p90 66.3 / p99 **101.6 µs**; warm-cache p50 45.9 / p90 59.3 / p99 **100.5 µs**. 10,000 calls per session, handshake excluded and reported separately. `publication.eligible` is **false** (1 session vs ≥ 20 required, 10k calls vs 100k, no paired Rust arm, no block-bootstrap CIs, thermal state unverified), so both p99 values sitting marginally over budget are **not** a pass/fail verdict. Raw + result JSON: [`windows/bench/results/ipc-rtt/`](https://github.com/gyldlab/keld-benches/tree/0330d6c37ed38c8529c59e256fb99e5e57a6fd62/windows/bench/results/ipc-rtt) @ [`0330d6c`](https://github.com/gyldlab/keld-benches/commit/0330d6c37ed38c8529c59e256fb99e5e57a6fd62); registry status `diagnostic` @ [`6b99cc9`](https://github.com/gyldlab/keld-benches/commit/6b99cc9). macOS and Linux **unmeasured**. |
+| Cold start → first paint | ≤ 300 ms | 1–3 s | **macOS WK, untraced double-rAF proxy (host-only `--hello` arm: an engine-class diagnostic per architecture 01 §5.1, not the product-census score):** last recorded `--publish` median **342.911 ms** (Keld `5ba4672`, benches recipe [`9e7c83d`](https://github.com/gyldlab/keld-benches/commit/9e7c83d1a5c94a790b2e3ed0a89855e3aed4ab9b); raw JSON not in keld-benches git). **Not** traced-arm beacon 352.211 ms. **Not** gyldlab/keld#10 `PageLoadEvent::Finished`. **Not** RSS. **Windows WebView2 (host-only `--hello` arm, same caveat):** **469 ms** (2026-08-15 direct-COM, [`windows-first-paint-kel65-direct-com.json`](https://github.com/gyldlab/keld-benches/blob/686d1ab632f023488227fcb5e7b44009df899653/windows/bench/windows-first-paint-kel65-direct-com.json) @ [`686d1ab`](https://github.com/gyldlab/keld-benches/commit/686d1ab632f023488227fcb5e7b44009df899653)); architecture 01 §5 records the Chromium controller-creation floor. Measurement only, not a scoreboard pass/fail. |
+| Idle RSS, 1 window (host + guardian + Bun; WebKit XPCs excluded) | ≤ 90 MiB | vendor-reported 150–300 MB | **72.6–77.8 MiB** host-only @ Keld `b93ebb6` (host-only diagnostic, not the budget census: no Bun, no guardian, WebKit XPCs excluded; architecture 01 §5.1 scores host + guardian + Bun). Coalition (host+WebKit helpers) is a different column — see Memory |
+| kipc small-message p99 | ≤ 100 µs | ~ms-class | **Windows Bun↔Rust diagnostic (KEL-99, 2026-08-23, Keld `1609dbd`):** fresh-process p50 **47.6 µs** / p90 66.3 / p99 **101.6 µs**; warm-cache p50 45.9 / p90 59.3 / p99 **100.5 µs**. 10,000 calls per session, handshake excluded and reported separately; the session used a 25-byte payload (41-byte frame), not the §5.1 small tier (6-byte payload). `publication.eligible` is **false** (1 session vs ≥ 20 required, 10k calls vs 100k, no paired Rust arm, no block-bootstrap CIs, thermal state unverified), so both p99 values sitting marginally over budget are **not** a pass/fail verdict. Raw + result JSON: [`windows/bench/results/ipc-rtt/`](https://github.com/gyldlab/keld-benches/tree/0330d6c37ed38c8529c59e256fb99e5e57a6fd62/windows/bench/results/ipc-rtt) @ [`0330d6c`](https://github.com/gyldlab/keld-benches/commit/0330d6c37ed38c8529c59e256fb99e5e57a6fd62); registry status `diagnostic` @ [`6b99cc9`](https://github.com/gyldlab/keld-benches/commit/6b99cc9). macOS and Linux **unmeasured**. |
 | kipc bulk (shm) | ≥ 1 GB/s | n/a | no shm |
 | Update patch, 1-line JS | ≤ 50 KB | full installer | no updater |
 | `keld dev` cold → window | ≤ 2 s | — | not measured here |
 
-KEL-11 freeze (survey, not this Mac): Electron 85–150 MB / 150–300 MB RSS / 1–3 s;
-Tauri 2.5–10 MB / 30–80 MB / 0.2–0.8 s. This-Mac Release hellos (2026-08-14)
-fill `vs` Electron/Tauri cells in the **disk and RSS** tables only. Do not mix
-Chromium vs WK. Do not mix disk with paint.
+KEL-11 freeze (survey, not this Mac, preserving vendor unit labels): Electron 85–150 MB
+/ 150–300 MB RSS / 1–3 s; Tauri 2.5–10 MB / 30–80 MB / 0.2–0.8 s. This-Mac Release
+hellos (2026-08-14) fill `vs` Electron/Tauri cells in the **disk and RSS** tables
+only. Do not mix Chromium vs WK. Do not mix disk with paint.
 
 ## Fairness rules
 
@@ -4896,9 +4974,9 @@ Keld `b93ebb6e0fb557b20ae312f155f3a33713212ccf`, release `keld-host --hello`,
 no Bun. Method: `ps -o rss=` after the window is up. WebKit XPCs (`ppid=1`)
 are **not** in the host figure.
 
-| Stack | Main RSS | Helpers (not in main) | vs ≤ 90 MB | Cite |
+| Stack | Main RSS | Helpers (not in main) | vs ≤ 90 MiB | Cite |
 |---|---:|---|---|---|
-| **Keld** host-only | **79,616 then 74,304 KiB (72.6–77.8 MiB)** | WebKit XPCs ~70 MiB extra (`phys_footprint` autopsy) | **under** (host-only; XPCs excluded; no Bun) | this repo @ `b93ebb6` |
+| **Keld** host-only | **79,616 then 74,304 KiB (72.6–77.8 MiB)** | WebKit XPCs ~70 MiB extra (`phys_footprint` autopsy) | n/a — host-only diagnostic, not the architecture 01 §5.1 census (XPCs excluded; no Bun; no guardian) | this repo @ `b93ebb6` |
 | Keld debug `just hello` | 73,184 then 70,752 KiB | — | not a `vs` | debug |
 | Tauri 2.11.5 main | **102,896 KB (~100.5 MiB)** | WebKit XPCs **80,560 KB** | n/a (not a keld process sum) | [`MEASUREMENTS.md`](https://github.com/gyldlab/keld-benches/blob/0308d55f628797067985247000b30b43ea00cba1/MEASUREMENTS.md) @ [`0308d55`](https://github.com/gyldlab/keld-benches/commit/0308d55f628797067985247000b30b43ea00cba1) [`macos/tauri/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/tauri/hello) |
 | Wails v3.0.0-beta.8 main | **95,648 KB (~93.4 MiB)** | WebKit XPCs **73,760 KB** | n/a | same SHA [`macos/wails/hello`](https://github.com/gyldlab/keld-benches/tree/0308d55f628797067985247000b30b43ea00cba1/macos/wails/hello) |
@@ -4956,7 +5034,10 @@ macOS WK rows above: different engine, different counter, different machine.
 Paired percentile bootstrap over rounds, 10,000 resamples, resampling whole
 rounds to preserve pairing: **median ratio 0.8484, CI95 [0.846864, 0.849548],
 verdict PASS** — the Keld host process is ~15.2% smaller, and the interval
-excludes 1.0. `publication.eligible` is **true**: zero blocking reasons.
+excludes 1.0. `publication.eligible` is **true**: zero blocking reasons. Under
+architecture 01 §5.1 (2026-09-08) this host-to-host comparison is a host-lane
+diagnostic; the scored census is host + supervised children, which this session
+reports below as the non-reproducing sum.
 
 **Host-to-host only — this is not a total-footprint claim.** The Keld arm
 additionally runs application JavaScript in a supervised Bun child over
@@ -4964,10 +5045,11 @@ authenticated kipc; the Tauri fixture backend is `tauri::Builder::default().run(
 and runs no application JavaScript at all. Host + Bun child is recorded per run
 as a diagnostic at a median of **73,620 KiB (71.9 MiB)** and is deliberately
 excluded from the comparison. Despite the harness naming that field for the sum
-of keld processes, it is host + runtime only and omits a third Keld-owned
-process; the next subsection gives the actual sum. The six WebView2 engine
-processes (**329,138 KiB** median) are excluded from both arms, mirroring how
-the macOS rows exclude WebKit XPCs.
+of Keld processes, it is host + runtime only; the historical `keld dev` process
+tree also included `conhost.exe`, a dev-loop helper excluded from the current
+shipped-product census. The next subsection records that historical tree
+diagnostic. The six WebView2 engine processes (**329,138 KiB** median) are
+excluded from both arms, mirroring how the macOS rows exclude WebKit XPCs.
 
 **The scored comparison replicates; the process-sum does not.** The session
 above was repeated on 2026-08-26 under a matched protocol — 30 rounds, the same
@@ -4986,16 +5068,14 @@ all four:
 **The headline replicated: median paired ratio 0.848386 then, 0.847364 now.**
 Everything the comparison depends on reproduces. One diagnostic does not.
 
-**The sum of keld processes is therefore not a stable figure.** It is
-83,772 KiB in the published session and 55,858 KiB in the matched repeat.
-Headroom against the ≤ 90 MB budget therefore varies by session **and by a unit
-the budget never defines**: read as 90 MiB, the two sums are 81.8 and 54.5 MiB
-leaving 8.2 and 35.5 MiB; read as decimal 90 MB they are 85.8 and 57.2 MB
-leaving 4.2 and 32.8 MB. Both sums pass under both readings, so the verdict
-survives — no headroom figure does, and none is quoted here as settled. Two further sessions on 2026-08-26
-landed at 55,832 and 55,876 KiB, so the published session is the outlier of
-four. No single-session sum belongs in a budget verdict, and this document does
-not give one.
+**The historical `keld dev` process-tree sum is therefore not a stable figure.** It
+is 83,772 KiB in the published session and 55,858 KiB in the matched repeat.
+Architecture 01 §5.1 now fixes the target at 90 MiB (92,160 KiB), but this
+diagnostic is not the shipped-product census and its resident sum is not
+reproducible. It is therefore **INCONCLUSIVE**, not a pass or a fail. Two further
+sessions on 2026-08-26 landed at 55,832 and 55,876 KiB, so the published session
+is the outlier of four. No single-session sum belongs in a budget verdict, and
+this document gives none.
 
 | Keld process | Working set | Private bytes |
 |---|---:|---:|
@@ -5015,12 +5095,15 @@ tracked once per second for 20 s it moved 22,868 → 22,928 KiB, so this is not 
 capture-time artefact. Within each session the spread is under 0.2%. The cause
 is not established; what is established is that it is not in the measured system.
 
-**The budget names the counter that does not reproduce.** Architecture 01 §5
+**The target names the counter that does not reproduce here.** Architecture 01 §5
 budgets idle RSS, and RSS is the working set — an OS residency decision, not a
 property of the program. On this evidence private bytes is the reproducible
-counter for the Bun child and the working set is not. That is an input to the
-spec decision, not a change to it: the budget's counter, unit and process scope
-are ambiguous today and resolving them is not this document's call.
+counter for the Bun child and the working set is not. That was an input to the
+spec decision, not a change to it. Architecture 01 §5.1 (2026-09-08) has since
+ruled: the resident set stays the scored counter, the private counter is a
+mandatory diagnostic, and a keld-owned resident sum that does not reproduce
+across otherwise matched sessions in the same cache class is `INCONCLUSIVE`, not
+a pass — which is exactly the state this diagnostic describes.
 
 **Why the asymmetry in the third process is real.** No binary in `crates/` sets
 `#![windows_subsystem = "windows"]`, so every Keld executable is console
@@ -5031,26 +5114,28 @@ observation of a live `keld dev` tree and by the PE subsystem byte: `keld.exe`
 and `keld-host.exe` are `CONSOLE (3)`, `tauri-hello.exe` is `GUI (2)`.
 
 **The conhost measured here is `keld.exe`'s, not the shipping host's.** The Keld
-arm runs `keld dev`, and `keld dev` does not spawn `keld-host` — it *is* the host
-process. A terminal tool having a console is correct, so this is not a product
-defect; it is a concrete consequence of the scope mismatch this document already
-discloses, a dev CLI flow measured against a packaged release exe. `keld-host`
+arm runs `keld dev`, and at that session's Keld `2a8e8a4` `keld dev` did not spawn
+`keld-host` — it *was* the host process. Historical: since PR #122 (2026-08-31)
+Windows `keld dev` stages and launches a no-flag `keld-host` that owns the
+window (macOS did so from PR #111, 2026-08-29). A terminal tool having a console
+is correct, so this is not a product defect; it is a concrete consequence of the
+scope mismatch this document already discloses, a dev CLI flow measured against
+a packaged release exe. `keld-host`
 being console subsystem is a separate, forward-looking product question, and it
 is **not** what was measured here.
 
-**The scored comparison is unaffected by any of it.** The headline scores each
-arm's native host process, read directly from the host PID rather than from the
-descendant walk. `conhost.exe` is neither arm's host, and both arms' host values
-reproduce at 1.00× across four sessions. The six WebView2 engine processes
-(329,138 KiB) are excluded from every column above, which is a scope choice
-architecture 01 §5 does not currently make explicit.
+**The scored host-to-host comparison is unaffected by any of it.** The headline
+scores each arm's native host process, read directly from the host PID rather than
+from the descendant walk. `conhost.exe` is neither arm's host, and both arms' host
+values reproduce at 1.00× across four sessions. The six WebView2 engine processes
+(329,138 KiB) are excluded from every column above, as architecture 01 §5.1 now
+requires for the Keld budget census.
 
-This measures the risk the Win conditions table already named — "host + Bun may
-miss ≤ 90 MB before app JS heap" — and it is not hypothetical. It does not fail
-the budget as written, because the budget names RSS and RSS passes. It does mean
-the headroom above a hello app is thin on this machine, and that a claim of
-winning the idle-RSS lane needs the engine-inclusive and app-heap cases measured
-before it is made.
+This is a historical `keld dev` diagnostic, not a product-budget verdict. It
+demonstrates that the measured resident sum is non-reproducible; it does not show
+that the shipped census passes or fails ≤ 90 MiB. A claim about the idle-RSS target
+needs a reproducible product census in one cache class, with the engine coalition
+and private footprint reported separately.
 
 **A working set is not comparable across sessions.** An earlier session on this
 machine recorded that host+Bun diagnostic at 48,688 KiB, but its
@@ -5170,12 +5255,13 @@ installer is measured yet.
 | Metric | Keld | Swift AppKit | Read as |
 |---|---|---|---|
 | Host `ps -o rss=` | ~76 MiB | ~89–97 MiB | Shared-library TEXT **counts**. Scoreboard “Keld lower.” |
-| Host `phys_footprint` | ~27 MB | ~30 MB | Owned dirty. Gap is accounting, not a WebKit win. |
+| Host `phys_footprint` | ~27 MB | ~30 MB | Owned dirty. Gap is accounting, not a WebKit win; a historical quotation, not a Keld budget unit (unsourced, no raw path). |
 | WebKit XPCs (WebContent + GPU + Networking) | ~70 MiB | ~70 MiB | `ppid=1`; not in host RSS; not a keld process |
 
-Architecture 01 §5 “sum of keld processes” can pass while engine-inclusive idle
-does not. Empty `bun` RSS floor ~22 MiB — host + Bun may miss ≤90 MB before app
-JS heap; XPCs still extra.
+Architecture 01 §5's Keld-owned census can pass while engine-inclusive idle does
+not. The historical empty-Bun observation is not a reproducible floor, so it
+cannot establish whether host + Bun meets ≤90 MiB before application JS heap;
+XPCs remain a separate diagnostic.
 
 Real disk cuts (do not destroy a unique): strip panic backtrace stack; stop
 compiling wry surfaces hello never uses; `lto = "fat"` is marginal. An objc2
@@ -5191,7 +5277,7 @@ Four uniques only — no fifth.
 | # | Lane | Score | Why |
 |---|---|---|---|
 | 1 | Host Mach-O vs Swift AppKit+WK (77,936 B / 88K `.app`) | **cannot win honestly** | Swift dylibs OS frameworks; Rust statically links libstd. 987K vs 78K is that fact. |
-| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KB / Wails 95,648 KB / Neutralino 86,336 KB (WK mains); Electron 138,064 KB Chromium main | **can win with work** | Host-only 72.6–77.8 MiB under those WK mains and ≤90 MB — not the product (no Bun, no XPCs). **Not** a claim against Electron. **Not** a first-paint claim. Electrobun 72,032 KB launcher is incomplete. **host+Bun was measured on Windows/WebView2 and did not reproduce** (see Memory § Windows paired MEM-IDLE): the keld-process sum read 81.8 MiB in one session and 54.5 MiB in three others under a matched protocol and a sha-identical binary, because the Bun child's working set swings 2.22× while its private bytes does not move. This lane cannot be scored on a working-set sum until that is understood or the budget names a reproducible counter. The macOS host+Bun case this row was written about is still unmeasured. |
+| 2 | Idle RSS vs Swift ~95 MiB / Tauri 102,896 KiB / Wails 95,648 KiB / Neutralino 86,336 KiB (WK mains); Electron 138,064 KiB Chromium main | **unmeasured — blocked on the product census** | Host-only 72.6–77.8 MiB sits below those WK mains, but it is a host-only diagnostic, not the architecture 01 §5.1 census (no Bun, no guardian, no XPCs). **Not** a claim against Electron. **Not** a first-paint claim. Electrobun 72,032 KiB launcher is incomplete. **host+Bun was measured on Windows/WebView2 and did not reproduce** (see Memory § Windows paired MEM-IDLE): the historical `keld dev` process-tree diagnostic read 81.8 MiB in one session and 54.5 MiB in three others under a matched protocol and a sha-identical binary, because the Bun child's working set swings 2.22× while its private bytes does not move. Under §5.1 this is INCONCLUSIVE, not a product score. The macOS host+Bun product census remains unmeasured. |
 | 3 | Installer no-Bun (≤6 MB) vs Tauri / Neutralino | **can win with work** vs Tauri | Host already 987K. Pack `.app`/DMG vs this-Mac Tauri `.app` 8,265,728 / DMG 2,910,772. **Cannot** claim smallest shell vs Swift 88K / Neutralino wrapped `.app` 2,953,216. |
 | 4 | Installer **with Bun** (≤20 MB) vs Electrobun / Electron | **can win with work** vs Electron | gzip-9 Bun alone is over 20 MB; zstd-19 = 16,838,595 for Bun alone — full installer size is unmeasured. This-Mac Electrobun zstd 18,514,771 (extracted 42,360,832; bundled Bun 32,287,232) is the compressed Bun-class ceiling to beat once packed. Electron zip 122,121,746 / `.app` 288,448,512. |
 | 5 | Cold start first paint (architecture target ≤300 ms) | **measurement only — no current gate** | Windows JSON @ `686d1ab`: Keld **469 ms** vs Tauri 479; Electron 275; floor is Chromium boot inside `CreateCoreWebView2Controller`. macOS: KEL-64 **untraced** double-rAF proxy **342.911 ms** (recipe `9e7c83d`; JSON not in benches git). Traced construction **149.031 ms** vs traced beacon **352.211 ms** @ `aae2e12` is residual WebKit (`external_webkit_scheduling`), **not** a paint score and **not** a `keld-wv` rewrite. Do not use gyldlab/keld#10 `PageLoadEvent::Finished`. Do not use RSS. |
@@ -5202,9 +5288,10 @@ Four uniques only — no fifth.
 Zero lanes are **already winning** as a public claim. Host-only RSS vs Swift/Tauri
 is a labeled diagnostic, not a launch tweet.
 
-**Spec tension:** architecture 01 §5 ≤20 MB with Bun vs architecture 06 §1
-compressed Bun ~25–35 MB — the 20 MB budget is a **compressor choice** (zstd vs
-UDZO), not a host-trim project.
+**Open package question:** the 20 MB target is for the complete compressed
+`runtime = bun` download; no package has been produced at the pinned Bun. Historical
+version-and-compressor observations are diagnostic only, so neither host trimming nor
+a runtime rewrite can claim to settle this lane.
 
 **Refuse:** CEF-by-default; drop Bun to win installer; count hello-without-Bun as
 the product; mix WK/Chromium/Skia in one `vs`; debug 5.5M in `vs`; time-to-RSS,
@@ -5327,7 +5414,7 @@ reason not to build a claim on that column.
 | Claim | Supported? |
 |---|---|
 | Keld has the smallest binary on Windows | **Yes.** 625,152 B is 13.8x under Tauri's exe, 16.5x under Wails'. |
-| Keld has the lowest main-process RSS on Windows | **Yes** — 21,880 KB, lowest of every arm that opened a window, and well under the ≤ 90 MB idle budget. |
+| Keld has the lowest main-process RSS on Windows | **Yes** — 21,880 KB, lowest of every arm that opened a window; main-process only, not the architecture 01 §5.1 census, so it is no reading against the ≤ 90 MiB budget. |
 | Keld starts faster than Tauri | **No.** On the budgeted metric — cold start → first paint — Tauri is **504 ms against Keld's 906 ms: 1.8x against us** (2026-08-14, median of 5). The earlier entry here said 6.6x; that figure came from titled-`HWND` times and was **inflated by a metric artifact** — that column times when a framework chooses to present its window, not when either renders. Fixing the metric shrinks the gap; it does **not** close it. Keld is still ~400 ms behind Tauri. Do not publish a startup claim. See KEL-62. |
 | Historical 2026-08-14 relation to the ≤ 300 ms target | Keld **906 ms**, Tauri **504 ms**. This dated row is superseded by the 2026-08-15 direct-COM JSON median **469 ms** and is not the current scoreboard pass/fail label. |
 | Keld uses less total memory than Electron | **No.** Electron 305,036 KB total beats every WebView2 arm because it runs 4 processes to WebView2's 7. |
@@ -5362,7 +5449,7 @@ Median of 5, same machine/session.
 
 | Claim | Supported? |
 |---|---|
-| Keld has the lowest main-process RSS on Windows | **Yes** — 19,860 KB, lowest of all three, under the ≤ 90 MB idle budget. |
+| Keld has the lowest main-process RSS on Windows | **Yes** — 19,860 KB, lowest of all three; main-process only, not the architecture 01 §5.1 census, so it is no reading against the ≤ 90 MiB budget. |
 | Keld has the smallest binary | **Yes** — unchanged; 625,152 B, 13.8x under Tauri. |
 | Keld starts fast | **No. Keld is the slowest arm measured** — 1,289 ms, 1.87x Tauri on the *same* WebView2 engine and 2.9x Electron. Not an engine cost; it is Keld's own startup path. See KEL-62. |
 | Historical relation to the ≤ 300 ms target | Keld **1,289 ms**, Tauri **688 ms**, Electron **444 ms**. Retained as a superseded session, not a current pass/fail label. |
