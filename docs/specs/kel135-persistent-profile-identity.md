@@ -3,10 +3,11 @@ Status: approved
 Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-09-02
 Approval: Linear comment `75d75f6e-76e9-4fd1-a130-9d57548d0372` · decision SHA-256 `b9f48f14a5d6fefe4cd0f94b1a97b14292cead5ba0202facbd81c6b6a1a44040`
 
-Media acceptance amendment: **proposed**, 2026-09-10; see §7.1. The approved
+Media acceptance amendment: **adopted**, 2026-09-10; see §7.1. The approved
 status and approval above apply to the original T0 contract, not retrospectively
 to this amendment. Its authoring assignment is Linear comment
-`06e32d67-7ab8-4b8b-a308-199d2053a7c9`; review and adoption remain outstanding.
+`06e32d67-7ab8-4b8b-a308-199d2053a7c9`; reviewed adoption under the user's
+explicit assignment is recorded in `ac75562f-ee34-46e2-9694-a26224b0f701`.
 
 ## 1. Goal & non-goals
 
@@ -547,7 +548,7 @@ required row cannot satisfy an edge.
   persistent and ephemeral cleanup intents, and pass real Windows rows `windows-app-ab`,
   `windows-package-identity`, `windows-dev-ephemeral`, `windows-second-user`,
   `windows-profile-containment-acl`, `windows-concurrency`, `windows-crash-release`, and
-  `windows-purge-recovery`. Proposed §7.1 additionally maps
+  `windows-purge-recovery`. Section 7.1 additionally requires
   `windows-media-saved-grant` here and strengthens `windows-dev-ephemeral`.
 - [ ] **T3 — macOS identified-store vertical slice** (`task_id=KEL-135/T3`,
   `node_id=webview-profile-macos`): requires exact passed T1. Consume the common manager,
@@ -558,7 +559,7 @@ required row cannot satisfy an edge.
   `macos-package-identity`, `macos-dev-ephemeral`, `macos-binding-recovery`,
   `macos-crash-quarantine-reboot-recovery`, `macos-purge-recovery`, and
   `macos-older-fail-closed`. Direct Apple physical-store path/ACL proof remains
-  unverified. Proposed §7.1 additionally maps `macos-media-saved-grant` here
+  unverified. Section 7.1 additionally requires `macos-media-saved-grant` here
   and strengthens `macos-dev-ephemeral`.
 - [ ] **T4 — Linux explicit-context vertical slice** (`task_id=KEL-135/T4`,
   `node_id=webview-profile-linux`): requires exact passed T1 and a reviewed upstream wry
@@ -572,7 +573,7 @@ required row cannot satisfy an edge.
   `linux-clear-recovery`, and `linux-xdg-relocation`. The T4
   artifact must also record exact `wry_version`, crates.io checksum, upstream source
   commit, API symbols and dependency-review evidence. No local wry fork or parallel
-  builder is allowed. Proposed §7.1 additionally maps `linux-media-saved-grant`
+  builder is allowed. Section 7.1 additionally requires `linux-media-saved-grant`
   here and strengthens `linux-dev-ephemeral`.
 - [ ] **T5 — package/update/uninstall orchestration** (`task_id=KEL-135/T5`,
   `node_id=webview-profile-package-lifecycle`): requires all three exact passed T2, T3
@@ -615,9 +616,9 @@ Platform tests use observable conditions and bounded kill-switch deadlines, neve
 macOS/Linux/Windows results are recorded separately. Mock policy tests may prove pure
 state only; source-string tests and another OS cannot prove engine/store behavior.
 
-### 7.1 Proposed media-permission acceptance amendment
+### 7.1 Media-permission acceptance amendment
 
-This proposed amendment closes the acceptance gap recorded by KEL-132: store
+This amendment closes the acceptance gap recorded by KEL-132: store
 isolation and a new-request callback do not themselves prove that a saved browser
 permission cannot bypass the next session's denying policy. No boundary change:
 the existing platform tasks own their stores and lifecycle, KEL-102/T4 owns verified
@@ -625,7 +626,7 @@ session-policy injection and callback revocation, and KEL-79 owns origin/navigat
 policy. No new evaluator, grant, profile API, task, or prerequisite order is selected.
 The six approved T0 decisions and every existing task row remain unchanged.
 
-| Task / artifact node | Proposed additional real-OS row | Existing real-OS row strengthened |
+| Task / artifact node | Additional real-OS row | Existing real-OS row strengthened |
 |---|---|---|
 | `KEL-135/T2` / `webview-profile-windows` | `windows-media-saved-grant` | `windows-dev-ephemeral` |
 | `KEL-135/T3` / `webview-profile-macos` | `macos-media-saved-grant` | `macos-dev-ephemeral` |
@@ -660,7 +661,7 @@ neither the grant nor the nonce; mutation to reuse A's store must fail. Because 
 row uses different session state, it never substitutes for same-profile revocation.
 
 Artifacts retain §6's exact task, approved-contract provenance, landed head and
-acceptance-status requirements. After adoption, they also bind the amendment's
+acceptance-status requirements. They also bind the amendment's
 review/adoption record and exact source revision, and carry separate camera and
 microphone results, store/origin/seed evidence, denial/prompt/capture evidence and
 negative controls. Missing or unsupported evidence remains awaiting and cannot be
@@ -672,9 +673,10 @@ execution operators are assigned in their claims before real-OS work starts.
 
 This amendment selects test contracts, not an undocumented engine API. Each platform
 implementation must establish the current primary API contract and real behavior
-before selecting a saved-permission reconciliation mechanism. No product evidence
-or permission-model approval is supplied by this proposed text. Its adoption requires
-independent permission-model and evidence review; original T0 approval is preserved.
+before selecting a saved-permission reconciliation mechanism. This amendment supplies
+acceptance requirements, not product evidence. Independent
+permission-model and evidence review preceded adoption; the original T0 approval
+remains preserved and does not retroactively approve these additional rows.
 
 ## 8. Review gates triggered
 
