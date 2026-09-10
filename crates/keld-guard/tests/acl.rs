@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use keld_guard::{
     Decision, DenyReason, ManifestError, PermissionsManifest, Principal, evaluate, load_manifest,
+    parse_manifest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -152,31 +153,31 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "url authority swallowed by wss scheme glob",
-        operation: "net.connect",
+        operation: "net_wss.connect",
         path: "wss://attacker.example/ws",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "url origin prefix grant",
-        operation: "net.connect",
+        operation: "net_origin.connect",
         path: "https://api.example.com/v1",
         expected: ALLOW,
     },
     Case {
         name: "url origin root itself",
-        operation: "net.connect",
+        operation: "net_origin.connect",
         path: "https://api.example.com",
         expected: ALLOW,
     },
     Case {
         name: "url sibling authority beyond origin prefix",
-        operation: "net.connect",
+        operation: "net_origin.connect",
         path: "https://api.example.com.evil.test/v1",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "url authority swallowed by single-slash scheme glob",
-        operation: "net.connect",
+        operation: "net_single_slash.connect",
         path: "https:/evil.example.com",
         expected: OUT_OF_SCOPE,
     },
@@ -212,19 +213,19 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "one letter scheme glob with separators",
-        operation: "net.connect",
+        operation: "net_one_letter.connect",
         path: "a://evil.example.com",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "backslash scheme glob",
-        operation: "net.connect",
+        operation: "net_backslash.connect",
         path: "https:\\/evil.example.com",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "tab separated scheme glob",
-        operation: "net.connect",
+        operation: "net_tab.connect",
         path: "https:\t//evil.example.com",
         expected: OUT_OF_SCOPE,
     },
@@ -327,6 +328,71 @@ fn fixture_decision_matrix_matches_authority_contract() {
         observed,
         include_str!("fixtures/scopes.expected"),
         "the checked decision snapshot must change only with an intentional authority-contract change"
+    );
+}
+
+/// Decides every case in the matrix against `manifest`, as one comparable snapshot.
+///
+/// Unlike `assert_case` this never panics: it is used to compare a reduced fixture
+/// against the real one, where decisions are *expected* to move.
+fn decision_snapshot(manifest: &PermissionsManifest) -> Vec<String> {
+    CASES
+        .iter()
+        .map(
+            |case| match evaluate(manifest, Principal::AppProcess, case.operation, case.path) {
+                Decision::Allow => "allow".to_owned(),
+                Decision::Deny(reason) => format!("deny {} {}", reason.code(), reason.kind()),
+            },
+        )
+        .collect()
+}
+
+/// Every grant row in the fixture must change at least one decision when removed.
+///
+/// KEL-208 shipped two rows that did not: one whose JSONC escaping made it a different
+/// grant than its comment claimed, and one fully shadowed by a broader entry in the same
+/// list. Both looked like coverage and pinned nothing, which is worse than no row at all
+/// — `crates/keld-guard/AGENTS.md` requires this fixture to be a permanent bypass record.
+///
+/// Rows are dropped by line, so this test needs no knowledge of how a scope is escaped;
+/// that is exactly the knowledge the original defect got wrong.
+#[test]
+fn every_fixture_grant_row_is_load_bearing() {
+    let text = include_str!("fixtures/scopes.jsonc");
+    let baseline = decision_snapshot(&load_fixture("scopes.jsonc"));
+
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut checked = 0usize;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // A grant row is a bare string element of a scope array.
+        if !trimmed.starts_with('"') || !(trimmed.ends_with('"') || trimmed.ends_with("\",")) {
+            continue;
+        }
+        let reduced_text = lines
+            .iter()
+            .enumerate()
+            .filter(|(other, _)| *other != index)
+            .map(|(_, value)| *value)
+            .collect::<Vec<&str>>()
+            .join("\n");
+        // Dropping the last element of an array leaves a trailing comma; skip a row whose
+        // removal cannot produce valid JSONC rather than pretending it was checked.
+        let Ok(reduced) = parse_manifest(&reduced_text) else {
+            continue;
+        };
+        checked += 1;
+        assert_ne!(
+            decision_snapshot(&reduced),
+            baseline,
+            "removing line {} of scopes.jsonc ({}) changes no decision, so the row pins              nothing. Give it its own capability, or delete it.",
+            index + 1,
+            trimmed
+        );
+    }
+    assert!(
+        checked >= 10,
+        "expected the fixture to contribute many droppable rows, checked only {checked}"
     );
 }
 

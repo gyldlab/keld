@@ -11,7 +11,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test hooks-test mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test hooks-test doc-placeholders-test doc-placeholders-check mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
 
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:
@@ -129,6 +129,18 @@ llms-test:
     mkdir -p target/llms-docs
     rustc --edition=2024 -D warnings --test tools/llms_docs.rs -o target/llms-docs/llms-docs-test
     target/llms-docs/llms-docs-test
+
+# CI gate: no unsubstituted template placeholder may reach checked-in prose (KEL-213).
+doc-placeholders-check:
+    mkdir -p target/doc-placeholders
+    rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders
+    target/doc-placeholders/doc-placeholders check .
+
+# Contract tests for the placeholder inventory, fences, adjacency, and stale entries.
+doc-placeholders-test:
+    mkdir -p target/doc-placeholders
+    rustc --edition=2024 -D warnings --test tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders-test
+    target/doc-placeholders/doc-placeholders-test
 
 # Validate Mermaid fences, accessibility metadata, stable types, and semantic palette.
 mermaid-check:

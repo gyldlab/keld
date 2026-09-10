@@ -1190,6 +1190,54 @@ mod tests {
         );
     }
 
+    /// The conformance fixture's escape-sensitive scopes must decode to the bytes their
+    /// comments claim.
+    ///
+    /// KEL-208 shipped `"https:\\\\t//**"`, which JSONC decodes to a backslash and the
+    /// letter `t` rather than a tab. The row still denied — against a tab-bearing resource
+    /// it simply failed to match — so neither the decision matrix nor the load-bearing
+    /// check could see it. Only the decoded bytes can, which is why they are asserted here
+    /// rather than inferred from an outcome.
+    #[test]
+    fn fixture_scopes_decode_to_their_intended_bytes() {
+        let manifest = parse_manifest(include_str!("../tests/fixtures/scopes.jsonc"))
+            .expect("the checked fixture must parse");
+        let expected: &[(&str, &[&str])] = &[
+            ("net_tab.connect", &["https:\t//**"]),
+            ("net_backslash.connect", &["https:\\/**"]),
+            ("net_single_slash.connect", &["https:/**"]),
+            ("net_triple_slash.connect", &["https:///**"]),
+            ("net.connect", &["https://**"]),
+            ("fs2.read", &["/srv/backup:/**", "\\\\?\\C:/**"]),
+        ];
+        for (capability, want) in expected {
+            let node = grant_node(&manifest, capability)
+                .unwrap_or_else(|| panic!("fixture is missing `{capability}`"));
+            let got: Vec<&str> = node
+                .as_array()
+                .unwrap_or_else(|| panic!("`{capability}` must be an array"))
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            assert_eq!(
+                got.len(),
+                want.len(),
+                "`{capability}` scope count changed: {got:?}"
+            );
+            for (got_scope, want_scope) in got.iter().zip(want.iter()) {
+                assert_eq!(
+                    got_scope.as_bytes(),
+                    want_scope.as_bytes(),
+                    "`{capability}` decoded to {:?} ({:02x?}), expected {:?} ({:02x?}). A JSONC string is escaped once; doubling a backslash changes the grant.",
+                    got_scope,
+                    got_scope.as_bytes(),
+                    want_scope,
+                    want_scope.as_bytes()
+                );
+            }
+        }
+    }
+
     #[test]
     fn json_pointer_for_dotted_capability() {
         assert_eq!(json_pointer_for("fs.read"), "/app/fs/read");
