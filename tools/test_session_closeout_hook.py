@@ -1,10 +1,15 @@
 """Hook admission tests reuse real git/filesystem closeout fixtures."""
 
+from contextlib import redirect_stderr
+import io
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 import session_closeout_hook as hook
 import test_session_closeout as fixtures
@@ -20,15 +25,15 @@ class HookTests(unittest.TestCase):
                         "cwd": str(self.repo), "hook_event_name": "Stop", "stop_hook_active": False}
         self.receipt_path = self.repo / ".git" / "keld-closeout" / "session_214" / "turn-1.json"
 
-    def publish(self):
+    def publish(self, binding="session_214", turn="turn-1"):
         fixture = self.fixture
-        binding = "session_214"
+        self.receipt_path = self.repo / '.git' / 'keld-closeout' / binding / (turn + '.json')
         baseline = json.loads(fixture.baseline.read_text(encoding="utf-8"))
         baseline["session_id"] = binding
         self.receipt_path.parent.mkdir(parents=True, exist_ok=True)
         fixture.baseline = self.receipt_path.parent / 'baseline.json'
         fixture.baseline.write_text(json.dumps(baseline), encoding="utf-8")
-        fixture.receipt.update(session_id=binding, turn_id='turn-1', baseline=fixture.proof(fixture.baseline))
+        fixture.receipt.update(session_id=binding, turn_id=turn, baseline=fixture.proof(fixture.baseline))
         self.receipt_path.write_text(json.dumps(fixture.receipt), encoding="utf-8")
 
     def cli(self, payload):
@@ -173,6 +178,204 @@ class HookTests(unittest.TestCase):
         result = self.cli("not JSON")
         self.assertIs(result["continue"], False)
         self.assertIn("HANDOFF REQUIRED", result["systemMessage"])
+
+    def test_claude_native_ids_share_core_and_reject_malformed_id(self):
+        payload = {"session_id": "native-session", "prompt_id": "prompt-1", "cwd": str(self.repo),
+                   "hook_event_name": "UserPromptSubmit", "prompt": "PRIVATE"}
+        answer = hook.claude_response(payload)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("claude-native-session", answer)
+        self.assertIn("prompt-1.json", answer)
+        self.assertNotIn("PRIVATE", answer)
+        payload["hook_event_name"] = "Stop"
+        directory = self.repo / ".git/keld-closeout/claude-native-session"
+        directory.mkdir(parents=True)
+        (directory / "baseline.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(hook.claude_response(payload)["decision"], "block")
+        payload["prompt_id"] = "../stale"
+        self.assertIs(hook.claude_response(payload)["continue"], False)
+
+    def test_cursor_session_prompt_stop_flow_is_metadata_only_and_bounded(self):
+        payload = {"conversation_id": "conversation-1", "workspace_roots": [str(self.repo)],
+                   "hook_event_name": "sessionStart"}
+        with mock.patch("os.getcwd", return_value=str(self.repo)):
+            start = hook.cursor_response(payload)
+            self.assertIn("current.json", start["additional_context"])
+            payload.update(hook_event_name="beforeSubmitPrompt", generation_id="generation-1",
+                           prompt="PRIVATE PROMPT", user_message="PRIVATE USER", transcript="PRIVATE TRANSCRIPT")
+            self.assertEqual(hook.cursor_response(payload), {"continue": True})
+            current = self.repo / ".git/keld-closeout/cursor-conversation-1/current.json"
+            stored = current.read_text(encoding="utf-8")
+            self.assertNotIn("PRIVATE", stored)
+            self.assertFalse((current.parent / "baseline.json").exists())
+            payload.update(hook_event_name="stop", loop_count=0, status="completed")
+            self.assertEqual(hook.cursor_response(payload), {})
+            (current.parent / "baseline.json").write_text("{}", encoding="utf-8")
+            self.assertIn("repair", hook.cursor_response(payload)["followup_message"])
+            payload["loop_count"] = 1
+            with redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(hook.cursor_response(payload), {})
+                self.assertIn('HANDOFF REQUIRED', stderr.getvalue())
+            payload.update(loop_count=0, status="aborted")
+            self.assertEqual(hook.cursor_response(payload), {})
+
+    def test_cursor_rejects_foreign_or_malformed_workspace_without_codex_shape(self):
+        foreign = fixtures.CloseoutTests()
+        foreign.setUp()
+        self.addCleanup(foreign.doCleanups)
+        base = {"conversation_id": "c", "generation_id": "g", "hook_event_name": "beforeSubmitPrompt"}
+        with mock.patch("os.getcwd", return_value=str(self.repo)):
+            for roots in ([], [str(foreign.repo)], [str(self.repo), str(foreign.repo)]):
+                answer = hook.cursor_response(dict(base, workspace_roots=roots))
+                self.assertEqual(set(answer), {"continue", "user_message"})
+            answer = hook.cursor_response(dict(base, workspace_roots=[str(self.repo)], generation_id="../bad"))
+            self.assertEqual(set(answer), {"continue", "user_message"})
+
+    def test_native_config_shapes_platforms_and_exec_argv(self):
+        codex = hook.configuration()
+        self.assertEqual(codex, json.loads((Path(__file__).parent.parent / ".codex/hooks.json").read_text(encoding='utf-8')))
+        claude = hook.configuration("claude", "windows")
+        handler = claude["hooks"]["Stop"][0]["hooks"][0]
+        self.assertEqual(handler["command"], "python.exe")
+        self.assertEqual(handler["args"][:3], ["-I", "-B", "-c"])
+        self.assertNotIn("commandWindows", handler)
+        cursor = hook.configuration("cursor", "posix")
+        self.assertEqual(cursor["version"], 1)
+        self.assertEqual(set(cursor["hooks"]), {"sessionStart", "beforeSubmitPrompt", "stop"})
+        self.assertEqual(cursor["hooks"]["stop"][0]["loop_limit"], 1)
+        self.assertNotIn("commandWindows", cursor["hooks"]["stop"][0])
+
+    def test_native_valid_receipts_cannot_cross_fresh_turns(self):
+        self.publish('claude-native-session', 'prompt-1')
+        payload = {'session_id': 'native-session', 'prompt_id': 'prompt-1',
+                   'cwd': str(self.repo), 'hook_event_name': 'Stop'}
+        self.assertIn('accepted: complete', hook.claude_response(payload)['systemMessage'])
+        payload['prompt_id'] = 'prompt-2'
+        self.assertEqual(hook.claude_response(payload)['decision'], 'block')
+        # Copying an otherwise valid old receipt to the fresh path must also fail.
+        self.receipt_path.with_name('prompt-2.json').write_bytes(self.receipt_path.read_bytes())
+        self.assertIn('another session or turn', hook.claude_response(payload)['reason'])
+        self.publish('cursor-native-session', 'generation-1')
+        payload = {'conversation_id': 'native-session', 'generation_id': 'generation-1',
+                   'workspace_roots': [str(self.repo)], 'hook_event_name': 'stop',
+                   'status': 'completed', 'loop_count': 0}
+        previous = os.getcwd()
+        try:
+            os.chdir(self.repo)
+            self.assertEqual(hook.cursor_response(payload), {})
+            payload['generation_id'] = 'generation-2'
+            self.assertIn('followup_message', hook.cursor_response(payload))
+            self.receipt_path.with_name('generation-2.json').write_bytes(self.receipt_path.read_bytes())
+            self.assertIn('another session or turn', hook.cursor_response(payload)['followup_message'])
+        finally:
+            os.chdir(previous)
+
+    def test_cursor_malformed_fields_and_cancelled_turn_do_not_claim_success(self):
+        previous = os.getcwd()
+        try:
+            os.chdir(self.repo)
+            base = {'conversation_id': 'c', 'generation_id': 'g',
+                    'workspace_roots': [str(self.repo)], 'hook_event_name': 'stop',
+                    'status': 'completed', 'loop_count': 0}
+            for invalid in (None, True, '1', -1, [], {}):
+                answer = hook.cursor_response(dict(base, loop_count=invalid))
+                self.assertIn('invalid Cursor loop_count', answer['followup_message'])
+            for status in ('aborted', 'error'):
+                self.assertEqual(hook.cursor_response({'hook_event_name': 'stop', 'status': status}), {})
+            for size in (0, 122, 129):
+                answer = hook.cursor_response(dict(base, hook_event_name='beforeSubmitPrompt',
+                                                   conversation_id='x' * size))
+                self.assertIs(answer['continue'], False)
+            self.assertFalse((self.repo / '.git/keld-closeout').exists())
+        finally:
+            os.chdir(previous)
+
+    def test_generated_native_commands_execute_and_fail_before_untrusted_source(self):
+        renamed = self.fixture.root / 'repo space-\u00e9-\u6d4b'
+        self.repo.rename(renamed)
+        self.repo = renamed
+        source_root = Path(__file__).resolve().parent.parent
+        (self.repo / 'tools').mkdir()
+        checker = self.repo / 'tools/session_closeout.py'
+        for harness in ('codex', 'claude', 'cursor'):
+            with self.subTest(harness=harness):
+                for name in ('session_closeout', 'session_closeout_hook'):
+                    shutil.copyfile(source_root / 'tools' / (name + '.py'),
+                                    self.repo / 'tools' / (name + '.py'))
+                config = hook.configuration(harness)
+                if harness == 'claude':
+                    handler = config['hooks']['Stop'][0]['hooks'][0]
+                    command = [handler['command'], *handler['args']]
+                    payload = {'session_id': 'native', 'prompt_id': 'p', 'cwd': str(self.repo),
+                               'hook_event_name': 'Stop'}
+                elif harness == 'codex':
+                    handler = config['hooks']['Stop'][0]['hooks'][0]
+                    shell = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command'] if os.name == 'nt' else ['sh', '-c']
+                    command = shell + [handler['commandWindows'] if os.name == 'nt' else handler['command']]
+                    payload = {'session_id': 'native', 'turn_id': 'p', 'cwd': str(self.repo),
+                               'hook_event_name': 'Stop'}
+                else:
+                    handler = config['hooks']['stop'][0]
+                    shell = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command'] if os.name == 'nt' else ['sh', '-c']
+                    command = shell + [handler['command']]
+                    payload = {'conversation_id': 'native', 'generation_id': 'p',
+                               'workspace_roots': [str(self.repo)], 'hook_event_name': 'stop',
+                               'status': 'completed', 'loop_count': 0}
+                def invoke(raw):
+                    return subprocess.run(command, cwd=self.repo, input=raw, capture_output=True,
+                                          text=True, encoding='utf-8', timeout=60)
+                answer = invoke(json.dumps(payload, ensure_ascii=False))
+                self.assertEqual(answer.returncode, 0, answer.stderr)
+                if harness in ('codex', 'claude'):
+                    self.assertIn('No activated Keld task', json.loads(answer.stdout)['systemMessage'])
+                else:
+                    self.assertEqual(json.loads(answer.stdout), {})
+                if harness == 'cursor':
+                    malformed = invoke('not JSON')
+                    self.assertNotEqual(malformed.returncode, 0)
+                    self.assertIn('Invalid Cursor closeout hook input', malformed.stderr)
+                checker.write_text("raise RuntimeError('UNTRUSTED_SOURCE_EXECUTED')", encoding='utf-8')
+                rejected = invoke(json.dumps(payload))
+                self.assertNotIn('UNTRUSTED_SOURCE_EXECUTED', rejected.stdout + rejected.stderr)
+                if harness == 'cursor':
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn('source changed', rejected.stderr)
+                else:
+                    self.assertIs(json.loads(rejected.stdout)['continue'], False)
+                    self.assertIn('source changed', json.loads(rejected.stdout)['stopReason'])
+
+    def test_cursor_metadata_directory_symlink_cannot_redirect_write(self):
+        outside = self.fixture.root / 'outside'
+        outside.mkdir()
+        link = self.repo / '.git/keld-closeout'
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest('OS did not grant directory symlink creation: ' + str(error))
+        previous = os.getcwd()
+        try:
+            os.chdir(self.repo)
+            answer = hook.cursor_response({'conversation_id': 'c', 'generation_id': 'g',
+                                          'workspace_roots': [str(self.repo)],
+                                          'hook_event_name': 'beforeSubmitPrompt'})
+            self.assertIs(answer['continue'], False)
+            self.assertEqual(list(outside.iterdir()), [])
+        finally:
+            os.chdir(previous)
+
+    def test_invalid_utf8_is_rejected_before_native_event_dispatch(self):
+        for harness in ('codex', 'claude', 'cursor'):
+            with self.subTest(harness=harness):
+                result = subprocess.run(
+                    [sys.executable, '-B', str(Path(hook.__file__)), '--harness', harness],
+                    input=b'{"unused":"\xff"}', capture_output=True, timeout=30)
+                if harness == 'cursor':
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b'utf-8', result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0)
+                    answer = json.loads(result.stdout)
+                    self.assertIs(answer['continue'], False)
+                    self.assertIn('utf-8', answer['stopReason'])
 
 
 if __name__ == "__main__":

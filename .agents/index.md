@@ -21,7 +21,7 @@ do not silently choose the less restrictive rule.
 | Using Linear, creating/using a branch or worktree, OS-scoped acceptance, or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
 | Opening/updating/rebasing/pushing/reviewing a PR or resolving review feedback | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
 | Editing GitHub Actions, the CI router/checkers, required checks, KeldBot, or branch protection | [`ci.md`](ci.md) and [`testing.md`](testing.md) |
-| Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository `.codex` assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |
+| Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository harness assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |
 | Editing generated docs, Mermaid, or public documentation | [`docs.md`](docs.md) and [`testing.md`](testing.md) |
 | Writing or changing a feature/architecture specification | [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
 | Starting work on an issue when another agent or device may also hold it | `docs/agents/workflow.md` § Agent claim |

@@ -16,11 +16,11 @@ external contributors do not acquire that authority.
 
 ## Session continuity and closeout
 
-This section owns non-trivial task completion, including research-only audits, reviews,
-cleanup and resumed sessions. Before work, save objectives, findings and owned resources
-at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Registered
-`UserPromptSubmit` supplies that exact path and the per-turn receipt path. Receipts use
-the same baseline `session_id` and a separate `turn_id`. Retain original task inventory
+This owns non-trivial completion, including research-only audits, reviews, cleanup
+and resumed sessions. Before work, save objectives, findings and owned resources
+at `<git-common-dir>/keld-closeout/<session_id>/baseline.json`. Native hooks supply current paths; see
+[setup](../onboarding/05-development-guide.md#agent-session-hooks). Receipts bind
+`session_id` and `turn_id`. Retain original task inventory
 across turns; steering MUST NOT silently erase/recreate it. At scope changes, milestones
 and resume, reconcile conversation, current Linear and resources; steering adds work
 unless the user cancels/replaces it. A merged follow-up MUST NOT erase its originating audit objective.

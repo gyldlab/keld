@@ -18,3 +18,6 @@ dist/
 
 # CI workflows, CODEOWNERS, and templates are tracked (KEL-39).
 /.claude
+
+# Generated native Cursor registration selects this machine's Python command.
+/.cursor/hooks.json

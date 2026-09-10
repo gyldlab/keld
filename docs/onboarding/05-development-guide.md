@@ -472,3 +472,70 @@ the clone's Git common directory and sets its local `core.hooksPath`. Checkout a
 merge do not run incoming repository code. The hooks print the explicit sync commands;
 Git does not enable them on clone. Rerun installation only when intending to trust
 updated hook bytes.
+
+### Agent session hooks
+
+The [session workflow](../agents/workflow.md#session-continuity-and-closeout) owns
+completion policy. `tools/session_closeout.py` is the shared evidence validator;
+`tools/session_closeout_hook.py` translates native lifecycle events. AGENTS.md and
+Agent Skills are portable instruction/skill formats, not a common lifecycle-hook
+contract. Cursor's optional Claude-hook compatibility does not establish equivalent
+Codex/Claude/Cursor identity, loading or stopping behavior.
+
+Generate registration with the Python interpreter from the prerequisites, from this
+reviewed checkout:
+
+```text
+python -B tools/session_closeout_hook.py --print-config --harness claude
+python -B tools/session_closeout_hook.py --print-config --harness cursor
+```
+
+Use `python3` instead of `python` on macOS/Linux. The generator selects the running
+OS; `--platform windows` or `--platform posix` selects another target explicitly.
+It prints JSON without changing settings. Save UTF-8 output and merge its `hooks`
+entries into the project configuration below, preserving existing settings/hooks.
+Review commands before enabling them. Do not install these project handlers globally.
+
+| Client | Project registration | Native identity | Completion behavior |
+|---|---|---|---|
+| Codex | tracked `.codex/hooks.json` | session_id / turn_id | block once; repeated failure terminates with explicit handoff |
+| Claude Code >=2.1.196 | `.claude/settings.local.json` | session_id / prompt_id | block once; repeated failure terminates with explicit handoff |
+| Cursor | `.cursor/hooks.json` | conversation_id / generation_id | one repair follow-up per conversation; no terminal admission guarantee |
+
+Claude/Cursor registration is generated locally for the OS. Their documented schemas
+have no Codex `commandWindows` override. Keep machine-specific registration out of
+commits; regenerate when changing OS or reviewed source. Codex's checked-in registration
+contains both native command variants. No additional Python packages are required.
+All registrations pin exact validator/adapter source hashes: changed bytes require
+review and regeneration, followed by the client's normal trust/loading check.
+
+Claude uses exact argument execution; Cursor uses its native command string. Cursor
+receives a session-start pointer and refreshes a small `current.json` before each prompt
+under the Git common directory's session namespace. It contains IDs and receipt
+instructions, never prompts or transcripts, and does not activate a task by itself.
+The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
+The repair limit is per conversation, not per task; start a new conversation after it
+is consumed. Follow-up event ordering still requires native qualification.
+Aborted/error Cursor turns do not start repair work; exhausted follow-up attempts remain
+unverified and report a handoff in hook diagnostics.
+
+Use the native Cursor registration without also importing these Claude hooks through
+Cursor's optional third-party configuration compatibility. Such duplicate loading is
+not qualified. Check the actual loaded hook list rather than assuming configuration
+priority suppresses duplicate execution.
+
+Verify Codex/Claude with `/hooks`; verify Cursor with Customize Hooks and its Hooks
+output channel. A configuration file or passing subprocess test proves neither trust
+nor native activation. After upgrades, exercise a factual inactive turn, an activated
+missing receipt, a valid receipt and a second fresh prompt. Follow-up tests must be
+bounded and must not allow a stale receipt to establish completion.
+
+Qualification for KEL-216 is recorded on its Linear issue. Windows and Linux subprocess
+results, native client events and macOS availability are separate evidence categories.
+Unsupported versions or unexercised clients use the manual `just session-closeout`
+workflow and must not be described as automatically enforced.
+
+Primary references (checked 2026-09-10): [Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[Claude hooks](https://code.claude.com/docs/en/hooks), [Cursor hooks](https://cursor.com/docs/hooks),
+[Cursor third-party compatibility](https://cursor.com/docs/reference/third-party-hooks),
+[AGENTS.md](https://agents.md/) and [Agent Skills](https://agentskills.io/specification).
