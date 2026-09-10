@@ -171,7 +171,10 @@ lands, valid regressions greater than 5% fail the PR or require a written waiver
 
 ### 5.1 Budget semantics (KEL-129 ruling, 2026-09-08)
 
-Every row above scores the shipped hello app, not a diagnostic slice. These readings
+Every row above, once it is scoreable, is measured against the shipped hello app —
+never a diagnostic slice. Three rows carry no live budget yet and say so in their own
+cell: bulk throughput has no shared-memory lane, the update patch has no bytes-kind
+registry id, and crash recovery has no architecture 01 §5 number. These readings
 define the budgets that the `gyldlab/keld-benches` metric registry
 (`schema/metrics.v1.json`, blob `a7da1075` at `01df1d8`) encodes; the registry stays
 the machine-readable source for metric ids, oracles, and cache classes. Where the
