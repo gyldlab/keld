@@ -17,8 +17,10 @@ use std::io::Write as _;
 use std::os::unix::fs::MetadataExt;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
@@ -191,10 +193,14 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     // The guardian is the last process executing from the staged directory:
     // the host parent exits when its CLI lease closes. Re-derive the exact
     // nonce from this executable rather than trusting the role argument.
-    let cleanup_root = guardian_stage_cleanup_root(&root).ok();
+    let cleanup_root = guardian_stage_cleanup_root(&root);
+    let cleanup_validation = cleanup_root.clone();
     let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
         move |app_link| {
+            cleanup_validation
+                .as_ref()
+                .map_err(|error| guardian_entry_error(error.clone()))?;
             let reopened = reopen_validated_entry(&root, &entry, expected_dev, expected_ino)?;
             // Advisory same-user dev-boundary check: retain the exact reopened
             // identity until immediately before Supervisor invokes spawn, then
@@ -213,13 +219,13 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         },
         std::io::stdout(),
     );
-    let cleanup = cleanup_root.map_or(Ok(()), |cleanup_root| {
-        fs::remove_dir_all(&cleanup_root).map_err(|source| {
-            format!(
-                "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
-                cleanup_root.display()
-            )
-        })
+    let cleanup = cleanup_root.and_then(|cleanup_root| match fs::remove_dir_all(&cleanup_root) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(format!(
+            "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
+            cleanup_root.display()
+        )),
     });
     let report = report.map_err(|error| {
         format!(
