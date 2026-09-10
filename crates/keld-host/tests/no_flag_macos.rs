@@ -13,8 +13,8 @@ use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -83,6 +83,7 @@ fn unix_descriptor_census_fixture_process() {
 /// read back out of the census under validation.
 #[test]
 fn unix_descriptor_census_charges_only_self_opened_sockets() {
+    let _isolation = census_isolation();
     let fixture = tempfile::tempdir().expect("census fixture root");
     let leaked_path = fixture.path().join("leaked.sock");
     let owned_path = fixture.path().join("owned.sock");
@@ -160,6 +161,7 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
 /// socket's far end, which would fail the child on `EPIPE`.
 #[test]
 fn unix_descriptor_census_charges_a_copy_the_harness_does_not_hold() {
+    let _isolation = census_isolation();
     let fixture = tempfile::tempdir().expect("census fixture root");
     let leaked_path = fixture.path().join("leaked.sock");
     let owned_path = fixture.path().join("owned.sock");
@@ -261,6 +263,7 @@ fn unix_descriptor_census_charges_a_copy_the_harness_does_not_hold() {
 /// with whatever the census believes.
 #[test]
 fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
+    let _isolation = census_isolation();
     let harness_anonymous = UnixDatagram::unbound().expect("harness unbound Unix socket");
     assert!(
         unix_socket_identities(std::process::id())
@@ -323,6 +326,7 @@ fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
 /// the one that survives even if `->(none)` is special-cased.
 #[test]
 fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
+    let _isolation = census_isolation();
     let fixture = tempfile::tempdir().expect("census fixture root");
     let shared_path = fixture.path().join("released.sock");
     let shared_identity = shared_path.to_str().expect("UTF-8 fixture path").to_owned();
@@ -389,6 +393,7 @@ fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
 /// [`empty_unix_census_rejects_a_reaped_pid`] is the load-bearing path.
 #[test]
 fn unix_descriptor_census_requires_a_live_descriptor_table() {
+    let _isolation = census_isolation();
     assert!(
         process_has_open_descriptors(std::process::id()),
         "this harness is running, so it has a descriptor table"
@@ -464,6 +469,7 @@ fn empty_unix_census_rejects_a_reaped_pid() {
 /// collision tests, each of which fails against a census that gets it wrong.
 #[test]
 fn unix_descriptor_census_of_a_process_without_unix_descriptors_is_empty() {
+    let _isolation = census_isolation();
     let mut closes = String::new();
     for record in unix_descriptors(std::process::id()) {
         // 0, 1 and 2 are replaced by the spawn's own stdio redirection.
@@ -3024,6 +3030,29 @@ fn unix_socket_identities(pid: u32) -> Vec<String> {
         .collect()
 }
 
+/// Serialises the census fixtures against each other.
+///
+/// macOS `std` has no atomic `SOCK_CLOEXEC`: it creates a socket and then sets
+/// `FD_CLOEXEC` in a second call, so a `posix_spawn` on another thread inside that
+/// window captures the descriptor by number. A socket that leaks into another test's
+/// child that way is charged to that child as soon as its real owner closes it,
+/// because the census can no longer attribute it to the harness. Measured on these
+/// tests sharing one process, that is one failure in 300 runs, and the panic names a
+/// socket from a different fixture's temporary directory.
+///
+/// The mandated gate runs every test in its own process, where the interleaving
+/// cannot happen at all; this lock buys a shared-process run the same isolation. It
+/// is uncontended under the gate. Poisoning is ignored deliberately: a panicking
+/// census test has already failed the run, and refusing the lock afterwards would
+/// replace that failure with a less informative one.
+static CENSUS_ISOLATION: Mutex<()> = Mutex::new(());
+
+fn census_isolation() -> MutexGuard<'static, ()> {
+    CENSUS_ISOLATION
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Every Unix-domain socket open on this harness, by kernel address.
 fn harness_unix_sockets() -> Vec<String> {
     unix_descriptors(std::process::id())
@@ -3062,14 +3091,21 @@ fn harness_unix_sockets() -> Vec<String> {
 /// over-charge in the `dup` reading, which is investigable.
 ///
 /// The harness table is read on both sides of the target census, and only what
-/// both readings agree on can excuse anything. macOS reissues freed socket
-/// addresses heavily — 74 of 90 stream-pair addresses returned across three
-/// consecutive runs, and 16 to 27 of 45 for unbound datagrams — so one reading
-/// would excuse a socket `pid` opened at an address whose previous tenant the
-/// harness had just closed. Agreement costs a wider window in which a harness
-/// close over-charges a genuinely inherited descriptor, which is again the loud
-/// direction. Neither behaviour can be pinned without a test whose timing decides
-/// the result, so both are argued from measurement rather than asserted by a test.
+/// both readings agree on can excuse anything. macOS reuses freed socket addresses,
+/// at a rate that varies far too much between sessions to quote as a figure —
+/// repeated measurements of the same 90 stream-pair ends have returned anywhere
+/// from 15 to 74 of them — so reuse has to be assumed rather than treated as rare.
+/// One reading would then excuse a socket `pid` opened at an address whose previous
+/// tenant the harness had just closed.
+///
+/// The cost is that a harness close between the two readings over-charges a
+/// genuinely inherited descriptor. That is not hypothetical, and an earlier version
+/// of this comment was wrong to say no thread here closes a Unix socket: when these
+/// tests share one process they close each other's, and it cost one failure in 300
+/// runs until [`CENSUS_ISOLATION`] serialised them. It is still the loud direction,
+/// which is why the reading stays doubled: the alternative excuses a socket the
+/// target may have opened and says nothing. Neither behaviour can be pinned without
+/// a test whose timing decides the result, so both are argued from measurement.
 ///
 /// What survives is what `pid` did not inherit *from this harness*, which is why
 /// the name says that and not "opened itself". The two coincide only for a direct
