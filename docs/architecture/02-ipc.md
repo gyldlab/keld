@@ -97,7 +97,22 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
   for a guard denial, the broker's own code (e.g. `KELD-NATIVE-001`) for a
   post-allow OS failure — and `message` is that error's full `Display` text,
-  which already contains the imperative fix sentence (07 §2). Peers match on
+  which already contains the imperative fix sentence (07 §2).
+  **Two narrowings are approved but not live** (`docs/specs/keld-auth.md` §3,
+  AC13(c) and AC13(d)), and they touch different halves of this bullet.
+  *`message`:* an `auth.token` denial carries a *constant* per code rather than
+  `DenyReason`'s rendering, because that rendering interpolates the requested
+  resource and the requested resource is exactly what the capability protects.
+  The constant still leads with the code and still names the manifest key to
+  edit. *`code` ownership:* on AC13(d)'s host-internal invariant path the guard
+  **Allows** and there is no `DenyReason` at all, so the `keld-native` broker
+  *synthesizes* a `KELD-GUARD002` reply — byte-identity with the granted-level
+  denial is the point of that criterion. So the sentence above about `code`
+  being owned by the crate that failed holds for every capability except that
+  one path, and `crates/keld-ipc/AGENTS.md` carries the same rule: the PR that
+  implements it must reconcile both in the same commit. Both renderings live in
+  one function in the auth module, and if a second capability ever needs them
+  they move here beside `From<&DenyReason>` rather than being copied. Peers match on
   `code` and do not parse it back out of `message`; every privileged channel
   uses this one payload rather than a per-channel `ERR` encoding (the binding
   rule lives in `crates/keld-ipc/AGENTS.md`). An `ERR` answers one call and

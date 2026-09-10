@@ -40,6 +40,15 @@ docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms
   URL is carried on the JSON/MCP `KeldErrorObject` (`https://keld.dev/e/<code>`);
   it is not inlined into every `Display` string. `keld-guard`'s `DenyReason` includes
   a `KELD-GUARD*` code and the `keld.permissions.jsonc` edit that would grant it.
+  **One approved exception, not live** (`docs/specs/keld-auth.md` §3, AC13(c);
+  `02-ipc.md` §2): an `auth.token` denial sends the child a constant message per
+  code — code, capability and the manifest key to edit — and never the requested
+  resource, because there the requested resource is the secret. The same
+  constant is sent on AC13(d)'s Allow-with-no-resolved-session path, where the
+  broker synthesizes the reply so it cannot be told apart from the denial. That
+  is a real cost, not a relocation: v0 has no audit sink to keep the precise
+  reason (`03-security.md` §2's `audit.log` is itself a destination), so an
+  operator reproduces the denial against the manifest by hand.
 - CLI: same objects rendered human-readable by default, `--json` for agents; exit
   codes are stable API.
 - Compat shim: unsupported Electron APIs throw structured errors naming the tier

@@ -74,7 +74,13 @@ manifest decoder.
     "net":     { "connect": ["https://api.myapp.com", "wss://sync.myapp.com"] },
     "shell":   { "open": ["https://docs.myapp.com/**"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
     "system":  ["clipboard.read", "clipboard.write", "notifications", "tray", "global-shortcuts"],
-    "secrets": ["keychain:myapp/**"]
+    "secrets": ["keychain:myapp/**"],
+    // approved spec, not live: docs/specs/keld-auth.md. Each entry is a declared
+    // issuer literal from that spec's closed v0 provider-profile table — the one
+    // v0 row is `entra-common`. A literal that names no tabled profile matches
+    // nothing the host ever asks for and therefore always denies.
+    "auth":    { "begin": ["https://login.microsoftonline.com/common"],
+                 "token": ["https://login.microsoftonline.com/common"] }
   },
   "windows": {
     "main":  { "channels": ["notes.*", "el:*"], "web": { "csp": "default" } },
@@ -143,6 +149,28 @@ manifest decoder.
   the app ceiling by default. Any additional role-specific authority is a separately
   versioned, reviewable manifest change; it cannot arise from an Electron
   `utilityProcess` option or child request. This schema is not live.
+- **Auth grants (destination; approved spec, not live):** `app.auth.begin` and
+  `app.auth.token` scopes are both issuer-URL exact string literals, compared by byte
+  equality — after `evaluate`'s own `..`-segment rejection, which runs on the resource
+  before any scope is matched, so a byte-equal pair containing a `..` segment still
+  denies; no v0 issuer literal contains one. The account an `auth.token` call names is a
+  host-resolved runtime selector, never a scope. The literal an operator may usefully
+  author is a **declared issuer literal** of a profile in the spec's host-side, closed v0
+  provider-profile table (one row, `entra-common` →
+  `https://login.microsoftonline.com/common`); any other literal loads and then denies at
+  call time, because it matches no resource the host ever presents. An entry containing
+  `**` **or any Unicode control character** (`U+0000`–`U+001F`, `U+007F`,
+  `U+0080`–`U+009F`) is rejected at manifest load — a rule **narrower** than the
+  authority-anchoring one above, and still required after it, because the
+  control-character half is what makes the spec's reserved sentinel unauthorable.
+  Grants belong under `app` only; a top-level `auth` key is ignored like any other unknown
+  top-level key (§1: the parser accepts and ignores unknown keys).
+  `auth.token` is the one capability whose `ERR` `message` is a constant rather than the
+  denial's full `Display` (`02-ipc.md` §2), because the requested resource is the thing
+  being protected — on denials, and on the host-internal invariant path where the guard
+  Allows but no session resolved, so the two cannot be told apart.
+  Owner: `docs/specs/keld-auth.md` (KEL-89). No auth channel, handler, or load-time
+  entry rejection exists in the workspace yet.
 - **CSP injection** by default on every webview (`default` = self + keld:// + declared
   net hosts; `static-only` = no script eval, no net). Opt-out is a named, linted grant.
 

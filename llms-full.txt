@@ -1263,7 +1263,22 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
   for a guard denial, the broker's own code (e.g. `KELD-NATIVE-001`) for a
   post-allow OS failure — and `message` is that error's full `Display` text,
-  which already contains the imperative fix sentence (07 §2). Peers match on
+  which already contains the imperative fix sentence (07 §2).
+  **Two narrowings are approved but not live** (`docs/specs/keld-auth.md` §3,
+  AC13(c) and AC13(d)), and they touch different halves of this bullet.
+  *`message`:* an `auth.token` denial carries a *constant* per code rather than
+  `DenyReason`'s rendering, because that rendering interpolates the requested
+  resource and the requested resource is exactly what the capability protects.
+  The constant still leads with the code and still names the manifest key to
+  edit. *`code` ownership:* on AC13(d)'s host-internal invariant path the guard
+  **Allows** and there is no `DenyReason` at all, so the `keld-native` broker
+  *synthesizes* a `KELD-GUARD002` reply — byte-identity with the granted-level
+  denial is the point of that criterion. So the sentence above about `code`
+  being owned by the crate that failed holds for every capability except that
+  one path, and `crates/keld-ipc/AGENTS.md` carries the same rule: the PR that
+  implements it must reconcile both in the same commit. Both renderings live in
+  one function in the auth module, and if a second capability ever needs them
+  they move here beside `From<&DenyReason>` rather than being copied. Peers match on
   `code` and do not parse it back out of `message`; every privileged channel
   uses this one payload rather than a per-channel `ERR` encoding (the binding
   rule lives in `crates/keld-ipc/AGENTS.md`). An `ERR` answers one call and
@@ -1568,7 +1583,13 @@ manifest decoder.
     "net":     { "connect": ["https://api.myapp.com", "wss://sync.myapp.com"] },
     "shell":   { "open": ["https://docs.myapp.com/**"], "spawn": [{ "cmd": "$RESOURCES/bin/ffmpeg", "args": "reviewed" }] },
     "system":  ["clipboard.read", "clipboard.write", "notifications", "tray", "global-shortcuts"],
-    "secrets": ["keychain:myapp/**"]
+    "secrets": ["keychain:myapp/**"],
+    // approved spec, not live: docs/specs/keld-auth.md. Each entry is a declared
+    // issuer literal from that spec's closed v0 provider-profile table — the one
+    // v0 row is `entra-common`. A literal that names no tabled profile matches
+    // nothing the host ever asks for and therefore always denies.
+    "auth":    { "begin": ["https://login.microsoftonline.com/common"],
+                 "token": ["https://login.microsoftonline.com/common"] }
   },
   "windows": {
     "main":  { "channels": ["notes.*", "el:*"], "web": { "csp": "default" } },
@@ -1637,6 +1658,28 @@ manifest decoder.
   the app ceiling by default. Any additional role-specific authority is a separately
   versioned, reviewable manifest change; it cannot arise from an Electron
   `utilityProcess` option or child request. This schema is not live.
+- **Auth grants (destination; approved spec, not live):** `app.auth.begin` and
+  `app.auth.token` scopes are both issuer-URL exact string literals, compared by byte
+  equality — after `evaluate`'s own `..`-segment rejection, which runs on the resource
+  before any scope is matched, so a byte-equal pair containing a `..` segment still
+  denies; no v0 issuer literal contains one. The account an `auth.token` call names is a
+  host-resolved runtime selector, never a scope. The literal an operator may usefully
+  author is a **declared issuer literal** of a profile in the spec's host-side, closed v0
+  provider-profile table (one row, `entra-common` →
+  `https://login.microsoftonline.com/common`); any other literal loads and then denies at
+  call time, because it matches no resource the host ever presents. An entry containing
+  `**` **or any Unicode control character** (`U+0000`–`U+001F`, `U+007F`,
+  `U+0080`–`U+009F`) is rejected at manifest load — a rule **narrower** than the
+  authority-anchoring one above, and still required after it, because the
+  control-character half is what makes the spec's reserved sentinel unauthorable.
+  Grants belong under `app` only; a top-level `auth` key is ignored like any other unknown
+  top-level key (§1: the parser accepts and ignores unknown keys).
+  `auth.token` is the one capability whose `ERR` `message` is a constant rather than the
+  denial's full `Display` (`02-ipc.md` §2), because the requested resource is the thing
+  being protected — on denials, and on the host-internal invariant path where the guard
+  Allows but no session resolved, so the two cannot be told apart.
+  Owner: `docs/specs/keld-auth.md` (KEL-89). No auth channel, handler, or load-time
+  entry rejection exists in the workspace yet.
 - **CSP injection** by default on every webview (`default` = self + keld:// + declared
   net hosts; `static-only` = no script eval, no net). Opt-out is a named, linted grant.
 
@@ -2088,8 +2131,10 @@ TS in `@keld/api` → (optionally) an Electron-compat facade. No module ships wi
 three OS implementations or an explicit documented gap.
 
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
-`process` or `pty` rows below, and neither has implementation. KEL-76 must approve and
-ship real behavior rather than adding placeholder identifiers.
+`process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must
+approve and ship real behavior for `process`/`pty` rather than adding placeholder
+identifiers; `auth` is approved under `docs/specs/keld-auth.md` (KEL-89) and ships only
+through that spec's ordered tasks.
 
 | Module | Scope v0.x | Electron facade |
 |---|---|---|
@@ -2108,6 +2153,7 @@ ship real behavior rather than adding placeholder identifiers.
 | `fs+` | scoped fs ops via broker (watch included — notify crate), drag-out, recent docs | strict-profile virtual Node-fs/watcher facade; raw access only in an explicit sandbox-off legacy tier |
 | `secrets` | keychain/DPAPI/libsecret | `safeStorage` |
 | `deeplink` | protocol registration + single-instance handoff | `app.setAsDefaultProtocolClient` |
+| `auth` (approved spec, not live) | host-owned OAuth/OIDC public-client flows — OS broker → host custom scheme → loopback + PKCE; `auth.begin` / `auth.token` grants scoped to a profile's declared issuer literal, from a closed host-side v0 profile table; refresh tokens never cross kipc; the per-application OAuth client id is operator-authored in `keld.config.ts` and reaches the host on the boot descriptor, which in v0 only `keld dev` produces; extends `deeplink` and `secrets`; contract: `docs/specs/keld-auth.md` (KEL-89) | none today; a future compat shim may map onto `auth.*` |
 | `autostart` | login items / registry / .desktop | `app.setLoginItemSettings` |
 | `dock/taskbar` | badge, progress, bounce, jump lists, thumbbar | `app.dock`, `setProgressBar` |
 | `capture` (Tier 3) | window/screen capture via ScreenCaptureKit / Graphics.Capture / PipeWire | `desktopCapturer` |
@@ -2944,6 +2990,15 @@ docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms
   URL is carried on the JSON/MCP `KeldErrorObject` (`https://keld.dev/e/<code>`);
   it is not inlined into every `Display` string. `keld-guard`'s `DenyReason` includes
   a `KELD-GUARD*` code and the `keld.permissions.jsonc` edit that would grant it.
+  **One approved exception, not live** (`docs/specs/keld-auth.md` §3, AC13(c);
+  `02-ipc.md` §2): an `auth.token` denial sends the child a constant message per
+  code — code, capability and the manifest key to edit — and never the requested
+  resource, because there the requested resource is the secret. The same
+  constant is sent on AC13(d)'s Allow-with-no-resolved-session path, where the
+  broker synthesizes the reply so it cannot be told apart from the denial. That
+  is a real cost, not a relocation: v0 has no audit sink to keep the precise
+  reason (`03-security.md` §2's `audit.log` is itself a destination), so an
+  operator reproduces the denial against the manifest by hand.
 - CLI: same objects rendered human-readable by default, `--json` for agents; exit
   codes are stable API.
 - Compat shim: unsupported Electron APIs throw structured errors naming the tier
