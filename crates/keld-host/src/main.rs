@@ -18,7 +18,7 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
@@ -101,6 +101,7 @@ fn main() {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if let Some(root) = dev_stage_cleanup
         && let Err(source) = fs::remove_dir_all(&root)
+        && source.kind() != std::io::ErrorKind::NotFound
     {
         eprintln!(
             "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
@@ -187,6 +188,10 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     let expected_ino = args[5]
         .parse::<u64>()
         .map_err(|source| format!("KELD-CORE-037: invalid private entry inode — {source}. Relaunch the validated no-flag host."))?;
+    // The guardian is the last process executing from the staged directory:
+    // the host parent exits when its CLI lease closes. Re-derive the exact
+    // nonce from this executable rather than trusting the role argument.
+    let cleanup_root = guardian_stage_cleanup_root(&root).ok();
     let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
         move |app_link| {
@@ -207,12 +212,28 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
             Ok(command)
         },
         std::io::stdout(),
-    )
-    .map_err(|error| {
+    );
+    let cleanup = cleanup_root.map_or(Ok(()), |cleanup_root| {
+        fs::remove_dir_all(&cleanup_root).map_err(|source| {
+            format!(
+                "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
+                cleanup_root.display()
+            )
+        })
+    });
+    let report = report.map_err(|error| {
         format!(
             "KELD-CORE-037: supervised Bun guardian failed — {error}. Fix the Bun app failure and relaunch the no-flag host."
         )
-    })?;
+    });
+    let report = match (report, cleanup) {
+        (Ok(report), Ok(())) => report,
+        (Err(primary), Ok(())) => return Err(primary),
+        (Ok(_), Err(cleanup)) => return Err(cleanup),
+        (Err(primary), Err(cleanup)) => {
+            return Err(format!("{primary} Additional cleanup failure: {cleanup}"));
+        }
+    };
     let stdout_notice = keld_runtime::CapturedOutput::elision_notice(report.stdout_dropped_bytes)
         .unwrap_or_default();
     let stderr_notice = keld_runtime::CapturedOutput::elision_notice(report.stderr_dropped_bytes)
@@ -224,6 +245,28 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         .and_then(|()| std::io::stderr().write_all(stderr_notice.as_bytes()))
         .map_err(|source| format!("KELD-CORE-037: guardian stderr failed — {source}. Retry."))?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn guardian_stage_cleanup_root(argument: &Path) -> Result<PathBuf, String> {
+    let executable = env::current_exe().map_err(|source| {
+        format!(
+            "KELD-CORE-037: guardian stage identity failed — {source}. Relaunch through `keld dev`."
+        )
+    })?;
+    let expected = dev_stage_cleanup_root_for(&executable, Some(std::ffi::OsStr::new("stdin-v1")))
+        .ok_or_else(|| String::from("KELD-CORE-037: guardian is not executing from a validated private dev stage. Relaunch through `keld dev`."))?;
+    let argument = argument.canonicalize().map_err(|source| {
+        format!(
+            "KELD-CORE-037: guardian stage identity failed — {source}. Relaunch through `keld dev`."
+        )
+    })?;
+    if argument != expected {
+        return Err(String::from(
+            "KELD-CORE-037: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
+        ));
+    }
+    Ok(expected)
 }
 
 #[cfg(target_os = "macos")]

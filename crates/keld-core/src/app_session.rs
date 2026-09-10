@@ -1312,7 +1312,7 @@ fn run_app(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
 ) -> Result<(), HostAppError> {
-    let dev_lease = DevHostLease::from_environment()?;
+    let mut dev_lease = DevHostLease::from_environment()?;
     let shutdown = SessionShutdownState::new();
     let AppBootSelection {
         root,
@@ -1353,11 +1353,15 @@ fn run_app(
         .register_guarded_primary_until(Instant::now() + APP_LINK_IO_DEADLINE)
         .map_err(|source| app_runtime("guardian registration", &source))?;
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let initial = await_bound_generation(
+    let Some(initial) = await_bound_generation(
         &mut guardian,
+        dev_lease.as_mut(),
         Instant::now() + APP_LINK_IO_DEADLINE,
         "initial app-link authentication",
-    )?;
+    )?
+    else {
+        return Ok(());
+    };
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
     let guardian_owner = GuardianOwner::start(
@@ -2163,10 +2167,23 @@ fn finish_guarded_session<T>(
 #[cfg(target_os = "macos")]
 fn await_bound_generation(
     guardian: &mut GuardedPrimary,
+    mut dev_lease: Option<&mut DevHostLease>,
     deadline: Instant,
     phase: &'static str,
-) -> Result<BoundPrimaryGeneration, HostAppError> {
+) -> Result<Option<BoundPrimaryGeneration>, HostAppError> {
     loop {
+        if let Some(lease) = dev_lease.as_deref_mut()
+            && lease.poll_lost()?
+        {
+            guardian.deny_recovery();
+            guardian
+                .accept_shutdown()
+                .map_err(|source| app_runtime("accepted startup cancellation", &source))?;
+            guardian
+                .shutdown()
+                .map_err(|source| app_guardian_fatal("accepted startup cancellation", &source))?;
+            return Ok(None);
+        }
         let now = Instant::now();
         if now >= deadline {
             guardian.deny_recovery();
@@ -2175,9 +2192,13 @@ fn await_bound_generation(
                 "Bun did not authenticate before the generation deadline",
             ));
         }
-        if let Some(update) = guardian.recv_update(deadline.saturating_duration_since(now)) {
+        if let Some(update) = guardian.recv_update(
+            deadline
+                .saturating_duration_since(now)
+                .min(APP_LINK_READER_POLL),
+        ) {
             match update {
-                GuardedPrimaryUpdate::Bound(bound) => return Ok(bound),
+                GuardedPrimaryUpdate::Bound(bound) => return Ok(Some(bound)),
                 GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { .. }) => {
                     guardian.deny_recovery();
                     return Err(app_detail(
