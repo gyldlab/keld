@@ -369,43 +369,84 @@ fn decision_snapshot(manifest: &PermissionsManifest) -> Vec<String> {
 ///
 /// Rows are dropped by line, so this test needs no knowledge of how a scope is escaped;
 /// that is exactly the knowledge the original defect got wrong.
+/// Whether a fixture line is a bare string element of a scope array.
+fn is_grant_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('"') && (trimmed.ends_with('"') || trimmed.ends_with("\","))
+}
+
+/// The fixture text without `index`, kept parseable.
+///
+/// Dropping the last element of an array strands the previous element's comma before
+/// the `]`. Repairing it matters: skipping those rows instead would leave the last
+/// entry of every array unchecked, which is the silent-coverage failure this contract
+/// exists to catch.
+fn without_row(lines: &[&str], index: usize) -> String {
+    let mut kept: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != index)
+        .map(|(_, line)| (*line).to_owned())
+        .collect();
+    let closes_array = kept
+        .get(index)
+        .is_some_and(|line| line.trim_start().starts_with(']'));
+    if closes_array && index > 0 {
+        for previous in (0..index).rev() {
+            let visible = kept[previous].trim_end().len();
+            if kept[previous][..visible].ends_with(',') {
+                // `,` is ASCII, so `visible - 1` is a char boundary.
+                kept[previous].truncate(visible - 1);
+                break;
+            }
+            if visible != 0 {
+                break;
+            }
+        }
+    }
+    kept.join("\n")
+}
+
 #[test]
 fn every_fixture_grant_row_is_load_bearing() {
     let text = include_str!("fixtures/scopes.jsonc");
     let baseline = decision_snapshot(&load_fixture("scopes.jsonc"));
 
     let lines: Vec<&str> = text.split('\n').collect();
+    let rows: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| is_grant_row(line))
+        .map(|(index, _)| index)
+        .collect();
+
     let mut checked = 0usize;
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        // A grant row is a bare string element of a scope array.
-        if !trimmed.starts_with('"') || !(trimmed.ends_with('"') || trimmed.ends_with("\",")) {
-            continue;
-        }
-        let reduced_text = lines
-            .iter()
-            .enumerate()
-            .filter(|(other, _)| *other != index)
-            .map(|(_, value)| *value)
-            .collect::<Vec<&str>>()
-            .join("\n");
-        // Dropping the last element of an array leaves a trailing comma; skip a row whose
-        // removal cannot produce valid JSONC rather than pretending it was checked.
-        let Ok(reduced) = parse_manifest(&reduced_text) else {
-            continue;
-        };
+    for &index in &rows {
+        let reduced = parse_manifest(&without_row(&lines, index)).unwrap_or_else(|error| {
+            panic!(
+                "dropping line {} must still yield valid JSONC: {error}",
+                index + 1
+            )
+        });
         checked += 1;
         assert_ne!(
             decision_snapshot(&reduced),
             baseline,
-            "removing line {} of scopes.jsonc ({}) changes no decision, so the row pins              nothing. Give it its own capability, or delete it.",
+            "removing line {} of scopes.jsonc ({}) changes no decision, so the row pins nothing. Give it its own capability, or delete it.",
             index + 1,
-            trimmed
+            lines[index].trim()
         );
     }
+    // A row skipped for any reason is a row this contract did not cover.
+    assert_eq!(
+        checked,
+        rows.len(),
+        "every detected grant row must be checked, not skipped"
+    );
     assert!(
-        checked >= 10,
-        "expected the fixture to contribute many droppable rows, checked only {checked}"
+        rows.len() >= 10,
+        "expected the fixture to contribute many grant rows, found {}",
+        rows.len()
     );
 }
 

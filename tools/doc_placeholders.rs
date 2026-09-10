@@ -174,10 +174,14 @@ fn relative_path(root: &Path, path: &Path) -> String {
 }
 
 fn collect_markdown(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return Ok(()),
-    };
+    // A scan root that cannot be opened must fail the gate, not silently shrink it:
+    // swallowing the error lets `check` report success having scanned one root.
+    let entries = fs::read_dir(dir).map_err(|error| {
+        format!(
+            "DOC-PLACEHOLDERS: cannot read scan directory `{}`: {error}. Every entry in SCANNED_DIRS must exist and be readable.",
+            relative_path(root, dir)
+        )
+    })?;
     for entry in entries {
         let entry =
             entry.map_err(|error| format!("DOC-PLACEHOLDERS: cannot read `{dir:?}`: {error}"))?;
