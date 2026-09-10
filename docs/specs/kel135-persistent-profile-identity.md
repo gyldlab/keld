@@ -3,6 +3,11 @@ Status: approved
 Linear: KEL-135 · Owner: GYLDLAB · Updated: 2026-09-02
 Approval: Linear comment `75d75f6e-76e9-4fd1-a130-9d57548d0372` · decision SHA-256 `b9f48f14a5d6fefe4cd0f94b1a97b14292cead5ba0202facbd81c6b6a1a44040`
 
+Media acceptance amendment: **proposed**, 2026-09-10; see §7.1. The approved
+status and approval above apply to the original T0 contract, not retrospectively
+to this amendment. Its authoring assignment is Linear comment
+`06e32d67-7ab8-4b8b-a308-199d2053a7c9`; review and adoption remain outstanding.
+
 ## 1. Goal & non-goals
 
 Keld must bind persistent browser state to one host-validated application identity and
@@ -542,7 +547,8 @@ required row cannot satisfy an edge.
   persistent and ephemeral cleanup intents, and pass real Windows rows `windows-app-ab`,
   `windows-package-identity`, `windows-dev-ephemeral`, `windows-second-user`,
   `windows-profile-containment-acl`, `windows-concurrency`, `windows-crash-release`, and
-  `windows-purge-recovery`.
+  `windows-purge-recovery`. Proposed §7.1 additionally maps
+  `windows-media-saved-grant` here and strengthens `windows-dev-ephemeral`.
 - [ ] **T3 — macOS identified-store vertical slice** (`task_id=KEL-135/T3`,
   `node_id=webview-profile-macos`): requires exact passed T1. Consume the common manager,
   validate code and extract Team Identifier plus signed identifier, require macOS 14+ for
@@ -552,7 +558,8 @@ required row cannot satisfy an edge.
   `macos-package-identity`, `macos-dev-ephemeral`, `macos-binding-recovery`,
   `macos-crash-quarantine-reboot-recovery`, `macos-purge-recovery`, and
   `macos-older-fail-closed`. Direct Apple physical-store path/ACL proof remains
-  unverified.
+  unverified. Proposed §7.1 additionally maps `macos-media-saved-grant` here
+  and strengthens `macos-dev-ephemeral`.
 - [ ] **T4 — Linux explicit-context vertical slice** (`task_id=KEL-135/T4`,
   `node_id=webview-profile-linux`): requires exact passed T1 and a reviewed upstream wry
   artifact/release that supplies explicit persistent+ephemeral managers, separate roots,
@@ -565,7 +572,8 @@ required row cannot satisfy an edge.
   `linux-clear-recovery`, and `linux-xdg-relocation`. The T4
   artifact must also record exact `wry_version`, crates.io checksum, upstream source
   commit, API symbols and dependency-review evidence. No local wry fork or parallel
-  builder is allowed.
+  builder is allowed. Proposed §7.1 additionally maps `linux-media-saved-grant`
+  here and strengthens `linux-dev-ephemeral`.
 - [ ] **T5 — package/update/uninstall orchestration** (`task_id=KEL-135/T5`,
   `node_id=webview-profile-package-lifecycle`): requires all three exact passed T2, T3
   and T4 artifacts—an empty or partial set fails the edge. Implement only the common
@@ -606,6 +614,67 @@ frontier artifact when its prompt requires one.
 Platform tests use observable conditions and bounded kill-switch deadlines, never sleeps.
 macOS/Linux/Windows results are recorded separately. Mock policy tests may prove pure
 state only; source-string tests and another OS cannot prove engine/store behavior.
+
+### 7.1 Proposed media-permission acceptance amendment
+
+This proposed amendment closes the acceptance gap recorded by KEL-132: store
+isolation and a new-request callback do not themselves prove that a saved browser
+permission cannot bypass the next session's denying policy. No boundary change:
+the existing platform tasks own their stores and lifecycle, KEL-102/T4 owns verified
+session-policy injection and callback revocation, and KEL-79 owns origin/navigation
+policy. No new evaluator, grant, profile API, task, or prerequisite order is selected.
+The six approved T0 decisions and every existing task row remain unchanged.
+
+| Task / artifact node | Proposed additional real-OS row | Existing real-OS row strengthened |
+|---|---|---|
+| `KEL-135/T2` / `webview-profile-windows` | `windows-media-saved-grant` | `windows-dev-ephemeral` |
+| `KEL-135/T3` / `webview-profile-macos` | `macos-media-saved-grant` | `macos-dev-ephemeral` |
+| `KEL-135/T4` / `webview-profile-linux` | `linux-media-saved-grant` | `linux-dev-ephemeral` |
+
+For each saved-grant row, camera and microphone have separate results:
+
+1. Start a controlled fixture with the platform task's validated app identity and
+   selected persistent profile. Record the actual profile identity, exact origin,
+   engine/OS version and an unrelated persistent browser nonce. Use a fixture-only
+   mechanism to seed Allow and independently confirm that it was stored. A positive
+   device/capture control proves that unavailable devices or an insecure origin
+   cannot make the denial test pass; identify physical and test devices separately.
+2. Complete the existing clean teardown/release barrier, then restart with a denying
+   Keld policy. Prove the same validated app identity, actual profile and exact origin
+   are used, and the unrelated nonce survives. A fresh profile, changed origin, or
+   full-store purge cannot stand in for permission revocation.
+3. Request media and observe completion with no capture or platform prompt. Record
+   the effective policy, requesting principal and successful platform denial through
+   callback provenance, or independently prove an earlier fail-closed mechanism.
+   A timeout or `NotAllowedError` alone is not proof. Keep current v0 default-policy
+   evidence distinct from the verified session digest and policy-update evidence
+   separately required by KEL-102/T4; this row cannot claim that integration is live.
+4. Independently remove the policy reconciliation/denial mechanism and require the
+   corresponding oracle to fail. Additional controls replace the profile, change
+   the origin or omit the stored seed; each must invalidate the evidence rather than
+   produce a revocation pass. Restore mutations before the final reviewed run.
+
+Each strengthened `*-dev-ephemeral` row instead seeds a grant and nonce in dev
+launch A, completes its owned cleanup, and starts fresh dev launch B. Prove B inherits
+neither the grant nor the nonce; mutation to reuse A's store must fail. Because this
+row uses different session state, it never substitutes for same-profile revocation.
+
+Artifacts retain §6's exact task, approved-contract provenance, landed head and
+acceptance-status requirements. After adoption, they also bind the amendment's
+review/adoption record and exact source revision, and carry separate camera and
+microphone results, store/origin/seed evidence, denial/prompt/capture evidence and
+negative controls. Missing or unsupported evidence remains awaiting and cannot be
+relabeled passed using another OS, a fresh-store result or the original T0 artifact.
+KEL-132 consumes these exact rows; T5 package/update/uninstall is not an additional
+prerequisite. Original T1 and platform prerequisites remain in force, including the
+Linux upstream-wry requirement. The platform task writer owns each row; specific
+execution operators are assigned in their claims before real-OS work starts.
+
+This amendment selects test contracts, not an undocumented engine API. Each platform
+implementation must establish the current primary API contract and real behavior
+before selecting a saved-permission reconciliation mechanism. No product evidence
+or permission-model approval is supplied by this proposed text. Its adoption requires
+independent permission-model and evidence review; original T0 approval is preserved.
 
 ## 8. Review gates triggered
 
