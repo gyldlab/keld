@@ -130,6 +130,56 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
     await_process_gone(child_pid);
 }
 
+/// KEL-222: owning no Unix descriptor is an empty census, not a census failure.
+///
+/// Zero is the *passing* value for the CLI, so the census must distinguish "this
+/// process owns none" from "the census could not run". This pins that: the child
+/// closes every Unix descriptor this harness could leak into it, discovered from
+/// the harness's own census rather than hard-coded, so it provably owns none, and
+/// reports readiness on its own pipe so the census never races the `exec`.
+#[test]
+fn unix_descriptor_census_of_a_process_without_unix_descriptors_is_empty() {
+    let mut closes = String::new();
+    for (descriptor, _) in unix_descriptors(std::process::id()) {
+        // 0, 1 and 2 are replaced by the spawn's own stdio redirection.
+        if !matches!(descriptor.as_str(), "0" | "1" | "2") {
+            closes.push_str("exec ");
+            closes.push_str(&descriptor);
+            closes.push_str(">&-; ");
+        }
+    }
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("{closes}echo READY; exec /bin/cat"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch descriptor-free census fixture");
+    let child_pid = child.id();
+    let mut ready = String::new();
+    BufReader::new(child.stdout.take().expect("census fixture readiness pipe"))
+        .read_line(&mut ready)
+        .expect("await census fixture readiness");
+    assert_eq!(ready.trim_end(), "READY");
+
+    let observed = unix_socket_identities(child_pid);
+    assert!(
+        observed.is_empty(),
+        "descriptor-free fixture still owns Unix descriptors: {observed:?}"
+    );
+    let opened = self_opened_unix_sockets(child_pid);
+    assert!(
+        opened.is_empty(),
+        "descriptor-free fixture was charged Unix descriptors: {opened:?}"
+    );
+
+    drop(child.stdin.take().expect("census fixture release lease"));
+    let status = child.wait().expect("reap descriptor-free census fixture");
+    assert!(status.success(), "census fixture failed: {status:?}");
+    await_process_gone(child_pid);
+}
+
 #[test]
 fn shipping_keld_dev_delegates_to_host_and_cli_death_reaps_the_session() {
     let fixture = ProductFixture::new("t2-cli-delegation");
@@ -2492,27 +2542,51 @@ fn await_process_gone(pid: u32) {
     }
 }
 
-/// One identity per Unix-domain descriptor open on `pid`.
+/// Every Unix-domain descriptor open on `pid`, as `(descriptor, identity)`.
 ///
-/// The identity is the `lsof -Fn` name field: the bound `sun_path` for a
-/// listener and for each peer it accepted, or `->0x<kernel address>` for a
-/// connected or paired endpoint. `exec` preserves it byte for byte, so one
-/// kernel socket reports the same identity in a parent and in every child that
-/// inherited the descriptor. Identities repeat, so callers keep the multiset.
-fn unix_socket_identities(pid: u32) -> Vec<String> {
+/// The identity is the `lsof` name field: the bound `sun_path` for a listener
+/// and for each peer it accepted, or `->0x<kernel address>` for a connected or
+/// paired endpoint. `exec` preserves it byte for byte, so one kernel socket
+/// reports the same identity in a parent and in every child that inherited the
+/// descriptor. Identities repeat, so callers keep the multiset.
+///
+/// `lsof` exits 1 only when it cannot locate the pid at all. A live process that
+/// owns no Unix descriptor exits 0 with no rows, so an empty census is a result
+/// and not an error (measured on macOS `lsof` 4.91). Censusing a pid that has
+/// already exited does fail here, which is the intent: treating that as an empty
+/// census would let an ownership assertion pass vacuously against a dead process.
+fn unix_descriptors(pid: u32) -> Vec<(String, String)> {
     let output = Command::new("/usr/sbin/lsof")
-        .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Fn"])
+        .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Ffn"])
         .output()
         .expect("enumerate Unix descriptors");
     assert!(
         output.status.success(),
         "lsof Unix descriptors for {pid}: {output:?}"
     );
-    String::from_utf8(output.stdout)
-        .expect("lsof output UTF-8")
-        .lines()
-        .filter_map(|line| line.strip_prefix('n'))
-        .map(str::to_owned)
+    let rendered = String::from_utf8(output.stdout).expect("lsof output UTF-8");
+    let mut descriptor = None;
+    let mut descriptors = Vec::new();
+    for line in rendered.lines() {
+        if let Some(fd) = line.strip_prefix('f') {
+            descriptor = Some(fd.to_owned());
+        } else if let Some(name) = line.strip_prefix('n') {
+            descriptors.push((
+                descriptor
+                    .take()
+                    .expect("lsof names a descriptor it listed"),
+                name.to_owned(),
+            ));
+        }
+    }
+    descriptors
+}
+
+/// One identity per Unix-domain descriptor open on `pid`.
+fn unix_socket_identities(pid: u32) -> Vec<String> {
+    unix_descriptors(pid)
+        .into_iter()
+        .map(|(_, identity)| identity)
         .collect()
 }
 
