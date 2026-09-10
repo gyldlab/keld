@@ -25,13 +25,6 @@ const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const TITLE: &str = "KEL96 T1b Fixture";
 const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
 const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
-/// What `lsof` reports for a Unix socket that is neither bound nor connected.
-///
-/// This is a placeholder, not an identity: every unbound socket on the machine
-/// reports it, so unlike a `sun_path` or a peer address it can never establish
-/// that two descriptors are the same kernel object (measured on macOS `lsof`
-/// 4.91).
-const ANONYMOUS_UNIX_SOCKET: &str = "->(none)";
 const EVENT_DEADLINE: Duration = Duration::from_secs(15);
 const PROCESS_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -153,8 +146,8 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
 /// that opened its own anonymous socket look clean whenever the harness happened
 /// to hold one too — a silent loss of detection power in exactly the direction
 /// this issue exists to close. The expected placeholder is written literally
-/// here, so this test pins the observed `lsof` output rather than agreeing with
-/// whatever constant the census uses.
+/// here, so this test pins what `lsof` was measured to print rather than agreeing
+/// with whatever the census believes.
 #[test]
 fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
     let harness_anonymous = UnixDatagram::unbound().expect("harness unbound Unix socket");
@@ -208,6 +201,68 @@ fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
     drop(harness_anonymous);
 }
 
+/// KEL-222: a `sun_path` is not an identity either, because a socket keeps
+/// reporting it after that path is unlinked.
+///
+/// The harness holds an accepted socket still named by a path that no longer
+/// exists on disk, and the child then binds a brand-new listener at that same
+/// path. `lsof` prints one name for both, so a name-keyed census excuses the
+/// child's own listener; keyed on the socket address the two never collide. This
+/// is the second of the two collisions that made name-keying unsound, and it is
+/// the one that survives even if `->(none)` is special-cased.
+#[test]
+fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
+    let fixture = tempfile::tempdir().expect("census fixture root");
+    let shared_path = fixture.path().join("released.sock");
+    let shared_identity = shared_path.to_str().expect("UTF-8 fixture path").to_owned();
+
+    // Keep an accepted end, then release the name: the descriptor still reports it.
+    let listener = UnixListener::bind(&shared_path).expect("bind harness release socket");
+    let far_end = UnixStream::connect(&shared_path).expect("connect harness release socket");
+    let (harness_stale, _) = listener.accept().expect("accept harness release socket");
+    drop(listener);
+    fs::remove_file(&shared_path).expect("release the fixture path");
+    assert!(
+        unix_socket_identities(std::process::id()).contains(&shared_identity),
+        "harness lost the stale name, so this test collides with nothing"
+    );
+
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "unix_descriptor_census_fixture_process"])
+        .env("KELD_T2_CENSUS_OWNED_SOCKET", &shared_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch Unix-descriptor census fixture");
+    let child_pid = child.id();
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    while !shared_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "census fixture never rebound the released path"
+        );
+        thread::yield_now();
+    }
+
+    let observed = unix_socket_identities(child_pid);
+    assert!(
+        observed.contains(&shared_identity),
+        "fixture did not rebind the released path: {observed:?}"
+    );
+    assert_eq!(
+        self_opened_unix_sockets(child_pid),
+        vec![shared_identity],
+        "census must charge the listener the child bound itself: {observed:?}"
+    );
+
+    drop(child.stdin.take().expect("census fixture release lease"));
+    let status = child.wait().expect("reap census fixture");
+    assert!(status.success(), "census fixture failed: {status:?}");
+    await_process_gone(child_pid);
+    drop((harness_stale, far_end));
+}
+
 /// KEL-222: owning no Unix descriptor is an empty census, not a census failure.
 ///
 /// Zero is the *passing* value for the CLI, so the census must distinguish "this
@@ -215,14 +270,21 @@ fn unix_descriptor_census_charges_anonymous_sockets_it_cannot_attribute() {
 /// closes every Unix descriptor this harness could leak into it, discovered from
 /// the harness's own census rather than hard-coded, so it provably owns none, and
 /// reports readiness on its own pipe so the census never races the `exec`.
+///
+/// What it pins is the `lsof` exit contract, not attribution. The second
+/// assertion below cannot fail once the first passes, because the charged set is
+/// always a subset of the observed one — it is kept as a statement of the
+/// relationship, not as independent detection. Attribution is proved by
+/// [`unix_descriptor_census_charges_only_self_opened_sockets`] and the two
+/// collision tests, each of which fails against a census that gets it wrong.
 #[test]
 fn unix_descriptor_census_of_a_process_without_unix_descriptors_is_empty() {
     let mut closes = String::new();
-    for (descriptor, _) in unix_descriptors(std::process::id()) {
+    for record in unix_descriptors(std::process::id()) {
         // 0, 1 and 2 are replaced by the spawn's own stdio redirection.
-        if !matches!(descriptor.as_str(), "0" | "1" | "2") {
+        if !matches!(record.descriptor.as_str(), "0" | "1" | "2") {
             closes.push_str("exec ");
-            closes.push_str(&descriptor);
+            closes.push_str(&record.descriptor);
             closes.push_str(">&-; ");
         }
     }
@@ -2620,22 +2682,34 @@ fn await_process_gone(pid: u32) {
     }
 }
 
-/// Every Unix-domain descriptor open on `pid`, as `(descriptor, identity)`.
+/// One Unix-domain descriptor: its number, the kernel socket behind it, and the
+/// name `lsof` prints for it.
+struct UnixDescriptor {
+    descriptor: String,
+    /// `lsof`'s `d` field: the address of the socket object itself. Two live
+    /// sockets never share one, and `exec` preserves it, so this is what
+    /// identifies a descriptor across processes.
+    socket: String,
+    /// `lsof`'s `n` field: the bound `sun_path` for a listener and for each peer
+    /// it accepted, `->0x<address>` naming the *peer* socket for a connected or
+    /// paired endpoint, or `->(none)` when there is neither. Human-readable, and
+    /// deliberately not used to decide identity.
+    identity: String,
+}
+
+/// Every Unix-domain descriptor open on `pid`.
 ///
-/// The identity is the `lsof` name field: the bound `sun_path` for a listener
-/// and for each peer it accepted, or `->0x<kernel address>` for a connected or
-/// paired endpoint. `exec` preserves it byte for byte, so one kernel socket
-/// reports the same identity in a parent and in every child that inherited the
-/// descriptor. Identities repeat, so callers keep the multiset.
-///
-/// `lsof` exits 1 only when it cannot locate the pid at all. A live process that
-/// owns no Unix descriptor exits 0 with no rows, so an empty census is a result
-/// and not an error (measured on macOS `lsof` 4.91). Censusing a pid that has
-/// already exited does fail here, which is the intent: treating that as an empty
-/// census would let an ownership assertion pass vacuously against a dead process.
-fn unix_descriptors(pid: u32) -> Vec<(String, String)> {
+/// `lsof` exits 1 when it cannot report on the pid at all — because it cannot be
+/// located, or cannot be inspected. Being unable to report is distinct from
+/// having nothing to report: a live process that owns no Unix descriptor exits 0
+/// with no rows, so an empty census is a result and not an error (measured on
+/// macOS `lsof` 4.91; its `DIAGNOSTICS` text does not promise this, so the
+/// behaviour is measured rather than specified). Censusing a pid that has already
+/// exited does fail here, which is the intent: treating that as an empty census
+/// would let an ownership assertion pass vacuously against a dead process.
+fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
     let output = Command::new("/usr/sbin/lsof")
-        .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Ffn"])
+        .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Fdfn"])
         .output()
         .expect("enumerate Unix descriptors");
     assert!(
@@ -2644,75 +2718,76 @@ fn unix_descriptors(pid: u32) -> Vec<(String, String)> {
     );
     let rendered = String::from_utf8(output.stdout).expect("lsof output UTF-8");
     let mut descriptor = None;
+    let mut socket = None;
     let mut descriptors = Vec::new();
     for line in rendered.lines() {
         if let Some(fd) = line.strip_prefix('f') {
             descriptor = Some(fd.to_owned());
+            socket = None;
+        } else if let Some(address) = line.strip_prefix('d') {
+            socket = Some(address.to_owned());
         } else if let Some(name) = line.strip_prefix('n') {
-            descriptors.push((
-                descriptor
+            descriptors.push(UnixDescriptor {
+                descriptor: descriptor
                     .take()
-                    .expect("lsof names a descriptor it listed"),
-                name.to_owned(),
-            ));
+                    .expect("lsof numbers a descriptor it names"),
+                socket: socket.take().expect("lsof addresses a descriptor it names"),
+                identity: name.to_owned(),
+            });
         }
     }
     descriptors
 }
 
-/// One identity per Unix-domain descriptor open on `pid`.
+/// One printable name per Unix-domain descriptor open on `pid`.
 fn unix_socket_identities(pid: u32) -> Vec<String> {
     unix_descriptors(pid)
         .into_iter()
-        .map(|(_, identity)| identity)
+        .map(|descriptor| descriptor.identity)
         .collect()
 }
 
-/// The Unix-domain descriptors `pid` opened itself, as identities.
+/// The Unix-domain descriptors `pid` opened itself, named for a human.
 ///
 /// A raw `lsof -U` count is not an oracle for app-link ownership. Every product
 /// process censused here descends from this harness, and a Unix socket the
 /// launching shell left without `FD_CLOEXEC` reaches all of them through `exec`,
 /// so the raw count charges the CLI for descriptors it never opened (KEL-222).
-/// The harness is their only ancestor, so its own live descriptor table bounds
-/// everything they can have inherited: whatever survives subtracting it was
-/// opened by `pid`.
+/// The harness is their only ancestor, so its descriptor table bounds what they
+/// can have inherited: whatever survives subtracting it was opened by `pid`.
 ///
-/// Subtracting is only safe for a *named* identity: a `sun_path` names the socket
-/// bound to it and every peer accepted on it, and a peer address is unique while
-/// both ends are open, so removing one discounts the inherited descriptor rather
-/// than a coincidental twin. An unbound socket has no identity at all — `lsof`
-/// reports every one of them as [`ANONYMOUS_UNIX_SOCKET`] — so it is never
-/// subtracted and is always charged to `pid`. That keeps an anonymous socket the
-/// process opened itself visible; the cost is charging one it merely inherited,
-/// which fails loudly instead of passing silently.
+/// The subtraction is keyed on the socket object's own address, never on the
+/// printable name, because names are not identities. Measured on macOS `lsof`
+/// 4.91: every socket that is neither bound nor connected is named `->(none)`,
+/// and a socket keeps reporting its `sun_path` after that path is unlinked, so a
+/// replacement bound to the same path reports the same name. Either would let a
+/// name-keyed subtraction excuse a descriptor `pid` opened itself — the silent
+/// false pass this oracle exists to prevent. An address is unique among live
+/// sockets and `exec` preserves it, so a match means the same kernel object.
 ///
-/// One residual is inherent to naming a socket by its path: a descriptor stays
-/// bound to its `sun_path` after that path is unlinked, so a harness holding a
-/// stale-bound descriptor could absorb a censused process that rebinds the same
-/// path. This harness binds only fixture paths under its own temporary directory
-/// and never a product session path, so it cannot construct that collision.
+/// Removing one address per match keeps this a multiset operation, because `dup`
+/// and inheritance give one socket several descriptors, and a copy beyond the one
+/// the harness holds must still be charged to `pid`.
 ///
-/// Removing one harness identity per match keeps this a multiset operation,
-/// because a listener and each peer it accepted report the same `sun_path`, and
-/// a duplicate beyond the inherited one must still be charged to `pid`. The
-/// harness is censused first: a descriptor it opens afterwards cannot have been
-/// inherited by an already-spawned child, so measuring it later could only
-/// excuse a real leak. `cargo nextest` gives each test its own process, so the
-/// table read here is this test's own.
+/// Two limits are inherent to comparing two live tables and are left loud rather
+/// than papered over. A descriptor the harness closes after spawning `pid` is no
+/// longer subtractable, so `pid` is charged for something it only inherited: that
+/// fails, and a failure is investigable. And an address freed between the two
+/// censuses could in principle be reissued to a socket `pid` then opens; this is
+/// single-threaded and the two calls are adjacent, so the harness closes nothing
+/// in that window.
 fn self_opened_unix_sockets(pid: u32) -> Vec<String> {
-    let mut inherited = unix_socket_identities(std::process::id());
+    let mut inherited: Vec<String> = unix_descriptors(std::process::id())
+        .into_iter()
+        .map(|descriptor| descriptor.socket)
+        .collect();
     let mut opened = Vec::new();
-    for identity in unix_socket_identities(pid) {
-        if identity == ANONYMOUS_UNIX_SOCKET {
-            opened.push(identity);
-            continue;
-        }
-        match inherited.iter().position(|held| *held == identity) {
+    for descriptor in unix_descriptors(pid) {
+        match inherited.iter().position(|held| *held == descriptor.socket) {
             Some(index) => {
                 inherited.swap_remove(index);
             }
-            None => opened.push(identity),
+            None => opened.push(descriptor.identity),
         }
     }
     opened
