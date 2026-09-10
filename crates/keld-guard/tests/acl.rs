@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use keld_guard::{
     Decision, DenyReason, ManifestError, PermissionsManifest, Principal, evaluate, load_manifest,
+    parse_manifest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -152,31 +153,31 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "url authority swallowed by wss scheme glob",
-        operation: "net.connect",
+        operation: "net_wss.connect",
         path: "wss://attacker.example/ws",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "url origin prefix grant",
-        operation: "net.connect",
+        operation: "net_origin.connect",
         path: "https://api.example.com/v1",
         expected: ALLOW,
     },
     Case {
         name: "url origin root itself",
-        operation: "net.connect",
+        operation: "net_origin.connect",
         path: "https://api.example.com",
         expected: ALLOW,
     },
     Case {
         name: "url sibling authority beyond origin prefix",
-        operation: "net.connect",
+        operation: "net_origin.connect",
         path: "https://api.example.com.evil.test/v1",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "url authority swallowed by single-slash scheme glob",
-        operation: "net.connect",
+        operation: "net_single_slash.connect",
         path: "https:/evil.example.com",
         expected: OUT_OF_SCOPE,
     },
@@ -212,19 +213,19 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "one letter scheme glob with separators",
-        operation: "net.connect",
+        operation: "net_one_letter.connect",
         path: "a://evil.example.com",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "backslash scheme glob",
-        operation: "net.connect",
+        operation: "net_backslash.connect",
         path: "https:\\/evil.example.com",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "tab separated scheme glob",
-        operation: "net.connect",
+        operation: "net_tab.connect",
         path: "https:\t//evil.example.com",
         expected: OUT_OF_SCOPE,
     },
@@ -266,6 +267,17 @@ fn load_fixture(name: &str) -> PermissionsManifest {
     load_manifest(&path).expect("checked ACL fixture must load")
 }
 
+/// The one rendering of a decision as snapshot text.
+///
+/// `assert_case` and `decision_snapshot` both emit it — the asserting path for the
+/// checked-in matrix, the comparing path for a reduced fixture — so it has one owner.
+fn decision_text(decision: &Decision) -> String {
+    match decision {
+        Decision::Allow => "allow".to_owned(),
+        Decision::Deny(reason) => format!("deny {} {}", reason.code(), reason.kind()),
+    }
+}
+
 fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
     let actual = evaluate(manifest, Principal::AppProcess, case.operation, case.path);
     match (case.expected, actual) {
@@ -290,7 +302,7 @@ fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
                 "{} returned the wrong denial variant: {reason:?}",
                 case.name
             );
-            format!("deny {} {}", reason.code(), reason.kind())
+            decision_text(&Decision::Deny(reason))
         }
         (ExpectedDecision::Allow, actual) => {
             assert_eq!(
@@ -327,6 +339,114 @@ fn fixture_decision_matrix_matches_authority_contract() {
         observed,
         include_str!("fixtures/scopes.expected"),
         "the checked decision snapshot must change only with an intentional authority-contract change"
+    );
+}
+
+/// Decides every case in the matrix against `manifest`, as one comparable snapshot.
+///
+/// Unlike `assert_case` this never panics: it is used to compare a reduced fixture
+/// against the real one, where decisions are *expected* to move.
+fn decision_snapshot(manifest: &PermissionsManifest) -> Vec<String> {
+    CASES
+        .iter()
+        .map(|case| {
+            decision_text(&evaluate(
+                manifest,
+                Principal::AppProcess,
+                case.operation,
+                case.path,
+            ))
+        })
+        .collect()
+}
+
+/// Every grant row in the fixture must change at least one decision when removed.
+///
+/// KEL-208 shipped two rows that did not: one whose JSONC escaping made it a different
+/// grant than its comment claimed, and one fully shadowed by a broader entry in the same
+/// list. Both looked like coverage and pinned nothing, which is worse than no row at all
+/// — `crates/keld-guard/AGENTS.md` requires this fixture to be a permanent bypass record.
+///
+/// Rows are dropped by line, so this test needs no knowledge of how a scope is escaped;
+/// that is exactly the knowledge the original defect got wrong.
+/// Whether a fixture line is a bare string element of a scope array.
+fn is_grant_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('"') && (trimmed.ends_with('"') || trimmed.ends_with("\","))
+}
+
+/// The fixture text without `index`, kept parseable.
+///
+/// Dropping the last element of an array strands the previous element's comma before
+/// the `]`. Repairing it matters: skipping those rows instead would leave the last
+/// entry of every array unchecked, which is the silent-coverage failure this contract
+/// exists to catch.
+fn without_row(lines: &[&str], index: usize) -> String {
+    let mut kept: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != index)
+        .map(|(_, line)| (*line).to_owned())
+        .collect();
+    let closes_array = kept
+        .get(index)
+        .is_some_and(|line| line.trim_start().starts_with(']'));
+    if closes_array && index > 0 {
+        for previous in (0..index).rev() {
+            let visible = kept[previous].trim_end().len();
+            if kept[previous][..visible].ends_with(',') {
+                // `,` is ASCII, so `visible - 1` is a char boundary.
+                kept[previous].truncate(visible - 1);
+                break;
+            }
+            if visible != 0 {
+                break;
+            }
+        }
+    }
+    kept.join("\n")
+}
+
+#[test]
+fn every_fixture_grant_row_is_load_bearing() {
+    let text = include_str!("fixtures/scopes.jsonc");
+    let baseline = decision_snapshot(&load_fixture("scopes.jsonc"));
+
+    let lines: Vec<&str> = text.split('\n').collect();
+    let rows: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| is_grant_row(line))
+        .map(|(index, _)| index)
+        .collect();
+
+    let mut checked = 0usize;
+    for &index in &rows {
+        let reduced = parse_manifest(&without_row(&lines, index)).unwrap_or_else(|error| {
+            panic!(
+                "dropping line {} must still yield valid JSONC: {error}",
+                index + 1
+            )
+        });
+        checked += 1;
+        assert_ne!(
+            decision_snapshot(&reduced),
+            baseline,
+            "removing line {} of scopes.jsonc ({}) changes no decision, so the row pins nothing. Give it its own capability, or delete it.",
+            index + 1,
+            lines[index].trim()
+        );
+    }
+    // A row skipped for any reason is a row this contract did not cover.
+    assert_eq!(
+        checked,
+        rows.len(),
+        "every detected grant row must be checked, not skipped"
+    );
+    assert!(
+        rows.len() >= 10,
+        "expected the fixture to contribute many grant rows, found {}",
+        rows.len()
     );
 }
 
