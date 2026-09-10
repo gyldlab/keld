@@ -388,9 +388,10 @@ fn unix_descriptor_census_charges_a_listener_rebound_on_a_released_path() {
 /// process and no for one that is gone. A stub that always answers yes fails this
 /// test, and the census then accepts teardown as evidence.
 ///
-/// This test does not call [`unix_descriptors`] or [`accept_empty_unix_census`].
-/// Deleting the empty-result reject therefore stays green here;
-/// [`empty_unix_census_rejects_a_reaped_pid`] is the load-bearing path.
+/// This test does not call [`unix_descriptors`], so deleting the empty-result reject
+/// stays green here;
+/// [`empty_unix_census_of_a_process_without_a_descriptor_table_is_rejected`] is the
+/// load-bearing path.
 #[test]
 fn unix_descriptor_census_requires_a_live_descriptor_table() {
     let _isolation = census_isolation();
@@ -414,23 +415,28 @@ fn unix_descriptor_census_requires_a_live_descriptor_table() {
     );
 }
 
-/// KEL-222: the empty-census reject must fail a test when it is deleted.
+/// KEL-222: an empty census of a process without a descriptor table is rejected.
 ///
-/// [`unix_descriptor_census_requires_a_live_descriptor_table`] pins
-/// [`process_has_open_descriptors`] itself and never reaches
-/// [`accept_empty_unix_census`]. Measured on this tip before the extraction:
-/// deleting the `if descriptors.is_empty()` corroboration in [`unix_descriptors`]
-/// left all seven `unix_descriptor_census_*` tests green. This test calls the
-/// reject on a reaped pid so that mutation is a red suite. The live-harness call
-/// without `catch_unwind` makes an always-panic stub fail too.
+/// This is the reject that closes the exiting-window false pass, and it has to be
+/// pinned where it lives rather than in a helper beside it. An earlier attempt
+/// extracted the assert and called it directly, which pinned the assert and not the
+/// census: deleting the census's call to it left all eight tests green. Driving
+/// [`unix_descriptors_reported`] with the output instead reaches the same decision
+/// the census makes, so deleting the reject turns this red.
 ///
-/// [`unix_descriptors`] on the same reaped pid must also panic. That is the
-/// earlier `lsof` exit-1 assert, not the empty-result corroboration: a reaped
-/// pid never reaches the empty-result path. It is kept so treating exit 1 as an
-/// empty census cannot land silently.
+/// A reaped pid supplies the state that matters — no table — and the empty output
+/// supplies the census result that `lsof` gives for both a clean process and one
+/// being torn down. The live half of the test is the negative control: the same
+/// empty output for a process that does have a table must be accepted, or the
+/// reject would just be a ban on empty censuses.
 #[test]
-fn empty_unix_census_rejects_a_reaped_pid() {
-    accept_empty_unix_census(std::process::id());
+fn empty_unix_census_of_a_process_without_a_descriptor_table_is_rejected() {
+    let _isolation = census_isolation();
+    assert!(
+        unix_descriptors_reported(std::process::id(), "").is_empty(),
+        "an empty census of this live harness is a result, not an error"
+    );
+
     let child = Command::new("/usr/bin/true")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -441,16 +447,49 @@ fn empty_unix_census_rejects_a_reaped_pid() {
     let output = wait_child_output(child, PROCESS_DEADLINE);
     assert!(output.status.success(), "fixture failed: {output:?}");
     await_process_gone(pid);
-    let rejected = std::panic::catch_unwind(|| accept_empty_unix_census(pid));
+    let rejected = std::panic::catch_unwind(|| unix_descriptors_reported(pid, ""));
     assert!(
         rejected.is_err(),
-        "empty census of reaped {pid} must be rejected, not accepted as evidence"
+        "an empty census of reaped {pid} is teardown and must be rejected"
     );
-    let census = std::panic::catch_unwind(|| unix_descriptors(pid));
+    let censused = std::panic::catch_unwind(|| unix_descriptors(pid));
     assert!(
-        census.is_err(),
-        "unix_descriptors({pid}) of a reaped pid must panic"
+        censused.is_err(),
+        "censusing reaped {pid} must fail on lsof's exit status too"
     );
+}
+
+/// KEL-222: `lsof` output that cannot be trusted fails loudly, never quietly.
+///
+/// The parser's own guards, driven with the output they exist to reject. A record
+/// `lsof` starts and never names would otherwise be dropped in silence, and
+/// dropping one of the target's descriptors is the direction that passes. An
+/// address that is not one matters because two empty strings compare equal and
+/// would excuse each other. Neither shape has been seen in real output, which is
+/// why they are pinned here rather than left to a comment.
+#[test]
+fn untrustworthy_lsof_output_is_rejected() {
+    let _isolation = census_isolation();
+    let pid = std::process::id();
+    assert_eq!(
+        unix_descriptors_reported(pid, "f3\nd0xabc\nn/tmp/one.sock\n").len(),
+        1,
+        "a well-formed record is still accepted"
+    );
+    for (shape, rendered) in [
+        (
+            "a record left unnamed",
+            "f3\nd0xabc\nf5\nd0xdef\nn/tmp/two.sock\n",
+        ),
+        (
+            "the last record left unnamed",
+            "f3\nd0xabc\nn/tmp/one.sock\nf5\nd0xdef\n",
+        ),
+        ("an address that is not one", "f3\nd\nn/tmp/one.sock\n"),
+    ] {
+        let rejected = std::panic::catch_unwind(|| unix_descriptors_reported(pid, rendered));
+        assert!(rejected.is_err(), "{shape} must be rejected: {rendered:?}");
+    }
 }
 
 /// KEL-222: owning no Unix descriptor is an empty census, not a census failure.
@@ -2927,21 +2966,6 @@ fn process_has_open_descriptors(pid: u32) -> bool {
             .any(|line| line.starts_with('f'))
 }
 
-/// Accept an empty Unix-descriptor census only if `pid` still has a table.
-///
-/// This is the load-bearing empty-result reject. [`unix_descriptors`] calls it
-/// when `lsof -U` returns no rows. [`empty_unix_census_rejects_a_reaped_pid`]
-/// calls it on a reaped pid, so deleting this function's assert — or replacing
-/// it with a no-op — turns that test red.
-fn accept_empty_unix_census(pid: u32) {
-    assert!(
-        process_has_open_descriptors(pid),
-        "{pid} has no descriptor table in state {}, so an empty Unix census is \
-         teardown rather than evidence",
-        process_state(pid)
-    );
-}
-
 /// Every Unix-domain descriptor open on `pid`.
 ///
 /// `lsof` exits 1 when it cannot report on the pid at all. Measured on macOS `lsof`
@@ -2965,9 +2989,10 @@ fn accept_empty_unix_census(pid: u32) {
 /// Unix census, it rejected all 83, and it stayed silent for live processes both with
 /// and without Unix sockets. The race cannot be reproduced deterministically, so
 /// [`unix_descriptor_census_requires_a_live_descriptor_table`] pins the corroboration
-/// helper. [`empty_unix_census_rejects_a_reaped_pid`] pins the reject itself:
-/// [`accept_empty_unix_census`] on a reaped pid must panic. The exiting window still
-/// cannot be entered on demand, so a reaped-pid [`unix_descriptors`] panic is the
+/// itself, and
+/// [`empty_unix_census_of_a_process_without_a_descriptor_table_is_rejected`] pins the
+/// census applying it. The exiting window still cannot be entered on demand, so a
+/// reaped pid with an empty report stands in for it: same absent table, same
 /// earlier `lsof` exit-1 assert, not this empty-result path.
 fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
     let output = Command::new("/usr/sbin/lsof")
@@ -2980,6 +3005,19 @@ fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
         process_state(pid)
     );
     let rendered = String::from_utf8(output.stdout).expect("lsof output UTF-8");
+    unix_descriptors_reported(pid, &rendered)
+}
+
+/// The descriptors `lsof` reported for `pid` in `rendered`, or a panic if what it
+/// reported cannot be trusted.
+///
+/// Split from [`unix_descriptors`] at the process boundary so every decision this
+/// census makes is reachable from a test that supplies the output itself. Without
+/// that seam the empty-result reject below was unpinned: deleting it left every
+/// census test green, because the only input that distinguishes teardown from a
+/// clean process is a pid whose table is gone, and a census of one cannot be
+/// arranged on demand.
+fn unix_descriptors_reported(pid: u32, rendered: &str) -> Vec<UnixDescriptor> {
     let mut descriptor = None;
     let mut socket = None;
     let mut descriptors = Vec::new();
@@ -3017,7 +3055,12 @@ fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
         "lsof left the last descriptor of {pid} unnamed: {rendered:?}"
     );
     if descriptors.is_empty() {
-        accept_empty_unix_census(pid);
+        assert!(
+            process_has_open_descriptors(pid),
+            "{pid} has no descriptor table in state {}, so an empty Unix census is \
+             teardown rather than evidence",
+            process_state(pid)
+        );
     }
     descriptors
 }
