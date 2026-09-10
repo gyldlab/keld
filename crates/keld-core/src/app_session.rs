@@ -1312,7 +1312,7 @@ fn run_app(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
 ) -> Result<(), HostAppError> {
-    let dev_lease = DevHostLease::from_environment()?;
+    let mut dev_lease = DevHostLease::from_environment()?;
     let shutdown = SessionShutdownState::new();
     let AppBootSelection {
         root,
@@ -1353,11 +1353,15 @@ fn run_app(
         .register_guarded_primary_until(Instant::now() + APP_LINK_IO_DEADLINE)
         .map_err(|source| app_runtime("guardian registration", &source))?;
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let initial = await_bound_generation(
+    let Some(initial) = await_bound_generation(
         &mut guardian,
+        dev_lease.as_mut(),
         Instant::now() + APP_LINK_IO_DEADLINE,
         "initial app-link authentication",
-    )?;
+    )?
+    else {
+        return Ok(());
+    };
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
     let guardian_owner = GuardianOwner::start(
@@ -2163,10 +2167,23 @@ fn finish_guarded_session<T>(
 #[cfg(target_os = "macos")]
 fn await_bound_generation(
     guardian: &mut GuardedPrimary,
+    mut dev_lease: Option<&mut DevHostLease>,
     deadline: Instant,
     phase: &'static str,
-) -> Result<BoundPrimaryGeneration, HostAppError> {
+) -> Result<Option<BoundPrimaryGeneration>, HostAppError> {
     loop {
+        if let Some(lease) = dev_lease.as_deref_mut()
+            && lease.poll_lost()?
+        {
+            guardian.deny_recovery();
+            guardian
+                .accept_shutdown()
+                .map_err(|source| app_runtime("accepted startup cancellation", &source))?;
+            guardian
+                .shutdown()
+                .map_err(|source| app_guardian_fatal("accepted startup cancellation", &source))?;
+            return Ok(None);
+        }
         let now = Instant::now();
         if now >= deadline {
             guardian.deny_recovery();
@@ -2175,9 +2192,13 @@ fn await_bound_generation(
                 "Bun did not authenticate before the generation deadline",
             ));
         }
-        if let Some(update) = guardian.recv_update(deadline.saturating_duration_since(now)) {
+        if let Some(update) = guardian.recv_update(
+            deadline
+                .saturating_duration_since(now)
+                .min(APP_LINK_READER_POLL),
+        ) {
             match update {
-                GuardedPrimaryUpdate::Bound(bound) => return Ok(bound),
+                GuardedPrimaryUpdate::Bound(bound) => return Ok(Some(bound)),
                 GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { .. }) => {
                     guardian.deny_recovery();
                     return Err(app_detail(
@@ -2462,11 +2483,15 @@ impl GuardianOwnerHandle {
         let _ = self.command_tx.send(GuardianOwnerCommand::DenyRecovery);
     }
 
-    fn arm_recovery(&self) -> Result<(), HostAppError> {
+    fn request_recovery_arm(&self) -> Result<Receiver<Result<(), String>>, HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(GuardianOwnerCommand::ArmRecovery(reply_tx))
             .map_err(|_| app_detail("primary recovery arm", "guardian owner stopped"))?;
+        Ok(reply_rx)
+    }
+
+    fn await_recovery_arm(reply_rx: &Receiver<Result<(), String>>) -> Result<(), HostAppError> {
         match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(detail)) => Err(app_detail("primary recovery arm", detail)),
@@ -2862,11 +2887,15 @@ impl DirectPrimaryOwnerHandle {
             .send(DirectPrimaryOwnerCommand::DenyRecovery);
     }
 
-    fn arm_recovery(&self) -> Result<(), HostAppError> {
-        self.request(
+    fn request_recovery_arm(&self) -> Result<Receiver<Result<(), String>>, HostAppError> {
+        self.enqueue_request(
             DirectPrimaryOwnerCommand::ArmRecovery,
             "primary recovery arm",
         )
+    }
+
+    fn await_recovery_arm(reply_rx: &Receiver<Result<(), String>>) -> Result<(), HostAppError> {
+        receive_direct_owner_reply(reply_rx, "primary recovery arm", false)
     }
 
     fn fail_generation(&self, attempt: u32) -> Result<(), HostAppError> {
@@ -2901,11 +2930,20 @@ impl DirectPrimaryOwnerHandle {
         command: impl FnOnce(mpsc::SyncSender<Result<(), String>>) -> DirectPrimaryOwnerCommand,
         phase: &'static str,
     ) -> Result<(), HostAppError> {
+        let reply_rx = self.enqueue_request(command, phase)?;
+        receive_direct_owner_reply(&reply_rx, phase, false)
+    }
+
+    fn enqueue_request(
+        &self,
+        command: impl FnOnce(mpsc::SyncSender<Result<(), String>>) -> DirectPrimaryOwnerCommand,
+        phase: &'static str,
+    ) -> Result<Receiver<Result<(), String>>, HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(command(reply_tx))
             .map_err(|_| app_detail(phase, "owner stopped"))?;
-        receive_direct_owner_reply(&reply_rx, phase, false)
+        Ok(reply_rx)
     }
 }
 
@@ -2976,20 +3014,30 @@ struct ActivePrimaryGeneration {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouterHandle {
     fn signal_ready(&self) -> Result<(), HostAppError> {
-        if self.recovery_armed.load(Ordering::Acquire) {
-            self.write_event(LifecycleEvent::Ready)?;
+        let arm_reply = {
+            let _transition = self.shutdown.transition_guard();
+            if !self.shutdown.is_running() {
+                return Ok(());
+            }
+            if self.recovery_armed.load(Ordering::Acquire) {
+                self.write_event_guarded(LifecycleEvent::Ready)?;
+                self.window_ready.store(true, Ordering::Release);
+                return Ok(());
+            }
+            if let Err(error) = self.write_event_guarded(LifecycleEvent::Ready) {
+                self.guardian.deny_recovery();
+                return Err(error);
+            }
+            // Publish Ready and enqueue its arm under the same transition as
+            // accepted shutdown. A later tail cannot overtake this command.
             self.window_ready.store(true, Ordering::Release);
-            return Ok(());
-        }
-        if let Err(error) = self.write_event(LifecycleEvent::Ready) {
-            self.guardian.deny_recovery();
-            return Err(error);
-        }
-        // Ready is now externally observable. Mark that fact before waiting
-        // for the guardian-owner acknowledgment; runtime's Pending decision
-        // blocks successor preparation during this interval.
-        self.window_ready.store(true, Ordering::Release);
-        if let Err(error) = self.guardian.arm_recovery() {
+            self.guardian.request_recovery_arm()
+        };
+        // The owner can process generation updates requiring the transition
+        // guard before acknowledging. Never hold that guard across this wait.
+        let arm =
+            arm_reply.and_then(|reply| PlatformPrimaryOwnerHandle::await_recovery_arm(&reply));
+        if let Err(error) = arm {
             self.guardian.deny_recovery();
             return Err(error);
         }
@@ -3003,8 +3051,14 @@ impl PrimaryRouterHandle {
     }
 
     fn write_event(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
-        let payload = encode(&event).map_err(|source| app_ipc("lifecycle event", &source))?;
         let _transition = self.shutdown.transition_guard();
+        self.write_event_guarded(event)
+    }
+
+    // Caller retains shutdown.transition through the write and any admission
+    // command that must precede a terminal claim.
+    fn write_event_guarded(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
+        let payload = encode(&event).map_err(|source| app_ipc("lifecycle event", &source))?;
         let mut current = self
             .current
             .lock()
@@ -4388,6 +4442,130 @@ mod tests {
         );
         router.shutdown().expect("Quit race router shutdown");
         guardian_thread.join().expect("Quit race guardian joins");
+    }
+
+    #[cfg(target_os = "linux")]
+    use DirectPrimaryOwnerCommand as TestPrimaryOwnerCommand;
+    #[cfg(target_os = "macos")]
+    use GuardianOwnerCommand as TestPrimaryOwnerCommand;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn initial_ready_router() -> (
+        PrimaryRouterHandle,
+        std::os::unix::net::UnixStream,
+        Receiver<TestPrimaryOwnerCommand>,
+    ) {
+        let (server, client) = std::os::unix::net::UnixStream::pair().expect("Ready stream pair");
+        let (command_tx, command_rx) = mpsc::channel();
+        let (window_tx, _window_rx) = mpsc::channel();
+        let handle = PrimaryRouterHandle {
+            current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
+                attempt: 1,
+                writer: server,
+            }))),
+            readers: Arc::new(Mutex::new(HashMap::new())),
+            window_ready: Arc::new(AtomicBool::new(false)),
+            last_window_closed: Arc::new(AtomicBool::new(false)),
+            recovery_armed: Arc::new(AtomicBool::new(false)),
+            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            shutdown: SessionShutdownState::new(),
+            guardian: PlatformPrimaryOwnerHandle { command_tx },
+            window_commands: window_tx,
+        };
+        (handle, client, command_rx)
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn initial_ready_after_accepted_shutdown_does_not_arm_a_stopped_owner() {
+        use std::io::Read as _;
+
+        let (handle, mut client, command_rx) = initial_ready_router();
+        assert!(handle.shutdown.claim_cli_lease_lost());
+        drop(command_rx); // The accepted tail has already stopped its owner.
+        handle
+            .signal_ready()
+            .expect("late navigation must not restart admission");
+        assert!(!handle.window_ready.load(Ordering::Acquire));
+        assert!(!handle.recovery_armed.load(Ordering::Acquire));
+        client
+            .set_nonblocking(true)
+            .expect("observe absence without waiting");
+        let error = client
+            .read(&mut [0])
+            .expect_err("late Ready must write no bytes");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn initial_ready_releases_transition_before_owner_acknowledgment() {
+        let (handle, mut client, command_rx) = initial_ready_router();
+        let shutdown = handle.shutdown.clone();
+        let ready = Arc::clone(&handle.window_ready);
+        let owner = thread::spawn(move || {
+            let TestPrimaryOwnerCommand::ArmRecovery(reply) =
+                command_rx.recv().expect("arm request")
+            else {
+                panic!("first owner command must arm recovery");
+            };
+            // A real owner may need this lock while applying a generation
+            // update before it can acknowledge the already-enqueued arm.
+            let _transition = shutdown.transition_guard();
+            assert!(ready.load(Ordering::Acquire));
+            reply.send(Ok(())).expect("arm acknowledgment");
+        });
+        handle
+            .signal_ready()
+            .expect("owner callback must not deadlock");
+        let (header, payload) = keld_ipc::link::read_frame(&mut client).expect("Ready bytes");
+        assert_eq!(header.kind, FrameKind::Event);
+        assert_eq!(header.channel, LIFECYCLE_CHANNEL);
+        assert_eq!(header.corr, CorrelationId(0));
+        assert_eq!(payload, [0]); // Rust lifecycle Ready postcard discriminant.
+        assert!(handle.recovery_armed.load(Ordering::Acquire));
+        owner.join().expect("owner callback joins");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn initial_ready_preserves_unaccepted_owner_failures() {
+        let (handle, _client, command_rx) = initial_ready_router();
+        drop(command_rx);
+        let error = handle
+            .signal_ready()
+            .expect_err("a missing live-session owner is a fault");
+        assert!(error.to_string().contains("KELD-CORE-037"), "{error}");
+        assert!(
+            error.to_string().contains("primary recovery arm"),
+            "{error}"
+        );
+
+        for reject in [true, false] {
+            let (handle, _client, command_rx) = initial_ready_router();
+            let owner = thread::spawn(move || {
+                let TestPrimaryOwnerCommand::ArmRecovery(reply) =
+                    command_rx.recv().expect("arm request")
+                else {
+                    panic!("first owner command must arm recovery");
+                };
+                if reject {
+                    reply
+                        .send(Err(String::from("forced arm refusal")))
+                        .expect("refusal reply");
+                }
+                // Dropping the reply without acknowledgment remains a real error.
+            });
+            let error = handle
+                .signal_ready()
+                .expect_err("arm fault must remain visible");
+            assert!(error.to_string().contains("KELD-CORE-037"), "{error}");
+            if reject {
+                assert!(error.to_string().contains("forced arm refusal"), "{error}");
+            }
+            assert!(!handle.recovery_armed.load(Ordering::Acquire));
+            owner.join().expect("owner probe joins");
+        }
     }
 
     #[test]
