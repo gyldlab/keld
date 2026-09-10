@@ -4778,6 +4778,23 @@ mod tests {
         assert_eq!(termination.stdout_len, ledger.stdout_len_at_last_crash);
     }
 
+    /// KEL-225: pin the public ceiling *value*. Boundedness tests compare
+    /// retained length to [`CAPTURE_MAX_RETAINED_BYTES`] and size fixtures from
+    /// the same symbols, so scaling the constants used to stay green. This
+    /// literal cannot track the production definition.
+    #[test]
+    fn capture_max_retained_bytes_is_the_documented_host_ceiling() {
+        assert_eq!(
+            CAPTURE_MAX_RETAINED_BYTES, 327_680,
+            "CAPTURE_MAX_RETAINED_BYTES is the host-memory budget for one \
+             untrusted child stream: 64 KiB pinned head + 192 KiB sliding tail \
+             + 64 KiB compaction slack (KEL-134). Changing the public CAPTURE_* \
+             constants is a contract change and must be an explicit decision; \
+             the self-referential `<= CAPTURE_MAX_RETAINED_BYTES` assertions \
+             still pass if the ceiling is silently doubled"
+        );
+    }
+
     /// KEL-134 storage bound, isolated from process spawning.
     ///
     /// This is the negative control for the retention cap: raising
@@ -5206,7 +5223,13 @@ mod tests {
         // Two orders of magnitude past the retention ceiling, still ~1s of pipe
         // traffic. Large enough that unbounded retention is unmistakable.
         let target_bytes = CAPTURE_MAX_RETAINED_BYTES * 200;
-        let rss_growth_ceiling = 32 * 1024 * 1024;
+        // Host RSS is not 1:1 with retained bytes: the soak process also holds
+        // the supervisor, pipes, and allocator slack. Bound growth to 100× the
+        // documented per-stream ceiling so the budget tracks the quantity it
+        // guards instead of a stale 32 MiB constant. Unmutated macOS peak
+        // growth was ~2 MiB; 100× (≈31.25 MiB) keeps the previous host-memory
+        // intent.
+        let rss_growth_ceiling = CAPTURE_MAX_RETAINED_BYTES * 100;
         let baseline_rss = process_rss_bytes();
         #[cfg(unix)]
         assert!(
