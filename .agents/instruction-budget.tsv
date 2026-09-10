@@ -25,4 +25,4 @@ crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv
 .agents/skills/instruction-review/SKILL.md	routed	2048	instruction-review-skill	skill:instruction-review
 docs/agents/spec-template.md	routed	3072	feature-spec-template	route:spec
 docs/agents/workflow.md	routed	16384	agent-development-lifecycle	route:implementation-or-coordination
-docs/agents/learnings.md	evidence	61440	learning-evidence-log	query:area
+docs/agents/learnings.md	evidence	63488	learning-evidence-log	query:area
