@@ -1640,6 +1640,7 @@ struct UnixCaptureFaults {
     read_interruptions: AtomicU8,
     wake_interruptions: AtomicU8,
     fionread_interruptions: AtomicU8,
+    fionread_failures: AtomicU8,
     poll_calls: AtomicU8,
     read_calls: AtomicU8,
     wake_calls: AtomicU8,
@@ -1914,6 +1915,9 @@ fn retire_unix_capture(control: Option<&UnixCaptureControl>) -> std::io::Result<
             control.faults.fionread_calls.fetch_add(1, Ordering::AcqRel);
             if consume_test_interruption(&control.faults.fionread_interruptions) {
                 return Err(rustix::io::Errno::INTR);
+            }
+            if consume_test_interruption(&control.faults.fionread_failures) {
+                return Err(rustix::io::Errno::BADF);
             }
         }
         rustix::io::ioctl_fionread(&control.reader)
@@ -4019,6 +4023,39 @@ mod tests {
             0
         );
         assert_eq!(control.faults.wake_interruptions.load(Ordering::Acquire), 0);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_capture_retirement_wakes_the_worker_when_fionread_fails() {
+        let (reader, writer) = UnixStream::pair().expect("native capture pipe");
+        let output = Arc::new(Mutex::new(
+            CaptureState::new(&[]).expect("empty marker set"),
+        ));
+        let (worker, control) = spawn_capture_thread(reader, output, "fionread-fail", true)
+            .expect("spawn capture worker");
+        await_atomic_at_least(&control.faults.poll_calls, 1, "capture worker entered poll");
+        control.faults.fionread_failures.store(1, Ordering::Release);
+
+        let error = retire_unix_capture(Some(&control))
+            .expect_err("injected FIONREAD failure must surface a typed error");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::BADF.raw_os_error())
+        );
+        assert_eq!(control.faults.fionread_failures.load(Ordering::Acquire), 0);
+        assert!(control.faults.fionread_calls.load(Ordering::Acquire) >= 1);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = join_capture_thread(Some(worker), "fionread-fail");
+            let _ = done_tx.send(result);
+        });
+        let joined = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("FIONREAD-failure wake must unblock the parked capture worker");
+        joined.expect("capture worker exits after FIONREAD-failure wake");
         drop(writer);
     }
 
