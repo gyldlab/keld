@@ -2046,7 +2046,19 @@ fn wait_backoff_or_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::io::Write as _;
+    #[cfg(windows)]
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    #[cfg(windows)]
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
     use std::path::{Path, PathBuf};
+    #[cfg(windows)]
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    #[cfg(windows)]
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
 
     #[test]
     fn stdout_markers_match_raw_splits_overlap_and_keep_first_end() {
@@ -2514,56 +2526,132 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn natural_exit_does_not_wait_for_descendant_capture_eof_before_restart() {
+        run_natural_exit_capture_fixture();
+    }
+
+    #[cfg(windows)]
+    fn run_natural_exit_capture_fixture() {
+        run_natural_exit_capture_fixture_with_cleanup_fault(None);
+    }
+
+    #[cfg(windows)]
+    fn run_natural_exit_capture_fixture_with_cleanup_fault(
+        mut holder_observation: Option<&mut Option<ObservedTestProcess>>,
+    ) {
+        let control = TcpListener::bind(("127.0.0.1", 0)).expect("bind capture control");
+        let control_address = control.local_addr().expect("capture control address");
+        let control_secret_dir = tempfile::Builder::new()
+            .prefix("keld-runtime-capture-control-")
+            .rand_bytes(16)
+            .tempdir()
+            .expect("mint capture control secret");
+        let control_secret = control_secret_dir
+            .path()
+            .file_name()
+            .expect("capture control secret name")
+            .to_string_lossy()
+            .into_owned();
+        // This guard exists before the helper can be spawned. On every later
+        // assertion failure it tells an observed holder to exit, then closes
+        // both control streams so an unobserved helper exits on EOF.
+        let mut fixture = CaptureFixtureCleanup::new();
         let factory_attempt = Arc::new(AtomicU32::new(0));
         let factory_counter = Arc::clone(&factory_attempt);
+        let fixture_control_address = control_address.to_string();
+        let fixture_control_secret = control_secret.clone();
         let supervisor = Supervisor::start(RestartPolicy::default(), move || {
             if factory_counter.fetch_add(1, Ordering::AcqRel) == 0 {
-                let mut command = Command::new("powershell");
-                command.args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "$null = Start-Process ping -ArgumentList '-n 5 127.0.0.1' -NoNewWindow -PassThru; exit 17",
-                ]);
+                let mut command =
+                    Command::new(std::env::current_exe().expect("current test binary"));
+                command
+                    .args([
+                        "--exact",
+                        "tests::descendant_capture_parent_helper_process",
+                        "--nocapture",
+                    ])
+                    .env("KELD_RUNTIME_CAPTURE_CONTROL", &fixture_control_address)
+                    .env(
+                        "KELD_RUNTIME_CAPTURE_CONTROL_SECRET",
+                        &fixture_control_secret,
+                    );
                 command
             } else {
-                let mut command = Command::new("powershell");
-                command.args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Start-Sleep -Seconds 30",
-                ]);
-                command
+                long_running_command()
             }
         })
         .expect("crashing child with inherited-pipe descendant starts");
-        assert!(matches!(
-            supervisor.recv_event(Duration::from_secs(2)),
-            Some(SupervisorEvent::Started { attempt: 1, .. })
-        ));
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut successor_started = false;
-        while Instant::now() < deadline {
-            if matches!(
-                supervisor.recv_event(Duration::from_millis(100)),
-                Some(SupervisorEvent::Started { attempt: 2, .. })
-            ) {
-                successor_started = true;
-                break;
+        fixture.arm_supervisor(supervisor);
+        let (parent_pid, attempt) = recv_started(fixture.supervisor());
+        assert_eq!(attempt, 1);
+        for _ in 0..3 {
+            let (role, pid, stream) = accept_capture_control(&control, &control_secret);
+            match role.as_str() {
+                "PARENT" => {
+                    assert_eq!(pid, parent_pid, "parent control reported another PID");
+                    fixture.arm_parent(stream);
+                }
+                "HOLDER" => {
+                    fixture.arm_holder_control(stream);
+                }
+                "HOLDER_SPAWNED" => {
+                    fixture.arm_holder_process(open_observed_process(pid, "pipe holder"));
+                    if let Some(observation) = holder_observation.as_deref_mut() {
+                        *observation = Some(fixture.holder().try_clone());
+                    }
+                }
+                other => panic!("unexpected capture control role {other:?}"),
             }
         }
-        assert!(
-            successor_started,
-            "natural exit waited for an unowned descendant pipe"
+        fixture.assert_parent_armed();
+        complete_natural_exit_capture_fixture(
+            &mut fixture,
+            parent_pid,
+            holder_observation.is_some(),
         );
-        let captured_at_successor = supervisor.output();
-        let observation_deadline = Instant::now() + Duration::from_secs(2);
-        while let Some(remaining) = observation_deadline.checked_duration_since(Instant::now()) {
-            thread::park_timeout(remaining);
-        }
-        let captured_after_descendant_writes = supervisor.output();
+    }
+
+    #[cfg(windows)]
+    fn complete_natural_exit_capture_fixture(
+        fixture: &mut CaptureFixtureCleanup,
+        parent_pid: u32,
+        fail_after_successor: bool,
+    ) {
+        let parent = open_observed_process(parent_pid, "direct parent");
+        fixture.release_parent();
+        assert_process_exited(&parent, "direct parent");
+        assert_process_running(fixture.holder(), "pipe holder before successor");
+
+        let exited = fixture.supervisor().recv_event(Duration::from_secs(10));
+        assert!(
+            matches!(exited, Some(SupervisorEvent::Exited { pid, code: Some(17) }) if pid == parent_pid),
+            "direct-parent exit was not published after the kernel observed it: {exited:?}"
+        );
+        let successor = fixture.supervisor().recv_event(Duration::from_secs(10));
+        assert!(
+            matches!(successor, Some(SupervisorEvent::Started { attempt: 2, .. })),
+            "capture retirement did not permit the successor while the pipe holder remained alive: {successor:?}"
+        );
+        assert_process_running(fixture.holder(), "pipe holder after successor");
+        assert!(
+            !fail_after_successor,
+            "intentional failure after parent exit and successor observation"
+        );
+        let captured_at_successor = fixture.supervisor().output();
+        assert!(
+            captured_at_successor
+                .stdout
+                .contains("direct-parent-stdout"),
+            "direct-parent stdout was truncated during capture retirement: {captured_at_successor:?}"
+        );
+        assert!(
+            captured_at_successor
+                .stderr
+                .contains("direct-parent-stderr"),
+            "direct-parent stderr was truncated during capture retirement: {captured_at_successor:?}"
+        );
+        fixture.release_holder();
+        fixture.await_holder_acknowledgment();
+        let captured_after_descendant_writes = fixture.supervisor().output();
         assert_eq!(
             captured_at_successor.stdout, captured_after_descendant_writes.stdout,
             "retired descendant contaminated successor stdout capture"
@@ -2572,11 +2660,591 @@ mod tests {
             captured_at_successor.stderr, captured_after_descendant_writes.stderr,
             "retired descendant contaminated successor stderr capture"
         );
-        supervisor.shutdown();
+        fixture.quit_holder();
+        assert_process_exited(fixture.holder(), "released pipe holder");
+        fixture.supervisor().shutdown();
         assert!(matches!(
-            supervisor.wait_for_outcome(),
+            fixture.supervisor().wait_for_outcome(),
             SupervisorOutcome::Stopped
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_fixture_early_helper_failure_cleans_family_and_next_fixture_succeeds() {
+        for missing_role in ["PARENT", "HOLDER"] {
+            run_capture_fixture_early_failure(missing_role);
+            run_natural_exit_capture_fixture();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_fixture_cleanup_reaps_holder_during_late_unwind_before_next_fixture() {
+        let mut holder = None;
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_natural_exit_capture_fixture_with_cleanup_fault(Some(&mut holder));
+        }));
+        assert!(failed.is_err(), "late fixture fault must unwind");
+        assert_process_exited(
+            holder.as_ref().expect("independent holder observation"),
+            "holder cleaned during late fixture unwind",
+        );
+        run_natural_exit_capture_fixture();
+    }
+
+    #[cfg(windows)]
+    fn run_capture_fixture_early_failure(missing_role: &str) {
+        let control = TcpListener::bind(("127.0.0.1", 0)).expect("bind capture fault control");
+        let control_address = control.local_addr().expect("capture fault control address");
+        let secret_dir = tempfile::Builder::new()
+            .prefix("keld-runtime-capture-control-")
+            .rand_bytes(16)
+            .tempdir()
+            .expect("mint capture fault secret");
+        let secret = secret_dir
+            .path()
+            .file_name()
+            .expect("capture fault secret name")
+            .to_string_lossy()
+            .into_owned();
+        let mut fixture = CaptureFixtureCleanup::new();
+        let command_address = control_address.to_string();
+        let command_secret = secret.clone();
+        let command_fault = missing_role.to_owned();
+        let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+            let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+            command
+                .args([
+                    "--exact",
+                    "tests::descendant_capture_parent_helper_process",
+                    "--nocapture",
+                ])
+                .env("KELD_RUNTIME_CAPTURE_CONTROL", &command_address)
+                .env("KELD_RUNTIME_CAPTURE_CONTROL_SECRET", &command_secret)
+                .env("KELD_RUNTIME_CAPTURE_MISSING_ROLE", &command_fault);
+            command
+        })
+        .expect("faulted capture parent starts");
+        fixture.arm_supervisor(supervisor);
+        let (parent_pid, attempt) = recv_started(fixture.supervisor());
+        assert_eq!(attempt, 1);
+        let parent = open_observed_process(parent_pid, "faulted capture parent");
+        let mut holder_spawned_control = None;
+
+        for _ in 0..2 {
+            let (role, pid, stream) = accept_capture_control(&control, &secret);
+            assert_ne!(role, missing_role, "fault injected role was announced");
+            match role.as_str() {
+                "PARENT" => {
+                    assert_eq!(pid, parent_pid, "parent control reported another PID");
+                    fixture.arm_parent(stream);
+                }
+                "HOLDER" => fixture.arm_holder_control(stream),
+                "HOLDER_SPAWNED" => {
+                    fixture.arm_holder_process(open_observed_process(pid, "faulted pipe holder"));
+                    holder_spawned_control = Some(stream);
+                }
+                other => panic!("unexpected capture fault control role {other:?}"),
+            }
+        }
+        if missing_role == "PARENT" {
+            holder_spawned_control
+                .as_mut()
+                .expect("holder spawn observation control")
+                .write_all(b"E")
+                .expect("release missing-parent early return");
+        }
+
+        let exited = fixture.supervisor().recv_event(Duration::from_secs(10));
+        assert!(
+            matches!(exited, Some(SupervisorEvent::Exited { pid, code: Some(0) }) if pid == parent_pid),
+            "faulted parent did not exit cleanly after omitting {missing_role}: {exited:?}"
+        );
+        assert_process_exited(&parent, "faulted capture parent");
+        assert_process_exited_within(fixture.holder(), "faulted pipe holder", 2_000);
+        fixture.supervisor().shutdown();
+        assert!(matches!(
+            fixture.supervisor().wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_control_rejects_unauthenticated_oversize_and_truncated_frames() {
+        for invalid in [
+            b"PARENT 1 wrong-secret\n".to_vec(),
+            vec![b'x'; 257],
+            b"PARENT 1 truncated-secret".to_vec(),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind hostile control");
+            let address = listener.local_addr().expect("hostile control address");
+            let secret = "authenticated-secret";
+            let peer = thread::spawn(move || {
+                let mut stream = TcpStream::connect(address).expect("connect hostile control");
+                stream.write_all(&invalid).expect("write hostile control");
+                stream
+                    .shutdown(Shutdown::Write)
+                    .expect("finish hostile control");
+            });
+            let rejected = std::panic::catch_unwind(|| {
+                let _ = accept_capture_control(&listener, secret);
+            });
+            peer.join().expect("hostile control peer");
+            assert!(rejected.is_err(), "hostile control frame must be rejected");
+
+            let valid_peer = thread::spawn(move || {
+                let mut stream = TcpStream::connect(address).expect("connect valid control");
+                write_capture_control_line(
+                    &mut stream,
+                    "PARENT",
+                    std::process::id(),
+                    std::ffi::OsStr::new(secret),
+                );
+            });
+            let (role, pid, _) = accept_capture_control(&listener, secret);
+            valid_peer.join().expect("valid control peer");
+            assert_eq!(role, "PARENT");
+            assert_eq!(pid, std::process::id());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn descendant_capture_parent_helper_process() {
+        let (Some(control), Some(secret)) = (
+            std::env::var_os("KELD_RUNTIME_CAPTURE_CONTROL"),
+            std::env::var_os("KELD_RUNTIME_CAPTURE_CONTROL_SECRET"),
+        ) else {
+            return;
+        };
+        let mut holder = Command::new(std::env::current_exe().expect("current test binary"));
+        holder
+            .args([
+                "--exact",
+                "tests::descendant_capture_holder_helper_process",
+                "--nocapture",
+            ])
+            .env("KELD_RUNTIME_CAPTURE_CONTROL", &control)
+            .env("KELD_RUNTIME_CAPTURE_CONTROL_SECRET", &secret);
+        if let Some(missing_role) = std::env::var_os("KELD_RUNTIME_CAPTURE_MISSING_ROLE") {
+            holder.env("KELD_RUNTIME_CAPTURE_MISSING_ROLE", missing_role);
+        }
+        // Armed immediately after spawn, before any fallible control I/O. Early
+        // returns and panics therefore terminate and reap the owned helper.
+        let mut holder =
+            HelperChildCleanup::new(holder.spawn().expect("spawn inherited-pipe holder"));
+        let mut holder_spawned_stream = connect_capture_control(&control);
+        write_capture_control_line(
+            &mut holder_spawned_stream,
+            "HOLDER_SPAWNED",
+            holder.id(),
+            &secret,
+        );
+        let missing_role = std::env::var("KELD_RUNTIME_CAPTURE_MISSING_ROLE").ok();
+        if missing_role.as_deref() == Some("PARENT") {
+            wait_capture_control_byte(
+                &mut holder_spawned_stream,
+                b'E',
+                "missing-parent early return release",
+            );
+            return;
+        }
+        let mut stream = connect_capture_control(&control);
+        write_capture_control_line(&mut stream, "PARENT", std::process::id(), &secret);
+        if missing_role.is_some() {
+            return;
+        }
+        wait_capture_control_byte(&mut stream, b'E', "parent exit release");
+        println!("direct-parent-stdout");
+        std::io::stdout()
+            .flush()
+            .expect("flush direct parent stdout");
+        eprintln!("direct-parent-stderr");
+        std::io::stderr()
+            .flush()
+            .expect("flush direct parent stderr");
+        holder.disarm();
+        std::process::exit(17);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn descendant_capture_holder_helper_process() {
+        let (Some(control), Some(secret)) = (
+            std::env::var_os("KELD_RUNTIME_CAPTURE_CONTROL"),
+            std::env::var_os("KELD_RUNTIME_CAPTURE_CONTROL_SECRET"),
+        ) else {
+            return;
+        };
+        if std::env::var_os("KELD_RUNTIME_CAPTURE_MISSING_ROLE").as_deref()
+            == Some(std::ffi::OsStr::new("HOLDER"))
+        {
+            return;
+        }
+        let mut stream = connect_capture_control(&control);
+        write_capture_control_line(&mut stream, "HOLDER", std::process::id(), &secret);
+        loop {
+            let mut command = [0_u8; 1];
+            match stream.read_exact(&mut command) {
+                Ok(()) if command[0] == b'R' => {
+                    let stdout = std::io::stdout().write_all(b"retired-holder-late-stdout\n");
+                    let stderr = std::io::stderr().write_all(b"retired-holder-late-stderr\n");
+                    let acknowledgment = if is_broken_pipe(&stdout) && is_broken_pipe(&stderr) {
+                        b"A"
+                    } else {
+                        b"F"
+                    };
+                    stream
+                        .write_all(acknowledgment)
+                        .expect("acknowledge late writes");
+                }
+                Ok(()) if command[0] == b'Q' => return,
+                Ok(()) => panic!("unexpected holder control command"),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return,
+                Err(error) => panic!("holder control read: {error}"),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    struct HelperChildCleanup(Option<Child>);
+
+    #[cfg(windows)]
+    impl HelperChildCleanup {
+        const fn new(child: Child) -> Self {
+            Self(Some(child))
+        }
+
+        fn id(&self) -> u32 {
+            self.0.as_ref().expect("helper child armed").id()
+        }
+
+        fn disarm(&mut self) {
+            let _ = self.0.take();
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for HelperChildCleanup {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    struct ObservedTestProcess {
+        handle: OwnedHandle,
+        pid: u32,
+    }
+
+    #[cfg(windows)]
+    impl ObservedTestProcess {
+        fn try_clone(&self) -> Self {
+            Self {
+                handle: self
+                    .handle
+                    .try_clone()
+                    .expect("clone observed process handle"),
+                pid: self.pid,
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    struct CaptureFixtureCleanup {
+        supervisor: Option<Supervisor>,
+        parent_control: Option<TcpStream>,
+        holder_control: Option<TcpStream>,
+        process: Option<ObservedTestProcess>,
+    }
+
+    #[cfg(windows)]
+    impl CaptureFixtureCleanup {
+        const fn new() -> Self {
+            Self {
+                supervisor: None,
+                parent_control: None,
+                holder_control: None,
+                process: None,
+            }
+        }
+
+        fn arm_supervisor(&mut self, supervisor: Supervisor) {
+            assert!(
+                self.supervisor.replace(supervisor).is_none(),
+                "supervisor already armed"
+            );
+        }
+
+        fn supervisor(&self) -> &Supervisor {
+            self.supervisor.as_ref().expect("supervisor armed")
+        }
+
+        fn arm_parent(&mut self, stream: TcpStream) {
+            assert!(
+                self.parent_control.replace(stream).is_none(),
+                "parent already armed"
+            );
+        }
+
+        fn assert_parent_armed(&self) {
+            assert!(self.parent_control.is_some(), "parent control connection");
+        }
+
+        fn arm_holder_control(&mut self, stream: TcpStream) {
+            assert!(
+                self.holder_control.replace(stream).is_none(),
+                "holder already armed"
+            );
+        }
+
+        fn arm_holder_process(&mut self, process: ObservedTestProcess) {
+            assert!(
+                self.process.replace(process).is_none(),
+                "holder process already armed"
+            );
+        }
+
+        fn holder(&self) -> &ObservedTestProcess {
+            self.process.as_ref().expect("holder process armed")
+        }
+
+        fn release_parent(&mut self) {
+            self.parent_control
+                .as_mut()
+                .expect("parent control armed")
+                .write_all(b"E")
+                .expect("release direct parent after OS handle observation");
+        }
+
+        fn release_holder(&mut self) {
+            self.holder_control
+                .as_mut()
+                .expect("holder control armed")
+                .write_all(b"R")
+                .expect("release holder late write");
+        }
+
+        fn await_holder_acknowledgment(&mut self) {
+            let mut acknowledgment = [0_u8; 1];
+            self.holder_control
+                .as_mut()
+                .expect("holder control armed")
+                .read_exact(&mut acknowledgment)
+                .expect("holder late-write acknowledgment");
+            assert_eq!(acknowledgment, [b'A'], "unexpected holder acknowledgment");
+        }
+
+        fn quit_holder(&mut self) {
+            self.holder_control
+                .as_mut()
+                .expect("holder control armed")
+                .write_all(b"Q")
+                .expect("release holder process");
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for CaptureFixtureCleanup {
+        fn drop(&mut self) {
+            if let Some(stream) = self.holder_control.as_mut() {
+                let _ = stream.write_all(b"Q");
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            if let Some(stream) = self.parent_control.as_mut() {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            let holder_wait = self
+                .process
+                .as_ref()
+                .map(|process| (process.pid, process_wait_result(process, 10_000)));
+            if let Some(supervisor) = self.supervisor.take() {
+                supervisor.shutdown();
+                let _ = supervisor.wait_for_outcome();
+            }
+            if let Some((pid, wait_result)) = holder_wait
+                && wait_result != WAIT_OBJECT_0
+            {
+                let message = format!(
+                    "capture fixture holder PID {pid} did not exit during cleanup: wait result {wait_result}"
+                );
+                if thread::panicking() {
+                    eprintln!("{message}");
+                } else {
+                    panic!("{message}");
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn connect_capture_control(address: &std::ffi::OsStr) -> TcpStream {
+        let address = address.to_string_lossy();
+        let stream = TcpStream::connect_timeout(
+            &address.parse().expect("parse capture control address"),
+            Duration::from_secs(10),
+        )
+        .expect("connect capture control");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set capture control read deadline");
+        stream
+    }
+
+    #[cfg(windows)]
+    fn write_capture_control_line(
+        stream: &mut TcpStream,
+        role: &str,
+        pid: u32,
+        secret: &std::ffi::OsStr,
+    ) {
+        writeln!(stream, "{role} {pid} {}", secret.to_string_lossy())
+            .expect("publish capture control role");
+        stream.flush().expect("flush capture control role");
+    }
+
+    #[cfg(windows)]
+    fn wait_capture_control_byte(stream: &mut TcpStream, expected: u8, description: &str) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set parent control deadline");
+        let mut observed = [0_u8; 1];
+        stream.read_exact(&mut observed).expect(description);
+        assert_eq!(observed, [expected], "unexpected {description}");
+    }
+
+    #[cfg(windows)]
+    fn is_broken_pipe(result: &std::io::Result<()>) -> bool {
+        matches!(result, Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe)
+    }
+
+    #[cfg(windows)]
+    fn accept_capture_control(listener: &TcpListener, secret: &str) -> (String, u32, TcpStream) {
+        const MAX_CONTROL_LINE_BYTES: usize = 256;
+        let listener = listener
+            .try_clone()
+            .expect("clone capture control listener");
+        let wake = listener.local_addr().expect("capture control wake address");
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let accept = thread::spawn(move || {
+            let _ = sender.send(listener.accept().map(|(stream, _)| stream));
+        });
+        let stream = match receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => result.expect("accept capture control"),
+            Err(error) => {
+                let _ = TcpStream::connect(wake);
+                accept.join().expect("capture control accept worker");
+                panic!("timed out accepting capture control: {error}");
+            }
+        };
+        accept.join().expect("capture control accept worker");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = stream;
+        let mut line = Vec::with_capacity(MAX_CONTROL_LINE_BYTES + 1);
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_else(|| panic!("timed out reading capture control role"));
+            stream
+                .set_read_timeout(Some(remaining))
+                .expect("set capture control absolute deadline");
+            let mut byte = [0_u8; 1];
+            match stream.read(&mut byte) {
+                Ok(0) => panic!("incomplete capture control role"),
+                Ok(1) if byte[0] == b'\n' => break,
+                Ok(1) => {
+                    line.push(byte[0]);
+                    assert!(
+                        line.len() <= MAX_CONTROL_LINE_BYTES,
+                        "capture control role exceeds {MAX_CONTROL_LINE_BYTES} bytes"
+                    );
+                }
+                Ok(_) => unreachable!("one-byte capture control read"),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    panic!("timed out reading capture control role: {error}")
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => panic!("read capture control role: {error}"),
+            }
+        }
+        let line = String::from_utf8(line).expect("UTF-8 capture control role");
+        let mut fields = line.split_whitespace();
+        let role = fields.next().expect("capture control role").to_owned();
+        let pid = fields
+            .next()
+            .expect("capture control PID")
+            .parse()
+            .expect("numeric capture control PID");
+        assert_eq!(fields.next(), Some(secret), "capture control secret");
+        assert!(
+            fields.next().is_none(),
+            "unexpected capture control fields: {line:?}"
+        );
+        (role, pid, stream)
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)] // test-only observation of an exact fixture PID
+    fn open_observed_process(pid: u32, description: &str) -> ObservedTestProcess {
+        // SAFETY: the PID came from this test's live fixture. A non-null result
+        // is one fresh owning handle, converted exactly once below.
+        let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(
+            !raw.is_null(),
+            "open {description} PID {pid}: {}",
+            std::io::Error::last_os_error()
+        );
+        ObservedTestProcess {
+            // SAFETY: raw is the fresh non-null owning handle returned above.
+            handle: unsafe { OwnedHandle::from_raw_handle(raw.cast()) },
+            pid,
+        }
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)] // read-only wait on a live test-owned process handle
+    fn process_wait_result(process: &ObservedTestProcess, timeout_ms: u32) -> u32 {
+        // SAFETY: the borrowed raw handle remains live for this call.
+        unsafe { WaitForSingleObject(process.handle.as_raw_handle().cast(), timeout_ms) }
+    }
+
+    #[cfg(windows)]
+    fn assert_process_exited(process: &ObservedTestProcess, description: &str) {
+        assert_process_exited_within(process, description, 10_000);
+    }
+
+    #[cfg(windows)]
+    fn assert_process_exited_within(
+        process: &ObservedTestProcess,
+        description: &str,
+        timeout_ms: u32,
+    ) {
+        assert_eq!(
+            process_wait_result(process, timeout_ms),
+            WAIT_OBJECT_0,
+            "{description} PID {} did not exit",
+            process.pid
+        );
+    }
+
+    #[cfg(windows)]
+    fn assert_process_running(process: &ObservedTestProcess, description: &str) {
+        assert_eq!(
+            process_wait_result(process, 0),
+            WAIT_TIMEOUT,
+            "{description} PID {} exited before the causal observation",
+            process.pid
+        );
     }
 
     #[test]
