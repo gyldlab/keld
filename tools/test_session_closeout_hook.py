@@ -377,6 +377,26 @@ class HookTests(unittest.TestCase):
                     self.assertIs(answer['continue'], False)
                     self.assertIn('utf-8', answer['stopReason'])
 
+    def test_native_utf8_bom_is_accepted_without_locale_decoding(self):
+        cases = [(harness, count) for harness in ('codex', 'claude', 'cursor') for count in (1, 2)]
+        for harness, bom_count in cases:
+            with self.subTest(harness=harness, bom_count=bom_count):
+                payload = {'hook_event_name': 'stop' if harness == 'cursor' else 'Stop',
+                           'session_id': 'native', 'turn_id': 't', 'prompt_id': 't',
+                           'conversation_id': 'native', 'generation_id': 't',
+                           'cwd': str(self.repo), 'workspace_roots': [str(self.repo)],
+                           'status': 'completed', 'loop_count': 0}
+                result = subprocess.run(
+                    [sys.executable, '-B', str(Path(hook.__file__)), '--harness', harness],
+                    cwd=self.repo, input=b'\xef\xbb\xbf' * bom_count + json.dumps(payload).encode('utf-8'),
+                    capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                answer = json.loads(result.stdout)
+                if harness == 'cursor':
+                    self.assertEqual(answer, {})
+                else:
+                    self.assertIn('No activated Keld task', answer['systemMessage'])
+
 
 if __name__ == "__main__":
     unittest.main()

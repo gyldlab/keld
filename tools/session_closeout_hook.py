@@ -250,8 +250,9 @@ def main():
         print(json.dumps(configuration(args.harness, args.platform), indent=2))
         return 0
     try:
-        # Native clients send UTF-8 JSON; Windows pipe encoding may be cp1252.
-        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"),
+        # Cursor's Windows CLI can prefix two UTF-8 BOMs. Strip only leading
+        # transport markers, never content inside the JSON or use the pipe locale.
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8").lstrip("\ufeff"),
                              object_pairs_hook=session_closeout.unique_object)
     except (ValueError, OSError) as error:
         failure = {"continue": False, "stopReason": "Invalid closeout hook input: " + str(error),
