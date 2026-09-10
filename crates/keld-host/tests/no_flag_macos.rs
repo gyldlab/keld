@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt};
@@ -38,6 +39,95 @@ fn keld_dev_helper_process() {
         return;
     };
     keld_cli::dev::run_dev(Path::new(&project)).expect("shipping keld dev helper");
+}
+
+/// Fixture child for [`unix_descriptor_census_charges_only_self_opened_sockets`].
+///
+/// Opens exactly one Unix listener of its own, then holds the Unix descriptor
+/// the harness passed down as stdin until the harness closes the far end. That
+/// read is the release signal, so the census always observes a live process
+/// instead of racing its exit. Returns immediately when the harness did not
+/// select it, like [`keld_dev_helper_process`].
+#[test]
+fn unix_descriptor_census_fixture_process() {
+    let Some(owned) = std::env::var_os("KELD_T2_CENSUS_OWNED_SOCKET") else {
+        return;
+    };
+    let _owned = UnixListener::bind(Path::new(&owned)).expect("census fixture Unix listener");
+    let mut released = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut released)
+        .expect("hold the inherited Unix descriptor until the harness releases it");
+}
+
+/// KEL-222: the Unix-descriptor census charges a descriptor to the process that
+/// opened it, never to a process that merely inherited one.
+///
+/// A shell that leaves a Unix socket without `FD_CLOEXEC` leaks it through every
+/// `exec` into the process under test, so counting `lsof -U` rows answers "does
+/// this pid hold any Unix descriptor from any source" instead of "did this pid
+/// open one". This test reproduces that leak deliberately: the harness keeps its
+/// own copy of an accepted Unix stream and hands a duplicate down as the child's
+/// stdin, while the child opens one listener of its own. Both expected
+/// identities are paths this test chose before the census ran, so neither is
+/// read back out of the census under validation.
+#[test]
+fn unix_descriptor_census_charges_only_self_opened_sockets() {
+    let fixture = tempfile::tempdir().expect("census fixture root");
+    let leaked_path = fixture.path().join("leaked.sock");
+    let owned_path = fixture.path().join("owned.sock");
+    let leaked_identity = leaked_path.to_str().expect("UTF-8 fixture path").to_owned();
+    let owned_identity = owned_path.to_str().expect("UTF-8 fixture path").to_owned();
+
+    // `lsof` names an accepted peer by the listener's bound `sun_path`, so the
+    // leaked descriptor's identity is a path this test already knows.
+    let leaked_listener = UnixListener::bind(&leaked_path).expect("bind harness leak socket");
+    let far_end = UnixStream::connect(&leaked_path).expect("connect harness leak socket");
+    let (harness_copy, _) = leaked_listener
+        .accept()
+        .expect("accept harness leak socket");
+    let inherited = harness_copy
+        .try_clone()
+        .expect("duplicate the leaked descriptor for the child");
+
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "unix_descriptor_census_fixture_process"])
+        .env("KELD_T2_CENSUS_OWNED_SOCKET", &owned_path)
+        .stdin(Stdio::from(OwnedFd::from(inherited)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch Unix-descriptor census fixture");
+    let child_pid = child.id();
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    while !owned_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "census fixture never bound its own Unix listener"
+        );
+        thread::yield_now();
+    }
+
+    // The fixture is only meaningful while the leak is real: prove the child
+    // holds the inherited descriptor before asserting that it is not charged.
+    let observed = unix_socket_identities(child_pid);
+    assert!(
+        observed.contains(&leaked_identity),
+        "fixture leaked no harness Unix descriptor into the child: {observed:?}"
+    );
+    assert_eq!(
+        self_opened_unix_sockets(child_pid),
+        vec![owned_identity],
+        "census must charge the child only the listener it bound itself: {observed:?}"
+    );
+
+    // Closing the far end is the child's release signal; the harness keeps its
+    // own copy and the listener until scope end, so the leaked identity stays in
+    // the harness table for the whole census above.
+    drop(far_end);
+    let status = child.wait().expect("reap census fixture");
+    assert!(status.success(), "census fixture failed: {status:?}");
+    await_process_gone(child_pid);
 }
 
 #[test]
@@ -1131,8 +1221,15 @@ impl ShippingDevCycle {
         beacon.assert_exact();
         assert_eq!(presentation.expect_initial(cycle.host_pid, name).len(), 1);
         assert!(native_windows(cli_pid, TITLE).is_empty());
-        assert!(host_unix_sockets(cycle.host_pid) > 0);
-        assert_eq!(host_unix_sockets(cli_pid), 0);
+        assert!(
+            !self_opened_unix_sockets(cycle.host_pid).is_empty(),
+            "host owns no Unix app-link descriptor it opened itself"
+        );
+        let cli_sockets = self_opened_unix_sockets(cli_pid);
+        assert!(
+            cli_sockets.is_empty(),
+            "CLI {cli_pid} owns Unix descriptors it opened itself: {cli_sockets:?}"
+        );
         if name == "t2-cli" {
             assert_lease_descriptor_ownership(
                 cli_pid,
@@ -2067,11 +2164,11 @@ impl LiveCycle {
             "exact host-owned native window: {windows:?}"
         );
         assert!(
-            host_unix_sockets(self.host_pid) > 0,
+            !self_opened_unix_sockets(self.host_pid).is_empty(),
             "host owns no authenticated Unix app-link descriptor"
         );
         assert!(
-            host_unix_sockets(self.bun_pid) > 0,
+            !self_opened_unix_sockets(self.bun_pid).is_empty(),
             "Bun owns no authenticated Unix app-link descriptor"
         );
         assert!(
@@ -2395,7 +2492,14 @@ fn await_process_gone(pid: u32) {
     }
 }
 
-fn host_unix_sockets(pid: u32) -> usize {
+/// One identity per Unix-domain descriptor open on `pid`.
+///
+/// The identity is the `lsof -Fn` name field: the bound `sun_path` for a
+/// listener and for each peer it accepted, or `->0x<kernel address>` for a
+/// connected or paired endpoint. `exec` preserves it byte for byte, so one
+/// kernel socket reports the same identity in a parent and in every child that
+/// inherited the descriptor. Identities repeat, so callers keep the multiset.
+fn unix_socket_identities(pid: u32) -> Vec<String> {
     let output = Command::new("/usr/sbin/lsof")
         .args(["-n", "-P", "-a", "-p", &pid.to_string(), "-U", "-Fn"])
         .output()
@@ -2407,8 +2511,42 @@ fn host_unix_sockets(pid: u32) -> usize {
     String::from_utf8(output.stdout)
         .expect("lsof output UTF-8")
         .lines()
-        .filter(|line| line.starts_with('n'))
-        .count()
+        .filter_map(|line| line.strip_prefix('n'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The Unix-domain descriptors `pid` opened itself, as identities.
+///
+/// A raw `lsof -U` count is not an oracle for app-link ownership. Every product
+/// process censused here descends from this harness, and a Unix socket the
+/// launching shell left without `FD_CLOEXEC` reaches all of them through `exec`,
+/// so the raw count charges the CLI for descriptors it never opened (KEL-222).
+/// The harness is their only ancestor, so its own live descriptor table bounds
+/// everything they can have inherited: whatever survives subtracting it was
+/// opened by `pid`. Two live sockets never share an identity — a `sun_path` is
+/// exclusive while bound and a kernel address is unique while open — so the
+/// subtraction can only ever discount the very descriptor that was inherited.
+///
+/// Removing one harness identity per match keeps this a multiset operation,
+/// because a listener and each peer it accepted report the same `sun_path`, and
+/// a duplicate beyond the inherited one must still be charged to `pid`. The
+/// harness is censused first: a descriptor it opens afterwards cannot have been
+/// inherited by an already-spawned child, so measuring it later could only
+/// excuse a real leak. `cargo nextest` gives each test its own process, so the
+/// table read here is this test's own.
+fn self_opened_unix_sockets(pid: u32) -> Vec<String> {
+    let mut inherited = unix_socket_identities(std::process::id());
+    let mut opened = Vec::new();
+    for identity in unix_socket_identities(pid) {
+        match inherited.iter().position(|held| *held == identity) {
+            Some(index) => {
+                inherited.swap_remove(index);
+            }
+            None => opened.push(identity),
+        }
+    }
+    opened
 }
 
 fn lsof_stdin(pid: u32) -> String {
