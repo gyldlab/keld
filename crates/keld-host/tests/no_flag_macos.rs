@@ -53,6 +53,9 @@ fn keld_dev_helper_process() {
 /// `lsof` reports without an identity. It is opened before the listener so that
 /// the listener's path, which is what the harness waits on, still marks the point
 /// where every descriptor this fixture owns is open.
+///
+/// The harness may also hand down the same inherited socket twice, on stdin and
+/// stdout, to stand in for a `dup` of an inherited descriptor.
 #[test]
 fn unix_descriptor_census_fixture_process() {
     let Some(owned) = std::env::var_os("KELD_T2_CENSUS_OWNED_SOCKET") else {
@@ -131,6 +134,87 @@ fn unix_descriptor_census_charges_only_self_opened_sockets() {
     // Closing the far end is the child's release signal; the harness keeps its
     // own copy and the listener until scope end, so the leaked identity stays in
     // the harness table for the whole census above.
+    drop(far_end);
+    let status = child.wait().expect("reap census fixture");
+    assert!(status.success(), "census fixture failed: {status:?}");
+    await_process_gone(child_pid);
+}
+
+/// KEL-222: a second descriptor on an inherited socket is still inherited.
+///
+/// `dup`, `exec` and fd-passing all give one kernel socket several descriptors.
+/// Every one of them is the socket the harness holds, so none of them is something
+/// the censused process opened, however many there are. This pins that: the child
+/// receives the same accepted socket twice, on stdin and on stdout, while the
+/// harness holds exactly one descriptor for it, and must still be charged only the
+/// listener it bound itself. A census that removed one harness address per match
+/// would charge the second copy and fail here.
+///
+/// The second copy lands on stderr rather than stdout because the child's test
+/// harness writes its result line to stdout after the harness has closed the
+/// socket's far end, which would fail the child on `EPIPE`.
+#[test]
+fn unix_descriptor_census_charges_no_extra_copy_of_an_inherited_socket() {
+    let fixture = tempfile::tempdir().expect("census fixture root");
+    let leaked_path = fixture.path().join("leaked.sock");
+    let owned_path = fixture.path().join("owned.sock");
+    let leaked_identity = leaked_path.to_str().expect("UTF-8 fixture path").to_owned();
+    let owned_identity = owned_path.to_str().expect("UTF-8 fixture path").to_owned();
+
+    let leaked_listener = UnixListener::bind(&leaked_path).expect("bind harness leak socket");
+    let far_end = UnixStream::connect(&leaked_path).expect("connect harness leak socket");
+    let (harness_copy, _) = leaked_listener
+        .accept()
+        .expect("accept harness leak socket");
+    let first = harness_copy
+        .try_clone()
+        .expect("duplicate the leaked descriptor for the child");
+    let second = harness_copy
+        .try_clone()
+        .expect("duplicate the leaked descriptor a second time");
+
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "unix_descriptor_census_fixture_process"])
+        .env("KELD_T2_CENSUS_OWNED_SOCKET", &owned_path)
+        // stdin and stderr, not stdout: the test harness writes its result line to
+        // stdout, and the socket's peer is closed before the child exits.
+        .stdin(Stdio::from(OwnedFd::from(first)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(OwnedFd::from(second)))
+        .spawn()
+        .expect("launch Unix-descriptor census fixture");
+    let child_pid = child.id();
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    while !owned_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "census fixture never bound its own Unix listener"
+        );
+        thread::yield_now();
+    }
+
+    // The fixture is only meaningful while the child really holds two descriptors
+    // on the one socket the harness holds once.
+    let observed = unix_socket_identities(child_pid);
+    let copies = observed
+        .iter()
+        .filter(|identity| **identity == leaked_identity)
+        .count();
+    assert_eq!(
+        copies, 2,
+        "fixture did not receive the inherited socket twice: {observed:?}"
+    );
+    assert_eq!(
+        harness_unix_sockets().len(),
+        unix_descriptors(std::process::id()).len(),
+        "harness census disagrees with itself"
+    );
+    assert_eq!(
+        self_opened_unix_sockets(child_pid),
+        vec![owned_identity],
+        "census must charge only the listener the child bound itself: {observed:?}"
+    );
+
     drop(far_end);
     let status = child.wait().expect("reap census fixture");
     assert!(status.success(), "census fixture failed: {status:?}");
@@ -2747,50 +2831,62 @@ fn unix_socket_identities(pid: u32) -> Vec<String> {
         .collect()
 }
 
-/// The Unix-domain descriptors `pid` opened itself, named for a human.
-///
-/// A raw `lsof -U` count is not an oracle for app-link ownership. Every product
-/// process censused here descends from this harness, and a Unix socket the
-/// launching shell left without `FD_CLOEXEC` reaches all of them through `exec`,
-/// so the raw count charges the CLI for descriptors it never opened (KEL-222).
-/// The harness is their only ancestor, so its descriptor table bounds what they
-/// can have inherited: whatever survives subtracting it was opened by `pid`.
-///
-/// The subtraction is keyed on the socket object's own address, never on the
-/// printable name, because names are not identities. Measured on macOS `lsof`
-/// 4.91: every socket that is neither bound nor connected is named `->(none)`,
-/// and a socket keeps reporting its `sun_path` after that path is unlinked, so a
-/// replacement bound to the same path reports the same name. Either would let a
-/// name-keyed subtraction excuse a descriptor `pid` opened itself — the silent
-/// false pass this oracle exists to prevent. An address is unique among live
-/// sockets and `exec` preserves it, so a match means the same kernel object.
-///
-/// Removing one address per match keeps this a multiset operation, because `dup`
-/// and inheritance give one socket several descriptors, and a copy beyond the one
-/// the harness holds must still be charged to `pid`.
-///
-/// Two limits are inherent to comparing two live tables and are left loud rather
-/// than papered over. A descriptor the harness closes after spawning `pid` is no
-/// longer subtractable, so `pid` is charged for something it only inherited: that
-/// fails, and a failure is investigable. And an address freed between the two
-/// censuses could in principle be reissued to a socket `pid` then opens; this is
-/// single-threaded and the two calls are adjacent, so the harness closes nothing
-/// in that window.
-fn self_opened_unix_sockets(pid: u32) -> Vec<String> {
-    let mut inherited: Vec<String> = unix_descriptors(std::process::id())
+/// Every Unix-domain socket open on this harness, by kernel address.
+fn harness_unix_sockets() -> Vec<String> {
+    unix_descriptors(std::process::id())
         .into_iter()
         .map(|descriptor| descriptor.socket)
-        .collect();
-    let mut opened = Vec::new();
-    for descriptor in unix_descriptors(pid) {
-        match inherited.iter().position(|held| *held == descriptor.socket) {
-            Some(index) => {
-                inherited.swap_remove(index);
-            }
-            None => opened.push(descriptor.identity),
-        }
-    }
-    opened
+        .collect()
+}
+
+/// The Unix-domain descriptors `pid` opened itself, named for a human.
+///
+/// A raw `lsof -U` count is not an oracle for app-link ownership. A Unix socket
+/// the launching shell left without `FD_CLOEXEC` reaches every process under test
+/// through `exec`, so the raw count charges the CLI for descriptors it never
+/// opened (KEL-222). Subtracting the harness's own table removes them.
+///
+/// Keyed on the socket object's own address, never on the printable name, because
+/// names are not identities. Measured on macOS `lsof` 4.91: every socket that is
+/// neither bound nor connected is named `->(none)`, and a socket keeps reporting
+/// its `sun_path` after that path is unlinked, so a replacement bound to the same
+/// path reports the same name. Either would let a name-keyed subtraction excuse a
+/// descriptor `pid` opened itself — the silent false pass this oracle exists to
+/// prevent. An address is unique among live sockets and `exec` preserves it, so a
+/// match means the same kernel object.
+///
+/// Membership, not multiset removal. `dup`, `exec` and fd-passing give one socket
+/// several descriptors, and every one of them is the socket the harness holds, so
+/// a second copy is still not something `pid` opened. Removing one address per
+/// match would charge `pid` for `dup`ing a descriptor it merely inherited, which
+/// is a false failure. Nothing is lost: opening a socket always creates a new
+/// kernel object, whose address the harness cannot already hold.
+///
+/// The harness table is read on both sides of the target census and an address
+/// must appear in both to be excused. macOS reissues a freed socket address
+/// immediately and deterministically, so a single harness census could otherwise
+/// excuse a socket `pid` opened after the harness closed the previous tenant of
+/// that address — measured as total, not occasional, when it happens. Requiring
+/// both removes the window rather than relying on the harness closing nothing.
+///
+/// This is an upper bound on what `pid` opened, and deliberately so. `pid` is not
+/// always a direct child — Bun is the guardian's child, so the host or guardian
+/// could inject a descriptor the harness never held, and it would be charged to
+/// Bun. Over-charging is the safe direction for the assertion this oracle owns,
+/// "the CLI opened none", which can then only fail. It is *not* safe for the
+/// positive "this process opened one" assertions, which need to name the app link
+/// rather than count anything; that gap is real and is tracked separately.
+fn self_opened_unix_sockets(pid: u32) -> Vec<String> {
+    let before = harness_unix_sockets();
+    let observed = unix_descriptors(pid);
+    let after = harness_unix_sockets();
+    observed
+        .into_iter()
+        .filter(|descriptor| {
+            !(before.contains(&descriptor.socket) && after.contains(&descriptor.socket))
+        })
+        .map(|descriptor| descriptor.identity)
+        .collect()
 }
 
 fn lsof_stdin(pid: u32) -> String {
