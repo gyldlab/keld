@@ -383,14 +383,16 @@ attestation_evidence = { subject_digest: digest, bundle_sha256: sha256,
   source_ref: string, source_commit: commit, signer_digest: commit,
   predicate_type: string, predicate_sha256: sha256, verified: boolean }
 reference = { ref: string, commit: commit, path: string, digest: digest }
-security_index = { source_uri: string, suite: "noble-security",
+security_index = { source_uri: "https://security.ubuntu.com/ubuntu/", suite: "noble-security",
   component: "main" | "universe", architecture: "amd64",
-  inrelease_sha256: sha256, packages_sha256: sha256, sources_sha256: sha256 }
+  inrelease_sha256: sha256, packages_sha256: sha256, sources_sha256: sha256,
+  release_date: timestamp, valid_until: null | timestamp, expires_at: timestamp }
 stale_source = { name: string, locked_version: string, current_version: string,
   index_identity: string, reason: "newer-version" | "changed-source-stanza"
     | "changed-binary-stanza" | "changed-package-file" }
 workflow_run = { repository: "gyldlab/keld", workflow_path: string,
-  workflow_sha256: sha256, source_commit: commit, run_id: integer,
+  workflow_sha256: sha256, source_ref: "refs/heads/main",
+  source_commit: commit, run_id: integer,
   run_attempt: integer, event_name: "schedule" | "workflow_dispatch" }
 ```
 
@@ -486,8 +488,18 @@ receipt. A stale freshness receipt exits nonzero with `KELD-CIIMG-008`.
   config uses fixed platform/history timestamps. The digest-pinned resolver image owns
   all packer tool versions.
 - Consumers use `runs-on: ubuntu-24.04`. They pull anonymously into an empty Docker
-  config, extract to a new directory, verify bytes/attestations, then use an offline apt
-  configuration whose only source is the extracted local repository. That recomposed
+  config and extract to a new directory. The installer copies regular repository files
+  into fresh inodes beneath a private root-owned directory with protected ancestors;
+  it rejects symlinks, special files and path traversal, and shares no writable file
+  descriptors or hard links with extraction/workspace processes. It closes writer
+  handles and protects the copy against unprivileged writes and path replacement before
+  verifying the final copy's subject-bound lock, indexes and every `.deb`, together with
+  the attestations. Only that protected copy is the offline apt source, and protection
+  lasts through apt/dpkg completion; configuration, lists and package caches used by
+  apt are equally private and cannot introduce a workspace-controlled replacement.
+  A read-only view of still-writable backing files or a last-minute hash of a mutable
+  path is insufficient. The trusted installer and root-capable processes are the trust
+  boundary; this does not claim containment of a malicious root process. That recomposed
   repository is intentionally unsigned and is marked `Trusted: yes` only after the OCI
   subject, lock, index and every `.deb` hash pass; the outer verified subject is its
   trust owner and no Keld archive-signing key is invented. Network package sources are
@@ -544,6 +556,20 @@ with `contents: read` and explicit `packages: none`, `attestations: none`, and
 `id-token: none`; it cannot call or dispatch the publisher. It authenticates the
 InRelease → Packages/Sources hash chain, then compares only source/binary stanzas and
 file hashes reachable from the locked source closure using Debian version ordering.
+Acquisition uses only `https://security.ubuntu.com/ubuntu/` over authenticated TLS,
+without redirects to another origin, snapshot endpoints or historical/cache fallback.
+Before either passed or stale output, the reader verifies the signed release's suite
+and extracts its `Date` and optional `Valid-Until` into `release_date` and `valid_until`.
+Using its trusted runner clock, it requires `release_date <= checked_at + 10s` and
+`checked_at < expires_at`, where `expires_at` is the earlier of signed `Valid-Until`
+(when present) and `release_date + 24h`. Missing/malformed Date, malformed or inconsistent
+validity fields, wrong source/suite, and expired/future metadata reject with code 002.
+The finite 24-hour maximum is proposed Keld policy, including when Valid-Until is absent;
+it is not an apt default. This bounds replay age, not proof of the latest publication
+within the window. An idle archive outside that bound fails closed; qualification must
+prove this policy operationally before adoption, and changing the bound requires review.
+These rules reuse [APT's signed-date validity model](https://manpages.ubuntu.com/manpages/noble/man5/apt.conf.5.html)
+with date and validity checks enabled and a finite maximum validity time.
 Unrelated index updates remain green. A relevant newer version or same-version
 stanza/binary/file change emits stale with code 008. It downloads no package payloads.
 
@@ -551,11 +577,18 @@ Promotion consumes that workflow's immutable artifact and records its SHA-256 in
 `freshness_receipt_sha256`; it does not fetch security indexes itself. T3c checks via
 the GitHub API that the receipt came from the protected main freshness workflow at
 the reviewed workflow hash/source commit, matching run ID/attempt and a successful
-job. It checks exact lock hash and candidate digest, and requires passed status and
+job. It independently verifies the run repository, event, source commit and main branch
+identity through authoritative GitHub run metadata: `source_ref` must be
+`refs/heads/main`; a receipt assertion alone cannot establish that identity. A dispatch
+from another branch or tag fails code 005 even when its commit/workflow bytes match.
+It checks exact lock hash and candidate digest, and requires passed status and
 `0 <= promotion_time - checked_at <= 24h`. It rejects a future, expired, stale,
 rejected, missing or mismatched receipt; rechecking means invoking the same freshness
 workflow, never introducing another reader. The workflow's output includes the signed
 metadata bytes and their hash chain for offline provenance verification by promotion.
+Promotion re-derives all signed validity fields and `expires_at` from those bytes and
+also requires `promotion_time < expires_at` for every security index; a recent receipt
+cannot extend old metadata's lifetime.
 The KEL coordinator uses
 the receipt to open or update one `keld.linux-ci-rotation/v1` record:
 
@@ -638,7 +671,7 @@ substitution or silent waiver is permitted.
 | 2 | Lock/schema unit: canonical parse plus exact roots, source/binary versions, source URI/snapshot_id/timestamp agreement/pocket/key/InRelease/Packages/Sources/closure/file hashes; independently alter order, duplicate keys, and the binary `(source_name, source_version, source_index_identity)` edge |
 | 3 | Reproducibility integration: generate SPDX only from the named input projection, then manifest/payload/OCI; two clean builds compare every byte/descriptor; enable live source or mutate timestamp/tool/arch/file metadata |
 | 4 | Host-preflight subprocess on two recorded `ubuntu-24.04` image revisions: sources disabled, no mutation sentinel; inject downgrade, removal, Essential replacement, missing deb and conflict; remove or spoof each compiler/linker command, target, version, probe and receipt field; assert no package mutation |
-| 5 | Host-install integration: local-only repository network trace, exact-root receipt, `dpkg --audit` and offline dependency result; allow network or change one root/version and fail before compile sentinel |
+| 5 | Host-install integration: local-only repository network trace, exact-root receipt, `dpkg --audit` and offline dependency result; allow network or change one root/version and fail before compile sentinel; substitute a selected package/index between extraction verification and protected-copy verification and reject before install; after final verification attempt file writes, writable-descriptor/hard-link aliases, directory replacement and cache substitution as the workspace user, require denial, and prove apt consumes only the unchanged verified copy |
 | 6 | Existing Linux strict process tests plus executable package/hash receipt; remove sysctl/bwrap, mutate path, or run default nested container and require the named failure |
 | 7 | Router/workflow/evaluator contract: every owned path runs both consumers as applicable and `CI required` observes result; assert the check matrix, every Ubuntu-specific condition and GUI runner use `ubuntu-24.04`; force gui=false for each bundle/workflow/router/evaluator input and fail; remove/invert each step/result edge and reject a stale consumer-side `ubuntu-latest` |
 | 8 | Existing media interposer + `linux_gui_smoke.sh` title/control/cleanup process oracle; delete each existing command/oracle and fail |
@@ -646,7 +679,7 @@ substitution or silent waiver is permitted.
 | 10 | Post-publish hosted check: package API visibility, repository association and empty-config anonymous digest pull are three separate assertions; private/unlinked/authenticated-only controls fail |
 | 11 | Required-result failure matrix: tag, unknown/unavailable/corrupt/unlinked/unattested/denied/cached subject, candidate-publication mode used by a consumer, candidate outside T4a or with spoofed repo/base/PR/head/checkout/workflow/run/attempt/job, arbitrary/unpointed/expired rollback, network source, retry, `continue-on-error` and selected skip each fail before mutation/compile; T3c re-derives the passing run through GitHub |
 | 12 | State-machine/transition-receipt unit plus Git/reference integration: unavailable candidate fields, null publication field promoted current, missing/duplicate consumer qualification receipt, mismatched GitHub run/check identity, two promotions inside 30 days retaining both previous entries, previous dropped without retired record/receipt, invalid transition, preferred rollback set/use/clear with the same hosted consumers, denied/expired/retired/unavailable pointer rejection, denied-before-pull even with a new valid attestation, non-main ref, reference remaining, early retirement, attestation cleanup and >5k/no-registry-delete paths |
-| 13 | Single freshness workflow plus offline promotion verification: reject second metadata reader, stale-as-shared-result, malformed nested records, unknown fields, wrong lock/digest/workflow/run, missing signature bytes, future/expired receipt; authenticate whole current security indexes, compare only reachable source/binary stanzas and file hashes, keep an unrelated-index-update control green, and emit a stale receipt plus `KELD-CIIMG-008`; injected-clock records cover T+71:59:59, exact 72h with/without response, T+72:00:01, repeat without reset, blocker-stays-red, replacement resolution and later-new-update origin |
+| 13 | Single freshness workflow plus offline promotion verification: reject second metadata reader, stale-as-shared-result, malformed nested records, unknown fields, wrong lock/digest/workflow/run, non-main branch/tag dispatch with otherwise identical commit/workflow, forged main ref, missing signature bytes, future/expired receipt; reject snapshot or wrong-origin acquisition, missing/malformed/future signed Date, expired Valid-Until, absent Valid-Until with Date older than 24h, forged validity fields and metadata expiring between check and promotion; test exact expiry and the 10s future bound plus a valid missing-Valid-Until control; authenticate whole current security indexes, compare only reachable source/binary stanzas and file hashes, keep an unrelated-index-update control green, and emit a stale receipt plus `KELD-CIIMG-008`; injected-clock records cover T+71:59:59, exact 72h with/without response, T+72:00:01, repeat without reset, blocker-stays-red, replacement resolution and later-new-update origin |
 
 Tests use file/process/network conditions rather than sleeps. Local Docker proves bundle
 and preflight behavior; only hosted Ubuntu proves runner identity, workflow permissions,
