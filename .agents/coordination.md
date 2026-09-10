@@ -1,24 +1,26 @@
-# Linear, worktree, OS, and merge coordination
+# Linear, worktree, OS and merge coordination
 
-Load for claims, worktrees, OS acceptance, or handoff.
-`docs/agents/workflow.md` owns lifecycle; review owns git.
+Workflow owns lifecycle; review owns Git.
 
 Handoffs MUST follow Prompt Tracker `docs/06-graph-engineering.md` for
 system/client/exact-model identity.
 
 ## Worktrees and ownership
 
-- Before adding one, map every worktree to its PR/claim. Remove and prune only clean
-  merged or unused trees; keep primary, open-PR, unique-commit, dirty, or active trees.
-- Claim competition and earliest-`createdAt` ownership remain in the workflow.
+- At start/resume, resource creation and closeout, inventory owned worktrees, clones,
+  caches and evidence by exact path and PR/claim. Remove authorized clean merged/unused
+  trees; preserve primary, dirty, active, open-PR, unique-commit and user content.
+- Before deletion, refresh live state, resolve boundaries/reparse points and preserve
+  evidence elsewhere. Use Git for registered worktrees; verify absence/registration
+  before pruning stale metadata. No prefix-only janitor or tool-denial bypass.
+- Record each resource as removed, retained with reason, or blocked with exact failure,
+  owner and next action. Workflow owns claims and session completion.
 
 ## OS acceptance
 
-`## OS acceptance` in the first Linear comment classifies each criterion as `CI-only`,
-`real OS/device`, or `not applicable` and records its system, observable, and
-availability. Real acceptance passes only on that system; CI, emulation, or another OS
-never substitutes. A failed/unavailable real criterion stays In Progress or Blocked and
-gets this handoff:
+`## OS acceptance` in the first Linear comment records each criterion as `CI-only`,
+`real OS/device`, or `not applicable`, with system, observable and availability.
+Only that real system proves OS acceptance. Failed/unavailable criteria stay open:
 
 ```text
 ## OS handoff
@@ -46,8 +48,7 @@ decision, OS handoff, or branch handoff. A pure local refactor does not need one
 
 ## Branch handoff
 
-Every used branch gets one Linear block before its owner finishes:
-Research branches obey `.agents/research.md`.
+Post each branch in Linear; research follows `.agents/research.md`.
 
 ```text
 ## Branch handoff
@@ -93,5 +94,5 @@ deployment, release, publication, production mutation, account administration or
 another repository.
 
 After merge, fetch main, verify the landed patch or tree and ancestor relation, post the
-execution artifact, mark the issue Done, release the claim and remove the clean
-worktree.
+execution artifact, complete only the owned acceptance unit, reconcile remaining parent
+criteria before marking its issue Done, release the claim and remove the clean worktree.

@@ -385,6 +385,8 @@ jobs:
           target/agent-context/agent-context-test
           rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context
           target/agent-context/agent-context check .
+          python3 -B tools/test_session_closeout.py
+          python3 -B tools/test_session_closeout_hook.py
       - name: Contract tests
         if: needs.changes.outputs.hygiene == 'true'
         run: |
