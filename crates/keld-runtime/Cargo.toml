@@ -14,9 +14,14 @@ keld-ipc = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 nix = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["event"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true }
-rustix = { workspace = true }
 seccompiler = { workspace = true }
 landlock = { workspace = true }
 

@@ -6,10 +6,18 @@
 //! live in `docs/engineering/product-status.tsv`.
 
 use std::io::Read;
+#[cfg(all(unix, test))]
+use std::io::Write as _;
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(all(unix, test))]
+use std::sync::atomic::AtomicU8;
 #[cfg(windows)]
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -615,6 +623,11 @@ pub(crate) trait GenerationLease: Send + 'static {
     /// Checks nonblocking lease-side state while the child is still running.
     fn poll(&mut self) -> Result<(), RuntimeError> {
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn injected_capture_retirement_failure(&self) -> Option<RuntimeError> {
+        None
     }
 
     /// Revokes every capability owned by this attempt before returning.
@@ -1225,6 +1238,17 @@ where
     }
 }
 
+fn cleanup_error_by_priority(
+    primary_error: Option<RuntimeError>,
+    revocation_error: Option<RuntimeError>,
+    capture_error: Option<RuntimeError>,
+) -> Option<RuntimeError> {
+    // A failed revoke means generation authority may remain live, so it owns
+    // the terminal result. Capture retirement is next because an inherited
+    // pipe holder can otherwise keep a supervisor-owned reader alive.
+    revocation_error.or(capture_error).or(primary_error)
+}
+
 #[allow(clippy::too_many_arguments)] // internal worker; grouping into a struct would not reduce coupling
 #[allow(clippy::too_many_lines)] // one lifecycle state machine keeps lease/child ownership transitions contiguous
 fn supervise<P>(
@@ -1267,21 +1291,26 @@ fn supervise<P>(
         let capture_threads = match start_capture_threads(&mut child, output) {
             Ok(threads) => threads,
             Err(error) => {
-                let terminal = RuntimeError::Lifecycle {
+                let primary_error = RuntimeError::Lifecycle {
                     phase: "capture thread",
                     source: error.source,
                 };
-                let terminal = match lease.revoke(RevocationCause::CaptureFailed) {
-                    Ok(()) => terminal,
-                    Err(revocation_error) => revocation_error,
-                };
+                #[cfg(test)]
+                let injected_capture_error = lease.injected_capture_retirement_failure();
+                #[cfg(not(test))]
+                let injected_capture_error = None;
+                let revocation_error = lease.revoke(RevocationCause::CaptureFailed).err();
                 let _ = child.kill();
                 let _ = child.wait();
-                finish_capture_threads_after_direct_child(error.threads);
+                let capture_error =
+                    capture_finish_error(finish_capture_threads_after_direct_child(error.threads))
+                        .or(injected_capture_error);
+                let terminal =
+                    cleanup_error_by_priority(Some(primary_error), revocation_error, capture_error);
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 *terminal_error
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
+                    .unwrap_or_else(PoisonError::into_inner) = terminal;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
             }
@@ -1290,37 +1319,50 @@ fn supervise<P>(
             match wait_or_shutdown(&mut child, &mut lease, shutdown, restart_attempt, attempt) {
                 Ok(wait) => wait,
                 Err(error) => {
-                    let terminal = RuntimeError::Lifecycle {
+                    let primary_error = RuntimeError::Lifecycle {
                         phase: "child wait",
                         source: error,
                     };
-                    let terminal = match lease.revoke(RevocationCause::WaitFailed) {
-                        Ok(()) => terminal,
-                        Err(revocation_error) => revocation_error,
-                    };
+                    #[cfg(test)]
+                    let injected_capture_error = lease.injected_capture_retirement_failure();
+                    #[cfg(not(test))]
+                    let injected_capture_error = None;
+                    let revocation_error = lease.revoke(RevocationCause::WaitFailed).err();
                     let _ = child.kill();
                     let _ = child.wait();
-                    finish_capture_threads_after_direct_child(capture_threads);
+                    let capture_error = capture_finish_error(
+                        finish_capture_threads_after_direct_child(capture_threads),
+                    )
+                    .or(injected_capture_error);
+                    let terminal = cleanup_error_by_priority(
+                        Some(primary_error),
+                        revocation_error,
+                        capture_error,
+                    );
                     *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     *terminal_error
                         .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
+                        .unwrap_or_else(PoisonError::into_inner) = terminal;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
             };
         if let WaitResult::LeaseFailed(error) = wait {
-            let terminal = match lease.revoke(RevocationCause::AdmissionFailed) {
-                Ok(()) => error,
-                Err(revocation_error) => revocation_error,
-            };
+            #[cfg(test)]
+            let injected_capture_error = lease.injected_capture_retirement_failure();
+            #[cfg(not(test))]
+            let injected_capture_error = None;
+            let revocation_error = lease.revoke(RevocationCause::AdmissionFailed).err();
             let _ = child.kill();
             let _ = child.wait();
-            finish_capture_threads_after_direct_child(capture_threads);
+            let capture_error =
+                capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
+                    .or(injected_capture_error);
+            let terminal = cleanup_error_by_priority(Some(error), revocation_error, capture_error);
             *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
             *terminal_error
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(terminal);
+                .unwrap_or_else(PoisonError::into_inner) = terminal;
             let _ = events_tx.send(SupervisorEvent::Failed { attempt });
             return;
         }
@@ -1332,33 +1374,31 @@ fn supervise<P>(
             // unrequested self-termination (KEL-116). Revocation still
             // precedes close/kill as architecture 06 requires.
             let self_terminated = wait_for_self_termination(&mut child);
-            if let Err(error) = lease.revoke(RevocationCause::Shutdown) {
+            #[cfg(test)]
+            let injected_capture_error = lease.injected_capture_retirement_failure();
+            #[cfg(not(test))]
+            let injected_capture_error = None;
+            let revocation_error = lease.revoke(RevocationCause::Shutdown).err();
+            let _ = child.kill();
+            let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
+                phase: "child shutdown wait",
+                source,
+            });
+            let capture_error =
+                capture_finish_error(finish_capture_threads_after_direct_child(capture_threads))
+                    .or(injected_capture_error);
+            if let Some(error) =
+                cleanup_error_by_priority(wait_error, revocation_error, capture_error)
+            {
                 *terminal_error
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                let _ = child.kill();
-                let _ = child.wait();
-                finish_capture_threads_after_direct_child(capture_threads);
                 let accepted = shutdown_was_accepted(accepted_shutdown);
                 if let Some(status) = self_terminated
                     && !accepted
                 {
                     record_self_termination(crash_ledger, output, pid, status.code());
                 }
-                *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                return;
-            }
-            let _ = child.kill();
-            let wait_result = child.wait();
-            finish_capture_threads_after_direct_child(capture_threads);
-            if let Err(source) = wait_result {
-                *terminal_error
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(RuntimeError::Lifecycle {
-                    phase: "child shutdown wait",
-                    source,
-                });
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                 return;
@@ -1379,41 +1419,45 @@ fn supervise<P>(
                 let restart_cause = RevocationCause::LinkFailed;
                 #[cfg(not(windows))]
                 let restart_cause = RevocationCause::AdmissionFailed;
-                if let Err(error) = lease.revoke(restart_cause) {
+                #[cfg(test)]
+                let injected_capture_error = lease.injected_capture_retirement_failure();
+                #[cfg(not(test))]
+                let injected_capture_error = None;
+                let revocation_error = lease.revoke(restart_cause).err();
+                let _ = child.kill();
+                let wait_error = child.wait().err().map(|source| RuntimeError::Lifecycle {
+                    phase: "child restart wait",
+                    source,
+                });
+                let capture_error = capture_finish_error(
+                    finish_capture_threads_after_direct_child(capture_threads),
+                )
+                .or(injected_capture_error);
+                if let Some(error) =
+                    cleanup_error_by_priority(wait_error, revocation_error, capture_error)
+                {
                     *terminal_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner) = Some(error);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    finish_capture_threads_after_direct_child(capture_threads);
-                    *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                    let _ = events_tx.send(SupervisorEvent::Failed { attempt });
-                    return;
-                }
-                let _ = child.kill();
-                if let Err(source) = child.wait() {
-                    *terminal_error
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(RuntimeError::Lifecycle {
-                        phase: "child restart wait",
-                        source,
-                    });
-                    finish_capture_threads_after_direct_child(capture_threads);
                     *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     let _ = events_tx.send(SupervisorEvent::Failed { attempt });
                     return;
                 }
                 // A descendant can retain Bun's inherited pipe write end.
-                // Retired readers share the output mutex safely and exit when
-                // that handle closes; joining here would block successor
-                // provisioning on a process this supervisor does not own.
-                // KEL-78 remains the descendant reaping owner.
-                finish_capture_threads_after_direct_child(capture_threads);
+                // Retired readers drain only the bytes already queued after
+                // the direct child was reaped. Joining cannot then block
+                // successor provisioning on a process this supervisor does
+                // not own. KEL-78 remains the descendant reaping owner.
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 None
             }
             WaitResult::Exited(status) => {
-                finish_capture_threads_after_direct_child(capture_threads);
+                let capture_error = capture_finish_error(
+                    finish_capture_threads_after_direct_child(capture_threads),
+                );
+                #[cfg(test)]
+                let capture_error =
+                    capture_error.or_else(|| lease.injected_capture_retirement_failure());
                 *current_pid.lock().unwrap_or_else(PoisonError::into_inner) = None;
                 let code = status.code();
                 restart_attempt.store(0, Ordering::Release);
@@ -1425,7 +1469,12 @@ fn supervise<P>(
                 if !accepted {
                     record_self_termination(crash_ledger, output, pid, code);
                 }
-                if let Err(error) = lease.revoke(RevocationCause::ChildExited) {
+                let revoke_error = lease.revoke(RevocationCause::ChildExited).err();
+                // Revocation failure wins because it means generation authority
+                // may remain live. Capture retirement is still attempted first,
+                // and neither failure may erase the already-observed exit fact
+                // or its durable ledger record.
+                if let Some(error) = cleanup_error_by_priority(None, revoke_error, capture_error) {
                     *terminal_error
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner) = Some(error);
@@ -1547,7 +1596,13 @@ fn supervise<P>(
 }
 
 struct CaptureThreads {
+    #[cfg(unix)]
+    stdout: Option<JoinHandle<std::io::Result<()>>>,
+    #[cfg(unix)]
+    stderr: Option<JoinHandle<std::io::Result<()>>>,
+    #[cfg(windows)]
     stdout: Option<JoinHandle<()>>,
+    #[cfg(windows)]
     stderr: Option<JoinHandle<()>>,
     #[cfg(windows)]
     stdout_handle: Arc<AtomicUsize>,
@@ -1561,6 +1616,43 @@ struct CaptureThreads {
     stdout_lock: Arc<Mutex<()>>,
     #[cfg(windows)]
     stderr_lock: Arc<Mutex<()>>,
+    #[cfg(unix)]
+    stdout_control: Option<Box<UnixCaptureControl>>,
+    #[cfg(unix)]
+    stderr_control: Option<Box<UnixCaptureControl>>,
+}
+
+#[cfg(unix)]
+struct UnixCaptureControl {
+    reader: Arc<std::fs::File>,
+    wake: UnixStream,
+    budget: Arc<AtomicU64>,
+    iteration_lock: Arc<Mutex<()>>,
+    done: Arc<AtomicBool>,
+    #[cfg(test)]
+    faults: Arc<UnixCaptureFaults>,
+}
+
+#[cfg(all(unix, test))]
+#[derive(Default)]
+struct UnixCaptureFaults {
+    poll_interruptions: AtomicU8,
+    read_interruptions: AtomicU8,
+    wake_interruptions: AtomicU8,
+    fionread_interruptions: AtomicU8,
+    poll_calls: AtomicU8,
+    read_calls: AtomicU8,
+    wake_calls: AtomicU8,
+    fionread_calls: AtomicU8,
+}
+
+#[cfg(all(unix, test))]
+fn consume_test_interruption(counter: &AtomicU8) -> bool {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_ok()
 }
 
 struct CaptureStartError {
@@ -1599,7 +1691,19 @@ fn start_capture_threads(
             .as_ref()
             .map_or(0, |reader| reader.as_raw_handle().addr()),
     ));
+    #[cfg(unix)]
+    let mut stdout_control = None;
+    #[cfg(unix)]
+    let mut stderr_control = None;
     let stdout_thread = match stdout.map(|r| {
+        #[cfg(unix)]
+        let (thread, control) = spawn_capture_thread(r, Arc::clone(output), "stdout", true)?;
+        #[cfg(unix)]
+        {
+            stdout_control = Some(Box::new(control));
+            Ok(thread)
+        }
+        #[cfg(windows)]
         spawn_capture_thread(
             r,
             Arc::clone(output),
@@ -1637,12 +1741,24 @@ fn start_capture_threads(
                     stdout_lock: Arc::clone(&stdout_lock),
                     #[cfg(windows)]
                     stderr_lock: Arc::clone(&stderr_lock),
+                    #[cfg(unix)]
+                    stdout_control: None,
+                    #[cfg(unix)]
+                    stderr_control: None,
                 },
             });
         }
         None => None,
     };
     let stderr_thread = match stderr.map(|r| {
+        #[cfg(unix)]
+        let (thread, control) = spawn_capture_thread(r, Arc::clone(output), "stderr", false)?;
+        #[cfg(unix)]
+        {
+            stderr_control = Some(Box::new(control));
+            Ok(thread)
+        }
+        #[cfg(windows)]
         spawn_capture_thread(
             r,
             Arc::clone(output),
@@ -1677,6 +1793,10 @@ fn start_capture_threads(
                     stdout_lock: Arc::clone(&stdout_lock),
                     #[cfg(windows)]
                     stderr_lock: Arc::clone(&stderr_lock),
+                    #[cfg(unix)]
+                    stdout_control,
+                    #[cfg(unix)]
+                    stderr_control: None,
                 },
             });
         }
@@ -1697,20 +1817,53 @@ fn start_capture_threads(
         stdout_lock,
         #[cfg(windows)]
         stderr_lock,
+        #[cfg(unix)]
+        stdout_control,
+        #[cfg(unix)]
+        stderr_control,
     })
 }
 
-#[cfg(not(windows))]
-fn join_capture_threads(threads: CaptureThreads) {
-    if let Some(thread) = threads.stdout {
-        let _ = thread.join();
-    }
-    if let Some(thread) = threads.stderr {
-        let _ = thread.join();
-    }
+#[cfg(unix)]
+fn join_capture_threads(threads: CaptureThreads) -> std::io::Result<()> {
+    let stdout = join_capture_thread(threads.stdout, "stdout");
+    let stderr = join_capture_thread(threads.stderr, "stderr");
+    stdout?;
+    stderr
 }
 
-fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
+#[cfg(unix)]
+fn join_capture_thread(
+    thread: Option<JoinHandle<std::io::Result<()>>>,
+    stream: &str,
+) -> std::io::Result<()> {
+    thread.map_or(Ok(()), |thread| {
+        thread.join().map_err(|_| capture_worker_panic(stream))?
+    })
+}
+
+#[cfg(unix)]
+fn capture_worker_panic(stream: &str) -> std::io::Error {
+    std::io::Error::other(format!("{stream} capture worker panicked"))
+}
+
+#[cfg_attr(
+    windows,
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "the shared lifecycle caller propagates Unix capture-retirement failures"
+    )
+)]
+fn finish_capture_threads_after_direct_child(threads: CaptureThreads) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let stdout_retirement = retire_unix_capture(threads.stdout_control.as_deref());
+        let stderr_retirement = retire_unix_capture(threads.stderr_control.as_deref());
+        let joined = join_capture_threads(threads);
+        stdout_retirement?;
+        stderr_retirement?;
+        joined
+    }
     #[cfg(windows)]
     {
         // An uncontained descendant may retain an inherited pipe write end.
@@ -1735,9 +1888,58 @@ fn finish_capture_threads_after_direct_child(threads: CaptureThreads) {
         if let Some(thread) = threads.stderr {
             let _ = thread.join();
         }
+        Ok(())
     }
-    #[cfg(not(windows))]
-    join_capture_threads(threads);
+}
+
+fn capture_finish_error(result: std::io::Result<()>) -> Option<RuntimeError> {
+    result.err().map(|source| RuntimeError::Lifecycle {
+        phase: "capture retirement",
+        source,
+    })
+}
+
+#[cfg(unix)]
+fn retire_unix_capture(control: Option<&UnixCaptureControl>) -> std::io::Result<()> {
+    let Some(control) = control else {
+        return Ok(());
+    };
+    let _iteration = control
+        .iteration_lock
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let available = match rustix::io::retry_on_intr(|| {
+        #[cfg(test)]
+        {
+            control.faults.fionread_calls.fetch_add(1, Ordering::AcqRel);
+            if consume_test_interruption(&control.faults.fionread_interruptions) {
+                return Err(rustix::io::Errno::INTR);
+            }
+        }
+        rustix::io::ioctl_fionread(&control.reader)
+    }) {
+        Ok(available) => available,
+        Err(error) => {
+            control.budget.store(0, Ordering::Release);
+            let _ = rustix::io::retry_on_intr(|| rustix::io::write(&control.wake, &[1]));
+            return Err(std::io::Error::from(error));
+        }
+    };
+    control.budget.store(available, Ordering::Release);
+    match rustix::io::retry_on_intr(|| {
+        #[cfg(test)]
+        {
+            control.faults.wake_calls.fetch_add(1, Ordering::AcqRel);
+            if consume_test_interruption(&control.faults.wake_interruptions) {
+                return Err(rustix::io::Errno::INTR);
+            }
+        }
+        rustix::io::write(&control.wake, &[1])
+    }) {
+        Ok(_) | Err(rustix::io::Errno::AGAIN) => Ok(()),
+        Err(_) if control.done.load(Ordering::Acquire) => Ok(()),
+        Err(error) => Err(std::io::Error::from(error)),
+    }
 }
 
 #[cfg(windows)]
@@ -1908,27 +2110,151 @@ fn record_self_termination(
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn spawn_capture_thread(
-    mut reader: impl Read + Send + 'static,
+    reader: impl Into<OwnedFd>,
     output: Arc<Mutex<CaptureState>>,
     name: &'static str,
     is_stdout: bool,
-) -> std::io::Result<JoinHandle<()>> {
-    thread::Builder::new()
+) -> std::io::Result<(JoinHandle<std::io::Result<()>>, UnixCaptureControl)> {
+    #[cfg(test)]
+    {
+        spawn_capture_thread_with_faults(
+            reader,
+            output,
+            name,
+            is_stdout,
+            Arc::new(UnixCaptureFaults::default()),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        spawn_capture_thread_with_faults(reader, output, name, is_stdout)
+    }
+}
+
+#[cfg(unix)]
+fn spawn_capture_thread_with_faults(
+    reader: impl Into<OwnedFd>,
+    output: Arc<Mutex<CaptureState>>,
+    name: &'static str,
+    is_stdout: bool,
+    #[cfg(test)] faults: Arc<UnixCaptureFaults>,
+) -> std::io::Result<(JoinHandle<std::io::Result<()>>, UnixCaptureControl)> {
+    let reader = prepare_unix_capture_reader(reader)?;
+    let (wake_reader, wake) = UnixStream::pair()?;
+    set_close_on_exec(&wake_reader)?;
+    set_close_on_exec(&wake)?;
+    wake.set_nonblocking(true)?;
+    let budget = Arc::new(AtomicU64::new(u64::MAX));
+    let iteration_lock = Arc::new(Mutex::new(()));
+    let done = Arc::new(AtomicBool::new(false));
+    let worker_reader = Arc::clone(&reader);
+    let worker_budget = Arc::clone(&budget);
+    let worker_lock = Arc::clone(&iteration_lock);
+    let worker_done = Arc::clone(&done);
+    #[cfg(test)]
+    let worker_faults = Arc::clone(&faults);
+    let thread = thread::Builder::new()
         .name(format!("keld-runtime-capture-{name}"))
         .spawn(move || {
-            let mut buf = [0_u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => {
-                        let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
-                        guard.push_raw(&buf[..n], is_stdout);
+            let result = (|| {
+                let mut buf = [0_u8; 4096];
+                loop {
+                    let remaining = worker_budget.load(Ordering::Acquire);
+                    if remaining == 0 {
+                        return Ok(());
+                    }
+                    let mut ready = [
+                        rustix::event::PollFd::new(&worker_reader, rustix::event::PollFlags::IN),
+                        rustix::event::PollFd::new(&wake_reader, rustix::event::PollFlags::IN),
+                    ];
+                    rustix::io::retry_on_intr(|| {
+                        #[cfg(test)]
+                        {
+                            worker_faults.poll_calls.fetch_add(1, Ordering::AcqRel);
+                            if consume_test_interruption(&worker_faults.poll_interruptions) {
+                                return Err(rustix::io::Errno::INTR);
+                            }
+                        }
+                        rustix::event::poll(&mut ready, None)
+                    })
+                    .map_err(std::io::Error::from)?;
+                    let _iteration = worker_lock.lock().unwrap_or_else(PoisonError::into_inner);
+                    let remaining = worker_budget.load(Ordering::Acquire);
+                    if remaining == 0 {
+                        return Ok(());
+                    }
+                    let read_len = usize::try_from(remaining)
+                        .unwrap_or(buf.len())
+                        .min(buf.len());
+                    let mut borrowed_reader = &*worker_reader;
+                    let read_result = loop {
+                        #[cfg(test)]
+                        let result = {
+                            worker_faults.read_calls.fetch_add(1, Ordering::AcqRel);
+                            if consume_test_interruption(&worker_faults.read_interruptions) {
+                                Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+                            } else {
+                                borrowed_reader.read(&mut buf[..read_len])
+                            }
+                        };
+                        #[cfg(not(test))]
+                        let result = borrowed_reader.read(&mut buf[..read_len]);
+                        match result {
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                            result => break result,
+                        }
+                    };
+                    match read_result {
+                        Ok(0) => return Ok(()),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(error) => return Err(error),
+                        Ok(n) => {
+                            let mut guard = output.lock().unwrap_or_else(PoisonError::into_inner);
+                            guard.push_raw(&buf[..n], is_stdout);
+                            let _ = worker_budget.fetch_update(
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                                |current| {
+                                    (current != u64::MAX)
+                                        .then_some(current.saturating_sub(n as u64))
+                                },
+                            );
+                        }
                     }
                 }
-            }
-        })
+            })();
+            worker_done.store(true, Ordering::Release);
+            result
+        })?;
+    Ok((
+        thread,
+        UnixCaptureControl {
+            reader,
+            wake,
+            budget,
+            iteration_lock,
+            done,
+            #[cfg(test)]
+            faults,
+        },
+    ))
+}
+
+#[cfg(unix)]
+fn prepare_unix_capture_reader(reader: impl Into<OwnedFd>) -> std::io::Result<Arc<std::fs::File>> {
+    let reader = Arc::new(std::fs::File::from(reader.into()));
+    let flags = rustix::fs::fcntl_getfl(&reader).map_err(std::io::Error::from)?;
+    rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK)
+        .map_err(std::io::Error::from)?;
+    Ok(reader)
+}
+
+#[cfg(unix)]
+fn set_close_on_exec(fd: &impl std::os::fd::AsFd) -> std::io::Result<()> {
+    let flags = rustix::io::fcntl_getfd(fd).map_err(std::io::Error::from)?;
+    rustix::io::fcntl_setfd(fd, flags | rustix::io::FdFlags::CLOEXEC).map_err(std::io::Error::from)
 }
 
 #[cfg(windows)]
@@ -2197,9 +2523,18 @@ mod tests {
     struct RecordingLease {
         attempt: u32,
         record: Arc<Mutex<Vec<String>>>,
+        inject_capture_failure: bool,
     }
 
     impl GenerationLease for RecordingLease {
+        fn injected_capture_retirement_failure(&self) -> Option<RuntimeError> {
+            self.inject_capture_failure
+                .then(|| RuntimeError::Lifecycle {
+                    phase: "capture retirement",
+                    source: std::io::Error::other("injected capture retirement failure"),
+                })
+        }
+
         fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError> {
             let cause = match cause {
                 RevocationCause::ChildExited => "exited",
@@ -2219,9 +2554,19 @@ mod tests {
         }
     }
 
-    struct FailingRevokeLease;
+    struct FailingRevokeLease {
+        inject_capture_failure: bool,
+    }
 
     impl GenerationLease for FailingRevokeLease {
+        fn injected_capture_retirement_failure(&self) -> Option<RuntimeError> {
+            self.inject_capture_failure
+                .then(|| RuntimeError::Lifecycle {
+                    phase: "capture retirement",
+                    source: std::io::Error::other("injected capture retirement failure"),
+                })
+        }
+
         fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
             Err(RuntimeError::Lifecycle {
                 phase: "test revoke",
@@ -2233,6 +2578,7 @@ mod tests {
     struct RecordingPreparer {
         record: Arc<Mutex<Vec<String>>>,
         commands: Vec<Command>,
+        inject_capture_failure: bool,
     }
 
     struct GatedPreparer {
@@ -2272,6 +2618,7 @@ mod tests {
                 lease: RecordingLease {
                     attempt,
                     record: Arc::clone(&self.record),
+                    inject_capture_failure: self.inject_capture_failure,
                 },
             })
         }
@@ -2279,6 +2626,7 @@ mod tests {
 
     struct FailingRevokePreparer {
         command: Option<Command>,
+        inject_capture_failure: bool,
     }
 
     struct ShutdownExitPreparer {
@@ -2344,7 +2692,9 @@ mod tests {
             })?;
             Ok(PreparedChild {
                 command: command.into(),
-                lease: FailingRevokeLease,
+                lease: FailingRevokeLease {
+                    inject_capture_failure: self.inject_capture_failure,
+                },
             })
         }
     }
@@ -2908,30 +3258,38 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     struct HelperChildCleanup(Option<Child>);
 
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     impl HelperChildCleanup {
         const fn new(child: Child) -> Self {
             Self(Some(child))
         }
 
+        #[cfg(windows)]
         fn id(&self) -> u32 {
             self.0.as_ref().expect("helper child armed").id()
         }
 
         fn disarm(&mut self) {
-            let _ = self.0.take();
+            self.0.take();
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     impl Drop for HelperChildCleanup {
         fn drop(&mut self) {
             if let Some(mut child) = self.0.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                let kill = child.kill();
+                let wait = child.wait();
+                if let Err(error) = kill.and(wait.map(|_| ())) {
+                    if thread::panicking() {
+                        eprintln!("inherited-writer helper cleanup failed: {error}");
+                    } else {
+                        panic!("inherited-writer helper cleanup failed: {error}");
+                    }
+                }
             }
         }
     }
@@ -3247,6 +3605,570 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    struct UnixCaptureFixture {
+        _temp: tempfile::TempDir,
+        supervisor: Option<Supervisor>,
+        parent: Option<UnixStream>,
+        descendant: Option<UnixStream>,
+        descendant_process: Option<ObservedUnixProcess>,
+        descendant_exited: bool,
+    }
+
+    #[cfg(unix)]
+    impl UnixCaptureFixture {
+        fn start() -> Self {
+            Self::start_with_missing_descendant(false)
+        }
+
+        fn start_with_missing_descendant(missing_descendant: bool) -> Self {
+            use std::os::unix::net::UnixListener;
+
+            let temp = tempfile::tempdir().expect("capture retirement tempdir");
+            let socket = temp.path().join("control.sock");
+            let listener = UnixListener::bind(&socket).expect("bind private control socket");
+            let factory_attempt = Arc::new(AtomicU32::new(0));
+            let factory_counter = Arc::clone(&factory_attempt);
+            let first_socket = socket.clone();
+            let supervisor = Supervisor::start(RestartPolicy::default(), move || {
+                if factory_counter.fetch_add(1, Ordering::AcqRel) == 0 {
+                    let mut command = unix_capture_parent_command(&first_socket);
+                    if missing_descendant {
+                        command.env("KELD_RUNTIME_CAPTURE_MISSING_DESCENDANT", "1");
+                    }
+                    command
+                } else {
+                    long_running_command()
+                }
+            })
+            .expect("capture fixture parent starts");
+            // The cleanup owner is armed before the first fixture assertion or
+            // control accept. Any missing/malformed peer unwinds through it.
+            let mut fixture = Self {
+                _temp: temp,
+                supervisor: Some(supervisor),
+                parent: None,
+                descendant: None,
+                descendant_process: None,
+                descendant_exited: false,
+            };
+            assert!(matches!(
+                fixture.supervisor().recv_event(Duration::from_secs(2)),
+                Some(SupervisorEvent::Started { attempt: 1, .. })
+            ));
+
+            while fixture.parent.is_none() || fixture.descendant.is_none() {
+                let (role, pid, stream) = accept_unix_capture_control(&listener, &socket);
+                match role.as_str() {
+                    "P" => fixture.parent = Some(stream),
+                    "D" => {
+                        fixture.descendant_process = Some(
+                            ObservedUnixProcess::new(pid)
+                                .expect("observe exact live descendant process"),
+                        );
+                        fixture.descendant = Some(stream);
+                    }
+                    other => panic!("unexpected fixture peer role {other}"),
+                }
+            }
+            fixture
+        }
+
+        fn supervisor(&self) -> &Supervisor {
+            self.supervisor.as_ref().expect("supervisor armed")
+        }
+
+        fn exit_parent(&mut self) {
+            self.parent
+                .as_mut()
+                .expect("parent control armed")
+                .write_all(b"E")
+                .expect("release parent exit");
+        }
+
+        fn await_successor(&self) {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "retired capture readers blocked successor provisioning"
+                );
+                if matches!(
+                    self.supervisor().recv_event(Duration::from_millis(100)),
+                    Some(SupervisorEvent::Started { attempt: 2, .. })
+                ) {
+                    return;
+                }
+            }
+        }
+
+        fn release_descendant_and_assert_late_excluded(&mut self, captured: &CapturedOutput) {
+            self.descendant
+                .as_mut()
+                .expect("descendant control armed")
+                .write_all(b"L")
+                .expect("release descendant late writes");
+            let mut acknowledgment = [0_u8; 1];
+            self.descendant
+                .as_mut()
+                .expect("descendant control armed")
+                .read_exact(&mut acknowledgment)
+                .expect("descendant completion acknowledgment");
+            assert_eq!(acknowledgment, [b'A']);
+            self.descendant_process
+                .as_ref()
+                .expect("descendant process observed")
+                .wait_for_exit()
+                .expect("observed descendant process exits after late-write acknowledgment");
+            self.descendant_exited = true;
+            let after = self.supervisor().output();
+            assert_eq!(captured.stdout, after.stdout);
+            assert_eq!(captured.stderr, after.stderr);
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for UnixCaptureFixture {
+        fn drop(&mut self) {
+            let descendant_cleanup = if self.descendant_exited {
+                Ok(())
+            } else {
+                match (self.descendant.as_mut(), self.descendant_process.as_ref()) {
+                    (Some(control), Some(process)) => control
+                        .write_all(b"Q")
+                        .and_then(|()| process.wait_for_exit()),
+                    (None, None) => Ok(()),
+                    _ => Err(std::io::Error::other(
+                        "descendant control and process observer disagree",
+                    )),
+                }
+            };
+            let outcome = self.supervisor.take().map(|supervisor| {
+                supervisor.shutdown();
+                supervisor.wait_for_outcome()
+            });
+            if let Err(error) = descendant_cleanup {
+                if thread::panicking() {
+                    eprintln!("capture fixture descendant cleanup failed: {error}");
+                } else {
+                    panic!("capture fixture descendant cleanup failed: {error}");
+                }
+            }
+            if outcome
+                .as_ref()
+                .is_some_and(|outcome| !matches!(outcome, SupervisorOutcome::Stopped))
+            {
+                if thread::panicking() {
+                    eprintln!("capture fixture supervisor cleanup failed: {outcome:?}");
+                } else {
+                    panic!("capture fixture supervisor cleanup failed: {outcome:?}");
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct ObservedUnixProcess {
+        pidfd: OwnedFd,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl ObservedUnixProcess {
+        fn new(pid: u32) -> std::io::Result<Self> {
+            let raw_pid = i32::try_from(pid)
+                .map_err(|_| std::io::Error::other("descendant PID exceeds i32"))?;
+            let pid = rustix::process::Pid::from_raw(raw_pid)
+                .ok_or_else(|| std::io::Error::other("invalid descendant PID"))?;
+            let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
+                .map_err(std::io::Error::from)?;
+            Ok(Self { pidfd })
+        }
+
+        fn wait_for_exit(&self) -> std::io::Result<()> {
+            let mut ready = [rustix::event::PollFd::new(
+                &self.pidfd,
+                rustix::event::PollFlags::IN,
+            )];
+            let timeout = rustix::event::Timespec {
+                tv_sec: 10,
+                tv_nsec: 0,
+            };
+            match rustix::event::poll(&mut ready, Some(&timeout)).map_err(std::io::Error::from)? {
+                1 => Ok(()),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "descendant process did not exit",
+                )),
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ObservedUnixProcess {
+        queue: OwnedFd,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ObservedUnixProcess {
+        #[allow(unsafe_code)] // test-only EVFILT_PROC registration contains no borrowed file descriptor
+        fn new(pid: u32) -> std::io::Result<Self> {
+            let raw_pid = i32::try_from(pid)
+                .map_err(|_| std::io::Error::other("descendant PID exceeds i32"))?;
+            let pid = rustix::process::Pid::from_raw(raw_pid)
+                .ok_or_else(|| std::io::Error::other("invalid descendant PID"))?;
+            let queue = rustix::event::kqueue::kqueue().map_err(std::io::Error::from)?;
+            let registration = rustix::event::kqueue::Event::new(
+                rustix::event::kqueue::EventFilter::Proc {
+                    pid,
+                    flags: rustix::event::kqueue::ProcessEvents::EXIT,
+                },
+                rustix::event::kqueue::EventFlags::ADD | rustix::event::kqueue::EventFlags::ONESHOT,
+                std::ptr::null_mut(),
+            );
+            let mut no_events: [rustix::event::kqueue::Event; 0] = [];
+            // SAFETY: EVFILT_PROC identifies the already-live PID and contains
+            // no borrowed file descriptor. `queue` remains owned by `Self`.
+            unsafe {
+                rustix::event::kqueue::kevent(
+                    &queue,
+                    &[registration],
+                    &mut no_events,
+                    Some(Duration::ZERO),
+                )
+            }
+            .map_err(std::io::Error::from)?;
+            Ok(Self { queue })
+        }
+
+        #[allow(unsafe_code)] // test-only wait on the owned kqueue registered in `new`
+        fn wait_for_exit(&self) -> std::io::Result<()> {
+            let mut event_storage =
+                [std::mem::MaybeUninit::<rustix::event::kqueue::Event>::uninit()];
+            // SAFETY: the changelist is empty and `self.queue` owns the only
+            // kqueue descriptor; the registered EVFILT_PROC contains no fd.
+            let (events, _) = unsafe {
+                rustix::event::kqueue::kevent(
+                    &self.queue,
+                    &[],
+                    &mut event_storage,
+                    Some(Duration::from_secs(10)),
+                )
+            }
+            .map_err(std::io::Error::from)?;
+            (!events.is_empty()).then_some(()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "descendant process did not exit",
+                )
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    fn accept_unix_capture_control(
+        listener: &std::os::unix::net::UnixListener,
+        wake_path: &Path,
+    ) -> (String, u32, UnixStream) {
+        let listener = listener.try_clone().expect("clone control listener");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let accept = thread::spawn(move || {
+            let _ = sender.send(listener.accept().map(|(stream, _)| stream));
+        });
+        let mut stream = match receiver.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => result.expect("accept capture control"),
+            Err(error) => {
+                let _ = UnixStream::connect(wake_path);
+                accept.join().expect("join control accept worker");
+                panic!("timed out accepting capture control: {error}");
+            }
+        };
+        accept.join().expect("join control accept worker");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("set control read timeout");
+        let mut line = Vec::with_capacity(33);
+        loop {
+            let mut byte = [0_u8; 1];
+            stream.read_exact(&mut byte).expect("read control identity");
+            if byte[0] == b'\n' {
+                break;
+            }
+            line.push(byte[0]);
+            assert!(line.len() <= 32, "control identity too long");
+        }
+        let line = String::from_utf8(line).expect("UTF-8 control identity");
+        let mut fields = line.split_whitespace();
+        let role = fields.next().expect("control role").to_owned();
+        let pid = fields
+            .next()
+            .expect("control PID")
+            .parse()
+            .expect("numeric control PID");
+        assert!(
+            fields.next().is_none(),
+            "unexpected control identity fields"
+        );
+        (role, pid, stream)
+    }
+
+    #[cfg(unix)]
+    fn unix_capture_parent_command(socket: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .args([
+                "--exact",
+                "tests::unix_capture_parent_helper_process",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KELD_RUNTIME_CAPTURE_CONTROL", socket);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_natural_exit_retires_inherited_capture_without_late_tail() {
+        let mut fixture = UnixCaptureFixture::start();
+        fixture.exit_parent();
+        fixture.await_successor();
+        let captured = fixture.supervisor().output();
+        assert!(captured.stdout.contains("direct-parent-out"));
+        assert!(captured.stderr.contains("direct-parent-err"));
+        fixture.release_descendant_and_assert_late_excluded(&captured);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unix_requested_restart_retires_inherited_capture() {
+        let mut fixture = UnixCaptureFixture::start();
+        fixture.supervisor().restart_generation(1);
+        fixture.await_successor();
+        let captured = fixture.supervisor().output();
+        fixture.release_descendant_and_assert_late_excluded(&captured);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_orderly_shutdown_retires_inherited_capture() {
+        let mut fixture = UnixCaptureFixture::start();
+        fixture.supervisor().shutdown();
+        assert!(matches!(
+            fixture.supervisor().wait_for_outcome(),
+            SupervisorOutcome::Stopped
+        ));
+        let captured = fixture.supervisor().output();
+        fixture.release_descendant_and_assert_late_excluded(&captured);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_capture_retries_interrupted_poll_and_read_on_live_pipe() {
+        let (reader, mut writer) = UnixStream::pair().expect("native capture pipe");
+        writer
+            .write_all(b"eintr-payload")
+            .expect("seed live capture pipe");
+        let output = Arc::new(Mutex::new(
+            CaptureState::new(&[]).expect("empty marker set"),
+        ));
+        let faults = Arc::new(UnixCaptureFaults::default());
+        faults.poll_interruptions.store(1, Ordering::Release);
+        faults.read_interruptions.store(1, Ordering::Release);
+        let (worker, control) =
+            spawn_capture_thread_with_faults(reader, Arc::clone(&output), "eintr", true, faults)
+                .expect("spawn capture worker");
+
+        await_capture_bytes(&output, b"eintr-payload");
+        retire_unix_capture(Some(&control)).expect("retire after interrupted capture operations");
+        join_capture_thread(Some(worker), "eintr").expect("join interrupted capture worker");
+        assert_eq!(control.faults.poll_interruptions.load(Ordering::Acquire), 0);
+        assert_eq!(control.faults.read_interruptions.load(Ordering::Acquire), 0);
+        assert!(control.faults.poll_calls.load(Ordering::Acquire) >= 2);
+        assert_eq!(control.faults.read_calls.load(Ordering::Acquire), 2);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_capture_retirement_retries_interrupted_fionread_and_wake() {
+        let (reader, writer) = UnixStream::pair().expect("native capture pipe");
+        let output = Arc::new(Mutex::new(
+            CaptureState::new(&[]).expect("empty marker set"),
+        ));
+        let (worker, control) = spawn_capture_thread(reader, output, "retirement-eintr", true)
+            .expect("spawn capture worker");
+        await_atomic_at_least(&control.faults.poll_calls, 1, "capture worker entered poll");
+        control
+            .faults
+            .fionread_interruptions
+            .store(1, Ordering::Release);
+        control
+            .faults
+            .wake_interruptions
+            .store(1, Ordering::Release);
+
+        retire_unix_capture(Some(&control)).expect("retire after interrupted control operations");
+        join_capture_thread(Some(worker), "retirement-eintr")
+            .expect("wake joins worker while pipe writer remains live");
+        assert_eq!(control.faults.fionread_calls.load(Ordering::Acquire), 2);
+        assert_eq!(control.faults.wake_calls.load(Ordering::Acquire), 2);
+        assert_eq!(
+            control
+                .faults
+                .fionread_interruptions
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(control.faults.wake_interruptions.load(Ordering::Acquire), 0);
+        drop(writer);
+    }
+
+    #[cfg(unix)]
+    fn await_capture_bytes(output: &Arc<Mutex<CaptureState>>, expected: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if output
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .transcript
+                .stdout
+                .as_bytes()
+                .windows(expected.len())
+                .any(|window| window == expected)
+            {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("capture worker did not publish expected bytes");
+    }
+
+    #[cfg(unix)]
+    fn await_atomic_at_least(counter: &AtomicU8, expected: u8, description: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if counter.load(Ordering::Acquire) >= expected {
+                return;
+            }
+            thread::yield_now();
+        }
+        panic!("timed out waiting for {description}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_fixture_drop_before_release_cleans_up_and_allows_next_run() {
+        drop(UnixCaptureFixture::start());
+        let mut next = UnixCaptureFixture::start();
+        next.exit_parent();
+        next.await_successor();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_fixture_missing_peer_unwinds_cleanup_and_allows_next_run() {
+        assert!(
+            std::panic::catch_unwind(|| UnixCaptureFixture::start_with_missing_descendant(true))
+                .is_err(),
+            "missing descendant peer must fail fixture setup"
+        );
+        let mut next = UnixCaptureFixture::start();
+        next.exit_parent();
+        next.await_successor();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "fixture helper process"]
+    fn unix_capture_parent_helper_process() {
+        let socket =
+            std::env::var_os("KELD_RUNTIME_CAPTURE_CONTROL").expect("capture control socket");
+        println!("direct-parent-out");
+        std::io::stdout()
+            .flush()
+            .expect("flush direct parent stdout");
+        eprintln!("direct-parent-err");
+        std::io::stderr()
+            .flush()
+            .expect("flush direct parent stderr");
+        let mut descendant = Command::new(std::env::current_exe().expect("current test binary"));
+        descendant
+            .args([
+                "--exact",
+                "tests::unix_capture_descendant_helper_process",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KELD_RUNTIME_CAPTURE_CONTROL", &socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        let descendant = descendant
+            .spawn()
+            .expect("spawn inherited-writer descendant");
+        let mut descendant = HelperChildCleanup::new(descendant);
+        let mut control = UnixStream::connect(socket).expect("connect parent control");
+        writeln!(control, "P {}", std::process::id()).expect("identify parent peer");
+        control.flush().expect("flush parent identity");
+        let mut command = [0_u8; 1];
+        control
+            .read_exact(&mut command)
+            .expect("read parent command");
+        assert_eq!(command, [b'E']);
+        descendant.disarm();
+        std::process::exit(17);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "fixture helper process"]
+    fn unix_capture_descendant_helper_process() {
+        if std::env::var_os("KELD_RUNTIME_CAPTURE_MISSING_DESCENDANT").is_some() {
+            return;
+        }
+        let socket =
+            std::env::var_os("KELD_RUNTIME_CAPTURE_CONTROL").expect("capture control socket");
+        let mut control = UnixStream::connect(socket).expect("connect descendant control");
+        writeln!(control, "D {}", std::process::id()).expect("identify descendant peer");
+        control.flush().expect("flush descendant identity");
+        let mut command = [0_u8; 1];
+        match control.read_exact(&mut command) {
+            Ok(()) if command == *b"L" => {
+                let stdout = std::io::stdout().write_all(b"late-descendant-out\n");
+                let stderr = std::io::stderr().write_all(b"late-descendant-err\n");
+                assert!(
+                    matches!(stdout, Err(ref error) if error.kind() == std::io::ErrorKind::BrokenPipe),
+                    "retired stdout writer remained open: {stdout:?}"
+                );
+                assert!(
+                    matches!(stderr, Err(ref error) if error.kind() == std::io::ErrorKind::BrokenPipe),
+                    "retired stderr writer remained open: {stderr:?}"
+                );
+            }
+            Ok(()) | Err(_) => {}
+        }
+        control
+            .write_all(b"A")
+            .expect("acknowledge descendant command completion");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_retirement_wakeup_is_not_lost_before_worker_wait() {
+        for _ in 0..32 {
+            let (reader, _writer) = UnixStream::pair().expect("private test pipe");
+            let output = Arc::new(Mutex::new(
+                CaptureState::new(&[]).expect("empty marker set"),
+            ));
+            let (thread, control) = spawn_capture_thread(reader, output, "lost-wake-test", true)
+                .expect("capture worker starts");
+            retire_unix_capture(Some(&control)).expect("retirement snapshot and wake");
+            thread
+                .join()
+                .expect("capture worker does not panic")
+                .expect("capture worker exits cleanly");
+        }
+    }
+
     #[test]
     fn prepared_lease_revokes_before_successor_preparation() {
         let record = Arc::new(Mutex::new(Vec::new()));
@@ -3259,6 +4181,7 @@ mod tests {
             RecordingPreparer {
                 record: Arc::clone(&record),
                 commands: vec![shell_command("exit 1"), shell_command("exit 0")],
+                inject_capture_failure: false,
             },
         )
         .expect("first prepared child must spawn");
@@ -3280,6 +4203,54 @@ mod tests {
     }
 
     #[test]
+    fn capture_failure_preserves_exit_ledger_and_mandatory_revocation() {
+        let record = Arc::new(Mutex::new(Vec::new()));
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            RecordingPreparer {
+                record: Arc::clone(&record),
+                commands: vec![shell_command(&joined_steps(&[
+                    "echo exit-before-capture-failure",
+                    "exit 17",
+                ]))],
+                inject_capture_failure: true,
+            },
+        )
+        .expect("prepared child starts");
+
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Started { attempt: 1, .. })
+        ));
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Exited { code: Some(17), .. })
+        ));
+        assert!(matches!(
+            supervisor.recv_event(Duration::from_secs(2)),
+            Some(SupervisorEvent::Failed { attempt: 1 })
+        ));
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "capture retirement",
+                ..
+            })
+        ));
+        assert_eq!(supervisor.crash_ledger().self_termination_count, 1);
+        assert!(
+            supervisor
+                .output()
+                .stdout
+                .contains("exit-before-capture-failure")
+        );
+        assert_eq!(
+            *record.lock().unwrap_or_else(PoisonError::into_inner),
+            vec!["prepare:1".to_owned(), "revoke:1:exited".to_owned()]
+        );
+    }
+
+    #[test]
     fn prepared_spawn_failure_revokes_unstarted_lease() {
         let record = Arc::new(Mutex::new(Vec::new()));
         let result = Supervisor::start_prepared(
@@ -3287,6 +4258,7 @@ mod tests {
             RecordingPreparer {
                 record: Arc::clone(&record),
                 commands: vec![Command::new("keld-runtime-definitely-not-a-real-binary")],
+                inject_capture_failure: false,
             },
         );
         assert!(matches!(result, Err(RuntimeError::Spawn(_))), "{result:?}");
@@ -3330,6 +4302,7 @@ mod tests {
             RestartPolicy::default(),
             FailingRevokePreparer {
                 command: Some(shell_command("exit 0")),
+                inject_capture_failure: false,
             },
         )
         .expect("child must spawn");
@@ -3359,6 +4332,51 @@ mod tests {
                 .is_some_and(|record| record.exit_code == Some(0)),
             "{ledger:?}"
         );
+    }
+
+    #[test]
+    fn shutdown_revocation_failure_wins_over_capture_retirement_failure() {
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            FailingRevokePreparer {
+                command: Some(long_running_command()),
+                inject_capture_failure: true,
+            },
+        )
+        .expect("child must spawn");
+        let _ = recv_started(&supervisor);
+
+        supervisor.shutdown();
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "test revoke",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn requested_restart_revocation_failure_wins_over_capture_retirement_failure() {
+        let supervisor = Supervisor::start_prepared(
+            RestartPolicy::default(),
+            FailingRevokePreparer {
+                command: Some(long_running_command()),
+                inject_capture_failure: true,
+            },
+        )
+        .expect("child must spawn");
+        let (_, attempt) = recv_started(&supervisor);
+
+        supervisor.restart_generation(attempt);
+        assert!(matches!(
+            supervisor.wait_for_outcome(),
+            SupervisorOutcome::Failed(RuntimeError::Lifecycle {
+                phase: "test revoke",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -3393,6 +4411,7 @@ mod tests {
                 inner: RecordingPreparer {
                     record: Arc::clone(&record),
                     commands: vec![shell_command("exit 1"), shell_command("sleep 1")],
+                    inject_capture_failure: false,
                 },
                 entered_tx,
                 release_rx,
@@ -3439,6 +4458,7 @@ mod tests {
             RecordingPreparer {
                 record: Arc::clone(&record),
                 commands: vec![shell_command("exit 1"), shell_command("exit 0")],
+                inject_capture_failure: false,
             },
         )
         .expect("initial child must spawn");

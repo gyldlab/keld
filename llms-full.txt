@@ -2519,6 +2519,18 @@ retained `run_dev_echo` diagnostic/test seam also spawns through
 the supervisor, not a bare `Command::new("bun")` wait;
 the app-link env var is still `KELD_APP_LINK=<endpoint>#<64 hex chars>`
 (`docs/architecture/02-ipc.md` §1).
+
+Unix capture retirement serializes a post-direct-child `FIONREAD` snapshot with
+the reader iteration, publishes that finite queued-byte budget, wakes the `poll`
+worker through a private close-on-exec socket, drains at most the snapshot, and
+joins. Natural exit still publishes the observed exit and ledger and revokes the
+generation when capture retirement fails; a revocation error takes precedence
+because authority may remain live. Shutdown and requested restart, where supported,
+reap the direct child before the same retirement. Capture retirement neither
+terminates nor reaps an inherited-writer descendant: KEL-78 owns that process family.
+KEL-118's separate blanket descendant-group cleanup criterion remains open under
+that owner; finite capture retirement alone does not satisfy it.
+
 Teardown reads the supervision verdict rather than dropping it (KEL-105): if
 the app process dies without a successful recovery, the no-flag host emits
 `KELD-CORE-033` with the owning `KELD-RUNTIME-*` error and captured stderr, then
