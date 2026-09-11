@@ -565,15 +565,9 @@ if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "media evidence head SHA was missing or malformed: $head_sha" >&2
   exit 1
 fi
-owned_paths=(
-  crates/keld-wv/examples/linux_media_guard.rs
-  crates/keld-wv/src/media.rs
-  crates/keld-wv/tests/fixtures/linux_media_interpose.c
-  crates/keld-wv/tests/linux_media_guard.sh
-)
-if ! git diff --quiet HEAD -- "${owned_paths[@]}" ||
-  ! git diff --cached --quiet HEAD -- "${owned_paths[@]}"; then
-  echo "media evidence owning sources differ from recorded HEAD $head_sha" >&2
+if ! git diff --quiet HEAD -- || ! git diff --cached --quiet HEAD -- ||
+  [ -n "$(git ls-files --others --exclude-standard)" ]; then
+  echo "media evidence checkout differs from recorded HEAD $head_sha" >&2
   exit 1
 fi
 example_blob=$(git rev-parse HEAD:crates/keld-wv/examples/linux_media_guard.rs)
