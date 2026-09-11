@@ -174,8 +174,8 @@ before native binding load fails during first `Database` construction with
 `ERR_DLOPEN_FAILED`. That failed row binds the selected candidate digest
 `707a4b480026ccd1fb8e308d43c7248e779d35eeefa09559ec9bb521bb97bb3b`
 without claiming it loaded successfully. The immutable
-[fixture](https://github.com/gyldlab/keld-benches/tree/70c7d37780f9996a74afd0af48b2d0ff9b728bd5/windows/bun/better-sqlite3-differential)
-and [raw receipt](https://github.com/gyldlab/keld-benches/blob/70c7d37780f9996a74afd0af48b2d0ff9b728bd5/windows/bun/better-sqlite3-differential/results/20260911T215043844Z-3916.windows-x64.raw.json)
+[fixture](https://github.com/gyldlab/keld-benches/tree/5d2db1232c46db6aef0149306a9b766c7a7dd7f1/windows/bun/better-sqlite3-differential)
+and [raw receipt](https://github.com/gyldlab/keld-benches/blob/5d2db1232c46db6aef0149306a9b766c7a7dd7f1/windows/bun/better-sqlite3-differential/results/20260911T221908487Z-3044.windows-x64.raw.json)
 retain the exact commands, exits, runtime queries, outputs, source/lock digests, and
 negative controls. Neither row generalizes to another package version, artifact,
 architecture, Bun revision, or operation. Planned `keld doctor` addon guidance will
