@@ -117,6 +117,7 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "$fixturePath = (Resolve-Path -LiteralPath $fixture[0].executable).Path",
     "$fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixturePath).Hash.ToLowerInvariant()",
     "$evidenceRoot = Join-Path $env:RUNNER_TEMP 'keld-windows-media'",
+    "if (Test-Path -LiteralPath $evidenceRoot) { throw 'Windows media evidence root must be absent before the child oracle starts' }",
     "$fixtureTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar",
     "$sharedProfileRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'dev.keld')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar",
     "if ($fixtureTempRoot.StartsWith($sharedProfileRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Windows media fixture temp root overlaps the shared dev.keld profile root' }",
@@ -3696,6 +3697,10 @@ mod tests {
             (
                 "Test-Path -LiteralPath $resultPath -PathType Leaf",
                 "Test-Path -LiteralPath $resultPath -PathType Container",
+            ),
+            (
+                "Test-Path -LiteralPath $evidenceRoot",
+                "Test-Path -LiteralPath $resultPath",
             ),
             (
                 "@($result.rows).Count -ne 10",
