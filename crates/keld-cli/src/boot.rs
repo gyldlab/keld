@@ -31,6 +31,12 @@ use windows_sys::Win32::Storage::FileSystem::{
 const PERMISSIONS_BYTES: &[u8] = b"{}\n";
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const PERMISSIONS_FILE: &str = "keld.permissions.jsonc";
+/// Hello/`keld create` embeds the canonical TypeScript transport beside the
+/// entry (KEL-136). The boot compiler copies it when present so Bun can resolve
+/// `./kipc-transport.ts` from the staged entry. Absence stays valid for
+/// fixtures that inline a self-contained entry.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const KIPC_TRANSPORT_REL: &str = "src/kipc-transport.ts";
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -339,6 +345,33 @@ where
 
     stage_project_file(&root, &entry, &entry_source, "entry")?;
     stage_project_file(&root, &renderer, &renderer_source, "renderer")?;
+    // Probe with two Path components. `join("src/kipc-transport.ts")` then
+    // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
+    // separator); `contained_source` still uses the same relative string as
+    // `entry` (`src/main.ts`), which `canonicalize` already accepts.
+    match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
+        Ok(metadata) if metadata.is_file() => {
+            let transport_source =
+                contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
+            owner_check(&transport_source)?;
+            stage_project_file(
+                &root,
+                KIPC_TRANSPORT_REL,
+                &transport_source,
+                "kipc transport",
+            )?;
+        }
+        Ok(_) => {
+            return Err(BootCompileError::new(
+                "kipc transport",
+                "target is not a regular file",
+            ));
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(BootCompileError::new("kipc transport", source.to_string()));
+        }
+    }
     write_new_file(
         &root.join(PERMISSIONS_FILE),
         PERMISSIONS_BYTES,
@@ -896,6 +929,10 @@ mod tests {
             fs::read(staged.root().join("index.html")).expect("renderer"),
             b"<p id=exact>fixture</p>\n"
         );
+        assert!(
+            !staged.root().join("src/kipc-transport.ts").exists(),
+            "absent kipc sidecar must not be invented"
+        );
 
         let source_metadata = fs::metadata(&source_host).expect("source metadata");
         let staged_metadata = fs::metadata(staged.host()).expect("staged metadata");
@@ -944,6 +981,18 @@ mod tests {
         assert_eq!(
             descriptor["permissions"]["content_sha256"],
             format!("sha256:{digest:x}")
+        );
+    }
+
+    #[test]
+    fn stage_copies_kipc_transport_sidecar_when_present() {
+        let (_temp, project, source_host) = fixture();
+        let bytes = b"export const KEL136 = 1;\n";
+        fs::write(project.join("src/kipc-transport.ts"), bytes).expect("sidecar");
+        let staged = stage_dev_boot(&project, &source_host).expect("stage with sidecar");
+        assert_eq!(
+            fs::read(staged.root().join("src/kipc-transport.ts")).expect("staged sidecar"),
+            bytes
         );
     }
 

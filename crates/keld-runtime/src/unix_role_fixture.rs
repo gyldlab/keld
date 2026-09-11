@@ -120,7 +120,13 @@ impl RoleScriptEnv {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../keld-cli/templates/hello/src/kipc.ts"),
             dir.join("kipc.ts"),
         )
-        .expect("copy kipc.ts");
+        .expect("copy hello echo adapter");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packages/@keld/kipc/src/transport.ts"),
+            dir.join("kipc-transport.ts"),
+        )
+        .expect("copy canonical kipc transport");
         fs::write(dir.join("role.ts"), ROLE_SCRIPT).expect("write fixture");
         Self { dir }
     }

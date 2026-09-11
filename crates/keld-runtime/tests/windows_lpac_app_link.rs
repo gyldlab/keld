@@ -751,7 +751,12 @@ fn write_bun_client(runtime: &Path) -> PathBuf {
         runtime.join("kipc.ts"),
         include_str!("../../keld-cli/templates/hello/src/kipc.ts"),
     )
-    .expect("copy unchanged product client");
+    .expect("copy hello echo adapter");
+    fs::write(
+        runtime.join("kipc-transport.ts"),
+        include_str!("../../../packages/@keld/kipc/src/transport.ts"),
+    )
+    .expect("copy canonical kipc transport");
     let entry = runtime.join("client.ts");
     fs::write(
         &entry,

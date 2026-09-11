@@ -18,6 +18,9 @@ ci: agents-md atomic-protocol agent-context ci-router-test hooks-test doc-placeh
 
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:
+    cd packages/@keld/kipc && bun install --frozen-lockfile
+    cd packages/@keld/kipc && bun run typecheck
+    cd packages/@keld/kipc && bun test
     cd packages/@keld/electron && bun install --frozen-lockfile
     cd packages/@keld/electron && bun run typecheck
     cd packages/@keld/electron && bun test

@@ -1,5 +1,5 @@
 /**
- * Golden-vector tests for `kipc.ts` (KEL-30).
+ * Golden-vector tests for the hello echo adapter and shared transport (KEL-30 / KEL-136).
  *
  * Not part of `keld create`'s scaffold output — `template.rs`'s
  * `HELLO_TEMPLATE` list is an explicit allow-list, not a directory glob, and

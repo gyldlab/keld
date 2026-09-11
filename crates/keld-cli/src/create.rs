@@ -123,6 +123,20 @@ pub fn create_project(parent: &Path, name: &str) -> Result<PathBuf, CreateError>
 mod tests {
     use super::*;
 
+    /// Regression for Ubuntu `KELD-CORE-037`: Bun `from "./kipc-transport.ts"`
+    /// must resolve a real sidecar in the created hello tree.
+    fn assert_created_hello_keeps_kipc_transport(root: &Path, main: &str) {
+        let sidecar = root.join("src").join("kipc-transport.ts");
+        assert!(
+            main.contains("from \"./kipc-transport.ts\""),
+            "hello main.ts must import the sidecar: {main}"
+        );
+        assert!(
+            sidecar.is_file(),
+            "created hello tree imported ./kipc-transport.ts but src/kipc-transport.ts is missing"
+        );
+    }
+
     fn file_count(path: &Path) -> usize {
         let mut n = 0;
         for entry in fs::read_dir(path).expect("read_dir") {
@@ -224,7 +238,11 @@ mod tests {
     fn writes_expected_file_contents() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = create_project(dir.path(), "demo").expect("create");
-        assert_eq!(file_count(&root), 6, "hello template is exactly six files");
+        assert_eq!(
+            file_count(&root),
+            7,
+            "hello template is exactly seven files"
+        );
 
         let config = fs::read_to_string(root.join("keld.config.ts")).expect("config");
         assert!(config.contains("name: \"demo\""), "{config}");
@@ -251,10 +269,24 @@ mod tests {
             main.contains("export async function echoRoundtrip"),
             "{main}"
         );
-        assert!(main.contains("Bun.connect"), "{main}");
+        assert!(
+            main.contains("from \"./kipc-transport.ts\""),
+            "echo adapter must import the embedded canonical transport: {main}"
+        );
         assert!(
             !main.contains("from \"./kipc\""),
-            "the configured entry must be self-contained after staging: {main}"
+            "the configured entry must not import the compatibility facade: {main}"
+        );
+        assert_created_hello_keeps_kipc_transport(&root, &main);
+        let transport =
+            fs::read_to_string(root.join("src").join("kipc-transport.ts")).expect("kipc-transport");
+        assert!(
+            transport.contains("Bun.connect"),
+            "canonical transport owns the socket connect: {transport}"
+        );
+        assert!(
+            transport.contains("export class FrameReader"),
+            "generated transport must be the implementation, not the in-repo shim: {transport}"
         );
         assert!(
             !main.contains("ipc-client"),
@@ -280,5 +312,13 @@ mod tests {
         let gitignore = fs::read_to_string(root.join(".gitignore")).expect("gitignore");
         assert!(gitignore.contains("node_modules/"), "{gitignore}");
         assert!(gitignore.contains(".keld/"), "{gitignore}");
+    }
+
+    #[test]
+    fn created_hello_tree_keeps_kipc_transport_when_main_imports_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = create_project(dir.path(), "sidecar").expect("create");
+        let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main");
+        assert_created_hello_keeps_kipc_transport(&root, &main);
     }
 }

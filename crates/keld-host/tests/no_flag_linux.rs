@@ -79,6 +79,8 @@ fn linux_stock_create_entry_is_self_contained_after_staging() {
     let stage =
         keld_cli::boot::stage_dev_boot(&project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
             .expect("stage untouched stock app");
+    assert_imported_kipc_sidecar_exists(&project);
+    assert_imported_kipc_sidecar_exists(stage.root());
 
     let output = Command::new("bun")
         .arg(stage.root().join("src/main.ts"))
@@ -518,6 +520,22 @@ impl StageFixture {
     }
 }
 
+/// Fails if `src/main.ts` imports `./kipc-transport.ts` but the sidecar is
+/// missing. The Linux death test remaps the entry to `/code/main.ts`; Bun
+/// then resolves that import at `/code/kipc-transport.ts`.
+fn assert_imported_kipc_sidecar_exists(root: &Path) {
+    let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main.ts");
+    assert!(
+        main.contains("from \"./kipc-transport.ts\""),
+        "entry must import ./kipc-transport.ts so Linux /code/main.ts can resolve the sidecar: {main}"
+    );
+    assert!(
+        root.join("src").join("kipc-transport.ts").is_file(),
+        "entry imports ./kipc-transport.ts but src/kipc-transport.ts is missing under {}",
+        root.display()
+    );
+}
+
 struct ProductFixture {
     root: tempfile::TempDir,
     project: std::path::PathBuf,
@@ -537,15 +555,20 @@ impl ProductFixture {
             ),
         )
         .expect("product config");
+        // create_project already wrote src/kipc-transport.ts. Keep it: Linux
+        // strict remaps src/main.ts to /code/main.ts and binds the sidecar to
+        // /code/kipc-transport.ts as its own file mount.
         fs::write(
             project.join("src/main.ts"),
             format!(
                 "{}{}",
-                include_str!("../../../packages/@keld/electron/src/link.ts"),
+                include_str!("../../../packages/@keld/electron/src/link.ts")
+                    .replace("../../kipc/src/transport.ts", "./kipc-transport.ts"),
                 include_str!("fixtures/t1b_harness.ts")
             ),
         )
         .expect("product entry");
+        assert_imported_kipc_sidecar_exists(&project);
         fs::write(
             project.join("index.html"),
             format!("<!doctype html>{DARK_BG}\n"),

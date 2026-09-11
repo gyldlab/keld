@@ -520,11 +520,14 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes six files (`crates/keld-cli/src/template.rs`):
-`keld.config.ts`, `package.json`, `index.html`, `src/main.ts`, `src/kipc.ts`, and `.gitignore`.
-The generated `src/main.ts` is self-contained: `template.rs` composes the hand-written,
-golden-vector-tested client source with `src/main-body.ts`. The generated `src/kipc.ts` is a tiny
-compatibility re-export from `src/main.ts`, not a second wire implementation. The repository's
+`keld create <name>` writes seven files (`crates/keld-cli/src/template.rs`):
+`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`, `src/main.ts`,
+`src/kipc.ts`, and `.gitignore`.
+The generated `src/kipc-transport.ts` is the embedded canonical transport
+(`packages/@keld/kipc/src/transport.ts`). The generated `src/main.ts` composes the
+hand-written, golden-vector-tested echo adapter with `src/main-body.ts`. The generated
+`src/kipc.ts` is a tiny compatibility re-export from `src/main.ts`, not a second wire
+implementation. The repository's
 `src/kipc.test.ts` is deliberately not emitted. The config is this, in full, with `{{name}}`
 substituted at scaffold time:
 
@@ -546,13 +549,15 @@ sections. Three honest observations about the gap:
    strict `keld.boot.json`; the no-flag host never evaluates TypeScript.
    `find_project_root` still walks up looking for the source file and `keld
    doctor` confirms the required inputs. Other keys are not a config schema yet.
-2. **`entry` and `renderer` are staged inputs.** The compiler copies both
-   contained project-relative files into a fresh owner-private root. The host
-   starts Bun from the descriptor's validated `entry` and loads the validated
-   renderer bytes as inline HTML. `keld hello` still uses `HELLO_HTML`.
+2. **`entry`, `renderer`, and the kipc transport sidecar are staged inputs.** The
+   compiler copies the contained project-relative entry and renderer, and when
+   `src/kipc-transport.ts` exists it copies that file too so Bun can resolve the
+   embedded KEL-136 transport from the staged `src/main.ts`. The host starts Bun
+   from the descriptor's validated `entry` and loads the validated renderer bytes
+   as inline HTML. `keld hello` still uses `HELLO_HTML`.
 3. **`defineConfig` cannot exist yet**, because `@keld/cli` has no code.
-   `@keld/electron` is live under `packages/` (KEL-72); the other `@keld/*`
-   packages are still absent.
+   `@keld/kipc` and `@keld/electron` are live under `packages/`; the other
+   `@keld/*` packages are still absent.
 
 ### The permission manifest
 

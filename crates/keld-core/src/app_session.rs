@@ -1693,6 +1693,10 @@ fn run_app_direct(
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const LINUX_BUN_ENTRY: &str = "/code/main.ts";
+/// Guest path Bun resolves for `from "./kipc-transport.ts"` after the entry
+/// remaps to `/code/main.ts`. Directory-wide `/code` mounts stay forbidden.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const LINUX_BUN_TRANSPORT: &str = "/code/kipc-transport.ts";
 // Deliberate Ubuntu/Debian x86_64 runtime manifest for the currently proved
 // Linux product profile. KEL-28 owns non-Debian evidence; target-driven `ldd`
 // execution here would run untrusted loader metadata outside containment.
@@ -1775,6 +1779,7 @@ fn linux_strict_primary_config_x86(
     profile = profile
         .readonly_runtime(&root.join(entry_path), Path::new(LINUX_BUN_ENTRY))
         .map_err(|source| app_detail("Linux strict entry", source.to_string()))?;
+    profile = bind_linux_kipc_transport(profile, root)?;
 
     let config = PrimaryRoleConfig::new(bun)
         .arg("run")
@@ -1801,6 +1806,47 @@ fn linux_strict_primary_config_x86(
         config
     };
     Ok(config.linux_strict(profile))
+}
+
+/// Admits the staged hello sidecar before any Linux `--ro-bind`.
+/// `Ok(true)` binds this exact path; `Ok(false)` is `NotFound` for
+/// self-contained entries. Symlinks fail closed so
+/// `LinuxReadonlyMount::new` cannot canonicalize them to an external file.
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+fn admit_kipc_transport_sidecar(path: &Path) -> Result<bool, HostAppError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(app_detail(
+            "Linux strict transport",
+            "src/kipc-transport.ts must be a regular file, not a symbolic link",
+        )),
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(app_detail(
+            "Linux strict transport",
+            "src/kipc-transport.ts exists but is not a regular file",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(app_io("Linux strict transport", &err)),
+    }
+}
+
+/// Binds the staged hello sidecar as its own file mount. `NotFound` stays
+/// valid for fixtures that inline a self-contained entry. A present non-file
+/// or symlink fails closed — `readonly_runtime` rejects directory-wide `/code`
+/// mounts and must not follow a sidecar symlink into `--ro-bind`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn bind_linux_kipc_transport(
+    profile: LinuxStrictProfile,
+    root: &Path,
+) -> Result<LinuxStrictProfile, HostAppError> {
+    // Two-component probe matches boot.rs: a single `src/...` component then
+    // `.is_file()` can miss the sidecar on Windows; keep the same join here.
+    let sidecar = root.join("src").join("kipc-transport.ts");
+    if !admit_kipc_transport_sidecar(&sidecar)? {
+        return Ok(profile);
+    }
+    profile
+        .readonly_runtime(&sidecar, Path::new(LINUX_BUN_TRANSPORT))
+        .map_err(|source| app_detail("Linux strict transport", source.to_string()))
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -3726,7 +3772,6 @@ mod tests {
     use std::cell::Cell;
     use std::path::Path;
 
-    #[cfg(any(target_os = "macos", windows))]
     use std::fs;
     #[cfg(windows)]
     use std::io::{BufRead as _, BufReader};
@@ -3949,6 +3994,76 @@ mod tests {
                 "accepted: {bytes}"
             );
         }
+    }
+
+    #[test]
+    fn kipc_transport_sidecar_admission_skips_absent_and_accepts_regular_file() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let sidecar = temp.path().join("kipc-transport.ts");
+        assert!(
+            !admit_kipc_transport_sidecar(&sidecar).expect("absent sidecar"),
+            "NotFound must allow self-contained entries"
+        );
+        fs::write(&sidecar, "export {}\n").expect("regular sidecar");
+        assert!(
+            admit_kipc_transport_sidecar(&sidecar).expect("regular sidecar"),
+            "regular file must be eligible to bind"
+        );
+    }
+
+    #[test]
+    fn kipc_transport_sidecar_admission_rejects_directory() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let sidecar = temp.path().join("kipc-transport.ts");
+        fs::create_dir(&sidecar).expect("directory sidecar");
+        let error = must_err(
+            admit_kipc_transport_sidecar(&sidecar),
+            "directory sidecar must fail closed",
+        );
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[test]
+    fn kipc_transport_sidecar_admission_uses_lstat_not_follow() {
+        let source = include_str!("app_session.rs");
+        let start = source
+            .find("fn admit_kipc_transport_sidecar")
+            .expect("admission helper");
+        let body = source
+            .get(start..start.saturating_add(900))
+            .expect("admission helper body");
+        assert!(
+            body.contains("symlink_metadata"),
+            "admission must lstat so a sidecar symlink is not followed into --ro-bind"
+        );
+        assert!(
+            !body.contains(".metadata()"),
+            "Path::metadata follows symlinks and would reintroduce CWE-59"
+        );
+        assert!(
+            body.contains("is_symlink()"),
+            "admission must reject a symlink before readonly_runtime"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kipc_transport_sidecar_admission_rejects_symlink_to_regular_file() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let outside = temp.path().join("outside.ts");
+        fs::write(&outside, "export const steal = 1;\n").expect("external target");
+        let sidecar = temp.path().join("kipc-transport.ts");
+        std::os::unix::fs::symlink(&outside, &sidecar).expect("sidecar symlink");
+        // `metadata()` follows and would admit this as a regular file — CWE-59.
+        assert!(
+            fs::metadata(&sidecar).expect("follow").is_file(),
+            "negative control: following the symlink sees a regular file"
+        );
+        let error = must_err(
+            admit_kipc_transport_sidecar(&sidecar),
+            "symlink sidecar must fail closed before --ro-bind",
+        );
+        assert!(error.to_string().contains("symbolic link"), "{error}");
     }
 
     #[test]

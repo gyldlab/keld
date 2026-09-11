@@ -1,61 +1,33 @@
 /**
- * kipc v2 client — hand-written, wire-exact (KEL-30).
+ * Hello echo adapter over the canonical kipc transport (KEL-136 / KEL-30).
  *
- * Full schema-driven codegen (`keld gen`, `@keld/schema`) is a later slice;
- * this is the v0 vertical slice speaking the same bytes as `keld-ipc`
- * (`crates/keld-ipc/src/{frame,codec,link,echo,session}.rs`,
- * `docs/architecture/02-ipc.md`). Every constant and byte layout here is
- * copied from that crate, not reverse-engineered — see `kipc.test.ts` for
- * cross-language golden vectors pinned against the Rust source.
- *
- * Wire summary:
- * - Frame header: 16 bytes LE — magic:u16 "KI" | ver:u8 | kind:u8 | flags:u16
- *   | channel:u16 | corr:u32 | len:u32.
- * - `HELLO` payload: 32 raw bytes (the session token from `KELD_APP_LINK`),
- *   not postcard-encoded.
- * - `Call`/`Reply` payload: postcard — LEB128 unsigned varints, strings as a
- *   byte-length varint followed by UTF-8 bytes, structs as concatenated
- *   fields in declaration order (no field names, no struct-level framing).
+ * Framing, HELLO, deadlines, buffering, and serialized writes live in
+ * `kipc-transport.ts`. This file owns echo postcard codecs and `AppLinkSession`.
+ * `keld create` concatenates this file with `main-body.ts` into `src/main.ts`.
  */
+export * from "./kipc-transport.ts";
 
-const MAGIC_BYTES = new Uint8Array([0x4b, 0x49]); // "KI", matches Rust `u16::from_le_bytes(*b"KI")`
-const PROTOCOL_VERSION = 2;
-const HEADER_LEN = 16;
-const ECHO_CHANNEL = 1;
-/** Control-plane frame payload cap — mirrors `keld_ipc::MAX_FRAME_LEN` (16 MiB). */
-const MAX_FRAME_LEN = 16 * 1024 * 1024;
-
-/** Frame kinds carried in the header's `kind` byte — mirrors `keld_ipc::FrameKind`. */
-export const FrameKind = {
-  Hello: 0,
-  Call: 1,
-  Reply: 2,
-  Err: 3,
-  Event: 4,
-  StreamOpen: 5,
-  StreamChunk: 6,
-  StreamClose: 7,
-  Cancel: 8,
-  Grant: 9,
-  Ping: 10,
-} as const;
-
-export type FrameKindValue = (typeof FrameKind)[keyof typeof FrameKind];
-
-const KNOWN_FRAME_KINDS: ReadonlySet<number> = new Set(Object.values(FrameKind));
-
-export interface FrameHeader {
-  kind: FrameKindValue;
-  flags: number;
-  channel: number;
-  corr: number;
-  len: number;
-}
-
-export interface DecodedFrame {
-  header: FrameHeader;
-  payload: Uint8Array;
-}
+import {
+  CLIENT_AWAIT_HELLO,
+  DirectedReader,
+  DrainSignal,
+  ECHO_CHANNEL,
+  FrameKind,
+  FrameReader,
+  RECEIVE_POLICIES,
+  WriteQueue,
+  connectKipcSocket,
+  decodeVarint,
+  encodeVarint,
+  echoReplyWaiter,
+  kipcError,
+  parseAppLink,
+  timingSafeEqual,
+  withIoDeadline,
+  type DecodedFrame,
+  type FrameKindValue,
+  type ReceivePolicy,
+} from "./kipc-transport.ts";
 
 export interface EchoRequest {
   message: string;
@@ -65,158 +37,6 @@ export interface EchoRequest {
 export interface EchoResponse {
   message: string;
   count: number;
-}
-
-function kipcError(code: string, detail: string): Error {
-  return new Error(`${code}: ${detail}`);
-}
-
-// --- frame header ------------------------------------------------------
-
-export function encodeHeader(h: FrameHeader): Uint8Array {
-  const out = new Uint8Array(HEADER_LEN);
-  const view = new DataView(out.buffer);
-  out.set(MAGIC_BYTES, 0);
-  out[2] = PROTOCOL_VERSION;
-  out[3] = h.kind;
-  view.setUint16(4, h.flags, true);
-  view.setUint16(6, h.channel, true);
-  view.setUint32(8, h.corr, true);
-  view.setUint32(12, h.len, true);
-  return out;
-}
-
-/** Header flag mirroring `keld_ipc::frame::FLAG_RAW`. */
-export const FLAG_RAW = 1 << 0;
-
-/**
- * Mirror of `keld_ipc::receive::ReceivePolicy` (KEL-133 spec §4) for the two
- * receiver states this scaffold has: awaiting the server HELLO, and awaiting
- * one echo REPLY. Same fixed check order and `KELD-IPC-005` details as the
- * Rust validator and `@keld/electron`; the shared corpus is the semantic
- * table, this is a consumer of it.
- */
-export interface ReceivePolicy {
-  channel: number;
-  kinds: readonly number[];
-  corr: { rule: "zero" } | { rule: "exactly"; id: number };
-  exactLen?: number;
-}
-
-export const CLIENT_AWAIT_HELLO: ReceivePolicy = {
-  channel: 0,
-  kinds: [FrameKind.Hello],
-  corr: { rule: "zero" },
-  exactLen: 32,
-};
-
-export function echoReplyWaiter(corr: number): ReceivePolicy {
-  return { channel: ECHO_CHANNEL, kinds: [FrameKind.Reply], corr: { rule: "exactly", id: corr } };
-}
-
-/**
- * Admits a decoded header for `policy` or throws `KELD-IPC-005` naming the
- * first violated rule (kind → flags → channel → correlation → declared length).
- */
-export function validateReceivedHeader(policy: ReceivePolicy, header: FrameHeader): FrameHeader {
-  if (!policy.kinds.includes(header.kind)) {
-    throw kipcError("KELD-IPC-005", "frame kind is not declared by the session policy");
-  }
-  if ((header.flags & FLAG_RAW) !== 0) {
-    throw kipcError("KELD-IPC-005", "FLAG_RAW is invalid for a structured session");
-  }
-  if (header.flags !== 0) {
-    throw kipcError("KELD-IPC-005", "unknown flag bits are reserved");
-  }
-  if (header.channel !== policy.channel) {
-    throw kipcError("KELD-IPC-005", "wrong channel for the session policy");
-  }
-  if (policy.corr.rule === "zero" && header.corr !== 0) {
-    throw kipcError("KELD-IPC-005", "correlation must be 0 for this frame");
-  }
-  if (policy.corr.rule === "exactly" && header.corr !== policy.corr.id) {
-    throw kipcError("KELD-IPC-005", "correlation does not match the awaited call");
-  }
-  if (policy.exactLen !== undefined && header.len !== policy.exactLen) {
-    throw kipcError("KELD-IPC-005", "payload length does not match the declared exact shape");
-  }
-  return header;
-}
-
-export function decodeHeader(bytes: Uint8Array): FrameHeader {
-  if (bytes.length < HEADER_LEN) {
-    throw kipcError(
-      "KELD-IPC-002",
-      `short frame header: ${bytes.length} bytes (expected ${HEADER_LEN})`,
-    );
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (bytes[0] !== MAGIC_BYTES[0] || bytes[1] !== MAGIC_BYTES[1]) {
-    const magic = view.getUint16(0, true);
-    throw kipcError(
-      "KELD-IPC-002",
-      `bad kipc magic: 0x${magic.toString(16).padStart(4, "0")} (expected 0x494b 'KI')`,
-    );
-  }
-  const version = bytes[2];
-  if (version !== PROTOCOL_VERSION) {
-    throw kipcError(
-      "KELD-IPC-002",
-      `unsupported kipc version: ${version} (expected ${PROTOCOL_VERSION})`,
-    );
-  }
-  const kindByte = bytes[3];
-  if (!KNOWN_FRAME_KINDS.has(kindByte)) {
-    throw kipcError("KELD-IPC-002", `unknown kipc frame kind: ${kindByte} (valid kinds are 0..=10)`);
-  }
-  return {
-    kind: kindByte as FrameKindValue,
-    flags: view.getUint16(4, true),
-    channel: view.getUint16(6, true),
-    corr: view.getUint32(8, true),
-    len: view.getUint32(12, true),
-  };
-}
-
-// --- postcard payload codec (varint LEB128 + UTF-8 strings) -----------
-
-/** Encodes a `u32` as an unsigned LEB128 varint. Rejects anything outside that range. */
-export function encodeVarint(n: number): Uint8Array {
-  // The upper bound belongs HERE, with the rest of the invariant, so no caller
-  // has to remember it. Without it this accepted 2**32 and encoded a 5-byte
-  // varint the Rust peer cannot represent as the u32 it declares.
-  if (!Number.isInteger(n) || n < 0 || n > 0xffff_ffff) {
-    throw kipcError("KELD-IPC-003", `varint value must be an integer in [0, 4294967295], got ${n}`);
-  }
-  const bytes: number[] = [];
-  let v = n;
-  do {
-    // Division, not `>>>`, so values above 2**31 (still valid u32) are not
-    // truncated by JS's 32-bit bitwise operators.
-    let byte = v % 128;
-    v = Math.floor(v / 128);
-    if (v !== 0) byte |= 0x80;
-    bytes.push(byte);
-  } while (v !== 0);
-  return new Uint8Array(bytes);
-}
-
-/** Decodes an unsigned LEB128 varint starting at `offset`. Returns `[value, nextOffset]`. */
-export function decodeVarint(bytes: Uint8Array, offset: number): [number, number] {
-  let result = 0;
-  let placeValue = 1;
-  let pos = offset;
-  for (;;) {
-    if (pos >= bytes.length) {
-      throw kipcError("KELD-IPC-003", "truncated varint");
-    }
-    const byte = bytes[pos];
-    pos += 1;
-    result += (byte & 0x7f) * placeValue;
-    if ((byte & 0x80) === 0) break;
-    placeValue *= 128;
-  }
-  return [result, pos];
 }
 
 const textEncoder = new TextEncoder();
@@ -243,11 +63,6 @@ function decodeString(bytes: Uint8Array, offset: number): [string, number] {
 /** Postcard encoding of `EchoRequest`: struct-as-tuple, field order = declaration order. */
 export function encodeEchoRequest(req: EchoRequest): Uint8Array {
   const message = encodeString(req.message);
-  // `req.count` is passed UNCHANGED. It used to be `req.count >>> 0`, which
-  // converts modulo 2**32 before encodeVarint's guard can see the value: -1
-  // became 4294967295 and 2**32 became 0, so an out-of-range count produced a
-  // well-formed request for a DIFFERENT number instead of an error. Coercing at
-  // the call site defeats the validation the codec already owns.
   const count = encodeVarint(req.count);
   const out = new Uint8Array(message.length + count.length);
   out.set(message, 0);
@@ -265,194 +80,6 @@ export function decodeEchoResponse(bytes: Uint8Array): EchoResponse {
   return { message, count };
 }
 
-// --- app-link parsing ----------------------------------------------------
-
-export interface AppLink {
-  endpoint: string;
-  token: Uint8Array;
-}
-
-/** Parses `<endpoint>#<64 hex chars>` — splits on the LAST `#`, matching `parse_app_link`. */
-export function parseAppLink(link: string): AppLink {
-  const hashIndex = link.lastIndexOf("#");
-  if (hashIndex <= 0) {
-    throw kipcError("KELD-IPC-007", "KELD_APP_LINK must be <endpoint>#<64 hex chars>");
-  }
-  const endpoint = link.slice(0, hashIndex);
-  const hex = link.slice(hashIndex + 1);
-  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-    throw kipcError("KELD-IPC-007", "KELD_APP_LINK token must be 64 hex characters");
-  }
-  const token = new Uint8Array(32);
-  for (let i = 0; i < 32; i += 1) {
-    token[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return { endpoint, token };
-}
-
-/** True only for a host-minted Keld Windows named-pipe endpoint. */
-export function isWin32PipeEndpoint(endpoint: string): boolean {
-  return /^\\\\\.\\pipe\\keld-[0-9a-f]{64}$/.test(endpoint);
-}
-
-/** Parses only the retained client-side decimal diagnostic compatibility form. */
-export function parseWin32DiagnosticPort(endpoint: string): number {
-  if (!/^[1-9][0-9]{0,4}$/.test(endpoint)) {
-    throw kipcError(
-      "KELD-IPC-007",
-      "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
-    );
-  }
-  const port = Number(endpoint);
-  if (port > 65535) {
-    throw kipcError(
-      "KELD-IPC-007",
-      "KELD_APP_LINK Windows endpoint must be an exact Keld pipe or decimal diagnostic port",
-    );
-  }
-  return port;
-}
-
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a[i] ^ b[i];
-  return diff === 0;
-}
-
-// --- incremental frame reader --------------------------------------------
-
-/**
- * Buffers socket chunks and resolves one `readFrame()` call per complete
- * frame. Exported for `kipc.test.ts` to feed it untrusted byte sequences
- * directly (oversized `len`, malformed headers) without a live socket — not
- * meant as a public transport API.
- *
- * v0 usage is strictly sequential per CALL (write, then await one reply),
- * so a single pending waiter is enough — no queue needed. Multiple CALLs
- * on one connection are issued one after another by `AppLinkSession`.
- */
-export class FrameReader {
-  #buf = new Uint8Array(0);
-  #pending: { resolve: (f: DecodedFrame) => void; reject: (e: Error) => void } | null = null;
-  #closed = false;
-  #closeError: Error | null = null;
-
-  push(chunk: Uint8Array): void {
-    const merged = new Uint8Array(this.#buf.length + chunk.length);
-    merged.set(this.#buf, 0);
-    merged.set(chunk, this.#buf.length);
-    this.#buf = merged;
-    this.#tryResolve();
-  }
-
-  fail(err: Error): void {
-    this.#closed = true;
-    this.#closeError = err;
-    const pending = this.#pending;
-    this.#pending = null;
-    pending?.reject(err);
-  }
-
-  #tryResolve(): void {
-    if (!this.#pending || this.#buf.length < HEADER_LEN) return;
-    let header: FrameHeader;
-    try {
-      header = decodeHeader(this.#buf);
-    } catch (err) {
-      // A malformed header is unrecoverable — later bytes cannot be
-      // reinterpreted as a fresh frame boundary. Fail the whole reader
-      // instead of throwing out of a socket `data` callback, matching how
-      // `fail()` is used for every other terminal transport error.
-      this.fail(err instanceof Error ? err : kipcError("KELD-IPC-002", String(err)));
-      return;
-    }
-    if (header.len > MAX_FRAME_LEN) {
-      // Same guard as `keld_ipc::link::ensure_payload_len`: reject before
-      // waiting for that many bytes to arrive, so a forged length cannot
-      // wedge the reader waiting on data that will never come.
-      this.fail(
-        kipcError(
-          "KELD-IPC-004",
-          `frame payload exceeds MAX_FRAME_LEN (${MAX_FRAME_LEN} bytes). ` +
-            "Shrink the payload or move large transfers to the bulk plane.",
-        ),
-      );
-      return;
-    }
-    const total = HEADER_LEN + header.len;
-    if (this.#buf.length < total) return;
-    const payload = this.#buf.slice(HEADER_LEN, total);
-    this.#buf = this.#buf.slice(total);
-    const pending = this.#pending;
-    this.#pending = null;
-    pending?.resolve({ header, payload });
-  }
-
-  readFrame(): Promise<DecodedFrame> {
-    if (this.#closed) {
-      return Promise.reject(this.#closeError ?? kipcError("KELD-IPC-001", "connection closed"));
-    }
-    return new Promise((resolve, reject) => {
-      this.#pending = { resolve, reject };
-      this.#tryResolve();
-    });
-  }
-}
-
-/** Single-slot "wait for the next drain event" signal for backpressure. */
-class DrainSignal {
-  #waiter: (() => void) | null = null;
-
-  fire(): void {
-    const waiter = this.#waiter;
-    this.#waiter = null;
-    waiter?.();
-  }
-
-  wait(): Promise<void> {
-    return new Promise((resolve) => {
-      this.#waiter = resolve;
-    });
-  }
-}
-
-// --- socket transport ------------------------------------------------
-
-interface KipcSocket {
-  write(data: Uint8Array): number;
-  end(): void;
-}
-
-async function writeFrame(
-  socket: KipcSocket,
-  drain: DrainSignal,
-  kind: FrameKindValue,
-  flags: number,
-  channel: number,
-  corr: number,
-  payload: Uint8Array,
-): Promise<void> {
-  const header = encodeHeader({ kind, flags, channel, corr, len: payload.length });
-  const frame = new Uint8Array(header.length + payload.length);
-  frame.set(header, 0);
-  frame.set(payload, header.length);
-
-  let offset = 0;
-  while (offset < frame.length) {
-    const written = socket.write(frame.subarray(offset));
-    if (written < 0) {
-      throw kipcError("KELD-IPC-001", "socket closed during write");
-    }
-    offset += written;
-    if (written === 0) {
-      // Backpressure: the OS send buffer is full. Wait for `drain`, matching
-      // the documented Bun.Socket contract, rather than busy-spinning.
-      await drain.wait();
-    }
-  }
-}
-
 /**
  * One `HELLO` plus N sequential `CALL`/`REPLY` pairs on a single app-link
  * socket. Mirrors `keld_ipc::{handshake_client, echo_invoke}`: a second
@@ -461,16 +88,26 @@ async function writeFrame(
  * `echoRoundtrip` is the one-shot wrapper (connect, one CALL, close).
  */
 export class AppLinkSession {
-  #socket: KipcSocket;
+  #socket: { end(): void };
   #reader: FrameReader;
   #drain: DrainSignal;
+  #directed: DirectedReader;
+  #writes: WriteQueue;
   #nextCorr = 1;
   #closed = false;
 
-  private constructor(socket: KipcSocket, reader: FrameReader, drain: DrainSignal) {
+  private constructor(
+    socket: { end(): void },
+    reader: FrameReader,
+    drain: DrainSignal,
+    directed: DirectedReader,
+    writes: WriteQueue,
+  ) {
     this.#socket = socket;
     this.#reader = reader;
     this.#drain = drain;
+    this.#directed = directed;
+    this.#writes = writes;
   }
 
   /**
@@ -482,46 +119,13 @@ export class AppLinkSession {
     const { endpoint, token } = parseAppLink(link);
     const reader = new FrameReader();
     const drain = new DrainSignal();
-
-    const handlers = {
-      binaryType: "uint8array" as const,
-      data(_socket: unknown, data: Uint8Array) {
-        reader.push(data);
-      },
-      drain(_socket: unknown) {
-        drain.fire();
-      },
-      error(_socket: unknown, err: Error) {
-        reader.fail(kipcError("KELD-IPC-001", err.message));
-      },
-      close(_socket: unknown) {
-        reader.fail(kipcError("KELD-IPC-001", "connection closed by peer"));
-      },
-      connectError(_socket: unknown, err: Error) {
-        reader.fail(kipcError("KELD-IPC-001", err.message));
-      },
-    };
-
-    const socket: KipcSocket =
-      process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
-        ? await Bun.connect({
-            hostname: "127.0.0.1",
-            port: parseWin32DiagnosticPort(endpoint),
-            socket: handlers,
-          })
-        : await Bun.connect({
-            unix: endpoint,
-            socket: handlers,
-          });
-
-    const session = new AppLinkSession(socket, reader, drain);
+    const socket = await connectKipcSocket(endpoint, reader, drain);
+    const writes = new WriteQueue(socket, drain);
+    const directed = new DirectedReader(reader);
+    const session = new AppLinkSession(socket, reader, drain, directed, writes);
     try {
-      await writeFrame(socket, drain, FrameKind.Hello, 0, 0, 0, token);
-      const helloReply = await reader.readFrame();
-      // KEL-133 shared receiver rules (spec kel133 §3 criterion 4): shape
-      // fails KELD-IPC-005 before the token comparison; KELD-IPC-007 is
-      // reserved for an exactly shaped foreign token.
-      validateReceivedHeader(CLIENT_AWAIT_HELLO, helloReply.header);
+      await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
+      const helloReply = await withIoDeadline(directed.receive(CLIENT_AWAIT_HELLO));
       if (!timingSafeEqual(helloReply.payload, token)) {
         throw kipcError("KELD-IPC-007", "HELLO session token mismatch");
       }
@@ -532,7 +136,6 @@ export class AppLinkSession {
     }
   }
 
-  /** Next CALL correlation id; `0` is reserved for `HELLO`. */
   #allocCorr(): number {
     const corr = this.#nextCorr;
     let next = (corr + 1) >>> 0;
@@ -541,8 +144,59 @@ export class AppLinkSession {
     return corr;
   }
 
+  /** Next CALL correlation id; `0` is reserved for `HELLO`. */
+  allocCorr(): number {
+    return this.#allocCorr();
+  }
+
+  /** Frames parked while waiting for another policy (typically lifecycle Events). */
+  parkedCount(): number {
+    return this.#directed.parkedCount();
+  }
+
+  /**
+   * One validated frame on this HELLO'd link. Pass
+   * `RECEIVE_POLICIES.lifecycleEventReceiver` as `park` so a `Ready` Event
+   * cannot fail an Echo Reply wait. Does not decode lifecycle payloads or send Quit.
+   */
+  async receive(want: ReceivePolicy, park?: ReceivePolicy): Promise<DecodedFrame> {
+    if (this.#closed) {
+      throw kipcError("KELD-IPC-001", "session is closed");
+    }
+    try {
+      return await withIoDeadline(this.#directed.receive(want, park));
+    } catch (err) {
+      this.close();
+      throw err;
+    }
+  }
+
+  /**
+   * One serialized frame write on this HELLO'd link. Callers own channel,
+   * correlation, and payload codecs (KEL-185 sends Quit here; this method does not).
+   */
+  async writeFrame(
+    kind: FrameKindValue,
+    channel: number,
+    corr: number,
+    payload: Uint8Array,
+    flags = 0,
+  ): Promise<void> {
+    if (this.#closed) {
+      throw kipcError("KELD-IPC-001", "session is closed");
+    }
+    try {
+      await withIoDeadline(this.#writes.writeFrame(kind, flags, channel, corr, payload));
+    } catch (err) {
+      this.close();
+      throw err;
+    }
+  }
+
   /**
    * One echo `Call`/`Reply` on this connection. Does not handshake again.
+   * Lifecycle Events that arrive before the Reply are parked, not treated as
+   * a protocol violation.
    *
    * @throws on I/O, protocol, or codec error — messages carry `KELD-IPC-*`.
    */
@@ -552,19 +206,25 @@ export class AppLinkSession {
     }
     const corr = this.#allocCorr();
     const payload = encodeEchoRequest(request);
-    await writeFrame(this.#socket, this.#drain, FrameKind.Call, 0, ECHO_CHANNEL, corr, payload);
-
-    const reply = await this.#reader.readFrame();
-    // KEL-133 shared waiter rules (spec kel133 §3 criterion 5): only the
-    // awaited REPLY may complete this call.
-    validateReceivedHeader(echoReplyWaiter(corr), reply.header);
+    await this.writeFrame(FrameKind.Call, ECHO_CHANNEL, corr, payload);
+    const reply = await this.receive(
+      echoReplyWaiter(corr),
+      RECEIVE_POLICIES.lifecycleEventReceiver,
+    );
     return decodeEchoResponse(reply.payload);
   }
 
-  /** Ends the socket. Safe to call more than once. */
+  /**
+   * Ends the socket and wakes leftover I/O. `withIoDeadline` does not cancel
+   * the inner promise; fail/fire here so a timed-out read cannot leave
+   * `FrameReader.#pending` set and a timed-out write cannot stay in
+   * `DrainSignal.wait()`. Safe to call more than once.
+   */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#reader.fail(kipcError("KELD-IPC-001", "session is closed"));
+    this.#drain.fire();
     this.#socket.end();
   }
 }
@@ -573,10 +233,7 @@ export class AppLinkSession {
  * Performs one echo round-trip: connect, `HELLO` handshake, one `Call`/`Reply`.
  *
  * One-shot wrapper over [`AppLinkSession`]. `link` is the `KELD_APP_LINK`
- * value (`<endpoint>#<64 hex chars>`); on Windows the endpoint is a
- * host-minted named pipe or an explicit decimal diagnostic port, while Unix
- * uses a domain socket. This matches the selector in
- * `crates/keld-core/src/echo_link.rs::echo_roundtrip`.
+ * value (`<endpoint>#<64 hex chars>`).
  *
  * @throws on I/O failure, protocol mismatch, auth failure, or codec error —
  * error messages carry the matching `KELD-IPC-*` code from `keld-ipc`.

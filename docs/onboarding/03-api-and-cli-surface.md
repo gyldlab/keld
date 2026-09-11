@@ -90,7 +90,7 @@ prints **`KELD-CLI-046`** first, then the same block, and exits **2**.
 
 ### 1.5 `keld create <name>`
 
-Writes the six embedded template files into `./<name>`. Nothing is downloaded and
+Writes the seven embedded template files into `./<name>`. Nothing is downloaded and
 nothing is installed; the files are compiled into the binary with `include_str!`
 ([`template.rs`](../../crates/keld-cli/src/template.rs)).
 
@@ -104,6 +104,7 @@ my-app/.gitignore
 my-app/index.html
 my-app/keld.config.ts
 my-app/package.json
+my-app/src/kipc-transport.ts
 my-app/src/kipc.ts
 my-app/src/main.ts
 ```
@@ -604,7 +605,7 @@ and no hand edits to generated code.
 
 ## 5. The template app contract — what an app developer actually writes
 
-`keld create <name>` produces exactly six files. This is, today, the whole "app
+`keld create <name>` produces exactly seven files. This is, today, the whole "app
 developer API".
 
 ```
@@ -614,17 +615,21 @@ my-app/
 ├─ keld.config.ts    app config (see caveat below)
 ├─ package.json      name, private, type: module, start script
 └─ src/
-   ├─ main.ts        self-contained app process + hand-written kipc v2 client (KEL-30)
-   └─ kipc.ts        compatibility re-export from main.ts; no second client copy
+   ├─ main.ts             echo adapter + app body (imports `./kipc-transport.ts`)
+   ├─ kipc-transport.ts   embedded copy of `packages/@keld/kipc/src/transport.ts`
+   └─ kipc.ts             compatibility re-export from main.ts; no second client copy
 ```
 
-The repository template keeps the wire client in
-[`templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts), its golden-vector
-tests in `templates/hello/src/kipc.test.ts`, and the app body in
-`templates/hello/src/main-body.ts`. `template.rs` composes the client and body byte-for-byte into the
-generated `src/main.ts`; generated `src/kipc.ts` only re-exports that module for source
-compatibility. This preserves one tested wire implementation while keeping the strict dev stage's
-configured entry self-contained.
+The canonical TypeScript transport is
+[`packages/@keld/kipc/src/transport.ts`](../../packages/@keld/kipc/src/transport.ts).
+The hello echo adapter lives in
+[`templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts),
+with golden-vector tests in `templates/hello/src/kipc.test.ts` and the app body in
+`templates/hello/src/main-body.ts`. `template.rs` embeds the transport as
+`src/kipc-transport.ts` and concatenates the echo adapter and body into
+`src/main.ts`; generated `src/kipc.ts` only re-exports that module for source
+compatibility. This preserves one tested wire implementation without an npm
+dependency in the stock scaffold.
 
 ### 5.1 `src/main.ts` — the main process
 
@@ -662,18 +667,16 @@ Read it as a contract statement in four parts:
    `KELD-IPC-007`. The file guards on `KELD_APP_LINK` and fails with a code-carrying
    message rather than crashing — the framework's error convention applied inside a
    template.
-2. **The app process is Bun-specific**, not Node-compatible: its embedded client uses
-   `Bun.connect` and top-level `await`.
+2. **The app process is Bun-specific**, not Node-compatible: the shared transport uses
+   `Bun.connect` and the entry uses top-level `await`.
 3. **There is still no schema-driven TypeScript SDK** (`@keld/api`, `keld gen`, KEL-13
    remain unbuilt), but as of KEL-30 the template no longer shells out to a second
-   process to fake one. The embedded client source is hand-written and speaks the real kipc v2
-   wire format — frame header, postcard `EchoRequest`/`EchoResponse`, one `HELLO`
-   per connection then N `CALL`/`REPLY` via `AppLinkSession` — pinned byte-for-byte
-   against `keld-ipc`'s own Rust tests. The generated `src/kipc.ts` is only a
-   compatibility re-export of `src/main.ts`; it does not duplicate this implementation. It is the
-   actual "Bun to Rust and back" vertical slice, not a placeholder for one. Expect it to
-   be replaced by generated code once `@keld/api` exists; until then it is real, tested
-   transport, not a stub.
+   process to fake one. KEL-136 owns one TypeScript transport
+   (`packages/@keld/kipc/src/transport.ts`) that `keld create` embeds as
+   `src/kipc-transport.ts`; the echo adapter speaks postcard `EchoRequest`/`EchoResponse`
+   on that transport. The generated `src/kipc.ts` is only a compatibility re-export of
+   `src/main.ts`; it does not duplicate the implementation. Expect `@keld/api` codegen
+   later; until then this is real, tested transport, not a stub.
 4. **`{{name}}` is substituted at scaffold time**, so a project called `my-app` prints
    `my-app: main process ready (IPC echo ok)`.
 
@@ -705,7 +708,7 @@ Be precise about what this does today:
   the no-flag host runs only that staged entry.
 - `find_project_root` walks up looking for the file; `keld doctor` confirms it is
   present (plus `src/main.ts`). This is not the arch/04 §2 `defineConfig` schema
-  (`@keld/cli` does not exist; only `@keld/electron` exists under `packages/`).
+  (`@keld/cli` does not exist; `@keld/kipc` and `@keld/electron` exist under `packages/`).
 
 `keld.config.ts` is nonetheless one of only four config filenames the project permits
 (`keld.config.ts`, `keld.permissions.jsonc`, `keld.build.ts`, `keld.compat.ts` — see
@@ -729,7 +732,7 @@ sequenceDiagram
     participant CLI as keld dev (parent)
     participant Host as staged no-flag keld-host
     participant Guard as guardian + Supervisor
-    participant Bun as Bun (self-contained src/main.ts)
+    participant Bun as Bun (src/main.ts + kipc-transport.ts)
     participant Win as WKWebView window
 
     Dev->>CLI: keld dev

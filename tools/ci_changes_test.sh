@@ -164,6 +164,11 @@ expect_flags "TypeScript package change runs the Bun lane and its Rust consumer 
 expect_output_package_token "TypeScript package change selects its Bun suite root" ts_packages packages/@keld/electron "$ts_classification"
 expect_package_token "TypeScript package change re-runs the crate that spawns its fixtures" keld-compat "$ts_classification"
 
+kipc_classification="$(result_for_paths packages/@keld/kipc/src/transport.ts)"
+expect_flags "shared kipc transport change runs the Bun lane and its Rust embed consumers" "$ts_flags" "$kipc_classification"
+expect_output_package_token "shared kipc transport change selects its Bun suite root" ts_packages packages/@keld/kipc "$kipc_classification"
+expect_package_token "shared kipc transport change re-runs the crate that embeds it" keld-cli "$kipc_classification"
+
 ts_fixture_classification="$(result_for_paths packages/@keld/electron/fixtures/app_ready.ts)"
 expect_flags "TypeScript fixture change routes like its owning package" "$ts_flags" "$ts_fixture_classification"
 expect_output_package_token "TypeScript fixture change selects the owning Bun suite root" ts_packages packages/@keld/electron "$ts_fixture_classification"
