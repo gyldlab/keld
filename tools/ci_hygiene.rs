@@ -120,7 +120,8 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "$fixtureTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar",
     "$sharedProfileRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'dev.keld')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar",
     "if ($fixtureTempRoot.StartsWith($sharedProfileRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Windows media fixture temp root overlaps the shared dev.keld profile root' }",
-    "& crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixturePath -EvidenceDirectory $evidenceRoot",
+    "$powerShellHost = (Get-Process -Id $PID).Path",
+    "& $powerShellHost -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixturePath -EvidenceDirectory $evidenceRoot",
     "if ($LASTEXITCODE -ne 0) { throw 'Windows media guard acceptance failed' }",
     "$resultPath = Join-Path $evidenceRoot 'result.json'",
     "if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Windows media guard produced no result.json' }",
@@ -130,7 +131,7 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "if ($actualTopLevel.Count -ne $requiredTopLevel.Count -or @(Compare-Object -CaseSensitive -ReferenceObject $requiredTopLevel -DifferenceObject $actualTopLevel).Count -ne 0) { throw 'Windows media guard returned the wrong top-level artifact shape' }",
     "if ($result.schema -cne 'keld.windows-media-fixture/v1' -or @($result.rows).Count -ne 10) { throw 'Windows media guard returned the wrong schema or row count' }",
     "$expectedScope = 'raw WebView2 callback receipt: adapter input; removed-product-guard plus fixture-only completion after DEFAULT; adapter-bypass; same-callback explicit state; loopback origin; synthetic capture control; bounded teardown. No physical-device, saved-grant, snapshot, or revocation pass.'",
-    "if ([string]::IsNullOrWhiteSpace($result.system) -or [string]::IsNullOrWhiteSpace($result.device) -or $result.capture_device -cne 'WebView2 synthetic development device' -or $result.scope -cne $expectedScope) { throw 'Windows media guard returned invalid platform or scope metadata' }",
+    "if ($result.system -cne [Environment]::OSVersion.VersionString -or $result.device -cne [Environment]::MachineName -or $result.capture_device -cne 'WebView2 synthetic development device' -or $result.scope -cne $expectedScope) { throw 'Windows media guard returned invalid platform or scope metadata' }",
     "$evidenceExecutable = Join-Path $evidenceRoot 'keld_wv_media_test.exe'",
     "if ($result.source_executable -cne $fixturePath -or $result.executable -cne $evidenceExecutable -or $result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $fixturePath).Hash.ToLowerInvariant() -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $evidenceExecutable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable and evidence copy' }",
     "$requiredProbeFields = @('mode', 'exit_code', 'outer_timed_out', 'stdout_sha256', 'stderr_sha256')",
@@ -197,7 +198,7 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "if ($row.view_id -ne $expectedView -or $row.permission_kind -ne $expectedPermissionKind -or $row.initial_state -ne 0 -or $row.requested_state -ne $expectedRequested -or $row.returned_state -ne $expectedRequested -or $row.manifest_fnv1a64 -cne $expectedManifestHash -or $row.adapter_principal -cne $expectedPrincipal -or $row.adapter_capability -cne $expectedCapability -or $row.adapter_decision -cne $expectedDecision -or $row.adapter_tid -ne $expectedAdapterTid -or $receiptFields.manifest -cne $expectedAdapter -or $receiptFields.adapter -cne $expectedAdapter -or $receiptFields.effect -cne $expectedEffect -or $receiptFields.origin -cne 'true' -or $receiptFields.js -cne 'true' -or $receiptFields.control -cne $expectedControl -or $receiptFields.accepted -cne $expectedAdapter -or $receiptFields.case_ok -cne 'true') { throw \"Windows media row violated the exact permission oracle: $rowStem\" }",
     "$expectedTrackKind = if ($row.kind -ceq 'camera') { 'video' } else { 'audio' }",
     "$expectedOutcome = if ($row.mode -ceq 'force-allow') { \"^$([Regex]::Escape($receiptFields.nonce)):resolved:$expectedTrackKind`:[1-9][0-9]*`:true$\" } else { \"$($receiptFields.nonce):true:NotAllowedError\" }",
-    "if (($row.mode -ceq 'force-allow' -and $row.outcome -cnotmatch $expectedOutcome) -or ($row.mode -cne 'force-allow' -and $row.outcome -cne $expectedOutcome) -or $receiptFields.runtime -cnotmatch '^[0-9]+(\\.[0-9]+)+$' -or $row.host_pid -le 0 -or $row.browser_pid -le 0 -or [int]$receiptFields.tid -le 0 -or [Convert]::ToUInt64($row.registration_identity, 16) -eq 0) { throw \"Windows media row lacked live runtime, process, origin, sender, or outcome evidence: $rowStem\" }",
+    "if (($row.mode -ceq 'force-allow' -and $row.outcome -cnotmatch $expectedOutcome) -or ($row.mode -cne 'force-allow' -and $row.outcome -cne $expectedOutcome) -or $receiptFields.runtime -cnotmatch '^(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*))+$' -or $row.host_pid -le 0 -or $row.browser_pid -le 0 -or [int]$receiptFields.tid -le 0 -or [Convert]::ToUInt64($row.registration_identity, 16) -eq 0) { throw \"Windows media row lacked live runtime, process, origin, sender, or outcome evidence: $rowStem\" }",
     "}",
     "$invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch $hashPattern -or $_.stderr_sha256 -cnotmatch $hashPattern })",
     "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
@@ -3673,8 +3674,12 @@ mod tests {
         for (needle, replacement) in [
             ("--features media-acceptance", "--features default"),
             (
-                "& crates/keld-wv/tests/windows_media_guard.ps1",
+                "& $powerShellHost -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File crates/keld-wv/tests/windows_media_guard.ps1",
                 "Write-Output crates/keld-wv/tests/windows_media_guard.ps1",
+            ),
+            (
+                "& $powerShellHost -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File crates/keld-wv/tests/windows_media_guard.ps1",
+                "& crates/keld-wv/tests/windows_media_guard.ps1",
             ),
             (
                 "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }",
@@ -3730,6 +3735,14 @@ mod tests {
             (
                 "$result.capture_device -cne 'WebView2 synthetic development device'",
                 "$result.capture_device -cne $result.capture_device",
+            ),
+            (
+                "$result.system -cne [Environment]::OSVersion.VersionString",
+                "$result.system -cne $result.system",
+            ),
+            (
+                "$result.device -cne [Environment]::MachineName",
+                "$result.device -cne $result.device",
             ),
             (
                 "$_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true'",
