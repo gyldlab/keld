@@ -170,8 +170,9 @@ passes its SQL/callback/teardown operation on Bun 1.4.2 revision
 `e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a`;
 the same fixture records `better-sqlite3` 12.11.1 failing Bun import with
 `ERR_DLOPEN_FAILED`. Neither row generalizes to another package version, artifact,
-architecture, Bun revision, or operation. `keld doctor` guidance therefore reports
-only curated, version-qualified evidence rather than promising that a prebuild loads.
+architecture, Bun revision, or operation. Planned `keld doctor` addon guidance will
+report only curated, version-qualified evidence rather than promising that a prebuild
+loads; the current doctor checks do not scan native addons.
 Modules that reach into Electron internals (rare) are Tier-✘ with documented
 workarounds.
 
