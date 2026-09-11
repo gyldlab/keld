@@ -408,14 +408,23 @@ run_probe() {
   fi
   if [ -n "$monitor_error" ]; then
     echo "$monitor_error" >&2
+    if [ "${KELD_MEDIA_KILL_MONITOR:-0}" = 1 ]; then
+      exit 84
+    fi
     exit 1
   fi
   if [ "$visible_window_count" -ne 0 ]; then
     echo "permission request added unexpected top-level clients for $kind/$expected: total=$visible_window_count details=${unexpected_windows:-none}" >&2
+    if [ "${KELD_MEDIA_SYNTHETIC_PROMPT:-0}" = 1 ]; then
+      exit 81
+    fi
     exit 1
   fi
   if [ "$map_event_count" -ne 0 ]; then
     echo "permission interval mapped $map_event_count transient top-level window(s) for $kind/$expected" >&2
+    if [ "${KELD_MEDIA_SYNTHETIC_PROMPT:-0}" = 1 ]; then
+      exit 81
+    fi
     exit 1
   fi
   if [ "$expected" = denied ]; then
@@ -431,6 +440,12 @@ run_probe() {
   fi
   if [ "$(grep -Ec "$policy_pattern" "$trace_file")" -ne 1 ]; then
     echo "expected one keld-guard policy receipt for $kind/$expected" >&2
+    if [ "${KELD_MEDIA_DISCONNECT_ADAPTER:-0}" = 1 ]; then
+      exit 83
+    fi
+    if [ "${KELD_MEDIA_DROP_POLICY_RECEIPT:-0}" = 1 ]; then
+      exit 82
+    fi
     exit 1
   fi
 
@@ -475,8 +490,12 @@ if grep -Eq "^policy .* capability=web\.microphone principal=webview:${camera_me
 fi
 echo "media_guard negative_control=hardcoded_principal rejected camera_id=$camera_media_id microphone_id=$microphone_media_id"
 
-if (KELD_MEDIA_DISCONNECT_ADAPTER=1 run_probe camera denied adapter_bypass disconnected-adapter); then
-  echo "disconnected adapter unexpectedly passed on platform denial alone" >&2
+set +e
+(set -e; KELD_MEDIA_DISCONNECT_ADAPTER=1 run_probe camera denied adapter_bypass disconnected-adapter)
+disconnected_status=$?
+set -e
+if [ "$disconnected_status" -ne 83 ]; then
+  echo "disconnected adapter exited $disconnected_status, expected policy-bypass status 83" >&2
   exit 1
 fi
 if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/disconnected-adapter.out" ||
@@ -492,8 +511,12 @@ if [ -z "$disconnected_pid" ] || kill -0 "$disconnected_pid" 2>/dev/null; then
 fi
 echo "media_guard negative_control=disconnected_adapter rejected_platform_deny_without_policy"
 
-if (KELD_MEDIA_SYNTHETIC_PROMPT=1 run_probe camera denied deny synthetic-prompt); then
-  echo "synthetic media prompt unexpectedly passed the no-prompt census" >&2
+set +e
+(set -e; KELD_MEDIA_SYNTHETIC_PROMPT=1 run_probe camera denied deny synthetic-prompt)
+synthetic_prompt_status=$?
+set -e
+if [ "$synthetic_prompt_status" -ne 81 ]; then
+  echo "synthetic media prompt exited $synthetic_prompt_status, expected prompt-census status 81" >&2
   exit 1
 fi
 if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/synthetic-prompt.out" ||
@@ -511,8 +534,12 @@ if [ -z "$synthetic_prompt_pid" ] || kill -0 "$synthetic_prompt_pid" 2>/dev/null
 fi
 echo "media_guard negative_control=synthetic_prompt rejected"
 
-if (KELD_MEDIA_DROP_POLICY_RECEIPT=1 run_probe camera denied deny missing-policy); then
-  echo "missing-policy cleanup negative control unexpectedly passed" >&2
+set +e
+(set -e; KELD_MEDIA_DROP_POLICY_RECEIPT=1 run_probe camera denied deny missing-policy)
+missing_policy_status=$?
+set -e
+if [ "$missing_policy_status" -ne 82 ]; then
+  echo "missing-policy control exited $missing_policy_status, expected missing-receipt status 82" >&2
   exit 1
 fi
 if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/missing-policy.out" ||
@@ -530,8 +557,21 @@ if [ -z "$missing_policy_pid" ] || kill -0 "$missing_policy_pid" 2>/dev/null; th
 fi
 echo "media_guard negative_control=missing_policy rejected_and_reaped"
 
-if (KELD_MEDIA_KILL_MONITOR=1 run_probe camera denied deny killed-monitor); then
-  echo "killed-monitor negative control unexpectedly passed" >&2
+set +e
+(set -e; KELD_MEDIA_KILL_MONITOR=1 run_probe camera denied deny killed-monitor)
+killed_monitor_status=$?
+set -e
+if [ "$killed_monitor_status" -ne 84 ]; then
+  echo "killed-monitor control exited $killed_monitor_status, expected monitor-loss status 84" >&2
+  exit 1
+fi
+if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/killed-monitor.out" ||
+  ! grep -Eq '^KELD_MEDIA_IDENTITY .* kind=camera primer_count=1 .* stale_count=1 stale_code=KELD-WV-007 media_id=[1-9][0-9]* fresh=true$' "$probe_root/killed-monitor.identity" ||
+  ! grep -Eq '^callback .* kind=camera action=deny ' "$probe_root/killed-monitor.trace" ||
+  ! grep -Eq '^policy .* capability=web\.camera .* decision=KELD-GUARD006 response=deny ' "$probe_root/killed-monitor.trace" ||
+  ! grep -q 'KELD_MEDIA_MONITOR' "$probe_root/killed-monitor.xevents" ||
+  grep -q 'KELD_MEDIA_MONITOR_FENCE' "$probe_root/killed-monitor.xevents"; then
+  echo "killed-monitor control did not isolate loss after readiness and before the final fence" >&2
   exit 1
 fi
 killed_monitor_pid=$(sed -n -E 's/^setup .* pid=([0-9]+) tid=.*/\1/p' \
@@ -599,7 +639,13 @@ device=$(hostname)
       "${evidence_identity_hashes[$index]}" "$comma"
   done
   printf '  ],\n'
-  printf '  "controls": ["hardcoded-principal", "disconnected-adapter", "synthetic-prompt", "missing-policy", "killed-monitor"]\n'
+  printf '  "controls": [\n'
+  printf '    {"key":"hardcoded-principal","status":"rejected","camera_media_id":%s,"microphone_media_id":%s},\n' "$camera_media_id" "$microphone_media_id"
+  printf '    {"key":"disconnected-adapter","status":"rejected","exit_code":83,"platform_denied":true,"policy_seen":false},\n'
+  printf '    {"key":"synthetic-prompt","status":"rejected","exit_code":81,"map_event_seen":true},\n'
+  printf '    {"key":"missing-policy","status":"rejected","exit_code":82,"discarded_policy_seen":true},\n'
+  printf '    {"key":"killed-monitor","status":"rejected","exit_code":84,"ready_seen":true,"final_fence_seen":false}\n'
+  printf '  ]\n'
   printf '}\n'
 } >"$probe_root/result.json"
 result_sha256=$(sha256sum -- "$probe_root/result.json" | awk '{print $1}')
