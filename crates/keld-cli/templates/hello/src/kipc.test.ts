@@ -271,6 +271,19 @@ describe("FrameReader — untrusted peer bytes", () => {
     reader.fail(new Error("KELD-IPC-001: connection closed by peer"));
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
   });
+
+  test("overlapping readFrame() rejects; the first waiter still gets the frame", async () => {
+    // Single-slot `#pending` overwrite left the first promise unsettled.
+    // keld_ipc::IpcError::Protocol is KELD-IPC-005 (unexpected session state).
+    const reader = new FrameReader();
+    const first = reader.readFrame();
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-005");
+    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 1, len: 0 });
+    reader.push(encoded);
+    const frame = await first;
+    expect(frame.header.kind).toBe(FrameKind.Ping);
+    expect(frame.header.corr).toBe(1);
+  });
 });
 
 describe("shared receiver rules (KEL-133)", () => {

@@ -104,11 +104,26 @@ def git_context(root):
     return tuple(Path(line).resolve() for line in lines)
 
 
+def cursor_workspace_root(root):
+    """Accept Cursor's Windows `/d:/...` workspace_roots form as an absolute path.
+
+    Cursor on Windows often emits POSIX-drive roots like `/d:/WORK/keld`. pathlib
+    treats that as non-absolute on Windows, which blocked beforeSubmitPrompt with
+    failClosed. Strip only that transport prefix; leave real relative paths rejected.
+    """
+    session_closeout.require(isinstance(root, str) and root, "path must be absolute")
+    if os.name == "nt":
+        slash = root.replace("\\", "/")
+        if re.fullmatch(r"/[A-Za-z]:(/.*)?", slash):
+            root = slash[1:]
+    return root
+
+
 def cursor_context(payload):
     roots = payload.get("workspace_roots")
     session_closeout.require(isinstance(roots, list) and roots, "workspace_roots must be a non-empty array")
     launch = git_context(os.getcwd())
-    contexts = {git_context(root) for root in roots}
+    contexts = {git_context(cursor_workspace_root(root)) for root in roots}
     session_closeout.require(len(contexts) == 1 and next(iter(contexts))[0] == launch[0],
                              "Cursor workspace_roots do not identify the launch Git repository unambiguously")
     return next(iter(contexts))

@@ -513,7 +513,9 @@ Claude uses exact argument execution; Cursor uses its native command string. Cur
 receives a session-start pointer and refreshes a small `current.json` before each prompt
 under the Git common directory's session namespace. It contains IDs and receipt
 instructions, never prompts or transcripts, and does not activate a task by itself.
-The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
+The adapter rejects ambiguous/foreign workspace roots. On Windows it also accepts Cursor's
+`/d:/...` workspace_roots transport form (pathlib would otherwise treat it as relative and
+`failClosed` would block prompt submit). The validator remains read-only.
 The adapter requests repair only when the native `loop_count` is zero and configures
 `loop_limit: 1`. Interactive CLI 2026.09.08-6caf4ff on Windows/Linux reset the count on
 later user generations, so this is not a conversation-wide repair budget. Its automatic

@@ -230,6 +230,18 @@ class HookTests(unittest.TestCase):
             answer = hook.cursor_response(dict(base, workspace_roots=[str(self.repo)], generation_id="../bad"))
             self.assertEqual(set(answer), {"continue", "user_message"})
 
+    def test_cursor_accepts_windows_posix_drive_workspace_roots(self):
+        """Cursor on Windows emits `/d:/path`; that must not fail closed as relative."""
+        drive_root = Path(self.repo).resolve()
+        posix_drive = "/" + drive_root.as_posix()  # e.g. /D:/WORK/keld
+        base = {"conversation_id": "c", "generation_id": "g", "hook_event_name": "beforeSubmitPrompt"}
+        with mock.patch("os.getcwd", return_value=str(self.repo)):
+            with mock.patch.object(hook.os, "name", "nt"):
+                answer = hook.cursor_response(dict(base, workspace_roots=[posix_drive]))
+        self.assertEqual(answer, {"continue": True})
+        self.assertTrue(
+            (self.repo / ".git/keld-closeout/cursor-c/current.json").is_file())
+
     def test_native_config_shapes_platforms_and_exec_argv(self):
         codex = hook.configuration()
         self.assertEqual(codex, json.loads((Path(__file__).parent.parent / ".codex/hooks.json").read_text(encoding='utf-8')))
