@@ -105,6 +105,30 @@ const PRODUCT_STATUS_WINDOWS_COMMANDS: &[&str] = &[
     "target/product-status/product-status-test",
 ];
 
+const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
+    "cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings",
+    "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }",
+    "cargo nextest run -p keld-wv --features media-acceptance --profile ci --no-tests=pass",
+    "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance tests failed' }",
+    "$artifacts = @(cargo test -p keld-wv --features media-acceptance --lib --no-run --message-format=json | ConvertFrom-Json)",
+    "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance test build failed' }",
+    "$fixture = @($artifacts | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'keld_wv' -and $_.profile.test -eq $true -and $_.executable })",
+    "if ($fixture.Count -ne 1) { throw \"expected one keld_wv libtest executable, found $($fixture.Count)\" }",
+    "$fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture[0].executable).Hash.ToLowerInvariant()",
+    "& crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixture[0].executable -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'keld-windows-media')",
+    "if ($LASTEXITCODE -ne 0) { throw 'Windows media guard acceptance failed' }",
+    "$resultPath = Join-Path $env:RUNNER_TEMP 'keld-windows-media/result.json'",
+    "if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Windows media guard produced no result.json' }",
+    "$result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json",
+    "if ($result.schema -cne 'keld.windows-media-fixture/v1' -or @($result.rows).Count -ne 10) { throw 'Windows media guard returned the wrong schema or row count' }",
+    "$expectedRows = @('camera/adapter-bypass/app-grants', 'camera/force-allow/app-grants', 'camera/guarded/app-grants', 'camera/guarded/empty', 'camera/removed-guard/app-grants', 'microphone/adapter-bypass/app-grants', 'microphone/force-allow/app-grants', 'microphone/guarded/app-grants', 'microphone/guarded/empty', 'microphone/removed-guard/app-grants')",
+    "$rowKeys = @($result.rows | ForEach-Object { \"$($_.kind)/$($_.mode)/$($_.manifest_case)\" } | Sort-Object -Unique -CaseSensitive)",
+    "if ($rowKeys.Count -ne 10 -or @(Compare-Object -CaseSensitive -ReferenceObject $expectedRows -DifferenceObject $rowKeys).Count -ne 0) { throw 'Windows media guard returned the wrong or duplicate row set' }",
+    "$invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch '^[0-9a-f]{64}$' })",
+    "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
+    "if ($result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable' }",
+];
+
 const FUZZ_WORKSPACE_COMMANDS: &[&str] =
     &["cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml"];
 
@@ -1420,6 +1444,55 @@ fn check_product_status_windows_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
+    let Some(check_job) = workflow_job_block(text, "check") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for KEL-132 Windows media acceptance."
+        ));
+    };
+    let step = "Windows media guard acceptance (KEL-132)";
+    let count = workflow_direct_named_step_count(&check_job, step);
+    if count != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+    })?;
+    let expected_keys = ["if".to_owned(), "shell".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: pwsh`, and `run` keys."
+        ));
+    }
+    let expected_condition =
+        "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')";
+    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(expected_condition) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact Windows and routed keld-wv condition."
+        ));
+    }
+    if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("pwsh") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must set `shell: pwsh` for its tracked PowerShell oracle."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(WINDOWS_MEDIA_ACCEPTANCE_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the exact feature Clippy/tests, Cargo JSON executable selection, and tracked media oracle without wrappers or suppression."
+        ));
+    }
+    Ok(())
+}
+
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -1851,6 +1924,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_required_job(&text)?;
     check_product_status_step(&text)?;
     check_product_status_windows_step(&text)?;
+    check_windows_media_acceptance_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_agent_context_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
@@ -2009,6 +2083,34 @@ mod tests {
     const PINNED_CHECKOUT: &str =
         "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n";
 
+    const WINDOWS_MEDIA_STEP: &str = concat!(
+        "      - name: Windows media guard acceptance (KEL-132)\n",
+        "        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n",
+        "        shell: pwsh\n",
+        "        run: |\n",
+        "          cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings\n",
+        "          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }\n",
+        "          cargo nextest run -p keld-wv --features media-acceptance --profile ci --no-tests=pass\n",
+        "          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance tests failed' }\n",
+        "          $artifacts = @(cargo test -p keld-wv --features media-acceptance --lib --no-run --message-format=json | ConvertFrom-Json)\n",
+        "          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance test build failed' }\n",
+        "          $fixture = @($artifacts | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'keld_wv' -and $_.profile.test -eq $true -and $_.executable })\n",
+        "          if ($fixture.Count -ne 1) { throw \"expected one keld_wv libtest executable, found $($fixture.Count)\" }\n",
+        "          $fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture[0].executable).Hash.ToLowerInvariant()\n",
+        "          & crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixture[0].executable -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'keld-windows-media')\n",
+        "          if ($LASTEXITCODE -ne 0) { throw 'Windows media guard acceptance failed' }\n",
+        "          $resultPath = Join-Path $env:RUNNER_TEMP 'keld-windows-media/result.json'\n",
+        "          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Windows media guard produced no result.json' }\n",
+        "          $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json\n",
+        "          if ($result.schema -cne 'keld.windows-media-fixture/v1' -or @($result.rows).Count -ne 10) { throw 'Windows media guard returned the wrong schema or row count' }\n",
+        "          $expectedRows = @('camera/adapter-bypass/app-grants', 'camera/force-allow/app-grants', 'camera/guarded/app-grants', 'camera/guarded/empty', 'camera/removed-guard/app-grants', 'microphone/adapter-bypass/app-grants', 'microphone/force-allow/app-grants', 'microphone/guarded/app-grants', 'microphone/guarded/empty', 'microphone/removed-guard/app-grants')\n",
+        "          $rowKeys = @($result.rows | ForEach-Object { \"$($_.kind)/$($_.mode)/$($_.manifest_case)\" } | Sort-Object -Unique -CaseSensitive)\n",
+        "          if ($rowKeys.Count -ne 10 -or @(Compare-Object -CaseSensitive -ReferenceObject $expectedRows -DifferenceObject $rowKeys).Count -ne 0) { throw 'Windows media guard returned the wrong or duplicate row set' }\n",
+        "          $invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch '^[0-9a-f]{64}$' })\n",
+        "          if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }\n",
+        "          if ($result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable' }",
+    );
+
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
     fn valid_workflow() -> String {
         [
@@ -2054,6 +2156,7 @@ mod tests {
             "          mkdir -p target/product-status",
             "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
             "          target/product-status/product-status-test",
+            WINDOWS_MEDIA_STEP,
             "  bun-test:",
             "    if: needs.changes.outputs.ts == 'true'",
             "    steps:",
@@ -3455,6 +3558,110 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("broadened Windows condition must fail");
         assert!(error.contains("exact condition"), "{error}");
+    }
+
+    #[test]
+    fn windows_media_acceptance_step_is_unique_and_direct() {
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(WINDOWS_MEDIA_STEP, "", 1),
+        );
+        let error = check(temp.path()).expect_err("missing Windows media step must fail");
+        assert!(error.contains("KEL-132"), "{error}");
+
+        let duplicated = format!("{WINDOWS_MEDIA_STEP}\n{WINDOWS_MEDIA_STEP}");
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(WINDOWS_MEDIA_STEP, &duplicated, 1),
+        );
+        let error = check(temp.path()).expect_err("duplicate Windows media step must fail");
+        assert!(error.contains("exactly one"), "{error}");
+
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "        shell: pwsh\n        run: |\n          cargo clippy -p keld-wv",
+                "        continue-on-error: true\n        shell: pwsh\n        run: |\n          cargo clippy -p keld-wv",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("failure suppression must fail");
+        assert!(
+            error.contains("KEL-132") || error.contains("continue-on-error"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn windows_media_acceptance_condition_and_shell_are_exact() {
+        for (needle, replacement) in [
+            (
+                "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')",
+                "matrix.os == 'windows-latest'",
+            ),
+            ("        shell: pwsh", "        shell: bash"),
+        ] {
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("weakened Windows media routing must fail");
+            assert!(error.contains("KEL-132"), "{needle}: {error}");
+        }
+    }
+
+    #[test]
+    fn windows_media_acceptance_commands_cannot_be_removed_or_made_inert() {
+        for (needle, replacement) in [
+            ("--features media-acceptance", "--features default"),
+            (
+                "& crates/keld-wv/tests/windows_media_guard.ps1",
+                "Write-Output crates/keld-wv/tests/windows_media_guard.ps1",
+            ),
+            (
+                "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }",
+                "Write-Output 'ignored Clippy status'",
+            ),
+            ("$fixture.Count -ne 1", "$fixture.Count -lt 0"),
+            (
+                "Test-Path -LiteralPath $resultPath -PathType Leaf",
+                "Test-Path -LiteralPath $resultPath -PathType Container",
+            ),
+            (
+                "@($result.rows).Count -ne 10",
+                "@($result.rows).Count -lt 0",
+            ),
+            (
+                "(Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant()",
+                "$result.executable_sha256",
+            ),
+            (
+                "$result.executable_sha256 -cne $fixtureHash",
+                "$result.executable_sha256 -cne $result.executable_sha256",
+            ),
+            (
+                "microphone/removed-guard/app-grants",
+                "camera/removed-guard/app-grants",
+            ),
+            (
+                "$_.profile_removed -ne $true",
+                "$_.profile_removed -eq $true",
+            ),
+            ("Sort-Object -Unique -CaseSensitive", "Sort-Object -Unique"),
+            ("Compare-Object -CaseSensitive", "Compare-Object"),
+            (
+                "$result.schema -cne 'keld.windows-media-fixture/v1'",
+                "$result.schema -ne 'keld.windows-media-fixture/v1'",
+            ),
+            (
+                "$_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true'",
+                "$_.receipt -notlike 'KELD_MEDIA_RESULT * case_ok=true'",
+            ),
+        ] {
+            let temp = complete_fixture();
+            temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("inert Windows media command must fail");
+            assert!(error.contains("KEL-132"), "{needle}: {error}");
+        }
     }
 
     #[test]

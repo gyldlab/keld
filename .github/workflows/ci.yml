@@ -187,6 +187,31 @@ jobs:
               cargo nextest run -p "$package" --profile ci --no-tests=pass
             fi
           done
+      - name: Windows media guard acceptance (KEL-132)
+        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')
+        shell: pwsh
+        run: |
+          cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }
+          cargo nextest run -p keld-wv --features media-acceptance --profile ci --no-tests=pass
+          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance tests failed' }
+          $artifacts = @(cargo test -p keld-wv --features media-acceptance --lib --no-run --message-format=json | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance test build failed' }
+          $fixture = @($artifacts | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'keld_wv' -and $_.profile.test -eq $true -and $_.executable })
+          if ($fixture.Count -ne 1) { throw "expected one keld_wv libtest executable, found $($fixture.Count)" }
+          $fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture[0].executable).Hash.ToLowerInvariant()
+          & crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixture[0].executable -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'keld-windows-media')
+          if ($LASTEXITCODE -ne 0) { throw 'Windows media guard acceptance failed' }
+          $resultPath = Join-Path $env:RUNNER_TEMP 'keld-windows-media/result.json'
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Windows media guard produced no result.json' }
+          $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
+          if ($result.schema -cne 'keld.windows-media-fixture/v1' -or @($result.rows).Count -ne 10) { throw 'Windows media guard returned the wrong schema or row count' }
+          $expectedRows = @('camera/adapter-bypass/app-grants', 'camera/force-allow/app-grants', 'camera/guarded/app-grants', 'camera/guarded/empty', 'camera/removed-guard/app-grants', 'microphone/adapter-bypass/app-grants', 'microphone/force-allow/app-grants', 'microphone/guarded/app-grants', 'microphone/guarded/empty', 'microphone/removed-guard/app-grants')
+          $rowKeys = @($result.rows | ForEach-Object { "$($_.kind)/$($_.mode)/$($_.manifest_case)" } | Sort-Object -Unique -CaseSensitive)
+          if ($rowKeys.Count -ne 10 -or @(Compare-Object -CaseSensitive -ReferenceObject $expectedRows -DifferenceObject $rowKeys).Count -ne 0) { throw 'Windows media guard returned the wrong or duplicate row set' }
+          $invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch '^[0-9a-f]{64}$' })
+          if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }
+          if ($result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable' }
       - name: Real Linux foreign-owner refusal (KEL-167)
         if: matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')
         env:
