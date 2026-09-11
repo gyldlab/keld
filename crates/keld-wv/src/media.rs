@@ -434,6 +434,20 @@ mod tests {
     use super::*;
     use keld_guard::{DenyReason, parse_manifest};
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_media_checkout_cleanliness_is_fail_closed() {
+        let script = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/linux_media_checkout_test.sh"
+        );
+        let status = std::process::Command::new("bash")
+            .arg(script)
+            .status()
+            .expect("Linux media checkout test must launch");
+        assert!(status.success(), "Linux media checkout test failed");
+    }
+
     fn other_webview() -> Principal {
         Principal::Webview {
             id: 99,
@@ -598,6 +612,7 @@ mod webview2_tests {
         MediaPermission, WebviewId, media_permission_allowed, webview_media_principal,
         webview2_media_kind,
     };
+
     use keld_guard::parse_manifest;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION,

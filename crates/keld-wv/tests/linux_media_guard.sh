@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+script_dir=$(dirname -- "$script_path")
+checkout_root=$(readlink -f -- "$(git -C "$script_dir" rev-parse --show-toplevel)")
+expected_script="$checkout_root/crates/keld-wv/tests/linux_media_guard.sh"
+expected_helper="$checkout_root/crates/keld-wv/tests/linux_media_checkout.sh"
+if [ "$script_path" != "$(readlink -f -- "$expected_script")" ] ||
+  [ "$(readlink -f -- "$script_dir/linux_media_checkout.sh")" != \
+    "$(readlink -f -- "$expected_helper")" ]; then
+  echo "media evidence runner must be the canonical tracked checkout source" >&2
+  exit 1
+fi
+source "$expected_helper"
+
 interposer=${1:?usage: linux_media_guard.sh <interposer.so> [probe-binary]}
 probe_binary=${2:-target/debug/examples/linux_media_guard}
 interposer=$(readlink -f -- "$interposer")
 probe_binary=$(readlink -f -- "$probe_binary")
 interposer_sha256=$(sha256sum -- "$interposer" | awk '{print $1}')
 probe_sha256=$(sha256sum -- "$probe_binary" | awk '{print $1}')
+git_dir=$(readlink -f -- "$(git -C "$checkout_root" rev-parse --absolute-git-dir)")
+git_common_dir=$(readlink -f -- \
+  "$(git -C "$checkout_root" rev-parse --path-format=absolute --git-common-dir)")
 keep_evidence=0
 if [ -n "${KELD_MEDIA_EVIDENCE_DIRECTORY:-}" ]; then
   probe_root=$(readlink -m -- "$KELD_MEDIA_EVIDENCE_DIRECTORY")
+  if ! keld_validate_evidence_root "$probe_root" "$git_dir" "$git_common_dir"; then
+    echo "media evidence directory must not be inside Git administrative storage: $probe_root" >&2
+    exit 1
+  fi
   if [ -e "$probe_root" ]; then
     echo "media evidence directory must be new: $probe_root" >&2
     exit 1
@@ -19,6 +39,10 @@ if [ -n "${KELD_MEDIA_EVIDENCE_DIRECTORY:-}" ]; then
 else
   probe_root=$(mktemp -d "${RUNNER_TEMP:-/tmp}/keld-media-guard.XXXXXX")
 fi
+probe_root_relative=""
+case "$probe_root" in
+  "$checkout_root"/*) probe_root_relative=${probe_root#"$checkout_root"/} ;;
+esac
 active_runner_pid=""
 active_release_file=""
 active_synthetic_pid=""
@@ -58,6 +82,11 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+
+if ! keld_checkout_is_clean "$checkout_root" "$probe_root_relative"; then
+  echo "media evidence checkout is dirty before acceptance" >&2
+  exit 1
+fi
 
 client_windows() {
   xprop -root _NET_CLIENT_LIST 2>/dev/null \
@@ -600,20 +629,20 @@ cp -- "$interposer" "$probe_root/linux_media_interpose.so"
 (cd "$probe_root" && find . -type f ! -name result.json ! -name sha256sums.txt -print0 |
   sort -z | xargs -0 sha256sum --) >"$probe_root/sha256sums.txt"
 manifest_sha256=$(sha256sum -- "$probe_root/sha256sums.txt" | awk '{print $1}')
-head_sha=$(git rev-parse HEAD)
+head_sha=$(git -C "$checkout_root" rev-parse HEAD)
 if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "media evidence head SHA was missing or malformed: $head_sha" >&2
   exit 1
 fi
-if ! git diff --quiet HEAD -- || ! git diff --cached --quiet HEAD -- ||
-  [ -n "$(git ls-files --others --exclude-standard)" ]; then
+if ! keld_checkout_is_clean "$checkout_root" "$probe_root_relative"; then
   echo "media evidence checkout differs from recorded HEAD $head_sha" >&2
   exit 1
 fi
-example_blob=$(git rev-parse HEAD:crates/keld-wv/examples/linux_media_guard.rs)
-media_blob=$(git rev-parse HEAD:crates/keld-wv/src/media.rs)
-interposer_blob=$(git rev-parse HEAD:crates/keld-wv/tests/fixtures/linux_media_interpose.c)
-runner_blob=$(git rev-parse HEAD:crates/keld-wv/tests/linux_media_guard.sh)
+example_blob=$(git -C "$checkout_root" rev-parse HEAD:crates/keld-wv/examples/linux_media_guard.rs)
+media_blob=$(git -C "$checkout_root" rev-parse HEAD:crates/keld-wv/src/media.rs)
+interposer_blob=$(git -C "$checkout_root" rev-parse HEAD:crates/keld-wv/tests/fixtures/linux_media_interpose.c)
+runner_blob=$(git -C "$checkout_root" rev-parse HEAD:crates/keld-wv/tests/linux_media_guard.sh)
+checkout_blob=$(git -C "$checkout_root" rev-parse HEAD:crates/keld-wv/tests/linux_media_checkout.sh)
 system=$(uname -srm)
 device=$(hostname)
 {
@@ -622,8 +651,8 @@ device=$(hostname)
   printf '  "head_sha": "%s",\n' "$head_sha"
   printf '  "system": "%s",\n' "$system"
   printf '  "device": "%s",\n' "$device"
-  printf '  "source_blobs": {"example":"%s","media":"%s","interposer":"%s","runner":"%s"},\n' \
-    "$example_blob" "$media_blob" "$interposer_blob" "$runner_blob"
+  printf '  "source_blobs": {"example":"%s","media":"%s","interposer":"%s","runner":"%s","checkout":"%s"},\n' \
+    "$example_blob" "$media_blob" "$interposer_blob" "$runner_blob" "$checkout_blob"
   printf '  "probe_sha256": "%s",\n' "$probe_sha256"
   printf '  "interposer_sha256": "%s",\n' "$interposer_sha256"
   printf '  "manifest_sha256": "%s",\n' "$manifest_sha256"
