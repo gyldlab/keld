@@ -1981,14 +1981,22 @@ does not prove compatibility. These contracts are not live in v0.
 
 Bun's Node-API implementation is the compatibility path, but a package name or an
 N-API source declaration is not a runtime qualification. Each native-addon claim names
-the exact package version, Windows/OS architecture, Bun revision, loaded native-binary
-SHA-256, operation, oracle, and authority profile in `keld.compat.evidence/v1`.
+the exact package version, Windows/OS architecture, Bun revision, selected/attempted
+native-binary SHA-256 (plus the loaded digest for successful rows), operation, oracle,
+and authority profile in `keld.compat.evidence/v1`.
 KEL-215's Windows x64 fixture records that `better-sqlite3` 13.0.3 (Node-API 10)
 passes its SQL/callback/teardown operation on Bun 1.4.2 revision
 `744846f844374847c902b5e7fd59b4342a51ef99` with loaded artifact
 `e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a`;
-the same fixture records `better-sqlite3` 12.11.1 failing Bun import with
-`ERR_DLOPEN_FAILED`. Neither row generalizes to another package version, artifact,
+the same fixture records the `better-sqlite3` 12.11.1 JavaScript require succeeding
+before native binding load fails during first `Database` construction with
+`ERR_DLOPEN_FAILED`. That failed row binds the selected candidate digest
+`707a4b480026ccd1fb8e308d43c7248e779d35eeefa09559ec9bb521bb97bb3b`
+without claiming it loaded successfully. The immutable
+[fixture](https://github.com/gyldlab/keld-benches/tree/70c7d37780f9996a74afd0af48b2d0ff9b728bd5/windows/bun/better-sqlite3-differential)
+and [raw receipt](https://github.com/gyldlab/keld-benches/blob/70c7d37780f9996a74afd0af48b2d0ff9b728bd5/windows/bun/better-sqlite3-differential/results/20260911T215043844Z-3916.windows-x64.raw.json)
+retain the exact commands, exits, runtime queries, outputs, source/lock digests, and
+negative controls. Neither row generalizes to another package version, artifact,
 architecture, Bun revision, or operation. Planned `keld doctor` addon guidance will
 report only curated, version-qualified evidence rather than promising that a prebuild
 loads; the current doctor checks do not scan native addons.
