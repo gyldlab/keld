@@ -172,6 +172,25 @@ export class AppLinkSession {
   }
 
   /**
+   * Waits without a request deadline for an unsolicited host Event.
+   *
+   * A healthy window may stay open indefinitely, so LastWindowClosed cannot
+   * use the bounded Echo/Quit response wait. Reader close, socket failure, and
+   * validation errors still fail this same directed read and close the session.
+   */
+  async receiveWhileIdle(want: ReceivePolicy, park?: ReceivePolicy): Promise<DecodedFrame> {
+    if (this.#closed) {
+      throw kipcError("KELD-IPC-001", "session is closed");
+    }
+    try {
+      return await this.#directed.receive(want, park);
+    } catch (err) {
+      this.close();
+      throw err;
+    }
+  }
+
+  /**
    * One serialized frame write on this HELLO'd link. Callers own channel,
    * correlation, and payload codecs (KEL-185 sends Quit here; this method does not).
    */

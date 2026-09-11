@@ -183,7 +183,7 @@ fn healthy_window_phase_still_exits_zero() {
 /// Regression: status zero is still self-termination when the window path
 /// requires the app to remain alive.
 ///
-/// This is the shipping template with only its parking line changed. The real
+/// This is the shipping template with only its lifecycle-wait line changed. The real
 /// Bun child completes HELLO + echo, prints the real ready marker, then exits
 /// zero before the injected window phase returns. The process-status oracle
 /// proves the host did not cause the exit.
@@ -192,12 +192,12 @@ fn ready_then_exit_zero_fails_the_window_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("z{}", std::process::id());
     let (root, pid_path) = project_with_main_rewrite(dir.path(), &name, |scaffolded| {
-        let parked = "  await new Promise(() => {});";
+        let lifecycle_wait = "    await quitAfterLastWindowClosed(session);";
         assert!(
-            scaffolded.contains(parked),
-            "template shape changed; this fixture edits its parking line"
+            scaffolded.contains(lifecycle_wait),
+            "template shape changed; this fixture edits its lifecycle-wait line"
         );
-        scaffolded.replace(parked, "  process.exit(0);")
+        scaffolded.replace(lifecycle_wait, "    process.exit(0);")
     });
 
     let msg = window_error_after_child_exits(&root, &pid_path);
@@ -216,18 +216,21 @@ fn finally_process_exit_zero_fails_the_window_path() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("f{}", std::process::id());
     let (root, pid_path) = project_with_main_rewrite(dir.path(), &name, |scaffolded| {
-        let parked = "  await new Promise(() => {});";
+        let lifecycle_wait = "    await quitAfterLastWindowClosed(session);";
         let finally_close = "  session.close();";
         assert!(
-            scaffolded.contains(parked),
-            "template parking shape changed"
+            scaffolded.contains(lifecycle_wait),
+            "template lifecycle-wait shape changed"
         );
         assert!(
             scaffolded.contains(finally_close),
             "template finally shape changed"
         );
         scaffolded
-            .replace(parked, "  throw new Error(\"kel116-finally-boom\");")
+            .replace(
+                lifecycle_wait,
+                "    throw new Error(\"kel116-finally-boom\");",
+            )
             .replace(finally_close, "  session.close();\n  process.exit();")
     });
 
@@ -341,7 +344,7 @@ fn a_later_readiness_wait_does_not_forgive_a_post_ready_crash() {
 /// stdout position is what separates "crashed, then printed" from "printed,
 /// then crashed".
 ///
-/// The fixture is the shipping template with only its parking line changed, so
+/// The fixture is the shipping template with only its lifecycle-wait line changed, so
 /// generation 1 does a real HELLO + CALL and prints the real ready line before
 /// dying. Generation 2 parks *before* the handshake, so exactly one crash
 /// occurs and the supervisor's terminal outcome stays `Stopped` — otherwise the
@@ -355,12 +358,12 @@ fn an_app_that_dies_after_reporting_ready_fails_the_run() {
     let gen_lit = gen_path.display().to_string();
     let main = root.join("src/main.ts");
     let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
-    let parked = "  await new Promise(() => {});";
+    let lifecycle_wait = "    await quitAfterLastWindowClosed(session);";
     assert!(
-        scaffolded.contains(parked),
-        "template shape changed; this fixture edits its parking line"
+        scaffolded.contains(lifecycle_wait),
+        "template shape changed; this fixture edits its lifecycle-wait line"
     );
-    let body = scaffolded.replace(parked, "  process.exit(1);");
+    let body = scaffolded.replace(lifecycle_wait, "    process.exit(1);");
     fs::write(
         &main,
         format!(

@@ -2,12 +2,95 @@
 
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
+use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use keld_cli::create::create_project;
 use keld_cli::echo_link::EchoServer;
+use keld_ipc::link::{read_frame, write_frame};
+use keld_ipc::{
+    APP_LINK_IO_DEADLINE, AppLinkDeadlines, BootstrapListener, ChannelId, CorrelationId,
+    ECHO_CHANNEL, EchoRequest, EchoResponse, FrameHeader, FrameKind, LIFECYCLE_CHANNEL,
+    LifecycleEvent, LifecycleRequest, LifecycleResponse,
+};
+
+fn wait_for_output(mut child: Child, timeout: Duration) -> Result<Output, String> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|error| format!("collect child output: {error}"));
+            }
+            Ok(None) if started.elapsed() < timeout => thread::yield_now(),
+            Ok(None) => {
+                let _ = child.kill();
+                let output = child
+                    .wait_with_output()
+                    .map_err(|error| format!("reap timed-out child: {error}"))?;
+                return Err(format!(
+                    "child did not exit within {timeout:?}; stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Err(error) => return Err(format!("poll child exit: {error}")),
+        }
+    }
+}
+
+fn send_ready_then_reply_to_stock_echo<S: Read + Write>(stream: &mut S) -> CorrelationId {
+    let ready = keld_ipc::codec::encode(&LifecycleEvent::Ready).expect("encode Ready");
+    write_frame(
+        stream,
+        FrameKind::Event,
+        0,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(0),
+        &ready,
+    )
+    .expect("send Ready before Echo Reply");
+
+    let (echo_header, echo_payload) = read_frame(stream).expect("read Echo Call");
+    assert_eq!(echo_header.kind, FrameKind::Call);
+    assert_eq!(echo_header.flags, 0);
+    assert_eq!(echo_header.channel, ECHO_CHANNEL);
+    assert_ne!(echo_header.corr, CorrelationId(0));
+    let request: EchoRequest = keld_ipc::codec::decode(&echo_payload).expect("decode Echo");
+    assert_eq!(request.message, "keld");
+    assert_eq!(request.count, 1);
+    let echo_reply = keld_ipc::codec::encode(&EchoResponse {
+        message: request.message,
+        count: request.count,
+    })
+    .expect("encode Echo Reply");
+    write_frame(
+        stream,
+        FrameKind::Reply,
+        0,
+        ECHO_CHANNEL,
+        echo_header.corr,
+        &echo_reply,
+    )
+    .expect("send Echo Reply");
+    echo_header.corr
+}
+
+fn spawn_generated_main(project: &Path, link: &str) -> Child {
+    Command::new("bun")
+        .args(["run", "src/main.ts"])
+        .current_dir(project)
+        .env("KELD_APP_LINK", link)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn generated main under Bun")
+}
 
 #[test]
 fn bun_main_runs_ipc_echo_with_unique_fields() {
@@ -191,6 +274,208 @@ fn created_template_main_runs_ipc_echo() {
         !stdout.contains("{{name}}"),
         "unsubstituted template leaked: stdout={stdout}"
     );
+}
+
+/// KEL-185 regression: the untouched generated main must consume the host's
+/// lifecycle event and answer Quit on its already-authenticated app-link.
+///
+/// The Rust server is the wire oracle. It deliberately sends `Ready` before
+/// the Echo Reply, then requires `LastWindowClosed`, a correlated `Quit`, its
+/// Reply, and EOF. A second `HELLO`, a competing reader, or the old permanent
+/// park fails at the exact frame where it appears. The timeout only reaps a faulty child.
+#[test]
+fn created_template_quits_after_last_window_closed_on_the_same_link() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app");
+
+    let listener = BootstrapListener::bind().expect("bind app-link");
+    let link = listener.app_link();
+    let server = thread::spawn(move || {
+        let mut stream = listener
+            .accept_authenticated()
+            .expect("accept app-link")
+            .expect("client must authenticate");
+        stream
+            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+            .expect("set app-link deadlines");
+
+        let echo_corr = send_ready_then_reply_to_stock_echo(&mut stream);
+
+        // Window lifetime is intentionally longer than the request/reply I/O
+        // deadline. The timeout is the contract measurement: no message is
+        // expected, and the sender stays live so disconnect cannot satisfy it.
+        let (_idle_guard, idle_window) = mpsc::channel::<()>();
+        assert!(matches!(
+            idle_window.recv_timeout(APP_LINK_IO_DEADLINE + Duration::from_millis(250)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        let ping_channel = ChannelId(91);
+        let ping_corr = CorrelationId(0x185);
+        write_frame(
+            &mut stream,
+            FrameKind::Ping,
+            0,
+            ping_channel,
+            ping_corr,
+            &[],
+        )
+        .expect("send lifecycle liveness Ping");
+        let (ping_header, ping_payload) = read_frame(&mut stream).expect("read echoed Ping");
+        assert_eq!(ping_header.kind, FrameKind::Ping);
+        assert_eq!(ping_header.flags, 0);
+        assert_eq!(ping_header.channel, ping_channel);
+        assert_eq!(ping_header.corr, ping_corr);
+        assert!(ping_payload.is_empty());
+
+        let closed =
+            keld_ipc::codec::encode(&LifecycleEvent::LastWindowClosed).expect("encode close");
+        write_frame(
+            &mut stream,
+            FrameKind::Event,
+            0,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(0),
+            &closed,
+        )
+        .expect("send LastWindowClosed");
+
+        let (quit_header, quit_payload) = read_frame(&mut stream).expect("read Quit Call");
+        assert_eq!(quit_header.kind, FrameKind::Call, "no second HELLO");
+        assert_eq!(quit_header.flags, 0);
+        assert_eq!(quit_header.channel, LIFECYCLE_CHANNEL);
+        assert_ne!(quit_header.corr, CorrelationId(0));
+        assert_ne!(quit_header.corr, echo_corr);
+        let request: LifecycleRequest =
+            keld_ipc::codec::decode(&quit_payload).expect("decode Quit Call");
+        assert_eq!(request, LifecycleRequest::Quit);
+        let quit_reply =
+            keld_ipc::codec::encode(&LifecycleResponse::Quit).expect("encode Quit Reply");
+        write_frame(
+            &mut stream,
+            FrameKind::Reply,
+            0,
+            LIFECYCLE_CHANNEL,
+            quit_header.corr,
+            &quit_reply,
+        )
+        .expect("send correlated Quit Reply");
+
+        let mut trailing = [0_u8; 1];
+        assert_eq!(
+            stream.read(&mut trailing).expect("read client EOF"),
+            0,
+            "client must close after consuming the Quit Reply"
+        );
+    });
+
+    let child = spawn_generated_main(&project, &link);
+    let output = wait_for_output(child, Duration::from_secs(10)).expect("generated main must exit");
+    server.join().expect("wire server");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "generated main failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("ipc-echo ok: message=\"keld\" count=1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("app: main process ready (IPC echo ok)"),
+        "{stdout}"
+    );
+}
+
+/// A peer that starts a lifecycle frame and then stalls must not turn the
+/// idle-event exception into an unbounded read. The first header byte starts
+/// the adapter's absolute frame deadline; Bun must fail and close the link.
+#[test]
+fn created_template_rejects_a_stalled_lifecycle_frame() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app");
+
+    let listener = BootstrapListener::bind().expect("bind app-link");
+    let link = listener.app_link();
+    let server = thread::spawn(move || {
+        let mut stream = listener
+            .accept_authenticated()
+            .expect("accept app-link")
+            .expect("client must authenticate");
+        stream
+            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+            .expect("set app-link deadlines");
+        send_ready_then_reply_to_stock_echo(&mut stream);
+
+        let header = FrameHeader {
+            kind: FrameKind::Event,
+            flags: 0,
+            channel: LIFECYCLE_CHANNEL,
+            corr: CorrelationId(0),
+            len: 1,
+        }
+        .encode();
+        stream
+            .write_all(&header[..1])
+            .expect("send first byte of a lifecycle frame");
+        stream
+            .flush()
+            .expect("make the stalled frame byte observable");
+        stream
+            .set_app_link_read_deadline(Some(APP_LINK_IO_DEADLINE + Duration::from_secs(2)))
+            .expect("bound EOF observation");
+        let mut trailing = [0_u8; 1];
+        assert_eq!(
+            stream
+                .read(&mut trailing)
+                .expect("client closes after frame timeout"),
+            0,
+            "timed-out client must close its app-link"
+        );
+    });
+
+    let child = spawn_generated_main(&project, &link);
+    let output = wait_for_output(child, Duration::from_secs(10)).expect("bounded client failure");
+    server.join().expect("wire server");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "stalled frame must fail: {stderr}"
+    );
+    assert!(stderr.contains("KELD-IPC-006"), "{stderr}");
+}
+
+/// Peer close while the stock app is waiting for a lifecycle Event remains a
+/// hard link failure. It must reject and reap rather than returning to a park.
+#[test]
+fn created_template_reaps_after_early_lifecycle_link_close() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app");
+
+    let listener = BootstrapListener::bind().expect("bind app-link");
+    let link = listener.app_link();
+    let server = thread::spawn(move || {
+        let mut stream = listener
+            .accept_authenticated()
+            .expect("accept app-link")
+            .expect("client must authenticate");
+        stream
+            .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+            .expect("set app-link deadlines");
+        send_ready_then_reply_to_stock_echo(&mut stream);
+    });
+
+    let child = spawn_generated_main(&project, &link);
+    server.join().expect("wire server");
+    let output = wait_for_output(child, Duration::from_secs(5)).expect("bounded client failure");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "early close must fail: {stderr}");
+    assert!(stderr.contains("KELD-IPC-001"), "{stderr}");
 }
 
 #[test]
