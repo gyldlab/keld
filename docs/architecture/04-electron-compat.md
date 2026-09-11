@@ -23,7 +23,7 @@ Keld migrate report — my-electron-app
   ✔ supported now: 42/47 call sites (Tier 1: 38, Tier 2: 4)
   ▲ behavior notes: BrowserWindow.vibrancy (macOS-only effect), sendSync (rate-limited)
   ✘ unsupported: desktopCapturer (2 sites) → tracked keld#77, workaround: docs/compat/capture.md
-  native modules: better-sqlite3 ✔ (N-API prebuilt) · node-pty ▲ (needs bun>=x.y)
+  native modules: better-sqlite3 ▲ (version/runtime/artifact-qualified evidence required) · node-pty ▲ (needs bun>=x.y)
   generated: keld.config.ts · keld.permissions.jsonc · keld.build.ts
   changed:   package.json (scripts, devDeps) · bunfig.toml (alias electron → @keld/electron)
   compat score: 91% — expected to run. `keld dev` to verify.
@@ -160,12 +160,20 @@ does not prove compatibility. These contracts are not live in v0.
 
 ## 5. Native modules policy
 
-Bun's Node-API implementation is the compat path: N-API prebuilds (better-sqlite3,
-sharp, keytar-class) load as-is — **no electron-rebuild treadmill, ever** (host ABI is
-not Node's; only Bun's N-API matters and it's pinned per Keld release). `keld doctor`
-scans `node_modules` for native deps, checks a curated compatibility DB (crowd-sourced,
-CI-verified), and flags known-bad ones with alternatives. Modules that reach into
-Electron internals (rare) are Tier-✘ with documented workarounds.
+Bun's Node-API implementation is the compatibility path, but a package name or an
+N-API source declaration is not a runtime qualification. Each native-addon claim names
+the exact package version, Windows/OS architecture, Bun revision, loaded native-binary
+SHA-256, operation, oracle, and authority profile in `keld.compat.evidence/v1`.
+KEL-215's Windows x64 fixture records that `better-sqlite3` 13.0.3 (Node-API 10)
+passes its SQL/callback/teardown operation on Bun 1.4.2 revision
+`744846f844374847c902b5e7fd59b4342a51ef99` with loaded artifact
+`e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a`;
+the same fixture records `better-sqlite3` 12.11.1 failing Bun import with
+`ERR_DLOPEN_FAILED`. Neither row generalizes to another package version, artifact,
+architecture, Bun revision, or operation. `keld doctor` guidance therefore reports
+only curated, version-qualified evidence rather than promising that a prebuild loads.
+Modules that reach into Electron internals (rare) are Tier-✘ with documented
+workarounds.
 
 ## 6. Migration corpus (measurement harness)
 
