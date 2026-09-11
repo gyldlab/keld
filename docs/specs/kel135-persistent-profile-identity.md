@@ -656,9 +656,11 @@ For each saved-grant row, camera and microphone have separate results:
    produce a revocation pass. Restore mutations before the final reviewed run.
 
 Each strengthened `*-dev-ephemeral` row instead seeds a grant and nonce in dev
-launch A, completes its owned cleanup, and starts fresh dev launch B. Prove B inherits
-neither the grant nor the nonce; mutation to reuse A's store must fail. Because this
-row uses different session state, it never substitutes for same-profile revocation.
+launch A, completes its owned cleanup, and starts fresh dev launch B on launch A's
+exact origin. Prove B inherits neither the grant nor the nonce; mutation to reuse
+A's store must fail. A changed origin cannot stand in for store isolation. Because
+this row uses different session state, it never substitutes for same-profile
+revocation.
 
 Artifacts retain §6's exact task, approved-contract provenance, landed head and
 acceptance-status requirements. They also bind the amendment's
