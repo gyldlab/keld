@@ -127,4 +127,22 @@ mod tests {
             "keld create emits config, package, html, transport, main, kipc facade, gitignore"
         );
     }
+
+    #[test]
+    fn template_main_import_requires_emitted_kipc_transport() {
+        let main = HELLO_TEMPLATE
+            .iter()
+            .find(|file| file.path == "src/main.ts")
+            .expect("hello main");
+        assert!(
+            main.contents.contains("from \"./kipc-transport.ts\""),
+            "generated main must import the sidecar"
+        );
+        assert!(
+            HELLO_TEMPLATE
+                .iter()
+                .any(|file| file.path == "src/kipc-transport.ts"),
+            "keld create must emit src/kipc-transport.ts whenever main.ts imports it"
+        );
+    }
 }

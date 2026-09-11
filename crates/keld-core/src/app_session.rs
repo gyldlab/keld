@@ -1693,6 +1693,10 @@ fn run_app_direct(
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const LINUX_BUN_ENTRY: &str = "/code/main.ts";
+/// Guest path Bun resolves for `from "./kipc-transport.ts"` after the entry
+/// remaps to `/code/main.ts`. Directory-wide `/code` mounts stay forbidden.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const LINUX_BUN_TRANSPORT: &str = "/code/kipc-transport.ts";
 // Deliberate Ubuntu/Debian x86_64 runtime manifest for the currently proved
 // Linux product profile. KEL-28 owns non-Debian evidence; target-driven `ldd`
 // execution here would run untrusted loader metadata outside containment.
@@ -1775,6 +1779,7 @@ fn linux_strict_primary_config_x86(
     profile = profile
         .readonly_runtime(&root.join(entry_path), Path::new(LINUX_BUN_ENTRY))
         .map_err(|source| app_detail("Linux strict entry", source.to_string()))?;
+    profile = bind_linux_kipc_transport(profile, root)?;
 
     let config = PrimaryRoleConfig::new(bun)
         .arg("run")
@@ -1801,6 +1806,30 @@ fn linux_strict_primary_config_x86(
         config
     };
     Ok(config.linux_strict(profile))
+}
+
+/// Binds the staged hello sidecar as its own file mount. `NotFound` stays
+/// valid for fixtures that inline a self-contained entry. A present non-file
+/// fails closed — `readonly_runtime` rejects directory-wide `/code` mounts.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn bind_linux_kipc_transport(
+    profile: LinuxStrictProfile,
+    root: &Path,
+) -> Result<LinuxStrictProfile, HostAppError> {
+    // Two-component probe matches boot.rs: a single `src/...` component then
+    // `.is_file()` can miss the sidecar on Windows; keep the same join here.
+    let sidecar = root.join("src").join("kipc-transport.ts");
+    match sidecar.metadata() {
+        Ok(metadata) if metadata.is_file() => profile
+            .readonly_runtime(&sidecar, Path::new(LINUX_BUN_TRANSPORT))
+            .map_err(|source| app_detail("Linux strict transport", source.to_string())),
+        Ok(_) => Err(app_detail(
+            "Linux strict transport",
+            "src/kipc-transport.ts exists but is not a regular file",
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(profile),
+        Err(err) => Err(app_io("Linux strict transport", &err)),
+    }
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

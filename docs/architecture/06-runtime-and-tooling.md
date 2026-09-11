@@ -374,7 +374,10 @@ that file as `src/kipc-transport.ts`; the hello echo adapter and `@keld/electron
 lifecycle adapter import it. `DirectedReader` on that transport parks lifecycle
 Events while waiting for Echo Reply so stock echo survives a preceding `Ready`.
 The non-release boot compiler copies that sidecar
-into the owner-private stage when present so `keld dev` Bun can resolve it. `keld gen` / `@keld/schema` codegen (KEL-13) is not
+into the owner-private stage when present so `keld dev` Bun can resolve it.
+Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,
+binds `src/kipc-transport.ts` to `/code/kipc-transport.ts` as a second file
+mount (directory-wide `/code` mounts stay forbidden). `keld gen` / `@keld/schema` codegen (KEL-13) is not
 built, so this shared transport plus the echo adapter is the actual
 "Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
 pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,

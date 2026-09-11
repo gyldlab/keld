@@ -685,12 +685,15 @@ export async function connectKipcSocket(
     },
     error(_socket: unknown, err: Error) {
       reader.fail(kipcError("KELD-IPC-001", err.message));
+      drain.fire();
     },
     close(_socket: unknown) {
       reader.fail(kipcError("KELD-IPC-001", "connection closed by peer"));
+      drain.fire();
     },
     connectError(_socket: unknown, err: Error) {
       reader.fail(kipcError("KELD-IPC-001", err.message));
+      drain.fire();
     },
   };
   const socket =

@@ -26,8 +26,10 @@ import {
   decodeHeader,
   echoReplyWaiter,
   encodeHeader,
+  kipcError,
   lifecycleReplyWaiter,
   validateReceivedHeader,
+  withIoDeadline,
 } from "./transport.ts";
 
 const REPO_ROOT = join(import.meta.dir, "../../../..");
@@ -251,6 +253,43 @@ describe("DrainSignal / WriteQueue", () => {
       "KELD-IPC-001",
     );
     expect(out.length).toBe(8);
+  });
+});
+
+describe("deadline leftover I/O", () => {
+  test("withIoDeadline leaves FrameReader.#pending until fail() closes it", async () => {
+    const reader = new FrameReader();
+    await expect(withIoDeadline(reader.readFrame(), 20)).rejects.toThrow("KELD-IPC-006");
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-005");
+    reader.fail(kipcError("KELD-IPC-001", "session is closed"));
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
+  });
+
+  test("fail() then drain.fire() rejects the parked read and wakes writers", async () => {
+    const reader = new FrameReader();
+    const drain = new DrainSignal();
+    const pending = reader.readFrame();
+    const waiting = drain.wait();
+    reader.fail(kipcError("KELD-IPC-001", "connection closed by peer"));
+    drain.fire();
+    await expect(pending).rejects.toThrow("KELD-IPC-001");
+    await waiting;
+  });
+
+  test("connect handlers fail the reader then fire drain", () => {
+    const source = readFileSync(join(import.meta.dir, "transport.ts"), "utf8");
+    const start = source.indexOf("const handlers = {");
+    const end = source.indexOf("const socket =", start);
+    const handlers = source.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    for (const name of ["error(", "close(", "connectError("]) {
+      const from = handlers.indexOf(name);
+      expect(from).toBeGreaterThan(-1);
+      const body = handlers.slice(from, from + 180);
+      expect(body.indexOf("reader.fail(")).toBeGreaterThan(-1);
+      expect(body.indexOf("drain.fire()")).toBeGreaterThan(body.indexOf("reader.fail("));
+    }
   });
 });
 

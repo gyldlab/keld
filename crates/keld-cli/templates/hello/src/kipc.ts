@@ -89,13 +89,23 @@ export function decodeEchoResponse(bytes: Uint8Array): EchoResponse {
  */
 export class AppLinkSession {
   #socket: { end(): void };
+  #reader: FrameReader;
+  #drain: DrainSignal;
   #directed: DirectedReader;
   #writes: WriteQueue;
   #nextCorr = 1;
   #closed = false;
 
-  private constructor(socket: { end(): void }, directed: DirectedReader, writes: WriteQueue) {
+  private constructor(
+    socket: { end(): void },
+    reader: FrameReader,
+    drain: DrainSignal,
+    directed: DirectedReader,
+    writes: WriteQueue,
+  ) {
     this.#socket = socket;
+    this.#reader = reader;
+    this.#drain = drain;
     this.#directed = directed;
     this.#writes = writes;
   }
@@ -112,7 +122,7 @@ export class AppLinkSession {
     const socket = await connectKipcSocket(endpoint, reader, drain);
     const writes = new WriteQueue(socket, drain);
     const directed = new DirectedReader(reader);
-    const session = new AppLinkSession(socket, directed, writes);
+    const session = new AppLinkSession(socket, reader, drain, directed, writes);
     try {
       await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
       const helloReply = await withIoDeadline(directed.receive(CLIENT_AWAIT_HELLO));
@@ -153,7 +163,12 @@ export class AppLinkSession {
     if (this.#closed) {
       throw kipcError("KELD-IPC-001", "session is closed");
     }
-    return await withIoDeadline(this.#directed.receive(want, park));
+    try {
+      return await withIoDeadline(this.#directed.receive(want, park));
+    } catch (err) {
+      this.close();
+      throw err;
+    }
   }
 
   /**
@@ -170,7 +185,12 @@ export class AppLinkSession {
     if (this.#closed) {
       throw kipcError("KELD-IPC-001", "session is closed");
     }
-    await withIoDeadline(this.#writes.writeFrame(kind, flags, channel, corr, payload));
+    try {
+      await withIoDeadline(this.#writes.writeFrame(kind, flags, channel, corr, payload));
+    } catch (err) {
+      this.close();
+      throw err;
+    }
   }
 
   /**
@@ -194,10 +214,17 @@ export class AppLinkSession {
     return decodeEchoResponse(reply.payload);
   }
 
-  /** Ends the socket. Safe to call more than once. */
+  /**
+   * Ends the socket and wakes leftover I/O. `withIoDeadline` does not cancel
+   * the inner promise; fail/fire here so a timed-out read cannot leave
+   * `FrameReader.#pending` set and a timed-out write cannot stay in
+   * `DrainSignal.wait()`. Safe to call more than once.
+   */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#reader.fail(kipcError("KELD-IPC-001", "session is closed"));
+    this.#drain.fire();
     this.#socket.end();
   }
 }
