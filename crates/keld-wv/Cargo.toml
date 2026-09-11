@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Explicit development fixture; absent from the shipping default build.
+media-acceptance = []
+
 [dependencies]
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`
 # on the live WKWebView permission callback. Sibling crate, not an upward edge.
