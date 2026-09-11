@@ -479,10 +479,12 @@ const report = (outcome, trackKind = "none", trackCount = 0, liveBeforeStop = fa
   await fetch(`/{nonce}/ready`);
   try {{
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    const tracks = stream.getTracks().filter(track => track.kind === "{}");
-    const liveBeforeStop = tracks.length > 0 && tracks.every(track => track.readyState === "live");
-    for (const track of tracks) track.stop();
-    const endedAfterStop = tracks.length > 0 && tracks.every(track => track.readyState === "ended");
+    const allTracks = stream.getTracks();
+    const tracks = allTracks.filter(track => track.kind === "{}");
+    const exactKind = tracks.length === allTracks.length;
+    const liveBeforeStop = tracks.length > 0 && exactKind && allTracks.every(track => track.readyState === "live");
+    for (const track of allTracks) track.stop();
+    const endedAfterStop = tracks.length > 0 && exactKind && allTracks.every(track => track.readyState === "ended");
     await report("resolved", "{}", tracks.length, liveBeforeStop, endedAfterStop);
   }} catch (error) {{
     await report(error && error.name ? error.name : "UnknownError");

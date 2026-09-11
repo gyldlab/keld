@@ -496,10 +496,30 @@ if (KELD_MEDIA_SYNTHETIC_PROMPT=1 run_probe camera denied deny synthetic-prompt)
   echo "synthetic media prompt unexpectedly passed the no-prompt census" >&2
   exit 1
 fi
+if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/synthetic-prompt.out" ||
+  ! grep -Eq '^callback .* kind=camera action=deny ' "$probe_root/synthetic-prompt.trace" ||
+  ! grep -Eq '^policy .* capability=web\.camera .* decision=KELD-GUARD006 response=deny ' "$probe_root/synthetic-prompt.trace" ||
+  ! grep -q '^MapNotify event' "$probe_root/synthetic-prompt.xevents" ||
+  [ ! -f "$probe_root/synthetic-prompt.prompt.log" ]; then
+  echo "synthetic-prompt control did not preserve a valid denied row plus mapped prompt evidence" >&2
+  exit 1
+fi
+synthetic_prompt_pid=$(sed -n -E 's/^setup .* pid=([0-9]+) tid=.*/\1/p' "$probe_root/synthetic-prompt.trace")
+if [ -z "$synthetic_prompt_pid" ] || kill -0 "$synthetic_prompt_pid" 2>/dev/null; then
+  echo "synthetic-prompt failure left the probe process alive" >&2
+  exit 1
+fi
 echo "media_guard negative_control=synthetic_prompt rejected"
 
 if (KELD_MEDIA_DROP_POLICY_RECEIPT=1 run_probe camera denied deny missing-policy); then
   echo "missing-policy cleanup negative control unexpectedly passed" >&2
+  exit 1
+fi
+if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/missing-policy.out" ||
+  ! grep -Eq '^callback .* kind=camera action=deny ' "$probe_root/missing-policy.trace" ||
+  grep -q '^policy ' "$probe_root/missing-policy.trace" ||
+  [ "$(grep -Ec '^policy .* capability=web\.camera .* decision=KELD-GUARD006 response=deny ' "$probe_root/missing-policy.discarded-policy")" -ne 1 ]; then
+  echo "missing-policy control did not isolate the discarded Keld policy receipt" >&2
   exit 1
 fi
 missing_policy_pid=$(sed -n -E 's/^setup .* pid=([0-9]+) tid=.*/\1/p' \
@@ -540,14 +560,26 @@ cp -- "$interposer" "$probe_root/linux_media_interpose.so"
 (cd "$probe_root" && find . -type f ! -name result.json ! -name sha256sums.txt -print0 |
   sort -z | xargs -0 sha256sum --) >"$probe_root/sha256sums.txt"
 manifest_sha256=$(sha256sum -- "$probe_root/sha256sums.txt" | awk '{print $1}')
-head_sha=${KELD_MEDIA_HEAD_SHA:-}
-if [ -z "$head_sha" ]; then
-  head_sha=$(git rev-parse HEAD)
-fi
+head_sha=$(git rev-parse HEAD)
 if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "media evidence head SHA was missing or malformed: $head_sha" >&2
   exit 1
 fi
+owned_paths=(
+  crates/keld-wv/examples/linux_media_guard.rs
+  crates/keld-wv/src/media.rs
+  crates/keld-wv/tests/fixtures/linux_media_interpose.c
+  crates/keld-wv/tests/linux_media_guard.sh
+)
+if ! git diff --quiet HEAD -- "${owned_paths[@]}" ||
+  ! git diff --cached --quiet HEAD -- "${owned_paths[@]}"; then
+  echo "media evidence owning sources differ from recorded HEAD $head_sha" >&2
+  exit 1
+fi
+example_blob=$(git rev-parse HEAD:crates/keld-wv/examples/linux_media_guard.rs)
+media_blob=$(git rev-parse HEAD:crates/keld-wv/src/media.rs)
+interposer_blob=$(git rev-parse HEAD:crates/keld-wv/tests/fixtures/linux_media_interpose.c)
+runner_blob=$(git rev-parse HEAD:crates/keld-wv/tests/linux_media_guard.sh)
 system=$(uname -srm)
 device=$(hostname)
 {
@@ -556,6 +588,8 @@ device=$(hostname)
   printf '  "head_sha": "%s",\n' "$head_sha"
   printf '  "system": "%s",\n' "$system"
   printf '  "device": "%s",\n' "$device"
+  printf '  "source_blobs": {"example":"%s","media":"%s","interposer":"%s","runner":"%s"},\n' \
+    "$example_blob" "$media_blob" "$interposer_blob" "$runner_blob"
   printf '  "probe_sha256": "%s",\n' "$probe_sha256"
   printf '  "interposer_sha256": "%s",\n' "$interposer_sha256"
   printf '  "manifest_sha256": "%s",\n' "$manifest_sha256"
