@@ -2,8 +2,9 @@
 
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
+use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -13,35 +14,147 @@ use keld_cli::create::create_project;
 use keld_cli::echo_link::EchoServer;
 use keld_ipc::link::{read_frame, write_frame};
 use keld_ipc::{
-    APP_LINK_IO_DEADLINE, AppLinkDeadlines, BootstrapListener, ChannelId, CorrelationId,
+    APP_LINK_IO_DEADLINE, AppLinkDeadlines, BootstrapAdmission, BootstrapListener,
+    BootstrapRejection, BootstrapRejectionObserver, BootstrapStream, ChannelId, CorrelationId,
     ECHO_CHANNEL, EchoRequest, EchoResponse, FrameHeader, FrameKind, LIFECYCLE_CHANNEL,
     LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
 
-fn wait_for_output(mut child: Child, timeout: Duration) -> Result<Output, String> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|error| format!("collect child output: {error}"));
+struct ObservedChild {
+    child: Option<Child>,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+}
+
+impl ObservedChild {
+    fn wait_for_output(mut self, timeout: Duration) -> Result<Output, String> {
+        let child = self.child.as_mut().expect("observed child present");
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() < timeout => {
+                    thread::park_timeout(Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let status = child
+                        .wait()
+                        .map_err(|error| format!("reap timed-out child: {error}"))?;
+                    self.child.take();
+                    let output = self.output(status)?;
+                    return Err(format!(
+                        "child did not exit within {timeout:?}; stdout={} stderr={}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    ));
+                }
+                Err(error) => return Err(format!("poll child exit: {error}")),
             }
-            Ok(None) if started.elapsed() < timeout => thread::yield_now(),
-            Ok(None) => {
+        };
+        self.child.take();
+        self.output(status)
+    }
+
+    fn output(&self, status: std::process::ExitStatus) -> Result<Output, String> {
+        Ok(Output {
+            status,
+            stdout: std::fs::read(&self.stdout_path)
+                .map_err(|error| format!("read child stdout: {error}"))?,
+            stderr: std::fs::read(&self.stderr_path)
+                .map_err(|error| format!("read child stderr: {error}"))?,
+        })
+    }
+}
+
+impl Drop for ObservedChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            if child.try_wait().is_ok_and(|status| status.is_none()) {
                 let _ = child.kill();
-                let output = child
-                    .wait_with_output()
-                    .map_err(|error| format!("reap timed-out child: {error}"))?;
-                return Err(format!(
-                    "child did not exit within {timeout:?}; stdout={} stderr={}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                ));
             }
-            Err(error) => return Err(format!("poll child exit: {error}")),
+            let _ = child.wait();
         }
     }
+}
+
+fn spawn_observed(command: &mut Command, output_root: &Path) -> ObservedChild {
+    let stdout_path = output_root.join("child.stdout.log");
+    let stderr_path = output_root.join("child.stderr.log");
+    let stdout = File::create(&stdout_path).expect("create child stdout log");
+    let stderr = File::create(&stderr_path).expect("create child stderr log");
+    let child = command
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("spawn observed child");
+    ObservedChild {
+        child: Some(child),
+        stdout_path,
+        stderr_path,
+    }
+}
+
+struct IgnoreBootstrapRejections;
+
+impl BootstrapRejectionObserver for IgnoreBootstrapRejections {
+    fn rejected(&self, _rejection: BootstrapRejection) {}
+}
+
+fn accept_generated_main(
+    listener: &BootstrapListener,
+    deadline: Instant,
+) -> Result<BootstrapStream, String> {
+    match listener.accept_authenticated_until(deadline, &IgnoreBootstrapRejections) {
+        Ok(BootstrapAdmission::Authenticated(stream)) => Ok(stream),
+        Ok(BootstrapAdmission::DeadlineElapsed) => {
+            Err("generated main did not authenticate before the admission deadline".to_owned())
+        }
+        Ok(BootstrapAdmission::Cancelled) => {
+            Err("generated-main admission was cancelled".to_owned())
+        }
+        Err(error) => Err(format!("accept generated-main app-link: {error}")),
+    }
+}
+
+fn wait_for_output(child: ObservedChild, timeout: Duration) -> Result<Output, String> {
+    child.wait_for_output(timeout)
+}
+
+fn output_diagnostics(output: &Output) -> String {
+    format!(
+        "status={:?} stdout={} stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+fn finish_lifecycle_fixture(
+    server: thread::JoinHandle<Result<(), String>>,
+    child: ObservedChild,
+    child_timeout: Duration,
+) -> Result<Output, String> {
+    let child_result = wait_for_output(child, child_timeout);
+    match (server.join(), child_result) {
+        (Ok(Ok(())), output) => output,
+        (Ok(Err(server_error)), Ok(output)) => Err(format!(
+            "wire server failed: {server_error}; child {}",
+            output_diagnostics(&output)
+        )),
+        (Ok(Err(server_error)), Err(child_error)) => {
+            Err(format!("wire server failed: {server_error}; {child_error}"))
+        }
+        (Err(_), Ok(output)) => Err(format!(
+            "wire server panicked; child {}",
+            output_diagnostics(&output)
+        )),
+        (Err(_), Err(child_error)) => Err(format!("wire server panicked; {child_error}")),
+    }
+}
+
+fn fixture_admission_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(10)
 }
 
 fn send_ready_then_reply_to_stock_echo<S: Read + Write>(stream: &mut S) -> CorrelationId {
@@ -81,15 +194,87 @@ fn send_ready_then_reply_to_stock_echo<S: Read + Write>(stream: &mut S) -> Corre
     echo_header.corr
 }
 
-fn spawn_generated_main(project: &Path, link: &str) -> Child {
-    Command::new("bun")
-        .args(["run", "src/main.ts"])
-        .current_dir(project)
-        .env("KELD_APP_LINK", link)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn generated main under Bun")
+fn spawn_generated_main(project: &Path, link: &str) -> ObservedChild {
+    spawn_observed(
+        Command::new("bun")
+            .args(["run", "src/main.ts"])
+            .current_dir(project)
+            .env("KELD_APP_LINK", link),
+        project,
+    )
+}
+
+const NO_CLIENT_ADMISSION_CHILD: &str = "created_template_server_admission_without_client_child";
+
+/// The lifecycle wire fixture must report a generated-main launch/admission
+/// failure instead of leaving its server worker blocked for the test binary's
+/// lifetime. The child isolates the deliberately absent client so the parent
+/// can reap the current unbounded implementation with an independent kill switch.
+#[test]
+fn created_template_server_admission_without_client_is_bounded() {
+    let output_dir = tempfile::tempdir().expect("no-client output tempdir");
+    let test_binary = std::env::current_exe().expect("current bun_echo test binary");
+    let child = spawn_observed(
+        Command::new(test_binary).args([
+            "--exact",
+            NO_CLIENT_ADMISSION_CHILD,
+            "--ignored",
+            "--nocapture",
+        ]),
+        output_dir.path(),
+    );
+
+    let output = wait_for_output(child, Duration::from_secs(2))
+        .expect("no-client admission fixture must terminate with a bounded result");
+    assert!(
+        output.status.success(),
+        "no-client admission fixture failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "spawned only by the bounded no-client admission parent"]
+fn created_template_server_admission_without_client_child() {
+    let listener = BootstrapListener::bind().expect("bind no-client app-link");
+    let error = accept_generated_main(&listener, Instant::now() + Duration::from_millis(250))
+        .expect_err("no-client admission must report its absolute deadline");
+    assert!(error.contains("admission deadline"), "{error}");
+}
+
+/// A generated main that exits before authenticating must leave its status and
+/// stderr in every KEL-185 lifecycle fixture failure path.
+#[test]
+fn created_template_pre_auth_failure_preserves_child_diagnostics() {
+    const MARKER: &str = "KEL185_PREAUTH_FAILURE";
+
+    for path in ["last-window-closed", "stalled-frame", "early-close"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        create_project(dir.path(), "app").expect("create");
+        let project = dir.path().join("app");
+        std::fs::write(
+            project.join("src/main.ts"),
+            format!("console.error({MARKER:?}); process.exit(23);\n"),
+        )
+        .expect("write pre-auth failure main");
+
+        let listener = BootstrapListener::bind().expect("bind app-link");
+        let link = listener.app_link();
+        let admission_deadline = Instant::now() + Duration::from_millis(250);
+        let server = thread::spawn(move || {
+            accept_generated_main(&listener, admission_deadline)
+                .map(|_| ())
+                .map_err(|error| format!("{path}: {error}"))
+        });
+        let child = spawn_generated_main(&project, &link);
+
+        let error = finish_lifecycle_fixture(server, child, Duration::from_secs(2))
+            .expect_err("pre-auth failure is not a successful lifecycle session");
+        assert!(error.contains(path), "{error}");
+        assert!(error.contains("status=Some(23)"), "{error}");
+        assert!(error.contains(MARKER), "{error}");
+    }
 }
 
 #[test]
@@ -291,11 +476,9 @@ fn created_template_quits_after_last_window_closed_on_the_same_link() {
 
     let listener = BootstrapListener::bind().expect("bind app-link");
     let link = listener.app_link();
-    let server = thread::spawn(move || {
-        let mut stream = listener
-            .accept_authenticated()
-            .expect("accept app-link")
-            .expect("client must authenticate");
+    let admission_deadline = fixture_admission_deadline();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let mut stream = accept_generated_main(&listener, admission_deadline)?;
         stream
             .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
             .expect("set app-link deadlines");
@@ -368,11 +551,12 @@ fn created_template_quits_after_last_window_closed_on_the_same_link() {
             0,
             "client must close after consuming the Quit Reply"
         );
+        Ok(())
     });
 
     let child = spawn_generated_main(&project, &link);
-    let output = wait_for_output(child, Duration::from_secs(10)).expect("generated main must exit");
-    server.join().expect("wire server");
+    let output = finish_lifecycle_fixture(server, child, Duration::from_secs(10))
+        .expect("generated main must exit");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -401,11 +585,9 @@ fn created_template_rejects_a_stalled_lifecycle_frame() {
 
     let listener = BootstrapListener::bind().expect("bind app-link");
     let link = listener.app_link();
-    let server = thread::spawn(move || {
-        let mut stream = listener
-            .accept_authenticated()
-            .expect("accept app-link")
-            .expect("client must authenticate");
+    let admission_deadline = fixture_admission_deadline();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let mut stream = accept_generated_main(&listener, admission_deadline)?;
         stream
             .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
             .expect("set app-link deadlines");
@@ -436,11 +618,12 @@ fn created_template_rejects_a_stalled_lifecycle_frame() {
             0,
             "timed-out client must close its app-link"
         );
+        Ok(())
     });
 
     let child = spawn_generated_main(&project, &link);
-    let output = wait_for_output(child, Duration::from_secs(10)).expect("bounded client failure");
-    server.join().expect("wire server");
+    let output = finish_lifecycle_fixture(server, child, Duration::from_secs(10))
+        .expect("bounded client failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
@@ -459,20 +642,19 @@ fn created_template_reaps_after_early_lifecycle_link_close() {
 
     let listener = BootstrapListener::bind().expect("bind app-link");
     let link = listener.app_link();
-    let server = thread::spawn(move || {
-        let mut stream = listener
-            .accept_authenticated()
-            .expect("accept app-link")
-            .expect("client must authenticate");
+    let admission_deadline = fixture_admission_deadline();
+    let server = thread::spawn(move || -> Result<(), String> {
+        let mut stream = accept_generated_main(&listener, admission_deadline)?;
         stream
             .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
             .expect("set app-link deadlines");
         send_ready_then_reply_to_stock_echo(&mut stream);
+        Ok(())
     });
 
     let child = spawn_generated_main(&project, &link);
-    server.join().expect("wire server");
-    let output = wait_for_output(child, Duration::from_secs(5)).expect("bounded client failure");
+    let output = finish_lifecycle_fixture(server, child, Duration::from_secs(5))
+        .expect("bounded client failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "early close must fail: {stderr}");
     assert!(stderr.contains("KELD-IPC-001"), "{stderr}");
