@@ -98,6 +98,34 @@ static void trace_line(const char *format, ...) {
   close(fd);
 }
 
+static const char *permission_kind(WebKitPermissionRequest *request) {
+  if (!WEBKIT_IS_USER_MEDIA_PERMISSION_REQUEST(request)) {
+    return "other";
+  }
+  WebKitUserMediaPermissionRequest *media =
+      WEBKIT_USER_MEDIA_PERMISSION_REQUEST(request);
+  if (webkit_user_media_permission_is_for_video_device(media)) {
+    return "camera";
+  }
+  if (webkit_user_media_permission_is_for_audio_device(media)) {
+    return "microphone";
+  }
+  return "other";
+}
+
+static gboolean disconnected_media_handler(WebKitWebView *web_view,
+                                             WebKitPermissionRequest *request,
+                                             gpointer data) {
+  char exe[PATH_MAX];
+  (void)web_view;
+  (void)data;
+  trace_line("callback nonce=%s kind=%s action=adapter_bypass caller=linux_media_interpose exe=%s pid=%ld tid=%ld\n",
+             required_nonce(), permission_kind(request), current_exe(exe),
+             (long)getpid(), (long)syscall(SYS_gettid));
+  real_deny()(request);
+  return TRUE;
+}
+
 void webkit_web_view_load_uri(WebKitWebView *web_view, const gchar *uri) {
   char exe[PATH_MAX];
   WebKitSettings *settings = webkit_web_view_get_settings(web_view);
@@ -113,8 +141,14 @@ gulong g_signal_connect_data(gpointer instance, const gchar *detailed_signal,
                              GCallback c_handler, gpointer data,
                              GClosureNotify destroy_data,
                              GConnectFlags connect_flags) {
+  GCallback effective_handler = c_handler;
+  if (g_strcmp0(detailed_signal, "permission-request") == 0 &&
+      g_strcmp0(getenv("KELD_MEDIA_DISCONNECT_ADAPTER"), "1") == 0) {
+    effective_handler = G_CALLBACK(disconnected_media_handler);
+  }
   const gulong handler_id = real_signal_connect_data()(
-      instance, detailed_signal, c_handler, data, destroy_data, connect_flags);
+      instance, detailed_signal, effective_handler, data, destroy_data,
+      connect_flags);
   if (g_strcmp0(detailed_signal, "permission-request") == 0) {
     char exe[PATH_MAX];
     Dl_info caller = {0};
@@ -133,16 +167,7 @@ gulong g_signal_connect_data(gpointer instance, const gchar *detailed_signal,
 
 void webkit_permission_request_deny(WebKitPermissionRequest *request) {
   char exe[PATH_MAX];
-  const char *kind = "other";
-  if (WEBKIT_IS_USER_MEDIA_PERMISSION_REQUEST(request)) {
-    WebKitUserMediaPermissionRequest *media =
-        WEBKIT_USER_MEDIA_PERMISSION_REQUEST(request);
-    if (webkit_user_media_permission_is_for_video_device(media)) {
-      kind = "camera";
-    } else if (webkit_user_media_permission_is_for_audio_device(media)) {
-      kind = "microphone";
-    }
-  }
+  const char *kind = permission_kind(request);
 
   Dl_info caller = {0};
   const void *return_address = __builtin_return_address(0);

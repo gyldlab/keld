@@ -672,7 +672,7 @@ mod wry_tests {
     use super::{
         MediaPermission, WebviewId, WryPermissionCallback, WryPermissionInstaller,
         media_permission_response, webview_media_principal, with_guarded_media_permissions,
-        wry_media_kind,
+        wry_media_kind, wry_response,
     };
     use keld_guard::parse_manifest;
 
@@ -745,6 +745,15 @@ mod wry_tests {
             wry::PermissionResponse::Default,
             "Default delegates platform policy — macOS auto-grants and Linux defaults deny without Keld provenance. v0 must explicitly Deny on both."
         );
+    }
+
+    #[test]
+    fn wry_response_mapper_preserves_allow_and_fails_closed() {
+        assert_eq!(
+            wry_response(Some(&keld_guard::Decision::Allow)),
+            wry::PermissionResponse::Allow
+        );
+        assert_eq!(wry_response(None), wry::PermissionResponse::Deny);
     }
 
     #[test]

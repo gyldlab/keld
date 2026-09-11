@@ -3,11 +3,34 @@ set -euo pipefail
 
 interposer=${1:?usage: linux_media_guard.sh <interposer.so> [probe-binary]}
 probe_binary=${2:-target/debug/examples/linux_media_guard}
-probe_root=$(mktemp -d "${RUNNER_TEMP:-/tmp}/keld-media-guard.XXXXXX")
+interposer=$(readlink -f -- "$interposer")
+probe_binary=$(readlink -f -- "$probe_binary")
+interposer_sha256=$(sha256sum -- "$interposer" | awk '{print $1}')
+probe_sha256=$(sha256sum -- "$probe_binary" | awk '{print $1}')
+keep_evidence=0
+if [ -n "${KELD_MEDIA_EVIDENCE_DIRECTORY:-}" ]; then
+  probe_root=$(readlink -m -- "$KELD_MEDIA_EVIDENCE_DIRECTORY")
+  if [ -e "$probe_root" ]; then
+    echo "media evidence directory must be new: $probe_root" >&2
+    exit 1
+  fi
+  mkdir -m 700 -- "$probe_root"
+  keep_evidence=1
+else
+  probe_root=$(mktemp -d "${RUNNER_TEMP:-/tmp}/keld-media-guard.XXXXXX")
+fi
 active_runner_pid=""
 active_release_file=""
 active_synthetic_pid=""
 active_monitor_pid=""
+camera_media_id=""
+microphone_media_id=""
+declare -a evidence_keys=()
+declare -a evidence_media_ids=()
+declare -a evidence_primer_counts=()
+declare -a evidence_trace_hashes=()
+declare -a evidence_output_hashes=()
+declare -a evidence_identity_hashes=()
 
 cleanup() {
   local status=$?
@@ -29,7 +52,9 @@ cleanup() {
   fi
   xprop -root -remove KELD_MEDIA_MONITOR >/dev/null 2>&1 || true
   xprop -root -remove KELD_MEDIA_MONITOR_FENCE >/dev/null 2>&1 || true
-  rm -r -- "$probe_root"
+  if [ "$keep_evidence" -ne 1 ]; then
+    rm -r -- "$probe_root"
+  fi
   exit "$status"
 }
 trap cleanup EXIT
@@ -48,6 +73,12 @@ run_probe() {
   local expected=$2
   local callback=$3
   local case_name=${4:-${kind}-${expected}}
+  local primer_count
+  case "$kind" in
+    camera) primer_count=1 ;;
+    microphone) primer_count=2 ;;
+    *) echo "unknown media kind: $kind" >&2; exit 1 ;;
+  esac
   local nonce="${case_name}-${BASHPID}-${RANDOM}"
   local trace_file="$probe_root/${case_name}.trace"
   local output_file="$probe_root/${case_name}.out"
@@ -78,7 +109,7 @@ run_probe() {
   fi
 
   timeout --signal=TERM --kill-after=5s 30s \
-    env "${environment[@]}" "$probe_binary" "$kind" "$expected" "$nonce" \
+    env "${environment[@]}" "$probe_binary" "$kind" "$expected" "$nonce" "$primer_count" \
     >"$output_file" 2>&1 &
   local runner_pid=$!
   active_runner_pid=$runner_pid
@@ -189,6 +220,8 @@ run_probe() {
   fi
   local setup_line
   setup_line=$(grep -E "$setup_pattern" "$trace_file")
+  local setup_line_number
+  setup_line_number=$(grep -nE "$setup_pattern" "$trace_file" | cut -d: -f1)
   local setup_pid
   local setup_tid
   setup_pid=$(printf '%s\n' "$setup_line" | sed -E 's/.* pid=([0-9]+) tid=.*/\1/')
@@ -207,6 +240,8 @@ run_probe() {
     exit 1
   fi
   registration_line=$(grep -E "$registration_pattern" "$trace_file")
+  local registration_line_number
+  registration_line_number=$(grep -nE "$registration_pattern" "$trace_file" | cut -d: -f1)
   local registration_pid
   local registration_tid
   registration_pid=$(printf '%s\n' "$registration_line" | sed -E 's/.* pid=([0-9]+) tid=.*/\1/')
@@ -215,9 +250,72 @@ run_probe() {
     echo "permission handler was not registered on the setup process main thread: setup=$setup_pid registration=$registration_pid tid=$registration_tid" >&2
     exit 1
   fi
+  if [ "$registration_line_number" -ge "$setup_line_number" ]; then
+    echo "permission handler registration did not precede initial media navigation: registration=$registration_line_number setup=$setup_line_number" >&2
+    exit 1
+  fi
+
+  local identity_line
+  identity_line=$(tr -d '\r\n' <"$identity_file")
+  local identity_pattern="^KELD_MEDIA_IDENTITY nonce=${nonce} kind=${kind} primer_count=${primer_count} primer_first=[1-9][0-9]* primer_last=[1-9][0-9]* stale_count=${primer_count} stale_code=KELD-WV-007 media_id=[1-9][0-9]* fresh=true$"
+  if ! printf '%s\n' "$identity_line" | grep -Eq "$identity_pattern"; then
+    echo "media lifecycle identity receipt was missing or malformed: $identity_line" >&2
+    exit 1
+  fi
+  local primer_first
+  local primer_last
+  local media_id
+  primer_first=$(printf '%s\n' "$identity_line" | sed -E 's/.* primer_first=([0-9]+) .*/\1/')
+  primer_last=$(printf '%s\n' "$identity_line" | sed -E 's/.* primer_last=([0-9]+) .*/\1/')
+  media_id=$(printf '%s\n' "$identity_line" | sed -E 's/.* media_id=([0-9]+) .*/\1/')
+  if [ "$primer_first" -gt "$primer_last" ] || [ "$media_id" -le "$primer_last" ]; then
+    echo "fresh media id did not follow the destroyed primer range: first=$primer_first last=$primer_last media=$media_id" >&2
+    exit 1
+  fi
+  local stale_receipt_pattern="^KELD_MEDIA_STALE nonce=${nonce} kind=${kind} ordinal=[1-9][0-9]* primer_id=[1-9][0-9]* code=KELD-WV-007$"
+  local -a stale_receipts=()
+  mapfile -t stale_receipts < <(grep -E "$stale_receipt_pattern" "$output_file")
+  if [ "${#stale_receipts[@]}" -ne "$primer_count" ]; then
+    echo "expected $primer_count exact stale-navigation receipts for $kind/$expected" >&2
+    exit 1
+  fi
+  local previous_primer_id=0
+  local receipt_index
+  for receipt_index in "${!stale_receipts[@]}"; do
+    local expected_ordinal=$((receipt_index + 1))
+    local actual_ordinal
+    local actual_primer_id
+    actual_ordinal=$(printf '%s\n' "${stale_receipts[$receipt_index]}" | sed -E 's/.* ordinal=([0-9]+) .*/\1/')
+    actual_primer_id=$(printf '%s\n' "${stale_receipts[$receipt_index]}" | sed -E 's/.* primer_id=([0-9]+) .*/\1/')
+    if [ "$actual_ordinal" -ne "$expected_ordinal" ] || [ "$actual_primer_id" -le "$previous_primer_id" ]; then
+      echo "stale-navigation receipts were not ordered with increasing host ids: ordinal=$actual_ordinal id=$actual_primer_id" >&2
+      exit 1
+    fi
+    previous_primer_id=$actual_primer_id
+  done
+  local first_stale_id
+  local last_stale_id
+  first_stale_id=$(printf '%s\n' "${stale_receipts[0]}" | sed -E 's/.* primer_id=([0-9]+) .*/\1/')
+  last_stale_id=$(printf '%s\n' "${stale_receipts[$((primer_count - 1))]}" | sed -E 's/.* primer_id=([0-9]+) .*/\1/')
+  if [ "$first_stale_id" -ne "$primer_first" ] || [ "$last_stale_id" -ne "$primer_last" ]; then
+    echo "stale-navigation ids did not bind the lifecycle identity range" >&2
+    exit 1
+  fi
+  local registration_count
+  registration_count=$(grep -Ec "^registration nonce=${nonce} signal=permission-request handler=[1-9][0-9]* webview=0x[0-9a-f]+ " "$trace_file")
+  local last_registration_line_number
+  last_registration_line_number=$(grep -nE "^registration nonce=${nonce} signal=permission-request handler=[1-9][0-9]* webview=0x[0-9a-f]+ " "$trace_file" | tail -n 1 | cut -d: -f1)
+  if [ "$registration_count" -ne "$((primer_count + 1))" ] || [ "$registration_line_number" -ne "$last_registration_line_number" ]; then
+    echo "expected one permission handler registration per primer and the fresh media view last: count=$registration_count media_line=$registration_line_number last_line=$last_registration_line_number primers=$primer_count" >&2
+    exit 1
+  fi
 
   local callback_line
-  local callback_pattern="^callback nonce=${nonce} kind=${kind} action=${callback} caller=.*${expected_caller_ere} exe=${expected_exe_ere} pid=[0-9]+ tid=[0-9]+$"
+  local callback_caller_pattern=".*${expected_caller_ere}"
+  if [ "$callback" = adapter_bypass ]; then
+    callback_caller_pattern=linux_media_interpose
+  fi
+  local callback_pattern="^callback nonce=${nonce} kind=${kind} action=${callback} caller=${callback_caller_pattern} exe=${expected_exe_ere} pid=[0-9]+ tid=[0-9]+$"
   if [ "$(grep -Ec "$callback_pattern" "$trace_file")" -ne 1 ]; then
     echo "expected one $callback callback record for $kind/$expected" >&2
     exit 1
@@ -232,12 +330,6 @@ run_probe() {
     exit 1
   fi
 
-  local media_id
-  media_id=$(tr -d '[:space:]' <"$identity_file")
-  if ! [[ "$media_id" =~ ^[0-9]+$ ]] || [ "$media_id" -le 1 ]; then
-    echo "media request was not bound to the independently returned non-first webview id: $media_id" >&2
-    exit 1
-  fi
   local capability="web.${kind}"
   local policy_pattern="^policy nonce=${nonce} capability=${capability} principal=webview:${media_id}:0 manifest_fnv1a64=e117311975d9f419 decision=KELD-GUARD006 response=deny pid=${setup_pid}$"
 
@@ -326,19 +418,42 @@ run_probe() {
     echo "permission interval mapped $map_event_count transient top-level window(s) for $kind/$expected" >&2
     exit 1
   fi
-  if [ "$(grep -Ec "$policy_pattern" "$trace_file")" -ne 1 ]; then
-    echo "expected one keld-guard policy receipt for $kind/$expected" >&2
-    exit 1
-  fi
-
   if [ "$expected" = denied ]; then
-    grep -Eq "^KELD_MEDIA_RESULT nonce=${nonce} kind=${kind} secure_context=true outcome=(NotAllowedError|SecurityError)$" "$output_file"
+    grep -Eq "^KELD_MEDIA_RESULT nonce=${nonce} kind=${kind} secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$" "$output_file"
     if grep -q 'action=force_allow' "$trace_file"; then
       echo "deny run unexpectedly reached the force-allow control" >&2
       exit 1
     fi
   else
-    grep -q "^KELD_MEDIA_RESULT nonce=${nonce} kind=${kind} secure_context=true outcome=resolved$" "$output_file"
+    local requested_track_kind
+    requested_track_kind=$(if [ "$kind" = camera ]; then printf video; else printf audio; fi)
+    grep -Eq "^KELD_MEDIA_RESULT nonce=${nonce} kind=${kind} secure_context=true outcome=resolved track_kind=${requested_track_kind} track_count=[1-9][0-9]* live_before_stop=true ended_after_stop=true$" "$output_file"
+  fi
+  if [ "$(grep -Ec "$policy_pattern" "$trace_file")" -ne 1 ]; then
+    echo "expected one keld-guard policy receipt for $kind/$expected" >&2
+    exit 1
+  fi
+
+  if [ "$case_name" = "${kind}-${expected}" ]; then
+    evidence_keys+=("${kind}/${expected}")
+    evidence_media_ids+=("$media_id")
+    evidence_primer_counts+=("$primer_count")
+    evidence_trace_hashes+=("$(sha256sum -- "$trace_file" | awk '{print $1}')")
+    evidence_output_hashes+=("$(sha256sum -- "$output_file" | awk '{print $1}')")
+    evidence_identity_hashes+=("$(sha256sum -- "$identity_file" | awk '{print $1}')")
+    if [ "$kind" = camera ]; then
+      if [ -n "$camera_media_id" ] && [ "$camera_media_id" != "$media_id" ]; then
+        echo "camera rows did not reproduce the same host-returned media id: $camera_media_id vs $media_id" >&2
+        exit 1
+      fi
+      camera_media_id=$media_id
+    else
+      if [ -n "$microphone_media_id" ] && [ "$microphone_media_id" != "$media_id" ]; then
+        echo "microphone rows did not reproduce the same host-returned media id: $microphone_media_id vs $media_id" >&2
+        exit 1
+      fi
+      microphone_media_id=$media_id
+    fi
   fi
 
   printf 'media_guard kind=%s expected=%s callback=%s pid=%s tid=%s\n' \
@@ -349,6 +464,33 @@ run_probe camera denied deny
 run_probe microphone denied deny
 run_probe camera allowed force_allow
 run_probe microphone allowed force_allow
+
+if [ -z "$camera_media_id" ] || [ -z "$microphone_media_id" ] || [ "$camera_media_id" = "$microphone_media_id" ]; then
+  echo "camera and microphone did not use distinct nonconstant host-returned ids: camera=$camera_media_id microphone=$microphone_media_id" >&2
+  exit 1
+fi
+if grep -Eq "^policy .* capability=web\.microphone principal=webview:${camera_media_id}:0 " "$probe_root/microphone-denied.trace"; then
+  echo "hard-coded camera principal unexpectedly satisfied the microphone row" >&2
+  exit 1
+fi
+echo "media_guard negative_control=hardcoded_principal rejected camera_id=$camera_media_id microphone_id=$microphone_media_id"
+
+if (KELD_MEDIA_DISCONNECT_ADAPTER=1 run_probe camera denied adapter_bypass disconnected-adapter); then
+  echo "disconnected adapter unexpectedly passed on platform denial alone" >&2
+  exit 1
+fi
+if ! grep -Eq '^KELD_MEDIA_RESULT .* kind=camera secure_context=true outcome=(NotAllowedError|SecurityError) track_kind=none track_count=0 live_before_stop=false ended_after_stop=false$' "$probe_root/disconnected-adapter.out" ||
+  ! grep -Eq '^callback .* kind=camera action=adapter_bypass caller=linux_media_interpose ' "$probe_root/disconnected-adapter.trace" ||
+  grep -q '^policy ' "$probe_root/disconnected-adapter.trace"; then
+  echo "disconnected-adapter control did not preserve platform denial while bypassing Keld policy" >&2
+  exit 1
+fi
+disconnected_pid=$(sed -n -E 's/^setup .* pid=([0-9]+) tid=.*/\1/p' "$probe_root/disconnected-adapter.trace")
+if [ -z "$disconnected_pid" ] || kill -0 "$disconnected_pid" 2>/dev/null; then
+  echo "disconnected-adapter failure left the probe process alive" >&2
+  exit 1
+fi
+echo "media_guard negative_control=disconnected_adapter rejected_platform_deny_without_policy"
 
 if (KELD_MEDIA_SYNTHETIC_PROMPT=1 run_probe camera denied deny synthetic-prompt); then
   echo "synthetic media prompt unexpectedly passed the no-prompt census" >&2
@@ -379,3 +521,58 @@ if [ -z "$killed_monitor_pid" ] || kill -0 "$killed_monitor_pid" 2>/dev/null; th
   exit 1
 fi
 echo "media_guard negative_control=killed_monitor rejected_and_reaped"
+
+if [ "${#evidence_keys[@]}" -ne 4 ] ||
+  [ "${evidence_keys[0]}" != camera/denied ] ||
+  [ "${evidence_keys[1]}" != microphone/denied ] ||
+  [ "${evidence_keys[2]}" != camera/allowed ] ||
+  [ "${evidence_keys[3]}" != microphone/allowed ]; then
+  echo "media evidence rows were not the exact four-row matrix" >&2
+  exit 1
+fi
+if [ "$(sha256sum -- "$probe_binary" | awk '{print $1}')" != "$probe_sha256" ] ||
+  [ "$(sha256sum -- "$interposer" | awk '{print $1}')" != "$interposer_sha256" ]; then
+  echo "media probe or interposer changed during acceptance" >&2
+  exit 1
+fi
+cp -- "$probe_binary" "$probe_root/linux_media_guard"
+cp -- "$interposer" "$probe_root/linux_media_interpose.so"
+(cd "$probe_root" && find . -type f ! -name result.json ! -name sha256sums.txt -print0 |
+  sort -z | xargs -0 sha256sum --) >"$probe_root/sha256sums.txt"
+manifest_sha256=$(sha256sum -- "$probe_root/sha256sums.txt" | awk '{print $1}')
+head_sha=${KELD_MEDIA_HEAD_SHA:-}
+if [ -z "$head_sha" ]; then
+  head_sha=$(git rev-parse HEAD)
+fi
+if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "media evidence head SHA was missing or malformed: $head_sha" >&2
+  exit 1
+fi
+system=$(uname -srm)
+device=$(hostname)
+{
+  printf '{\n'
+  printf '  "schema": "keld.linux-media-fixture/v1",\n'
+  printf '  "head_sha": "%s",\n' "$head_sha"
+  printf '  "system": "%s",\n' "$system"
+  printf '  "device": "%s",\n' "$device"
+  printf '  "probe_sha256": "%s",\n' "$probe_sha256"
+  printf '  "interposer_sha256": "%s",\n' "$interposer_sha256"
+  printf '  "manifest_sha256": "%s",\n' "$manifest_sha256"
+  printf '  "camera_media_id": %s,\n' "$camera_media_id"
+  printf '  "microphone_media_id": %s,\n' "$microphone_media_id"
+  printf '  "rows": [\n'
+  for index in 0 1 2 3; do
+    comma=,
+    if [ "$index" -eq 3 ]; then comma=; fi
+    printf '    {"key":"%s","primer_count":%s,"media_id":%s,"stale_code":"KELD-WV-007","registration_before_navigation":true,"track_lifecycle":true,"trace_sha256":"%s","output_sha256":"%s","identity_sha256":"%s"}%s\n' \
+      "${evidence_keys[$index]}" "${evidence_primer_counts[$index]}" "${evidence_media_ids[$index]}" \
+      "${evidence_trace_hashes[$index]}" "${evidence_output_hashes[$index]}" \
+      "${evidence_identity_hashes[$index]}" "$comma"
+  done
+  printf '  ],\n'
+  printf '  "controls": ["hardcoded-principal", "disconnected-adapter", "synthetic-prompt", "missing-policy", "killed-monitor"]\n'
+  printf '}\n'
+} >"$probe_root/result.json"
+result_sha256=$(sha256sum -- "$probe_root/result.json" | awk '{print $1}')
+echo "KELD_LINUX_MEDIA_RESULT rows=4 controls=5 result_sha256=$result_sha256 evidence=$probe_root"
