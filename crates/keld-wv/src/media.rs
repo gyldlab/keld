@@ -62,6 +62,21 @@ pub const WEB_MEDIA_ORIGIN: &str = "*";
 /// slice (spec 03).
 const WEBVIEW_MEDIA_GENERATION: u32 = 0;
 
+/// Stable fixture fingerprint for the parsed manifest bytes represented by the
+/// guard's canonical debug form. Both Linux and Windows acceptance emit this
+/// value so their external runners can reject a substituted manifest.
+#[cfg(any(
+    all(target_os = "linux", debug_assertions),
+    all(target_os = "windows", feature = "media-acceptance", test)
+))]
+pub(crate) fn manifest_fingerprint(manifest: &PermissionsManifest) -> u64 {
+    format!("{manifest:?}")
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+        })
+}
+
 /// Media kinds the platform backends map their permission callbacks onto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaPermission {
@@ -110,7 +125,7 @@ pub fn media_permission_decision(
     principal: Option<Principal>,
     capability: &str,
 ) -> Decision {
-    match principal {
+    let decision = match principal {
         Some(webview @ Principal::Webview { .. }) => {
             evaluate(manifest, webview, capability, WEB_MEDIA_ORIGIN)
         }
@@ -118,7 +133,12 @@ pub fn media_permission_decision(
             capability: capability.to_owned(),
             presented,
         }),
-    }
+    };
+    #[cfg(all(target_os = "windows", feature = "media-acceptance", test))]
+    crate::webview2::media_acceptance::observe_adapter_decision(
+        manifest, principal, capability, &decision,
+    );
+    decision
 }
 
 /// Whether `kind` is allowed by `manifest` for `principal`.
@@ -370,11 +390,7 @@ fn trace_linux_policy_decision(
     let Ok(mut trace) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let manifest_fingerprint = format!("{manifest:?}")
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
-        });
+    let manifest_fingerprint = manifest_fingerprint(manifest);
     let _ = writeln!(
         trace,
         "policy nonce={nonce} capability={capability} principal=webview:{id}:{generation} manifest_fnv1a64={manifest_fingerprint:016x} decision={decision} response={response} pid={}",
@@ -406,7 +422,7 @@ mod tests {
             .split_once("fn install_guarded_media_permissions(")
             .expect("Windows guard installer exists")
             .1
-            .split_once("Ok(GuardInstalled(()))")
+            .split_once("Ok(GuardInstalled(webview))")
             .expect("guard installer returns its navigation witness")
             .0;
         assert!(
@@ -427,6 +443,16 @@ mod tests {
 
     fn camera_grant() -> PermissionsManifest {
         parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant")
+    }
+
+    #[cfg(all(target_os = "windows", feature = "media-acceptance"))]
+    #[test]
+    fn acceptance_manifest_fingerprints_are_fixed_external_identities() {
+        let empty = PermissionsManifest::default();
+        let app_grants = parse_manifest(r#"{"app":{"web":{"camera":["*"],"microphone":["*"]}}}"#)
+            .expect("acceptance app grants");
+        assert_eq!(manifest_fingerprint(&empty), 0xe117_3119_75d9_f419);
+        assert_eq!(manifest_fingerprint(&app_grants), 0x1fb6_f771_494b_3631);
     }
 
     #[test]
