@@ -3,6 +3,131 @@ param(
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory
 )
 
+function Write-MediaProcessLogs {
+    param(
+        [string]$StdoutPath,
+        [string]$StderrPath,
+        [IO.TextWriter]$Writer = [Console]::Out
+    )
+    $Writer.WriteLine('KELD_MEDIA_STDOUT_BEGIN')
+    $Writer.WriteLine([IO.File]::ReadAllText($StdoutPath))
+    $Writer.WriteLine('KELD_MEDIA_STDOUT_END')
+    $Writer.WriteLine('KELD_MEDIA_STDERR_BEGIN')
+    $Writer.WriteLine([IO.File]::ReadAllText($StderrPath))
+    $Writer.WriteLine('KELD_MEDIA_STDERR_END')
+}
+
+function Invoke-MediaProcess {
+    param(
+        [Diagnostics.ProcessStartInfo]$Start,
+        [string]$StdoutPath,
+        [string]$StderrPath,
+        [int]$DeadlineMilliseconds,
+        [IO.TextWriter]$Writer = [Console]::Out
+    )
+    $process = [Diagnostics.Process]::Start($Start)
+    [int]$childPid = $process.Id
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $outerTimedOut = $false
+    try {
+        if (-not $process.WaitForExit($DeadlineMilliseconds)) {
+            $outerTimedOut = $true
+            try {
+                $process.Kill()
+            } catch [InvalidOperationException] {
+                if (-not $process.HasExited) { throw }
+            }
+            $process.WaitForExit()
+        }
+        # Complete redirected-stream draining before reading ExitCode.
+        $process.WaitForExit()
+        [int]$exitCode = $process.ExitCode
+        [IO.File]::WriteAllText($StdoutPath, $stdout.Result)
+        [IO.File]::WriteAllText($StderrPath, $stderr.Result)
+    } finally {
+        $process.Dispose()
+    }
+    if ($outerTimedOut -or $exitCode -ne 0) {
+        Write-MediaProcessLogs -StdoutPath $StdoutPath -StderrPath $StderrPath -Writer $Writer
+    }
+    [pscustomobject]@{
+        child_pid = $childPid
+        exit_code = $exitCode
+        outer_timed_out = $outerTimedOut
+        stdout_text = [IO.File]::ReadAllText($StdoutPath)
+        stderr_text = [IO.File]::ReadAllText($StderrPath)
+    }
+}
+
+function Invoke-MediaWatchdogProbe {
+    param([string]$Binary, [string]$EvidenceRoot)
+    $stdoutPath = Join-Path $EvidenceRoot 'watchdog-probe.log'
+    $stderrPath = Join-Path $EvidenceRoot 'watchdog-probe.stderr.log'
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Binary
+    $start.Arguments = 'webview2::media_acceptance::tests::windows_media_acceptance_subprocess --ignored --exact --nocapture --test-threads=1'
+    $start.EnvironmentVariables['KELD_MEDIA_WATCHDOG_PROBE'] = 'work'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $writer = [IO.StringWriter]::new()
+    $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 5000 -Writer $writer
+    $consoleText = $writer.ToString()
+    $writer.Dispose()
+    [Console]::Out.Write($consoleText)
+    $expectedPhase = 'KELD_MEDIA_PHASE watchdog-probe-work-block'
+    if ($execution.outer_timed_out -or $execution.exit_code -ne 124 -or
+        -not $execution.stdout_text.Contains($expectedPhase) -or
+        -not $execution.stderr_text.Contains('KELD_MEDIA_TIMEOUT: fixture exceeded 0.1 seconds') -or
+        -not $consoleText.Contains('KELD_MEDIA_STDOUT_BEGIN') -or
+        -not $consoleText.Contains('KELD_MEDIA_STDOUT_END') -or
+        -not $consoleText.Contains('KELD_MEDIA_STDERR_BEGIN') -or
+        -not $consoleText.Contains('KELD_MEDIA_STDERR_END') -or
+        -not $consoleText.Contains($expectedPhase) -or
+        -not $consoleText.Contains('KELD_MEDIA_TIMEOUT: fixture exceeded 0.1 seconds')) {
+        throw "Watchdog probe failed: outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)"
+    }
+    [pscustomobject]@{
+        mode = 'work'
+        exit_code = $execution.exit_code
+        outer_timed_out = $execution.outer_timed_out
+        stdout_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()
+        stderr_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant()
+    }
+}
+
+function Invoke-MediaOuterDeadlineProbe {
+    param([string]$EvidenceRoot)
+    $stdoutPath = Join-Path $EvidenceRoot 'outer-deadline-probe.log'
+    $stderrPath = Join-Path $EvidenceRoot 'outer-deadline-probe.stderr.log'
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    $start.Arguments = '-NoProfile -Command "[Console]::Out.WriteLine(''KELD_MEDIA_PHASE outer-probe-block''); [Console]::Out.Flush(); $gate = [Threading.ManualResetEventSlim]::new($false); $gate.Wait()"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $writer = [IO.StringWriter]::new()
+    $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 5000 -Writer $writer
+    $consoleText = $writer.ToString()
+    $writer.Dispose()
+    [Console]::Out.Write($consoleText)
+    if (-not $execution.outer_timed_out -or $execution.exit_code -eq 0 -or
+        -not $consoleText.Contains('KELD_MEDIA_PHASE outer-probe-block') -or
+        -not $consoleText.Contains('KELD_MEDIA_STDOUT_BEGIN') -or
+        -not $consoleText.Contains('KELD_MEDIA_STDERR_END')) {
+        throw "Outer deadline probe failed: outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)"
+    }
+    [pscustomobject]@{
+        exit_code = $execution.exit_code
+        outer_timed_out = $execution.outer_timed_out
+        stdout_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()
+        stderr_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant()
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 $sourceBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 $evidenceRoot = [IO.Path]::GetFullPath($EvidenceDirectory)
@@ -17,9 +142,12 @@ $binaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLower
 if ($binaryHash -ne $sourceBinaryHash) {
     throw "Fixture executable copy mismatch: source=$sourceBinaryHash evidence=$binaryHash"
 }
+$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
+$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot
 $results = @()
 $seenNonces = @{}
 $seenRows = @{}
+$outerDeadlineMilliseconds = 90000
 foreach ($kind in @('camera', 'microphone')) {
     foreach ($mode in @('guarded', 'removed-guard', 'adapter-bypass', 'force-allow')) {
         $manifestCases = if ($mode -eq 'guarded') { @('empty', 'app-grants') } else { @('app-grants') }
@@ -35,31 +163,20 @@ foreach ($kind in @('camera', 'microphone')) {
             $start.EnvironmentVariables['KELD_MEDIA_KIND'] = $kind
             $start.EnvironmentVariables['KELD_MEDIA_MODE'] = $mode
             $start.EnvironmentVariables['KELD_MEDIA_MANIFEST'] = $manifestCase
+            $start.EnvironmentVariables['KELD_MEDIA_PARENT_DEADLINE_MS'] = "$outerDeadlineMilliseconds"
+            [void]$start.EnvironmentVariables.Remove('KELD_MEDIA_WATCHDOG_PROBE')
             $start.UseShellExecute = $false
             $start.CreateNoWindow = $true
             $start.RedirectStandardOutput = $true
             $start.RedirectStandardError = $true
-            $process = [Diagnostics.Process]::Start($start)
-            [int]$childPid = $process.Id
-            $stdout = $process.StandardOutput.ReadToEndAsync()
-            $stderr = $process.StandardError.ReadToEndAsync()
-            try {
-                if (-not $process.WaitForExit(45000)) {
-                    $process.Kill()
-                    $process.WaitForExit()
-                    throw "Fixture exceeded external deadline: $log; profile may require cleanup."
-                }
-                # Complete redirected-stream draining before reading ExitCode.
-                $process.WaitForExit()
-                [int]$exitCode = $process.ExitCode
-                [IO.File]::WriteAllText($log, $stdout.Result)
-                [IO.File]::WriteAllText($stderrLog, $stderr.Result)
-            } finally {
-                $process.Dispose()
-            }
+            $execution = Invoke-MediaProcess -Start $start -StdoutPath $log -StderrPath $stderrLog -DeadlineMilliseconds $outerDeadlineMilliseconds
+            [int]$childPid = $execution.child_pid
             $output = @(Get-Content -LiteralPath $log)
-            if ($exitCode -ne 0) {
-                throw "Media fixture failed ($rowKey): exit $exitCode; see $log"
+            if ($execution.outer_timed_out) {
+                throw "Fixture exceeded external deadline: $log; profile may require cleanup."
+            }
+            if ($execution.exit_code -ne 0) {
+                throw "Media fixture failed ($rowKey): exit $($execution.exit_code); see $log"
             }
             $receipts = @($output | Where-Object { "$_" -like 'KELD_MEDIA_RESULT *' })
             if ($receipts.Count -ne 1) { throw "Expected exactly one result receipt: $log" }
@@ -164,7 +281,7 @@ foreach ($kind in @('camera', 'microphone')) {
                 registration_identity = $parsed.registration_identity
                 sender_identity = $parsed.sender_identity; outcome = $parsed.outcome
                 profile_path = $profilePath; profile_removed = $true
-                exit_code = $exitCode; receipt = $receipt
+                exit_code = $execution.exit_code; receipt = $receipt
                 log_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $log).Hash.ToLowerInvariant()
                 stderr_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $stderrLog).Hash.ToLowerInvariant()
             }
@@ -188,6 +305,8 @@ $record = [ordered]@{
     device = [Environment]::MachineName
     capture_device = 'WebView2 synthetic development device'
     scope = 'raw WebView2 callback receipt: adapter input; removed-product-guard plus fixture-only completion after DEFAULT; adapter-bypass; same-callback explicit state; loopback origin; synthetic capture control; bounded teardown. No physical-device, saved-grant, snapshot, or revocation pass.'
+    watchdog_probe = $watchdogProbe
+    outer_deadline_probe = $outerDeadlineProbe
     rows = $results
 }
 [IO.File]::WriteAllText((Join-Path $evidenceRoot 'result.json'), ($record | ConvertTo-Json -Depth 5))

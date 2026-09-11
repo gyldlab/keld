@@ -34,6 +34,10 @@ use super::{
 use crate::{LogicalSize, media::manifest_fingerprint};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 
+const FIXTURE_DEADLINE: Duration = Duration::from_mins(1);
+const WATCHDOG_PROBE_DEADLINE: Duration = Duration::from_millis(100);
+const PARENT_DEADLINE_MARGIN: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 struct Evidence {
     active: bool,
@@ -181,6 +185,42 @@ fn same_directory(actual: &str, expected: &Path) -> Result<(), WvError> {
 /// Returns an error for missing runtime, API/identity/receipt failures, unexpected
 /// JavaScript behavior, a control accepted by the oracle, or incomplete cleanup.
 fn run_media_acceptance() -> Result<(), WvError> {
+    let watchdog_probe = std::env::var("KELD_MEDIA_WATCHDOG_PROBE").ok();
+    match watchdog_probe.as_deref() {
+        Some("work") => run_with_watchdog(WATCHDOG_PROBE_DEADLINE, block_watchdog_probe),
+        None => run_with_watchdog(FIXTURE_DEADLINE, run_media_acceptance_inner),
+        Some(_) => Err(failure("unknown watchdog probe mode")),
+    }
+}
+
+fn run_with_watchdog<T>(
+    deadline: Duration,
+    work: impl FnOnce() -> Result<T, WvError>,
+) -> Result<T, WvError> {
+    let (done_tx, watchdog) = spawn_watchdog(deadline);
+    let result = work();
+    let _ = done_tx.send(());
+    watchdog.join().map_err(|_| failure("watchdog panicked"))?;
+    result
+}
+
+fn block_watchdog_probe() -> Result<(), WvError> {
+    println!("KELD_MEDIA_PHASE watchdog-probe-work-block");
+    let _ = std::io::stdout().flush();
+    let (_block_tx, block_rx) = mpsc::channel::<()>();
+    let _ = block_rx.recv();
+    Err(failure("watchdog probe returned before process exit"))
+}
+
+fn run_media_acceptance_inner() -> Result<(), WvError> {
+    let parent_deadline = std::env::var("KELD_MEDIA_PARENT_DEADLINE_MS")
+        .map_err(|_| failure("KELD_MEDIA_PARENT_DEADLINE_MS is required"))?;
+    if !parent_deadline_is_valid(&parent_deadline) {
+        return Err(failure(format!(
+            "parent deadline must be at least {} milliseconds",
+            (FIXTURE_DEADLINE + PARENT_DEADLINE_MARGIN).as_millis()
+        )));
+    }
     let kind = std::env::var("KELD_MEDIA_KIND")
         .map_err(|_| failure("KELD_MEDIA_KIND must be camera or microphone"))?;
     let mode = std::env::var("KELD_MEDIA_MODE").map_err(|_| {
@@ -270,9 +310,33 @@ fn destroy_primers(
         ) {
             return Err(failure("destroyed view remained navigable"));
         }
+        println!("KELD_MEDIA_PHASE primer-destroyed id={}", primer.0);
         last = Some(primer);
     }
     Ok(last)
+}
+
+fn spawn_watchdog(deadline: Duration) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    let watchdog = thread::spawn(move || {
+        if done_rx.recv_timeout(deadline) == Err(mpsc::RecvTimeoutError::Timeout) {
+            // This opt-in fixture is a disposable process. A process deadline also
+            // bounds nested creation/cleanup pumps; one consumed WM_QUIT cannot do so.
+            eprintln!(
+                "KELD_MEDIA_TIMEOUT: fixture exceeded {} seconds; inspect any KELD_MEDIA_PROFILE receipt",
+                deadline.as_secs_f64()
+            );
+            let _ = std::io::stderr().flush();
+            std::process::exit(124);
+        }
+    });
+    (done_tx, watchdog)
+}
+
+fn parent_deadline_is_valid(value: &str) -> bool {
+    value.parse::<u64>().is_ok_and(|milliseconds| {
+        Duration::from_millis(milliseconds) >= FIXTURE_DEADLINE + PARENT_DEADLINE_MARGIN
+    })
 }
 
 fn run_case(
@@ -297,19 +361,12 @@ fn run_case(
         .map_err(failure)?;
     // SAFETY: thread ID query is unconditional.
     let tid = unsafe { GetCurrentThreadId() };
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let watchdog = thread::spawn(move || {
-        if done_rx.recv_timeout(Duration::from_secs(30)) == Err(mpsc::RecvTimeoutError::Timeout) {
-            // This opt-in fixture is a disposable process. A process deadline also
-            // bounds nested creation/cleanup pumps; one consumed WM_QUIT cannot do so.
-            eprintln!("KELD_MEDIA_TIMEOUT: fixture exceeded 30 seconds; profile retained");
-            std::process::exit(124);
-        }
-    });
     let environment = fixture_environment(directory)?;
+    println!("KELD_MEDIA_PHASE environment-ready");
     let mut engine = WebView2Engine::from_environment(event_loop, environment.clone());
     let primer_count = if kind == "camera" { 1 } else { 2 };
     let last_primer = destroy_primers(&mut engine, primer_count)?;
+    println!("KELD_MEDIA_PHASE primers-destroyed count={primer_count}");
     let listener = TcpListener::bind("127.0.0.1:0").map_err(failure)?;
     let address = listener.local_addr().map_err(failure)?;
     let url = format!("http://{address}/{nonce}/");
@@ -364,6 +421,7 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
         unsafe { view.webview.remove_PermissionRequested(token) }.map_err(failure)?;
     }
     let message_rx = observe_request(&view.webview, mode, &url)?;
+    println!("KELD_MEDIA_PHASE observers-ready");
     release_tx
         .send(())
         .map_err(|_| failure("HTTP release receiver closed"))?;
@@ -378,8 +436,6 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
     unsafe { environment5.remove_BrowserProcessExited(exit_token) }.map_err(failure)?;
     drop(environment5);
     drop(environment);
-    let _ = done_tx.send(());
-    watchdog.join().map_err(|_| failure("watchdog panicked"))?;
     server_result.map_err(failure)?;
     validate(Validation {
         kind,
@@ -899,6 +955,14 @@ mod tests {
             "7:resolved",
         ] {
             assert!(!allow_result_matches(camera, 7, result), "{result}");
+        }
+    }
+
+    #[test]
+    fn parent_deadline_stays_above_the_complete_child_bound() {
+        assert!(parent_deadline_is_valid("90000"));
+        for value in ["89999", "60000", "invalid"] {
+            assert!(!parent_deadline_is_valid(value), "{value}");
         }
     }
 }
