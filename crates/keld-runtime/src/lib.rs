@@ -1640,6 +1640,7 @@ struct UnixCaptureFaults {
     read_interruptions: AtomicU8,
     wake_interruptions: AtomicU8,
     fionread_interruptions: AtomicU8,
+    fionread_failures: AtomicU8,
     poll_calls: AtomicU8,
     read_calls: AtomicU8,
     wake_calls: AtomicU8,
@@ -1914,6 +1915,9 @@ fn retire_unix_capture(control: Option<&UnixCaptureControl>) -> std::io::Result<
             control.faults.fionread_calls.fetch_add(1, Ordering::AcqRel);
             if consume_test_interruption(&control.faults.fionread_interruptions) {
                 return Err(rustix::io::Errno::INTR);
+            }
+            if consume_test_interruption(&control.faults.fionread_failures) {
+                return Err(rustix::io::Errno::BADF);
             }
         }
         rustix::io::ioctl_fionread(&control.reader)
@@ -4023,6 +4027,39 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn unix_capture_retirement_wakes_the_worker_when_fionread_fails() {
+        let (reader, writer) = UnixStream::pair().expect("native capture pipe");
+        let output = Arc::new(Mutex::new(
+            CaptureState::new(&[]).expect("empty marker set"),
+        ));
+        let (worker, control) = spawn_capture_thread(reader, output, "fionread-fail", true)
+            .expect("spawn capture worker");
+        await_atomic_at_least(&control.faults.poll_calls, 1, "capture worker entered poll");
+        control.faults.fionread_failures.store(1, Ordering::Release);
+
+        let error = retire_unix_capture(Some(&control))
+            .expect_err("injected FIONREAD failure must surface a typed error");
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::BADF.raw_os_error())
+        );
+        assert_eq!(control.faults.fionread_failures.load(Ordering::Acquire), 0);
+        assert!(control.faults.fionread_calls.load(Ordering::Acquire) >= 1);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = join_capture_thread(Some(worker), "fionread-fail");
+            let _ = done_tx.send(result);
+        });
+        let joined = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("FIONREAD-failure wake must unblock the parked capture worker");
+        joined.expect("capture worker exits after FIONREAD-failure wake");
+        drop(writer);
+    }
+
+    #[cfg(unix)]
     fn await_capture_bytes(output: &Arc<Mutex<CaptureState>>, expected: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
@@ -4778,6 +4815,23 @@ mod tests {
         assert_eq!(termination.stdout_len, ledger.stdout_len_at_last_crash);
     }
 
+    /// KEL-225: pin the public ceiling *value*. Boundedness tests compare
+    /// retained length to [`CAPTURE_MAX_RETAINED_BYTES`] and size fixtures from
+    /// the same symbols, so scaling the constants used to stay green. This
+    /// literal cannot track the production definition.
+    #[test]
+    fn capture_max_retained_bytes_is_the_documented_host_ceiling() {
+        assert_eq!(
+            CAPTURE_MAX_RETAINED_BYTES, 327_680,
+            "CAPTURE_MAX_RETAINED_BYTES is the host-memory budget for one \
+             untrusted child stream: 64 KiB pinned head + 192 KiB sliding tail \
+             + 64 KiB compaction slack (KEL-134). Changing the public CAPTURE_* \
+             constants is a contract change and must be an explicit decision; \
+             the self-referential `<= CAPTURE_MAX_RETAINED_BYTES` assertions \
+             still pass if the ceiling is silently doubled"
+        );
+    }
+
     /// KEL-134 storage bound, isolated from process spawning.
     ///
     /// This is the negative control for the retention cap: raising
@@ -5206,7 +5260,13 @@ mod tests {
         // Two orders of magnitude past the retention ceiling, still ~1s of pipe
         // traffic. Large enough that unbounded retention is unmistakable.
         let target_bytes = CAPTURE_MAX_RETAINED_BYTES * 200;
-        let rss_growth_ceiling = 32 * 1024 * 1024;
+        // Host RSS is not 1:1 with retained bytes: the soak process also holds
+        // the supervisor, pipes, and allocator slack. Bound growth to 100× the
+        // documented per-stream ceiling so the budget tracks the quantity it
+        // guards instead of a stale 32 MiB constant. Unmutated macOS peak
+        // growth was ~2 MiB; 100× (≈31.25 MiB) keeps the previous host-memory
+        // intent.
+        let rss_growth_ceiling = CAPTURE_MAX_RETAINED_BYTES * 100;
         let baseline_rss = process_rss_bytes();
         #[cfg(unix)]
         assert!(
