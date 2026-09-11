@@ -29,6 +29,7 @@ const JUST_STATUS_CHECK_COMMANDS: &[&str] = &[
 ];
 const REQUIRED_NON_CRATE_IDS: &[&str] = &[
     "package.keld-electron",
+    "package.keld-kipc",
     "package.keld-api",
     "package.keld-web",
     "package.keld-cli",
@@ -147,6 +148,7 @@ enum RecordKind {
 fn expected_package_owner(id: &str) -> Option<&'static str> {
     match id {
         "package.keld-electron" => Some("package:@keld/electron"),
+        "package.keld-kipc" => Some("package:@keld/kipc"),
         "package.keld-api" => Some("package:@keld/api"),
         "package.keld-web" => Some("package:@keld/web"),
         "package.keld-cli" => Some("package:@keld/cli"),
@@ -2035,6 +2037,16 @@ mod tests {
         expect_check_error(
             &temp,
             "required stable status id `package.keld-web` is missing",
+        );
+    }
+
+    #[test]
+    fn missing_required_kipc_package_id_fails() {
+        let temp = fixture();
+        temp.remove_line_containing(LEDGER_REL, "package.keld-kipc\t");
+        expect_check_error(
+            &temp,
+            "required stable status id `package.keld-kipc` is missing",
         );
     }
 

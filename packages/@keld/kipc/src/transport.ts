@@ -156,6 +156,15 @@ export function kipcError(code: string, detail: string): Error {
   return new Error(`${code}: ${detail}`);
 }
 
+function payloadTooLarge(detail?: string): Error {
+  return kipcError(
+    "KELD-IPC-004",
+    detail ??
+      `frame payload exceeds MAX_FRAME_LEN (${MAX_FRAME_LEN} bytes). ` +
+        "Shrink the payload or move large transfers to the bulk plane.",
+  );
+}
+
 function ioDeadlineExceeded(): Error {
   return kipcError(
     "KELD-IPC-006",
@@ -351,8 +360,14 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
  * One in-flight `readFrame()` only. A second call while a waiter is set is
  * `KELD-IPC-005`; it must not overwrite the waiter.
  */
+const CHUNK_COMPACT_THRESHOLD = 1024;
+
+/** Maximum unread fragments retained for one in-flight frame. */
+export const MAX_PENDING_CHUNKS = 65_536;
+
 export class FrameReader {
-  #chunks: Uint8Array[] = [];
+  #chunks: Array<Uint8Array | undefined> = [];
+  #chunkIndex = 0;
   #head = 0;
   #length = 0;
   #pending: { resolve: (f: DecodedFrame) => void; reject: (e: Error) => void } | null = null;
@@ -369,20 +384,40 @@ export class FrameReader {
    * second `push`; the chunk-queue reader keeps one entry per unread chunk.
    */
   pendingChunkCount(): number {
-    return this.#chunks.length;
+    return this.#chunks.length - this.#chunkIndex;
   }
 
   push(chunk: Uint8Array): void {
     if (this.#closed || chunk.byteLength === 0) return;
-    this.#chunks.push(chunk);
+    // Bun documents the callback value's type but not a retain-after-callback
+    // lifetime. Own each queued chunk so a reused/mutated producer buffer
+    // cannot rewrite a partially received frame after `push` returns.
+    this.#chunks.push(new Uint8Array(chunk));
     this.#length += chunk.byteLength;
     this.#tryResolve();
+    if (!this.#closed && this.#length > HEADER_LEN + MAX_FRAME_LEN) {
+      this.fail(
+        payloadTooLarge(
+          `buffered app-link data exceeds one maximum frame envelope (${HEADER_LEN + MAX_FRAME_LEN} bytes). ` +
+            "Stop the flooding peer and open a fresh app-link.",
+        ),
+      );
+    }
+    if (!this.#closed && this.pendingChunkCount() > MAX_PENDING_CHUNKS) {
+      this.fail(
+        payloadTooLarge(
+          `buffered app-link data exceeds ${MAX_PENDING_CHUNKS} unread fragments. ` +
+            "Stop the fragment-flooding peer and open a fresh app-link.",
+        ),
+      );
+    }
   }
 
   fail(err: Error): void {
     this.#closed = true;
     this.#closeError = err;
     this.#chunks = [];
+    this.#chunkIndex = 0;
     this.#head = 0;
     this.#length = 0;
     const pending = this.#pending;
@@ -393,7 +428,7 @@ export class FrameReader {
   #copyOut(n: number): Uint8Array {
     const out = new Uint8Array(n);
     let written = 0;
-    let idx = 0;
+    let idx = this.#chunkIndex;
     let offset = this.#head;
     while (written < n) {
       const chunk = this.#chunks[idx];
@@ -413,7 +448,7 @@ export class FrameReader {
     let left = n;
     this.#length -= n;
     while (left > 0) {
-      const chunk = this.#chunks[0];
+      const chunk = this.#chunks[this.#chunkIndex];
       if (chunk === undefined) {
         throw kipcError("KELD-IPC-001", "frame reader underrun");
       }
@@ -423,8 +458,27 @@ export class FrameReader {
         return;
       }
       left -= avail;
-      this.#chunks.shift();
+      // Release consumed bytes immediately and advance the logical queue head
+      // without relying on Array.shift() reindexing behavior.
+      this.#chunks[this.#chunkIndex] = undefined;
+      this.#chunkIndex += 1;
       this.#head = 0;
+    }
+    this.#compactChunks();
+  }
+
+  #compactChunks(): void {
+    if (this.#chunkIndex === this.#chunks.length) {
+      this.#chunks = [];
+      this.#chunkIndex = 0;
+      return;
+    }
+    if (
+      this.#chunkIndex >= CHUNK_COMPACT_THRESHOLD &&
+      this.#chunkIndex * 2 >= this.#chunks.length
+    ) {
+      this.#chunks = this.#chunks.slice(this.#chunkIndex);
+      this.#chunkIndex = 0;
     }
   }
 
@@ -438,13 +492,7 @@ export class FrameReader {
       return;
     }
     if (header.len > MAX_FRAME_LEN) {
-      this.fail(
-        kipcError(
-          "KELD-IPC-004",
-          `frame payload exceeds MAX_FRAME_LEN (${MAX_FRAME_LEN} bytes). ` +
-            "Shrink the payload or move large transfers to the bulk plane.",
-        ),
-      );
+      this.fail(payloadTooLarge());
       return;
     }
     const total = HEADER_LEN + header.len;
@@ -625,6 +673,12 @@ export class WriteQueue {
     corr: number,
     payload: Uint8Array,
   ): Promise<void> {
+    // Admission failures emit no bytes and leave this queue usable. Only a
+    // failure from the serialized write chain can imply a partial frame and
+    // poison subsequent writes.
+    if (payload.byteLength > MAX_FRAME_LEN) {
+      return Promise.reject(payloadTooLarge());
+    }
     if (this.#poison) {
       return Promise.reject(this.#poison);
     }
@@ -726,22 +780,42 @@ export function encodeVarint(n: number): Uint8Array {
   return new Uint8Array(bytes);
 }
 
-/** Decodes an unsigned LEB128 varint starting at `offset`. Returns `[value, nextOffset]`. */
-export function decodeVarint(bytes: Uint8Array, offset: number): [number, number] {
+function decodeVarintAt(
+  bytes: Uint8Array,
+  offset: number,
+  truncatedDetail: string,
+): [number, number] {
+  if (!Number.isInteger(offset) || offset < 0 || offset > bytes.length) {
+    throw kipcError(
+      "KELD-IPC-003",
+      `varint offset must be an integer in [0, ${bytes.length}], got ${offset}`,
+    );
+  }
   let result = 0;
   let placeValue = 1;
   let pos = offset;
-  for (;;) {
+  for (let byteIndex = 0; byteIndex < 5; byteIndex += 1) {
     if (pos >= bytes.length) {
-      throw kipcError("KELD-IPC-003", "truncated varint");
+      throw kipcError("KELD-IPC-003", truncatedDetail);
     }
     const byte = bytes[pos];
     pos += 1;
+    if (byteIndex === 4 && byte > 0x0f) {
+      throw kipcError(
+        "KELD-IPC-003",
+        "u32 varint exceeds five bytes or overflows its fifth byte",
+      );
+    }
     result += (byte & 0x7f) * placeValue;
-    if ((byte & 0x80) === 0) break;
+    if ((byte & 0x80) === 0) return [result, pos];
     placeValue *= 128;
   }
-  return [result, pos];
+  throw kipcError("KELD-IPC-003", "u32 varint exceeds five bytes");
+}
+
+/** Decodes an unsigned LEB128 varint starting at `offset`. Returns `[value, nextOffset]`. */
+export function decodeVarint(bytes: Uint8Array, offset: number): [number, number] {
+  return decodeVarintAt(bytes, offset, "truncated varint");
 }
 
 /**
@@ -749,26 +823,13 @@ export function decodeVarint(bytes: Uint8Array, offset: number): [number, number
  * one past its last byte.
  */
 export function decodePostcardStringAt(bytes: Uint8Array, offset: number): [string, number] {
-  let len = 0;
-  let shift = 0;
-  let i = offset;
-  while (i < bytes.length) {
-    const b = bytes[i]!;
-    i += 1;
-    len |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) {
-      const text = bytes.subarray(i, i + len);
-      if (text.length !== len) {
-        throw kipcError("KELD-IPC-003", "postcard string length does not match payload");
-      }
-      return [new TextDecoder("utf-8", { fatal: true }).decode(text), i + len];
-    }
-    shift += 7;
-    if (shift > 28) {
-      throw kipcError("KELD-IPC-003", "postcard string length overflow");
-    }
+  const [len, afterLen] = decodeVarintAt(bytes, offset, "truncated postcard string");
+  const end = afterLen + len;
+  const text = bytes.subarray(afterLen, end);
+  if (text.length !== len) {
+    throw kipcError("KELD-IPC-003", "postcard string length does not match payload");
   }
-  throw kipcError("KELD-IPC-003", "truncated postcard string");
+  return [new TextDecoder("utf-8", { fatal: true }).decode(text), end];
 }
 
 /**

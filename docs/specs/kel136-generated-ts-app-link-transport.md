@@ -1,6 +1,6 @@
 # Spec: one generated TypeScript app-link transport
 Status: implementing
-Linear: KEL-136 · Owner: GYLDLAB · Updated: 2026-09-10
+Linear: KEL-136 · Owner: GYLDLAB · Updated: 2026-09-11
 
 ## 1. Goal & non-goals
 
@@ -9,7 +9,9 @@ readers, writers, and constants. They diverged, and both concatenated buffered
 prefixes on every chunk. T1 makes one TypeScript source the owner of framing,
 HELLO, absolute deadlines, bounded buffering, and serialized writes. Both
 consumers reuse that source: `keld create` embeds it; `@keld/electron` imports
-it. Echo and lifecycle codecs stay thin adapters.
+it. Each borrowed socket callback buffer is copied once before retention, and
+both retained input and outbound payloads are capped before they can create an
+unbounded queue or an oversized frame. Echo and lifecycle codecs stay thin adapters.
 
 Non-goals:
 
@@ -61,6 +63,20 @@ already required by KEL-133 criterion 10's later consumer.
     `AppLinkSession.echo` runs, then the echo succeeds and the Event stays
     parked for a later `receive(lifecycleEventReceiver)`. Close/Quit is still
     not sent here (KEL-185).
+11. Given a postcard u32 varint, when it exceeds five bytes or uses more than
+    four payload bits in byte five, then the shared decoder rejects
+    `KELD-IPC-003`; string and scalar decoding reuse that one bound.
+12. Given a borrowed callback chunk, mutation after `FrameReader.push` cannot
+    alter retained bytes. More than `HEADER_LEN + MAX_FRAME_LEN` retained bytes
+    fail `KELD-IPC-004`, and an outbound payload above `MAX_FRAME_LEN` fails
+    before header allocation or any socket write without poisoning the queue;
+    a later valid write still succeeds.
+13. Given the generated transport sidecar, the boot compiler stages it and the
+    Linux strict profile binds only the admitted regular file at
+    `/code/kipc-transport.ts`; absence remains valid for self-contained fixtures,
+    while a directory or symbolic link fails closed.
+14. Given more than 65,536 unread fragments for an incomplete frame, the reader
+    fails closed with `KELD-IPC-004`, releases the queue, and rejects later reads.
 
 ## 4. Design
 
@@ -74,6 +90,14 @@ already required by KEL-133 criterion 10's later consumer.
   ships without it). Rejected putting kipc inside `@keld/electron`. Rejected
   keeping two copies plus a sync script.
 - Compatibility fallback: stock scaffold stays dependency-free via `include_str!`.
+- Memory ownership: Bun's `SocketHandler.data` callback type does not document a
+  retain-after-callback lifetime. `FrameReader.push` therefore treats input as
+  borrowed and takes exactly one owned copy before queueing it. This replaces
+  the old repeated prefix copies without relying on an undocumented runtime
+  lifetime.
+- Envelope ownership: `FrameReader` owns at most one maximum frame envelope of
+  retained bytes; `WriteQueue` owns the matching outbound cap and rejects before
+  header allocation or socket effects. Rust `keld-ipc` remains the wire owner.
 - New types: `packages/@keld/kipc` (npm package, not a Rust crate).
 - Capabilities / manifest: none.
 - Wire/protocol: none (no version bump). Public TS surface of `@keld/kipc` is new
@@ -87,10 +111,15 @@ Implement in:
 - `packages/@keld/kipc/**`;
 - `crates/keld-cli/templates/hello/src/{kipc.ts,kipc-transport.ts,kipc.test.ts}`;
 - `crates/keld-cli/src/template.rs` embed path;
-- `crates/keld-cli/src/boot.rs` stages `src/kipc-transport.ts` when present;
+- `crates/keld-cli/src/{boot.rs,create.rs,template.rs}` for generated/staged sidecar behavior;
+- `crates/keld-core/src/app_session.rs` for the exact Linux read-only sidecar mount;
+- `crates/keld-host/tests/no_flag_{linux,macos,windows}.rs` and the existing
+  `keld-runtime` platform fixtures for product-path reuse;
 - `packages/@keld/electron/src/{link.ts,corpus.test.ts}`;
 - `justfile` typescript subset;
-- architecture 02/06 current-state and onboarding 03.
+- `tools/ci_changes_test.sh` for the derived test-routing contract;
+- architecture 02/06 current-state, onboarding 03/04, the product-status source,
+  and their generated documentation.
 
 Must not touch: KEL-185 hello Close/Quit body, KEL-182 evidence, KEL-133 TSV rows,
 keld-guard, principal minting, workspace Cargo.toml.
@@ -109,19 +138,39 @@ keld-guard, principal minting, workspace Cargo.toml.
 | 8 | `just typescript`; no-`any` grep |
 | 9 | hello `kipc.test.ts` echo vectors; electron `app.test.ts` / lifecycle fixtures |
 | 10 | `@keld/kipc` Ready-before-Echo park/FIFO/overflow; hello `AppLinkSession.receive`/`writeFrame` |
+| 11 | `@keld/kipc` fifth-byte overflow, six-byte, valid-u32-max, invalid-offset, and postcard-string regressions |
+| 12 | borrowed-chunk mutation, retained-envelope overflow, and zero-effect/non-poisoning oversized-write regressions |
+| 13 | CLI create/stage sidecar tests; core absent/regular/directory/lstat/symlink tests; no-flag Linux product fixture |
+| 14 | `@keld/kipc` pending-fragment overflow and queue-release regression |
 
 Anti-flake: no sleeps; write-deadline tests keep their existing 4–12s wall-clock bounds.
 
 ## 8. Review gates triggered
 
-unsafe: none. public API: `@keld/kipc` transport exports. permission model: none.
+unsafe: none. public API: `@keld/kipc` transport exports. permission model:
+Linux strict containment adds one exact read-only file mount, independently
+covered by lstat/symlink admission and the no-flag Linux product fixture.
 dependency addition: `@types/bun` 1.4.0 and `typescript` 7.0.2 already pinned by
 `@keld/electron` (same versions; new package lockfile). wire protocol: none.
 
 ## 9. Perf impact
 
-none on architecture 01 §5 host/first-paint budgets. Fragmented max-size frames
-stop doing quadratic prefix copies; no claimed µs gain without a benchmark.
+None on architecture 01 §5 host/first-paint budgets. Fragmented max-size frames
+stop doing quadratic prefix copies; no absolute latency target is claimed.
+
+Performance decomposition and reproducible evidence:
+
+- census: 8 MiB/32,768 and 16 MiB/65,536 payload/chunk pairs at 256 bytes per chunk;
+- work: one owned admission copy per chunk and one final payload assembly;
+- queue/copy: one entry per unread chunk, retained bytes capped at one maximum
+  frame envelope and unread entries capped at 65,536, with a first-active cursor
+  that releases consumed buffers and amortizes prefix compaction instead of
+  reindexing via `Array.shift()`;
+- clock: `performance.now()` in one pinned Bun process;
+- statistic: three samples after a warm-up, reported as median and 16/8 scaling
+  ratio without a flaky timing threshold;
+- artifact: `bun run bench:fragmented` from `packages/@keld/kipc`, plus the
+  deterministic queue/cap/ownership tests that remain the correctness oracle.
 
 ## 10. Open questions
 

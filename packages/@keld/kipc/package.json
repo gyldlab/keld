@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Canonical TypeScript kipc v0 app-link transport (KEL-136)",
   "scripts": {
+    "bench:fragmented": "bun run bench/fragmented-frame.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

@@ -4,7 +4,17 @@
  * Oracles: keld-ipc constants and error codes, the canonical TSV path (no row
  * copy), chunk-queue shape, and fail-closed unknown kind / wrong-channel Err.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, test } from "bun:test";
 
@@ -19,11 +29,15 @@ import {
   HEADER_LEN,
   LIFECYCLE_CHANNEL,
   MAX_FRAME_LEN,
+  MAX_PENDING_CHUNKS,
   MAX_PARKED_FRAMES,
   PROTOCOL_VERSION,
   RECEIVE_POLICIES,
   WriteQueue,
+  connectKipcSocket,
+  decodePostcardStringAt,
   decodeHeader,
+  decodeVarint,
   echoReplyWaiter,
   encodeHeader,
   kipcError,
@@ -38,6 +52,15 @@ const CORPUS_PATH = join(
   "../../../../crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
 );
 const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
+const SKIP_DIR_NAMES = new Set([".git", "node_modules", "target"]);
+const SKIP_REPO_DIRS = new Set([
+  join(REPO_ROOT, "competitors"),
+  join(REPO_ROOT, "docs", "research"),
+]);
+
+function skipDirectory(path: string, name: string): boolean {
+  return SKIP_DIR_NAMES.has(name) || SKIP_REPO_DIRS.has(path);
+}
 
 function encodeFrame(kind: number, channel: number, corr: number, payload: Uint8Array): Uint8Array {
   const header = encodeHeader(kind, 0, channel, corr, payload.length);
@@ -50,9 +73,10 @@ function encodeFrame(kind: number, channel: number, corr: number, payload: Uint8
 function walkFiles(root: string, suffix: string, into: string[]): void {
   for (const name of readdirSync(root)) {
     const path = join(root, name);
-    const stat = statSync(path);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) continue;
     if (stat.isDirectory()) {
-      if (name === "node_modules" || name === "target" || name === ".git") continue;
+      if (skipDirectory(path, name)) continue;
       walkFiles(path, suffix, into);
       continue;
     }
@@ -216,6 +240,84 @@ describe("FrameReader chunk queue", () => {
     reader.fail(new Error("test teardown: incomplete max-size frame"));
     await expect(pending).rejects.toThrow("test teardown");
   });
+
+  test("retains an owned copy when a borrowed socket chunk is still incomplete", async () => {
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    reader.push(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 2));
+    const borrowed = new Uint8Array([0x41]);
+    reader.push(borrowed);
+    borrowed[0] = 0x5a;
+    reader.push(new Uint8Array([0x42]));
+    expect((await pending).payload).toEqual(new Uint8Array([0x41, 0x42]));
+  });
+
+  test("consumes fragmented chunks without calling Array.shift", async () => {
+    const shift = Object.getOwnPropertyDescriptor(Array.prototype, "shift");
+    if (shift === undefined) throw new Error("Array.prototype.shift descriptor is missing");
+    Object.defineProperty(Array.prototype, "shift", {
+      ...shift,
+      value(): never {
+        throw new Error("Array.shift reindexes the frame queue");
+      },
+    });
+    try {
+      const reader = new FrameReader();
+      const pending = reader.readFrame();
+      reader.push(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 2));
+      reader.push(new Uint8Array([0x41]));
+      reader.push(new Uint8Array([0x42]));
+      expect((await pending).payload).toEqual(new Uint8Array([0x41, 0x42]));
+    } finally {
+      Object.defineProperty(Array.prototype, "shift", shift);
+    }
+  });
+
+  test("fails closed instead of retaining more than one maximum frame envelope", async () => {
+    const reader = new FrameReader();
+    reader.push(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 0));
+    reader.push(new Uint8Array(MAX_FRAME_LEN + 1));
+    expect(reader.bufferedBytes()).toBe(0);
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-004");
+  });
+
+  test("fails closed when tiny fragments exceed the pending-chunk cap", async () => {
+    const reader = new FrameReader();
+    for (let i = 0; i <= MAX_PENDING_CHUNKS; i += 1) {
+      reader.push(new Uint8Array([i & 0xff]));
+    }
+    expect(reader.bufferedBytes()).toBe(0);
+    expect(reader.pendingChunkCount()).toBe(0);
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-004");
+  });
+});
+
+describe("u32 postcard varint bounds", () => {
+  test("rejects overflow in the fifth byte and any sixth byte", () => {
+    expect(() => decodeVarint(new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x10]), 0)).toThrow(
+      "KELD-IPC-003",
+    );
+    expect(() =>
+      decodeVarint(new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x80, 0x00]), 0),
+    ).toThrow("KELD-IPC-003");
+    expect(decodeVarint(new Uint8Array([0xff, 0xff, 0xff, 0xff, 0x0f]), 0)).toEqual([
+      0xffff_ffff,
+      5,
+    ]);
+  });
+
+  test("rejects non-integer and out-of-range offsets", () => {
+    const bytes = new Uint8Array([0]);
+    for (const offset of [-1, 0.5, 2]) {
+      expect(() => decodeVarint(bytes, offset)).toThrow("KELD-IPC-003");
+    }
+  });
+
+  test("postcard strings reuse the bounded decoder", () => {
+    expect(() =>
+      decodePostcardStringAt(new Uint8Array([0x80, 0x80, 0x80, 0x80, 0x10]), 0),
+    ).toThrow("KELD-IPC-003");
+  });
 });
 
 describe("DrainSignal / WriteQueue", () => {
@@ -254,6 +356,34 @@ describe("DrainSignal / WriteQueue", () => {
     );
     expect(out.length).toBe(8);
   });
+
+  test("an oversized payload fails before socket effects without poisoning later writes", async () => {
+    let writes = 0;
+    const queue = new WriteQueue(
+      {
+        write(data: Uint8Array): number {
+          writes += 1;
+          return data.length;
+        },
+        end(): void {},
+      },
+      new DrainSignal(),
+    );
+    await expect(
+      queue.writeFrame(
+        FrameKind.Call,
+        0,
+        ECHO_CHANNEL,
+        1,
+        new Uint8Array(MAX_FRAME_LEN + 1),
+      ),
+    ).rejects.toThrow("KELD-IPC-004");
+    expect(writes).toBe(0);
+    await expect(
+      queue.writeFrame(FrameKind.Ping, 0, 0, 2, new Uint8Array()),
+    ).resolves.toBeUndefined();
+    expect(writes).toBe(1);
+  });
 });
 
 describe("deadline leftover I/O", () => {
@@ -276,24 +406,73 @@ describe("deadline leftover I/O", () => {
     await waiting;
   });
 
-  test("connect handlers fail the reader then fire drain", () => {
-    const source = readFileSync(join(import.meta.dir, "transport.ts"), "utf8");
-    const start = source.indexOf("const handlers = {");
-    const end = source.indexOf("const socket =", start);
-    const handlers = source.slice(start, end);
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    for (const name of ["error(", "close(", "connectError("]) {
-      const from = handlers.indexOf(name);
-      expect(from).toBeGreaterThan(-1);
-      const body = handlers.slice(from, from + 180);
-      expect(body.indexOf("reader.fail(")).toBeGreaterThan(-1);
-      expect(body.indexOf("drain.fire()")).toBeGreaterThan(body.indexOf("reader.fail("));
+  test("connect failure handlers reject the reader before waking writers", async () => {
+    const originalConnect = Bun.connect;
+    let handlers: Record<string, (...args: never[]) => void> = {};
+    Bun.connect = (async (opts: { socket?: Record<string, (...args: never[]) => void> }) => {
+      handlers = opts.socket ?? {};
+      return { write: () => 1, end: () => undefined };
+    }) as unknown as typeof Bun.connect;
+
+    try {
+      for (const name of ["error", "close", "connectError"] as const) {
+        const reader = new FrameReader();
+        const drain = new DrainSignal();
+        const endpoint = process.platform === "win32" ? "9000" : "/tmp/keld-kipc-test.sock";
+        await connectKipcSocket(endpoint, reader, drain);
+
+        const outcomes: string[] = [];
+        const read = reader.readFrame().then(
+          () => outcomes.push("read-resolved"),
+          () => outcomes.push("read-rejected"),
+        );
+        const waiting = drain.wait().then(() => outcomes.push("drain-resolved"));
+        const handler = handlers[name];
+        expect(handler).toBeDefined();
+        if (name === "close") {
+          handler?.();
+        } else {
+          handler?.(undefined as never, new Error(`${name} test`) as never);
+        }
+        await Promise.all([read, waiting]);
+        expect(outcomes).toEqual(["read-rejected", "drain-resolved"]);
+      }
+    } finally {
+      Bun.connect = originalConnect;
     }
   });
 });
 
 describe("one source / no second copy", () => {
+  test("repository walks skip only owned reference roots and directory symlinks", () => {
+    const root = mkdtempSync(join(tmpdir(), "keld-kipc-walk-"));
+    try {
+      const source = join(root, "source");
+      const target = join(root, "target");
+      mkdirSync(source);
+      mkdirSync(target);
+      writeFileSync(join(target, "linked.ts"), "export {};\n");
+      symlinkSync(target, join(source, "linked"), process.platform === "win32" ? "junction" : "dir");
+      for (const skipped of ["node_modules", "target"]) {
+        mkdirSync(join(source, skipped));
+        writeFileSync(join(source, skipped, `${skipped}.ts`), "export {};\n");
+      }
+      writeFileSync(join(source, "owned.ts"), "export {};\n");
+      const files: string[] = [];
+      walkFiles(source, ".ts", files);
+      expect(files.map((file) => relative(source, file).replaceAll("\\", "/"))).toEqual([
+        "owned.ts",
+      ]);
+      expect(skipDirectory(join(REPO_ROOT, "competitors"), "competitors")).toBe(true);
+      expect(skipDirectory(join(REPO_ROOT, "docs", "research"), "research")).toBe(true);
+      expect(
+        skipDirectory(join(REPO_ROOT, "packages", "@keld", "example", "research"), "research"),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("MAGIC_BYTES and class FrameReader exist only in the canonical transport", () => {
     const files: string[] = [];
     walkFiles(join(REPO_ROOT, "packages"), ".ts", files);
