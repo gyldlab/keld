@@ -529,6 +529,12 @@ export class FrameReader {
 
   #tryResolve(): void {
     if (!this.#pending || this.#length < HEADER_LEN) return;
+    const startedAt = this.#arrivalAt(0);
+    const headerCompletedAt = this.#arrivalAt(HEADER_LEN - 1);
+    if (headerCompletedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
+      this.fail(ioDeadlineExceeded());
+      return;
+    }
     let header: FrameHeader;
     try {
       header = decodeHeader(this.#copyOut(HEADER_LEN));
@@ -542,7 +548,6 @@ export class FrameReader {
     }
     const total = HEADER_LEN + header.len;
     if (this.#length < total) return;
-    const startedAt = this.#arrivalAt(0);
     const completedAt = this.#arrivalAt(total - 1);
     if (completedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
       this.fail(

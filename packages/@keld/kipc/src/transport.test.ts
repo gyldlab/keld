@@ -297,6 +297,24 @@ describe("FrameReader chunk queue", () => {
   );
 
   test(
+    "active waiter checks a late malformed header against the deadline first",
+    async () => {
+      const reader = new FrameReader();
+      const pending = reader.readFrame();
+      const malformed = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+      malformed[3] = 99;
+      reader.push(malformed.subarray(0, 1));
+      const started = performance.now();
+      while (performance.now() - started < APP_LINK_IO_DEADLINE_MS + 10) {
+        // Hold the JS turn so the overdue callback cannot decide first.
+      }
+      reader.push(malformed.subarray(1));
+      await expect(pending).rejects.toThrow("KELD-IPC-006");
+    },
+    8_000,
+  );
+
+  test(
     "queued partial frame keeps its first-byte clock before a waiter exists",
     async () => {
       const reader = new FrameReader();
