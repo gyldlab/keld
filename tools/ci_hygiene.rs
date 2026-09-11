@@ -114,19 +114,51 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "if ($LASTEXITCODE -ne 0) { throw 'media-acceptance test build failed' }",
     "$fixture = @($artifacts | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'keld_wv' -and $_.profile.test -eq $true -and $_.executable })",
     "if ($fixture.Count -ne 1) { throw \"expected one keld_wv libtest executable, found $($fixture.Count)\" }",
-    "$fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture[0].executable).Hash.ToLowerInvariant()",
-    "& crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixture[0].executable -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'keld-windows-media')",
+    "$fixturePath = (Resolve-Path -LiteralPath $fixture[0].executable).Path",
+    "$fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixturePath).Hash.ToLowerInvariant()",
+    "$evidenceRoot = Join-Path $env:RUNNER_TEMP 'keld-windows-media'",
+    "& crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixturePath -EvidenceDirectory $evidenceRoot",
     "if ($LASTEXITCODE -ne 0) { throw 'Windows media guard acceptance failed' }",
-    "$resultPath = Join-Path $env:RUNNER_TEMP 'keld-windows-media/result.json'",
+    "$resultPath = Join-Path $evidenceRoot 'result.json'",
     "if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Windows media guard produced no result.json' }",
     "$result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json",
+    "$requiredTopLevel = @('schema', 'source_executable', 'executable', 'executable_sha256', 'system', 'device', 'capture_device', 'scope', 'watchdog_probe', 'outer_deadline_probe', 'rows')",
+    "$actualTopLevel = @($result.PSObject.Properties.Name | Sort-Object -Unique -CaseSensitive)",
+    "if ($actualTopLevel.Count -ne $requiredTopLevel.Count -or @(Compare-Object -CaseSensitive -ReferenceObject $requiredTopLevel -DifferenceObject $actualTopLevel).Count -ne 0) { throw 'Windows media guard returned the wrong top-level artifact shape' }",
     "if ($result.schema -cne 'keld.windows-media-fixture/v1' -or @($result.rows).Count -ne 10) { throw 'Windows media guard returned the wrong schema or row count' }",
+    "$evidenceExecutable = Join-Path $evidenceRoot 'keld_wv_media_test.exe'",
+    "if ($result.source_executable -cne $fixturePath -or $result.executable -cne $evidenceExecutable -or $result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $evidenceExecutable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable and evidence copy' }",
+    "$requiredProbeFields = @('mode', 'exit_code', 'outer_timed_out', 'stdout_sha256', 'stderr_sha256')",
+    "$watchdogFields = @($result.watchdog_probe.PSObject.Properties.Name | Sort-Object -Unique -CaseSensitive)",
+    "if ($watchdogFields.Count -ne $requiredProbeFields.Count -or @(Compare-Object -CaseSensitive -ReferenceObject $requiredProbeFields -DifferenceObject $watchdogFields).Count -ne 0 -or $result.watchdog_probe.mode -cne 'work' -or $result.watchdog_probe.exit_code -ne 124 -or $result.watchdog_probe.outer_timed_out -ne $false) { throw 'Windows media watchdog probe was absent or invalid' }",
+    "$requiredOuterProbeFields = @('exit_code', 'outer_timed_out', 'stdout_sha256', 'stderr_sha256')",
+    "$outerProbeFields = @($result.outer_deadline_probe.PSObject.Properties.Name | Sort-Object -Unique -CaseSensitive)",
+    "if ($outerProbeFields.Count -ne $requiredOuterProbeFields.Count -or @(Compare-Object -CaseSensitive -ReferenceObject $requiredOuterProbeFields -DifferenceObject $outerProbeFields).Count -ne 0 -or $result.outer_deadline_probe.exit_code -eq 0 -or $result.outer_deadline_probe.outer_timed_out -ne $true) { throw 'Windows media outer-deadline probe was absent or invalid' }",
+    "$hashPattern = '^[0-9a-f]{64}$'",
+    "foreach ($probe in @(@($result.watchdog_probe, 'watchdog-probe'), @($result.outer_deadline_probe, 'outer-deadline-probe'))) {",
+    "$stdoutPath = Join-Path $evidenceRoot \"$($probe[1]).log\"",
+    "$stderrPath = Join-Path $evidenceRoot \"$($probe[1]).stderr.log\"",
+    "if ($probe[0].stdout_sha256 -cnotmatch $hashPattern -or $probe[0].stderr_sha256 -cnotmatch $hashPattern -or (Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant() -cne $probe[0].stdout_sha256 -or (Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant() -cne $probe[0].stderr_sha256) { throw \"Windows media probe logs were absent or did not match: $($probe[1])\" }",
+    "}",
+    "$watchdogStdout = Get-Content -Raw -LiteralPath (Join-Path $evidenceRoot 'watchdog-probe.log')",
+    "$watchdogStderr = Get-Content -Raw -LiteralPath (Join-Path $evidenceRoot 'watchdog-probe.stderr.log')",
+    "$outerStdout = Get-Content -Raw -LiteralPath (Join-Path $evidenceRoot 'outer-deadline-probe.log')",
+    "if (-not $watchdogStdout.Contains('KELD_MEDIA_PHASE watchdog-probe-work-block') -or -not $watchdogStderr.Contains('KELD_MEDIA_TIMEOUT: fixture exceeded 0.1 seconds') -or -not $outerStdout.Contains('KELD_MEDIA_PHASE outer-probe-block')) { throw 'Windows media probe phase or timeout evidence was absent' }",
     "$expectedRows = @('camera/adapter-bypass/app-grants', 'camera/force-allow/app-grants', 'camera/guarded/app-grants', 'camera/guarded/empty', 'camera/removed-guard/app-grants', 'microphone/adapter-bypass/app-grants', 'microphone/force-allow/app-grants', 'microphone/guarded/app-grants', 'microphone/guarded/empty', 'microphone/removed-guard/app-grants')",
     "$rowKeys = @($result.rows | ForEach-Object { \"$($_.kind)/$($_.mode)/$($_.manifest_case)\" } | Sort-Object -Unique -CaseSensitive)",
     "if ($rowKeys.Count -ne 10 -or @(Compare-Object -CaseSensitive -ReferenceObject $expectedRows -DifferenceObject $rowKeys).Count -ne 0) { throw 'Windows media guard returned the wrong or duplicate row set' }",
-    "$invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch '^[0-9a-f]{64}$' })",
+    "$requiredRowFields = @('kind', 'mode', 'manifest_case', 'nonce', 'view_id', 'host_pid', 'browser_pid', 'permission_kind', 'initial_state', 'requested_state', 'returned_state', 'origin_uri', 'manifest_fnv1a64', 'adapter_principal', 'adapter_capability', 'adapter_decision', 'adapter_tid', 'registration_identity', 'sender_identity', 'outcome', 'profile_path', 'profile_removed', 'exit_code', 'receipt', 'log_sha256', 'stderr_sha256')",
+    "foreach ($row in $result.rows) {",
+    "$rowFields = @($row.PSObject.Properties.Name | Sort-Object -Unique -CaseSensitive)",
+    "if ($rowFields.Count -ne $requiredRowFields.Count -or @(Compare-Object -CaseSensitive -ReferenceObject $requiredRowFields -DifferenceObject $rowFields).Count -ne 0) { throw 'Windows media guard returned the wrong row artifact shape' }",
+    "$rowStem = \"$($row.kind)-$($row.mode)-$($row.manifest_case)\"",
+    "$rowLog = Join-Path $evidenceRoot \"$rowStem.log\"",
+    "$rowStderr = Join-Path $evidenceRoot \"$rowStem.stderr.log\"",
+    "$logReceipts = @(Get-Content -LiteralPath $rowLog | Where-Object { \"$_\" -clike 'KELD_MEDIA_RESULT *' })",
+    "if ($row.log_sha256 -cnotmatch $hashPattern -or $row.stderr_sha256 -cnotmatch $hashPattern -or (Get-FileHash -Algorithm SHA256 -LiteralPath $rowLog).Hash.ToLowerInvariant() -cne $row.log_sha256 -or (Get-FileHash -Algorithm SHA256 -LiteralPath $rowStderr).Hash.ToLowerInvariant() -cne $row.stderr_sha256 -or $logReceipts.Count -ne 1 -or \"$($logReceipts[0])\" -cne $row.receipt -or (Test-Path -LiteralPath $row.profile_path)) { throw \"Windows media row logs, receipt, or teardown did not match: $rowStem\" }",
+    "}",
+    "$invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch $hashPattern -or $_.stderr_sha256 -cnotmatch $hashPattern })",
     "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
-    "if ($result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable' }",
 ];
 
 const FUZZ_WORKSPACE_COMMANDS: &[&str] =
@@ -2083,36 +2115,20 @@ mod tests {
     const PINNED_CHECKOUT: &str =
         "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n";
 
-    const WINDOWS_MEDIA_STEP: &str = concat!(
-        "      - name: Windows media guard acceptance (KEL-132)\n",
-        "        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n",
-        "        shell: pwsh\n",
-        "        run: |\n",
-        "          cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings\n",
-        "          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance Clippy failed' }\n",
-        "          cargo nextest run -p keld-wv --features media-acceptance --profile ci --no-tests=pass\n",
-        "          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance tests failed' }\n",
-        "          $artifacts = @(cargo test -p keld-wv --features media-acceptance --lib --no-run --message-format=json | ConvertFrom-Json)\n",
-        "          if ($LASTEXITCODE -ne 0) { throw 'media-acceptance test build failed' }\n",
-        "          $fixture = @($artifacts | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'keld_wv' -and $_.profile.test -eq $true -and $_.executable })\n",
-        "          if ($fixture.Count -ne 1) { throw \"expected one keld_wv libtest executable, found $($fixture.Count)\" }\n",
-        "          $fixtureHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixture[0].executable).Hash.ToLowerInvariant()\n",
-        "          & crates/keld-wv/tests/windows_media_guard.ps1 -BinaryPath $fixture[0].executable -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'keld-windows-media')\n",
-        "          if ($LASTEXITCODE -ne 0) { throw 'Windows media guard acceptance failed' }\n",
-        "          $resultPath = Join-Path $env:RUNNER_TEMP 'keld-windows-media/result.json'\n",
-        "          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Windows media guard produced no result.json' }\n",
-        "          $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json\n",
-        "          if ($result.schema -cne 'keld.windows-media-fixture/v1' -or @($result.rows).Count -ne 10) { throw 'Windows media guard returned the wrong schema or row count' }\n",
-        "          $expectedRows = @('camera/adapter-bypass/app-grants', 'camera/force-allow/app-grants', 'camera/guarded/app-grants', 'camera/guarded/empty', 'camera/removed-guard/app-grants', 'microphone/adapter-bypass/app-grants', 'microphone/force-allow/app-grants', 'microphone/guarded/app-grants', 'microphone/guarded/empty', 'microphone/removed-guard/app-grants')\n",
-        "          $rowKeys = @($result.rows | ForEach-Object { \"$($_.kind)/$($_.mode)/$($_.manifest_case)\" } | Sort-Object -Unique -CaseSensitive)\n",
-        "          if ($rowKeys.Count -ne 10 -or @(Compare-Object -CaseSensitive -ReferenceObject $expectedRows -DifferenceObject $rowKeys).Count -ne 0) { throw 'Windows media guard returned the wrong or duplicate row set' }\n",
-        "          $invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch '^[0-9a-f]{64}$' })\n",
-        "          if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }\n",
-        "          if ($result.executable_sha256 -cne $fixtureHash -or (Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant() -cne $fixtureHash) { throw 'Windows media result does not bind the selected Cargo executable' }",
-    );
+    fn windows_media_step() -> String {
+        let commands = WINDOWS_MEDIA_ACCEPTANCE_COMMANDS
+            .iter()
+            .map(|command| format!("          {command}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "      - name: Windows media guard acceptance (KEL-132)\n        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n        shell: pwsh\n        run: |\n{commands}"
+        )
+    }
 
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
     fn valid_workflow() -> String {
+        let windows_media_step = windows_media_step();
         [
             "name: CI",
             "jobs:",
@@ -2156,7 +2172,7 @@ mod tests {
             "          mkdir -p target/product-status",
             "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
             "          target/product-status/product-status-test",
-            WINDOWS_MEDIA_STEP,
+            windows_media_step.as_str(),
             "  bun-test:",
             "    if: needs.changes.outputs.ts == 'true'",
             "    steps:",
@@ -3563,17 +3579,18 @@ mod tests {
     #[test]
     fn windows_media_acceptance_step_is_unique_and_direct() {
         let temp = complete_fixture();
+        let windows_media_step = windows_media_step();
         temp.write(
             WORKFLOW,
-            &valid_workflow().replacen(WINDOWS_MEDIA_STEP, "", 1),
+            &valid_workflow().replacen(&windows_media_step, "", 1),
         );
         let error = check(temp.path()).expect_err("missing Windows media step must fail");
         assert!(error.contains("KEL-132"), "{error}");
 
-        let duplicated = format!("{WINDOWS_MEDIA_STEP}\n{WINDOWS_MEDIA_STEP}");
+        let duplicated = format!("{windows_media_step}\n{windows_media_step}");
         temp.write(
             WORKFLOW,
-            &valid_workflow().replacen(WINDOWS_MEDIA_STEP, &duplicated, 1),
+            &valid_workflow().replacen(&windows_media_step, &duplicated, 1),
         );
         let error = check(temp.path()).expect_err("duplicate Windows media step must fail");
         assert!(error.contains("exactly one"), "{error}");
@@ -3631,12 +3648,28 @@ mod tests {
                 "@($result.rows).Count -lt 0",
             ),
             (
-                "(Get-FileHash -Algorithm SHA256 -LiteralPath $result.executable).Hash.ToLowerInvariant()",
-                "$result.executable_sha256",
+                "$result.source_executable -cne $fixturePath",
+                "$result.source_executable -cne $result.source_executable",
             ),
             (
                 "$result.executable_sha256 -cne $fixtureHash",
                 "$result.executable_sha256 -cne $result.executable_sha256",
+            ),
+            (
+                "$result.watchdog_probe.exit_code -ne 124",
+                "$result.watchdog_probe.exit_code -ne $result.watchdog_probe.exit_code",
+            ),
+            (
+                "$result.outer_deadline_probe.outer_timed_out -ne $true",
+                "$result.outer_deadline_probe.outer_timed_out -eq $true",
+            ),
+            (
+                "Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath",
+                "Get-FileHash -Algorithm SHA256 -LiteralPath $evidenceExecutable",
+            ),
+            (
+                "$watchdogStderr.Contains('KELD_MEDIA_TIMEOUT: fixture exceeded 0.1 seconds')",
+                "$watchdogStderr.Contains('anything')",
             ),
             (
                 "microphone/removed-guard/app-grants",
@@ -3655,6 +3688,18 @@ mod tests {
             (
                 "$_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true'",
                 "$_.receipt -notlike 'KELD_MEDIA_RESULT * case_ok=true'",
+            ),
+            (
+                "$row.stderr_sha256 -cnotmatch $hashPattern",
+                "$row.stderr_sha256 -cmatch $hashPattern",
+            ),
+            (
+                "\"$($logReceipts[0])\" -cne $row.receipt",
+                "\"$($logReceipts[0])\" -cne \"$($logReceipts[0])\"",
+            ),
+            (
+                "Test-Path -LiteralPath $row.profile_path",
+                "Test-Path -LiteralPath $resultPath",
             ),
         ] {
             let temp = complete_fixture();
