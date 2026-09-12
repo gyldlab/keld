@@ -3092,13 +3092,9 @@ impl PrimaryRouterHandle {
     }
 
     fn signal_last_window_closed(&self) -> Result<(), HostAppError> {
-        self.last_window_closed.store(true, Ordering::Release);
-        self.write_event(LifecycleEvent::LastWindowClosed)
-    }
-
-    fn write_event(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
         let _transition = self.shutdown.transition_guard();
-        self.write_event_guarded(event)
+        self.last_window_closed.store(true, Ordering::Release);
+        self.write_event_guarded(LifecycleEvent::LastWindowClosed)
     }
 
     // Caller retains shutdown.transition through the write and any admission
@@ -3270,6 +3266,16 @@ impl PrimaryRouterHandle {
                 attempt,
                 writer: writer_stream,
             });
+            drop(current);
+            // Publication and retained replay are one transition with live
+            // window delivery. Start the reader only after replay, so a call
+            // cannot overtake Ready or observe the same Close via both paths.
+            if self.window_ready.load(Ordering::Acquire) {
+                self.write_event_guarded(LifecycleEvent::Ready)?;
+            }
+            if self.last_window_closed.load(Ordering::Acquire) {
+                self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
+            }
         }
         let handle = self.clone();
         let reader = thread::Builder::new()
@@ -3289,12 +3295,6 @@ impl PrimaryRouterHandle {
             .lock()
             .map_err(|_| app_detail("primary session readers", "reader list lock poisoned"))?
             .insert(attempt, reader);
-        if self.window_ready.load(Ordering::Acquire) {
-            self.write_event(LifecycleEvent::Ready)?;
-        }
-        if self.last_window_closed.load(Ordering::Acquire) {
-            self.write_event(LifecycleEvent::LastWindowClosed)?;
-        }
         Ok(())
     }
 
