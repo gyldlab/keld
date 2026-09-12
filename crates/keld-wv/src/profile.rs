@@ -6,9 +6,9 @@
 //! such verifier and selects no native store.
 
 use core::fmt;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const PROFILE_IDENTITY_DOMAIN: &[u8] = b"keld.profile.identity/v1\0";
@@ -1052,11 +1052,12 @@ impl LeaseOwner {
 }
 
 /// Unforgeable token returned by the common exclusive lease table.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ProfileLease {
     key: ProfileLeaseKey,
     owner: LeaseOwner,
     generation: u64,
+    capability: Arc<LeaseTableCapability>,
 }
 
 impl ProfileLease {
@@ -1073,14 +1074,39 @@ impl ProfileLease {
     }
 }
 
+impl PartialEq for ProfileLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.owner == other.owner
+            && self.generation == other.generation
+            && Arc::ptr_eq(&self.capability, &other.capability)
+    }
+}
+
+impl Eq for ProfileLease {}
+
 /// In-process common exclusivity model used in addition to native platform locks.
 ///
 /// This table cannot prove cross-process exclusion. T2, T3, and T4 must pair the
 /// same key policy with a real OS lease and engine release evidence.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ProfileLeaseTable {
     owners: BTreeMap<ProfileLeaseKey, (LeaseOwner, u64)>,
     next_generation: u64,
+    capability: Arc<LeaseTableCapability>,
+}
+
+#[derive(Debug)]
+struct LeaseTableCapability;
+
+impl Default for ProfileLeaseTable {
+    fn default() -> Self {
+        Self {
+            owners: BTreeMap::new(),
+            next_generation: 0,
+            capability: Arc::new(LeaseTableCapability),
+        }
+    }
 }
 
 impl ProfileLeaseTable {
@@ -1107,6 +1133,7 @@ impl ProfileLeaseTable {
             key,
             owner,
             generation,
+            capability: Arc::clone(&self.capability),
         })
     }
 
@@ -1116,7 +1143,9 @@ impl ProfileLeaseTable {
     ///
     /// Returns `KELD-WV-009` when the token is absent or does not match.
     pub fn release(&mut self, lease: &ProfileLease) -> Result<(), ProfileError> {
-        if self.owners.get(&lease.key) != Some(&(lease.owner, lease.generation)) {
+        if !Arc::ptr_eq(&self.capability, &lease.capability)
+            || self.owners.get(&lease.key) != Some(&(lease.owner, lease.generation))
+        {
             return Err(ProfileError::new(ProfileErrorKind::ProfileInUse));
         }
         self.owners.remove(&lease.key);
@@ -1191,7 +1220,7 @@ impl ProfileLockOrder {
 }
 
 /// Strict boot-scoped identity bytes supplied by a future platform parser.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BootIdentity([u8; 16]);
 
 impl BootIdentity {
@@ -1208,9 +1237,18 @@ impl BootIdentity {
     }
 }
 
+impl<'de> Deserialize<'de> for BootIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes = <[u8; 16]>::deserialize(deserializer)?;
+        Self::from_host_verified_bytes(bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Exact OS process identity retained in non-idle lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProfileProcessIdentity {
     pid: u32,
     process_birth: u64,
@@ -1228,6 +1266,24 @@ impl ProfileProcessIdentity {
         }
         Ok(Self { pid, process_birth })
     }
+}
+
+impl<'de> Deserialize<'de> for ProfileProcessIdentity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let document = ProcessIdentityDocument::deserialize(deserializer)?;
+        Self::from_host_observation(document.pid, document.process_birth)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessIdentityDocument {
+    pid: u32,
+    process_birth: u64,
 }
 
 /// Durable common lifecycle phase for one persistent profile.
@@ -1372,17 +1428,13 @@ impl ProfileLifecycleRecord {
             )?)?,
             owner: document.owner,
         };
-        let owner_fields_valid = record
-            .owner
-            .is_none_or(|owner| owner.pid != 0 && owner.process_birth != 0);
-        let valid_owner = owner_fields_valid
-            && match record.phase {
-                ProfileLifecyclePhase::Idle => record.owner.is_none(),
-                ProfileLifecyclePhase::Starting
-                | ProfileLifecyclePhase::Running
-                | ProfileLifecyclePhase::Stopping
-                | ProfileLifecyclePhase::Quarantined => record.owner.is_some(),
-            };
+        let valid_owner = match record.phase {
+            ProfileLifecyclePhase::Idle => record.owner.is_none(),
+            ProfileLifecyclePhase::Starting
+            | ProfileLifecyclePhase::Running
+            | ProfileLifecyclePhase::Stopping
+            | ProfileLifecyclePhase::Quarantined => record.owner.is_some(),
+        };
         if !valid_owner {
             return Err(ProfileError::new(ProfileErrorKind::InvalidRecord));
         }
@@ -2061,6 +2113,101 @@ mod tests {
         assert!(ProfileLifecycleRecord::from_record_bytes(zero_pid.as_bytes()).is_err());
         let nested_unknown = starting_text.replace("\"pid\":42", "\"pid\":42,\"extra\":0");
         assert!(ProfileLifecycleRecord::from_record_bytes(nested_unknown.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn deserialization_preserves_identity_validation() {
+        let zero_boot_json = serde_json::to_string(&[0_u8; 16]).expect("encode boot fixture");
+        let zero_boot = serde_json::from_str::<BootIdentity>(&zero_boot_json);
+        if let Ok(forged_boot) = zero_boot.as_ref().copied() {
+            let admitted = next_lifecycle_action(
+                ProfileLifecycleRecord::idle(forged_boot),
+                RecordedProcessObservation::Unknown,
+                forged_boot,
+            );
+            assert!(
+                admitted.is_err(),
+                "a directly decoded zero boot identity must not admit startup"
+            );
+        }
+        assert!(zero_boot.is_err(), "zero boot identity must fail decoding");
+
+        let zero_pid =
+            serde_json::from_str::<ProfileProcessIdentity>(r#"{"pid":0,"process_birth":700}"#);
+        if let Ok(forged_owner) = zero_pid.as_ref().copied() {
+            let boot = BootIdentity::from_host_verified_bytes([1; 16]).expect("valid boot");
+            assert!(
+                ProfileLifecycleRecord::idle(boot)
+                    .begin_startup(forged_owner)
+                    .is_err(),
+                "a directly decoded zero PID must not begin startup"
+            );
+        }
+        assert!(zero_pid.is_err(), "zero PID must fail decoding");
+        assert!(
+            serde_json::from_str::<ProfileProcessIdentity>(r#"{"pid":42,"process_birth":0}"#)
+                .is_err(),
+            "zero process birth must fail decoding"
+        );
+
+        let valid_boot_json = serde_json::to_string(&[2_u8; 16]).expect("encode valid boot");
+        let valid_boot =
+            serde_json::from_str::<BootIdentity>(&valid_boot_json).expect("valid boot decodes");
+        let valid_owner =
+            serde_json::from_str::<ProfileProcessIdentity>(r#"{"pid":42,"process_birth":700}"#)
+                .expect("valid process identity decodes");
+        ProfileLifecycleRecord::idle(valid_boot)
+            .begin_startup(valid_owner)
+            .expect("validated decoded identities begin startup");
+        assert!(
+            serde_json::from_str::<ProfileProcessIdentity>(
+                r#"{"pid":42,"process_birth":700,"extra":1}"#
+            )
+            .is_err(),
+            "unknown process identity fields remain denied"
+        );
+    }
+
+    #[test]
+    fn lease_rejects_foreign_table_token() {
+        let key = ProfileLeaseKey::from_host_validated_parts(
+            test_identity(6),
+            ProfilePlatform::Linux,
+            [3; 32],
+            [4; 32],
+        );
+        let original_owner = LeaseOwner::from_host_process_identity([3; 16]).expect("owner");
+        let other_owner = LeaseOwner::from_host_process_identity([4; 16]).expect("owner");
+        let mut first_table = ProfileLeaseTable::default();
+        let mut second_table = ProfileLeaseTable::default();
+        let first_token = first_table
+            .acquire(key, original_owner)
+            .expect("first table lease");
+        let second_token = second_table
+            .acquire(key, original_owner)
+            .expect("second table lease");
+        assert_ne!(
+            first_token, second_token,
+            "tokens from distinct tables carry distinct provenance"
+        );
+
+        let foreign = second_table
+            .release(&first_token)
+            .expect_err("foreign table token must be rejected");
+        assert_eq!(foreign.kind(), ProfileErrorKind::ProfileInUse);
+        let conflict = second_table
+            .acquire(key, other_owner)
+            .expect_err("foreign release must preserve the original owner");
+        assert_eq!(conflict.kind(), ProfileErrorKind::ProfileInUse);
+        second_table
+            .release(&second_token)
+            .expect("the original second-table token still releases");
+        second_table
+            .acquire(key, other_owner)
+            .expect("a new owner acquires only after exact release");
+        first_table
+            .release(&first_token)
+            .expect("first table remains independently releasable");
     }
 
     fn test_identity(seed: u8) -> ProfileIdentity {
