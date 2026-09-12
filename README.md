@@ -28,7 +28,7 @@ do not establish release support:
 | Platform | Current app-session slice | Qualification still needed |
 |---|---|---|
 | macOS / WKWebView | Native window, app link, recovery, ordered Quit/CLI-loss cleanup | Stock app native Close remains unverified; complete strict profiles and release packaging |
-| Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock app native Close remains incomplete; remaining strict admission and release packaging |
+| Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock native Close/cleanup/relaunch qualified on the [Windows 11 x64 capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405); complete strict-profile admission and release packaging remain unverified |
 | Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Native Close/cleanup/relaunch qualified on the [PR #228 candidate](https://github.com/gyldlab/keld/pull/228) for Ubuntu 26.04.1 / GNOME Wayland; X11 product runs, other distributions/architectures, and release packaging remain unverified |
 
 ## Try it
@@ -55,6 +55,11 @@ and the [Ubuntu build/create/doctor/window/Ctrl-C/relaunch run](https://github.c
 Both used Bun 1.4.0; Windows used interactive PowerShell. These dated interrupt runs remain
 separate from native-Close acceptance.
 
+The [Windows stock native-Close capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405)
+qualifies two runs on source `62f4cc1a71a02db8d3b3a5959f2bbf6ba1a9a0c8`, Windows 11 x64,
+and Bun 1.4.2 revision `1.4.2+744846f84`; both CLI exits were zero, captured process
+identities exited, and both stages were absent at 20 seconds without forced cleanup.
+
 The [qualified Linux native-Close evidence](docs/onboarding/README.md#qualified-linux-native-close-evidence)
 for [PR #228](https://github.com/gyldlab/keld/pull/228), source `a843b32`, updates the
 historical failure status for that tested environment only. The earlier
@@ -76,6 +81,7 @@ no npm installation or packaged app release yet.
 - [CI](https://github.com/gyldlab/keld/actions/workflows/ci.yml): current automated
   checks. A CI run and a real desktop acceptance run are different evidence.
 - Public, source-pinned device records: [Windows/WebView2](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723),
+  [Windows native Close](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405),
   [initial Ubuntu/WebKitGTK](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917),
   and the [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871).
   These maintainer-recorded observations preserve their platform limits and do not
