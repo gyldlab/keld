@@ -1401,6 +1401,7 @@ version = "0.0.1"
 name = "keld-wv"
 version = "0.0.1"
 dependencies = [
+ "getrandom 0.4.3",
  "keld-guard",
  "serde",
  "serde_json",
@@ -1408,6 +1409,7 @@ dependencies = [
  "tao",
  "webview2-com",
  "windows",
+ "windows-permissions",
  "wry",
 ]
 
