@@ -29,7 +29,7 @@ do not establish release support:
 |---|---|---|
 | macOS / WKWebView | Native window, app link, recovery, ordered Quit/CLI-loss cleanup | Stock app native Close remains unverified; complete strict profiles and release packaging |
 | Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock app native Close remains incomplete; remaining strict admission and release packaging |
-| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Two native-Close/cleanup/relaunch runs passed on the [PR #228 candidate](https://github.com/gyldlab/keld/pull/228) at source `a843b32` on Ubuntu 26.04.1 x86_64 / GNOME 50.1 Wayland with Bun 1.4.2 and WebKitGTK 2.52.6; X11 product runs, other distributions/architectures, and release packaging remain unverified |
+| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Native Close/cleanup/relaunch qualified on the [PR #228 candidate](https://github.com/gyldlab/keld/pull/228) for Ubuntu 26.04.1 / GNOME Wayland; X11 product runs, other distributions/architectures, and release packaging remain unverified |
 
 ## Try it
 
@@ -55,15 +55,11 @@ and the [Ubuntu build/create/doctor/window/Ctrl-C/relaunch run](https://github.c
 Both used Bun 1.4.0; Windows used interactive PowerShell. These dated interrupt runs remain
 separate from native-Close acceptance.
 
-**Qualified Linux native Close:** two untouched stock-app runs on the
-[PR #228 candidate](https://github.com/gyldlab/keld/pull/228), source `a843b32`, passed
-native Close, cleanup, and relaunch on Ubuntu 26.04.1 x86_64 with GNOME 50.1 Wayland,
-Bun 1.4.2, and WebKitGTK 2.52.6. Both CLI processes exited 0; all 20 observed pidfds
-exited, both distinct launch stages disappeared, and no forced cleanup was used. This
-qualifies that recorded Linux environment and candidate only; root is capturing fresh
-native evidence on the final rebased PR head. The earlier
+The [qualified Linux native-Close evidence](docs/onboarding/README.md#qualified-linux-native-close-evidence)
+for [PR #228](https://github.com/gyldlab/keld/pull/228), source `a843b32`, updates the
+historical failure status for that tested environment only. The earlier
 [Ubuntu/Wayland failure record](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
-remains historical. The [lifecycle issue](https://github.com/gyldlab/keld/issues/176)
+remains linked as history. The [lifecycle issue](https://github.com/gyldlab/keld/issues/176)
 tracks the stock-app correction. The Rust executables are built from source; there is
 no npm installation or packaged app release yet.
 
