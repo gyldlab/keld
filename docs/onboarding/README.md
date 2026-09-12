@@ -25,7 +25,7 @@ wrapper or packaged application release to install yet.
   | Platform | Prerequisites and qualification |
   |---|---|
   | macOS | Apple command-line developer tools (`xcode-select --install` if absent); WKWebView is supplied by macOS |
-  | Windows | Rust's MSVC build tools and the WebView2 runtime; use an interactive PowerShell session for the qualified `dev`/Ctrl-C path; stock native Close remains incomplete |
+  | Windows | Rust's MSVC build tools and the WebView2 runtime; use an interactive PowerShell session for the source-build/Ctrl-C path; stock native Close/cleanup/relaunch is qualified only for the [Windows 11 x64 capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405) |
   | Ubuntu/Debian x86_64, Wayland | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; native Close/cleanup/relaunch qualified on Ubuntu 26.04.1 / GNOME Wayland; X11 product runs and other distributions remain unverified |
 
 The Ubuntu build packages are recorded in the [CI workflow](../../.github/workflows/ci.yml).
@@ -119,8 +119,9 @@ one. Expected behavior:
 
 4. Check that the host/Bun session and its nonce directory under `.keld/dev` are gone
    before a new run. The linked Windows and Ubuntu quick-start records observed Ctrl-C
-   cleanup; see [qualified native-Close evidence](#qualified-linux-native-close-evidence)
-   for the separate normal-close path.
+   cleanup; Windows stock native-Close evidence is separately source-qualified below.
+   See [qualified Linux native-Close evidence](#qualified-linux-native-close-evidence)
+   for that environment's normal-close path.
 
 ### Qualified Linux native Close evidence
 
@@ -136,9 +137,19 @@ runs on its source `a843b32` passed native Close, cleanup, and relaunch on Ubunt
 processes exited 0; 20 observed process identities exited, two distinct launch stages
 were absent, and no forced cleanup was used. This evidence qualifies that source and
 environment only. No public Mac device record is cited here, so macOS native Close
-remains unverified. The
-[final-source Windows run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
-also leaves stock native Close incomplete; its passing Ctrl-C result does not replace it.
+remains unverified.
+
+### Qualified Windows native Close evidence
+
+The earlier
+[Windows stock native-Close attempt](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+is retained as historical failure evidence; the later passing capture is separately
+qualified here.
+The [Windows stock native-Close capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405)
+qualifies two runs on source `62f4cc1a71a02db8d3b3a5959f2bbf6ba1a9a0c8`, Windows 11 x64,
+and Bun 1.4.2 revision `1.4.2+744846f84`; both CLI exits were zero, captured process
+identities exited, and both stages were absent at 20 seconds without forced cleanup.
+Complete strict-profile admission and release packaging remain unverified.
 
 The [newer Linux relaunch/early-interrupt record](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
 tested [PR #184](https://github.com/gyldlab/keld/pull/184) and produced no `KELD-CORE`
