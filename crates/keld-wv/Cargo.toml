@@ -16,6 +16,13 @@ media-acceptance = []
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`
 # on the live WKWebView permission callback. Sibling crate, not an upward edge.
 keld-guard = { workspace = true }
+# Common profile identity and schema-v1 durable records (KEL-135/T1). These
+# reuse versions already present through `keld-guard`; no lockfile package is
+# added. SHA-256 is the approved identity primitive, while serde's strict
+# private documents keep marker/registry parsing under one policy owner.
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

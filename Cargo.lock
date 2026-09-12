@@ -1402,6 +1402,9 @@ name = "keld-wv"
 version = "0.0.1"
 dependencies = [
  "keld-guard",
+ "serde",
+ "serde_json",
+ "sha2",
  "tao",
  "webview2-com",
  "windows",

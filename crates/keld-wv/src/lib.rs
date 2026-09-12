@@ -13,6 +13,7 @@ mod engine;
 mod error;
 mod hello;
 mod media;
+pub mod profile;
 #[cfg(target_os = "macos")]
 mod startup;
 #[cfg(test)]
@@ -33,6 +34,7 @@ pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};
 pub use media::{
     MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WEB_MICROPHONE, media_permission_allowed,
 };
+pub use profile::{ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection};
 
 /// Identifies a webview instance owned by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

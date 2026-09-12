@@ -115,6 +115,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: WebView2 runtime unavailable
 - fix: Install the Evergreen Runtime from https://developer.microsoft.com/microsoft-edge/webview2/ and re-run. Keld will not download or execute an installer for you.
 
+## KELD-WV-009
+
+- crate: keld-wv
+- message: Persistent profile identity, namespace, ownership, or lifecycle selection failed closed
+- fix: Use a platform-verified package identity for release or a fresh host-minted ephemeral development session; then repair the exact marker, registry intent, lease, lock order, or lifecycle release condition named by the error before starting a webview. Never select a default, suffixed, shared temporary, or caller-provided fallback store.
+
 ## KELD-WV-010
 
 - crate: keld-wv
