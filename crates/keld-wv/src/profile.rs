@@ -62,6 +62,7 @@ impl ProfileError {
         Self::new(ProfileErrorKind::MissingAuthenticatedIdentity)
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) const fn platform_failure(kind: ProfileErrorKind) -> Self {
         Self::new(kind)
     }
@@ -263,6 +264,7 @@ impl EphemeralProfile {
         encode_lower_hex(&self.launch_nonce)
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) fn from_namespace_segment(value: &str) -> Result<Self, ProfileError> {
         Self::from_host_random(decode_lower_hex::<32>(value)?)
     }
@@ -1425,10 +1427,12 @@ impl ProfileLifecycleRecord {
         self.phase
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) const fn owner(&self) -> Option<ProfileProcessIdentity> {
         self.owner
     }
 
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn complete_windows_recovery(self) -> Result<Self, ProfileError> {
         if self.phase != ProfileLifecyclePhase::Quarantined
             || self.owner.is_none()
