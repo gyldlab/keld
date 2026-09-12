@@ -27,10 +27,10 @@ use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
 use windows::core::PWSTR;
 
 use super::{
-    COINIT_APARTMENTTHREADED, CoInitializeEx, CoreWebView2EnvironmentOptions, E_POINTER,
-    EventLoopBuilder, NavTarget, PermissionRequestedEventHandler, WebEngine, WebView2Engine,
-    WebviewSpec, WindowsLoopEvent, WvError, create_environment_with_options, matching_browser_exit,
-    runtime_version, wait_with_pump, webview_media_principal,
+    CoreWebView2EnvironmentOptions, E_POINTER, EventLoopBuilder, NavTarget,
+    PermissionRequestedEventHandler, WebEngine, WebView2Engine, WebviewSpec, WindowsLoopEvent,
+    WvError, create_environment_with_options, matching_browser_exit, runtime_version,
+    wait_with_pump, webview_media_principal,
 };
 use crate::{LogicalSize, media::manifest_fingerprint};
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
@@ -360,10 +360,9 @@ fn run_case(
     // this same fixture thread.
     event_loop.with_any_thread(true);
     let event_loop = event_loop.build();
-    // SAFETY: all COM work is confined to this fixture-owned UI STA.
-    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
-        .ok()
-        .map_err(failure)?;
+    // This fixture retains environment/observer clones after dropping its
+    // engine; its own COM reference must outlive those clones as well.
+    let _com = super::initialize_com_sta()?;
     // SAFETY: thread ID query is unconditional.
     let tid = unsafe { GetCurrentThreadId() };
     let environment = fixture_environment(directory)?;
@@ -371,7 +370,11 @@ fn run_case(
     let browser_exit =
         super::observe_profile_browser_exit(&environment, Arc::clone(&expected_browser_pid), None)?;
     println!("KELD_MEDIA_PHASE environment-ready");
-    let mut engine = WebView2Engine::from_environment(event_loop, environment.clone());
+    let mut engine = WebView2Engine::from_environment(
+        super::initialize_com_sta()?,
+        event_loop,
+        environment.clone(),
+    );
     let primer_count = if kind == "camera" { 1 } else { 2 };
     let last_primer = destroy_primers(&mut engine, primer_count)?;
     println!("KELD_MEDIA_PHASE primers-destroyed count={primer_count}");
@@ -859,13 +862,13 @@ mod tests {
         options: CoreWebView2EnvironmentOptions,
     ) -> Result<WebView2Engine, WvError> {
         runtime_version()?;
-        let profile = super::super::prepare_profile_before_event_loop(root, selection)?;
+        let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_any_thread(true).with_dpi_aware(false);
         let event_loop = builder.build();
         let environment =
             super::super::create_environment_for_profile_with_options(&profile, options)?;
-        WebView2Engine::from_selected_environment(event_loop, environment, profile)
+        WebView2Engine::from_selected_environment(com, event_loop, environment, profile)
     }
 
     fn run_profile_fixture(mut engine: WebView2Engine) -> Result<(), WvError> {
@@ -1195,6 +1198,77 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             std::fs::remove_dir_all(case.root).map_err(failure)?;
         }
         Ok(())
+    }
+
+    #[test]
+    #[ignore = "real Windows COM environment ownership and native HWND Close"]
+    fn windows_com_engine_lifetime_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            use tao::platform::windows::WindowExtWindows as _;
+            use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType};
+            use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+
+            let apartment = || {
+                let mut kind = APTTYPE::default();
+                let mut qualifier = APTTYPEQUALIFIER::default();
+                // SAFETY: writable outputs; this query changes no COM ownership.
+                // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-cogetapartmenttype
+                unsafe { CoGetApartmentType(&raw mut kind, &raw mut qualifier) }
+            };
+            assert_eq!(
+                apartment().expect_err("fresh STA").code(),
+                windows::Win32::Foundation::CO_E_NOTINITIALIZED
+            );
+            let root = profile_fixture_root("com-lifetime");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let ephemeral = crate::profile::EphemeralProfile::from_host_random([93; 32])?;
+            let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+            let plan = super::super::windows_profile_plan(&root, selection)?;
+            let engine = profile_fixture_engine(&root, selection)?;
+            apartment().map_err(failure)?;
+            assert_eq!(
+                super::super::environment_user_data_folder(&engine.environment)?,
+                plan.user_data_dir
+            );
+            drop(engine);
+            // No Tao Window was created, so its per-window/TLS COM owners were
+            // never acquired. This isolates the engine's successful COM count.
+            assert_eq!(
+                apartment().expect_err("engine COM count released").code(),
+                windows::Win32::Foundation::CO_E_NOTINITIALIZED
+            );
+            println!("KELD_COM engine-environment-dropped balanced");
+
+            let successor = crate::profile::EphemeralProfile::from_host_random([94; 32])?;
+            let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
+            let next_plan = super::super::windows_profile_plan(&root, successor)?;
+            let mut engine = profile_fixture_engine(&root, successor)?;
+            let id = engine.create(&blank_spec())?;
+            let window = &engine.view(id)?.window;
+            // SAFETY: this fixture owns the live HWND. Posting the actual Close
+            // message exercises Tao's normal close event and browser exit wait.
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postmessagew
+            unsafe {
+                PostMessageW(
+                    Some(windows::Win32::Foundation::HWND(window.hwnd() as _)),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            }
+            .map_err(failure)?;
+            engine.run_until_closed()?;
+            assert!(
+                !next_plan.control_dir.exists(),
+                "Close must finish profile release"
+            );
+            assert!(
+                !plan.control_dir.exists(),
+                "successor must scavenge the released predecessor"
+            );
+            println!("KELD_COM hwnd-close-release successor-cleanup-complete");
+            std::fs::remove_dir_all(root).map_err(failure)
+        })
     }
 
     #[test]

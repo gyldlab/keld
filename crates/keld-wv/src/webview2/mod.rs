@@ -288,13 +288,29 @@ fn profile_failure(kind: ProfileErrorKind) -> WvError {
     ProfileError::platform_failure(kind).into()
 }
 
-fn initialize_com_sta() -> Result<(), WvError> {
+/// One successful COM initialization, released on its initializing thread.
+#[derive(Debug)]
+#[must_use]
+struct ComSta(std::marker::PhantomData<Rc<()>>);
+
+impl Drop for ComSta {
+    fn drop(&mut self) {
+        // SAFETY: only successful initialization constructs this non-Clone,
+        // !Send/!Sync owner. Callers retain it until all their COM objects have
+        // dropped. S_FALSE owns a reference too; a failed call owns none.
+        // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-couninitialize
+        unsafe { CoUninitialize() };
+    }
+}
+
+fn initialize_com_sta() -> Result<ComSta, WvError> {
     // SAFETY: the caller invokes this before creating thread-affine WebView2
     // objects. S_OK/S_FALSE are success; RPC_E_CHANGED_MODE and other errors
     // fail before profile filesystem or engine work. Contract:
     // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
         .ok()
+        .map(|()| ComSta(std::marker::PhantomData))
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))
 }
 
@@ -816,12 +832,12 @@ fn prepare_windows_profile_at(
 fn prepare_profile_before_event_loop(
     local_app_data: &Path,
     selection: WebProfileSelection,
-) -> Result<SelectedWindowsProfile, WvError> {
+) -> Result<(ComSta, SelectedWindowsProfile), WvError> {
     initialize_process_dpi_awareness()?;
-    initialize_com_sta()?;
+    let com = initialize_com_sta()?;
     let mut profile = prepare_windows_profile_at(local_app_data, selection)?;
     recover_windows_profile(&mut profile)?;
-    Ok(profile)
+    Ok((com, profile))
 }
 
 fn open_persistent_purge_owner(
@@ -1454,13 +1470,8 @@ fn prove_exclusive_udf_released_on_cleanup_sta(
     thread::scope(|scope| {
         scope
             .spawn(|| {
-                initialize_com_sta()?;
-                let result = prove_exclusive_udf_released(profile);
-                // SAFETY: balances this thread's successful CoInitializeEx
-                // after all recovery COM objects were dropped. Contract:
-                // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-couninitialize
-                unsafe { CoUninitialize() };
-                result
+                let _com = initialize_com_sta()?;
+                prove_exclusive_udf_released(profile)
             })
             .join()
             .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?
@@ -2119,13 +2130,8 @@ fn scavenge_after_release(root: Option<PathBuf>) -> Result<(), WvError> {
     thread::Builder::new()
         .name("keld-wv-profile-scavenge".to_owned())
         .spawn(move || {
-            initialize_com_sta()?;
-            let result = scavenge_ephemeral_profiles(&root).map(|_| ());
-            // SAFETY: balances this thread's successful CoInitializeEx after
-            // all thread-affine cleanup objects were dropped. Contract:
-            // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-couninitialize
-            unsafe { CoUninitialize() };
-            result
+            let _com = initialize_com_sta()?;
+            scavenge_ephemeral_profiles(&root).map(|_| ())
         })
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?
         .join()
@@ -2167,8 +2173,8 @@ impl Drop for View {
 /// it. Uses tao `run_return` so the host can reap supervised children after the last
 /// window closes (KEL-30 concurrent hello app-link).
 pub struct WebView2Engine {
-    /// Present until the run loop starts; consumed by `run_until_closed`.
-    event_loop: Option<EventLoop<WindowsLoopEvent>>,
+    /// Drop controllers/windows before environments and the event loop.
+    views: BTreeMap<u32, View>,
     /// One environment per engine: every webview shares its profile directory
     /// and browser process (`learn.microsoft.com`, `WebView2` process model).
     environment: ICoreWebView2Environment,
@@ -2178,13 +2184,16 @@ pub struct WebView2Engine {
     browser_exit_environment: Option<ICoreWebView2Environment5>,
     browser_exit_token: Option<i64>,
     expected_browser_pid: Arc<AtomicU32>,
-    views: BTreeMap<u32, View>,
     next_id: u32,
     pending_app_events: Option<Sender<AppWindowEvent>>,
     navigation_ready: Arc<AtomicBool>,
     navigation_failed: Arc<AtomicBool>,
     app_window_created: bool,
     saved_permissions_reconciled: bool,
+    /// Present until the run loop starts; consumed by `run_until_closed`.
+    event_loop: Option<EventLoop<WindowsLoopEvent>>,
+    /// Last field: all owned COM interfaces and windows drop before this count.
+    _com: ComSta,
 }
 
 impl fmt::Debug for WebView2Engine {
@@ -2211,12 +2220,13 @@ impl WebView2Engine {
     /// ever appears.
     pub fn new(selection: WebProfileSelection) -> Result<Self, WvError> {
         runtime_version()?;
-        let profile = prepare_profile_before_event_loop(&known_local_app_data()?, selection)?;
+        let (com, profile) =
+            prepare_profile_before_event_loop(&known_local_app_data()?, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_dpi_aware(false);
         let event_loop = builder.build();
         let environment = create_environment_for_profile(&profile)?;
-        Self::from_selected_environment(event_loop, environment, profile)
+        Self::from_selected_environment(com, event_loop, environment, profile)
     }
 
     /// Creates the explicit owner-private profile used by unsigned dev hosts.
@@ -2247,15 +2257,17 @@ impl WebView2Engine {
         // SAFETY: purge runs on its packaging process main thread and confines
         // any recovery probe COM objects to this STA.
         initialize_process_dpi_awareness()?;
-        initialize_com_sta()?;
+        let _com = initialize_com_sta()?;
         purge_persistent_profile_at(&known_local_app_data()?, identity, true)
     }
 
     fn from_environment(
+        com: ComSta,
         event_loop: EventLoop<WindowsLoopEvent>,
         environment: ICoreWebView2Environment,
     ) -> Self {
         Self {
+            _com: com,
             event_loop: Some(event_loop),
             environment,
             profile: None,
@@ -2274,6 +2286,7 @@ impl WebView2Engine {
     }
 
     fn from_selected_environment(
+        com: ComSta,
         event_loop: EventLoop<WindowsLoopEvent>,
         environment: ICoreWebView2Environment,
         profile: SelectedWindowsProfile,
@@ -2284,7 +2297,7 @@ impl WebView2Engine {
             Arc::clone(&expected_browser_pid),
             Some(event_loop.create_proxy()),
         )?;
-        let mut engine = Self::from_environment(event_loop, environment);
+        let mut engine = Self::from_environment(com, event_loop, environment);
         engine.profile = Some(profile);
         engine.browser_exit = Some(browser_exit.receiver);
         engine.browser_exit_environment = Some(browser_exit.environment);
@@ -2934,6 +2947,140 @@ mod tests {
                 assert!(msg.contains("Evergreen Runtime"), "missing fix in: {msg}");
             }
         }
+    }
+
+    fn run_com_lifetime_case(case: &str) {
+        use windows::Win32::System::Com::{
+            APTTYPE, APTTYPE_MTA, APTTYPEQUALIFIER, COINIT_MULTITHREADED, CoGetApartmentType,
+        };
+
+        fn apartment() -> windows::core::Result<APTTYPE> {
+            let mut kind = APTTYPE::default();
+            let mut qualifier = APTTYPEQUALIFIER::default();
+            // SAFETY: both outputs are writable and the query has no ownership effect.
+            // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-cogetapartmenttype
+            unsafe { CoGetApartmentType(&raw mut kind, &raw mut qualifier) }?;
+            Ok(kind)
+        }
+
+        fn assert_uninitialized() {
+            assert_eq!(
+                apartment()
+                    .expect_err("callee must release its COM reference")
+                    .code(),
+                windows::Win32::Foundation::CO_E_NOTINITIALIZED,
+            );
+        }
+
+        assert_uninitialized();
+        let caller = match case {
+            "control" | "purge-sta" | "initialize-sta" => Some(super::COINIT_APARTMENTTHREADED),
+            "purge-mta" => Some(COINIT_MULTITHREADED),
+            _ => None,
+        };
+        if let Some(mode) = caller {
+            // SAFETY: this fresh child owns one explicit initialization, balanced below.
+            // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex
+            unsafe { super::CoInitializeEx(None, mode) }
+                .ok()
+                .expect("caller COM");
+        }
+        let before = apartment();
+        if case.starts_with("initialize-") {
+            let com = initialize_com_sta().expect("owned initialization");
+            assert!(apartment().is_ok(), "owned reference must initialize COM");
+            drop(com);
+        } else if case == "preflight-error" {
+            let absent =
+                std::env::temp_dir().join(format!("keld-com-absent-{}", std::process::id()));
+            assert!(!absent.exists());
+            let selection = crate::profile::WebProfileSelection::Persistent(
+                crate::profile::ProfileIdentity::from_host_verified_parts(
+                    [91; 32],
+                    "dev.keld.com-preflight-test",
+                )
+                .expect("synthetic test identity"),
+            );
+            assert!(super::prepare_profile_before_event_loop(&absent, selection).is_err());
+        } else if case != "control" {
+            let identity = crate::profile::ProfileIdentity::from_host_verified_parts(
+                [92; 32],
+                &format!("dev.keld.com-purge-test-{}", std::process::id()),
+            )
+            .expect("synthetic absent identity");
+            let plan = super::windows_profile_plan(
+                &super::known_local_app_data().expect("known folder"),
+                crate::profile::WebProfileSelection::Persistent(identity),
+            )
+            .expect("synthetic plan");
+            assert!(
+                !plan.control_dir.exists(),
+                "probe must not purge existing data"
+            );
+            assert!(super::WebView2Engine::purge_persistent_profile(identity).is_err());
+        }
+        println!(
+            "KELD_COM case={case} before={before:?} after={:?}",
+            apartment()
+        );
+        if caller.is_some() {
+            assert_eq!(
+                apartment().expect("caller reference remains"),
+                before.expect("caller")
+            );
+            if case == "purge-mta" {
+                assert_eq!(apartment().expect("MTA remains"), APTTYPE_MTA);
+            }
+            // SAFETY: balances only the successful explicit caller initialization above.
+            // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-couninitialize
+            unsafe { super::CoUninitialize() };
+        }
+        assert_uninitialized();
+        println!("KELD_COM balanced case={case}");
+    }
+
+    #[test]
+    fn com_lifetime_subprocess() {
+        const CHILD: &str = "KELD_COM_LIFETIME_CASE";
+        if let Ok(case) = std::env::var(CHILD) {
+            run_com_lifetime_case(&case);
+            return;
+        }
+
+        let mut failed = Vec::new();
+        for case in [
+            "control",
+            "initialize-fresh",
+            "initialize-sta",
+            "purge-uninitialized",
+            "purge-sta",
+            "purge-mta",
+            "preflight-error",
+        ] {
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([
+                        "--exact",
+                        "webview2::tests::com_lifetime_subprocess",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, case)
+                    .output()
+                    .expect("fresh COM subprocess");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!(
+                "KELD_COM child={case} exit={}\n{stdout}\n{stderr}",
+                output.status
+            );
+            if !output.status.success()
+                || !stdout.contains(&format!("KELD_COM balanced case={case}"))
+                || stderr.contains("panicked")
+            {
+                failed.push(case);
+            }
+        }
+        assert!(failed.is_empty(), "COM lifetime failures: {failed:?}");
     }
 
     #[test]
