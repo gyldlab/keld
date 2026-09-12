@@ -3104,8 +3104,7 @@ mod tests {
 
     #[test]
     fn native_profile_lease_and_handles_prevent_alias_and_reuse() {
-        let root = unique_test_root("lease");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("lease");
         let identity = ProfileIdentity::from_host_verified_parts([9; 32], "dev.keld.native-lease")
             .expect("identity");
         let selection = WebProfileSelection::Persistent(identity);
@@ -3129,8 +3128,7 @@ mod tests {
 
     #[test]
     fn aliased_control_file_is_rejected_before_lock_or_record_use() {
-        let root = unique_test_root("control-alias");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("control-alias");
         let identity = ProfileIdentity::from_host_verified_parts([11; 32], "dev.keld.alias")
             .expect("identity");
         let plan =
@@ -3151,8 +3149,7 @@ mod tests {
 
     #[test]
     fn dead_persistent_owner_is_durably_quarantined_before_recovery() {
-        let root = unique_test_root("lifecycle");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("lifecycle");
         let identity = ProfileIdentity::from_host_verified_parts([12; 32], "dev.keld.lifecycle")
             .expect("identity");
         let selection = WebProfileSelection::Persistent(identity);
@@ -3190,8 +3187,7 @@ mod tests {
 
     #[test]
     fn persistent_purge_is_resumable_and_preserves_control_state() {
-        let root = unique_test_root("purge");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("purge");
         let identity = ProfileIdentity::from_host_verified_parts([16; 32], "dev.keld.purge")
             .expect("identity");
         let selection = WebProfileSelection::Persistent(identity);
@@ -3223,8 +3219,7 @@ mod tests {
 
     #[test]
     fn purge_intent_precedes_recovery_and_blocks_normal_startup() {
-        let root = unique_test_root("purge-recovery-order");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("purge-recovery-order");
         let identity =
             ProfileIdentity::from_host_verified_parts([20; 32], "dev.keld.purge-recovery")
                 .expect("identity");
@@ -3261,8 +3256,7 @@ mod tests {
 
     #[test]
     fn scavenger_deletes_only_marker_validated_inactive_leaf() {
-        let root = unique_test_root("scavenge");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("scavenge");
         let profile = EphemeralProfile::from_host_random([17; 32]).expect("ephemeral");
         let plan =
             windows_profile_plan(&root, WebProfileSelection::ephemeral_dev(profile)).expect("plan");
@@ -3322,10 +3316,8 @@ mod tests {
 
     #[test]
     fn reparse_ancestor_is_rejected_before_profile_creation() {
-        let root = unique_test_root("reparse");
-        let outside = unique_test_root("reparse-outside");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
-        std::fs::create_dir_all(&outside).expect("create reparse target");
+        let root = create_private_test_root("reparse");
+        let outside = create_private_test_root("reparse-outside");
         let junction = std::process::Command::new("cmd.exe")
             .args(["/d", "/c", "mklink", "/J"])
             .arg(root.join("Keld"))
@@ -3349,8 +3341,7 @@ mod tests {
 
     #[test]
     fn dev_nonce_leaf_is_create_once_even_after_release() {
-        let root = unique_test_root("ephemeral");
-        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let root = create_private_test_root("ephemeral");
         let first = EphemeralProfile::from_host_random([3; 32]).expect("first nonce");
         let selected = prepare_windows_profile_at(&root, WebProfileSelection::ephemeral_dev(first))
             .expect("first dev profile");
@@ -3363,7 +3354,7 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("remove test root");
     }
 
-    fn unique_test_root(label: &str) -> std::path::PathBuf {
+    fn create_private_test_root(label: &str) -> std::path::PathBuf {
         use std::fmt::Write as _;
 
         let mut nonce = [0_u8; 16];
@@ -3372,11 +3363,28 @@ mod tests {
         for byte in nonce {
             write!(&mut suffix, "{byte:02x}").expect("write test suffix");
         }
-        super::known_local_app_data()
+        let root = super::known_local_app_data()
             .expect("resolve test LocalAppData")
             .join("Keld")
             .join("test-fixtures")
-            .join(format!("keld-profile-{label}-{suffix}"))
+            .join(format!("keld-profile-{label}-{suffix}"));
+        std::fs::create_dir_all(&root).expect("create test LocalAppData");
+        let current_sid = super::current_process_sid()
+            .expect("resolve test process SID")
+            .to_string();
+        let grant = format!("*{current_sid}:(OI)(CI)F");
+        let output = std::process::Command::new("icacls.exe")
+            .arg(&root)
+            .args(["/inheritance:r", "/grant:r"])
+            .arg(grant)
+            .output()
+            .expect("run owner-private DACL fixture command");
+        assert!(
+            output.status.success(),
+            "set owner-private fixture DACL: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        root
     }
 
     /// KEL-66: the environment options this backend ships must not carry
