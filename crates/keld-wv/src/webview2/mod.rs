@@ -2021,6 +2021,14 @@ impl ProfileReleaseWait {
         if self.observed.get() {
             return;
         }
+        if self
+            .deadline
+            .get()
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.failed.set(true);
+            return;
+        }
         let Some(receiver) = self.receiver.as_ref() else {
             self.observed.set(true);
             return;
@@ -2032,14 +2040,6 @@ impl ProfileReleaseWait {
                 self.observed.set(true);
             }
             Err(TryRecvError::Empty) => {}
-        }
-        if !self.observed.get()
-            && self
-                .deadline
-                .get()
-                .is_some_and(|deadline| Instant::now() >= deadline)
-        {
-            self.failed.set(true);
         }
     }
 
@@ -2947,6 +2947,23 @@ mod tests {
         release.poll();
         assert!(release.failed.get());
         assert!(!release.observed.get());
+
+        let (sender, receiver) = std::sync::mpsc::channel::<Result<(), WvError>>();
+        let ready = ProfileReleaseWait::with_timeout(Some(receiver), std::time::Duration::ZERO);
+        ready.arm();
+        sender.send(Ok(())).expect("queue late success");
+        ready.poll();
+        assert!(ready.failed.get());
+        assert!(!ready.observed.get());
+        assert!(
+            ready
+                .receiver
+                .as_ref()
+                .expect("receiver")
+                .try_recv()
+                .is_ok(),
+            "expired result must remain unconsumed"
+        );
     }
 
     #[test]
