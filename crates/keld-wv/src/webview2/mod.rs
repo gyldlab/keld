@@ -2949,6 +2949,34 @@ mod tests {
         }
     }
 
+    /// Shared process kill switch for native COM and media fixture children.
+    pub(super) fn run_with_watchdog<T>(
+        deadline: std::time::Duration,
+        work: impl FnOnce() -> Result<T, WvError>,
+    ) -> Result<T, WvError> {
+        use std::io::Write as _;
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if done_rx.recv_timeout(deadline) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                // Disposable native test process: the deadline bounds nested
+                // COM creation/cleanup pumps, unlike a consumed WM_QUIT.
+                // Keep the existing media harness's diagnostic/exit contract.
+                eprintln!(
+                    "KELD_MEDIA_TIMEOUT: fixture exceeded {} seconds; inspect any KELD_MEDIA_PROFILE receipt",
+                    deadline.as_secs_f64()
+                );
+                let _ = std::io::stderr().flush();
+                std::process::exit(124);
+            }
+        });
+        let result = work();
+        let _ = done_tx.send(());
+        watchdog
+            .join()
+            .map_err(|_| WvError::Webview(String::from("native fixture watchdog panicked")))?;
+        result
+    }
+
     fn run_com_lifetime_case(case: &str) {
         use windows::Win32::System::Com::{
             APTTYPE, APTTYPE_MTA, APTTYPEQUALIFIER, COINIT_MULTITHREADED, CoGetApartmentType,
@@ -3043,13 +3071,29 @@ mod tests {
     fn com_lifetime_subprocess() {
         const CHILD: &str = "KELD_COM_LIFETIME_CASE";
         if let Ok(case) = std::env::var(CHILD) {
-            run_com_lifetime_case(&case);
+            let deadline = if case == "watchdog-probe" {
+                std::time::Duration::from_millis(100)
+            } else {
+                std::time::Duration::from_secs(30)
+            };
+            run_with_watchdog(deadline, || {
+                if case == "watchdog-probe" {
+                    let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+                    receiver
+                        .recv()
+                        .expect("watchdog must terminate blocked child");
+                }
+                run_com_lifetime_case(&case);
+                Ok(())
+            })
+            .expect("bounded native COM case");
             return;
         }
 
         let mut failed = Vec::new();
         for case in [
             "control",
+            "watchdog-probe",
             "initialize-fresh",
             "initialize-sta",
             "purge-uninitialized",
@@ -3073,10 +3117,14 @@ mod tests {
                 "KELD_COM child={case} exit={}\n{stdout}\n{stderr}",
                 output.status
             );
-            if !output.status.success()
-                || !stdout.contains(&format!("KELD_COM balanced case={case}"))
-                || stderr.contains("panicked")
-            {
+            let passed = if case == "watchdog-probe" {
+                output.status.code() == Some(124) && stderr.contains("KELD_MEDIA_TIMEOUT")
+            } else {
+                output.status.success()
+                    && stdout.contains(&format!("KELD_COM balanced case={case}"))
+                    && !stderr.contains("panicked")
+            };
+            if !passed {
                 failed.push(case);
             }
         }
