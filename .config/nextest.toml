@@ -50,6 +50,13 @@ max-threads = 1
 filter = "binary(linux_strict_boundary)"
 test-group = "linux-strict-boundary"
 
+# KEL-185's temporary hosted-entrypoint probe must publish its validated,
+# redacted identity record even when the diagnostic test passes. This is one
+# named test only; the stock lifecycle acceptance rows keep default output.
+[[profile.ci.overrides]]
+filter = "binary(bun_echo) & test(created_template_entrypoint_identity_precedes_the_main_guard)"
+success-output = "immediate"
+
 # These rows each own a real Wayland/WebKitGTK app session plus a strict Bun
 # process tree. The product does not require independent test processes to
 # contend for one desktop compositor. Preserve every deadline and assertion,

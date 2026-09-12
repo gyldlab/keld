@@ -358,7 +358,9 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
  * fragmented max-size frame.
  *
  * One in-flight `readFrame()` only. A second call while a waiter is set is
- * `KELD-IPC-005`; it must not overwrite the waiter.
+ * `KELD-IPC-005`; it must not overwrite the waiter. An idle waiter has no
+ * deadline; its first buffered byte starts one absolute frame deadline that
+ * later chunks cannot renew.
  */
 const CHUNK_COMPACT_THRESHOLD = 1024;
 
@@ -367,12 +369,17 @@ export const MAX_PENDING_CHUNKS = 65_536;
 
 export class FrameReader {
   #chunks: Array<Uint8Array | undefined> = [];
+  #chunkArrivals: Array<number | undefined> = [];
   #chunkIndex = 0;
   #head = 0;
   #length = 0;
+  #censusChunkIndex = 0;
+  #censusOffset = 0;
+  #censusBytes = 0;
   #pending: { resolve: (f: DecodedFrame) => void; reject: (e: Error) => void } | null = null;
   #closed = false;
   #closeError: Error | null = null;
+  #frameDeadline: ReturnType<typeof setTimeout> | undefined;
 
   /** Unread buffered bytes. Independent of how many socket chunks carried them. */
   bufferedBytes(): number {
@@ -388,12 +395,15 @@ export class FrameReader {
   }
 
   push(chunk: Uint8Array): void {
+    const arrivedAt = performance.now();
     if (this.#closed || chunk.byteLength === 0) return;
     // Bun documents the callback value's type but not a retain-after-callback
     // lifetime. Own each queued chunk so a reused/mutated producer buffer
     // cannot rewrite a partially received frame after `push` returns.
     this.#chunks.push(new Uint8Array(chunk));
+    this.#chunkArrivals.push(arrivedAt);
     this.#length += chunk.byteLength;
+    this.#ensureFrameDeadline();
     this.#tryResolve();
     if (!this.#closed && this.#length > HEADER_LEN + MAX_FRAME_LEN) {
       this.fail(
@@ -414,12 +424,17 @@ export class FrameReader {
   }
 
   fail(err: Error): void {
+    this.#clearFrameDeadline();
     this.#closed = true;
     this.#closeError = err;
     this.#chunks = [];
+    this.#chunkArrivals = [];
     this.#chunkIndex = 0;
     this.#head = 0;
     this.#length = 0;
+    this.#censusChunkIndex = 0;
+    this.#censusOffset = 0;
+    this.#censusBytes = 0;
     const pending = this.#pending;
     this.#pending = null;
     pending?.reject(err);
@@ -432,9 +447,7 @@ export class FrameReader {
     let offset = this.#head;
     while (written < n) {
       const chunk = this.#chunks[idx];
-      if (chunk === undefined) {
-        throw kipcError("KELD-IPC-001", "frame reader underrun");
-      }
+      if (chunk === undefined) throw kipcError("KELD-IPC-001", "frame reader underrun");
       const take = Math.min(chunk.byteLength - offset, n - written);
       out.set(chunk.subarray(offset, offset + take), written);
       written += take;
@@ -444,7 +457,27 @@ export class FrameReader {
     return out;
   }
 
+  #arrivalAt(skip: number): number {
+    let idx = this.#chunkIndex;
+    let offset = this.#head;
+    let leftToSkip = skip;
+    while (true) {
+      const chunk = this.#chunks[idx];
+      const arrival = this.#chunkArrivals[idx];
+      if (chunk === undefined || arrival === undefined) {
+        throw kipcError("KELD-IPC-001", "frame reader arrival underrun");
+      }
+      const available = chunk.byteLength - offset;
+      if (leftToSkip < available) return arrival;
+      leftToSkip -= available;
+      idx += 1;
+      offset = 0;
+    }
+  }
+
   #consume(n: number): void {
+    const resetCensus = n > this.#censusBytes;
+    this.#censusBytes = Math.max(0, this.#censusBytes - n);
     let left = n;
     this.#length -= n;
     while (left > 0) {
@@ -455,35 +488,53 @@ export class FrameReader {
       const avail = chunk.byteLength - this.#head;
       if (left < avail) {
         this.#head += left;
-        return;
+        left = 0;
+        break;
       }
       left -= avail;
       // Release consumed bytes immediately and advance the logical queue head
       // without relying on Array.shift() reindexing behavior.
       this.#chunks[this.#chunkIndex] = undefined;
+      this.#chunkArrivals[this.#chunkIndex] = undefined;
       this.#chunkIndex += 1;
       this.#head = 0;
     }
     this.#compactChunks();
+    if (resetCensus) {
+      this.#censusChunkIndex = this.#chunkIndex;
+      this.#censusOffset = this.#head;
+    }
   }
 
   #compactChunks(): void {
     if (this.#chunkIndex === this.#chunks.length) {
       this.#chunks = [];
+      this.#chunkArrivals = [];
       this.#chunkIndex = 0;
+      this.#censusChunkIndex = 0;
+      this.#censusOffset = 0;
       return;
     }
     if (
       this.#chunkIndex >= CHUNK_COMPACT_THRESHOLD &&
       this.#chunkIndex * 2 >= this.#chunks.length
     ) {
+      const removed = this.#chunkIndex;
       this.#chunks = this.#chunks.slice(this.#chunkIndex);
+      this.#chunkArrivals = this.#chunkArrivals.slice(this.#chunkIndex);
+      this.#censusChunkIndex -= removed;
       this.#chunkIndex = 0;
     }
   }
 
   #tryResolve(): void {
     if (!this.#pending || this.#length < HEADER_LEN) return;
+    const startedAt = this.#arrivalAt(0);
+    const headerCompletedAt = this.#arrivalAt(HEADER_LEN - 1);
+    if (headerCompletedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
+      this.fail(ioDeadlineExceeded());
+      return;
+    }
     let header: FrameHeader;
     try {
       header = decodeHeader(this.#copyOut(HEADER_LEN));
@@ -497,9 +548,21 @@ export class FrameReader {
     }
     const total = HEADER_LEN + header.len;
     if (this.#length < total) return;
+    const completedAt = this.#arrivalAt(total - 1);
+    if (completedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
+      this.fail(
+        kipcError(
+          "KELD-IPC-006",
+          "started app-link frame did not finish within the I/O deadline",
+        ),
+      );
+      return;
+    }
     this.#consume(HEADER_LEN);
     const payload = header.len === 0 ? new Uint8Array(0) : this.#copyOut(header.len);
     if (header.len > 0) this.#consume(header.len);
+    this.#clearFrameDeadline();
+    this.#ensureFrameDeadline();
     const pending = this.#pending;
     this.#pending = null;
     pending?.resolve({ header, payload });
@@ -519,8 +582,114 @@ export class FrameReader {
     }
     return new Promise((resolve, reject) => {
       this.#pending = { resolve, reject };
+      this.#ensureFrameDeadline();
       this.#tryResolve();
     });
+  }
+
+  #ensureFrameDeadline(): void {
+    if (this.#censusBytes >= this.#length || this.#frameDeadline !== undefined) return;
+    this.#scheduleFrameDeadline(this.#censusArrival());
+  }
+
+  #censusArrival(): number {
+    const value = this.#chunkArrivals[this.#censusChunkIndex];
+    if (value === undefined) {
+      throw kipcError("KELD-IPC-001", "frame reader deadline census underrun");
+    }
+    return value;
+  }
+
+  #scheduleFrameDeadline(startedAt: number): void {
+    if (this.#frameDeadline !== undefined) return;
+    const remaining = Math.max(0, startedAt + APP_LINK_IO_DEADLINE_MS - performance.now());
+    this.#frameDeadline = setTimeout(() => {
+      this.#frameDeadline = undefined;
+      let incompleteStartedAt: number | undefined;
+      try {
+        incompleteStartedAt = this.#incompleteFrameStartedAt();
+      } catch (err) {
+        this.fail(err instanceof Error ? err : kipcError("KELD-IPC-002", String(err)));
+        return;
+      }
+      if (incompleteStartedAt === undefined) return;
+      if (performance.now() < incompleteStartedAt + APP_LINK_IO_DEADLINE_MS) {
+        this.#scheduleFrameDeadline(incompleteStartedAt);
+        return;
+      }
+      this.fail(
+        kipcError(
+          "KELD-IPC-006",
+          "started app-link frame did not finish within the I/O deadline",
+        ),
+      );
+    }, remaining);
+  }
+
+  #incompleteFrameStartedAt(): number | undefined {
+    let idx = this.#censusChunkIndex;
+    let chunkOffset = this.#censusOffset;
+    let remaining = this.#length - this.#censusBytes;
+
+    const currentArrival = (): number => {
+      const value = this.#chunkArrivals[idx];
+      if (value === undefined) {
+        throw kipcError("KELD-IPC-001", "frame reader deadline census underrun");
+      }
+      return value;
+    };
+
+    const advance = (n: number, copy?: Uint8Array): number => {
+      let left = n;
+      let written = 0;
+      let lastArrival = currentArrival();
+      while (left > 0) {
+        const chunk = this.#chunks[idx];
+        const arrival = this.#chunkArrivals[idx];
+        if (chunk === undefined || arrival === undefined) {
+          throw kipcError("KELD-IPC-001", "frame reader deadline census underrun");
+        }
+        lastArrival = arrival;
+        const take = Math.min(chunk.byteLength - chunkOffset, left);
+        copy?.set(chunk.subarray(chunkOffset, chunkOffset + take), written);
+        written += take;
+        left -= take;
+        chunkOffset += take;
+        if (chunkOffset === chunk.byteLength) {
+          idx += 1;
+          chunkOffset = 0;
+        }
+      }
+      remaining -= n;
+      return lastArrival;
+    };
+
+    const encodedHeader = new Uint8Array(HEADER_LEN);
+    while (remaining > 0) {
+      const startedAt = currentArrival();
+      if (remaining < HEADER_LEN) return startedAt;
+      const headerCompletedAt = advance(HEADER_LEN, encodedHeader);
+      if (headerCompletedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
+        throw ioDeadlineExceeded();
+      }
+      const header = decodeHeader(encodedHeader);
+      if (header.len > MAX_FRAME_LEN) throw payloadTooLarge();
+      if (remaining < header.len) return startedAt;
+      const completedAt = header.len === 0 ? headerCompletedAt : advance(header.len);
+      if (completedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
+        throw ioDeadlineExceeded();
+      }
+      this.#censusChunkIndex = idx;
+      this.#censusOffset = chunkOffset;
+      this.#censusBytes += HEADER_LEN + header.len;
+    }
+    return undefined;
+  }
+
+  #clearFrameDeadline(): void {
+    if (this.#frameDeadline === undefined) return;
+    clearTimeout(this.#frameDeadline);
+    this.#frameDeadline = undefined;
   }
 }
 

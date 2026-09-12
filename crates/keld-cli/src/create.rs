@@ -297,8 +297,16 @@ mod tests {
             "{main}"
         );
         assert!(
-            main.contains("await new Promise(() => {})"),
-            "KEL-30: stay alive for host window duration: {main}"
+            main.contains("await quitAfterLastWindowClosed(session)"),
+            "KEL-185: stock app must consume LastWindowClosed on its app-link: {main}"
+        );
+        assert!(
+            main.contains("session.receive(lifecycleReplyWaiter(corr))"),
+            "KEL-185: stock app must await the correlated Quit Reply: {main}"
+        );
+        assert!(
+            !main.contains("await new Promise(() => {})"),
+            "KEL-185: stock app must not park forever after echo: {main}"
         );
         assert!(!main.contains("{{name}}"), "{main}");
 

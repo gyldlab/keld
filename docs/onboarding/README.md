@@ -26,7 +26,7 @@ wrapper or packaged application release to install yet.
   |---|---|
   | macOS | Apple command-line developer tools (`xcode-select --install` if absent); WKWebView is supplied by macOS |
   | Windows | Rust's MSVC build tools and the WebView2 runtime; use an interactive PowerShell session for the qualified `dev`/Ctrl-C path; stock native Close remains incomplete |
-  | Ubuntu/Debian x86_64, Wayland | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; stock native Close currently fails, and X11 product runs and other distributions remain unverified |
+  | Ubuntu/Debian x86_64, Wayland | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; native Close/cleanup/relaunch qualified on Ubuntu 26.04.1 / GNOME Wayland; X11 product runs and other distributions remain unverified |
 
 The Ubuntu build packages are recorded in the [CI workflow](../../.github/workflows/ci.yml).
 A desktop session and the required Linux containment primitives are separate from
@@ -108,7 +108,8 @@ one. Expected behavior:
    project checks.
 2. `dev` opens a native window titled `hello-keld`. Its content says that IPC echo runs
    in the Bun main process.
-3. After inspecting the demo, Ctrl-C requests shutdown. Captured Bun output is
+3. After inspecting the demo, use native Close on the qualified Ubuntu environment
+   above; Ctrl-C remains a separate interrupt-shutdown path. Captured Bun output is
    forwarded at shutdown; do not wait for these lines while the window is open:
 
    ```text
@@ -117,18 +118,25 @@ one. Expected behavior:
    ```
 
 4. Check that the host/Bun session and its nonce directory under `.keld/dev` are gone
-   before a new run. The linked Windows and Ubuntu public records observed Ctrl-C
-   cleanup; it is a separate acceptance case from native window Close.
+   before a new run. The linked Windows and Ubuntu quick-start records observed Ctrl-C
+   cleanup; see [qualified native-Close evidence](#qualified-linux-native-close-evidence)
+   for the separate normal-close path.
 
-**Normal-close acceptance is currently incomplete.** The
+### Qualified Linux native Close evidence
+
+The historical
 [public Ubuntu/Wayland failure record](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
 reports that clicking the stock app's Close button removed the renderer but left CLI,
 host, Bun, and the launch stage alive beyond an independent 20-second observation.
 The later [Ubuntu quick-start refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
-verified Ctrl-C cleanup and relaunch but did not retry native Close. The
-[lifecycle issue](https://github.com/gyldlab/keld/issues/176) tracks the stock-app
-correction and its required native-close regression. No public Mac device record is
-cited here, so macOS native Close remains unverified. The
+verified Ctrl-C cleanup and relaunch but did not retry native Close. The stock-app
+correction is in [PR #228](https://github.com/gyldlab/keld/pull/228). Two untouched stock
+runs on its source `a843b32` passed native Close, cleanup, and relaunch on Ubuntu
+26.04.1 x86_64 with GNOME 50.1 Wayland, Bun 1.4.2, and WebKitGTK 2.52.6. Both CLI
+processes exited 0; 20 observed process identities exited, two distinct launch stages
+were absent, and no forced cleanup was used. This evidence qualifies that source and
+environment only. No public Mac device record is cited here, so macOS native Close
+remains unverified. The
 [final-source Windows run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
 also leaves stock native Close incomplete; its passing Ctrl-C result does not replace it.
 
