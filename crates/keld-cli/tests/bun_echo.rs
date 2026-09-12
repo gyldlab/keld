@@ -2,6 +2,7 @@
 
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -195,16 +196,33 @@ fn send_ready_then_reply_to_stock_echo<S: Read + Write>(stream: &mut S) -> Corre
 }
 
 fn spawn_generated_main(project: &Path, link: &str) -> ObservedChild {
-    let project = std::fs::canonicalize(project).expect("canonical generated project");
+    spawn_generated_main_with(project, link, OsStr::new("bun"), false)
+}
+
+fn spawn_generated_main_with(
+    project: &Path,
+    link: &str,
+    executable: &OsStr,
+    preserve_input_spelling: bool,
+) -> ObservedChild {
+    let project = if preserve_input_spelling {
+        project.to_path_buf()
+    } else {
+        std::fs::canonicalize(project).expect("canonical generated project")
+    };
     let main = project.join("src/main.ts");
-    spawn_observed(
-        Command::new("bun")
-            .arg("run")
-            .arg(&main)
-            .current_dir(&project)
-            .env("KELD_APP_LINK", link),
-        &project,
-    )
+    let mut command = Command::new(executable);
+    command
+        .arg("run")
+        .arg(&main)
+        .current_dir(&project)
+        .env("KELD_APP_LINK", link);
+    if preserve_input_spelling {
+        command
+            .env("KELD185_LAUNCH_MAIN", &main)
+            .env("KELD185_LAUNCH_CWD", &project);
+    }
+    spawn_observed(&mut command, &project)
 }
 
 fn add_entrypoint_diagnostic(project: &Path) {
@@ -218,6 +236,8 @@ fn add_entrypoint_diagnostic(project: &Path) {
   pid: process.pid,
   cwd: process.cwd(),
   argv: process.argv,
+  launchMain: process.env.KELD185_LAUNCH_MAIN,
+  launchCwd: process.env.KELD185_LAUNCH_CWD,
   importMetaMain: import.meta.main,
   importMetaPath: import.meta.path,
   keldAppLinkPresent: typeof process.env.KELD_APP_LINK === "string" && process.env.KELD_APP_LINK.length > 0,
@@ -246,7 +266,7 @@ fn capture_entrypoint_identity(project: &Path) -> (Output, Result<(), String>, s
     let admission_deadline = Instant::now() + Duration::from_secs(2);
     let server =
         thread::spawn(move || accept_generated_main(&listener, admission_deadline).map(|_| ()));
-    let child = spawn_generated_main(project, &link);
+    let child = spawn_generated_main_with(project, &link, OsStr::new("bun"), true);
     let output = wait_for_output(child, Duration::from_secs(4)).expect("bounded diagnostic child");
     let admission = server.join().expect("diagnostic server thread");
 
@@ -481,6 +501,17 @@ fn created_template_entrypoint_matches_through_a_short_path_alias() {
             "{label} identity={record}; child {}",
             output_diagnostics(&output)
         );
+        let expected_main = path.join("src/main.ts");
+        assert_eq!(
+            record["launchMain"],
+            expected_main.to_string_lossy().as_ref(),
+            "{label} diagnostic must retain the supplied argv spelling: {evidence}"
+        );
+        assert_eq!(
+            record["launchCwd"],
+            path.to_string_lossy().as_ref(),
+            "{label} diagnostic must retain the supplied cwd spelling: {evidence}"
+        );
         assert_eq!(record["importMetaMain"], true, "{evidence}");
         assert_eq!(record["bunMain"], record["importMetaPath"], "{evidence}");
         assert!(
@@ -489,6 +520,68 @@ fn created_template_entrypoint_matches_through_a_short_path_alias() {
             admission.as_ref().expect_err("admission failure asserted")
         );
     }
+}
+
+/// The command child observes argv and launch metadata independently of the
+/// helper's implementation. This lexical spelling control is CI plumbing only;
+/// it does not simulate or claim a Windows 8.3 alias.
+#[cfg(unix)]
+#[test]
+fn generated_main_launch_preserves_supplied_path_spelling() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app").join("..").join("app");
+    let canonical = std::fs::canonicalize(&project).expect("canonical generated project");
+    assert_ne!(project, canonical, "control spelling must be distinct");
+
+    let recorder = dir.path().join("record-bun");
+    std::fs::write(
+        &recorder,
+        "#!/bin/sh\nprintf 'main=%s\\n' \"$2\"\nprintf 'launch_main=%s\\n' \"$KELD185_LAUNCH_MAIN\"\nprintf 'launch_cwd=%s\\n' \"$KELD185_LAUNCH_CWD\"\nprintf 'runtime_cwd=%s\\n' \"$(pwd -P)\"\n",
+    )
+    .expect("write process-boundary recorder");
+    let mut permissions = std::fs::metadata(&recorder)
+        .expect("recorder metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&recorder, permissions).expect("make recorder executable");
+
+    let output = spawn_generated_main_with(&project, "unused-app-link", recorder.as_os_str(), true)
+        .wait_for_output(Duration::from_secs(2))
+        .expect("bounded command recorder");
+    assert!(output.status.success(), "recorder failed: {output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("recorder stdout is UTF-8");
+    let expected_main = project.join("src/main.ts");
+    let expected_main_line = format!("main={}", expected_main.display());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == expected_main_line.as_str()),
+        "actual child argv lost the supplied entry spelling: {stdout}"
+    );
+    let expected_launch_main_line = format!("launch_main={}", expected_main.display());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == expected_launch_main_line.as_str()),
+        "diagnostic launch entry input lost the supplied spelling: {stdout}"
+    );
+    let expected_launch_cwd_line = format!("launch_cwd={}", project.display());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == expected_launch_cwd_line.as_str()),
+        "diagnostic launch cwd input lost the supplied spelling: {stdout}"
+    );
+    let expected_runtime_cwd_line = format!("runtime_cwd={}", canonical.display());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == expected_runtime_cwd_line.as_str()),
+        "runtime cwd should report the normalized directory identity: {stdout}"
+    );
 }
 
 #[test]
