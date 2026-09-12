@@ -1477,8 +1477,8 @@ pub enum ProfileLifecycleAction {
 ///
 /// # Errors
 ///
-/// Returns `KELD-WV-009` for a live owner, unknown liveness, malformed idle
-/// state, or same-boot quarantine.
+/// Returns `KELD-WV-009` for a live owner, same-boot unknown liveness,
+/// malformed idle state, or same-boot quarantine.
 pub fn next_lifecycle_action(
     record: ProfileLifecycleRecord,
     process: RecordedProcessObservation,
@@ -1493,6 +1493,13 @@ pub fn next_lifecycle_action(
         }
         ProfileLifecyclePhase::Quarantined => {
             Err(ProfileError::new(ProfileErrorKind::LifecycleUnproven))
+        }
+        ProfileLifecyclePhase::Starting
+        | ProfileLifecyclePhase::Running
+        | ProfileLifecyclePhase::Stopping
+            if record.boot_identity != current_boot =>
+        {
+            Ok(ProfileLifecycleAction::WriteQuarantined)
         }
         ProfileLifecyclePhase::Starting
         | ProfileLifecyclePhase::Running
@@ -2113,6 +2120,46 @@ mod tests {
         assert!(ProfileLifecycleRecord::from_record_bytes(zero_pid.as_bytes()).is_err());
         let nested_unknown = starting_text.replace("\"pid\":42", "\"pid\":42,\"extra\":0");
         assert!(ProfileLifecycleRecord::from_record_bytes(nested_unknown.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn changed_boot_quarantines_each_non_idle_phase_before_liveness() {
+        let old_boot = BootIdentity::from_host_verified_bytes([5; 16]).expect("old boot");
+        let new_boot = BootIdentity::from_host_verified_bytes([6; 16]).expect("new boot");
+        let owner = ProfileProcessIdentity::from_host_observation(51, 900).expect("process");
+        let starting = ProfileLifecycleRecord::idle(old_boot)
+            .begin_startup(owner)
+            .expect("starting");
+        let running = starting
+            .advance(ProfileLifecyclePhase::Running)
+            .expect("running");
+        let stopping = running
+            .advance(ProfileLifecyclePhase::Stopping)
+            .expect("stopping");
+
+        for record in [starting, running, stopping] {
+            assert_eq!(
+                next_lifecycle_action(record, RecordedProcessObservation::Unknown, new_boot),
+                Ok(ProfileLifecycleAction::WriteQuarantined),
+                "a changed boot proves the old non-idle process cannot survive"
+            );
+            let same_boot =
+                next_lifecycle_action(record, RecordedProcessObservation::Unknown, old_boot)
+                    .expect_err("same-boot unknown liveness must fail closed");
+            assert_eq!(same_boot.kind(), ProfileErrorKind::LifecycleUnproven);
+
+            let quarantined = record
+                .quarantine()
+                .expect("preserve old boot in quarantine");
+            assert_eq!(
+                next_lifecycle_action(quarantined, RecordedProcessObservation::Unknown, new_boot,),
+                Ok(ProfileLifecycleAction::RestoreIdleAfterBoot)
+            );
+            let blocked =
+                next_lifecycle_action(quarantined, RecordedProcessObservation::Unknown, old_boot)
+                    .expect_err("equal-boot quarantine remains blocked");
+            assert_eq!(blocked.kind(), ProfileErrorKind::LifecycleUnproven);
+        }
     }
 
     #[test]
