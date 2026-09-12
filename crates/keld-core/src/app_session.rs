@@ -3092,13 +3092,9 @@ impl PrimaryRouterHandle {
     }
 
     fn signal_last_window_closed(&self) -> Result<(), HostAppError> {
-        self.last_window_closed.store(true, Ordering::Release);
-        self.write_event(LifecycleEvent::LastWindowClosed)
-    }
-
-    fn write_event(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
         let _transition = self.shutdown.transition_guard();
-        self.write_event_guarded(event)
+        self.last_window_closed.store(true, Ordering::Release);
+        self.write_event_guarded(LifecycleEvent::LastWindowClosed)
     }
 
     // Caller retains shutdown.transition through the write and any admission
@@ -3270,6 +3266,16 @@ impl PrimaryRouterHandle {
                 attempt,
                 writer: writer_stream,
             });
+            drop(current);
+            // Publication and retained replay are one transition with live
+            // window delivery. Start the reader only after replay, so a call
+            // cannot overtake Ready or observe the same Close via both paths.
+            if self.window_ready.load(Ordering::Acquire) {
+                self.write_event_guarded(LifecycleEvent::Ready)?;
+            }
+            if self.last_window_closed.load(Ordering::Acquire) {
+                self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
+            }
         }
         let handle = self.clone();
         let reader = thread::Builder::new()
@@ -3289,12 +3295,6 @@ impl PrimaryRouterHandle {
             .lock()
             .map_err(|_| app_detail("primary session readers", "reader list lock poisoned"))?
             .insert(attempt, reader);
-        if self.window_ready.load(Ordering::Acquire) {
-            self.write_event(LifecycleEvent::Ready)?;
-        }
-        if self.last_window_closed.load(Ordering::Acquire) {
-            self.write_event(LifecycleEvent::LastWindowClosed)?;
-        }
         Ok(())
     }
 
@@ -3353,7 +3353,7 @@ struct PrimaryRouter {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouter {
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     fn start(
         stream: BootstrapStream,
         window_commands: Sender<AppWindowCommand>,
@@ -4313,7 +4313,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[allow(clippy::too_many_lines)] // one test preserves the full Ready/calls/Quit ordering oracle
     fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
         use std::io::Read as _;
@@ -4341,12 +4341,12 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("guardian Quit preparation")
             {
-                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
-                GuardianOwnerCommand::Shutdown(_) => panic!("Quit reply lacked preparation"),
-                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
-                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
-                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
-                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
+                TestPrimaryOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
+                TestPrimaryOwnerCommand::Shutdown(_) => panic!("Quit reply lacked preparation"),
+                TestPrimaryOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                TestPrimaryOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                TestPrimaryOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                TestPrimaryOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
             guardian_prepared_in_thread.store(true, Ordering::Release);
             prepare_reply
@@ -4356,12 +4356,14 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("guardian shutdown request")
             {
-                GuardianOwnerCommand::Shutdown(reply) => reply,
-                GuardianOwnerCommand::PrepareAcceptedShutdown(_) => panic!("duplicate preparation"),
-                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
-                GuardianOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
-                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
-                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
+                TestPrimaryOwnerCommand::Shutdown(reply) => reply,
+                TestPrimaryOwnerCommand::PrepareAcceptedShutdown(_) => {
+                    panic!("duplicate preparation")
+                }
+                TestPrimaryOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
+                TestPrimaryOwnerCommand::FailGeneration(_, _) => panic!("unexpected link failure"),
+                TestPrimaryOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
+                TestPrimaryOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
             };
             eof_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -4374,7 +4376,7 @@ mod tests {
         let router = PrimaryRouter::start(
             server,
             window_tx,
-            GuardianOwnerHandle {
+            PlatformPrimaryOwnerHandle {
                 command_tx: guardian_tx,
             },
             SessionShutdownState::new(),
@@ -4434,7 +4436,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn retired_generation_eof_cannot_fail_or_replace_the_successor() {
         use std::os::unix::net::UnixStream;
         use std::sync::mpsc;
@@ -4451,7 +4453,7 @@ mod tests {
         let router = PrimaryRouter::start(
             g1_server,
             window_tx,
-            GuardianOwnerHandle {
+            PlatformPrimaryOwnerHandle {
                 command_tx: guardian_tx,
             },
             SessionShutdownState::new(),
@@ -4490,7 +4492,118 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn recovered_generation_orders_window_events_once_across_installation() {
+        use std::os::unix::net::UnixStream;
+
+        // Gap, live delivery overlapping reader registration, and delivery after
+        // installation are distinct schedules of the same real framed router.
+        for close_at in ["gap", "registration", "installed"] {
+            let (g1_server, mut g1_client) = UnixStream::pair().expect("g1 pair");
+            g1_client
+                .set_app_link_read_deadline(Some(Duration::from_secs(5)))
+                .expect("g1 kill switch");
+            let (window_tx, _window_rx) = mpsc::channel();
+            let (command_tx, _command_rx) = mpsc::channel();
+            let router = PrimaryRouter::start(
+                g1_server,
+                window_tx,
+                PlatformPrimaryOwnerHandle { command_tx },
+                SessionShutdownState::new(),
+            )
+            .expect("router");
+            let handle = router.handle();
+            handle.signal_ready().expect("initial Ready");
+            assert_lifecycle_event(&mut g1_client, LifecycleEvent::Ready);
+            handle.retire_generation(1).expect("retire g1");
+            if close_at == "gap" {
+                handle.signal_last_window_closed().expect("gap Close");
+            }
+            let (g2_server, mut g2_client) = UnixStream::pair().expect("g2 pair");
+            g2_client
+                .set_app_link_read_deadline(Some(Duration::from_secs(5)))
+                .expect("test kill switch");
+            let mut events = Vec::new();
+            if close_at == "registration" {
+                let registration = handle.readers.lock().expect("pause registration");
+                let installer = handle.clone();
+                let install = thread::spawn(move || installer.install_generation(2, g2_server));
+                // A correlated reply proves the real reader is running while
+                // installation cannot yet finish. No absence timeout or sleep.
+                collect_events_before_echo(&mut g2_client, 90, &mut events);
+                handle
+                    .signal_last_window_closed()
+                    .expect("overlapping Close");
+                drop(registration);
+                install
+                    .join()
+                    .expect("installer joins")
+                    .expect("install g2");
+            } else {
+                handle.install_generation(2, g2_server).expect("install g2");
+                if close_at == "installed" {
+                    handle.signal_last_window_closed().expect("live Close");
+                }
+            }
+            // Both producers have completed before this positive fence. Every
+            // queued Event must precede this reply on the serialized writer.
+            collect_events_before_echo(&mut g2_client, 91, &mut events);
+            assert_eq!(
+                events,
+                [LifecycleEvent::Ready, LifecycleEvent::LastWindowClosed],
+                "close during {close_at}"
+            );
+            router.shutdown().expect("router shutdown");
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn collect_events_before_echo(
+        client: &mut std::os::unix::net::UnixStream,
+        correlation: u32,
+        events: &mut Vec<LifecycleEvent>,
+    ) {
+        use keld_ipc::echo::{EchoRequest, EchoResponse};
+        use keld_ipc::link::read_frame;
+
+        let request = EchoRequest {
+            message: "fence".to_owned(),
+            count: correlation,
+        };
+        write_frame(
+            client,
+            FrameKind::Call,
+            0,
+            ECHO_CHANNEL,
+            CorrelationId(correlation),
+            &encode(&request).expect("encode fence"),
+        )
+        .expect("write fence");
+        loop {
+            let (header, payload) = read_frame(client).expect("fence frame");
+            if header.kind == FrameKind::Event {
+                assert_eq!(header.channel, LIFECYCLE_CHANNEL);
+                assert_eq!(header.corr, CorrelationId(0));
+                events.push(decode(&payload).expect("lifecycle event"));
+                assert!(events.len() <= 3, "unbounded lifecycle replay");
+            } else {
+                assert_eq!(header.kind, FrameKind::Reply);
+                assert_eq!(header.channel, ECHO_CHANNEL);
+                assert_eq!(header.corr, CorrelationId(correlation));
+                assert_eq!(
+                    decode::<EchoResponse>(&payload).expect("fence payload"),
+                    EchoResponse {
+                        message: request.message,
+                        count: correlation
+                    }
+                );
+                break;
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn revoke_racing_accepted_quit_does_not_join_on_the_guardian_owner() {
         use std::os::unix::net::UnixStream;
         use std::sync::mpsc;
@@ -4505,7 +4618,7 @@ mod tests {
             let prepare = guardian_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("accepted Quit preparation");
-            let GuardianOwnerCommand::PrepareAcceptedShutdown(reply) = prepare else {
+            let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(reply) = prepare else {
                 panic!("Quit race skipped attribution");
             };
             observed_tx.send(()).expect("report blocked attribution");
@@ -4514,7 +4627,7 @@ mod tests {
             let shutdown = guardian_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("accepted Quit shutdown");
-            let GuardianOwnerCommand::Shutdown(reply) = shutdown else {
+            let TestPrimaryOwnerCommand::Shutdown(reply) = shutdown else {
                 panic!("Quit race skipped shutdown");
             };
             reply.send(Ok(())).expect("accepted Quit shutdown reply");
@@ -4522,7 +4635,7 @@ mod tests {
         let router = PrimaryRouter::start(
             server,
             window_tx,
-            GuardianOwnerHandle {
+            PlatformPrimaryOwnerHandle {
                 command_tx: guardian_tx,
             },
             SessionShutdownState::new(),
@@ -4684,7 +4797,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn failed_initial_ready_write_denies_recovery_before_successor() {
         use std::collections::HashMap;
         use std::os::unix::net::UnixStream;
@@ -4707,7 +4820,7 @@ mod tests {
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown: SessionShutdownState::new(),
-            guardian: GuardianOwnerHandle {
+            guardian: PlatformPrimaryOwnerHandle {
                 command_tx: guardian_tx,
             },
             window_commands: window_tx,
@@ -4720,7 +4833,7 @@ mod tests {
             guardian_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("Ready failure recovery denial"),
-            GuardianOwnerCommand::DenyRecovery
+            TestPrimaryOwnerCommand::DenyRecovery
         ));
         assert!(!handle.recovery_armed.load(Ordering::Acquire));
         assert!(!handle.window_ready.load(Ordering::Acquire));
@@ -5096,7 +5209,7 @@ mod tests {
         assert!(error.to_string().contains("permission denied"), "{error}");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn assert_echo_call(
         client: &mut std::os::unix::net::UnixStream,
         correlation: u32,
@@ -5250,7 +5363,7 @@ mod tests {
         assert!(!created.load(Ordering::Acquire));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn assert_lifecycle_event(
         client: &mut std::os::unix::net::UnixStream,
         expected: LifecycleEvent,
