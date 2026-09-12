@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use crate::profile::ProfileError;
+
 /// Failure in the webview engine layer.
 #[derive(Debug)]
 pub enum WvError {
@@ -40,6 +42,8 @@ pub enum WvError {
         /// Exact preparation or re-exec failure.
         detail: String,
     },
+    /// Persistent profile identity, namespace, state, or ownership failed closed.
+    ProfileSelection(ProfileError),
 }
 
 impl fmt::Display for WvError {
@@ -94,19 +98,33 @@ impl fmt::Display for WvError {
                  Launch through Keld's process entry before creating a webview; \
                  do not mutate or export the process environment manually."
             ),
+            Self::ProfileSelection(source) => source.fmt(f),
         }
     }
 }
 
-impl std::error::Error for WvError {}
+impl std::error::Error for WvError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ProfileSelection(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<ProfileError> for WvError {
+    fn from(source: ProfileError) -> Self {
+        Self::ProfileSelection(source)
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use super::WvError;
+    use super::{ProfileError, WvError};
 
     #[test]
     fn display_messages_carry_error_codes_and_fix_guidance() {
-        let cases: [(WvError, &str, &str); 9] = [
+        let cases: [(WvError, &str, &str); 10] = [
             (
                 WvError::UnsupportedPlatform {
                     os: "freebsd",
@@ -158,6 +176,11 @@ mod tests {
                 },
                 "KELD-WV-010",
                 "process entry",
+            ),
+            (
+                WvError::from(ProfileError::missing_authenticated_identity()),
+                "KELD-WV-009",
+                "verified package identity",
             ),
         ];
         for (err, code, fix_hint) in cases {
