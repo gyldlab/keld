@@ -562,6 +562,72 @@ describe("DrainSignal / WriteQueue", () => {
     await Promise.all([first, second]);
   });
 
+  test("wall-clock jumps do not expire a progressing write", async () => {
+    const originalDateNow = Date.now;
+    let wallOffsetMs = 0;
+    let writes = 0;
+    let allowCompletion = false;
+    let pending: Promise<void> | undefined;
+    let observeFirstWrite!: () => void;
+    let observeSecondWrite!: () => void;
+    const firstWrite = new Promise<void>((resolve) => {
+      observeFirstWrite = resolve;
+    });
+    const secondWrite = new Promise<void>((resolve) => {
+      observeSecondWrite = resolve;
+    });
+    const beforeWatchdog = async <T>(promise: Promise<T>, stage: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const watchdog = new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`test watchdog expired: ${stage}`)), 500);
+      });
+      try {
+        return await Promise.race([promise, watchdog]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
+    const drain = new DrainSignal();
+    const queue = new WriteQueue(
+      {
+        write(data: Uint8Array): number {
+          writes += 1;
+          if (writes === 1) observeFirstWrite();
+          if (writes === 2) observeSecondWrite();
+          return allowCompletion ? data.length : 0;
+        },
+        end(): void {},
+      },
+      drain,
+    );
+    Date.now = () => originalDateNow() + wallOffsetMs;
+
+    try {
+      const writing = queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array());
+      pending = writing;
+      await beforeWatchdog(firstWrite, "first write");
+      expect(writes).toBe(1);
+
+      wallOffsetMs = -60_000;
+      drain.fire();
+      await beforeWatchdog(secondWrite, "second write after rollback");
+      expect(writes).toBe(2);
+
+      wallOffsetMs = 60_000;
+      allowCompletion = true;
+      drain.fire();
+      await expect(
+        beforeWatchdog(writing, "write completion after forward jump"),
+      ).resolves.toBeUndefined();
+      expect(writes).toBe(3);
+    } finally {
+      Date.now = originalDateNow;
+      allowCompletion = true;
+      drain.fire();
+      await pending?.catch(() => undefined);
+    }
+  });
+
   test("a failed mid-frame write poisons later writes", async () => {
     const out: number[] = [];
     let writes = 0;
