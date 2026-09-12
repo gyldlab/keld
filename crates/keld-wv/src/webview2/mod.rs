@@ -90,7 +90,8 @@ use webview2_com::{
     PermissionRequestedEventHandler, SetPermissionStateCompletedHandler, wait_with_pump,
 };
 use windows::Win32::Foundation::{
-    E_POINTER, E_UNEXPECTED, ERROR_INVALID_STATE, FILETIME, HANDLE, HWND, RECT,
+    E_POINTER, E_UNEXPECTED, ERROR_ACCESS_DENIED, ERROR_INVALID_STATE, FILETIME, HANDLE, HWND,
+    RECT, WAIT_FAILED,
 };
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
@@ -104,11 +105,14 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 use windows::Win32::System::WindowsProgramming::{DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE};
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
+    CreateWindowExW, DestroyWindow, DispatchMessageW, MSG, MWMO_INPUTAVAILABLE,
+    MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT, TranslateMessage,
+    WINDOW_EX_STYLE, WM_QUIT, WS_OVERLAPPED,
 };
 use windows::core::{BOOL, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
 use windows_permissions::Acl;
@@ -179,6 +183,7 @@ pub fn runtime_version() -> Result<String, WvError> {
 }
 
 const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
+const PROFILE_RELEASE_DEADLINE: Duration = Duration::from_secs(15);
 const PROFILE_MARKER: &str = "profile.owner.v1";
 const PROFILE_LEASE: &str = "profile.lock";
 const PROFILE_LIFECYCLE: &str = "profile.lifecycle.v1";
@@ -298,8 +303,81 @@ fn initialize_process_dpi_awareness() -> Result<(), WvError> {
     // context is the same preference tao otherwise applies while building its
     // event loop. Contract:
     // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext
-    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
-        .map_err(|error| WvError::Window(error.to_string()))
+    match unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == windows::core::HRESULT::from_win32(ERROR_ACCESS_DENIED.0) => {
+            // SAFETY: both DPI-context operations are process/thread queries.
+            // A failed setter is accepted only when the effective context is
+            // already the exact policy Keld requested. Contracts:
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getthreaddpiawarenesscontext
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-aredpiawarenesscontextsequal
+            let matches = unsafe {
+                AreDpiAwarenessContextsEqual(
+                    GetThreadDpiAwarenessContext(),
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                )
+            };
+            if matches.as_bool() {
+                Ok(())
+            } else {
+                Err(WvError::Window(error.to_string()))
+            }
+        }
+        Err(error) => Err(WvError::Window(error.to_string())),
+    }
+}
+
+fn wait_with_message_pump_until<T>(
+    receiver: &Receiver<T>,
+    deadline: Instant,
+) -> Result<T, WvError> {
+    loop {
+        match receiver.try_recv() {
+            Ok(value) => return Ok(value),
+            Err(TryRecvError::Disconnected) => {
+                return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+            }
+            Err(TryRecvError::Empty) => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        }
+        let milliseconds = u32::try_from(
+            deadline
+                .saturating_duration_since(now)
+                .as_millis()
+                .saturating_add(1)
+                .min(u128::from(u32::MAX)),
+        )
+        .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
+        // SAFETY: no handles are supplied; this thread waits only for its
+        // Win32/COM queue or the remaining monotonic deadline. Contract:
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-msgwaitformultipleobjectsex
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(None, milliseconds, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        if wait == WAIT_FAILED {
+            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        }
+        let mut message = MSG::default();
+        // SAFETY: `message` is writable and each removed message is translated
+        // and dispatched once on its owning thread. Contract:
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
+        while unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+            if message.message == WM_QUIT {
+                return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+            }
+            // SAFETY: `message` is the live record just removed from this
+            // thread's queue. Contracts:
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-translatemessage
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-dispatchmessagew
+            unsafe {
+                let _ = TranslateMessage(&raw const message);
+                DispatchMessageW(&raw const message);
+            }
+        }
+    }
 }
 
 fn windows_profile_plan(
@@ -1041,10 +1119,23 @@ fn create_environment_for_profile_with_options(
     profile: &SelectedWindowsProfile,
     options: CoreWebView2EnvironmentOptions,
 ) -> Result<ICoreWebView2Environment, WvError> {
+    create_environment_for_profile_with_options_until(
+        profile,
+        options,
+        Instant::now() + PROFILE_RELEASE_DEADLINE,
+    )
+}
+
+fn create_environment_for_profile_with_options_until(
+    profile: &SelectedWindowsProfile,
+    options: CoreWebView2EnvironmentOptions,
+    deadline: Instant,
+) -> Result<ICoreWebView2Environment, WvError> {
     // SAFETY: options is private and unpublished. The pinned implementation
     // exposes the documented EnvironmentOptions2 exclusive-UDF property.
     unsafe { options.set_exclusive_user_data_folder_access(true) };
-    let environment = create_environment_with_options(&profile.plan.user_data_dir, options)?;
+    let environment =
+        create_environment_with_options_until(&profile.plan.user_data_dir, options, deadline)?;
     let actual = environment_user_data_folder(&environment)?;
     same_directory_as_handle(&actual, &profile.user_data_handle)?;
     validate_profile_acl(&profile.user_data_handle)?;
@@ -1110,9 +1201,22 @@ fn observe_profile_browser_exit(
     })
 }
 
+#[cfg(all(feature = "media-acceptance", test))]
 fn create_environment_with_options(
     directory: &std::path::Path,
     options: CoreWebView2EnvironmentOptions,
+) -> Result<ICoreWebView2Environment, WvError> {
+    create_environment_with_options_until(
+        directory,
+        options,
+        Instant::now() + PROFILE_RELEASE_DEADLINE,
+    )
+}
+
+fn create_environment_with_options_until(
+    directory: &std::path::Path,
+    options: CoreWebView2EnvironmentOptions,
+    deadline: Instant,
 ) -> Result<ICoreWebView2Environment, WvError> {
     let user_data = HSTRING::from(directory.as_os_str());
     let (tx, rx) = mpsc::channel();
@@ -1142,9 +1246,7 @@ fn create_environment_with_options(
         });
     }
 
-    let environment = wait_with_pump(rx).map_err(|err| WvError::WebView2RuntimeMissing {
-        detail: err.to_string(),
-    })?;
+    let environment = wait_with_message_pump_until(&rx, deadline)?;
     environment.map_err(|err| WvError::WebView2RuntimeMissing {
         detail: err.to_string(),
     })
@@ -1167,7 +1269,7 @@ fn create_controller(
 
 enum ControllerCreationError {
     Windows(windows::core::Error),
-    Pump(webview2_com::Error),
+    Pump(WvError),
 }
 
 impl ControllerCreationError {
@@ -1193,6 +1295,14 @@ fn create_controller_observed(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
+    create_controller_observed_until(environment, hwnd, Instant::now() + PROFILE_RELEASE_DEADLINE)
+}
+
+fn create_controller_observed_until(
+    environment: &ICoreWebView2Environment,
+    hwnd: HWND,
+    deadline: Instant,
+) -> Result<ICoreWebView2Controller, ControllerCreationError> {
     let (tx, rx) = mpsc::channel();
 
     // SAFETY: `environment` was created on this thread (STA) and `hwnd` is a
@@ -1212,7 +1322,7 @@ fn create_controller_observed(
         )
     };
     launched.map_err(ControllerCreationError::Windows)?;
-    wait_with_pump(rx)
+    wait_with_message_pump_until(&rx, deadline)
         .map_err(ControllerCreationError::Pump)?
         .map_err(ControllerCreationError::Windows)
 }
@@ -1334,10 +1444,15 @@ fn prove_exclusive_udf_released_on_hwnd(
     profile: &SelectedWindowsProfile,
     window: HWND,
 ) -> Result<ExclusiveUdfRelease, WvError> {
-    let environment = create_environment_for_profile(profile)?;
+    let deadline = Instant::now() + PROFILE_RELEASE_DEADLINE;
+    let environment = create_environment_for_profile_with_options_until(
+        profile,
+        CoreWebView2EnvironmentOptions::default(),
+        deadline,
+    )?;
     let expected_pid = Arc::new(AtomicU32::new(0));
     let observation = observe_profile_browser_exit(&environment, Arc::clone(&expected_pid), None)?;
-    let controller = match create_controller_observed(&environment, window) {
+    let controller = match create_controller_observed_until(&environment, window, deadline) {
         Ok(controller) => controller,
         Err(error) if error.is_invalid_state() => {
             remove_browser_exit_observer(&observation.environment, observation.token)?;
@@ -1362,8 +1477,7 @@ fn prove_exclusive_udf_released_on_hwnd(
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
     drop(webview);
     drop(controller);
-    let observed = wait_with_pump(observation.receiver)
-        .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
+    let observed = wait_with_message_pump_until(&observation.receiver, deadline)?;
     remove_browser_exit_observer(&observation.environment, observation.token)?;
     observed?;
     Ok(ExclusiveUdfRelease::Released)
@@ -1878,14 +1992,28 @@ struct ProfileReleaseWait {
     receiver: Option<Receiver<Result<(), WvError>>>,
     observed: Cell<bool>,
     failed: Cell<bool>,
+    deadline: Cell<Option<Instant>>,
+    timeout: Duration,
 }
 
 impl ProfileReleaseWait {
     fn new(receiver: Option<Receiver<Result<(), WvError>>>) -> Self {
+        Self::with_timeout(receiver, PROFILE_RELEASE_DEADLINE)
+    }
+
+    fn with_timeout(receiver: Option<Receiver<Result<(), WvError>>>, timeout: Duration) -> Self {
         Self {
             receiver,
             observed: Cell::new(false),
             failed: Cell::new(false),
+            deadline: Cell::new(None),
+            timeout,
+        }
+    }
+
+    fn arm(&self) {
+        if self.deadline.get().is_none() {
+            self.deadline.set(Some(Instant::now() + self.timeout));
         }
     }
 
@@ -1905,10 +2033,30 @@ impl ProfileReleaseWait {
             }
             Err(TryRecvError::Empty) => {}
         }
+        if !self.observed.get()
+            && self
+                .deadline
+                .get()
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.failed.set(true);
+        }
     }
 
     fn exit_ready(&self, expected_pid: &AtomicU32) -> bool {
-        expected_pid.load(Ordering::Acquire) == 0 || self.observed.get()
+        expected_pid.load(Ordering::Acquire) == 0 || self.observed.get() || self.failed.get()
+    }
+
+    fn schedule(&self, control_flow: &mut ControlFlow) {
+        let Some(deadline) = self.deadline.get() else {
+            return;
+        };
+        if self.observed.get() || self.failed.get() {
+            return;
+        }
+        if !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline) {
+            *control_flow = ControlFlow::WaitUntil(deadline);
+        }
     }
 }
 
@@ -2171,12 +2319,17 @@ impl WebView2Engine {
                         &expected_browser_pid,
                         stop_in_loop.as_ref(),
                     );
+                    if exit_requested {
+                        release_in_loop.arm();
+                    }
                 }
                 _ => {}
             }
             release_in_loop.poll();
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
+            } else {
+                release_in_loop.schedule(control_flow);
             }
         });
         if release.failed.get() {
@@ -2333,7 +2486,8 @@ impl WebView2Engine {
                 commit_profile_stop(stop_in_loop.as_ref());
                 views.clear();
                 exit_requested = true;
-                *control_flow = ControlFlow::Wait;
+                release_in_loop.arm();
+                release_in_loop.schedule(control_flow);
                 return;
             }
             if navigation_ready.load(Ordering::Acquire) {
@@ -2343,7 +2497,8 @@ impl WebView2Engine {
                 commit_profile_stop(stop_in_loop.as_ref());
                 views.clear();
                 exit_requested = true;
-                *control_flow = ControlFlow::Wait;
+                release_in_loop.arm();
+                release_in_loop.schedule(control_flow);
                 return;
             } else {
                 *control_flow = ControlFlow::WaitUntil(navigation_deadline);
@@ -2353,12 +2508,14 @@ impl WebView2Engine {
                     commit_profile_stop(stop_in_loop.as_ref());
                     views.clear();
                     exit_requested = true;
+                    release_in_loop.arm();
                 }
                 Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::Fatal)) => {
                     fatal_in_loop.store(true, Ordering::Release);
                     commit_profile_stop(stop_in_loop.as_ref());
                     views.clear();
                     exit_requested = true;
+                    release_in_loop.arm();
                 }
                 Event::WindowEvent {
                     window_id,
@@ -2383,6 +2540,7 @@ impl WebView2Engine {
                         stop_in_loop.as_ref(),
                     );
                     if last_window_closed {
+                        release_in_loop.arm();
                         let _ = events.send(AppWindowEvent::LastWindowClosed);
                     }
                 }
@@ -2391,6 +2549,8 @@ impl WebView2Engine {
             release_in_loop.poll();
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
+            } else {
+                release_in_loop.schedule(control_flow);
             }
         });
         stop_app_wake_bridge(&stop_bridge, bridge);
@@ -2704,11 +2864,11 @@ pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
 mod tests {
     use super::{
         COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY, PROFILE_LEASE,
-        PROFILE_LIFECYCLE, PROFILE_MARKER, SavedPermission, WebView2Engine,
+        PROFILE_LIFECYCLE, PROFILE_MARKER, ProfileReleaseWait, SavedPermission, WebView2Engine,
         app_window_slot_available, dacl_has_untrusted_write, initial_navigation_failure_is_fatal,
-        initialize_com_sta, prepare_windows_profile_at, purge_persistent_profile_at,
-        runtime_version, saved_media_permission_needs_deny, try_scavenge_ephemeral_profile,
-        webview2_permission_state, windows_profile_plan,
+        initialize_com_sta, initialize_process_dpi_awareness, prepare_windows_profile_at,
+        purge_persistent_profile_at, runtime_version, saved_media_permission_needs_deny,
+        try_scavenge_ephemeral_profile, webview2_permission_state, windows_profile_plan,
     };
     use crate::error::WvError;
     use crate::profile::{
@@ -2760,6 +2920,32 @@ mod tests {
         })
         .join()
         .expect("COM apartment test thread");
+    }
+
+    #[test]
+    fn existing_per_monitor_v2_dpi_policy_is_accepted() {
+        initialize_process_dpi_awareness().expect("initial DPI policy");
+        initialize_process_dpi_awareness().expect("existing identical DPI policy");
+    }
+
+    #[test]
+    fn absent_browser_exit_has_one_nonrenewable_deadline() {
+        let (_sender, receiver) = std::sync::mpsc::channel::<Result<(), WvError>>();
+        let release = ProfileReleaseWait::with_timeout(Some(receiver), std::time::Duration::ZERO);
+        release.arm();
+        let first = release.deadline.get().expect("armed deadline");
+        release.arm();
+        assert_eq!(
+            release.deadline.get(),
+            Some(first),
+            "events cannot renew it"
+        );
+        let mut control_flow = super::ControlFlow::Wait;
+        release.schedule(&mut control_flow);
+        assert_eq!(control_flow, super::ControlFlow::WaitUntil(first));
+        release.poll();
+        assert!(release.failed.get());
+        assert!(!release.observed.get());
     }
 
     /// Keeps the engine type named from the test module so a rename fails the
