@@ -150,9 +150,8 @@ remains unverified.
 ### Qualified Windows native Close evidence
 
 The earlier
-[Windows stock native-Close attempt](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
-is retained as historical failure evidence; the later passing capture is separately
-qualified here.
+[Windows build/window/Ctrl-C/relaunch record](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+remains historical and does not establish stock native Close.
 The [Windows stock native-Close capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405)
 qualifies two runs on source `62f4cc1a71a02db8d3b3a5959f2bbf6ba1a9a0c8`, Windows 11 x64,
 and Bun 1.4.2 revision `1.4.2+744846f84`; both CLI exits were zero, captured process
