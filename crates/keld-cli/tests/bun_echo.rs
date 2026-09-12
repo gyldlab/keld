@@ -204,6 +204,36 @@ fn spawn_generated_main(project: &Path, link: &str) -> ObservedChild {
     )
 }
 
+fn add_entrypoint_diagnostic(project: &Path) {
+    const GUARD: &str = "if (import.meta.main) {";
+    const DIAGNOSTIC: &str = r#"console.error("KEL185_ENTRYPOINT_DIAGNOSTIC " + JSON.stringify({
+  schema: "kel185-entrypoint-diagnostic/v1",
+  bunVersion: Bun.version,
+  bunRevision: Bun.revision,
+  execPath: process.execPath,
+  pid: process.pid,
+  cwd: process.cwd(),
+  argv: process.argv,
+  importMetaMain: import.meta.main,
+  importMetaPath: import.meta.path,
+  keldAppLinkPresent: typeof process.env.KELD_APP_LINK === "string" && process.env.KELD_APP_LINK.length > 0,
+}));
+
+"#;
+    let main_path = project.join("src/main.ts");
+    let main = std::fs::read_to_string(&main_path).expect("read generated main");
+    assert_eq!(
+        main.matches(GUARD).count(),
+        1,
+        "generated main must have one entrypoint guard"
+    );
+    std::fs::write(
+        &main_path,
+        main.replacen(GUARD, &format!("{DIAGNOSTIC}{GUARD}"), 1),
+    )
+    .expect("write diagnostic generated main");
+}
+
 const NO_CLIENT_ADMISSION_CHILD: &str = "created_template_server_admission_without_client_child";
 
 /// The lifecycle wire fixture must report a generated-main launch/admission
@@ -275,6 +305,106 @@ fn created_template_pre_auth_failure_preserves_child_diagnostics() {
         assert!(error.contains("status=Some(23)"), "{error}");
         assert!(error.contains(MARKER), "{error}");
     }
+}
+
+/// Diagnostic-only fixture for the hosted Windows zero-output exit. The three
+/// lifecycle wire tests below remain untouched stock generators, so this
+/// record cannot make their acceptance pass. A false entrypoint flag fails
+/// with the redacted identity record captured through the same file-backed path.
+#[test]
+fn created_template_entrypoint_identity_precedes_the_main_guard() {
+    const PREFIX: &str = "KEL185_ENTRYPOINT_DIAGNOSTIC ";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app");
+    add_entrypoint_diagnostic(&project);
+
+    let listener = BootstrapListener::bind().expect("bind app-link");
+    let link = listener.app_link();
+    let admission_deadline = Instant::now() + Duration::from_secs(2);
+    let server =
+        thread::spawn(move || accept_generated_main(&listener, admission_deadline).map(|_| ()));
+    let child = spawn_generated_main(&project, &link);
+    let output = wait_for_output(child, Duration::from_secs(4)).expect("bounded diagnostic child");
+    let admission = server.join().expect("diagnostic server thread");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let record = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(PREFIX))
+        .unwrap_or_else(|| {
+            panic!(
+                "diagnostic record missing from file-backed stderr; child {}",
+                output_diagnostics(&output)
+            )
+        });
+    let record: serde_json::Value = serde_json::from_str(record).unwrap_or_else(|error| {
+        panic!(
+            "invalid entrypoint JSON: {error}; raw_record={record:?}; child {}",
+            output_diagnostics(&output)
+        )
+    });
+    let evidence = || format!("identity={record}; child {}", output_diagnostics(&output));
+    assert_eq!(
+        record["schema"],
+        "kel185-entrypoint-diagnostic/v1",
+        "{}",
+        evidence()
+    );
+    assert_eq!(record["keldAppLinkPresent"], true, "{}", evidence());
+    assert!(
+        record["bunVersion"].as_str().is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
+    assert!(
+        record["bunRevision"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
+    assert!(
+        record["execPath"].as_str().is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
+    assert!(
+        record["pid"].as_u64().is_some_and(|pid| pid > 0),
+        "{}",
+        evidence()
+    );
+    assert!(
+        record["cwd"].as_str().is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
+    assert!(
+        record["argv"].as_array().is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
+    assert!(
+        record["importMetaPath"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
+    assert_eq!(
+        record["importMetaMain"],
+        true,
+        "generated entrypoint guard would be skipped; {}",
+        evidence()
+    );
+    admission.unwrap_or_else(|error| {
+        panic!(
+            "main=true diagnostic child did not authenticate: {error}; {}",
+            evidence()
+        )
+    });
+    println!("{PREFIX}{record}");
 }
 
 #[test]
