@@ -97,7 +97,7 @@ use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW,
     GetFileInformationByHandle, GetFinalPathNameByHandleW, GetVolumePathNameW,
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, VOLUME_NAME_DOS,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, VOLUME_NAME_DOS,
 };
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -118,7 +118,7 @@ use windows::core::{BOOL, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
 use windows_permissions::Acl;
 use windows_permissions::constants::{AccessRights, SeObjectType, SecurityInformation};
 use windows_permissions::utilities::current_process_sid;
-use windows_permissions::wrappers::GetSecurityInfo;
+use windows_permissions::wrappers::{GetSecurityInfo, SetSecurityInfo};
 
 use keld_guard::{PermissionsManifest, Principal};
 
@@ -435,8 +435,19 @@ fn known_local_app_data() -> Result<PathBuf, WvError> {
 }
 
 fn open_directory_handle(path: &Path) -> Result<File, WvError> {
+    open_directory_handle_with_access(path, AccessRights::ReadControl.bits())
+}
+
+fn open_created_directory_handle(path: &Path) -> Result<File, WvError> {
+    open_directory_handle_with_access(
+        path,
+        (AccessRights::ReadControl | AccessRights::WriteOwner).bits(),
+    )
+}
+
+fn open_directory_handle_with_access(path: &Path, access_mode: u32) -> Result<File, WvError> {
     let file = OpenOptions::new()
-        .access_mode(READ_CONTROL.0)
+        .access_mode(access_mode)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
         .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
         .open(path)
@@ -544,22 +555,45 @@ fn retain_directory_chain(
             return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
         };
         path.push(component);
-        if create_missing {
+        let component_created = if create_missing {
             match fs::create_dir(&path) {
                 Ok(()) => {
                     if path == target {
                         target_created = true;
                     }
+                    true
                 }
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                     if path == target && require_new_target {
                         return Err(profile_failure(ProfileErrorKind::ProfileInUse));
                     }
+                    false
                 }
                 Err(_) => return Err(profile_failure(ProfileErrorKind::MarkerMismatch)),
             }
+        } else {
+            false
+        };
+        let mut handle = if component_created {
+            open_created_directory_handle(&path)?
+        } else {
+            open_directory_handle(&path)?
+        };
+        if component_created {
+            let owner = current_process_sid()
+                .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+            SetSecurityInfo(
+                &mut handle,
+                SeObjectType::SE_FILE_OBJECT,
+                SecurityInformation::Owner,
+                Some(&owner),
+                None,
+                None,
+                None,
+            )
+            .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
         }
-        handles.push(open_directory_handle(&path)?);
+        handles.push(handle);
     }
     Ok((handles, target_created))
 }
