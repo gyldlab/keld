@@ -332,16 +332,16 @@ fn wait_with_message_pump_until<T>(
     deadline: Instant,
 ) -> Result<T, WvError> {
     loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
+        }
         match receiver.try_recv() {
             Ok(value) => return Ok(value),
             Err(TryRecvError::Disconnected) => {
                 return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
             }
             Err(TryRecvError::Empty) => {}
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
         }
         let milliseconds = u32::try_from(
             deadline
@@ -364,7 +364,7 @@ fn wait_with_message_pump_until<T>(
         // SAFETY: `message` is writable and each removed message is translated
         // and dispatched once on its owning thread. Contract:
         // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
-        while unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+        if unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
             if message.message == WM_QUIT {
                 return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
             }
@@ -2868,7 +2868,8 @@ mod tests {
         app_window_slot_available, dacl_has_untrusted_write, initial_navigation_failure_is_fatal,
         initialize_com_sta, initialize_process_dpi_awareness, prepare_windows_profile_at,
         purge_persistent_profile_at, runtime_version, saved_media_permission_needs_deny,
-        try_scavenge_ephemeral_profile, webview2_permission_state, windows_profile_plan,
+        try_scavenge_ephemeral_profile, wait_with_message_pump_until, webview2_permission_state,
+        windows_profile_plan,
     };
     use crate::error::WvError;
     use crate::profile::{
@@ -2946,6 +2947,34 @@ mod tests {
         release.poll();
         assert!(release.failed.get());
         assert!(!release.observed.get());
+    }
+
+    #[test]
+    fn expired_pump_rejects_ready_result_before_queued_messages() {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW, WM_NULL,
+        };
+
+        let mut message = MSG::default();
+        // SAFETY: the no-remove query creates this test thread's message queue;
+        // the output is live. Contract:
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
+        let _ = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_NOREMOVE) };
+        // SAFETY: posts inert WM_NULL to the current test thread's live queue.
+        // Contract: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postthreadmessagew
+        unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_NULL, WPARAM(0), LPARAM(0)) }
+            .expect("queue inert message");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(7_u8).expect("queue ready result");
+        wait_with_message_pump_until(&receiver, std::time::Instant::now())
+            .expect_err("expired work must lose to the absolute deadline");
+        // SAFETY: removes only this test's inert WM_NULL records without
+        // dispatch. Contract: PeekMessageW above.
+        while unsafe { PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE) }.as_bool()
+        {
+        }
     }
 
     /// Keeps the engine type named from the test module so a rename fails the
