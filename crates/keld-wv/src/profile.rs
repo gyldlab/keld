@@ -61,6 +61,11 @@ impl ProfileError {
     pub const fn missing_authenticated_identity() -> Self {
         Self::new(ProfileErrorKind::MissingAuthenticatedIdentity)
     }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) const fn platform_failure(kind: ProfileErrorKind) -> Self {
+        Self::new(kind)
+    }
 }
 
 impl fmt::Display for ProfileError {
@@ -251,6 +256,17 @@ impl EphemeralProfile {
     #[must_use]
     pub const fn launch_nonce(&self) -> &[u8; 32] {
         &self.launch_nonce
+    }
+
+    /// Returns the canonical owner-private namespace segment for this launch.
+    #[must_use]
+    pub fn namespace_segment(&self) -> String {
+        encode_lower_hex(&self.launch_nonce)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn from_namespace_segment(value: &str) -> Result<Self, ProfileError> {
+        Self::from_host_random(decode_lower_hex::<32>(value)?)
     }
 }
 
@@ -1302,11 +1318,17 @@ pub enum ProfileLifecyclePhase {
     Quarantined,
 }
 
-/// Schema-v1 lifecycle record interpreted by the common recovery policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleRecovery {
+    BootScoped(BootIdentity),
+    WindowsExclusiveUdf,
+}
+
+/// Durable lifecycle record interpreted by the common phase policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileLifecycleRecord {
     phase: ProfileLifecyclePhase,
-    boot_identity: BootIdentity,
+    recovery: LifecycleRecovery,
     owner: Option<ProfileProcessIdentity>,
 }
 
@@ -1316,7 +1338,18 @@ impl ProfileLifecycleRecord {
     pub const fn idle(boot_identity: BootIdentity) -> Self {
         Self {
             phase: ProfileLifecyclePhase::Idle,
-            boot_identity,
+            recovery: LifecycleRecovery::BootScoped(boot_identity),
+            owner: None,
+        }
+    }
+
+    /// Creates an admissible Windows record recovered only through the
+    /// exclusive-UDF browser-process release oracle.
+    #[must_use]
+    pub const fn windows_idle() -> Self {
+        Self {
+            phase: ProfileLifecyclePhase::Idle,
+            recovery: LifecycleRecovery::WindowsExclusiveUdf,
             owner: None,
         }
     }
@@ -1394,19 +1427,47 @@ impl ProfileLifecycleRecord {
         self.phase
     }
 
-    /// Encodes the canonical strict schema-v1 lifecycle record.
+    #[cfg(target_os = "windows")]
+    pub(crate) const fn owner(&self) -> Option<ProfileProcessIdentity> {
+        self.owner
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    pub(crate) fn complete_windows_recovery(self) -> Result<Self, ProfileError> {
+        if self.phase != ProfileLifecyclePhase::Quarantined
+            || self.owner.is_none()
+            || self.recovery != LifecycleRecovery::WindowsExclusiveUdf
+        {
+            return Err(ProfileError::new(ProfileErrorKind::LifecycleUnproven));
+        }
+        Ok(Self::windows_idle())
+    }
+
+    /// Encodes the canonical strict lifecycle record for its recovery mode.
     ///
     /// # Errors
     ///
     /// Returns `KELD-WV-009` if the record cannot be encoded.
     pub fn to_record_bytes(&self) -> Result<Vec<u8>, ProfileError> {
-        serde_json::to_vec(&LifecycleDocument {
-            schema: 1,
-            phase: self.phase,
-            boot_identity: encode_lower_hex(&self.boot_identity.0),
-            owner: self.owner,
-        })
-        .map_err(|_| ProfileError::new(ProfileErrorKind::InvalidRecord))
+        let encoded = match self.recovery {
+            LifecycleRecovery::BootScoped(boot_identity) => {
+                serde_json::to_vec(&BootLifecycleDocument {
+                    schema: 1,
+                    phase: self.phase,
+                    boot_identity: encode_lower_hex(&boot_identity.0),
+                    owner: self.owner,
+                })
+            }
+            LifecycleRecovery::WindowsExclusiveUdf => {
+                serde_json::to_vec(&WindowsLifecycleDocument {
+                    schema: 2,
+                    recovery_mode: WindowsRecoveryMode::WindowsExclusiveUdf,
+                    phase: self.phase,
+                    owner: self.owner,
+                })
+            }
+        };
+        encoded.map_err(|_| ProfileError::new(ProfileErrorKind::InvalidRecord))
     }
 
     /// Decodes and validates one durable lifecycle record.
@@ -1416,17 +1477,29 @@ impl ProfileLifecycleRecord {
     /// Returns `KELD-WV-009` for malformed, noncanonical, wrong-schema, or
     /// phase/owner-inconsistent records.
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, ProfileError> {
-        let document: LifecycleDocument = serde_json::from_slice(bytes)
+        let document: AnyLifecycleDocument = serde_json::from_slice(bytes)
             .map_err(|_| ProfileError::new(ProfileErrorKind::InvalidRecord))?;
-        if document.schema != 1 {
-            return Err(ProfileError::new(ProfileErrorKind::InvalidRecord));
-        }
-        let record = Self {
-            phase: document.phase,
-            boot_identity: BootIdentity::from_host_verified_bytes(decode_lower_hex::<16>(
-                &document.boot_identity,
-            )?)?,
-            owner: document.owner,
+        let record = match document {
+            AnyLifecycleDocument::Boot(document) if document.schema == 1 => Self {
+                phase: document.phase,
+                recovery: LifecycleRecovery::BootScoped(BootIdentity::from_host_verified_bytes(
+                    decode_lower_hex::<16>(&document.boot_identity)?,
+                )?),
+                owner: document.owner,
+            },
+            AnyLifecycleDocument::Windows(document)
+                if document.schema == 2
+                    && document.recovery_mode == WindowsRecoveryMode::WindowsExclusiveUdf =>
+            {
+                Self {
+                    phase: document.phase,
+                    recovery: LifecycleRecovery::WindowsExclusiveUdf,
+                    owner: document.owner,
+                }
+            }
+            AnyLifecycleDocument::Boot(_) | AnyLifecycleDocument::Windows(_) => {
+                return Err(ProfileError::new(ProfileErrorKind::InvalidRecord));
+            }
         };
         let valid_owner = match record.phase {
             ProfileLifecyclePhase::Idle => record.owner.is_none(),
@@ -1440,15 +1513,65 @@ impl ProfileLifecycleRecord {
         }
         Ok(record)
     }
+
+    /// Decodes only a boot-scoped macOS/Linux lifecycle record.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-WV-009` for Windows-mode or malformed records.
+    pub fn from_boot_scoped_record_bytes(bytes: &[u8]) -> Result<Self, ProfileError> {
+        let record = Self::from_record_bytes(bytes)?;
+        if matches!(record.recovery, LifecycleRecovery::BootScoped(_)) {
+            Ok(record)
+        } else {
+            Err(ProfileError::new(ProfileErrorKind::InvalidRecord))
+        }
+    }
+
+    /// Decodes only a Windows exclusive-UDF lifecycle record.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-WV-009` for boot-scoped or malformed records.
+    pub fn from_windows_record_bytes(bytes: &[u8]) -> Result<Self, ProfileError> {
+        let record = Self::from_record_bytes(bytes)?;
+        if record.recovery == LifecycleRecovery::WindowsExclusiveUdf {
+            Ok(record)
+        } else {
+            Err(ProfileError::new(ProfileErrorKind::InvalidRecord))
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LifecycleDocument {
+struct BootLifecycleDocument {
     schema: u8,
     phase: ProfileLifecyclePhase,
     boot_identity: String,
     owner: Option<ProfileProcessIdentity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WindowsRecoveryMode {
+    WindowsExclusiveUdf,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsLifecycleDocument {
+    schema: u8,
+    recovery_mode: WindowsRecoveryMode,
+    phase: ProfileLifecyclePhase,
+    owner: Option<ProfileProcessIdentity>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AnyLifecycleDocument {
+    Boot(BootLifecycleDocument),
+    Windows(WindowsLifecycleDocument),
 }
 
 /// Host observation of the exact process recorded in durable state.
@@ -1471,6 +1594,8 @@ pub enum ProfileLifecycleAction {
     WriteQuarantined,
     /// Revalidate metadata, commit `idle`, and retry startup afterward.
     RestoreIdleAfterBoot,
+    /// Run the Windows exclusive-UDF recovery probe without app navigation.
+    RunWindowsExclusiveUdfRecovery,
 }
 
 /// Selects the next safe lifecycle action from independently supplied facts.
@@ -1484,11 +1609,14 @@ pub fn next_lifecycle_action(
     process: RecordedProcessObservation,
     current_boot: BootIdentity,
 ) -> Result<ProfileLifecycleAction, ProfileError> {
+    let LifecycleRecovery::BootScoped(recorded_boot) = record.recovery else {
+        return Err(ProfileError::new(ProfileErrorKind::LifecycleUnproven));
+    };
     match record.phase {
         ProfileLifecyclePhase::Idle if record.owner.is_none() => {
             Ok(ProfileLifecycleAction::BeginStartup)
         }
-        ProfileLifecyclePhase::Quarantined if record.boot_identity != current_boot => {
+        ProfileLifecyclePhase::Quarantined if recorded_boot != current_boot => {
             Ok(ProfileLifecycleAction::RestoreIdleAfterBoot)
         }
         ProfileLifecyclePhase::Quarantined => {
@@ -1497,7 +1625,7 @@ pub fn next_lifecycle_action(
         ProfileLifecyclePhase::Starting
         | ProfileLifecyclePhase::Running
         | ProfileLifecyclePhase::Stopping
-            if record.boot_identity != current_boot =>
+            if recorded_boot != current_boot =>
         {
             Ok(ProfileLifecycleAction::WriteQuarantined)
         }
@@ -1514,6 +1642,154 @@ pub fn next_lifecycle_action(
         },
         ProfileLifecyclePhase::Idle => Err(ProfileError::new(ProfileErrorKind::InvalidRecord)),
     }
+}
+
+/// Selects the next Windows lifecycle action without inventing a boot identity.
+///
+/// # Errors
+///
+/// Returns `KELD-WV-009` for a boot-scoped record, live/unknown predecessor,
+/// or malformed idle state. A quarantined record can only start the platform
+/// exclusive-UDF recovery probe; the backend commits idle after its exact
+/// browser-process release event.
+pub fn next_windows_lifecycle_action(
+    record: ProfileLifecycleRecord,
+    process: RecordedProcessObservation,
+) -> Result<ProfileLifecycleAction, ProfileError> {
+    if record.recovery != LifecycleRecovery::WindowsExclusiveUdf {
+        return Err(ProfileError::new(ProfileErrorKind::LifecycleUnproven));
+    }
+    match record.phase {
+        ProfileLifecyclePhase::Idle if record.owner.is_none() => {
+            Ok(ProfileLifecycleAction::BeginStartup)
+        }
+        ProfileLifecyclePhase::Quarantined => {
+            Ok(ProfileLifecycleAction::RunWindowsExclusiveUdfRecovery)
+        }
+        ProfileLifecyclePhase::Starting
+        | ProfileLifecyclePhase::Running
+        | ProfileLifecyclePhase::Stopping => match process {
+            RecordedProcessObservation::Live => {
+                Err(ProfileError::new(ProfileErrorKind::ProfileInUse))
+            }
+            RecordedProcessObservation::Dead => Ok(ProfileLifecycleAction::WriteQuarantined),
+            RecordedProcessObservation::Unknown => {
+                Err(ProfileError::new(ProfileErrorKind::LifecycleUnproven))
+            }
+        },
+        ProfileLifecyclePhase::Idle => Err(ProfileError::new(ProfileErrorKind::InvalidRecord)),
+    }
+}
+
+/// Durable phase for an exact-identity platform data purge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfilePurgePhase {
+    /// Intent is durable before platform data is removed.
+    Prepared,
+    /// The platform data removal or clear barrier completed.
+    DataRemoved,
+    /// Absence was verified before the intent is cleared.
+    Completed,
+}
+
+/// Strict platform purge intent retained outside engine-managed data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfilePurgeRecord {
+    identity: ProfileIdentity,
+    platform: ProfilePlatform,
+    phase: ProfilePurgePhase,
+}
+
+impl ProfilePurgeRecord {
+    /// Creates the intent which must be durable before destructive work.
+    #[must_use]
+    pub const fn prepared(identity: ProfileIdentity, platform: ProfilePlatform) -> Self {
+        Self {
+            identity,
+            platform,
+            phase: ProfilePurgePhase::Prepared,
+        }
+    }
+
+    /// Returns the exact identity authorized for this purge.
+    #[must_use]
+    pub const fn identity(&self) -> ProfileIdentity {
+        self.identity
+    }
+
+    /// Returns the owning platform.
+    #[must_use]
+    pub const fn platform(&self) -> ProfilePlatform {
+        self.platform
+    }
+
+    /// Returns the durable purge phase.
+    #[must_use]
+    pub const fn phase(&self) -> ProfilePurgePhase {
+        self.phase
+    }
+
+    /// Advances one exact purge phase without skipping a barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-WV-009` for skipped or reversed phases.
+    pub fn advance(self, next: ProfilePurgePhase) -> Result<Self, ProfileError> {
+        if !matches!(
+            (self.phase, next),
+            (ProfilePurgePhase::Prepared, ProfilePurgePhase::DataRemoved)
+                | (ProfilePurgePhase::DataRemoved, ProfilePurgePhase::Completed)
+        ) {
+            return Err(ProfileError::new(ProfileErrorKind::ActiveIntent));
+        }
+        Ok(Self {
+            phase: next,
+            ..self
+        })
+    }
+
+    /// Encodes canonical schema-v1 purge bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-WV-009` if serialization fails.
+    pub fn to_record_bytes(&self) -> Result<Vec<u8>, ProfileError> {
+        serde_json::to_vec(&ProfilePurgeDocument {
+            schema: 1,
+            profile_identity: self.identity.namespace_segment(),
+            platform: self.platform,
+            phase: self.phase,
+        })
+        .map_err(|_| ProfileError::new(ProfileErrorKind::InvalidRecord))
+    }
+
+    /// Decodes stored purge data without granting purge authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-WV-009` for malformed or noncanonical data.
+    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, ProfileError> {
+        let document: ProfilePurgeDocument = serde_json::from_slice(bytes)
+            .map_err(|_| ProfileError::new(ProfileErrorKind::InvalidRecord))?;
+        if document.schema != 1 {
+            return Err(ProfileError::new(ProfileErrorKind::InvalidRecord));
+        }
+        Ok(Self {
+            identity: ProfileIdentity::from_namespace_segment(&document.profile_identity)?,
+            platform: document.platform,
+            phase: document.phase,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfilePurgeDocument {
+    schema: u8,
+    profile_identity: String,
+    platform: ProfilePlatform,
+    phase: ProfilePurgePhase,
 }
 
 fn validate_canonical_app_id(value: &str) -> Result<(), ProfileError> {
@@ -1583,9 +1859,11 @@ mod tests {
         MarkerObservation, ProfileError, ProfileErrorKind, ProfileIdentity, ProfileLeaseKey,
         ProfileLeaseTable, ProfileLifecycleAction, ProfileLifecyclePhase, ProfileLifecycleRecord,
         ProfileLockLevel, ProfileLockOrder, ProfileMarker, ProfilePlatform, ProfileProcessIdentity,
-        ProfileRootRole, PurgePhase, RecordedProcessObservation, RegistryAction, RegistryIntent,
-        RegistryRecord, RegistryRequest, RegistrySnapshot, StoreBinding, StoreObservation,
-        WebProfileSelection, next_lifecycle_action, next_marker_action, next_registry_action,
+        ProfilePurgePhase, ProfilePurgeRecord, ProfileRootRole, PurgePhase,
+        RecordedProcessObservation, RegistryAction, RegistryIntent, RegistryRecord,
+        RegistryRequest, RegistrySnapshot, StoreBinding, StoreObservation, WebProfileSelection,
+        next_lifecycle_action, next_marker_action, next_registry_action,
+        next_windows_lifecycle_action,
     };
 
     #[test]
@@ -2120,6 +2398,89 @@ mod tests {
         assert!(ProfileLifecycleRecord::from_record_bytes(zero_pid.as_bytes()).is_err());
         let nested_unknown = starting_text.replace("\"pid\":42", "\"pid\":42,\"extra\":0");
         assert!(ProfileLifecycleRecord::from_record_bytes(nested_unknown.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn windows_lifecycle_requires_exclusive_udf_recovery() {
+        let owner = ProfileProcessIdentity::from_host_observation(84, 1_200).expect("process");
+        let idle = ProfileLifecycleRecord::windows_idle();
+        assert_eq!(
+            next_windows_lifecycle_action(idle, RecordedProcessObservation::Unknown),
+            Ok(ProfileLifecycleAction::BeginStartup)
+        );
+        let running = idle
+            .begin_startup(owner)
+            .and_then(|record| record.advance(ProfileLifecyclePhase::Running))
+            .expect("running");
+        assert_eq!(
+            next_windows_lifecycle_action(running, RecordedProcessObservation::Dead),
+            Ok(ProfileLifecycleAction::WriteQuarantined)
+        );
+        let quarantined = running.quarantine().expect("quarantine");
+        assert_eq!(
+            next_windows_lifecycle_action(quarantined, RecordedProcessObservation::Unknown),
+            Ok(ProfileLifecycleAction::RunWindowsExclusiveUdfRecovery)
+        );
+        assert!(
+            quarantined.advance(ProfileLifecyclePhase::Idle).is_err(),
+            "ordinary phase advancement must not bypass the WebView2 release oracle"
+        );
+        let recovered = quarantined
+            .complete_windows_recovery()
+            .expect("backend release proof restores idle");
+        assert_eq!(recovered, ProfileLifecycleRecord::windows_idle());
+
+        let bytes = quarantined.to_record_bytes().expect("encode Windows state");
+        let text = String::from_utf8(bytes.clone()).expect("UTF-8 Windows state");
+        assert!(text.contains(r#""schema":2"#));
+        assert!(text.contains(r#""recovery_mode":"windows_exclusive_udf""#));
+        assert!(!text.contains("boot_identity"));
+        assert_eq!(
+            ProfileLifecycleRecord::from_windows_record_bytes(&bytes),
+            Ok(quarantined)
+        );
+        assert!(ProfileLifecycleRecord::from_boot_scoped_record_bytes(&bytes).is_err());
+
+        let boot = BootIdentity::from_host_verified_bytes([7; 16]).expect("boot");
+        let boot_bytes = ProfileLifecycleRecord::idle(boot)
+            .to_record_bytes()
+            .expect("encode boot state");
+        assert!(ProfileLifecycleRecord::from_windows_record_bytes(&boot_bytes).is_err());
+        assert!(
+            next_windows_lifecycle_action(
+                ProfileLifecycleRecord::idle(boot),
+                RecordedProcessObservation::Dead,
+            )
+            .is_err()
+        );
+        assert!(
+            next_lifecycle_action(quarantined, RecordedProcessObservation::Dead, boot).is_err()
+        );
+        let unknown = text.replace("\"schema\":2", "\"schema\":2,\"extra\":0");
+        assert!(ProfileLifecycleRecord::from_record_bytes(unknown.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn platform_purge_record_is_exact_and_cannot_skip_barriers() {
+        let identity = test_identity(19);
+        let prepared = ProfilePurgeRecord::prepared(identity, ProfilePlatform::Windows);
+        let removed = prepared
+            .advance(ProfilePurgePhase::DataRemoved)
+            .expect("data barrier");
+        let completed = removed
+            .advance(ProfilePurgePhase::Completed)
+            .expect("absence verification");
+        assert_eq!(completed.identity(), identity);
+        assert_eq!(completed.platform(), ProfilePlatform::Windows);
+        assert_eq!(completed.phase(), ProfilePurgePhase::Completed);
+        assert!(prepared.advance(ProfilePurgePhase::Completed).is_err());
+        assert!(completed.advance(ProfilePurgePhase::Prepared).is_err());
+
+        let bytes = removed.to_record_bytes().expect("encode purge");
+        assert_eq!(ProfilePurgeRecord::from_record_bytes(&bytes), Ok(removed));
+        let text = String::from_utf8(bytes).expect("purge UTF-8");
+        let unknown = text.replace("\"schema\":1", "\"schema\":1,\"extra\":0");
+        assert!(ProfilePurgeRecord::from_record_bytes(unknown.as_bytes()).is_err());
     }
 
     #[test]

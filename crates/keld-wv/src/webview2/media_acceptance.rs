@@ -5,6 +5,8 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,20 +17,20 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
     COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE,
     COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
-    COREWEBVIEW2_PERMISSION_STATE_DENY, ICoreWebView2Environment5, ICoreWebView2Environment7,
-    ICoreWebView2PermissionRequestedEventArgs,
+    COREWEBVIEW2_PERMISSION_STATE_DENY, ICoreWebView2PermissionRequestedEventArgs,
 };
-use webview2_com::{BrowserProcessExitedEventHandler, WebMessageReceivedEventHandler};
+use webview2_com::WebMessageReceivedEventHandler;
 use windows::Win32::Foundation::{E_UNEXPECTED, LPARAM, WPARAM};
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
-use windows::core::{Interface, PWSTR};
+use windows::core::PWSTR;
 
+use super::tests::run_with_watchdog;
 use super::{
-    AppWindowCommand, COINIT_APARTMENTTHREADED, CoInitializeEx, CoreWebView2EnvironmentOptions,
-    E_POINTER, EventLoopBuilder, NavTarget, PermissionRequestedEventHandler, WebEngine,
-    WebView2Engine, WebviewSpec, WvError, create_environment_with_options, runtime_version,
+    CoreWebView2EnvironmentOptions, E_POINTER, EventLoopBuilder, NavTarget,
+    PermissionRequestedEventHandler, WebEngine, WebView2Engine, WebviewSpec, WindowsLoopEvent,
+    WvError, create_environment_with_options, matching_browser_exit, runtime_version,
     wait_with_pump, webview_media_principal,
 };
 use crate::{LogicalSize, media::manifest_fingerprint};
@@ -113,6 +115,10 @@ pub(super) fn observe_production_effect(
     });
 }
 
+pub(super) fn observe_browser_exit(actual: u32, expected: u32, normal: bool) {
+    println!("KELD_MEDIA_BROWSER_EXIT pid={actual} expected={expected} normal={normal}");
+}
+
 pub(super) fn permission_uri(
     args: &ICoreWebView2PermissionRequestedEventArgs,
 ) -> windows::core::Result<String> {
@@ -191,17 +197,6 @@ fn run_media_acceptance() -> Result<(), WvError> {
         None => run_with_watchdog(FIXTURE_DEADLINE, run_media_acceptance_inner),
         Some(_) => Err(failure("unknown watchdog probe mode")),
     }
-}
-
-fn run_with_watchdog<T>(
-    deadline: Duration,
-    work: impl FnOnce() -> Result<T, WvError>,
-) -> Result<T, WvError> {
-    let (done_tx, watchdog) = spawn_watchdog(deadline);
-    let result = work();
-    let _ = done_tx.send(());
-    watchdog.join().map_err(|_| failure("watchdog panicked"))?;
-    result
 }
 
 fn block_watchdog_probe() -> Result<(), WvError> {
@@ -316,23 +311,6 @@ fn destroy_primers(
     Ok(last)
 }
 
-fn spawn_watchdog(deadline: Duration) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let watchdog = thread::spawn(move || {
-        if done_rx.recv_timeout(deadline) == Err(mpsc::RecvTimeoutError::Timeout) {
-            // This opt-in fixture is a disposable process. A process deadline also
-            // bounds nested creation/cleanup pumps; one consumed WM_QUIT cannot do so.
-            eprintln!(
-                "KELD_MEDIA_TIMEOUT: fixture exceeded {} seconds; inspect any KELD_MEDIA_PROFILE receipt",
-                deadline.as_secs_f64()
-            );
-            let _ = std::io::stderr().flush();
-            std::process::exit(124);
-        }
-    });
-    (done_tx, watchdog)
-}
-
 fn parent_deadline_is_valid(value: &str) -> bool {
     value.parse::<u64>().is_ok_and(|milliseconds| {
         Duration::from_millis(milliseconds) >= FIXTURE_DEADLINE + PARENT_DEADLINE_MARGIN
@@ -349,21 +327,27 @@ fn run_case(
     manifest: PermissionsManifest,
 ) -> Result<(), WvError> {
     let runtime = runtime_version()?;
-    let mut event_loop = EventLoopBuilder::<AppWindowCommand>::with_user_event();
+    let mut event_loop = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
     // The ignored libtest entrypoint runs on a harness worker. Windows supports
     // a dedicated UI/message thread; every COM object and callback remains on
     // this same fixture thread.
     event_loop.with_any_thread(true);
     let event_loop = event_loop.build();
-    // SAFETY: all COM work is confined to this fixture-owned UI STA.
-    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
-        .ok()
-        .map_err(failure)?;
+    // This fixture retains environment/observer clones after dropping its
+    // engine; its own COM reference must outlive those clones as well.
+    let _com = super::initialize_com_sta()?;
     // SAFETY: thread ID query is unconditional.
     let tid = unsafe { GetCurrentThreadId() };
     let environment = fixture_environment(directory)?;
+    let expected_browser_pid = Arc::new(AtomicU32::new(0));
+    let browser_exit =
+        super::observe_profile_browser_exit(&environment, Arc::clone(&expected_browser_pid), None)?;
     println!("KELD_MEDIA_PHASE environment-ready");
-    let mut engine = WebView2Engine::from_environment(event_loop, environment.clone());
+    let mut engine = WebView2Engine::from_environment(
+        super::initialize_com_sta()?,
+        event_loop,
+        environment.clone(),
+    );
     let primer_count = if kind == "camera" { 1 } else { 2 };
     let last_primer = destroy_primers(&mut engine, primer_count)?;
     println!("KELD_MEDIA_PHASE primers-destroyed count={primer_count}");
@@ -407,8 +391,7 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
         "KELD_MEDIA_VIEW id={} browser_pid={browser_pid}",
         media_id.0
     );
-    let environment5: ICoreWebView2Environment5 = environment.cast().map_err(failure)?;
-    let (exit_rx, exit_token) = observe_browser_exit(&environment5, browser_pid)?;
+    expected_browser_pid.store(browser_pid, Ordering::Release);
     let registration = EVIDENCE.with_borrow(|e| e.registration);
     let Some((identity, token)) = registration else {
         return Err(failure("production constructor did not register media"));
@@ -431,10 +414,9 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
     engine.destroy(media_id)?;
     println!("KELD_MEDIA_CLOSED waiting_for={browser_pid}");
     drop(engine);
-    wait_with_pump(exit_rx).map_err(failure)??;
-    // SAFETY: remove this environment's callback only after its matching exit.
-    unsafe { environment5.remove_BrowserProcessExited(exit_token) }.map_err(failure)?;
-    drop(environment5);
+    wait_with_pump(browser_exit.receiver).map_err(failure)??;
+    super::remove_browser_exit_observer(&browser_exit.environment, browser_exit.token)?;
+    drop(browser_exit.environment);
     drop(environment);
     server_result.map_err(failure)?;
     validate(Validation {
@@ -745,6 +727,17 @@ fn observe_request(
 }
 
 fn fixture_environment(directory: &Path) -> Result<super::ICoreWebView2Environment, WvError> {
+    let options = fixture_environment_options();
+    let environment = create_environment_with_options(directory, options)?;
+    let actual = super::environment_user_data_folder(&environment)?;
+    let actual = actual
+        .to_str()
+        .ok_or_else(|| failure("actual user-data folder is not Unicode"))?;
+    same_directory(actual, directory)?;
+    Ok(environment)
+}
+
+fn fixture_environment_options() -> CoreWebView2EnvironmentOptions {
     let options = CoreWebView2EnvironmentOptions::default();
     // SAFETY: options is not shared or published yet. This documented development
     // switch supplies devices without changing the permission-request decision.
@@ -752,13 +745,7 @@ fn fixture_environment(directory: &Path) -> Result<super::ICoreWebView2Environme
     unsafe {
         options.set_additional_browser_arguments("--use-fake-device-for-media-stream".to_owned());
     };
-    let environment = create_environment_with_options(directory, options)?;
-    let environment7: ICoreWebView2Environment7 = environment.cast().map_err(failure)?;
-    let mut actual = PWSTR::null();
-    // SAFETY: live environment on its STA; writable LPWSTR output is COM-owned.
-    unsafe { environment7.UserDataFolder(&raw mut actual) }.map_err(failure)?;
-    same_directory(&owned_string(actual)?, directory)?;
-    Ok(environment)
+    options
 }
 
 fn serve_page(
@@ -812,55 +799,658 @@ fn serve_page(
     })
 }
 
-fn matching_browser_exit(expected: u32, actual: u32, normal: bool) -> bool {
-    expected != 0 && expected == actual && normal
-}
-
-fn observe_browser_exit(
-    environment: &ICoreWebView2Environment5,
-    expected_pid: u32,
-) -> Result<(mpsc::Receiver<Result<(), WvError>>, i64), WvError> {
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND, COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL,
-    };
-    let (tx, rx) = mpsc::channel();
-    let mut token = 0;
-    // SAFETY: environment retains callback on its STA. Match the newest browser PID
-    // before cleanup: a delayed primer exit cannot release the final view's profile.
-    // https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2environment5
-    unsafe {
-        environment.add_BrowserProcessExited(
-            &BrowserProcessExitedEventHandler::create(Box::new(move |_, args| {
-                let args = args.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
-                let mut pid = 0;
-                let mut kind = COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND::default();
-                args.BrowserProcessId(&raw mut pid)?;
-                args.BrowserProcessExitKind(&raw mut kind)?;
-                println!(
-                    "KELD_MEDIA_BROWSER_EXIT pid={pid} expected={expected_pid} kind={}",
-                    kind.0
-                );
-                if matching_browser_exit(
-                    expected_pid,
-                    pid,
-                    kind == COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL,
-                ) {
-                    send_and_wake(&tx, Ok(()))?;
-                } else if pid == expected_pid {
-                    send_and_wake(&tx, Err(failure("final browser exited abnormally")))?;
-                }
-                Ok(())
-            })),
-            &raw mut token,
-        )
-    }
-    .map_err(failure)?;
-    Ok((rx, token))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_fixture_root(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("fixture clock")
+            .as_nanos();
+        super::super::known_local_app_data()
+            .expect("resolve fixture LocalAppData")
+            .join("Keld")
+            .join("test-fixtures")
+            .join(format!(
+                "keld-profile-acceptance-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+    }
+
+    fn profile_fixture_engine(
+        root: &Path,
+        selection: crate::profile::WebProfileSelection,
+    ) -> Result<WebView2Engine, WvError> {
+        profile_fixture_engine_with_options(
+            root,
+            selection,
+            CoreWebView2EnvironmentOptions::default(),
+        )
+    }
+
+    fn profile_fixture_engine_with_options(
+        root: &Path,
+        selection: crate::profile::WebProfileSelection,
+        options: CoreWebView2EnvironmentOptions,
+    ) -> Result<WebView2Engine, WvError> {
+        runtime_version()?;
+        let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
+        let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
+        builder.with_any_thread(true).with_dpi_aware(false);
+        let event_loop = builder.build();
+        let environment =
+            super::super::create_environment_for_profile_with_options(&profile, options)?;
+        WebView2Engine::from_selected_environment(com, event_loop, environment, profile)
+    }
+
+    fn run_profile_fixture(mut engine: WebView2Engine) -> Result<(), WvError> {
+        let (events_tx, _events_rx) = mpsc::channel();
+        engine.create_app(&blank_spec(), events_tx)?;
+        let (commands_tx, commands_rx) = mpsc::channel();
+        commands_tx
+            .send(crate::AppWindowCommand::Quit)
+            .map_err(|_| failure("queue fixture Quit"))?;
+        engine.run_app_until_quit(commands_rx, mpsc::channel().0)
+    }
+
+    fn assert_saved_media_state(
+        profile: &super::super::ICoreWebView2Profile4,
+        origin: &str,
+        expected: COREWEBVIEW2_PERMISSION_STATE,
+    ) -> Result<(), WvError> {
+        let settings = super::super::profile_permission_settings(profile)?;
+        for kind in [
+            COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+            COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+        ] {
+            if !settings.iter().any(|setting| {
+                setting.kind == kind && setting.origin == origin && setting.state == expected
+            }) {
+                return Err(failure(format!(
+                    "saved media setting kind={} did not read back state={}",
+                    kind.0, expected.0
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn assert_saved_permission_state(
+        profile: &super::super::ICoreWebView2Profile4,
+        origin: &str,
+        kind: COREWEBVIEW2_PERMISSION_KIND,
+        expected: COREWEBVIEW2_PERMISSION_STATE,
+    ) -> Result<(), WvError> {
+        let settings = super::super::profile_permission_settings(profile)?;
+        if settings.iter().any(|setting| {
+            setting.kind == kind && setting.origin == origin && setting.state == expected
+        }) {
+            Ok(())
+        } else {
+            Err(failure(format!(
+                "saved media setting kind={} did not read back state={}",
+                kind.0, expected.0
+            )))
+        }
+    }
+
+    fn assert_no_saved_permission(
+        profile: &super::super::ICoreWebView2Profile4,
+        origin: &str,
+        kind: COREWEBVIEW2_PERMISSION_KIND,
+    ) -> Result<(), WvError> {
+        if super::super::profile_permission_settings(profile)?
+            .iter()
+            .any(|setting| setting.kind == kind && setting.origin == origin)
+        {
+            Err(failure("control unexpectedly inherited a saved permission"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn saved_grant_root(run_id: &str) -> Result<std::path::PathBuf, WvError> {
+        if run_id.len() != 32
+            || !run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(failure("saved-grant run id must be 32 lowercase hex bytes"));
+        }
+        Ok(super::super::known_local_app_data()?
+            .join("Keld")
+            .join("test-fixtures")
+            .join(format!("saved-grant-{run_id}")))
+    }
+
+    fn saved_grant_result_matches(result: &str, nonce: u128, phase: &str, track: &str) -> bool {
+        let prior = if matches!(phase, "deny" | "control") {
+            "persisted"
+        } else {
+            "none"
+        };
+        if matches!(
+            phase,
+            "deny" | "replaced-profile" | "changed-origin" | "omitted-seed" | "dev-fresh"
+        ) {
+            result == format!("{nonce}:{phase}:{prior}:error:NotAllowedError")
+        } else {
+            result.starts_with(&format!("{nonce}:{phase}:{prior}:resolved:{track}:"))
+                && result.ends_with(":true")
+        }
+    }
+
+    struct SavedGrantCase {
+        phase: String,
+        kind_name: String,
+        kind: COREWEBVIEW2_PERMISSION_KIND,
+        constraints: &'static str,
+        track: &'static str,
+        root: std::path::PathBuf,
+        nonce: u128,
+        address: String,
+    }
+
+    fn load_saved_grant_case() -> Result<SavedGrantCase, WvError> {
+        let phase = std::env::var("KELD_PROFILE_SAVED_PHASE")
+            .map_err(|_| failure("KELD_PROFILE_SAVED_PHASE is required"))?;
+        if !matches!(
+            phase.as_str(),
+            "seed"
+                | "deny"
+                | "control"
+                | "replaced-profile"
+                | "changed-origin"
+                | "omitted-seed"
+                | "dev-seed"
+                | "dev-fresh"
+        ) {
+            return Err(failure("unknown saved-grant phase"));
+        }
+        let kind_name = std::env::var("KELD_PROFILE_SAVED_KIND")
+            .map_err(|_| failure("KELD_PROFILE_SAVED_KIND is required"))?;
+        let (kind, constraints, track) = match kind_name.as_str() {
+            "camera" => (COREWEBVIEW2_PERMISSION_KIND_CAMERA, "{video:true}", "video"),
+            "microphone" => (
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                "{audio:true}",
+                "audio",
+            ),
+            _ => return Err(failure("saved kind must be camera or microphone")),
+        };
+        let run_id = std::env::var("KELD_PROFILE_SAVED_RUN_ID")
+            .map_err(|_| failure("KELD_PROFILE_SAVED_RUN_ID is required"))?;
+        Ok(SavedGrantCase {
+            root: saved_grant_root(&run_id)?,
+            nonce: u128::from_str_radix(&run_id, 16).map_err(failure)?,
+            address: std::env::var("KELD_PROFILE_SAVED_ADDRESS")
+                .map_err(|_| failure("KELD_PROFILE_SAVED_ADDRESS is required"))?,
+            phase,
+            kind_name,
+            kind,
+            constraints,
+            track,
+        })
+    }
+
+    struct SavedGrantPage {
+        url: String,
+        origin: String,
+        release: mpsc::Sender<()>,
+        server: thread::JoinHandle<std::io::Result<()>>,
+    }
+
+    fn start_saved_grant_page(case: &SavedGrantCase) -> Result<SavedGrantPage, WvError> {
+        let listener = TcpListener::bind(&case.address).map_err(failure)?;
+        let address = listener.local_addr().map_err(failure)?;
+        let url = format!("http://{address}/{}/", case.nonce);
+        let html = format!(
+            r"<!doctype html><script>
+(async()=>{{await fetch('/{nonce}/release',{{cache:'no-store'}});
+const prior=localStorage.getItem('keld-profile-nonce')||'none';
+if('{phase}'==='seed'||'{phase}'==='dev-seed')localStorage.setItem('keld-profile-nonce','persisted');
+try{{const stream=await navigator.mediaDevices.getUserMedia({constraints});
+const matching=stream.getTracks().filter(track=>track.kind==='{track}'&&track.readyState==='live');
+for(const item of stream.getTracks())item.stop();
+chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matching.length+':'+matching.every(track=>track.readyState==='ended'));
+}}catch(error){{chrome.webview.postMessage('{nonce}:{phase}:'+prior+':error:'+error.name);}}}})();
+</script>",
+            nonce = case.nonce,
+            phase = case.phase,
+            constraints = case.constraints,
+            track = case.track,
+        );
+        let (release, release_rx) = mpsc::channel();
+        Ok(SavedGrantPage {
+            url,
+            origin: format!("http://{address}/"),
+            release,
+            server: serve_page(listener, html, case.nonce, release_rx),
+        })
+    }
+
+    struct PreparedSavedGrant {
+        profile: super::super::ICoreWebView2Profile4,
+        permission: super::super::SavedPermission,
+    }
+
+    fn prepare_saved_grant_permission(
+        engine: &WebView2Engine,
+        view_id: crate::WebviewId,
+        case: &SavedGrantCase,
+        origin: &str,
+    ) -> Result<PreparedSavedGrant, WvError> {
+        let view = engine.view(view_id)?;
+        let profile = super::super::webview_profile(&view.webview)?;
+        let permission = super::super::SavedPermission {
+            kind: case.kind,
+            state: COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            origin: origin.to_owned(),
+        };
+        let registration = EVIDENCE
+            .with_borrow(|evidence| evidence.registration)
+            .ok_or_else(|| failure("saved-grant view has no production registration"))?;
+        let expected = match case.phase.as_str() {
+            "seed" | "control" | "dev-seed" => Some(COREWEBVIEW2_PERMISSION_STATE_ALLOW),
+            "deny" => Some(COREWEBVIEW2_PERMISSION_STATE_DENY),
+            "replaced-profile" | "changed-origin" | "omitted-seed" | "dev-fresh" => None,
+            _ => return Err(failure("unreachable saved phase")),
+        };
+        if matches!(case.phase.as_str(), "seed" | "dev-seed") {
+            super::super::set_profile_permission_state(
+                &profile,
+                &permission,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            )?;
+        }
+        if let Some(expected) = expected {
+            assert_saved_permission_state(&profile, origin, case.kind, expected)?;
+        } else {
+            assert_no_saved_permission(&profile, origin, case.kind)?;
+        }
+        if matches!(case.phase.as_str(), "seed" | "dev-seed") {
+            // SAFETY: this token came from the production registration on
+            // this exact live view; the seed needs the stored Allow oracle.
+            unsafe { view.webview.remove_PermissionRequested(registration.1) }.map_err(failure)?;
+        }
+        Ok(PreparedSavedGrant {
+            profile,
+            permission,
+        })
+    }
+
+    fn run_saved_grant_phase() -> Result<(), WvError> {
+        use crate::profile::{ProfileIdentity, WebProfileSelection};
+
+        let case = load_saved_grant_case()?;
+        if matches!(
+            case.phase.as_str(),
+            "seed" | "omitted-seed" | "dev-seed" | "dev-fresh"
+        ) {
+            std::fs::create_dir_all(&case.root).map_err(failure)?;
+        } else if !case.root.is_dir() {
+            return Err(failure("saved-grant persistent fixture is missing"));
+        }
+        let page = start_saved_grant_page(&case)?;
+        let selection = match case.phase.as_str() {
+            "dev-seed" => WebProfileSelection::ephemeral_dev(
+                crate::profile::EphemeralProfile::from_host_random([24; 32])?,
+            ),
+            "dev-fresh" => WebProfileSelection::ephemeral_dev(
+                crate::profile::EphemeralProfile::from_host_random([25; 32])?,
+            ),
+            _ => {
+                let publisher = if case.phase == "replaced-profile" {
+                    [22; 32]
+                } else {
+                    [21; 32]
+                };
+                WebProfileSelection::Persistent(ProfileIdentity::from_host_verified_parts(
+                    publisher,
+                    &format!("dev.keld.synthetic-saved-{}", case.kind_name),
+                )?)
+            }
+        };
+        let mut engine = profile_fixture_engine_with_options(
+            &case.root,
+            selection,
+            fixture_environment_options(),
+        )?;
+        EVIDENCE.with_borrow_mut(|evidence| {
+            *evidence = Evidence {
+                active: true,
+                manifest: Some(PermissionsManifest::default()),
+                ..Evidence::default()
+            };
+        });
+        let view_id = engine.create(&blank_spec())?;
+        let origin = page.origin.clone();
+        let prepared = prepare_saved_grant_permission(&engine, view_id, &case, &origin)?;
+        let view = engine.view(view_id)?;
+        let result_rx = observe_request(&view.webview, "guarded", &page.url)?;
+        page.release
+            .send(())
+            .map_err(|_| failure("release saved-grant page"))?;
+        engine.navigate(view_id, NavTarget::Url(page.url))?;
+        let result = wait_with_pump(result_rx).map_err(failure)??;
+        page.server
+            .join()
+            .map_err(|_| failure("saved server panicked"))?
+            .map_err(failure)?;
+        if !saved_grant_result_matches(&result, case.nonce, &case.phase, case.track) {
+            return Err(failure(format!(
+                "saved-grant {} oracle rejected result {result}",
+                case.phase
+            )));
+        }
+        if case.phase == "deny" {
+            super::super::set_profile_permission_state(
+                &prepared.profile,
+                &prepared.permission,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            )?;
+            assert_saved_permission_state(
+                &prepared.profile,
+                &origin,
+                case.kind,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            )?;
+        }
+        println!(
+            "KELD_PROFILE_SAVED_RESULT kind={} phase={} origin={origin} result={result}",
+            case.kind_name, case.phase
+        );
+        drop(prepared.profile);
+        let (commands_tx, commands_rx) = mpsc::channel();
+        commands_tx
+            .send(crate::AppWindowCommand::Quit)
+            .map_err(|_| failure("queue saved fixture Quit"))?;
+        engine.run_app_until_quit(commands_rx, mpsc::channel().0)?;
+        if std::env::var_os("KELD_PROFILE_SAVED_CLEANUP").is_some() {
+            std::fs::remove_dir_all(case.root).map_err(failure)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "real Windows COM environment ownership and native HWND Close"]
+    fn windows_com_engine_lifetime_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            use tao::platform::windows::WindowExtWindows as _;
+            use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType};
+            use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+
+            let apartment = || {
+                let mut kind = APTTYPE::default();
+                let mut qualifier = APTTYPEQUALIFIER::default();
+                // SAFETY: writable outputs; this query changes no COM ownership.
+                // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-cogetapartmenttype
+                unsafe { CoGetApartmentType(&raw mut kind, &raw mut qualifier) }
+                    .map(|()| (kind, qualifier))
+            };
+            assert_eq!(
+                apartment().expect_err("fresh STA").code(),
+                windows::Win32::Foundation::CO_E_NOTINITIALIZED
+            );
+            let root = profile_fixture_root("com-lifetime");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            println!("KELD_COM fixture-root={}", root.display());
+            let ephemeral = crate::profile::EphemeralProfile::from_host_random([93; 32])?;
+            let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+            let plan = super::super::windows_profile_plan(&root, selection)?;
+            let engine = profile_fixture_engine(&root, selection)?;
+            let (kind, qualifier) = apartment().map_err(failure)?;
+            assert!(matches!(
+                kind,
+                windows::Win32::System::Com::APTTYPE_STA
+                    | windows::Win32::System::Com::APTTYPE_MAINSTA
+            ));
+            assert_eq!(
+                qualifier,
+                windows::Win32::System::Com::APTTYPEQUALIFIER_NONE
+            );
+            assert_eq!(
+                super::super::environment_user_data_folder(&engine.environment)?,
+                plan.user_data_dir
+            );
+            drop(engine);
+            // WebView2 can leave an implicit process MTA: CoGetApartmentType
+            // can succeed even without a calling-thread reference. No Tao
+            // Window exists yet. A new explicit STA must return S_OK rather
+            // than S_FALSE, which would reveal the engine's leaked reference.
+            // https://learn.microsoft.com/windows/win32/api/objidl/ne-objidl-apttypequalifier
+            // SAFETY: this observer acquires and balances only its own count.
+            // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex
+            let initialized = unsafe {
+                super::super::CoInitializeEx(None, super::super::COINIT_APARTMENTTHREADED)
+            };
+            if initialized.is_ok() {
+                // SAFETY: exactly balances the observer's successful S_OK/S_FALSE.
+                // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-couninitialize
+                unsafe { super::super::CoUninitialize() };
+            }
+            assert_eq!(
+                initialized,
+                windows::Win32::Foundation::S_OK,
+                "engine COM count released"
+            );
+            println!("KELD_COM engine-environment-dropped balanced");
+
+            let successor = crate::profile::EphemeralProfile::from_host_random([94; 32])?;
+            let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
+            let next_plan = super::super::windows_profile_plan(&root, successor)?;
+            let mut engine = profile_fixture_engine(&root, successor)?;
+            let id = engine.create(&blank_spec())?;
+            let window = &engine.view(id)?.window;
+            // SAFETY: this fixture owns the live HWND. Posting the actual Close
+            // message exercises Tao's normal close event and browser exit wait.
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postmessagew
+            unsafe {
+                PostMessageW(
+                    Some(windows::Win32::Foundation::HWND(window.hwnd() as _)),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            }
+            .map_err(failure)?;
+            engine.run_until_closed()?;
+            assert!(
+                !next_plan.control_dir.exists(),
+                "Close must finish profile release"
+            );
+            assert!(
+                !plan.control_dir.exists(),
+                "successor must scavenge the released predecessor"
+            );
+            println!("KELD_COM hwnd-close-release successor-cleanup-complete");
+            std::fs::remove_dir_all(root).map_err(failure)
+        })
+    }
+
+    #[test]
+    #[ignore = "real Windows WebView2 dev-profile cleanup"]
+    fn windows_dev_profile_cleanup_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            let root = profile_fixture_root("dev");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let old = crate::profile::EphemeralProfile::from_host_random([12; 32])?;
+            let old_selection = crate::profile::WebProfileSelection::ephemeral_dev(old);
+            let old_plan = super::super::windows_profile_plan(&root, old_selection)?;
+            drop(super::super::prepare_windows_profile_at(
+                &root,
+                old_selection,
+            )?);
+            let ephemeral = crate::profile::EphemeralProfile::from_host_random([13; 32])?;
+            let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+            let plan = super::super::windows_profile_plan(&root, selection)?;
+            let result = profile_fixture_engine(&root, selection).and_then(run_profile_fixture);
+            if result.is_ok() {
+                if plan.control_dir.exists() || old_plan.control_dir.exists() {
+                    return Err(failure(
+                        "graceful cleanup or production stale-leaf scavenging was incomplete",
+                    ));
+                }
+                std::fs::remove_dir_all(&root).map_err(failure)?;
+            } else {
+                eprintln!("KELD_PROFILE_RETAINED {}", root.display());
+            }
+            result
+        })
+    }
+
+    #[test]
+    #[ignore = "real production-path busy ephemeral retention"]
+    fn windows_busy_ephemeral_scavenge_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            let root = profile_fixture_root("dev-busy");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let old = crate::profile::EphemeralProfile::from_host_random([22; 32])?;
+            let old_selection = crate::profile::WebProfileSelection::ephemeral_dev(old);
+            let old_plan = super::super::windows_profile_plan(&root, old_selection)?;
+            let old_owner = super::super::prepare_windows_profile_at(&root, old_selection)?;
+            let current = crate::profile::EphemeralProfile::from_host_random([23; 32])?;
+            let current = crate::profile::WebProfileSelection::ephemeral_dev(current);
+            profile_fixture_engine(&root, current).and_then(run_profile_fixture)?;
+            if !old_plan.control_dir.exists() {
+                return Err(failure("busy old ephemeral leaf was deleted"));
+            }
+            drop(old_owner);
+            std::fs::remove_dir_all(root).map_err(failure)
+        })
+    }
+
+    #[test]
+    #[ignore = "real Windows WebView2 exclusive-UDF recovery"]
+    /// Seeds one synthetic dead `running` record, then proves the real hidden
+    /// exclusive-UDF probe and clean `idle` transition. It is not an actual
+    /// host-death cut across every durable phase.
+    fn windows_persistent_recovery_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            use crate::profile::{
+                ProfileIdentity, ProfileLifecyclePhase, ProfileLifecycleRecord,
+                ProfileProcessIdentity, WebProfileSelection,
+            };
+
+            let root = profile_fixture_root("persistent-recovery");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let identity =
+                ProfileIdentity::from_host_verified_parts([14; 32], "dev.keld.synthetic-recovery")?;
+            let selection = WebProfileSelection::Persistent(identity);
+            let plan = super::super::windows_profile_plan(&root, selection)?;
+            std::fs::create_dir_all(&plan.user_data_dir).map_err(failure)?;
+            std::fs::write(
+                plan.control_dir.join(super::super::PROFILE_MARKER),
+                &plan.marker,
+            )
+            .map_err(failure)?;
+            std::fs::write(plan.control_dir.join(super::super::PROFILE_LEASE), [])
+                .map_err(failure)?;
+            let dead = ProfileLifecycleRecord::windows_idle()
+                .begin_startup(ProfileProcessIdentity::from_host_observation(
+                    u32::MAX,
+                    u64::MAX,
+                )?)?
+                .advance(ProfileLifecyclePhase::Running)?;
+            let lifecycle = plan.control_dir.join(super::super::PROFILE_LIFECYCLE);
+            std::fs::write(&lifecycle, dead.to_record_bytes()?).map_err(failure)?;
+
+            let result = profile_fixture_engine(&root, selection).and_then(run_profile_fixture);
+            if result.is_ok() {
+                let durable = ProfileLifecycleRecord::from_windows_record_bytes(
+                    &std::fs::read(&lifecycle).map_err(failure)?,
+                )?;
+                if durable.phase() != ProfileLifecyclePhase::Idle {
+                    return Err(failure("clean recovery did not commit durable idle"));
+                }
+                std::fs::remove_dir_all(&root).map_err(failure)?;
+            } else {
+                eprintln!("KELD_PROFILE_RETAINED {}", root.display());
+            }
+            result
+        })
+    }
+
+    #[test]
+    #[ignore = "real WebView2 Profile4 saved-media reconciliation with synthetic identity"]
+    fn windows_saved_media_reconciliation_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, || {
+            use crate::profile::{ProfileIdentity, WebProfileSelection};
+
+            let root = profile_fixture_root("saved-media");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            let identity = ProfileIdentity::from_host_verified_parts(
+                [15; 32],
+                "dev.keld.synthetic-saved-media",
+            )?;
+            let mut engine =
+                profile_fixture_engine(&root, WebProfileSelection::Persistent(identity))?;
+            let first = engine.create(&blank_spec())?;
+            let profile = super::super::webview_profile(&engine.view(first)?.webview)?;
+            let origin = "http://127.0.0.1:41000/";
+            for kind in [
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+            ] {
+                super::super::set_profile_permission_state(
+                    &profile,
+                    &super::super::SavedPermission {
+                        kind,
+                        state: COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                        origin: origin.to_owned(),
+                    },
+                    COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                )?;
+            }
+            assert_saved_media_state(&profile, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+            println!("KELD_PROFILE_SAVED_MEDIA seeded=allow camera=true microphone=true");
+
+            engine.destroy(first)?;
+            engine.saved_permissions_reconciled = false;
+            let second = engine.create(&blank_spec())?;
+            let reconciled = super::super::webview_profile(&engine.view(second)?.webview)?;
+            assert_saved_media_state(&reconciled, origin, COREWEBVIEW2_PERMISSION_STATE_DENY)?;
+            println!("KELD_PROFILE_SAVED_MEDIA reconciled=deny camera=true microphone=true");
+
+            for kind in [
+                COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+            ] {
+                super::super::set_profile_permission_state(
+                    &reconciled,
+                    &super::super::SavedPermission {
+                        kind,
+                        state: COREWEBVIEW2_PERMISSION_STATE_DENY,
+                        origin: origin.to_owned(),
+                    },
+                    COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                )?;
+            }
+            assert_saved_media_state(&reconciled, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+            println!(
+                "KELD_PROFILE_SAVED_MEDIA mutation=restored-allow camera=true microphone=true"
+            );
+
+            let (commands_tx, commands_rx) = mpsc::channel();
+            commands_tx
+                .send(crate::AppWindowCommand::Quit)
+                .map_err(|_| failure("queue fixture Quit"))?;
+            let result = engine.run_app_until_quit(commands_rx, mpsc::channel().0);
+            if result.is_ok() {
+                std::fs::remove_dir_all(&root).map_err(failure)?;
+            } else {
+                eprintln!("KELD_PROFILE_RETAINED {}", root.display());
+            }
+            result
+        })
+    }
+
+    #[test]
+    #[ignore = "real same-profile media saved-grant phase subprocess"]
+    fn windows_saved_grant_phase_subprocess() -> Result<(), WvError> {
+        run_with_watchdog(FIXTURE_DEADLINE, run_saved_grant_phase)
+    }
 
     #[test]
     #[ignore = "real Windows WebView2 media acceptance subprocess"]

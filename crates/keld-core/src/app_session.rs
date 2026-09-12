@@ -1606,7 +1606,7 @@ fn run_app_direct(
     };
     let engine = run_direct_startup_if_session_running(&shutdown, || {
         #[cfg(windows)]
-        let mut direct_engine = WebView2Engine::new()
+        let mut direct_engine = WebView2Engine::new_dev_ephemeral()
             .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
         #[cfg(target_os = "linux")]
         let mut direct_engine = direct_engine;

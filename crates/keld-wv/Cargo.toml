@@ -50,6 +50,8 @@ wry = { version = "0.56.1", features = ["devtools"] }
 
 [target.'cfg(target_os="windows")'.dependencies]
 tao = "0.35.3"
+getrandom = { workspace = true }
+windows-permissions = { workspace = true }
 # --- Dependency review (KEL-65 / AGENTS.md gate) ---
 # Name: webview2-com 0.38 (was probe-only; now the whole Windows backend)
 # Purpose: direct WebView2 COM — environment/controller creation, the
@@ -67,7 +69,7 @@ webview2-com = "0.38"
 # HWND/RECT/HRESULT constants (Win32_Foundation), CoInitializeEx/CoTaskMemFree
 # (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
 # to a crate already in the graph rather than a second copy.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os="linux")'.dependencies]
 tao = "0.35.3"
