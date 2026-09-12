@@ -554,20 +554,32 @@ fn generated_main_launch_preserves_supplied_path_spelling() {
     assert!(output.status.success(), "recorder failed: {output:?}");
     let stdout = String::from_utf8(output.stdout).expect("recorder stdout is UTF-8");
     let expected_main = project.join("src/main.ts");
+    let expected_main_line = format!("main={}", expected_main.display());
     assert!(
-        stdout.contains(&format!("main={}\n", expected_main.display())),
+        stdout
+            .lines()
+            .any(|line| line == expected_main_line.as_str()),
         "actual child argv lost the supplied entry spelling: {stdout}"
     );
+    let expected_launch_main_line = format!("launch_main={}", expected_main.display());
     assert!(
-        stdout.contains(&format!("launch_main={}\n", expected_main.display())),
+        stdout
+            .lines()
+            .any(|line| line == expected_launch_main_line.as_str()),
         "diagnostic launch entry input lost the supplied spelling: {stdout}"
     );
+    let expected_launch_cwd_line = format!("launch_cwd={}", project.display());
     assert!(
-        stdout.contains(&format!("launch_cwd={}\n", project.display())),
+        stdout
+            .lines()
+            .any(|line| line == expected_launch_cwd_line.as_str()),
         "diagnostic launch cwd input lost the supplied spelling: {stdout}"
     );
+    let expected_runtime_cwd_line = format!("runtime_cwd={}", canonical.display());
     assert!(
-        stdout.contains(&format!("runtime_cwd={}\n", canonical.display())),
+        stdout
+            .lines()
+            .any(|line| line == expected_runtime_cwd_line.as_str()),
         "runtime cwd should report the normalized directory identity: {stdout}"
     );
 }
