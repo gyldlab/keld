@@ -26,6 +26,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
 use windows::core::PWSTR;
 
+use super::tests::run_with_watchdog;
 use super::{
     CoreWebView2EnvironmentOptions, E_POINTER, EventLoopBuilder, NavTarget,
     PermissionRequestedEventHandler, WebEngine, WebView2Engine, WebviewSpec, WindowsLoopEvent,
@@ -198,17 +199,6 @@ fn run_media_acceptance() -> Result<(), WvError> {
     }
 }
 
-fn run_with_watchdog<T>(
-    deadline: Duration,
-    work: impl FnOnce() -> Result<T, WvError>,
-) -> Result<T, WvError> {
-    let (done_tx, watchdog) = spawn_watchdog(deadline);
-    let result = work();
-    let _ = done_tx.send(());
-    watchdog.join().map_err(|_| failure("watchdog panicked"))?;
-    result
-}
-
 fn block_watchdog_probe() -> Result<(), WvError> {
     println!("KELD_MEDIA_PHASE watchdog-probe-work-block");
     let _ = std::io::stdout().flush();
@@ -319,23 +309,6 @@ fn destroy_primers(
         last = Some(primer);
     }
     Ok(last)
-}
-
-fn spawn_watchdog(deadline: Duration) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let watchdog = thread::spawn(move || {
-        if done_rx.recv_timeout(deadline) == Err(mpsc::RecvTimeoutError::Timeout) {
-            // This opt-in fixture is a disposable process. A process deadline also
-            // bounds nested creation/cleanup pumps; one consumed WM_QUIT cannot do so.
-            eprintln!(
-                "KELD_MEDIA_TIMEOUT: fixture exceeded {} seconds; inspect any KELD_MEDIA_PROFILE receipt",
-                deadline.as_secs_f64()
-            );
-            let _ = std::io::stderr().flush();
-            std::process::exit(124);
-        }
-    });
-    (done_tx, watchdog)
 }
 
 fn parent_deadline_is_valid(value: &str) -> bool {
