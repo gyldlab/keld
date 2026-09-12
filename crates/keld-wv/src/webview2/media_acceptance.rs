@@ -1187,6 +1187,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 // SAFETY: writable outputs; this query changes no COM ownership.
                 // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-cogetapartmenttype
                 unsafe { CoGetApartmentType(&raw mut kind, &raw mut qualifier) }
+                    .map(|()| (kind, qualifier))
             };
             assert_eq!(
                 apartment().expect_err("fresh STA").code(),
@@ -1194,21 +1195,45 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             );
             let root = profile_fixture_root("com-lifetime");
             std::fs::create_dir_all(&root).map_err(failure)?;
+            println!("KELD_COM fixture-root={}", root.display());
             let ephemeral = crate::profile::EphemeralProfile::from_host_random([93; 32])?;
             let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
             let plan = super::super::windows_profile_plan(&root, selection)?;
             let engine = profile_fixture_engine(&root, selection)?;
-            apartment().map_err(failure)?;
+            let (kind, qualifier) = apartment().map_err(failure)?;
+            assert!(matches!(
+                kind,
+                windows::Win32::System::Com::APTTYPE_STA
+                    | windows::Win32::System::Com::APTTYPE_MAINSTA
+            ));
+            assert_eq!(
+                qualifier,
+                windows::Win32::System::Com::APTTYPEQUALIFIER_NONE
+            );
             assert_eq!(
                 super::super::environment_user_data_folder(&engine.environment)?,
                 plan.user_data_dir
             );
             drop(engine);
-            // No Tao Window was created, so its per-window/TLS COM owners were
-            // never acquired. This isolates the engine's successful COM count.
+            // WebView2 can leave an implicit process MTA: CoGetApartmentType
+            // can succeed even without a calling-thread reference. No Tao
+            // Window exists yet. A new explicit STA must return S_OK rather
+            // than S_FALSE, which would reveal the engine's leaked reference.
+            // https://learn.microsoft.com/windows/win32/api/objidl/ne-objidl-apttypequalifier
+            // SAFETY: this observer acquires and balances only its own count.
+            // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-coinitializeex
+            let initialized = unsafe {
+                super::super::CoInitializeEx(None, super::super::COINIT_APARTMENTTHREADED)
+            };
+            if initialized.is_ok() {
+                // SAFETY: exactly balances the observer's successful S_OK/S_FALSE.
+                // https://learn.microsoft.com/windows/win32/api/combaseapi/nf-combaseapi-couninitialize
+                unsafe { super::super::CoUninitialize() };
+            }
             assert_eq!(
-                apartment().expect_err("engine COM count released").code(),
-                windows::Win32::Foundation::CO_E_NOTINITIALIZED
+                initialized,
+                windows::Win32::Foundation::S_OK,
+                "engine COM count released"
             );
             println!("KELD_COM engine-environment-dropped balanced");
 
