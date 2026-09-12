@@ -62,7 +62,7 @@ fn content_limit_rejects_read_and_write_without_mutating_target() {
     std::fs::remove_dir_all(&root).expect("cleanup owned root");
     assert_eq!(control.expect("fresh allowed operation"), b"fresh");
     assert_eq!(
-        read.as_ref().err().map(|e| e.code()),
+        read.as_ref().err().map(keld_native::fs::FsError::code),
         Some("KELD-NATIVE-004")
     );
     assert_eq!(
