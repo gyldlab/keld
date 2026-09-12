@@ -195,12 +195,15 @@ fn send_ready_then_reply_to_stock_echo<S: Read + Write>(stream: &mut S) -> Corre
 }
 
 fn spawn_generated_main(project: &Path, link: &str) -> ObservedChild {
+    let project = std::fs::canonicalize(project).expect("canonical generated project");
+    let main = project.join("src/main.ts");
     spawn_observed(
         Command::new("bun")
-            .args(["run", "src/main.ts"])
-            .current_dir(project)
+            .arg("run")
+            .arg(&main)
+            .current_dir(&project)
             .env("KELD_APP_LINK", link),
-        project,
+        &project,
     )
 }
 
@@ -208,6 +211,7 @@ fn add_entrypoint_diagnostic(project: &Path) {
     const GUARD: &str = "if (import.meta.main) {";
     const DIAGNOSTIC: &str = r#"console.error("KEL185_ENTRYPOINT_DIAGNOSTIC " + JSON.stringify({
   schema: "kel185-entrypoint-diagnostic/v1",
+  bunMain: Bun.main,
   bunVersion: Bun.version,
   bunRevision: Bun.revision,
   execPath: process.execPath,
@@ -232,6 +236,61 @@ fn add_entrypoint_diagnostic(project: &Path) {
         main.replacen(GUARD, &format!("{DIAGNOSTIC}{GUARD}"), 1),
     )
     .expect("write diagnostic generated main");
+}
+
+const ENTRYPOINT_DIAGNOSTIC_PREFIX: &str = "KEL185_ENTRYPOINT_DIAGNOSTIC ";
+
+fn capture_entrypoint_identity(project: &Path) -> (Output, Result<(), String>, serde_json::Value) {
+    let listener = BootstrapListener::bind().expect("bind app-link");
+    let link = listener.app_link();
+    let admission_deadline = Instant::now() + Duration::from_secs(2);
+    let server =
+        thread::spawn(move || accept_generated_main(&listener, admission_deadline).map(|_| ()));
+    let child = spawn_generated_main(project, &link);
+    let output = wait_for_output(child, Duration::from_secs(4)).expect("bounded diagnostic child");
+    let admission = server.join().expect("diagnostic server thread");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let record = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(ENTRYPOINT_DIAGNOSTIC_PREFIX));
+    assert!(
+        record.is_some(),
+        "diagnostic record missing from file-backed stderr; child {}",
+        output_diagnostics(&output)
+    );
+    let record = record.expect("record presence asserted");
+    let parsed = serde_json::from_str(record);
+    assert!(
+        parsed.is_ok(),
+        "invalid entrypoint JSON: {}; raw_record={record:?}; child {}",
+        parsed.as_ref().expect_err("parse failure asserted"),
+        output_diagnostics(&output)
+    );
+    let record = parsed.expect("entrypoint JSON validity asserted");
+    (output, admission, record)
+}
+
+#[cfg(windows)]
+fn windows_short_path(path: &Path) -> PathBuf {
+    let script = path.join("kel185-short-path.cmd");
+    std::fs::write(&script, "@for %%I in (\"%~1\") do @echo %%~sI\r\n")
+        .expect("write short-path query script");
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/C"])
+        .arg(&script)
+        .arg(path)
+        .output()
+        .expect("run GetShortPathName command expansion");
+    assert!(
+        output.status.success(),
+        "short-path query failed: {}",
+        output_diagnostics(&output)
+    );
+    let short = String::from_utf8(output.stdout).expect("short path is UTF-8");
+    let short = short.trim();
+    assert!(!short.is_empty(), "short-path query returned no path");
+    PathBuf::from(short)
 }
 
 const NO_CLIENT_ADMISSION_CHILD: &str = "created_template_server_admission_without_client_child";
@@ -313,38 +372,12 @@ fn created_template_pre_auth_failure_preserves_child_diagnostics() {
 /// with the redacted identity record captured through the same file-backed path.
 #[test]
 fn created_template_entrypoint_identity_precedes_the_main_guard() {
-    const PREFIX: &str = "KEL185_ENTRYPOINT_DIAGNOSTIC ";
-
     let dir = tempfile::tempdir().expect("tempdir");
     create_project(dir.path(), "app").expect("create");
     let project = dir.path().join("app");
     add_entrypoint_diagnostic(&project);
 
-    let listener = BootstrapListener::bind().expect("bind app-link");
-    let link = listener.app_link();
-    let admission_deadline = Instant::now() + Duration::from_secs(2);
-    let server =
-        thread::spawn(move || accept_generated_main(&listener, admission_deadline).map(|_| ()));
-    let child = spawn_generated_main(&project, &link);
-    let output = wait_for_output(child, Duration::from_secs(4)).expect("bounded diagnostic child");
-    let admission = server.join().expect("diagnostic server thread");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let record = stderr
-        .lines()
-        .find_map(|line| line.strip_prefix(PREFIX))
-        .unwrap_or_else(|| {
-            panic!(
-                "diagnostic record missing from file-backed stderr; child {}",
-                output_diagnostics(&output)
-            )
-        });
-    let record: serde_json::Value = serde_json::from_str(record).unwrap_or_else(|error| {
-        panic!(
-            "invalid entrypoint JSON: {error}; raw_record={record:?}; child {}",
-            output_diagnostics(&output)
-        )
-    });
+    let (output, admission, record) = capture_entrypoint_identity(&project);
     let evidence = || format!("identity={record}; child {}", output_diagnostics(&output));
     assert_eq!(
         record["schema"],
@@ -353,6 +386,11 @@ fn created_template_entrypoint_identity_precedes_the_main_guard() {
         evidence()
     );
     assert_eq!(record["keldAppLinkPresent"], true, "{}", evidence());
+    assert!(
+        record["bunMain"].as_str().is_some_and(|v| !v.is_empty()),
+        "{}",
+        evidence()
+    );
     assert!(
         record["bunVersion"].as_str().is_some_and(|v| !v.is_empty()),
         "{}",
@@ -398,13 +436,59 @@ fn created_template_entrypoint_identity_precedes_the_main_guard() {
         "generated entrypoint guard would be skipped; {}",
         evidence()
     );
-    admission.unwrap_or_else(|error| {
-        panic!(
-            "main=true diagnostic child did not authenticate: {error}; {}",
-            evidence()
-        )
-    });
-    println!("{PREFIX}{record}");
+    assert!(
+        admission.is_ok(),
+        "main=true diagnostic child did not authenticate: {}; {}",
+        admission.as_ref().expect_err("admission failure asserted"),
+        evidence()
+    );
+    println!("{ENTRYPOINT_DIAGNOSTIC_PREFIX}{record}");
+}
+
+/// Runs the real Rust launch/file-capture path against two spellings of the
+/// same generated project. A short-name mismatch must fail with both Bun path
+/// identities before any canonicalization change is considered.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires an explicit Windows temp root with a distinct 8.3 short alias"]
+fn created_template_entrypoint_matches_through_a_short_path_alias() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    create_project(dir.path(), "app").expect("create");
+    let project = dir.path().join("app");
+    add_entrypoint_diagnostic(&project);
+    let short_project = windows_short_path(&project);
+    assert_ne!(short_project, project, "8.3 alias is unavailable");
+    let canonical_short = std::fs::canonicalize(&short_project);
+    assert!(
+        canonical_short.is_ok(),
+        "canonical short project {short_project:?}: {}",
+        canonical_short
+            .as_ref()
+            .expect_err("canonicalization failure asserted")
+    );
+    assert_eq!(
+        canonical_short.expect("short path canonicalization asserted"),
+        std::fs::canonicalize(&project).expect("canonical long project"),
+        "long and short paths must identify the same project"
+    );
+
+    for (label, path) in [
+        ("long", project.as_path()),
+        ("short", short_project.as_path()),
+    ] {
+        let (output, admission, record) = capture_entrypoint_identity(path);
+        let evidence = format!(
+            "{label} identity={record}; child {}",
+            output_diagnostics(&output)
+        );
+        assert_eq!(record["importMetaMain"], true, "{evidence}");
+        assert_eq!(record["bunMain"], record["importMetaPath"], "{evidence}");
+        assert!(
+            admission.is_ok(),
+            "{label} admission failed: {}; {evidence}",
+            admission.as_ref().expect_err("admission failure asserted")
+        );
+    }
 }
 
 #[test]
