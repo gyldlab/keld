@@ -3294,7 +3294,11 @@ mod tests {
         let profile = EphemeralProfile::from_host_random([17; 32]).expect("ephemeral");
         let plan =
             windows_profile_plan(&root, WebProfileSelection::ephemeral_dev(profile)).expect("plan");
-        std::fs::create_dir_all(&plan.control_dir).expect("create old control");
+        let (control_handles, created) =
+            super::retain_directory_chain(&root, &plan.control_dir, true, false)
+                .expect("create old control through owning helper");
+        assert!(created);
+        drop(control_handles);
         std::fs::write(plan.control_dir.join(PROFILE_MARKER), &plan.marker)
             .expect("write old marker");
         std::fs::write(plan.control_dir.join(PROFILE_LEASE), []).expect("write old lease");
@@ -3304,7 +3308,11 @@ mod tests {
         let corrupt = EphemeralProfile::from_host_random([18; 32]).expect("ephemeral");
         let corrupt_plan = windows_profile_plan(&root, WebProfileSelection::ephemeral_dev(corrupt))
             .expect("corrupt plan");
-        std::fs::create_dir_all(&corrupt_plan.control_dir).expect("create corrupt control");
+        let (corrupt_handles, created) =
+            super::retain_directory_chain(&root, &corrupt_plan.control_dir, true, false)
+                .expect("create corrupt control through owning helper");
+        assert!(created);
+        drop(corrupt_handles);
         std::fs::write(corrupt_plan.control_dir.join(PROFILE_MARKER), b"foreign")
             .expect("write foreign marker");
         std::fs::write(corrupt_plan.control_dir.join(PROFILE_LEASE), [])
