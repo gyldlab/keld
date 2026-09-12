@@ -41,13 +41,19 @@ Bun app-link output. `cargo build -p keld-cli` alone does not provide the host i
 fresh checkout. `just hello` exercises only the diagnostic backend window.
 
 The [platform surfaces ledger](../engineering/product-status.md#platform-surfaces)
-owns implemented scope. The [final-source Windows record](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
-passes build, native window, interactive Ctrl-C output/cleanup, and relaunch; stock
-native Close remains incomplete. The [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
-passes its separate Ctrl-C/relaunch rows, while the
+owns implemented scope. The [Windows build/window/Ctrl-C/relaunch record](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
+covers the earlier interrupt path. Stock native Close/cleanup/relaunch is now qualified
+by the [landed-source Windows recheck](https://github.com/gyldlab/keld/issues/174#issuecomment-5644295973):
+two runs exited zero, all 16 captured original process identities were gone, both nonce
+stages were absent at 20 seconds, and no forced cleanup was used. This is a captured
+census on the recorded Windows 11 x64 device, not an exhaustive all-time child census
+or strict/release-profile qualification. For Ubuntu, see the
+[qualified Linux native-Close evidence](./README.md#qualified-linux-native-close-evidence);
+the [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
+covers separate Ctrl-C/relaunch rows, and the
 [initial Ubuntu run](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
-records the stock native-Close failure. X11 product runs, other distributions, and
-release packaging remain unverified. This source-built demo is not an installer or a
+records a historical stock native-Close failure. X11 product runs, other distributions,
+and release packaging remain unverified. This source-built demo is not an installer or a
 migrated Electron application.
 
 ---

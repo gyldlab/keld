@@ -156,13 +156,17 @@ The [Windows stock native-Close capture](https://github.com/gyldlab/keld/issues/
 qualifies two runs on source `62f4cc1a71a02db8d3b3a5959f2bbf6ba1a9a0c8`, Windows 11 x64,
 and Bun 1.4.2 revision `1.4.2+744846f84`; both CLI exits were zero, captured process
 identities exited, and both stages were absent at 20 seconds without forced cleanup.
-Complete strict-profile admission and release packaging remain unverified.
+The later [landed-source Windows recheck](https://github.com/gyldlab/keld/issues/174#issuecomment-5644295973)
+rebuilt PR #228's merge commit and confirmed two stock Close/cleanup/relaunch runs with
+zero exits and all 16 captured original process identities gone. No forced cleanup was
+used; this remains a captured census, not an exhaustive all-time child census or
+strict/release-profile qualification. Complete strict-profile admission and release
+packaging remain unverified.
 
 The [newer Linux relaunch/early-interrupt record](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
 tested [PR #184](https://github.com/gyldlab/keld/pull/184) and produced no `KELD-CORE`
-diagnostic while passing cleanup/relaunch observables. That cancellation fix remains a
-separate unmerged candidate, so this documentation change does not claim it landed on
-`main`.
+diagnostic while passing cleanup/relaunch observables. PR #184 has since merged as
+9ad79936f7b999b960846c850c83790306525c17; its cancellation fix is on `main`.
 
 The generated app is the canonical current example. Its `index.html` is the renderer;
 `src/main.ts` contains the app-link client and echo. It is not an Electron migration
