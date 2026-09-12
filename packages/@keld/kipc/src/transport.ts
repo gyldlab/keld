@@ -802,10 +802,10 @@ async function writeOneFrame(
   const frame = new Uint8Array(header.length + payload.length);
   frame.set(header, 0);
   frame.set(payload, header.length);
-  const deadlineAt = Date.now() + APP_LINK_IO_DEADLINE_MS;
+  const deadlineAt = performance.now() + APP_LINK_IO_DEADLINE_MS;
   let offset = 0;
   while (offset < frame.length) {
-    const remaining = deadlineAt - Date.now();
+    const remaining = deadlineAt - performance.now();
     if (remaining <= 0) {
       throw ioDeadlineExceeded();
     }
