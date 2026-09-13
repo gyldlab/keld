@@ -519,6 +519,7 @@ fn created_template_entrypoint_matches_through_a_short_path_alias() {
             "{label} admission failed: {}; {evidence}",
             admission.as_ref().expect_err("admission failure asserted")
         );
+        println!("{label} {ENTRYPOINT_DIAGNOSTIC_PREFIX}{record}");
     }
 }
 
