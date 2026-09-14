@@ -173,6 +173,22 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaises(Invalid):
                 self.check(publication=publication)
 
+    def test_publication_requires_frozenset_of_nonempty_string_ids(self):
+        author = "authenticated-test-author"
+        data = json.dumps(self.candidate).encode()
+        good = Publication("comment", author, "winning-test-claim", frozenset({author}), sha(data))
+        malformed = [
+            "not-" + author, [author], (author,), {author}, {author: True}, None,
+            frozenset({author, 7}), frozenset({author, None}),
+            frozenset({author, ""}), frozenset({author, " "}),
+        ]
+        for ids in malformed:
+            with self.subTest(ids=ids), self.assertRaises(Invalid):
+                self.check(publication=replace(good, authorized_author_ids=ids))
+        with self.assertRaises(Invalid):
+            self.check(publication=replace(good, authorized_author_ids=frozenset({"not-" + author})))
+        self.assertEqual(self.check(publication=good), self.candidate)
+
     def test_contract_receipt_cannot_override_actual_git_bytes(self):
         for key in ("spec_blob", "spec_sha256", "decision_digest"):
             t0 = copy.deepcopy(self.t0)

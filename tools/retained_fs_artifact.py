@@ -85,6 +85,18 @@ def validate(artifact_bytes, *, approved_t0, publication, repo, current_main, ev
     require(isinstance(publication, Publication), "independent publication facts required")
     for name in ("comment_id", "author_id", "winning_claim_id"):
         text(getattr(publication, name), name)
+    require(
+        type(publication.authorized_author_ids) is frozenset,
+        "authorized_author_ids must be a frozenset",
+    )
+    require(
+        all(
+            isinstance(author_id, str) and bool(author_id.strip())
+            for author_id in publication.authorized_author_ids
+        ),
+        "authorized_author_ids must contain nonempty string IDs",
+    )
+    digest(publication.artifact_sha256, 64, "publication artifact SHA256")
     require(publication.author_id in publication.authorized_author_ids, "unauthorized publisher")
     require(artifact.get("publisher_id") == publication.author_id, "publisher identity mismatch")
     require(artifact.get("claim_id") == publication.winning_claim_id, "winning claim mismatch")
