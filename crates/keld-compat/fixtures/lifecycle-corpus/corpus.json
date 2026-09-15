@@ -1,0 +1,38 @@
+{
+  "corpus_id": "electron-lifecycle-v0",
+  "scope": "@keld/electron app lifecycle slice only; not median-app product compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "upstream": {
+    "electron_version": "44.3.0",
+    "electron_commit": "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2",
+    "app_docs": "https://github.com/electron/electron/blob/07e460719c75b2ec5ee4893f7d2192ef31c7b8c2/docs/api/app.md"
+  },
+  "cells": [
+    {
+      "operation_id": "app.when-ready.host-ready-gate",
+      "oracle_id": "electron-v44.3.0.app.when-ready-initialized",
+      "expected_verdict": "pass",
+      "test_path": "crates/keld-compat/tests/electron_lifecycle.rs",
+      "test_name": "when_ready_does_not_resolve_before_host_ready_event",
+      "negative_control": "Replacing whenReady with Promise.resolve() makes the mapped conformance test fail before host Ready."
+    },
+    {
+      "operation_id": "app.window-all-closed.policy",
+      "oracle_id": "electron-v44.3.0.app.window-all-closed-policy",
+      "expected_verdict": "pass",
+      "test_path": "packages/@keld/electron/src/app.test.ts",
+      "test_name": "LastWindowClosed default-quits with zero listeners, after last removeListener, and not while a listener remains",
+      "negative_control": "A remaining window-all-closed listener must suppress default quit; removing the last listener restores default quit."
+    },
+    {
+      "operation_id": "app.quit.return-contract",
+      "oracle_id": "electron-v44.3.0.app.quit-void",
+      "expected_verdict": "fail",
+      "test_path": "packages/@keld/electron/src/app.test.ts",
+      "test_name": "returns Promise<void> so unset KELD_APP_LINK is KELD-IPC-007, not silent void",
+      "negative_control": "Changing Keld app.quit to silent void would make the mapped divergence test fail.",
+      "intentional_divergence": "Electron app.quit() is void; Keld returns Promise<void> so typed kipc failure remains observable."
+    }
+  ]
+}

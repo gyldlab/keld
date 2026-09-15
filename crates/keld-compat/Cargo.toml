@@ -11,13 +11,16 @@ authors.workspace = true
 [dependencies]
 keld-core = { workspace = true }
 # Cold JSON ledger parser (KEL-74). Already workspace-pinned for keld-guard /
-# keld-cli. Alternatives rejected: a new crate; hand-rolled JSON; sha2 (this
-# slice validates digest *format* and classifies magic bytes only).
+# keld-cli. T1 rejected a production sha2 dependency because it validates digest
+# format only; KEL-237 uses the existing workspace pin below strictly in tests.
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 keld-ipc = { workspace = true }
+# Corpus digest validation only (KEL-237). Reuses the workspace pin already
+# used by KEL-77 evidence producers; test-only, never on the runtime path.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true
