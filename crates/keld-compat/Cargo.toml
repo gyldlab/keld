@@ -18,6 +18,9 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 keld-ipc = { workspace = true }
+# Corpus digest validation only (KEL-237). Reuses the workspace pin already
+# used by KEL-77 evidence producers; test-only, never on the runtime path.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true
