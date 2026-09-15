@@ -19,7 +19,7 @@ const TS_APP_TESTS: &str = include_str!("../../../packages/@keld/electron/src/ap
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Corpus {
+struct Manifest {
     corpus_id: String,
     scope: String,
     panel: String,
@@ -71,7 +71,7 @@ fn test_source(path: &str) -> &'static str {
 
 #[test]
 fn lifecycle_corpus_denominator_matches_exact_manifest_bytes() {
-    let corpus: Corpus = serde_json::from_slice(CORPUS_JSON).expect("lifecycle corpus JSON");
+    let corpus: Manifest = serde_json::from_slice(CORPUS_JSON).expect("lifecycle corpus JSON");
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
 
     assert_eq!(corpus.corpus_id, "electron-lifecycle-v0");
@@ -125,7 +125,7 @@ fn lifecycle_corpus_denominator_matches_exact_manifest_bytes() {
 
 #[test]
 fn lifecycle_corpus_cells_map_to_existing_behavioral_oracles() {
-    let corpus: Corpus = serde_json::from_slice(CORPUS_JSON).expect("lifecycle corpus JSON");
+    let corpus: Manifest = serde_json::from_slice(CORPUS_JSON).expect("lifecycle corpus JSON");
 
     assert_eq!(corpus.upstream.electron_version, "44.3.0");
     assert_eq!(
