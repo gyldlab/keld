@@ -29,7 +29,7 @@ do not establish release support:
 |---|---|---|
 | macOS / WKWebView | Native window, app link, recovery, ordered Quit/CLI-loss cleanup | Stock app native Close remains unverified; complete strict profiles and release packaging |
 | Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock native Close/cleanup/relaunch qualified on the [Windows 11 x64 capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405); complete strict-profile admission and release packaging remain unverified |
-| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Native Close/cleanup/relaunch qualified on the [PR #228 candidate](https://github.com/gyldlab/keld/pull/228) for Ubuntu 26.04.1 / GNOME Wayland; X11 product runs, other distributions/architectures, and release packaging remain unverified |
+| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Native Close/cleanup/relaunch qualified by the landed [PR #228 lifecycle correction](https://github.com/gyldlab/keld/pull/228) on Ubuntu 26.04.1 / GNOME Wayland; X11 product runs, other distributions/architectures, and release packaging remain unverified |
 
 ## Try it
 
@@ -61,12 +61,14 @@ and Bun 1.4.2 revision `1.4.2+744846f84`; both CLI exits were zero, captured pro
 identities exited, and both stages were absent at 20 seconds without forced cleanup.
 
 The [qualified Linux native-Close evidence](docs/onboarding/README.md#qualified-linux-native-close-evidence)
-for [PR #228](https://github.com/gyldlab/keld/pull/228), source `a843b32`, updates the
-historical failure status for that tested environment only. The earlier
+for the landed [PR #228](https://github.com/gyldlab/keld/pull/228), exact candidate
+`e4987703812a9c7ebb8d2656b870bbb99f03c730`, updates the historical failure status for
+that tested environment only. The earlier
 [Ubuntu/Wayland failure record](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
 remains linked as history. The [lifecycle issue](https://github.com/gyldlab/keld/issues/176)
-tracks the stock-app correction. The Rust executables are built from source; there is
-no npm installation or packaged app release yet.
+is closed after the correction landed as merge commit
+`9eb54fb7fe31f94a3c1e2c70b97714b869768c67`. The Rust executables are built from
+source; there is no npm installation or packaged app release yet.
 
 ## Evidence
 
