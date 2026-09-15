@@ -6,7 +6,7 @@
 
 #![allow(clippy::expect_used, clippy::panic)] // test-only parsing/assertion context
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::PathBuf, process::Command};
 
 use keld_compat::evidence::{OperationKind, Panel, parse_denominator};
 use serde::Deserialize;
@@ -51,6 +51,14 @@ struct CorpusCell {
 
 fn sha256_uri(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/keld-compat -> workspace root")
+        .to_path_buf()
 }
 
 fn test_source(path: &str) -> &'static str {
@@ -166,4 +174,20 @@ fn lifecycle_corpus_cells_map_to_existing_behavioral_oracles() {
             ),
         }
     }
+}
+
+#[test]
+fn lifecycle_corpus_typescript_oracles_execute() {
+    let output = Command::new("bun")
+        .args(["test", "./packages/@keld/electron/src/app.test.ts"])
+        .current_dir(workspace_root())
+        .output()
+        .expect("spawn existing @keld/electron app test file — bun must be on PATH");
+
+    assert!(
+        output.status.success(),
+        "mapped TypeScript lifecycle oracles failed. stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
