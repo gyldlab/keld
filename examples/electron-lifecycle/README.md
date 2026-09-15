@@ -27,13 +27,21 @@ The fixture uses the same import shape an Electron main process uses:
 import { app } from "electron";
 
 app.on("window-all-closed", () => {
-  void app.quit();
+  void app.quit().then(
+    () => process.exit(0),
+    (err: unknown) => {
+      console.error(`Keld lifecycle quit failed: ${String(err)}`);
+      process.exit(1);
+    },
+  );
 });
 
 await app.whenReady();
 ```
 
-The fixture contains extra markers and a deliberately throwing `ready` listener because it is also a regression oracle. Those test details prove that listener failure does not skip the remaining listener or break the lifecycle read loop.
+Keld's `app.quit()` returns `Promise<void>`, so the example handles both fulfillment and rejection instead of discarding a possible `KELD-IPC-*` transport failure.
+
+The fixture contains extra markers and a deliberately throwing `ready` listener because it also participates in broader lifecycle regression coverage. The named command above specifically proves host-gated `whenReady()`, later `window-all-closed` delivery, real Quit completion, and successful child exit; it does not independently assert the fixture's `KEL72_READY_SECOND` marker.
 
 The adjacent [`tsconfig.json`](../../packages/@keld/electron/fixtures/tsconfig.json) is the current v0 runtime alias owner for this fixture: Bun resolves `electron` to the repository's [`@keld/electron`](../../packages/@keld/electron/src/index.ts) package through `compilerOptions.paths`. The package then uses the canonical [`@keld/kipc`](../../packages/@keld/kipc/src/transport.ts) transport through its lifecycle adapter. There is one transport and one authenticated app-link; this example adds neither.
 
@@ -43,7 +51,7 @@ The conformance harness requires the following behavior:
 
 1. the Bun main process starts and records `KEL72_WAITING`;
 2. `app.whenReady()` remains pending after authenticated connection establishment;
-3. only after the host sends lifecycle `Ready` do the `ready` listener and `app.whenReady()` complete;
+3. only after the host sends lifecycle `Ready` does `app.whenReady()` complete;
 4. the application does not synthesize `window-all-closed` itself;
 5. after the host reports its last window closed, the registered `window-all-closed` listener runs;
 6. `app.quit()` sends the real lifecycle Quit call and the host session ends successfully.
