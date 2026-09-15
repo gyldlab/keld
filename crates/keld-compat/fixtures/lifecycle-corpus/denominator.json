@@ -1,0 +1,21 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-lifecycle-v0",
+  "corpus_sha256": "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "app.when-ready.host-ready-gate",
+      "oracle_id": "electron-v44.3.0.app.when-ready-initialized"
+    },
+    {
+      "operation_id": "app.window-all-closed.policy",
+      "oracle_id": "electron-v44.3.0.app.window-all-closed-policy"
+    },
+    {
+      "operation_id": "app.quit.return-contract",
+      "oracle_id": "electron-v44.3.0.app.quit-void"
+    }
+  ]
+}
