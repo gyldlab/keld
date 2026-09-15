@@ -13,11 +13,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const CORPUS_JSON: &[u8] = include_bytes!("../fixtures/lifecycle-corpus/corpus.json");
-const DENOMINATOR_JSON: &[u8] =
-    include_bytes!("../fixtures/lifecycle-corpus/denominator.json");
+const DENOMINATOR_JSON: &[u8] = include_bytes!("../fixtures/lifecycle-corpus/denominator.json");
 const RUST_LIFECYCLE_TESTS: &str = include_str!("electron_lifecycle.rs");
-const TS_APP_TESTS: &str =
-    include_str!("../../../packages/@keld/electron/src/app.test.ts");
+const TS_APP_TESTS: &str = include_str!("../../../packages/@keld/electron/src/app.test.ts");
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +70,9 @@ fn lifecycle_corpus_denominator_matches_exact_manifest_bytes() {
     assert_eq!(corpus.panel, "showcase");
     assert_eq!(corpus.kind, "primary_workflow");
     assert!(
-        corpus.scope.contains("not median-app product compatibility"),
+        corpus
+            .scope
+            .contains("not median-app product compatibility"),
         "bounded corpus must not read as the product denominator"
     );
 
