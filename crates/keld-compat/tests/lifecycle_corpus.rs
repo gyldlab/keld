@@ -238,7 +238,11 @@ fn lifecycle_corpus_rust_oracles_execute() {
         output.status.success(),
         "Rust lifecycle oracles failed. stdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    for cell in manifest().cells.iter().filter(|cell| cell.test_path == RUST_TEST_PATH) {
+    for cell in manifest()
+        .cells
+        .iter()
+        .filter(|cell| cell.test_path == RUST_TEST_PATH)
+    {
         assert!(
             rust_case_passed(&stdout, &cell.test_name),
             "{} needs exactly one executed, passing Rust test `{}`. stdout:\n{stdout}",
@@ -265,7 +269,11 @@ fn lifecycle_corpus_typescript_oracles_execute() {
         output.status.success(),
         "TypeScript lifecycle oracles failed. stdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    for cell in manifest().cells.iter().filter(|cell| cell.test_path == TS_TEST_PATH) {
+    for cell in manifest()
+        .cells
+        .iter()
+        .filter(|cell| cell.test_path == TS_TEST_PATH)
+    {
         assert!(
             bun_case_passed(&stderr, &cell.test_name),
             "{} needs exactly one executed, passing Bun test `{}`. stderr:\n{stderr}",
@@ -279,7 +287,10 @@ fn lifecycle_corpus_typescript_oracles_execute() {
 #[test]
 fn rust_case_results_reject_source_mentions_and_unexecuted_cases() {
     let source_only = "// #[test] fn mapped() {}\nfn mapped() {}\n";
-    assert!(source_only.contains("mapped"), "old check accepted this source");
+    assert!(
+        source_only.contains("mapped"),
+        "old check accepted this source"
+    );
     for output in [
         source_only,
         "",
@@ -289,7 +300,10 @@ fn rust_case_results_reject_source_mentions_and_unexecuted_cases() {
         "test mapped_extra ... ok\n",
         "test mapped ... ok\ntest mapped ... ok\n",
     ] {
-        assert!(!rust_case_passed(output, "mapped"), "false admission: {output}");
+        assert!(
+            !rust_case_passed(output, "mapped"),
+            "false admission: {output}"
+        );
     }
     assert!(rust_case_passed("test mapped ... ok\n", "mapped"));
 }
@@ -298,7 +312,10 @@ fn rust_case_results_reject_source_mentions_and_unexecuted_cases() {
 #[test]
 fn bun_case_results_reject_source_mentions_and_unexecuted_cases() {
     let source_only = "// test(\"mapped\", () => {});\nfunction mapped() {}\n";
-    assert!(source_only.contains("mapped"), "old check accepted this source");
+    assert!(
+        source_only.contains("mapped"),
+        "old check accepted this source"
+    );
     for output in [
         source_only,
         "",
@@ -309,8 +326,14 @@ fn bun_case_results_reject_source_mentions_and_unexecuted_cases() {
         "(pass) suite > mapped_extra [1.00ms]\n",
         "(pass) first > mapped\n(pass) second > mapped\n",
     ] {
-        assert!(!bun_case_passed(output, "mapped"), "false admission: {output}");
+        assert!(
+            !bun_case_passed(output, "mapped"),
+            "false admission: {output}"
+        );
     }
-    assert!(bun_case_passed("(pass) suite > mapped [1.00ms]\n", "mapped"));
+    assert!(bun_case_passed(
+        "(pass) suite > mapped [1.00ms]\n",
+        "mapped"
+    ));
     assert!(bun_case_passed("(pass) mapped\n", "mapped"));
 }
