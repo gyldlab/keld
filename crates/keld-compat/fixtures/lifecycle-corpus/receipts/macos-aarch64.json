@@ -1,0 +1,52 @@
+{
+  "schema": "keld.lifecycle.ci-receipt/v1",
+  "source": {
+    "pull_request": 242,
+    "pr_head": "fd3c875c59e3cb0b0530166b21013571afd05754",
+    "tested_commit": "38db257ba2d1f377bd2e24f7bc871faca895c6d5",
+    "actions_run_id": 35015086640,
+    "actions_job_id": 104536859915,
+    "actions_job_name": "clippy + test (macos-latest)",
+    "ci_required_job_id": 104538742340,
+    "conclusion": "success",
+    "run_url": "https://github.com/gyldlab/keld/actions/runs/35015086640",
+    "job_url": "https://github.com/gyldlab/keld/actions/runs/35015086640/job/104536859915"
+  },
+  "runner": {
+    "platform": "macos",
+    "arch": "aarch64",
+    "runner_arch": "ARM64",
+    "os": "macOS 26.6.2 (25G83)",
+    "image": "macos-26-arm64",
+    "image_version": "20260907.0351.1"
+  },
+  "runtime": {
+    "bun_version": "1.4.2",
+    "bun_revision": "744846f844374847c902b5e7fd59b4342a51ef99",
+    "rust_version": "1.97.1",
+    "rust_commit": "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+  },
+  "corpus": {
+    "id": "electron-lifecycle-v0",
+    "sha256": "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2",
+    "upstream_electron_version": "44.3.0",
+    "upstream_electron_commit": "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2"
+  },
+  "test": {
+    "crate": "keld-compat",
+    "passed": 48,
+    "skipped": 0,
+    "mapped_cases": [
+      "electron_lifecycle::bunfig_alias_resolves_electron_and_shims_process_fields",
+      "electron_lifecycle::app_ready_isolates_listeners_retries_connect_without_unhandled_rejection",
+      "electron_lifecycle::when_ready_does_not_resolve_before_host_ready_event",
+      "lifecycle_corpus::lifecycle_corpus_cells_map_to_existing_behavioral_oracles",
+      "lifecycle_corpus::lifecycle_corpus_denominator_matches_exact_manifest_bytes",
+      "lifecycle_corpus::lifecycle_corpus_typescript_oracles_execute",
+      "lifecycle_corpus::lifecycle_corpus_rust_oracles_execute",
+      "lifecycle_corpus::bun_case_results_reject_source_mentions_and_unexecuted_cases",
+      "lifecycle_corpus::rust_case_results_reject_source_mentions_and_unexecuted_cases"
+    ]
+  },
+  "scope": "Headless lifecycle conformance only; no native-window, webview-engine, strict-profile, packaging, release, or adoption qualification."
+}
