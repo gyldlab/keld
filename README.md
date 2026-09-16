@@ -1,118 +1,380 @@
 # KELD
 
-Keld is a desktop framework being built around a Rust host, Bun application processes,
-and the operating system's webview. Its goal is to make Electron applications smaller
-and easier to secure while measuring compatibility against real application behavior.
-By [GYLDLAB](https://github.com/gyldlab).
+**Keep your JavaScript. Change the desktop foundation.**
 
-**Pre-alpha: build from source.** The current runnable slice scaffolds an application,
-opens a native webview window, and runs an authenticated IPC echo in a supervised Bun
-process. Electron migration, application installers, and signed updates are future work.
+KELD is a pre-alpha desktop framework being built for JavaScript and TypeScript teams that want a path beyond Electron without turning migration into a backend rewrite.
 
-## What works today
+**Rust host · Bun main process · system webviews · authenticated KIPC**
 
-- `keld create`, `keld dev`, and `keld doctor` support the current hello application.
-- The Rust host owns the window and Bun lifecycle; kipc provides authenticated app-link
-  communication, framed messages, and typed codecs.
-- Permission parsing and guard-before-handler checks exist. Broad native services and
-  complete strict-profile admission remain incomplete.
-- `@keld/electron` implements a limited application-lifecycle facade. Its
-  [compatibility board](docs/engineering/compat-scoreboard.md) records the known
-  matches and divergences; broad Electron compatibility is not measured yet.
+Open source by [GYLDLAB](https://github.com/gyldlab).
 
-The generated [Current/Target/Evidence ledger](docs/engineering/product-status.md)
-is the source of truth for implemented scope and its evidence. These rows summarize
-its no-flag app-session implementation and the latest acceptance limitations; they
-do not establish release support:
+> **Pre-alpha · source build only.** The current KELD slice is runnable today, but packaged releases, broad Electron compatibility, `keld build`, `keld migrate`, installers, and signed updates are not available yet.
 
-| Platform | Current app-session slice | Qualification still needed |
-|---|---|---|
-| macOS / WKWebView | Native window, app link, recovery, ordered Quit/CLI-loss cleanup | Stock app native Close remains unverified; complete strict profiles and release packaging |
-| Windows / WebView2 | Native window, named-pipe app link, recovery, Ctrl-C cleanup and relaunch | Stock native Close/cleanup/relaunch qualified on the [Windows 11 x64 capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405); complete strict-profile admission and release packaging remain unverified |
-| Ubuntu/Debian x86_64 / WebKitGTK / Wayland | Window, authenticated link, strict Bun generations, recovery | Native Close/cleanup/relaunch qualified by the landed [PR #228 lifecycle correction](https://github.com/gyldlab/keld/pull/228) on Ubuntu 26.04.1 / GNOME Wayland; X11 product runs, other distributions/architectures, and release packaging remain unverified |
+[Quick start](#quick-start) · [Why KELD](#why-keld-exists) · [Evidence](#evidence-snapshot) · [Benchmarks](https://github.com/gyldlab/keld-benches) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md)
 
-## Try it
+---
 
-Use the [source-build quick-start](docs/onboarding/README.md#run-the-current-demo)
-for prerequisites, expected output, and Windows instructions. With Rust and Bun
-installed, run this in a macOS or Ubuntu/Debian x86_64 Wayland desktop terminal
-after checking the platform prerequisites and current limitations below:
+## Quick start
+
+You need **Git**, **Rust via rustup**, and **Bun 1.4.2**. Windows and Linux have additional platform prerequisites; the [source-build guide](docs/onboarding/README.md) records the exact requirements and troubleshooting path.
+
+### macOS / qualified Ubuntu/Debian Wayland
 
 ```bash
 git clone https://github.com/gyldlab/keld.git
 cd keld
+
 cargo build --locked -p keld-cli -p keld-host
+
 ./target/debug/keld create hello-keld
 cd hello-keld
+
 ../target/debug/keld doctor
 ../target/debug/keld dev
 ```
 
-The expected result is a `hello-keld` window. Captured Bun output, including
-`IPC echo ok`, appears at shutdown. Maintainer-recorded, source-pinned public evidence
-covers the [Windows build/window/Ctrl-C/relaunch run](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723)
-and the [Ubuntu build/create/doctor/window/Ctrl-C/relaunch run](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871).
-Both used Bun 1.4.0; Windows used interactive PowerShell. These dated interrupt runs remain
-separate from native-Close acceptance.
+### Windows PowerShell
 
-The [Windows stock native-Close capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405)
-qualifies two runs on source `62f4cc1a71a02db8d3b3a5959f2bbf6ba1a9a0c8`, Windows 11 x64,
-and Bun 1.4.2 revision `1.4.2+744846f84`; both CLI exits were zero, captured process
-identities exited, and both stages were absent at 20 seconds without forced cleanup.
+```powershell
+git clone https://github.com/gyldlab/keld.git
+Set-Location keld
 
-The [qualified Linux native-Close evidence](docs/onboarding/README.md#qualified-linux-native-close-evidence)
-for the landed [PR #228](https://github.com/gyldlab/keld/pull/228), exact candidate
-`e4987703812a9c7ebb8d2656b870bbb99f03c730`, updates the historical failure status for
-that tested environment only. The earlier
-[Ubuntu/Wayland failure record](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
-remains linked as history. The [lifecycle issue](https://github.com/gyldlab/keld/issues/176)
-is closed after the correction landed as merge commit
-`9eb54fb7fe31f94a3c1e2c70b97714b869768c67`. The Rust executables are built from
-source; there is no npm installation or packaged app release yet.
+cargo build --locked -p keld-cli -p keld-host
 
-## Evidence
+.\target\debug\keld.exe create hello-keld
+Set-Location hello-keld
 
-- [Product status](docs/engineering/product-status.md): code and tests behind every
-  current capability, with target-only work called out.
-- [Electron compatibility](docs/engineering/compat-scoreboard.md): implemented
-  lifecycle behavior and divergences. No product corpus percentage is published yet.
-- [Benchmarks](https://github.com/gyldlab/keld-benches) and the
-  [measurement scoreboard](docs/engineering/budget-scoreboard.md): OS-qualified
-  fixtures, pinned measurements, and limitations. Historical hello measurements do not
-  establish a performance claim for a complete migrated application.
-- [CI](https://github.com/gyldlab/keld/actions/workflows/ci.yml): current automated
-  checks. A CI run and a real desktop acceptance run are different evidence.
-- Public, source-pinned device records: [Windows/WebView2](https://github.com/gyldlab/keld/issues/174#issuecomment-5589117723),
-  [Windows native Close](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405),
-  [initial Ubuntu/WebKitGTK](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917),
-  and the [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871).
-  These maintainer-recorded observations preserve their platform limits and do not
-  establish acceptance for another OS, session type, or exit path.
+..\target\debug\keld.exe doctor
+..\target\debug\keld.exe dev
+```
 
-## Roadmap
+**Expected result:** a native window titled `hello-keld`.
 
-The public [roadmap](ROADMAP.md) explains the next prerequisites and their exit
-criteria. [GitHub Issues](https://github.com/gyldlab/keld/issues) is the public place to
-report defects, find contribution opportunities, and follow work.
+The current demo also starts a supervised Bun application process and establishes an authenticated KIPC application link. When the session shuts down, captured Bun output includes the echo round-trip:
 
-## Target
+```text
+ipc-echo ok: message="keld" count=1
+hello-keld: main process ready (IPC echo ok)
+```
 
-Keld aims to provide a prebuilt Rust host, supervised Bun application roles, typed
-kipc, and generated host-enforced default-deny permissions. Electron applications
-would migrate through a compatibility facade with unsupported behavior visible.
+### What happens when you run KELD?
 
-`keld migrate` and `keld build` are reserved commands today. VS Code migration is a
-future stress workload that depends on those framework contracts; it is not a current
-demo. The [architecture](docs/architecture/01-overview.md) defines the destination.
+```mermaid
+flowchart TB
+    START(["Developer starts with the KELD source tree"])
 
-## Contribute
+    subgraph BUILD["Build and scaffold"]
+        BUILDCLI["Build keld-cli + keld-host<br/>cargo build --locked"]
+        CREATE["Create a project<br/>keld create hello-keld"]
+        PROJECT["Generated project<br/>keld.config.ts · index.html · src/main.ts"]
+    end
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md), the
-[maintainers](MAINTAINERS.md), and the [Code of Conduct](CODE_OF_CONDUCT.md).
-Report vulnerabilities through [SECURITY.md](SECURITY.md). Public code, documentation,
-and tests are sufficient to contribute; private research is optional.
+    subgraph VALIDATE["Environment and project admission"]
+        DOCTOR["Validate the environment<br/>keld doctor"]
+        DEV["Start the development session<br/>keld dev"]
+    end
+
+    subgraph SESSION["KELD application session"]
+        HOST["Rust host owns the session<br/>native window · lifecycle · privileged boundaries"]
+        BUN["Supervised Bun main process<br/>runs application-side JavaScript / TypeScript"]
+        KIPC["Authenticated KIPC app link<br/>HELLO proves the session token before framed messages"]
+        ADMITTED["Authenticated application session<br/>host and Bun can exchange admitted messages"]
+    end
+
+    subgraph PLATFORM["Operating-system rendering"]
+        SELECT{"Host selects the current OS backend"}
+        MAC["macOS<br/>WKWebView"]
+        WINDOWS["Windows<br/>WebView2"]
+        LINUX["Linux<br/>WebKitGTK"]
+    end
+
+    RESULT(["Observable result<br/>native hello-keld window + supervised shutdown output"])
+
+    START -->|"build"| BUILDCLI
+    BUILDCLI -->|"scaffold"| CREATE
+    CREATE -->|"writes"| PROJECT
+    PROJECT -->|"inspect prerequisites"| DOCTOR
+    DOCTOR -->|"admit project"| DEV
+    DEV -->|"launch shipping session"| HOST
+    HOST -->|"spawn and supervise"| BUN
+    BUN -->|"HELLO authenticates"| KIPC
+    KIPC -->|"establish app link"| ADMITTED
+    ADMITTED -->|"host creates native webview"| SELECT
+    SELECT -->|"on macOS"| MAC
+    SELECT -->|"on Windows"| WINDOWS
+    SELECT -->|"on Linux"| LINUX
+    MAC -->|"renders"| RESULT
+    WINDOWS -->|"renders"| RESULT
+    LINUX -->|"renders"| RESULT
+
+    classDef action fill:#DCE6F2,stroke:#72879A,color:#26343F,stroke-width:1.2px;
+    classDef app fill:#EEE5D5,stroke:#9B8867,color:#3B3428,stroke-width:1.2px;
+    classDef authority fill:#DDE9DF,stroke:#718A76,color:#26352A,stroke-width:1.2px;
+    classDef platform fill:#E7E2EC,stroke:#84798E,color:#342E39,stroke-width:1.2px;
+    classDef result fill:#E3E8E4,stroke:#6F7E72,color:#26352A,stroke-width:1.4px;
+
+    class BUILDCLI,CREATE,DOCTOR,DEV action;
+    class PROJECT,BUN app;
+    class HOST,KIPC,ADMITTED authority;
+    class SELECT,MAC,WINDOWS,LINUX platform;
+    class START,RESULT result;
+```
+
+That is the current source-built development path. It is not yet an npm-installed or packaged application workflow.
+
+---
+
+## Why KELD exists
+
+Electron is widely used for good reasons: JavaScript/TypeScript productivity, a mature ecosystem, and predictable Chromium behavior. KELD is not built on the assumption that those reasons are mistakes.
+
+It is built around a different question:
+
+> **How much of the Electron development model can we preserve while moving desktop authority, lifecycle, IPC, and native boundaries into a KELD-controlled host—and making the migration risk measurable?**
+
+| Developer pain | KELD response |
+|---|---|
+| **A framework switch becomes a backend rewrite** | Keep application-side JavaScript/TypeScript in a supervised Bun main process while Rust owns the desktop foundation. |
+| **Compatibility failures appear late in migration** | Record behavior against explicit oracles, keep divergences visible, and avoid a universal compatibility percentage that hides unknowns. |
+| **System webviews differ by platform** | Treat WKWebView, WebView2, and WebKitGTK as platform-qualified surfaces rather than pretending one successful OS proves another. |
+| **Privileged native access is difficult to reason about** | Put the authority boundary in the Rust host, authenticate the app link, and build guard-before-handler enforcement around native operations. |
+| **Framework benchmarks become marketing screenshots** | Keep benchmark methodology, raw evidence, machine identity, source revisions, and limitations in the public [`keld-benches`](https://github.com/gyldlab/keld-benches) repository. |
+
+---
+
+## How KELD draws the authority boundary
+
+```mermaid
+flowchart TB
+    subgraph APPLICATION["Application-owned code"]
+        APP["Application source<br/>JavaScript / TypeScript logic + web renderer assets"]
+        BUN["Bun main process<br/>runs application-side JS / TS"]
+        APP -->|"executes main-process logic"| BUN
+    end
+
+    subgraph TRUST["Authenticated process boundary"]
+        KIPC["KIPC application link<br/>HELLO session authentication + framed typed messages"]
+    end
+
+    subgraph RUST["Rust host — desktop authority (current foundation is partial)"]
+        HOST["Shipping Rust host<br/>owns application lifecycle and native window"]
+        DISPATCH["Privileged dispatch boundary<br/>requests must cross host-owned policy"]
+        GUARD["Guard-before-handler foundation<br/>permission decision precedes native handling"]
+        LIFECYCLE["Lifecycle owner<br/>startup · recovery · ordered shutdown"]
+        WEBVIEW["Webview owner<br/>creates the OS-native rendering surface"]
+        NATIVE["Native service boundary<br/>partial surface · guard-before-handler contract"]
+    end
+
+    subgraph OS["Operating system"]
+        BACKEND{"Platform backend"}
+        WK["macOS<br/>WKWebView"]
+        WV2["Windows<br/>WebView2"]
+        WGTK["Linux<br/>WebKitGTK"]
+        SERVICES["OS-native capabilities<br/>files · windows · future native services"]
+    end
+
+    BUN -->|"authenticate and send application messages"| KIPC
+    KIPC -->|"admitted messages enter host authority"| HOST
+    HOST -->|"route privileged requests"| DISPATCH
+    DISPATCH -->|"evaluate before handling"| GUARD
+    GUARD -->|"admitted lifecycle action"| LIFECYCLE
+    GUARD -->|"admitted window action"| WEBVIEW
+    GUARD -->|"admitted native operation"| NATIVE
+    WEBVIEW -->|"select backend for current OS"| BACKEND
+    BACKEND -->|"macOS"| WK
+    BACKEND -->|"Windows"| WV2
+    BACKEND -->|"Linux"| WGTK
+    NATIVE -->|"call OS capability"| SERVICES
+
+    classDef app fill:#EEE5D5,stroke:#9B8867,color:#3B3428,stroke-width:1.2px;
+    classDef transport fill:#DCE6F2,stroke:#72879A,color:#26343F,stroke-width:1.3px;
+    classDef authority fill:#DDE9DF,stroke:#718A76,color:#26352A,stroke-width:1.2px;
+    classDef platform fill:#E7E2EC,stroke:#84798E,color:#342E39,stroke-width:1.2px;
+
+    class APP,BUN app;
+    class KIPC transport;
+    class HOST,DISPATCH,GUARD,LIFECYCLE,WEBVIEW,NATIVE authority;
+    class BACKEND,WK,WV2,WGTK,SERVICES platform;
+```
+
+The diagram describes the intended ownership model, while the [Current / Target / Evidence ledger](docs/engineering/product-status.md) records how much of each surface is implemented today.
+
+---
+
+## Evidence snapshot
+
+KELD is pre-alpha. The entries below are deliberately **bounded proof points**, not framework-wide performance, security, compatibility, or production-readiness claims.
+
+| Surface | Public evidence | Boundary |
+|---|---|---|
+| **Windows app-link security** | The shipping Windows app-link uses a current-user-protected named pipe plus HELLO authentication. The evidence covers a different-user denial and an authorized same-user successor path. [Contract](docs/specs/kel101-windows-named-pipe-dacl.md) | This is the KELD app-link boundary, **not** a claim that generic Windows account/WAM authentication or the complete sandbox story is finished. |
+| **Windows lifecycle** | Public Windows 11 x64 captures qualify stock native Close → cleanup → relaunch for the tested source/environment. [Evidence](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405) | Does not qualify every Windows version, strict profile, or packaged release. |
+| **Linux lifecycle** | Ubuntu 26.04.1 x86_64 / GNOME Wayland has qualified stock native Close → cleanup → relaunch evidence for the landed lifecycle correction. [Lifecycle correction](https://github.com/gyldlab/keld/pull/228) | X11, non-Debian distributions, other architectures, and release packaging remain separately unverified. |
+| **KIPC diagnostic** | On Apple M4 macOS, the public cross-process Rust↔Rust KIPC fixture measured pooled p99 of **9.375 µs** for the 6 B tier and **10.25 µs** for the 1,024 B tier across **20 sessions × 100,000 calls per tier**. [Raw benchmark work](https://github.com/gyldlab/keld-benches/pull/21) | This is a KIPC library-arm diagnostic, **not** full Bun-product latency and not a framework-wide “KELD is faster” claim. |
+
+For the complete evidence trail:
+
+- **Implemented vs target state:** [Product status](docs/engineering/product-status.md)
+- **Benchmark methodology and raw evidence:** [KELD Benches](https://github.com/gyldlab/keld-benches)
+- **Electron behavior evidence:** [Compatibility scoreboard](docs/engineering/compat-scoreboard.md)
+- **Current automated checks:** [CI](https://github.com/gyldlab/keld/actions/workflows/ci.yml)
+
+---
+
+## Electron compatibility without a fake percentage
+
+KELD's long-term goal is to make Electron migration require as little rewriting as the evidence allows.
+
+Today, `@keld/electron` is intentionally narrow. The current repository contains lifecycle compatibility work; broad Electron host emulation is not implemented.
+
+KELD treats compatibility results in three different ways:
+
+| Result | Meaning |
+|---|---|
+| **Compatible behavior** | The behavior is implemented and tied to a defined oracle/test surface. |
+| **Intentional divergence** | KELD behaves differently on purpose and records the reason instead of hiding it. |
+| **Unknown / unsupported** | The behavior stays visible as unknown or unsupported until evidence exists. |
+
+`keld migrate` remains a future command. A future migration tool should reduce uncertainty before it rewrites code; it should not convert unknown behavior into a reassuring percentage.
+
+→ [Electron compatibility scoreboard](docs/engineering/compat-scoreboard.md)
+
+---
+
+## Research first. Claim second.
+
+KELD started from systems research, and that should remain visible in how the project makes public claims.
+
+```mermaid
+flowchart TB
+    QUESTION(["Engineering question or developer pain<br/>Example: lifecycle behavior, IPC security, startup cost"])
+
+    RESEARCH["Research the actual surface<br/>current OS/runtime docs · upstream behavior · competing implementations · failure reports"]
+
+    SPEC["Write the falsifiable contract<br/>owner · boundary · expected observable · explicit failure condition"]
+
+    IMPLEMENT["Implement the smallest owned change<br/>reuse existing primitives before inventing new policy"]
+
+    NEGATIVE["Attack the implementation<br/>negative controls · hostile transcripts · skipped/missing-case tests · failure-path checks"]
+
+    EVIDENCE["Collect reproducible evidence<br/>CI and/or physical OS · exact source · exact artifact · raw observations"]
+
+    DECISION{"Does the evidence support the proposed claim?"}
+
+    CLAIM["Publish a bounded claim<br/>Claim + Evidence + Scope + Limitation"]
+
+    REVISE["Do not market the result<br/>revise the implementation, oracle, experiment, or wording"]
+
+    QUESTION -->|"define the real problem"| RESEARCH
+    RESEARCH -->|"turn findings into a testable contract"| SPEC
+    SPEC -->|"implementation must satisfy the contract"| IMPLEMENT
+    IMPLEMENT -->|"try to prove it wrong"| NEGATIVE
+    NEGATIVE -->|"retain reproducible observations"| EVIDENCE
+    EVIDENCE -->|"independent decision point"| DECISION
+    DECISION -->|"yes"| CLAIM
+    DECISION -.->|"no / inconclusive"| REVISE
+    REVISE -.->|"new evidence or corrected hypothesis"| RESEARCH
+
+    classDef question fill:#DCE6F2,stroke:#72879A,color:#26343F,stroke-width:1.3px;
+    classDef research fill:#E7E2EC,stroke:#84798E,color:#342E39,stroke-width:1.2px;
+    classDef build fill:#EEE5D5,stroke:#9B8867,color:#3B3428,stroke-width:1.2px;
+    classDef evidence fill:#DDE9DF,stroke:#718A76,color:#26352A,stroke-width:1.2px;
+    classDef decision fill:#E8E8E6,stroke:#7E817D,color:#303230,stroke-width:1.3px;
+    classDef future fill:#ECEDEE,stroke:#8C9197,color:#363A3E,stroke-width:1.2px,stroke-dasharray:5 4;
+
+    class QUESTION question;
+    class RESEARCH,SPEC research;
+    class IMPLEMENT,NEGATIVE build;
+    class EVIDENCE,CLAIM evidence;
+    class DECISION decision;
+    class REVISE future;
+```
+
+The standard is simple: **do not ask developers to trust a promise when the project can publish the evidence and its boundary instead.**
+
+---
+
+## What exists today — and what does not
+
+### Runnable today
+
+- `keld create`
+- `keld dev`
+- `keld doctor`
+- native system-webview windows
+- supervised Bun application process
+- authenticated KIPC app link
+- current macOS, Windows, and Linux application-session implementations
+- permission parsing and guard-before-handler infrastructure
+- limited `@keld/electron` lifecycle compatibility
+- public evidence/benchmark repositories and CI
+
+### Target — not released yet
+
+- packaged KELD releases
+- npm installation / prebuilt CLI distribution
+- `keld build`
+- `keld migrate`
+- broad Electron API compatibility
+- a full native-service surface
+- complete strict-profile admission across every supported platform
+- installers, signing, notarization, and signed update distribution
+- a universal Electron compatibility percentage
+
+Unknown or unfinished surfaces stay visible. They are not silently converted into “supported.”
+
+---
+
+## Should I use KELD today?
+
+**Try KELD today if you are:**
+
+- evaluating a lower-rewrite path beyond Electron;
+- interested in a Bun + Rust-host desktop architecture;
+- testing the current source-built application slice;
+- contributing to compatibility, IPC, security, platform, benchmark, or release engineering;
+- interested in evidence-driven desktop framework development.
+
+**Do not treat KELD as a production-ready replacement yet if you require:**
+
+- packaged stable releases;
+- broad Electron API compatibility;
+- signed installers and updater distribution;
+- guaranteed Chromium-equivalent rendering on every platform;
+- a mature production support ecosystem.
+
+That boundary will move only when the corresponding evidence moves.
+
+---
+
+## Go deeper by intent
+
+| I want to… | Start here |
+|---|---|
+| **Run KELD from source** | [Source-build / onboarding guide](docs/onboarding/README.md) |
+| **See exactly what is implemented** | [Current / Target / Evidence ledger](docs/engineering/product-status.md) |
+| **Understand the architecture** | [Architecture overview](docs/architecture/01-overview.md) |
+| **Inspect Electron compatibility** | [Compatibility scoreboard](docs/engineering/compat-scoreboard.md) |
+| **Audit performance claims** | [KELD Benches](https://github.com/gyldlab/keld-benches) |
+| **Follow what comes next** | [Roadmap](ROADMAP.md) |
+| **Find something to work on** | [GitHub Issues](https://github.com/gyldlab/keld/issues) |
+| **Contribute code or docs** | [Contributing guide](CONTRIBUTING.md) |
+| **Report a vulnerability** | [Security policy](SECURITY.md) |
+
+---
+
+## Contributing
+
+KELD is open source. Public code, tests, documentation, issues, and review are sufficient to contribute; private research access is not required.
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md), the [open issues](https://github.com/gyldlab/keld/issues), and [MAINTAINERS.md](MAINTAINERS.md).
+
+Please report security vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
+
+---
 
 ## License
 
-MIT OR Apache-2.0 — [LICENSE](LICENSE), [LICENSE-MIT](LICENSE-MIT),
-[LICENSE-APACHE](LICENSE-APACHE).
+MIT OR Apache-2.0
+
+[LICENSE](LICENSE) · [MIT](LICENSE-MIT) · [Apache-2.0](LICENSE-APACHE)
