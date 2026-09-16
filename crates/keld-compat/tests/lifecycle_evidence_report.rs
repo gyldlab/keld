@@ -166,14 +166,17 @@ const PUBLISHED: [PublishedPlatform; 3] = [
     },
 ];
 
+/// Returns the content-addressed evidence URI for immutable receipt bytes.
 fn sha256_uri(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+/// Parses one committed lifecycle CI receipt with unknown fields rejected.
 fn parse_receipt(bytes: &[u8]) -> Receipt {
     serde_json::from_slice(bytes).expect("published lifecycle CI receipt")
 }
 
+/// Parses the three KEL-74 evidence cells committed for one hosted platform.
 fn parse_records(platform: PublishedPlatform) -> Vec<EvidenceRecord> {
     platform
         .evidence
@@ -182,6 +185,7 @@ fn parse_records(platform: PublishedPlatform) -> Vec<EvidenceRecord> {
         .collect()
 }
 
+/// Maps the KEL-74 platform enum to the receipt's stable lowercase token.
 const fn platform_token(platform: Platform) -> &'static str {
     match platform {
         Platform::Macos => "macos",
@@ -190,6 +194,7 @@ const fn platform_token(platform: Platform) -> &'static str {
     }
 }
 
+/// Maps the KEL-74 architecture enum to the receipt's stable token.
 const fn arch_token(arch: Arch) -> &'static str {
     match arch {
         Arch::Aarch64 => "aarch64",
@@ -197,6 +202,7 @@ const fn arch_token(arch: Arch) -> &'static str {
     }
 }
 
+/// Maps an evidence verdict to the lowercase token rendered in `report.md`.
 const fn verdict_token(verdict: Verdict) -> &'static str {
     match verdict {
         Verdict::Pass => "pass",
@@ -206,6 +212,16 @@ const fn verdict_token(verdict: Verdict) -> &'static str {
     }
 }
 
+/// Returns the required verdict for each frozen lifecycle operation.
+fn expected_verdict(operation_id: &str) -> Verdict {
+    match operation_id {
+        "app.when-ready.host-ready-gate" | "app.window-all-closed.policy" => Verdict::Pass,
+        "app.quit.return-contract" => Verdict::Fail,
+        other => panic!("unexpected lifecycle operation verdict: {other}"),
+    }
+}
+
+/// Explains the bounded compatibility meaning of one frozen lifecycle operation.
 fn operation_meaning(operation_id: &str) -> &'static str {
     match operation_id {
         "app.when-ready.host-ready-gate" => {
@@ -221,6 +237,7 @@ fn operation_meaning(operation_id: &str) -> &'static str {
     }
 }
 
+/// Renders the human-readable report from the same canonical evidence records.
 fn render_report() -> String {
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
     let mut out = String::new();
@@ -341,6 +358,7 @@ fn render_report() -> String {
     out
 }
 
+/// Verifies one CI receipt is tied to the claimed runner, source, runtime, and corpus.
 fn assert_receipt(published: PublishedPlatform, receipt: &Receipt) {
     assert_eq!(receipt.schema, "keld.lifecycle.ci-receipt/v1");
     assert_eq!(receipt.source.pull_request, 242);
@@ -419,6 +437,7 @@ fn assert_receipt(published: PublishedPlatform, receipt: &Receipt) {
     }
 }
 
+/// Verifies every evidence row is platform-bound, receipt-bound, and operation-correct.
 fn assert_records(published: PublishedPlatform, records: &[EvidenceRecord], receipt_uri: &str) {
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
     assert_eq!(records.len(), denominator.cells().len());
@@ -439,11 +458,19 @@ fn assert_records(published: PublishedPlatform, records: &[EvidenceRecord], rece
             record.operation().oracle.revision,
             "electron-v44.3.0@07e460719c75b2ec5ee4893f7d2192ef31c7b8c2"
         );
+        assert_eq!(
+            record.result(),
+            expected_verdict(&record.operation().id),
+            "{} has the wrong verdict for {}",
+            published.label,
+            record.operation().id
+        );
         assert_eq!(record.evidence_uri(), receipt_uri);
         assert!(record.waiver().is_none());
     }
 }
 
+/// Verifies each platform scores to the same bounded two-match/one-divergence shape.
 fn assert_platform_score(records: &[EvidenceRecord]) {
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
     let board = score(&denominator, records, AS_OF).expect("score published lifecycle platform");
@@ -461,6 +488,7 @@ fn assert_platform_score(records: &[EvidenceRecord]) {
     );
 }
 
+/// Confirms all published platform evidence is schema-valid and provenance-bound.
 #[test]
 fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scoped() {
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
@@ -479,6 +507,7 @@ fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scope
     }
 }
 
+/// Confirms the checked-in report is the deterministic view of canonical records.
 #[test]
 fn lifecycle_report_is_a_deterministic_view_of_canonical_records() {
     let expected = std::str::from_utf8(REPORT_MD).expect("report is UTF-8");
@@ -493,6 +522,7 @@ fn lifecycle_report_is_a_deterministic_view_of_canonical_records() {
     );
 }
 
+/// Proves verdict or receipt-byte tampering changes the published evidence outcome.
 #[test]
 fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding() {
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
