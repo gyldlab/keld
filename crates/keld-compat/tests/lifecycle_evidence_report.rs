@@ -16,12 +16,10 @@ use keld_compat::evidence::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const DENOMINATOR_JSON: &[u8] =
-    include_bytes!("../fixtures/lifecycle-corpus/denominator.json");
+const DENOMINATOR_JSON: &[u8] = include_bytes!("../fixtures/lifecycle-corpus/denominator.json");
 const REPORT_MD: &[u8] = include_bytes!("../fixtures/lifecycle-corpus/report.md");
 
-const CORPUS_SHA: &str =
-    "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2";
+const CORPUS_SHA: &str = "sha256:badc0aaf3619168927cf464e2dd0006a599b5614a35b84960c59984b18e0e8b2";
 const PR_HEAD: &str = "fd3c875c59e3cb0b0530166b21013571afd05754";
 const TESTED_COMMIT: &str = "38db257ba2d1f377bd2e24f7bc871faca895c6d5";
 const ELECTRON_COMMIT: &str = "07e460719c75b2ec5ee4893f7d2192ef31c7b8c2";
@@ -116,9 +114,7 @@ const PUBLISHED: [PublishedPlatform; 3] = [
         label: "macOS",
         platform: Platform::Macos,
         arch: Arch::Aarch64,
-        receipt: include_bytes!(
-            "../fixtures/lifecycle-corpus/receipts/macos-aarch64.json"
-        ),
+        receipt: include_bytes!("../fixtures/lifecycle-corpus/receipts/macos-aarch64.json"),
         evidence: [
             include_bytes!(
                 "../fixtures/lifecycle-corpus/evidence/macos-aarch64--app-when-ready-host-ready-gate.json"
@@ -136,9 +132,7 @@ const PUBLISHED: [PublishedPlatform; 3] = [
         label: "Linux",
         platform: Platform::Linux,
         arch: Arch::X86_64,
-        receipt: include_bytes!(
-            "../fixtures/lifecycle-corpus/receipts/linux-x86_64.json"
-        ),
+        receipt: include_bytes!("../fixtures/lifecycle-corpus/receipts/linux-x86_64.json"),
         evidence: [
             include_bytes!(
                 "../fixtures/lifecycle-corpus/evidence/linux-x86_64--app-when-ready-host-ready-gate.json"
@@ -156,9 +150,7 @@ const PUBLISHED: [PublishedPlatform; 3] = [
         label: "Windows",
         platform: Platform::Windows,
         arch: Arch::X86_64,
-        receipt: include_bytes!(
-            "../fixtures/lifecycle-corpus/receipts/windows-x86_64.json"
-        ),
+        receipt: include_bytes!("../fixtures/lifecycle-corpus/receipts/windows-x86_64.json"),
         evidence: [
             include_bytes!(
                 "../fixtures/lifecycle-corpus/evidence/windows-x86_64--app-when-ready-host-ready-gate.json"
@@ -248,8 +240,11 @@ fn render_report() -> String {
     )
     .expect("String write");
     writeln!(out, "- PR source head: `{PR_HEAD}`").expect("String write");
-    writeln!(out, "- Exact GitHub Actions tested merge: `{TESTED_COMMIT}`")
-        .expect("String write");
+    writeln!(
+        out,
+        "- Exact GitHub Actions tested merge: `{TESTED_COMMIT}`"
+    )
+    .expect("String write");
     writeln!(
         out,
         "- Candidate-A Actions run: [{ACTIONS_RUN_ID}](https://github.com/gyldlab/keld/actions/runs/{ACTIONS_RUN_ID})"
@@ -273,8 +268,7 @@ fn render_report() -> String {
         "| Platform | Hosted runner | keld-compat batch | Oracle matches | Intentional divergence | Receipt |"
     )
     .expect("String write");
-    writeln!(out, "| --- | --- | ---: | ---: | ---: | --- |")
-        .expect("String write");
+    writeln!(out, "| --- | --- | ---: | ---: | ---: | --- |").expect("String write");
 
     for published in PUBLISHED {
         let receipt = parse_receipt(published.receipt);
@@ -364,8 +358,18 @@ fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scope
         assert_eq!(receipt.source.ci_required_job_id, CI_REQUIRED_JOB_ID);
         assert_eq!(receipt.source.conclusion, "success");
         assert!(receipt.source.actions_job_id > 0);
-        assert!(receipt.source.actions_job_name.starts_with("clippy + test ("));
-        assert!(receipt.source.run_url.ends_with(&ACTIONS_RUN_ID.to_string()));
+        assert!(
+            receipt
+                .source
+                .actions_job_name
+                .starts_with("clippy + test (")
+        );
+        assert!(
+            receipt
+                .source
+                .run_url
+                .ends_with(&ACTIONS_RUN_ID.to_string())
+        );
         assert!(
             receipt
                 .source
@@ -412,7 +416,11 @@ fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scope
             "lifecycle_corpus::lifecycle_corpus_rust_oracles_execute",
         ] {
             assert!(
-                receipt.test.mapped_cases.iter().any(|case| case == required),
+                receipt
+                    .test
+                    .mapped_cases
+                    .iter()
+                    .any(|case| case == required),
                 "{} receipt is missing mapped case {required}",
                 published.label
             );
@@ -481,8 +489,7 @@ fn lifecycle_evidence_negative_controls_change_score_and_break_receipt_binding()
     let original = std::str::from_utf8(published.evidence[0]).expect("evidence UTF-8");
     let mutated = original.replacen("\"result\": \"pass\"", "\"result\": \"fail\"", 1);
     assert_ne!(mutated, original, "negative control must mutate a pass");
-    records[0] =
-        parse_evidence(mutated.as_bytes()).expect("mutated evidence remains schema-valid");
+    records[0] = parse_evidence(mutated.as_bytes()).expect("mutated evidence remains schema-valid");
 
     let board = score(&denominator, &records, AS_OF).expect("score mutated records");
     assert_eq!(board.passed(), 1);
