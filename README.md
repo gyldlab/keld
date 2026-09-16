@@ -16,7 +16,7 @@ Open source by [GYLDLAB](https://github.com/gyldlab).
 
 ## Quick start
 
-You need **Git**, **Rust via rustup**, and **Bun 1.4.2**. Windows and Linux have additional platform prerequisites; the [source-build guide](docs/onboarding/README.md) records the exact requirements and troubleshooting path.
+You need **Git**, **Rust via rustup**, and **Bun on `PATH`**. macOS requires Apple command-line developer tools; Windows and Linux have additional platform prerequisites. Use **Bun 1.4.2** for `just ci` and the full workspace gate. The [source-build guide](docs/onboarding/README.md) records the exact requirements and troubleshooting path.
 
 ### macOS / qualified Ubuntu/Debian Wayland
 
@@ -61,6 +61,8 @@ hello-keld: main process ready (IPC echo ok)
 
 ```mermaid
 flowchart TB
+    accTitle: From source to a running KELD desktop app
+    accDescr: A developer builds KELD, scaffolds and validates an app, starts a supervised Rust and Bun session, authenticates KIPC, selects the current operating-system webview, and observes a native hello-keld window plus shutdown output.
     START(["Developer starts with the KELD source tree"])
 
     subgraph BUILD["Build and scaffold"]
@@ -107,17 +109,13 @@ flowchart TB
     WINDOWS -->|"renders"| RESULT
     LINUX -->|"renders"| RESULT
 
-    classDef action fill:#DCE6F2,stroke:#72879A,color:#26343F,stroke-width:1.2px;
-    classDef app fill:#EEE5D5,stroke:#9B8867,color:#3B3428,stroke-width:1.2px;
-    classDef authority fill:#DDE9DF,stroke:#718A76,color:#26352A,stroke-width:1.2px;
-    classDef platform fill:#E7E2EC,stroke:#84798E,color:#342E39,stroke-width:1.2px;
-    classDef result fill:#E3E8E4,stroke:#6F7E72,color:#26352A,stroke-width:1.4px;
+    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
+    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
 
-    class BUILDCLI,CREATE,DOCTOR,DEV action;
-    class PROJECT,BUN app;
-    class HOST,KIPC,ADMITTED authority;
-    class SELECT,MAC,WINDOWS,LINUX platform;
-    class START,RESULT result;
+    class BUILDCLI,CREATE,PROJECT,DOCTOR,DEV,HOST,BUN,ADMITTED,RESULT current;
+    class KIPC,SELECT gate;
+    class START,MAC,WINDOWS,LINUX external;
 ```
 
 That is the current source-built development path. It is not yet an npm-installed or packaged application workflow.
@@ -146,6 +144,8 @@ It is built around a different question:
 
 ```mermaid
 flowchart TB
+    accTitle: KELD runtime and desktop authority boundary
+    accDescr: Application JavaScript and TypeScript run in Bun, authenticate through the KIPC application link, and cross into the Rust host, which owns lifecycle, policy, native operations, and the operating-system webview backends.
     subgraph APPLICATION["Application-owned code"]
         APP["Application source<br/>JavaScript / TypeScript logic + web renderer assets"]
         BUN["Bun main process<br/>runs application-side JS / TS"]
@@ -186,15 +186,13 @@ flowchart TB
     BACKEND -->|"Linux"| WGTK
     NATIVE -->|"call OS capability"| SERVICES
 
-    classDef app fill:#EEE5D5,stroke:#9B8867,color:#3B3428,stroke-width:1.2px;
-    classDef transport fill:#DCE6F2,stroke:#72879A,color:#26343F,stroke-width:1.3px;
-    classDef authority fill:#DDE9DF,stroke:#718A76,color:#26352A,stroke-width:1.2px;
-    classDef platform fill:#E7E2EC,stroke:#84798E,color:#342E39,stroke-width:1.2px;
+    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
+    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
 
-    class APP,BUN app;
-    class KIPC transport;
-    class HOST,DISPATCH,GUARD,LIFECYCLE,WEBVIEW,NATIVE authority;
-    class BACKEND,WK,WV2,WGTK,SERVICES platform;
+    class HOST,LIFECYCLE,WEBVIEW,NATIVE current;
+    class KIPC,DISPATCH,GUARD,BACKEND gate;
+    class APP,BUN,WK,WV2,WGTK,SERVICES external;
 ```
 
 The diagram describes the intended ownership model, while the [Current / Target / Evidence ledger](docs/engineering/product-status.md) records how much of each surface is implemented today.
@@ -247,6 +245,8 @@ KELD started from systems research, and that should remain visible in how the pr
 
 ```mermaid
 flowchart TB
+    accTitle: Research to a scoped public KELD claim
+    accDescr: KELD turns an engineering question into research, a falsifiable contract, implementation, hostile testing, and reproducible evidence; supported evidence can become a bounded claim, while failed or inconclusive evidence returns to revision instead.
     QUESTION(["Engineering question or developer pain<br/>Example: lifecycle behavior, IPC security, startup cost"])
 
     RESEARCH["Research the actual surface<br/>current OS/runtime docs · upstream behavior · competing implementations · failure reports"]
@@ -275,19 +275,15 @@ flowchart TB
     DECISION -.->|"no / inconclusive"| REVISE
     REVISE -.->|"new evidence or corrected hypothesis"| RESEARCH
 
-    classDef question fill:#DCE6F2,stroke:#72879A,color:#26343F,stroke-width:1.3px;
-    classDef research fill:#E7E2EC,stroke:#84798E,color:#342E39,stroke-width:1.2px;
-    classDef build fill:#EEE5D5,stroke:#9B8867,color:#3B3428,stroke-width:1.2px;
-    classDef evidence fill:#DDE9DF,stroke:#718A76,color:#26352A,stroke-width:1.2px;
-    classDef decision fill:#E8E8E6,stroke:#7E817D,color:#303230,stroke-width:1.3px;
-    classDef future fill:#ECEDEE,stroke:#8C9197,color:#363A3E,stroke-width:1.2px,stroke-dasharray:5 4;
+    classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
+    classDef gate fill:#fef3c7,stroke:#b45309,color:#451a03,stroke-width:2px
+    classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
+    classDef denied fill:#fee2e2,stroke:#b91c1c,color:#450a0a,stroke-width:2px
 
-    class QUESTION question;
-    class RESEARCH,SPEC research;
-    class IMPLEMENT,NEGATIVE build;
-    class EVIDENCE,CLAIM evidence;
-    class DECISION decision;
-    class REVISE future;
+    class IMPLEMENT,EVIDENCE,CLAIM current;
+    class NEGATIVE,DECISION gate;
+    class QUESTION,RESEARCH,SPEC external;
+    class REVISE denied;
 ```
 
 The standard is simple: **do not ask developers to trust a promise when the project can publish the evidence and its boundary instead.**
