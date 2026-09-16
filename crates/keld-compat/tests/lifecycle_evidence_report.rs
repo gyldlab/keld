@@ -341,6 +341,126 @@ fn render_report() -> String {
     out
 }
 
+fn assert_receipt(published: PublishedPlatform, receipt: &Receipt) {
+    assert_eq!(receipt.schema, "keld.lifecycle.ci-receipt/v1");
+    assert_eq!(receipt.source.pull_request, 242);
+    assert_eq!(receipt.source.pr_head, PR_HEAD);
+    assert_eq!(receipt.source.tested_commit, TESTED_COMMIT);
+    assert_eq!(receipt.source.actions_run_id, ACTIONS_RUN_ID);
+    assert_eq!(receipt.source.ci_required_job_id, CI_REQUIRED_JOB_ID);
+    assert_eq!(receipt.source.conclusion, "success");
+    assert!(receipt.source.actions_job_id > 0);
+    assert!(
+        receipt
+            .source
+            .actions_job_name
+            .starts_with("clippy + test (")
+    );
+    assert!(
+        receipt
+            .source
+            .run_url
+            .ends_with(&ACTIONS_RUN_ID.to_string())
+    );
+    assert!(
+        receipt
+            .source
+            .job_url
+            .ends_with(&receipt.source.actions_job_id.to_string())
+    );
+
+    assert_eq!(receipt.runner.platform, platform_token(published.platform));
+    assert_eq!(receipt.runner.arch, arch_token(published.arch));
+    assert!(!receipt.runner.runner_arch.is_empty());
+    assert!(!receipt.runner.os.is_empty());
+    assert!(!receipt.runner.image.is_empty());
+    assert!(!receipt.runner.image_version.is_empty());
+
+    assert_eq!(receipt.runtime.bun_version, "1.4.2");
+    assert_eq!(
+        receipt.runtime.bun_revision,
+        "744846f844374847c902b5e7fd59b4342a51ef99"
+    );
+    assert_eq!(receipt.runtime.rust_version, "1.97.1");
+    assert_eq!(
+        receipt.runtime.rust_commit,
+        "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+    );
+    assert_eq!(receipt.corpus.id, "electron-lifecycle-v0");
+    assert_eq!(receipt.corpus.sha256, CORPUS_SHA);
+    assert_eq!(receipt.corpus.upstream_electron_version, "44.3.0");
+    assert_eq!(receipt.corpus.upstream_electron_commit, ELECTRON_COMMIT);
+    assert_eq!(receipt.test.crate_name, "keld-compat");
+    assert_eq!(receipt.test.passed, published.expected_tests);
+    assert_eq!(receipt.test.skipped, 0);
+    assert!(
+        receipt
+            .scope
+            .contains("Headless lifecycle conformance only"),
+        "receipt must not read as desktop acceptance"
+    );
+
+    for required in [
+        "electron_lifecycle::when_ready_does_not_resolve_before_host_ready_event",
+        "lifecycle_corpus::lifecycle_corpus_cells_map_to_existing_behavioral_oracles",
+        "lifecycle_corpus::lifecycle_corpus_denominator_matches_exact_manifest_bytes",
+        "lifecycle_corpus::lifecycle_corpus_typescript_oracles_execute",
+        "lifecycle_corpus::lifecycle_corpus_rust_oracles_execute",
+    ] {
+        assert!(
+            receipt
+                .test
+                .mapped_cases
+                .iter()
+                .any(|case| case == required),
+            "{} receipt is missing mapped case {required}",
+            published.label
+        );
+    }
+}
+
+fn assert_records(published: PublishedPlatform, records: &[EvidenceRecord], receipt_uri: &str) {
+    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
+    assert_eq!(records.len(), denominator.cells().len());
+
+    for record in records {
+        assert_eq!(record.artifact().sha256, CORPUS_SHA);
+        assert_eq!(record.artifact().platform, published.platform);
+        assert_eq!(record.artifact().arch, published.arch);
+        assert_eq!(record.revisions().keld, TESTED_COMMIT);
+        assert_eq!(record.revisions().bun, "1.4.2+744846f84");
+        assert_eq!(record.revisions().engine, ENGINE_REVISION);
+        assert_eq!(
+            record.authority_profile(),
+            AuthorityProfile::LegacySandboxOff
+        );
+        assert_eq!(record.operation().kind, OperationKind::PrimaryWorkflow);
+        assert_eq!(
+            record.operation().oracle.revision,
+            "electron-v44.3.0@07e460719c75b2ec5ee4893f7d2192ef31c7b8c2"
+        );
+        assert_eq!(record.evidence_uri(), receipt_uri);
+        assert!(record.waiver().is_none());
+    }
+}
+
+fn assert_platform_score(records: &[EvidenceRecord]) {
+    let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
+    let board = score(&denominator, records, AS_OF).expect("score published lifecycle platform");
+    assert_eq!(board.panel(), Panel::Showcase);
+    assert_eq!(board.denominator(), 3);
+    assert_eq!(board.passed(), 2);
+    assert_eq!(board.failed(), 1);
+    assert_eq!(board.unknown(), 0);
+    assert_eq!(board.waived(), 0);
+    assert_eq!(board.missing(), 0);
+    assert_eq!(board.unweighted_percent(), Some(66));
+    assert!(
+        !board.complete(),
+        "intentional app.quit divergence keeps this showcase incomplete"
+    );
+}
+
 #[test]
 fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scoped() {
     let denominator = parse_denominator(DENOMINATOR_JSON).expect("KEL-74 denominator");
@@ -350,119 +470,12 @@ fn published_lifecycle_evidence_is_schema_valid_receipt_bound_and_platform_scope
 
     for published in PUBLISHED {
         let receipt = parse_receipt(published.receipt);
-        assert_eq!(receipt.schema, "keld.lifecycle.ci-receipt/v1");
-        assert_eq!(receipt.source.pull_request, 242);
-        assert_eq!(receipt.source.pr_head, PR_HEAD);
-        assert_eq!(receipt.source.tested_commit, TESTED_COMMIT);
-        assert_eq!(receipt.source.actions_run_id, ACTIONS_RUN_ID);
-        assert_eq!(receipt.source.ci_required_job_id, CI_REQUIRED_JOB_ID);
-        assert_eq!(receipt.source.conclusion, "success");
-        assert!(receipt.source.actions_job_id > 0);
-        assert!(
-            receipt
-                .source
-                .actions_job_name
-                .starts_with("clippy + test (")
-        );
-        assert!(
-            receipt
-                .source
-                .run_url
-                .ends_with(&ACTIONS_RUN_ID.to_string())
-        );
-        assert!(
-            receipt
-                .source
-                .job_url
-                .ends_with(&receipt.source.actions_job_id.to_string())
-        );
-
-        assert_eq!(receipt.runner.platform, platform_token(published.platform));
-        assert_eq!(receipt.runner.arch, arch_token(published.arch));
-        assert!(!receipt.runner.runner_arch.is_empty());
-        assert!(!receipt.runner.os.is_empty());
-        assert!(!receipt.runner.image.is_empty());
-        assert!(!receipt.runner.image_version.is_empty());
-
-        assert_eq!(receipt.runtime.bun_version, "1.4.2");
-        assert_eq!(
-            receipt.runtime.bun_revision,
-            "744846f844374847c902b5e7fd59b4342a51ef99"
-        );
-        assert_eq!(receipt.runtime.rust_version, "1.97.1");
-        assert_eq!(
-            receipt.runtime.rust_commit,
-            "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
-        );
-        assert_eq!(receipt.corpus.id, "electron-lifecycle-v0");
-        assert_eq!(receipt.corpus.sha256, CORPUS_SHA);
-        assert_eq!(receipt.corpus.upstream_electron_version, "44.3.0");
-        assert_eq!(receipt.corpus.upstream_electron_commit, ELECTRON_COMMIT);
-        assert_eq!(receipt.test.crate_name, "keld-compat");
-        assert_eq!(receipt.test.passed, published.expected_tests);
-        assert_eq!(receipt.test.skipped, 0);
-        assert!(
-            receipt
-                .scope
-                .contains("Headless lifecycle conformance only"),
-            "receipt must not read as desktop acceptance"
-        );
-
-        for required in [
-            "electron_lifecycle::when_ready_does_not_resolve_before_host_ready_event",
-            "lifecycle_corpus::lifecycle_corpus_cells_map_to_existing_behavioral_oracles",
-            "lifecycle_corpus::lifecycle_corpus_denominator_matches_exact_manifest_bytes",
-            "lifecycle_corpus::lifecycle_corpus_typescript_oracles_execute",
-            "lifecycle_corpus::lifecycle_corpus_rust_oracles_execute",
-        ] {
-            assert!(
-                receipt
-                    .test
-                    .mapped_cases
-                    .iter()
-                    .any(|case| case == required),
-                "{} receipt is missing mapped case {required}",
-                published.label
-            );
-        }
+        assert_receipt(published, &receipt);
 
         let receipt_uri = sha256_uri(published.receipt);
         let records = parse_records(published);
-        assert_eq!(records.len(), denominator.cells().len());
-        for record in &records {
-            assert_eq!(record.artifact().sha256, CORPUS_SHA);
-            assert_eq!(record.artifact().platform, published.platform);
-            assert_eq!(record.artifact().arch, published.arch);
-            assert_eq!(record.revisions().keld, TESTED_COMMIT);
-            assert_eq!(record.revisions().bun, "1.4.2+744846f84");
-            assert_eq!(record.revisions().engine, ENGINE_REVISION);
-            assert_eq!(
-                record.authority_profile(),
-                AuthorityProfile::LegacySandboxOff
-            );
-            assert_eq!(record.operation().kind, OperationKind::PrimaryWorkflow);
-            assert_eq!(
-                record.operation().oracle.revision,
-                "electron-v44.3.0@07e460719c75b2ec5ee4893f7d2192ef31c7b8c2"
-            );
-            assert_eq!(record.evidence_uri(), receipt_uri);
-            assert!(record.waiver().is_none());
-        }
-
-        let board =
-            score(&denominator, &records, AS_OF).expect("score published lifecycle platform");
-        assert_eq!(board.panel(), Panel::Showcase);
-        assert_eq!(board.denominator(), 3);
-        assert_eq!(board.passed(), 2);
-        assert_eq!(board.failed(), 1);
-        assert_eq!(board.unknown(), 0);
-        assert_eq!(board.waived(), 0);
-        assert_eq!(board.missing(), 0);
-        assert_eq!(board.unweighted_percent(), Some(66));
-        assert!(
-            !board.complete(),
-            "intentional app.quit divergence keeps this showcase incomplete"
-        );
+        assert_records(published, &records, &receipt_uri);
+        assert_platform_score(&records);
     }
 }
 
