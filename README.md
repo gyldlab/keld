@@ -186,7 +186,7 @@ sequenceDiagram
     B->>H: Quit request on the same KIPC link
     H-->>B: Quit reply
     B->>B: Close link and exit
-    Note over H,B: Session cleanup completes;<br/>CLI forwards captured output
+    Note over H,B: Session cleanup completes<br/>CLI forwards captured output
 ```
 
 [Template implementation](crates/keld-cli/templates/hello/src/main-body.ts).
