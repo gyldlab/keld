@@ -1,0 +1,86 @@
+name: KEL-241 isolated lock review
+
+on:
+  push:
+    branches:
+      - review/kel-241-deecbaf
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: deecbafcadf6f5f00d16086c9cc480ce20ac02c7
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
+        with:
+          toolchain: 1.97.1
+      - name: Lens 1 — scope and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=195608aca80c3330027e82565723d80a8805602b
+          head=deecbafcadf6f5f00d16086c9cc480ce20ac02c7
+          test "$(git rev-parse HEAD)" = "$head"
+          test "$(git diff --name-only "$base".."$head")" = "Cargo.lock"
+          test "$(git diff --numstat "$base".."$head" -- Cargo.lock)" = $'1\t0\tCargo.lock'
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          base = '195608aca80c3330027e82565723d80a8805602b'
+          head = 'deecbafcadf6f5f00d16086c9cc480ce20ac02c7'
+          diff = subprocess.check_output(['git', 'diff', '--unified=0', f'{base}..{head}', '--', 'Cargo.lock'], text=True)
+          changed = [line for line in diff.splitlines() if line.startswith(('+', '-')) and not line.startswith(('+++', '---'))]
+          if changed != ['+ "sha2",']:
+              raise SystemExit(f'unexpected lock delta: {changed!r}')
+
+          compat = Path('crates/keld-compat/Cargo.toml').read_text()
+          if '[dev-dependencies]' not in compat or 'sha2 = { workspace = true }' not in compat:
+              raise SystemExit('keld-compat manifest does not declare workspace sha2 dev-dependency')
+          workspace = Path('Cargo.toml').read_text()
+          if 'sha2 = ' not in workspace:
+              raise SystemExit('workspace does not pin sha2')
+          print('scope/provenance lens: one generated lock dependency line, backed by existing manifest + workspace pin')
+          PY
+      - name: Lens 2 — independent Cargo refuter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('Cargo.lock')
+          text = path.read_text()
+          marker = 'name = "keld-compat"\n'
+          start = text.index(marker)
+          end = text.index('\n[[package]]', start + len(marker))
+          block = text[start:end]
+          needle = ' "sha2",\n'
+          if block.count(needle) != 1:
+              raise SystemExit('review negative control could not identify exactly one keld-compat sha2 lock entry')
+          block = block.replace(needle, '', 1)
+          path.write_text(text[:start] + block + text[end:])
+          PY
+
+          test "$(git diff --numstat -- Cargo.lock)" = $'0\t1\tCargo.lock'
+
+          if cargo metadata --locked --format-version 1 >/tmp/kel241-negative.json 2>/tmp/kel241-negative.err; then
+            echo 'negative control failed: Cargo accepted the stale lock under --locked' >&2
+            exit 1
+          fi
+          grep -Eiq 'lock file.*needs to be updated|Cargo.lock.*needs to be updated' /tmp/kel241-negative.err || {
+            echo 'negative control failed for an unexpected reason:' >&2
+            cat /tmp/kel241-negative.err >&2
+            exit 1
+          }
+
+          cargo metadata --format-version 1 >/tmp/kel241-regenerated.json
+          git diff --exit-code -- Cargo.lock
+          echo 'independent refuter: deleting the line breaks --locked metadata; Cargo regenerates exactly the reviewed lockfile'
