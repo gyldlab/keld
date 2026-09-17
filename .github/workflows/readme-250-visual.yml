@@ -1,0 +1,90 @@
+name: README 250 visual validation
+
+on:
+  push:
+    branches: [validation/kel-239-readme-250]
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact README revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 66956810f2d584be3c747454bd46f71e9580b141
+          persist-credentials: false
+      - name: Verify source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "66956810f2d584be3c747454bd46f71e9580b141"
+          test "$(git hash-object README.md)" = "a294e496ac1aad72f9e2663f6041b94e9fed8c04"
+      - name: Render with the existing pinned isolated renderer
+        shell: bash
+        env:
+          KELD_MERMAID_KEEP_OUTPUT: "1"
+        run: |
+          set -euo pipefail
+          tools/mermaid_render_check.sh
+      - name: Collect the two README SVGs and a digest receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          expected = {
+              "Current KELD runtime responsibilities": "runtime.svg",
+              "Current stock demo normal-close sequence": "shutdown.svg",
+          }
+          output = Path("target/readme-250-visual")
+          output.mkdir(mode=0o700)
+          records = []
+          found = set()
+          for path in Path("target").glob("keld-mermaid-render.*/**/*.svg"):
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit(f"Refusing unexpected SVG path: {path}")
+              data = path.read_bytes()
+              tree = ET.fromstring(data)
+              titles = ["".join(node.itertext()).strip() for node in tree.iter()
+                        if node.tag.rsplit("}", 1)[-1] == "title"]
+              for title in titles:
+                  if title not in expected:
+                      continue
+                  if title in found:
+                      raise SystemExit(f"Duplicate README diagram title: {title}")
+                  found.add(title)
+                  destination = output / expected[title]
+                  shutil.copyfile(path, destination)
+                  records.append({"title": title, "file": destination.name,
+                                  "sha256": hashlib.sha256(data).hexdigest(),
+                                  "bytes": len(data)})
+          if found != set(expected):
+              raise SystemExit(f"Missing README diagrams: {set(expected) - found}")
+          receipt = {
+              "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "readme_blob_sha": subprocess.check_output(["git", "hash-object", "README.md"], text=True).strip(),
+              "renderer": "Mermaid CLI 11.16.0",
+              "renderer_digest": "sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf",
+              "scope": "Two README SVGs rendered by the existing repository script; not full just ci or device acceptance",
+              "diagrams": sorted(records, key=lambda item: item["file"]),
+          }
+          (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          print(json.dumps(receipt, indent=2))
+          PY
+      - name: Upload README visual-review evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: readme-250-svg-6695681
+          path: target/readme-250-visual/
+          if-no-files-found: error
+          retention-days: 14
