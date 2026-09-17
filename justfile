@@ -201,8 +201,16 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # CI gate: tests (unit + integration + doctests). Matches CI nextest profile.
+# The Linux host suite owns real GTK windows, so preserve its virtual-display
+# contract for the full root gate as well as the routed Ubuntu package lane.
 test:
-    cargo nextest run --workspace --profile ci
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        xvfb-run -a cargo nextest run --workspace --profile ci
+    else
+        cargo nextest run --workspace --profile ci
+    fi
 
 # CI gate: rustdoc builds cleanly.
 doc:
