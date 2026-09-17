@@ -16,10 +16,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: deecbafcadf6f5f00d16086c9cc480ce20ac02c7
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify source identity
         shell: bash
-        run: test "$(git rev-parse HEAD)" = "deecbafcadf6f5f00d16086c9cc480ce20ac02c7"
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "deecbafcadf6f5f00d16086c9cc480ce20ac02c7"
+          git cat-file -e c41ec5e117db284d191ee508f42a4d8812869a00^{commit}
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
