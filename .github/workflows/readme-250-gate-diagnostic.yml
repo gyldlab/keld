@@ -6,15 +6,13 @@ permissions:
   contents: read
 jobs:
   full-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: readme-0140a04
-            sha: 0140a0460e0c0e83bd99748533c2bfc18930aa9f
-          - name: lock-deecbaf
+          - name: lock-deecbaf-ubuntu22
             sha: deecbafcadf6f5f00d16086c9cc480ce20ac02c7
     env:
       CARGO_TERM_COLOR: never
@@ -73,6 +71,8 @@ jobs:
           (root / 'tracked-diff.txt').write_bytes(dirty.stdout + dirty.stderr)
           data = (root / 'just-ci.log').read_bytes()
           receipt = {'source_sha': source, 'expected_sha': os.environ['EXPECTED_SHA'],
+                     'runner_image': os.environ.get('ImageOS'),
+                     'runner_version': os.environ.get('ImageVersion'),
                      'command': command, 'exit_code': result.returncode,
                      'tracked_diff_exit': dirty.returncode,
                      'log_sha256': hashlib.sha256(data).hexdigest(),
