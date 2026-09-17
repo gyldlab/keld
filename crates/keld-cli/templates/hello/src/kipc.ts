@@ -17,6 +17,7 @@ import {
   RECEIVE_POLICIES,
   WriteQueue,
   connectKipcSocket,
+  decodePostcardStringAt,
   decodeVarint,
   encodeVarint,
   echoReplyWaiter,
@@ -40,24 +41,31 @@ export interface EchoResponse {
 }
 
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 function encodeString(s: string): Uint8Array {
+  if (typeof s !== "string") {
+    throw kipcError("KELD-IPC-003", "echo message must be a string");
+  }
+  // TextEncoder replaces unpaired UTF-16 surrogates with U+FFFD. Reject
+  // unrepresentable input instead of sending a different Rust String.
+  for (let i = 0; i < s.length; i += 1) {
+    const unit = s.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw kipcError("KELD-IPC-003", "echo message contains an unpaired UTF-16 surrogate");
+      }
+      i += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw kipcError("KELD-IPC-003", "echo message contains an unpaired UTF-16 surrogate");
+    }
+  }
   const utf8 = textEncoder.encode(s);
   const lenPrefix = encodeVarint(utf8.length);
   const out = new Uint8Array(lenPrefix.length + utf8.length);
   out.set(lenPrefix, 0);
   out.set(utf8, lenPrefix.length);
   return out;
-}
-
-function decodeString(bytes: Uint8Array, offset: number): [string, number] {
-  const [len, afterLen] = decodeVarint(bytes, offset);
-  const end = afterLen + len;
-  if (end > bytes.length) {
-    throw kipcError("KELD-IPC-003", "truncated string payload");
-  }
-  return [textDecoder.decode(bytes.subarray(afterLen, end)), end];
 }
 
 /** Postcard encoding of `EchoRequest`: struct-as-tuple, field order = declaration order. */
@@ -72,7 +80,7 @@ export function encodeEchoRequest(req: EchoRequest): Uint8Array {
 
 /** Postcard decoding of `EchoResponse`. Rejects trailing bytes (mirrors `keld_ipc::codec::decode`). */
 export function decodeEchoResponse(bytes: Uint8Array): EchoResponse {
-  const [message, afterMessage] = decodeString(bytes, 0);
+  const [message, afterMessage] = decodePostcardStringAt(bytes, 0);
   const [count, afterCount] = decodeVarint(bytes, afterMessage);
   if (afterCount !== bytes.length) {
     throw kipcError("KELD-IPC-003", "trailing bytes after EchoResponse");
