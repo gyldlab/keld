@@ -989,7 +989,7 @@ export function decodeVarint(bytes: Uint8Array, offset: number): [number, number
 
 /**
  * Reads one postcard string starting at `offset`; returns it with the index
- * one past its last byte.
+ * one past its last byte. Preserves every Unicode scalar, including U+FEFF.
  */
 export function decodePostcardStringAt(bytes: Uint8Array, offset: number): [string, number] {
   const [len, afterLen] = decodeVarintAt(bytes, offset, "truncated postcard string");
@@ -998,7 +998,13 @@ export function decodePostcardStringAt(bytes: Uint8Array, offset: number): [stri
   if (text.length !== len) {
     throw kipcError("KELD-IPC-003", "postcard string length does not match payload");
   }
-  return [new TextDecoder("utf-8", { fatal: true }).decode(text), end];
+  try {
+    // A postcard String carries data, not a text-file encoding signature.
+    // Preserve U+FEFF rather than consuming it as a byte-order mark.
+    return [new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(text), end];
+  } catch {
+    throw kipcError("KELD-IPC-003", "invalid UTF-8 in postcard string");
+  }
 }
 
 /**
