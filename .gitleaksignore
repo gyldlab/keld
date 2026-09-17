@@ -1,0 +1,4 @@
+# False positive: prose in KEL-53 acceptance criterion 2 contains the words
+# "unknown key" followed by descriptive text; no credential is present.
+# Keep this suppression fingerprint-specific so other findings still fail CI.
+0ef941a14a40ff7529dc2c6e7cd89dac65a9a517:docs/specs/kel53-full-package-activation.md:generic-api-key:35
