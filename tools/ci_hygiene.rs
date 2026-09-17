@@ -18,6 +18,7 @@ const CI_REQUIRED_EVALUATOR: &str = "tools/ci_required.sh";
 const ATOMIC_PROTOCOL_CHECKER: &str = "tools/atomic_protocol.rs";
 const AGENT_CONTEXT_CHECKER: &str = "tools/agent_context.rs";
 const GITIGNORE: &str = ".gitignore";
+const JUSTFILE: &str = "justfile";
 const NEXTEST_CONFIG: &str = ".config/nextest.toml";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
@@ -215,6 +216,16 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
 const FUZZ_WORKSPACE_COMMANDS: &[&str] =
     &["cargo check --manifest-path crates/keld-ipc/fuzz/Cargo.toml"];
 
+const ROOT_TEST_RECIPE_COMMANDS: &[&str] = &[
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "if [[ \"$(uname -s)\" == \"Linux\" ]]; then",
+    "xvfb-run -a cargo nextest run --workspace --profile ci",
+    "else",
+    "cargo nextest run --workspace --profile ci",
+    "fi",
+];
+
 fn read(root: &Path, relative: &str) -> Result<String, String> {
     let path = root.join(relative);
     fs::read_to_string(&path).map_err(|error| {
@@ -223,6 +234,41 @@ fn read(root: &Path, relative: &str) -> Result<String, String> {
             path.display()
         )
     })
+}
+
+fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
+    let header = format!("{recipe}:");
+    let start = text.lines().position(|line| line == header)? + 1;
+    let mut commands = Vec::new();
+    for line in text.lines().skip(start) {
+        if !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
+            break;
+        }
+        let command = line.trim();
+        if !command.is_empty() && (!command.starts_with('#') || command.starts_with("#!")) {
+            commands.push(command.to_owned());
+        }
+    }
+    Some(commands)
+}
+
+fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
+    let justfile = read(root, JUSTFILE)?;
+    let commands = just_recipe_commands(&justfile, "test").ok_or_else(|| {
+        format!(
+            "CI-HYGIENE: `{JUSTFILE}` is missing the root `test:` recipe. Restore the full nextest gate."
+        )
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(ROOT_TEST_RECIPE_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `test:` must run the full workspace under `xvfb-run -a` on Linux and directly on other OSes. The Linux no-flag host suite creates a real GTK window; without the virtual display, the root gate fails before its lifecycle oracle runs."
+        ));
+    }
+    Ok(())
 }
 
 fn github_dir_is_ignored(gitignore: &str) -> bool {
@@ -2073,6 +2119,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
 fn check(root: &Path) -> Result<(), String> {
     check_gitignore(root)?;
     check_ci_profile_does_not_retry(root)?;
+    check_root_test_display_contract(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
     check_issue_templates(root)?;
@@ -2406,6 +2453,19 @@ mod tests {
         temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
         temp.write(ATOMIC_PROTOCOL_CHECKER, "fn main() {}\n");
         temp.write(AGENT_CONTEXT_CHECKER, "fn main() {}\n");
+        temp.write(
+            JUSTFILE,
+            concat!(
+                "test:\n",
+                "    #!/usr/bin/env bash\n",
+                "    set -euo pipefail\n",
+                "    if [[ \"$(uname -s)\" == \"Linux\" ]]; then\n",
+                "        xvfb-run -a cargo nextest run --workspace --profile ci\n",
+                "    else\n",
+                "        cargo nextest run --workspace --profile ci\n",
+                "    fi\n"
+            ),
+        );
         temp.write(MERMAID_CHECKER, "fn main() {}\n");
         temp.write(NEXTEST_CONFIG, "[profile.ci]\n");
         temp.write(MERMAID_RENDERER, include_str!("mermaid_render_check.sh"));
@@ -2420,6 +2480,25 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn root_test_recipe_requires_linux_xvfb_without_weakening_other_platforms() {
+        for (needle, replacement) in [
+            ("xvfb-run -a ", ""),
+            ("if [[ \"$(uname -s)\" == \"Linux\" ]]; then", "if false; then"),
+            ("cargo nextest run --workspace --profile ci", "true"),
+        ] {
+            let temp = complete_fixture();
+            temp.write(
+                JUSTFILE,
+                &read(temp.path(), JUSTFILE)
+                    .expect("root test fixture")
+                    .replacen(needle, replacement, 1),
+            );
+            let error = check(temp.path()).expect_err("display contract must remain executable");
+            assert!(error.contains("xvfb-run"), "{needle}: {error}");
+        }
     }
 
     #[test]
