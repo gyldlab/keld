@@ -1,0 +1,55 @@
+name: KEL-241 full root gate
+
+on:
+  push:
+    branches: [validation/kel-241-full-ci]
+
+permissions:
+  contents: read
+
+jobs:
+  just-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: deecbafcadf6f5f00d16086c9cc480ce20ac02c7
+          persist-credentials: false
+      - name: Verify source identity
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "deecbafcadf6f5f00d16086c9cc480ce20ac02c7"
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - name: Bun 1.4.2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.4.2"
+      - name: Linux build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev pkg-config build-essential xvfb xauth bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install local gate tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install just --locked
+          cargo install cargo-nextest --locked
+          cargo install cargo-deny --locked
+          just --version
+          cargo nextest --version
+          cargo deny --version
+          bun --revision
+          docker --version
+      - name: Full root gate
+        shell: bash
+        run: just ci
