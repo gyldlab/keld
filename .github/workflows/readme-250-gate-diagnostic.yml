@@ -1,0 +1,30 @@
+name: README 250 gate diagnostic
+on:
+  push:
+    branches: [validation/kel-239-readme-250]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Retrieve the existing full-gate failure without rerunning tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          gh api repos/gyldlab/keld/actions/jobs/105029443861/logs > evidence/full-root-gate.log
+          tail -n 100 evidence/full-root-gate.log > evidence/failure-tail.txt
+          sha256sum evidence/full-root-gate.log > evidence/log.sha256
+          cat evidence/failure-tail.txt
+      - name: Preserve the bounded diagnostic
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: readme-250-gate-diagnostic
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
