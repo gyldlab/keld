@@ -141,25 +141,21 @@ messages between Bun and the Rust host; it is not another JavaScript runtime.
 ```mermaid
 flowchart TB
     accTitle: Current KELD runtime responsibilities
-    accDescr: The Rust host owns the native window and application session and starts and supervises a separate Bun process. Bun runs the app's main TypeScript and exchanges authenticated KIPC messages with the host. The host creates a system webview to render the app's HTML, using WKWebView on macOS, WebView2 on Windows, or WebKitGTK on Linux. A general renderer-to-host bridge is not shown because it is not implemented.
+    accDescr: The Rust host owns the native window and application session and supervises a separate Bun process running src/main.ts. Bun and the host exchange authenticated KIPC messages. The host owns the system webview, where index.html and browser JavaScript run. The engine is WKWebView on macOS, WebView2 on Windows, or WebKitGTK on Linux. A general renderer-to-host bridge is not implemented.
 
-    HOST["Rust host<br/>Native window + app lifetime<br/>Starts and supervises Bun"]
-    BUN["Bun app process<br/>Your src/main.ts"]
-    VIEW["System webview<br/>Your index.html + browser JavaScript"]
-    MAC["macOS<br/>WKWebView"]
-    WIN["Windows<br/>WebView2"]
-    LINUX["Linux<br/>WebKitGTK"]
+    HOST["Rust host<br/>Window + app lifetime<br/>Supervises Bun"]
+    BUN["Bun process<br/>src/main.ts"]
+    VIEW["System webview<br/>index.html<br/>Browser JavaScript"]
+    ENGINE["OS webview engine<br/>macOS: WKWebView<br/>Windows: WebView2<br/>Linux: WebKitGTK"]
 
-    HOST <-->|"KIPC: authenticated app messages"| BUN
-    HOST -->|"Creates and owns the window"| VIEW
-    VIEW -->|"macOS backend"| MAC
-    VIEW -->|"Windows backend"| WIN
-    VIEW -->|"Linux backend"| LINUX
+    HOST <-->|"Authenticated<br/>KIPC"| BUN
+    HOST -->|"Owns"| VIEW
+    VIEW -->|"Chosen by OS"| ENGINE
 
     classDef current fill:#dcfce7,stroke:#15803d,color:#052e16,stroke-width:2px
     classDef external fill:#e2e8f0,stroke:#475569,color:#0f172a,stroke-width:2px
     class HOST current;
-    class BUN,VIEW,MAC,WIN,LINUX external;
+    class BUN,VIEW,ENGINE external;
 ```
 
 This is the current demo's runtime layout, not a diagram of every planned API.
@@ -170,23 +166,23 @@ The general **renderer-to-host bridge is still incomplete**. See the
 ### Closing the window closes the session
 
 The stock demo does more than display a page. When its last window closes, the
-host tells the Bun app. The app requests an orderly quit over the same KIPC link,
+host sends `LastWindowClosed` to the Bun app. The app requests an orderly quit over
+the same KIPC link,
 then exits after the host replies.
 
 ```mermaid
 sequenceDiagram
     accTitle: Current stock demo normal-close sequence
     accDescr: After the last native window closes, the Rust host sends LastWindowClosed over the authenticated KIPC link. The stock Bun app sends a Quit request on the same link, waits for its reply, closes its connection and exits. Session cleanup and captured output forwarding finish before relaunch. Physical normal-close evidence is scoped to the linked Windows and Ubuntu captures.
-    participant W as Native window
     participant H as Rust host
     participant B as Bun app
 
-    W->>H: Last window closes
-    H-->>B: LastWindowClosed event
-    B->>H: Quit request on the same KIPC link
+    H->>H: Last window closes
+    H-->>B: Window-closed event
+    B->>H: Quit request
     H-->>B: Quit reply
-    B->>B: Close link and exit
-    Note over H,B: Session cleanup completes<br/>CLI forwards captured output
+    B->>B: Close link<br/>and exit
+    Note over H,B: Cleanup completes<br/>Output reaches the terminal
 ```
 
 [Template implementation](crates/keld-cli/templates/hello/src/main-body.ts).
