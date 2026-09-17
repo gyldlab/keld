@@ -1,41 +1,93 @@
-name: README 250 gate diagnostic
+name: README 250 exact-source full gate
 on:
   push:
     branches: [validation/kel-239-readme-250]
 permissions:
   contents: read
-  actions: read
 jobs:
-  diagnose:
+  full-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: readme-0140a04
+            sha: 0140a0460e0c0e83bd99748533c2bfc18930aa9f
+          - name: lock-deecbaf
+            sha: deecbafcadf6f5f00d16086c9cc480ce20ac02c7
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_INCREMENTAL: "0"
     steps:
-      - name: Retrieve existing full-gate output as data
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.4.2"
+      - name: Install build and virtual-display prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev pkg-config build-essential xvfb xauth bubblewrap dbus-x11
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6
+        with:
+          tool: just@1.58.0,cargo-nextest@0.9.143,cargo-deny@0.20.2
+      - name: Verify source and frozen lock metadata
         env:
-          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ matrix.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          git diff --exit-code
+      - name: Execute unchanged full root gate with Xvfb
+        env:
+          EXPECTED_SHA: ${{ matrix.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p evidence
-          curl --fail --silent --show-error --location --max-time 60 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            https://api.github.com/repos/gyldlab/keld/actions/jobs/105029443861/logs \
-            -o evidence/full-root-gate.log
           python3 - <<'PY'
           import hashlib
           import json
+          import os
           from pathlib import Path
-          data = Path('evidence/full-root-gate.log').read_bytes()
-          lines = data.decode('utf-8-sig', errors='replace').splitlines()
-          tail = json.dumps(lines[-100:], ensure_ascii=True, indent=2)
-          Path('evidence/failure-tail.json').write_text(tail + '\n')
-          Path('evidence/log.sha256').write_text(hashlib.sha256(data).hexdigest() + '\n')
-          print(tail)
+          import subprocess
+          import sys
+          root = Path(os.environ['RUNNER_TEMP']) / 'full-gate-evidence'
+          root.mkdir(mode=0o700)
+          command = ['xvfb-run', '--auto-servernum', '--server-args=-screen 0 1280x800x24',
+                     'dbus-run-session', '--', 'just', 'ci']
+          with (root / 'just-ci.log').open('wb') as log:
+              result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False)
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          dirty = subprocess.run(['git', 'diff', '--exit-code'], capture_output=True, check=False)
+          (root / 'tracked-diff.txt').write_bytes(dirty.stdout + dirty.stderr)
+          data = (root / 'just-ci.log').read_bytes()
+          receipt = {'source_sha': source, 'expected_sha': os.environ['EXPECTED_SHA'],
+                     'command': command, 'exit_code': result.returncode,
+                     'tracked_diff_exit': dirty.returncode,
+                     'log_sha256': hashlib.sha256(data).hexdigest(),
+                     'security_policy': 'Runner defaults retained; no sysctl, AppArmor, sandbox or test bypass'}
+          (root / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          print(json.dumps(data.decode('utf-8', errors='replace').splitlines()[-70:], ensure_ascii=True, indent=2))
+          status = result.returncode or dirty.returncode or (source != os.environ['EXPECTED_SHA'])
+          sys.exit(status if status >= 0 else 128 - status)
           PY
-      - name: Preserve diagnostic evidence
+      - name: Preserve actual execution evidence
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: readme-250-gate-diagnostic
-          path: evidence/
-          if-no-files-found: error
+          name: full-gate-${{ matrix.name }}
+          path: ${{ runner.temp }}/full-gate-evidence/
+          if-no-files-found: warn
           retention-days: 14
