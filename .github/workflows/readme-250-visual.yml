@@ -15,14 +15,14 @@ jobs:
       - name: Check out the exact README revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 66956810f2d584be3c747454bd46f71e9580b141
+          ref: 0140a0460e0c0e83bd99748533c2bfc18930aa9f
           persist-credentials: false
       - name: Verify source identity
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "66956810f2d584be3c747454bd46f71e9580b141"
-          test "$(git hash-object README.md)" = "a294e496ac1aad72f9e2663f6041b94e9fed8c04"
+          test "$(git rev-parse HEAD)" = "0140a0460e0c0e83bd99748533c2bfc18930aa9f"
+          test "$(git hash-object README.md)" = "21de26f0233d8cc1cbd0daa87a9f251a906bdc6f"
       - name: Render with the existing pinned isolated renderer
         shell: bash
         env:
@@ -84,7 +84,7 @@ jobs:
       - name: Upload README visual-review evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: readme-250-svg-6695681
+          name: readme-250-svg-0140a04
           path: target/readme-250-visual/
           if-no-files-found: error
           retention-days: 14
