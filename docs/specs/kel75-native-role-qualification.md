@@ -121,8 +121,8 @@ Must not touch merely to make the design look generic:
 
 ## 6. Tasks
 
-- [ ] T9a — promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API.
-- [ ] T9b — implement one supervised Rust service role on one already-qualified OS using the existing preparation/generation/app-link owner; no renderer API change.
+- [ ] T9a — promote this draft with synchronized architecture/config/current-vs-target wording; freeze the smallest host-owned native-role declaration without adding a public runtime-plugin API. **T9b–T9g remain planning-only and MUST NOT begin until T9a lands with this specification at `Status: approved`.**
+- [ ] T9b — after approved T9a, implement one supervised Rust service role on one already-qualified OS using the existing preparation/generation/app-link owner; no renderer API change.
 - [ ] T9c — same-contract hybrid fixture: TS implementation and Rust implementation separately satisfy value/error/permission/ordering/malformed-input vectors; renderer call site is unchanged.
 - [ ] T9d — KEL-78 containment qualification for that exact native artifact, including hostile file/network/process/code-load/hang/abort/resource tests and descendant cleanup.
 - [ ] T9e — Rust-only primary product fixture: no Bun process/artifact, real renderer call, guarded denial, recovery/ambiguous-effect case and clean Quit.
