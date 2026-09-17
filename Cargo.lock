@@ -1312,6 +1312,7 @@ dependencies = [
  "keld-ipc",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
