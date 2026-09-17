@@ -109,6 +109,67 @@ describe("wire constants match keld-ipc", () => {
   });
 });
 
+describe("outbound header numeric domain", () => {
+  test("preserves the full declared integer domain without truncation", () => {
+    const encoded = encodeHeader({
+      kind: FrameKind.Ping,
+      flags: 0xffff,
+      channel: 0xffff,
+      corr: 0xffff_ffff,
+      len: 0xffff_ffff,
+    });
+    expect(decodeHeader(encoded)).toEqual({
+      kind: FrameKind.Ping,
+      flags: 0xffff,
+      channel: 0xffff,
+      corr: 0xffff_ffff,
+      len: 0xffff_ffff,
+    });
+  });
+
+  test("rejects values JavaScript typed arrays would silently wrap or truncate", () => {
+    const invalid = [
+      { field: "kind", value: 257 },
+      { field: "kind", value: 11 },
+      { field: "kind", value: -1 },
+      { field: "kind", value: 1.5 },
+      { field: "kind", value: Number.NaN },
+      { field: "flags", value: -1 },
+      { field: "flags", value: 0x1_0000 },
+      { field: "channel", value: 0x1_0000 },
+      { field: "channel", value: 1.5 },
+      { field: "corr", value: 0x1_0000_0000 },
+      { field: "corr", value: Number.POSITIVE_INFINITY },
+      { field: "len", value: -1 },
+      { field: "len", value: 0x1_0000_0000 },
+      { field: "len", value: Number.NaN },
+    ] as const;
+
+    const base = { kind: FrameKind.Call, flags: 0, channel: 1, corr: 1, len: 0 };
+    for (const { field, value } of invalid) {
+      expect(() => encodeHeader({ ...base, [field]: value })).toThrow("KELD-IPC-003");
+    }
+  });
+
+  test("the positional overload rejects the same lossy or missing values", () => {
+    expect(() => encodeHeader(FrameKind.Call, 0, 0x1_0000, 1, 0)).toThrow("KELD-IPC-003");
+    expect(() => encodeHeader(FrameKind.Call, 0, 1, 0x1_0000_0000, 0)).toThrow("KELD-IPC-003");
+    const encodeUnchecked = encodeHeader as unknown as (...args: unknown[]) => Uint8Array;
+    expect(() => encodeUnchecked(FrameKind.Call, null, 1, 1, 0)).toThrow("KELD-IPC-003");
+    expect(() => encodeUnchecked(FrameKind.Call, 0, 1, 1)).toThrow("KELD-IPC-003");
+  });
+
+  test("does not coerce non-numeric runtime input before rejection", () => {
+    let coerced = false;
+    const hostile = { valueOf() { coerced = true; return 1; }, toString() { coerced = true; return "1"; } };
+    const input = { kind: FrameKind.Call, flags: 0, channel: hostile as unknown as number, corr: 1, len: 0 };
+    expect(() => encodeHeader(input)).toThrow("KELD-IPC-003");
+    expect(coerced).toBe(false);
+    const encodeUnchecked = encodeHeader as unknown as (header: unknown) => Uint8Array;
+    expect(() => encodeUnchecked(null)).toThrow("KELD-IPC-003");
+  });
+});
+
 describe("fail-closed header semantics", () => {
   test("unknown kind is KELD-IPC-002", () => {
     const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });

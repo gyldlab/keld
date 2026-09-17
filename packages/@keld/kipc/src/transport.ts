@@ -172,6 +172,34 @@ function ioDeadlineExceeded(): Error {
   );
 }
 
+function requireHeaderInteger(field: string, value: unknown, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
+    throw kipcError(
+      "KELD-IPC-003",
+      `${field} must be an unsigned integer no greater than ${max}`,
+    );
+  }
+  return value;
+}
+
+function validateHeaderForEncoding(header: unknown): FrameHeader {
+  if (header === null || typeof header !== "object") {
+    throw kipcError("KELD-IPC-003", "frame header must be an object");
+  }
+  const candidate = header as Partial<FrameHeader>;
+  const kind = requireHeaderInteger("frame kind", candidate.kind, 0xff);
+  if (!KNOWN_FRAME_KINDS.has(kind)) {
+    throw kipcError("KELD-IPC-003", `frame kind ${kind} is not declared by kipc v${PROTOCOL_VERSION}`);
+  }
+  return {
+    kind,
+    flags: requireHeaderInteger("frame flags", candidate.flags, 0xffff),
+    channel: requireHeaderInteger("frame channel", candidate.channel, 0xffff),
+    corr: requireHeaderInteger("frame correlation", candidate.corr, 0xffff_ffff),
+    len: requireHeaderInteger("frame payload length", candidate.len, 0xffff_ffff),
+  };
+}
+
 export function encodeHeader(header: FrameHeader): Uint8Array;
 export function encodeHeader(
   kind: number,
@@ -187,25 +215,26 @@ export function encodeHeader(
   corr?: number,
   len?: number,
 ): Uint8Array {
-  const h: FrameHeader =
+  const candidate: unknown =
     typeof kindOrHeader === "object"
       ? kindOrHeader
       : {
           kind: kindOrHeader,
-          flags: flags ?? 0,
-          channel: channel ?? 0,
-          corr: corr ?? 0,
-          len: len ?? 0,
+          flags,
+          channel,
+          corr,
+          len,
         };
+  const header = validateHeaderForEncoding(candidate);
   const out = new Uint8Array(HEADER_LEN);
   const view = new DataView(out.buffer);
   out.set(MAGIC_BYTES, 0);
   out[2] = PROTOCOL_VERSION;
-  out[3] = h.kind;
-  view.setUint16(4, h.flags, true);
-  view.setUint16(6, h.channel, true);
-  view.setUint32(8, h.corr, true);
-  view.setUint32(12, h.len, true);
+  out[3] = header.kind;
+  view.setUint16(4, header.flags, true);
+  view.setUint16(6, header.channel, true);
+  view.setUint32(8, header.corr, true);
+  view.setUint32(12, header.len, true);
   return out;
 }
 
