@@ -23,6 +23,8 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -36,6 +38,9 @@ use keld_ipc::{SessionToken, format_app_link};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 const TEST_TOKEN_BYTES: [u8; 32] = [0x72; 32];
+
+#[cfg(unix)]
+static NEXT_SESSION_DIR: AtomicU64 = AtomicU64::new(0);
 
 fn test_token() -> SessionToken {
     SessionToken::from_bytes(TEST_TOKEN_BYTES)
@@ -169,17 +174,21 @@ struct Bound {
 
 #[cfg(unix)]
 fn bind_app_link() -> Bound {
-    let session_dir = std::env::temp_dir().join(format!(
-        "k7-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&session_dir)
-        .expect("session dir");
+    let pid = std::process::id();
+    let epoch_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let session_dir = loop {
+        let nonce = NEXT_SESSION_DIR.fetch_add(1, Ordering::Relaxed);
+        let candidate = std::env::temp_dir().join(format!("k7-{pid}-{epoch_nanos}-{nonce}"));
+        match std::fs::DirBuilder::new().mode(0o700).create(&candidate) {
+            Ok(()) => break candidate,
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                panic!("session dir: {error}")
+            }
+            Err(_) => {}
+        }
+    };
     std::fs::set_permissions(&session_dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     let path = session_dir.join("e.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");

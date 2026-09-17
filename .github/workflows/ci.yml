@@ -167,7 +167,7 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
         with:
           tool: nextest
       - name: test
@@ -556,12 +556,12 @@ jobs:
       # pull_request runners without secrets or repository write permission.
       # macOS avoids another GTK apt lane; this is not all-OS containment proof.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0, bundle 2.27.0
         with:
           languages: ${{ matrix.language }}
           build-mode: none
       - name: Analyze and upload CodeQL results
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9, bundle 2.26.4
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0, bundle 2.27.0
         with:
           category: /language:${{ matrix.language }}
           upload: always
