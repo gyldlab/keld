@@ -75,7 +75,7 @@ jobs:
             echo 'negative control failed: Cargo accepted the stale lock under --locked' >&2
             exit 1
           fi
-          grep -Eiq 'lock file.*needs to be updated|Cargo.lock.*needs to be updated' /tmp/kel241-negative.err || {
+          grep -Eiq 'cannot update the lock file .* because --locked was passed|lock file.*needs to be updated|Cargo.lock.*needs to be updated' /tmp/kel241-negative.err || {
             echo 'negative control failed for an unexpected reason:' >&2
             cat /tmp/kel241-negative.err >&2
             exit 1
