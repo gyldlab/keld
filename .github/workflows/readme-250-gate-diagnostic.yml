@@ -10,18 +10,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Retrieve the existing full-gate failure without rerunning tests
+      - name: Retrieve existing full-gate output as data
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p evidence
-          gh api repos/gyldlab/keld/actions/jobs/105029443861/logs > evidence/full-root-gate.log
-          tail -n 100 evidence/full-root-gate.log > evidence/failure-tail.txt
-          sha256sum evidence/full-root-gate.log > evidence/log.sha256
-          cat evidence/failure-tail.txt
-      - name: Preserve the bounded diagnostic
+          curl --fail --silent --show-error --location --max-time 60 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/gyldlab/keld/actions/jobs/105029443861/logs \
+            -o evidence/full-root-gate.log
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          data = Path('evidence/full-root-gate.log').read_bytes()
+          lines = data.decode('utf-8-sig', errors='replace').splitlines()
+          tail = json.dumps(lines[-100:], ensure_ascii=True, indent=2)
+          Path('evidence/failure-tail.json').write_text(tail + '\n')
+          Path('evidence/log.sha256').write_text(hashlib.sha256(data).hexdigest() + '\n')
+          print(tail)
+          PY
+      - name: Preserve diagnostic evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: readme-250-gate-diagnostic
