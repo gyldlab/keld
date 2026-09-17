@@ -178,7 +178,7 @@ sequenceDiagram
     participant B as Bun app
 
     H->>H: Last window closes
-    H-->>B: Window-closed event
+    H-->>B: LastWindowClosed event
     B->>H: Quit request
     H-->>B: Quit reply
     B->>B: Close link<br/>and exit
