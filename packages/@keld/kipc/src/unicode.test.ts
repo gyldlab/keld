@@ -27,7 +27,7 @@ const validEchoVectors: ReadonlyArray<readonly [string, readonly number[]]> = [
 describe("postcard Unicode scalar identity", () => {
   for (const [message, vector] of validEchoVectors) {
     test(`preserves exact echo bytes for ${JSON.stringify(message)}`, () => {
-      expect(Array.from(encodeEchoRequest({ message, count: 0 }))).toEqual(vector);
+      expect(Array.from(encodeEchoRequest({ message, count: 0 }))).toEqual([...vector]);
       expect(decodeEchoResponse(Uint8Array.from(vector))).toEqual({ message, count: 0 });
       // The final byte is count, not part of the postcard string.
       expect(decodePostcardStringAt(Uint8Array.from(vector), 0)).toEqual([
