@@ -319,8 +319,8 @@ decision is normative in [`02` §2](../architecture/02-ipc.md):
 | flatbuffers / Cap'n Proto | Near zero-copy but schema tooling is heavy. Overkill for command RPC; reconsider for bulk later |
 | bincode | Fast Rust↔Rust, less portable to TypeScript. Rejected for public contracts |
 
-The framing is worth stating explicitly, because it is what every competitor got wrong: Electron
-uses structured-clone/JSON, Tauri uses serde-JSON `invoke`, Electrobun uses JSON-RPC over localhost
+The framing is worth stating explicitly, because each competitor made a different tradeoff: Electron
+uses Structured Clone IPC, Tauri uses serde-JSON `invoke`, Electrobun uses JSON-RPC over localhost
 WebSockets, and Deno Desktop deletes the boundary. Keld's position is that the mediation cost gets
 *engineered away* with binary framing plus shared memory — not avoided by removing the security
 boundary.
@@ -477,15 +477,18 @@ exist yet; the reviewed `windows_named_pipe` module is the current other owner.
 **`keld://` streaming (wv-link).** Engines do not reliably expose shared memory to page JS, so bulk
 data to and from webviews rides a custom scheme instead: `keld://c/{channel}` request/response with
 streaming bodies, served through `WKURLSchemeHandler`, WebView2's `WebResourceRequested`, or
-WebKitGTK 2.40+ streams. `postMessage` stays control-only — it is string-typed on WebView2. A
-renderer→app-process transfer (Electron's `send(bigBuffer)` pattern) is routed: the webview streams
-over `keld://` into the host, and the host forwards into the shm ring — one copy at the
-engine-imposed scheme boundary, zero after.
+WebKitGTK 2.40+ streams. Keld keeps `postMessage` control-only. On WebView2 the page can post
+JSON-convertible values and the host can read JSON/string representations; that path is not a
+generic binary lane. A renderer→app-process transfer (Electron's `send(bigBuffer)` pattern) is
+routed through the host. A platform adapter may forward into a qualified role-private bulk ring, but
+each engine path must measure and report its end-to-end copies; neither a custom scheme nor a binary
+codec establishes zero-copy by itself.
 
 **Backpressure.** Per-channel credit windows granted in `Grant` frames, SPSC credit counting;
 senders suspend at zero credit (a promise in JS, a state-machine pause in Rust). The design rule is
-absolute — "No unbounded queues anywhere" — which is what makes Electron's frame-starving chatty-IPC
-failure structurally impossible rather than merely discouraged.
+absolute — "No unbounded queues anywhere". Credit windows bound admitted credit-accounted units per
+channel; producer queues, handler queues, bytes per unit/window, and scheduling/fairness require
+separate bounds and qualification under load.
 
 **Cancellation.** `Cancel` frames carry the `corr` of the target `Call` or stream; handlers observe
 an `AbortSignal` in JS and a `CancelToken` in Rust.

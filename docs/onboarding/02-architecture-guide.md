@@ -481,7 +481,7 @@ engines honestly:
 
 | Platform | Engine | Grade | Consequence for Keld |
 |---|---|---|---|
-| Windows | WebView2 (Chromium, evergreen) | A− | System webview is clearly right; CEF adds little. Caveats: still multi-process, string-typed message bridge (binary needs the scheme or shm lane) |
+| Windows | WebView2 (Chromium, evergreen) | A− | System webview is clearly right; CEF adds little. Caveats: still multi-process; content-side web messages are JSON-convertible values, not a generic binary lane (binary still needs the scheme or an independently qualified bulk lane) |
 | macOS | WKWebView (WebKit, OS-locked) | B | System default + a published minimum OS baseline (start 12+), polyfill pack for the tail. Out-of-process WebContent gives crash isolation for free. No CDP — DevTools is the Safari inspector |
 | Linux | WebKitGTK | D+ | The documented disaster zone: NVIDIA DMABUF crashes, blank windows, crash-on-resize, WebGL silently falling back to software while masking the renderer string, and distro version freezes |
 

@@ -553,8 +553,8 @@ decision is normative in [`02` §2](../architecture/02-ipc.md):
 | flatbuffers / Cap'n Proto | Near zero-copy but schema tooling is heavy. Overkill for command RPC; reconsider for bulk later |
 | bincode | Fast Rust↔Rust, less portable to TypeScript. Rejected for public contracts |
 
-The framing is worth stating explicitly, because it is what every competitor got wrong: Electron
-uses structured-clone/JSON, Tauri uses serde-JSON `invoke`, Electrobun uses JSON-RPC over localhost
+The framing is worth stating explicitly, because each competitor made a different tradeoff: Electron
+uses Structured Clone IPC, Tauri uses serde-JSON `invoke`, Electrobun uses JSON-RPC over localhost
 WebSockets, and Deno Desktop deletes the boundary. Keld's position is that the mediation cost gets
 *engineered away* with binary framing plus shared memory — not avoided by removing the security
 boundary.
@@ -711,15 +711,18 @@ exist yet; the reviewed `windows_named_pipe` module is the current other owner.
 **`keld://` streaming (wv-link).** Engines do not reliably expose shared memory to page JS, so bulk
 data to and from webviews rides a custom scheme instead: `keld://c/{channel}` request/response with
 streaming bodies, served through `WKURLSchemeHandler`, WebView2's `WebResourceRequested`, or
-WebKitGTK 2.40+ streams. `postMessage` stays control-only — it is string-typed on WebView2. A
-renderer→app-process transfer (Electron's `send(bigBuffer)` pattern) is routed: the webview streams
-over `keld://` into the host, and the host forwards into the shm ring — one copy at the
-engine-imposed scheme boundary, zero after.
+WebKitGTK 2.40+ streams. Keld keeps `postMessage` control-only. On WebView2 the page can post
+JSON-convertible values and the host can read JSON/string representations; that path is not a
+generic binary lane. A renderer→app-process transfer (Electron's `send(bigBuffer)` pattern) is
+routed through the host. A platform adapter may forward into a qualified role-private bulk ring, but
+each engine path must measure and report its end-to-end copies; neither a custom scheme nor a binary
+codec establishes zero-copy by itself.
 
 **Backpressure.** Per-channel credit windows granted in `Grant` frames, SPSC credit counting;
 senders suspend at zero credit (a promise in JS, a state-machine pause in Rust). The design rule is
-absolute — "No unbounded queues anywhere" — which is what makes Electron's frame-starving chatty-IPC
-failure structurally impossible rather than merely discouraged.
+absolute — "No unbounded queues anywhere". Credit windows bound admitted credit-accounted units per
+channel; producer queues, handler queues, bytes per unit/window, and scheduling/fairness require
+separate bounds and qualification under load.
 
 **Cancellation.** `Cancel` frames carry the `corr` of the target `Call` or stream; handlers observe
 an `AbortSignal` in JS and a `CancelToken` in Rust.
@@ -1230,7 +1233,7 @@ KEL-83 pending a real concurrent-init consumer (Bun boot) to overlap it against.
 
 # kipc — Keld's Typed IPC Plane
 
-IPC is where every competitor cut corners (Electron structured-clone JSON, Tauri
+IPC is where every competitor made different tradeoffs (Electron Structured Clone IPC, Tauri
 serde-JSON invoke, Electrobun localhost WebSockets, Deno deleting the boundary
 entirely). Keld treats the IPC plane as a core product. Design goals: typed end-to-end,
 binary, copy-accounted, backpressured, capability-checked, and fast enough that the
@@ -1449,8 +1452,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Backpressure (destination):** per-channel credit windows granted in `GRANT`
   frames (SPSC credit counting); senders suspend (JS: promise; Rust:
   state-machine pause) at zero credit. The design goal is no unbounded queues
-  anywhere — Electron's frame-starving chatty-IPC failure becomes structurally
-  impossible once credit windows ship. **v0:** `FrameKind::Grant` exists in the
+  anywhere. Credit windows bound admitted credit-accounted units per channel;
+  producer queues, handler queues, bytes per unit/window, and scheduling/fairness
+  require separate bounds and qualification under load.
+  **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
   readiness-driven reader remains destination work (see §7).
@@ -1470,9 +1475,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **wv-link**: engines don't expose shm to page JS reliably (SAB needs COOP/COEP and
   still doesn't cross to native). Bulk therefore rides the custom scheme: `keld://c/{channel}`
   request/response with streaming bodies (WKURLSchemeHandler / WebView2
-  WebResourceRequested / WebKitGTK 2.40+ streams), which engines serve off the UI
-  thread and can hand to us as counted buffers. postMessage stays control-only
-  (string-typed on WebView2 — see `docs/research/library/host-platforms/06-webview-reality.md`).
+  WebResourceRequested / WebKitGTK 2.40+ streams). Engine callbacks keep their
+  platform-defined thread affinity; adapters defer expensive work where supported and
+  must not block the UI/event loop while producing counted buffers. Keld keeps
+  `postMessage` control-only. On WebView2, content-side `postMessage` accepts values
+  supported by JSON conversion and the host exposes JSON/string views; it is not a
+  generic binary-transfer lane.
 - Renderer→app-role file-ish transfers (the Electron `send(bigBuffer)` pattern) are
   routed through the host with bounded credit. A platform adapter MAY forward into that
   role's ring, but the actual engine path reports its copies; choosing a binary codec
