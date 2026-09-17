@@ -1,6 +1,6 @@
 # kipc — Keld's Typed IPC Plane
 
-IPC is where every competitor cut corners (Electron structured-clone JSON, Tauri
+IPC is where every competitor made different tradeoffs (Electron Structured Clone IPC, Tauri
 serde-JSON invoke, Electrobun localhost WebSockets, Deno deleting the boundary
 entirely). Keld treats the IPC plane as a core product. Design goals: typed end-to-end,
 binary, copy-accounted, backpressured, capability-checked, and fast enough that the
@@ -219,8 +219,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Backpressure (destination):** per-channel credit windows granted in `GRANT`
   frames (SPSC credit counting); senders suspend (JS: promise; Rust:
   state-machine pause) at zero credit. The design goal is no unbounded queues
-  anywhere — Electron's frame-starving chatty-IPC failure becomes structurally
-  impossible once credit windows ship. **v0:** `FrameKind::Grant` exists in the
+  anywhere. Credit windows bound admitted credit-accounted units per channel;
+  producer queues, handler queues, bytes per unit/window, and scheduling/fairness
+  require separate bounds and qualification under load.
+  **v0:** `FrameKind::Grant` exists in the
   wire schema but has no live sender/receiver; bounded inline `CALL`/`REPLY`
   and the current drain-driven writer are the v0 backpressure surface; the
   readiness-driven reader remains destination work (see §7).
@@ -240,9 +242,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **wv-link**: engines don't expose shm to page JS reliably (SAB needs COOP/COEP and
   still doesn't cross to native). Bulk therefore rides the custom scheme: `keld://c/{channel}`
   request/response with streaming bodies (WKURLSchemeHandler / WebView2
-  WebResourceRequested / WebKitGTK 2.40+ streams), which engines serve off the UI
-  thread and can hand to us as counted buffers. postMessage stays control-only
-  (string-typed on WebView2 — see `docs/research/library/host-platforms/06-webview-reality.md`).
+  WebResourceRequested / WebKitGTK 2.40+ streams). Engine callbacks keep their
+  platform-defined thread affinity; adapters defer expensive work where supported and
+  must not block the UI/event loop while producing counted buffers. Keld keeps
+  `postMessage` control-only. On WebView2, content-side `postMessage` accepts values
+  supported by JSON conversion and the host exposes JSON/string views; it is not a
+  generic binary-transfer lane.
 - Renderer→app-role file-ish transfers (the Electron `send(bigBuffer)` pattern) are
   routed through the host with bounded credit. A platform adapter MAY forward into that
   role's ring, but the actual engine path reports its copies; choosing a binary codec

@@ -49,8 +49,8 @@ into five structural problems that no shipping framework has solved *together*:
    evergreen Chromium and basically fine, WKWebView is acceptable on recent macOS, and
    WebKitGTK on Linux is the problem child. See
    [`docs/research/library/host-platforms/06-webview-reality.md`](../research/library/host-platforms/06-webview-reality.md).
-4. **IPC as an afterthought.** Chatty structured-clone JSON (Electron), serde-JSON
-   `invoke` (Tauri), a localhost WebSocket on port 50000+ (Electrobun).
+4. **IPC as an afterthought.** Structured Clone IPC (Electron), serde-JSON `invoke`
+   (Tauri), a localhost WebSocket on port 50000+ (Electrobun).
 5. **Security either optional or hostile.** Electron: remember five code patterns or ship
    an RCE. Tauri: right model, painful hand-written-JSON DX. Electrobun: no model.
 
