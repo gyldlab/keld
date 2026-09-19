@@ -31,8 +31,8 @@ an authenticated Unix socket. They measure the KIPC library, **not** Bun-to-host
 latency, app startup, or a complete KELD application. P99 is the latency threshold
 covering 99% of the sampled round trips.
 
-[Fixture and reproduction steps](https://github.com/gyldlab/keld-benches/tree/b7137c1c2107e0f622eb350819d32605be7a781f/macos/keld/kipc-rust-echo) ·
-[Raw sessions](https://github.com/gyldlab/keld-benches/tree/b7137c1c2107e0f622eb350819d32605be7a781f/macos/bench/results/ipc-rtt) ·
+[Fixture and reproduction steps](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/keld/kipc-rust-echo) ·
+[Raw sessions](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/bench/results/ipc-rtt) ·
 [More measurements](docs/engineering/budget-scoreboard.md)
 
 <details>
@@ -62,7 +62,7 @@ prerequisites for your platform. The repository selects its Rust toolchain.
 |---|---|
 | **macOS** | Apple command-line developer tools. WKWebView comes with macOS. |
 | **Windows** | Rust's MSVC build tools and the WebView2 runtime. Use an interactive PowerShell session. |
-| **Linux** | The current product path targets Ubuntu/Debian x86_64 on Wayland. Install GTK3/WebKitGTK 4.1 development libraries, a C compiler, `pkg-config`, and `bwrap`; use an owner-controlled checkout and a host that supports the required containment. |
+| **Linux** | The current source-built product path is qualified on Ubuntu 26.04.1 x86_64 with GNOME Wayland and X11 through Mutter Xwayland. Install GTK3/WebKitGTK 4.1 development libraries, a C compiler, `pkg-config`, and `bwrap`; use an owner-controlled checkout and a host that supports the required containment. Fedora 43 and Arch package/build portability have separate bounded evidence; see the platform setup guide for what that does **not** qualify. |
 
 [Platform setup and troubleshooting](docs/onboarding/README.md#prerequisites).
 Contributors running the full `just ci` suite need **Bun 1.4.2**.
@@ -221,8 +221,10 @@ app actually uses on each intended platform.
 
 The [webview architecture](docs/architecture/05-webview-and-native.md) describes
 the design; [current implementation status](docs/engineering/product-status.md)
-distinguishes it from available functionality. Linux X11, other distributions,
-and other architectures remain separately unverified for the product launch path.
+distinguishes it from available functionality. The recorded Linux product path
+covers native GNOME Wayland and X11 through Mutter Xwayland on Ubuntu. Fedora 43
+userland/X11-control and Arch build-portability evidence are narrower: native Xorg,
+a bare-metal non-Debian desktop, and other architectures remain separately unverified.
 
 ## What is ready, and what is next?
 
