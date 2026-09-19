@@ -26,7 +26,7 @@ wrapper or packaged application release to install yet.
   |---|---|
   | macOS | Apple command-line developer tools (`xcode-select --install` if absent); WKWebView is supplied by macOS |
   | Windows | Rust's MSVC build tools and the WebView2 runtime; use an interactive PowerShell session for the source-build/Ctrl-C path; stock native Close/cleanup/relaunch is qualified only for the [Windows 11 x64 capture](https://github.com/gyldlab/keld/issues/174#issuecomment-5644140405) |
-  | Ubuntu/Debian x86_64 | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; native Close/cleanup/relaunch is qualified on Ubuntu 26.04.1 / GNOME Wayland, and shipping-product X11 is qualified through the same host's Mutter Xwayland server; native Xorg is not yet qualified |
+  | Ubuntu/Debian x86_64 | GTK3/WebKitGTK 4.1 development libraries, `pkg-config`, a C compiler, and trusted checkout/strict-launch prerequisites below; native Close/cleanup/relaunch is qualified on Ubuntu 26.04.1 / GNOME Wayland. Bounded shipping-product evidence also exercises X11 through the same host's Mutter Xwayland server, but X11/native Xorg qualification remains open in the canonical product-status ledger |
   | Fedora 43 x86_64 — bounded userland/control evidence | `gtk3-devel`, `webkit2gtk4.1-devel`, `pkgconf-pkg-config`, a C/C++ build toolchain, and `bubblewrap`; a pinned Fedora 43 userland produced a locked release host and a Fedora-owned X11/Xvfb+Fluxbox resize/minimize/restore/close control, but this is **not** a bare-metal Fedora desktop qualification |
   | Arch Linux x86_64 — build portability only | `gtk3`, `webkit2gtk-4.1`, `libsoup3`, `pkgconf`, and `bubblewrap`; a pinned Arch userland produced a locked release host with no unresolved dynamic links, but no Arch desktop runtime acceptance is claimed |
 
@@ -83,9 +83,10 @@ Linux also needs the sibling `keld-role-launcher` binary built by `keld-host`.
 Building only `keld-cli` is insufficient in a fresh checkout. If using a custom Cargo
 target directory, substitute that directory for `target` in the following paths.
 
-On macOS or an Ubuntu/Debian x86_64 desktop with the prerequisites above, in the
-repository root (the recorded Ubuntu product evidence covers GNOME Wayland and X11
-through Mutter Xwayland):
+On macOS or the qualified Ubuntu 26.04.1 x86_64 GNOME Wayland session with the
+prerequisites above, in the repository root. X11 applications through Mutter Xwayland
+have separate bounded shipping-product evidence, but that does not qualify native Xorg
+or widen the canonical Linux product-status row:
 
 ```bash
 ./target/debug/keld create hello-keld

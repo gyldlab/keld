@@ -62,7 +62,7 @@ prerequisites for your platform. The repository selects its Rust toolchain.
 |---|---|
 | **macOS** | Apple command-line developer tools. WKWebView comes with macOS. |
 | **Windows** | Rust's MSVC build tools and the WebView2 runtime. Use an interactive PowerShell session. |
-| **Linux** | The current source-built product path is qualified on Ubuntu 26.04.1 x86_64 with GNOME Wayland and X11 through Mutter Xwayland. Install GTK3/WebKitGTK 4.1 development libraries, a C compiler, `pkg-config`, and `bwrap`; use an owner-controlled checkout and a host that supports the required containment. Fedora 43 and Arch package/build portability have separate bounded evidence; see the platform setup guide for what that does **not** qualify. |
+| **Linux** | The current source-built product path is qualified on Ubuntu 26.04.1 x86_64 with GNOME Wayland. Install GTK3/WebKitGTK 4.1 development libraries, a C compiler, `pkg-config`, and `bwrap`; use an owner-controlled checkout and a host that supports the required containment. Bounded shipping-product evidence also exists for X11 through the same host's Mutter Xwayland server, but the canonical product-status ledger still leaves X11/native Xorg qualification open. Fedora 43 and Arch package/build portability have separate bounded evidence; see the platform setup guide for what that does **not** qualify. |
 
 [Platform setup and troubleshooting](docs/onboarding/README.md#prerequisites).
 Contributors running the full `just ci` suite need **Bun 1.4.2**.
@@ -221,10 +221,12 @@ app actually uses on each intended platform.
 
 The [webview architecture](docs/architecture/05-webview-and-native.md) describes
 the design; [current implementation status](docs/engineering/product-status.md)
-distinguishes it from available functionality. The recorded Linux product path
-covers native GNOME Wayland and X11 through Mutter Xwayland on Ubuntu. Fedora 43
-userland/X11-control and Arch build-portability evidence are narrower: native Xorg,
-a bare-metal non-Debian desktop, and other architectures remain separately unverified.
+distinguishes it from available functionality. The qualified Linux product path covers native GNOME Wayland on Ubuntu. Separate
+bounded shipping-product runs exercise X11 through the same host's Mutter Xwayland
+server, but the canonical product-status ledger still leaves X11/native Xorg
+qualification open. Fedora 43 userland/X11-control and Arch build-portability evidence
+are narrower: a bare-metal non-Debian desktop and other architectures remain separately
+unverified.
 
 ## What is ready, and what is next?
 

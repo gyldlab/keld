@@ -45,7 +45,7 @@ from `std::env::args()`.
 | `keld --version` / `keld -V` | `main.rs` | prints `keld <CARGO_PKG_VERSION>` |
 | `keld` (no args) | `main.rs::print_usage` | usage on **stderr**, exit 0 |
 | `keld create <name>` | [`create.rs`](../../crates/keld-cli/src/create.rs) | scaffolds the hello template into `./<name>` |
-| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile stages and launches the no-flag host with a private liveness lease; Linux also stages the strict-role launcher. Ubuntu GNOME Wayland and X11 through Mutter Xwayland have product evidence. Fedora 43 has bounded userland/build plus Fedora-owned X11-control evidence and Arch has build-portability evidence only; native Xorg and bare-metal non-Debian product qualification remain open |
+| `keld dev` | [`dev.rs`](../../crates/keld-cli/src/dev.rs) | checks env; on macOS, Windows, and the current Ubuntu/Debian x86_64 Linux profile stages and launches the no-flag host with a private liveness lease; Linux also stages the strict-role launcher. Ubuntu GNOME Wayland is the qualified product path. Bounded shipping-product evidence exercises X11 through Mutter Xwayland, but the canonical product-status ledger still leaves X11/native Xorg qualification open. Fedora 43 has bounded userland/build plus Fedora-owned X11-control evidence and Arch has build-portability evidence only; bare-metal non-Debian product qualification remains open |
 | `keld doctor` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | prints `[ok]`/`[FAIL]` per check |
 | `keld doctor --json` | [`doctor.rs`](../../crates/keld-cli/src/doctor.rs) | emits the findings array used by agents and MCP |
 | `keld mcp serve` | [`mcp/`](../../crates/keld-cli/src/mcp/) | serves doctor/docs/permissions tools over stdio |
@@ -215,7 +215,7 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   absolute paths (`KELD-CLI-035`), and passes the file contents as
   `NavTarget::Html`. Linked local assets are not this slice. `keld hello` and
   `keld-host --hello` still render compiled `keld_wv::HELLO_HTML`.
-- **On macOS, Windows, and the proved Ubuntu GNOME Wayland/X11-through-Xwayland paths the host, not the CLI, owns close and Quit.** The live
+- **On macOS, Windows, and the qualified Ubuntu GNOME Wayland path the host, not the CLI, owns close and Quit.** Separate bounded X11-through-Xwayland product runs exercise the same ownership path without promoting X11/native Xorg to canonical qualification. The live
   WKWebView/WebView2/WebKitGTK paths use event-loop wake commands; `LastWindowClosed`
   stays on the same link, and the correlated Quit reply precedes link close
   and supervisor reap. Linux additionally confines each Bun generation and its
@@ -224,9 +224,10 @@ Three behaviors that will surprise you if you only read the ROADMAP:
   same cross-platform call on every OS, and Linux (`WebKitGTK` via wry,
   `build_gtk` for Wayland+X11 both, GTK3 + `libwebkit2gtk-4.1-dev`) now
   dispatches to a real backend instead of an `unavailable()` stub. Compiled,
-  clippy-clean, and test-green on real Ubuntu. Shipping-product evidence covers
-  native GNOME Wayland and X11 through the host's live Mutter Xwayland server;
-  a separate Fedora-owned X11/Xvfb+Fluxbox control verifies title/PID binding,
+  clippy-clean, and test-green on real Ubuntu. Native GNOME Wayland is the
+  qualified product path. Separate bounded shipping-product evidence exercises X11
+  through the host's live Mutter Xwayland server without qualifying X11/native Xorg;
+  a Fedora-owned X11/Xvfb+Fluxbox control verifies title/PID binding,
   resize, minimize/restore, native close, exit 0, and reap for a Fedora-built
   host. That Fedora control is not a bare-metal Fedora login, and native Xorg
   remains unqualified. A plain WSL sandbox with no display still fails at
@@ -512,7 +513,7 @@ Backends:
 |---|---|---|
 | `wkwebview` (`#[cfg(target_os = "macos")]`) | macOS | **Live.** `WkWebViewEngine::new()` / `run_until_closed()` / `run_hello(title, html)`. Built on tao 0.35 + wry 0.56 as interim scaffolding, to be replaced by direct objc2 bindings. On macOS 12+, new camera/mic requests go through `with_permission_handler` → `keld-guard` (`web.camera` / `web.microphone`, default-deny). Pinned wry cfg-removes that delegate callback below 12 on debug hosts, so the oldest-supported-OS boundary and real proof remain open. |
 | [`webview2`](../../crates/keld-wv/src/webview2/mod.rs) | Windows | **Live (KEL-27, direct COM since KEL-65).** `WebView2Engine::new()` / `run_until_closed()` / `run_hello`; drives `webview2-com` directly (environment, controller, navigation) with tao for window + event loop — wry is not linked on Windows. Runtime probe fails closed as `KELD-WV-008`. Camera/mic go through `add_PermissionRequested` → `keld-guard`, registered before the first navigation (compile-enforced). |
-| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; shipping-product runs cover native GNOME Wayland and X11 through live Mutter Xwayland, while a Fedora-built host has a Fedora-owned X11/Xvfb+Fluxbox lifecycle/control receipt. KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. Native Xorg and bare-metal non-Debian product qualification remain open. New camera/mic requests go through a guard-installed wry builder → `keld-guard`; Linux's unhandled default deny is not accepted as policy provenance, so the KEL-132 real probe binds callback/API denial to the manifest, principal, process and no-prompt census. Saved-preference restart/revocation remains KEL-135-owned. |
+| [`webkitgtk`](../../crates/keld-wv/src/webkitgtk/mod.rs) | Linux | **Live (KEL-28), wry interim** — GTK3 + `libwebkit2gtk-4.1-dev`, same "wry now, direct webkit6/gtk4 later" policy as macOS/Windows started with; `build_gtk` (not plain `build`) so Wayland works, not just X11. Process entry calls `prepare_gpu_safe_mode_process()` to exact-self re-exec with NVIDIA+Wayland safe-mode before any GTK/WebKit call; fallible `WebKitGtkEngine::new()` rejects an unprepared risky stack as `KELD-WV-010`. Pure `detect_gpu_safe_mode()` distinguishes normal, risky/unprepared, and risky/prepared without side effects for `keld doctor`; `is_degraded()` is true only for the prepared state. Compiled/tested on real Ubuntu; native GNOME Wayland is the qualified product path. Separate bounded shipping-product runs exercise X11 through live Mutter Xwayland without promoting X11/native Xorg to canonical qualification, while a Fedora-built host has a Fedora-owned X11/Xvfb+Fluxbox lifecycle/control receipt. KEL-96 adds native GNOME Wayland rendered-navigation/no-flag evidence. Bare-metal non-Debian product qualification also remains open. New camera/mic requests go through a guard-installed wry builder → `keld-guard`; Linux's unhandled default deny is not accepted as policy provenance, so the KEL-132 real probe binds callback/API denial to the manifest, principal, process and no-prompt census. Saved-preference restart/revocation remains KEL-135-owned. |
 
 Hello-window entry points, re-exported at crate root: `HELLO_HTML` (the dark-background
 "Hello from Keld" document — engine-neutral on purpose, one const backs both live

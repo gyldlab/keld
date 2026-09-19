@@ -52,10 +52,12 @@ or strict/release-profile qualification. For Ubuntu, see the
 the [Ubuntu refresh](https://github.com/gyldlab/keld/issues/175#issuecomment-5588845871)
 covers separate Ctrl-C/relaunch rows, and the
 [initial Ubuntu run](https://github.com/gyldlab/keld/issues/167#issuecomment-5575535917)
-records a historical stock native-Close failure. Shipping-product X11 is now qualified
-through the Ubuntu host's live Mutter Xwayland server. Fedora 43 has bounded userland/build
-plus Fedora-owned X11-control evidence and Arch has build-portability evidence only;
-native Xorg, a bare-metal non-Debian desktop, and release packaging remain unverified.
+records a historical stock native-Close failure. Separate bounded shipping-product runs
+exercise X11 through the Ubuntu host's live Mutter Xwayland server, but the canonical
+product-status ledger still leaves X11/native Xorg qualification open. Fedora 43 has
+bounded userland/build plus Fedora-owned X11-control evidence and Arch has
+build-portability evidence only; a bare-metal non-Debian desktop and release packaging
+remain unverified.
 This source-built demo is not an installer or a migrated Electron application.
 
 ---
