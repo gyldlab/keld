@@ -740,9 +740,9 @@ an `AbortSignal` in JS and a `CancelToken` in Rust.
 traits, the channel table for the handshake, and — the part that matters most — the **permission
 stubs**, so that the manifest generator and the guard enforce the same source of truth
 ([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists, and the
-current echo adapter still carries hand-written TypeScript payload interfaces. KEL-98 proposes a
-bounded bootstrap that, after approval, would derive compile-time TypeScript payload declarations
-from the already-shipped Rust `EchoRequest` / `EchoResponse` structs to retire that mirror; it would
+current echo adapter still carries hand-written TypeScript payload interfaces. Approved KEL-98
+defines a bounded bootstrap whose implementation will derive compile-time TypeScript payload
+declarations from the already-shipped Rust `EchoRequest` / `EchoResponse` structs to retire that mirror; it does
 not become the general schema-authoring model or replace postcard/runtime validation.
 
 ---
@@ -1500,11 +1500,11 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 ## 4. Schema-first contracts
 
 The destination general contract model is TypeScript-native (no new IDL to learn) and
-compiled to both sides. KEL-98 proposes one bounded bootstrap exception: after approval,
-the already-shipped Rust `EchoRequest` / `EchoResponse` structs would become the source
-for generated TypeScript payload declarations so the current hand-written echo mirror
-can be removed. Until that implementation lands, the hand-written mirror remains the
-live source on the TypeScript side. The proposed echo-only bootstrap would not make Rust
+compiled to both sides. Approved KEL-98 defines one bounded bootstrap exception: its
+implementation will derive generated TypeScript payload declarations from the
+already-shipped Rust `EchoRequest` / `EchoResponse` structs so the current hand-written
+echo mirror can be removed. Until that implementation lands, the hand-written mirror
+remains the live source on the TypeScript side. The approved echo-only bootstrap does not make Rust
 the general schema language, ship `@keld/schema` or live `keld gen`, or replace runtime
 postcard/golden-vector validation.
 

@@ -1,6 +1,9 @@
 # Spec: echo Rust-schema to TypeScript contract codegen
 Status: approved
 Linear: KEL-98 · Owner: GYLDLAB · Updated: 2026-09-19
+Approval: repository-owner maintainer session · approved content head `1be5ed88ccb1035df4e7c8fe2d5e6c98a2b80bd8` · [public receipt](https://github.com/gyldlab/keld/pull/257#issuecomment-5741478846) · decision SHA-256 `f1583577d2edcc3a1dc351415f675d8ec6e22103353a170920b865e4b9570ec5`
+
+{"schema":"keld.kel98-approval/v1","decision":"approved","approved_content_head":"1be5ed88ccb1035df4e7c8fe2d5e6c98a2b80bd8","approver_id":"amishabenramani","source":"active-maintainer-session-2026-09-19","public_receipt":"https://github.com/gyldlab/keld/pull/257#issuecomment-5741478846"}
 
 ## 1. Goal & non-goals
 
