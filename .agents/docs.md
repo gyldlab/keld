@@ -11,6 +11,17 @@ Load for agent-docs, generated docs, Mermaid, or public documentation changes.
 - Numbered documentation paths are identifiers; renumbering MUST update every reference
   in the same change.
 
+## Public technical audits
+
+- This section owns audit publication/correction procedure; `docs/audits/README.md` owns
+  registry data and reader-facing guarantees. Private systems, paths, and user data MUST
+  NOT support or leak into published claims.
+- Reports are historical: implementation changes require a new dated audit. The registry
+  original-snapshot hash MUST NOT change; dated `Errata` preserve it and atomically
+  refresh the current manifest hash/registry metadata.
+- Publication/correction MUST pass `python3 docs/audits/verify.py` and
+  `python3 docs/audits/test_verify.py`.
+
 ## Diagram selection and meaning
 
 - Add Mermaid only when it materially clarifies relationships over prose/a small table.

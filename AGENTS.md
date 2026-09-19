@@ -9,7 +9,7 @@ in agent-facing files. Architecture specs remain prose.
 
 ## Ground truth
 
-- Specs: `docs/architecture/01..07-*.md`; research: nested `docs/research/` checkout.
+- Specs: `docs/architecture/01..07-*.md`; audits: `docs/audits/README.md`; research: nested `docs/research/` checkout.
 - [`llms.txt`](llms.txt) is the compact generated index; [`llms-full.txt`](llms-full.txt)
   is its ordered corpus. Included-source changes MUST pass `just llms-check`.
 - Code/spec mismatch is a bug in one. Fix both in the same PR or state the blocker;
@@ -17,7 +17,7 @@ in agent-facing files. Architecture specs remain prose.
 - Features require an approved `docs/agents/spec-template.md` spec plus Linear (KELD).
   `docs/agents/workflow.md` owns execution; routed review/coordination playbooks own
   their operational rules.
-- The nearest crate `AGENTS.md` adds path invariants and MUST be read before editing it.
+- Read nearest crate `AGENTS.md` before editing there.
 
 ## Instruction loading and routing (MUST)
 

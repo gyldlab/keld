@@ -1,0 +1,133 @@
+{
+  "schema": "keld.public-audit-evidence/v1",
+  "report": "../2026-09-19-full-spectrum-technical-audit.md",
+  "original_report_sha256": "6f4ff0ca989ece1fce0b1627b1ee80e1f91403b6510f4cdf35cb0cd9d8f88ecf",
+  "report_sha256": "6f4ff0ca989ece1fce0b1627b1ee80e1f91403b6510f4cdf35cb0cd9d8f88ecf",
+  "audit_date": "2026-09-19",
+  "audit_provenance": "AI-assisted maintainer technical audit, not a third-party certification",
+  "public_only": true,
+  "scope": [
+    "public KELD source tree",
+    "architecture and status documentation",
+    "tests",
+    "selected Git history and CI evidence",
+    "public benchmark repository",
+    "authoritative upstream documentation"
+  ],
+  "audited_revisions": {
+    "gyldlab/keld": "0ea0780bb574ad242e9f1105fa4af5842872bad3",
+    "gyldlab/keld-benches": "da36dd9b26a0f4134d53899818a877b9e2f0620b"
+  },
+  "verification": {
+    "rust_library_tests": {
+      "passed": 353,
+      "ignored": 3
+    },
+    "typescript_tests": {
+      "passed": 111,
+      "failed": 0,
+      "expectations": 2209
+    },
+    "linux_benchmark_harness_tests": {
+      "passed": 38
+    },
+    "benchmark_schema": "passed",
+    "ci_required_contract": "passed",
+    "ci_change_router_contract": "passed"
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "S2",
+      "confidence": "confirmed",
+      "title": "Developer staging is not a general application staging/permissions pipeline"
+    },
+    {
+      "id": "F-02",
+      "severity": "S2",
+      "confidence": "high",
+      "title": "Windows WebView2 storage uses a shared dev.keld namespace"
+    },
+    {
+      "id": "F-03",
+      "severity": "S2",
+      "confidence": "high",
+      "title": "Filesystem authorization is lexical and not object-bound"
+    },
+    {
+      "id": "F-04",
+      "severity": "S2",
+      "confidence": "high",
+      "title": "Equivalent shipping authority containment is not established across all three OS paths"
+    },
+    {
+      "id": "F-05",
+      "severity": "S3",
+      "confidence": "confirmed",
+      "title": "glib 0.18.5 is in the affected range of RUSTSEC-2024-0429"
+    },
+    {
+      "id": "F-06",
+      "severity": "S3",
+      "confidence": "confirmed",
+      "title": "Allocation-free IPC instruction contradicts current implementation"
+    },
+    {
+      "id": "F-07",
+      "severity": "S3",
+      "confidence": "confirmed",
+      "title": "Architecture and Linux benchmark use different MEM-IDLE denominators"
+    },
+    {
+      "id": "F-08",
+      "severity": "S3",
+      "confidence": "high",
+      "title": "TypeScript outbound queue lacks aggregate admission bound and queue-inclusive deadline"
+    },
+    {
+      "id": "F-09",
+      "severity": "S3",
+      "confidence": "high",
+      "title": "doctor --json output and exit status run findings separately"
+    },
+    {
+      "id": "F-10",
+      "severity": "S3",
+      "confidence": "high",
+      "title": "Windows COM initialization ownership is not explicitly balanced"
+    }
+  ],
+  "performance_snapshot": {
+    "linux_wayland_product_paint_fresh_ms": {
+      "median": 533.646,
+      "bootstrap_ci_approx": [
+        524.7025,
+        543.4085
+      ],
+      "valid_samples": 30,
+      "publication_eligible": false
+    },
+    "linux_wayland_product_memory_fresh_kib": {
+      "host_rss_median": 179710,
+      "total_tree_rss_median": 494352,
+      "total_private_dirty_median": 75978,
+      "publication_eligible": false
+    }
+  },
+  "public_evidence_roots": [
+    "https://github.com/gyldlab/keld/tree/0ea0780bb574ad242e9f1105fa4af5842872bad3",
+    "https://github.com/gyldlab/keld-benches/tree/da36dd9b26a0f4134d53899818a877b9e2f0620b"
+  ],
+  "upstream_receipts": [
+    {
+      "path": "evidence/upstream/2026-09-19-platform-semantics.json",
+      "sha256": "73c5fe8a7ea99b6f0e72480f14e2f1087c7b93aab6a4b42ada7c650aec72d062"
+    }
+  ],
+  "corrections": [],
+  "notes": [
+    "Open pull requests were context only and were not counted as landed capability.",
+    "No S0 or S1 finding was established; this does not prove that none exists.",
+    "Private repositories, private work-management state, local machine paths, and user-specific data are intentionally excluded from publication evidence."
+  ]
+}
