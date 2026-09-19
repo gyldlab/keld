@@ -758,7 +758,7 @@ without a spec change.
 |---|---|---|---|
 | `keld.config.ts` | App identity, windows, runtime choice, engine policy, dev server | `keld migrate` / `create-keld` | **Partial** — the macOS/Windows dev compiler reads `name`, `entry`, and `renderer`; the full schema is absent, and the no-flag host consumes only compiled `keld.boot.json` |
 | `keld.permissions.jsonc` | Capability manifest — see [`03` §2](../architecture/03-security.md) | `keld migrate` + the doctor recorder | **No** |
-| `keld.build.ts` | Packaging: targets, signing, update feed, delta settings | `keld migrate`, from electron-builder config | **No** |
+| `keld.build.ts` | Packaging: targets, signing, full update feed, optional delta settings | `keld migrate`, from electron-builder config | **No** |
 | `keld.compat.ts` | Compat switches: quirks flags, `sendSync` policy, shim logging | `keld migrate`, migrated apps only | **No** |
 
 Two more files are *edited* rather than owned: `package.json` (scripts and `@keld/*` deps replacing
@@ -1092,7 +1092,7 @@ view and links each claim to tracked evidence.
 | `keld-native` | Guarded native services: filesystem, menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell and secure storage | ipc, guard |
 | `keld-guard` | Capability manifest, generated scopes, principal/window grants, evaluation and audit | sha2 |
 | `keld-runtime` | Supervised Bun process family, role identities, lifecycle policy, grants and virtual ports | ipc |
-| `keld-update` | Signed update manifests, delta application, rollback and feeds | — |
+| `keld-update` | Signed full-package activation, rollback and optional later delta transport | — |
 | `keld-pack` | Installer assembly, signing/notarization and cross-target packaging | — |
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
@@ -1844,16 +1844,31 @@ manifest decoder.
    injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.
-4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9
-   lesson); host binaries + updates are ed25519-signed with a TUF-style rotating root;
-   `keld.lock` pins host/Bun/polyfill-pack versions.
+4. **Supply-chain destination**: the planned CLI uses a 24 h `min-release-age` for
+   template dependencies, while `keld.lock` pins host/Bun/polyfill-pack versions. The
+   v0 update contract selects one compiled-in ed25519 key; a TUF-style rotating root
+   remains later target behavior and requires a wire/trust review.
 
-## 5. Update security
+## 5. Update security (specified, not implemented)
 
-Update manifests signed (ed25519, key in `keld.build.ts` → CI secret); patches carry
-full-file BLAKE3 post-conditions (a bad/malicious diff cannot produce an unverified
-binary); rollback keeps N-1 with the same verification; channel pinning
-(stable/beta/canary) in the manifest. Threat model documented in `keld-update` crate docs.
+The repository currently has only the `keld-update::Channel` skeleton; it has no
+manifest verifier, activation journal, health owner, rollback engine or feed client.
+The following is the reviewed destination contract. V0 update manifests are signed with
+ed25519 and verified by the host's compiled-in public key. Every release has a bounded
+full package whose transport and canonical
+content have separate BLAKE3 checks; optional later deltas must reconstruct that same
+full-content digest. Protected installer provenance, rather than path heuristics,
+decides whether the direct updater owns the installation channel and records an
+admitted strict/distinct-OS-principal profile. Legacy same-user role mode refuses direct
+update. The host keeps the
+semantic-version trust floor separate from `current`, an exact attempt journal and
+`last-known-good`; candidate health cannot advance LKG unless its private receipt
+matches the journaled attempt and artifact. The optional signed Windows helper consumes
+only protected journal/handle inputs after the host exits. In the admitted profile,
+application roles and webviews cannot write this state. Administrators and arbitrary
+same-user native malware on an already compromised host account remain outside this
+boundary. Architecture 06
+§4a owns exact ordering, recovery and package-cell admission.
 
 ## 6. What we deliberately do NOT promise (honesty ledger)
 
@@ -2710,29 +2725,32 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 - Signing: platform signers driven natively (rcodesign / signtool / osslsigncode
   fallback), config in `keld.build.ts`, CI recipes documented for GitHub Actions.
 
-## 4. keld-update: delta updates as a default
+## 4. keld-update: verified full packages before delta optimization
 
-- Artifacts: per-release zstd-compressed bsdiff patches (HDiffPatch evaluated in bench
-  before freeze) between the last N releases + full package fallback; static-host
-  compatible feed (`updates.json` manifest, any CDN/S3/GitHub Releases).
-- Client: host-side (no separate updater binary), background polling with jitter,
-  BLAKE3 post-conditions + ed25519 manifest signatures, atomic swap + N-1 rollback,
-  channels (stable/beta/canary), UI hooks exposed as kipc events; `autoUpdater` compat
-  facade for migrated apps; bridge-release recipe for Electron switchers (04 §7).
-- Budget: 1-line JS change → ≤ 50 KB patch (Electrobun demonstrated 4 KB-class is
-  feasible; our floor includes manifest + signature overhead).
-- All three platforms at v1 — explicitly ahead of Electrobun (Windows stability caveats)
-  and Deno Desktop (no Windows auto-update).
+- Baseline artifact: every release carries a bounded zstd-compressed full package.
+  The first admitted cell is Windows x64 direct distribution with a file-only tree that
+  fits the v0 canonical archive. Delta entries remain parseable but are ignored until
+  the full-package activation and recovery baseline lands. macOS/Linux package cells
+  require KEL-137's executable-mode/link representation first.
+- Client: host-side, with a detached ed25519 manifest signature, BLAKE3 transport and
+  content post-conditions, protected install-channel provenance, a monotonic
+  semantic-version trust floor, attempt-bound activation/health, retained
+  last-known-good state and typed manual recovery. Store/package-manager-owned installs
+  refuse direct mutation. No updater runtime behavior is implemented today.
+- Optional delta: only a measured later transport optimization. It reconstructs the
+  same full-package content identity, retains a same-attempt full fallback and cannot
+  change activation, health, trust-floor or rollback semantics.
+- UI hooks, `autoUpdater` compatibility and the bridge-release recipe remain target
+  behavior. All platform/format/channel support cells qualify independently.
 
 ### 4a. v0 manifest & feed wire contract (KEL-53 trigger)
 
-The paragraph above names the pieces; this subsection is the byte-level contract KEL-53
-needs before its fixtures (valid/tampered manifest, corrupted patch, full-package
-fallback, N-1 rollback) can be written as executable acceptance tests instead of
-prose. **Not decided here:** bsdiff vs HDiffPatch (KEL-53 AC2 benchmarks that), the
-exact `ed25519-dalek`/`zstd`/delta crate choices (KEL-53 AC3, dependency review gate),
-or a TUF-style rotating root (03-security.md §4 point 4 names it as a target; v0 below
-is a single pinned key, stated as a v0 limitation, not silently narrowed).
+This subsection is the byte-level contract for signed-manifest and full-package
+fixtures. It also freezes the local activation invariants needed to distinguish a
+verified candidate, an exact healthy attempt, a retained last-known-good package and a
+monotonic trust floor. Delta fields remain in the wire for compatibility; selecting an
+algorithm/dependency is later measured work. A TUF-style rotating root also remains
+future work: v0 uses one compiled-in key and states that limitation directly.
 
 **Feed layout**, one static tree per channel **and target**, servable from any
 CDN/S3/GitHub Releases (no server logic required):
@@ -2862,18 +2880,51 @@ release missing `full` is part of AC1):
     empty segments, **at most 100 bytes** (the plain ustar `name` field's own limit —
     a path that doesn't fit is a v0 limitation; the ustar `prefix` field and
     GNU/PAX long-name extensions are explicitly out of scope, not silently assumed).
-    No two entries may share a `name`.
-  - `mode`: exactly `0644` for regular files, exactly `0755` for directories — no
-    other value.
-  - `uid`/`gid`: `0`. `uname`/`gname`: empty. `mtime`: `0`. `devmajor`/`devminor`: `0`.
-    `linkname`: empty.
-  - `magic`: `"ustar\0"`, `version`: `"00"` (POSIX ustar; not the pre-POSIX v7 or GNU
-    tar variants). `chksum`: computed per the POSIX header-checksum algorithm.
+    Directory names have no trailing `/`; `typeflag` carries their type. No two
+    entries may share a byte-identical `name`.
+  - Windows admission applies before any write. Before T3, the KEL-130
+    `keld-guard`-owned lexical-component classifier must be amended as the one
+    shared owner; package code cannot copy a second list. The complete rule rejects
+    `\`, colon/ADS, NUL and controls U+0001–U+001F, `< > " | ? *`,
+    drive/UNC/NT/device prefixes, components ending in dot or space, every reserved
+    device basename including superscript-digit forms, and `~`. Tilde is forbidden
+    for the first Windows package cell so an archive cannot name an NTFS 8.3 alias of
+    another entry. Each UTF-8 component must already equal Windows
+    `NormalizationC`. The full relative-path set is unique under
+    `CompareStringOrdinal(..., TRUE)`; case or normalization aliases and every
+    file/directory ancestor collision reject the archive during pass 1. This includes
+    `.keld/update-policy.v1`. Microsoft documents
+    [file naming](https://learn.microsoft.com/windows/win32/fileio/naming-a-file),
+    [normalization](https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-normalizestring)
+    and [ordinal case comparison](https://learn.microsoft.com/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal).
+  - Fixed-width string fields contain their bytes followed by zero bytes to the field
+    width. `name` is 100 bytes; `linkname` (100), `uname` (32),
+    `gname` (32), `prefix` (155) and header padding bytes 500–511 are all
+    zero except for the used `name` bytes.
+  - Numeric fields use ASCII octal only; base-256/GNU numeric extensions are forbidden.
+    `mode`, `uid`, `gid`, `devmajor` and `devminor` are seven
+    octal digits plus NUL. Mode is `0000644\0` for a regular file and
+    `0000755\0` for a directory; the four identity/device fields are
+    `0000000\0`. `size` and `mtime` are eleven octal digits plus NUL.
+    Directory size and every mtime are zero; regular-file size is the exact byte length
+    and must fit the field and `contentSize`.
+  - `typeflag` is ASCII `0` or `5`. `magic` is the six bytes
+    `ustar\0` and `version` is `00`. To compute `chksum`, treat
+    its eight bytes as ASCII spaces, sum every unsigned header byte, then encode exactly
+    six octal digits, NUL and one ASCII space. Noncanonical but numerically equivalent
+    encodings reject.
   - Entries sorted by `name` (byte order). Archive terminated by exactly two 512-byte
     zero blocks; every header and data section padded to a 512-byte boundary with
     zero bytes — the standard tar block format, stated here so an implementer does
     not have to re-derive it from the POSIX spec.
-  - Any producer and consumer that agree on every rule above produce and read
+  - The archive has no root-directory entry and has exactly one `typeflag '5'`
+    entry for every non-root directory, including every implicit parent and empty
+    directory. A regular-file entry therefore never creates an omitted parent as a
+    side effect. A nested-tree golden vector makes omission or duplication fail.
+  - Golden vectors cover an empty directory, a one-byte file and a multi-block file,
+    including the complete 512-byte headers, data padding, two terminal zero blocks,
+    total `contentSize` and `contentBlake3`. Any producer and consumer that
+    agree on every rule above produce and read
     byte-identical archives for the same input tree — that agreement is what makes
     `contentBlake3` reproducible at all; "roughly tar-shaped" is not enough.
 
@@ -2883,7 +2934,8 @@ release missing `full` is part of AC1):
   1. Read every entry's header first, without writing any file. Reject the whole
      archive (no partial writes to clean up, because none happened) if any entry's
      `name` is absolute, contains a `..` component, is empty, or — after being joined
-     against the destination versioned directory — does not stay lexically within it
+     against the destination `<version>/tree/` directory — does not stay lexically
+     within it
      (standard "tar slip" defense; sorted names and the 100-byte/no-`..` `name` rule
      above narrow what a *valid* archive can contain, but do not by themselves stop a
      crafted or corrupted stream from attempting the escape during extraction). Also
@@ -2892,18 +2944,19 @@ release missing `full` is part of AC1):
      is the enforcement point), or a path that requires a directory where an *ancestor*
      path is already claimed as a regular file (e.g. entries for both `a` and `a/b` —
      `a` cannot be a file and a directory at once).
-  2. Only after every header in the archive passes pass 1 does pass 2 write anything,
-     directories before the regular files inside them (guaranteed satisfiable because
-     pass 1 already proved no file/directory collisions exist).
+  2. Only after every header in the archive passes pass 1 does pass 2 write beneath
+     `<version>/tree/`, directories before the regular files inside them
+     (guaranteed satisfiable because pass 1 proved complete directory entries and no
+     collisions). Updater-owned `<version>/content.tar` and
+     `<version>/.complete` are siblings of `tree/`, never archive
+     destinations; archive members named `content.tar` or `.complete` can
+     exist only inside `tree/` and cannot replace recovery metadata.
 
-  Every directory created during extraction is `fsync`ed **bottom-up** — each
-  directory's own `fsync` happens only after every entry inside it (files and
-  subdirectories alike) is already durable — ending with the versioned directory
-  itself and then its parent (`<app-data>/versions/`, since adding a new child
-  directory entry to it is itself a metadata change that needs its own directory
-  `fsync`, the same rule this contract already applies everywhere else). Only once
-  that full bottom-up sync completes is the `.complete` marker created — a marker
-  that's durable while a nested child directory underneath it is not is not a
+  Pass 2 then calls the selected platform adapter's ordered file and directory-entry
+  persistence sequence. That adapter must make every tree entry durable before
+  publishing the sibling `.complete` and the final version-directory name. POSIX
+  adapters synchronize directories bottom-up; Windows uses the staging-directory
+  publish sequence below. A completion marker visible without its tree is not a
   meaningful "this write finished" signal.
 
 **Client verification order — no step may be skipped or reordered:**
@@ -2931,146 +2984,230 @@ release missing `full` is part of AC1):
    running version can be lower than the floor on purpose, so anything **remaining
    after this filter** that a client would otherwise act on is either a legitimate
    forward update or an attacker replaying an old signed manifest — never both.
-   Among the filtered set, select the single **highest** version.
-5. Prefer a `deltas[]` entry whose `fromVersion` equals the installed version; else use
-   `full`. Download the chosen artifact as a size-bounded stream: reject once received
-   bytes exceed the artifact's `size`, and reject a stream that ends short of it.
-6. BLAKE3 the downloaded bytes; compare to that artifact's own `blake3`. Reject and
-   discard on mismatch — do not attempt to decompress or apply a patch that failed its
-   own transport-integrity check.
-7. Decompress, bounded incrementally by `contentSize` (abort the instant produced
-   output exceeds it — see the `size`/`contentSize` bullet above). For `full`, check
-   the decompressed tar bytes against `contentBlake3` — that is the installable
-   package (see the canonical-content-stream bullet above for what "decompressed"
-   means precisely, and for the path-safety rules extraction must enforce). For a
-   delta, apply it against the **previous version's retained exact tar bytes** (see
-   "Atomic swap and rollback" below — the delta base is never re-derived from an
-   already-extracted directory tree), then check the *reconstructed* bytes against
-   that same release's `full.contentBlake3`. This is the oracle step 6 cannot provide:
-   step 6 only proves the patch file itself downloaded intact, not that applying it
-   against this host's actual base produces the intended result.
-8. **Any** failure on the delta path — size mismatch, transport `blake3` mismatch
-   (step 6), a decompression error, a patch-application error, or a reconstructed-
-   content `contentBlake3` mismatch (step 7) — triggers one `full` attempt (steps 5–7
-   again, for the full artifact) **within the same update attempt**, not deferred to
-   the next poll. Deferring would just re-select the same `deltas[]` entry next time
-   (step 5's preference for a matching delta never changes on its own) and retry the
-   identical failure forever.
-9. Only content that passed a `contentBlake3` check (full path directly, delta path via
-   reconstruction) is eligible to install.
+   If the filtered set is empty, return a typed successful no-update result without
+   downloading, package-policy validation, staging or protected-state mutation. This
+   does not turn a malformed manifest or missing/corrupt protected floor into success.
+   Otherwise select the single **highest** version.
+5. Slice A selects `full` even when a matching `deltas[]` entry exists. Download it
+   as a size-bounded stream: reject once bytes exceed `size`, and reject a stream
+   that ends short. Merely parsing a delta entry does not make delta support live.
+6. BLAKE3 the downloaded full artifact and compare it with `full.blake3`. Reject and
+   discard on mismatch before decompression.
+7. Decompress while incrementally enforcing `full.contentSize`, then compare the
+   exact canonical tar bytes with `full.contentBlake3`. Only matching bytes may
+   enter the two-pass archive validation/extraction contract above.
+8. Future delta support may select one entry whose `fromVersion` matches the retained
+   exact prior `content.tar`. It must bound and verify the patch artifact, verify
+   reconstructed bytes against the selected release's `full.contentBlake3`, and on
+   any delta-path failure try `full` once in the same update attempt. The full path
+   remains independently complete when all delta code and dependencies are absent.
+9. Only content that passed the selected release's `full.contentBlake3` check is
+   eligible for package-policy validation and staging.
 
-**Atomic swap and rollback:**
+**Full-package activation and rollback:**
 
-- Each verified package is written to its own versioned directory
-  (`<app-data>/versions/<version>/`), and that directory retains **both** the exact
-  canonical tar bytes (`content.tar`, the literal stream `contentBlake3` was computed
-  over) **and** the tree extracted from it per the rules above. A delta's base is
-  always the previous version's retained `content.tar`, never a re-derivation from the
-  extracted tree on disk — extraction is the lossy direction (entry order, block
-  padding, and every v0-excluded metadata field are not guaranteed recoverable from an
-  already-extracted directory), so only the retained bytes are a valid patch base.
-  Every file — `content.tar`, every extracted file — is `fsync`ed, then the directory
-  itself is `fsync`ed (POSIX: `fsync` on an open directory fd — durability for a
-  directory entry is a metadata operation the file's own `fsync` does not cover, per
-  the same rename-durability contract POSIX `rename(2)` documents: the rename is
-  atomic but not durable without a following directory `fsync`). **Only then** is a
-  `.complete` marker file created in that directory, and the marker file itself is
-  `fsync`ed, followed by one more directory `fsync` to make the marker's own existence
-  durable — a marker that isn't itself durably persisted is not a durable "this write
-  finished" signal. A versioned directory without a durably-persisted `.complete`
-  marker is a crash-interrupted write, never a candidate for `current`, rollback, or a
-  future delta base.
-- **A `publish-intent` file names the one thing that distinguishes "an update was
-  interrupted mid-flight" from "the host deliberately rolled back."** Both can leave
-  `current` pointing behind the persisted floor, and conflating them is a real bug:
-  recovery logic that blindly republishes whatever `.complete`-marked directory
-  matches the floor would silently *undo* an intentional rollback the moment the host
-  restarts. `publish-intent` (containing the target version) is written durably (same
-  temp-file + `fsync` + atomic-rename + directory-`fsync` sequence used everywhere
-  else here) immediately **before** the floor is advanced for a forward update, and
-  removed durably immediately **after** `current` is republished to that version.
-  Rollback never writes it — rollback is a direct, one-step pointer flip to
-  already-verified state, not a publish sequence with an in-flight version to name.
-- **The version floor and the `current` pointer are two separate durable files, and
-  their publish order is load-bearing**: `publish-intent` is written, then the floor
-  is advanced, and only once that succeeds is `current` published to the new version,
-  and only then is `publish-intent` removed. Floor-before-pointer (never the reverse)
-  guarantees the floor is never behind whatever `current` could possibly show, even
-  across a crash between the writes; the reverse order — pointer before floor — would
-  leave a window where `current` already shows the new version but the floor still
-  allows a replayed old signed manifest, exactly the gap this ordering exists to close.
-- Publishing any of the three files above (`content.tar`'s directory, the floor, the
-  pointer) is a durable-replace, not an in-place edit: write a temporary file **in the
-  same directory as the target it will replace** — POSIX `rename()` requires both
-  paths on one filesystem (cross-filesystem `rename()` fails `EXDEV`, and papering
-  over that with a copy+delete fallback is exactly the non-atomic operation this whole
-  scheme exists to avoid, so `EXDEV` is a hard error, not a fallback trigger); Windows
-  `ReplaceFile`/`MoveFileEx` carry the same same-volume requirement. `fsync` the temp
-  file, then atomically publish it over the target — POSIX `rename()` (atomic within
-  one filesystem; the directory is `fsync`ed afterward for the same reason above);
-  Windows `ReplaceFile`/`MoveFileEx(..., MOVEFILE_REPLACE_EXISTING |
-  MOVEFILE_WRITE_THROUGH)` on the temp file. **None of these files is ever removed
-  before its replacement is durably in place** — there is no window where a required
-  pointer is absent.
-- **All of the above — a full update attempt, a rollback, and startup recovery — are
-  serialized by a single-writer lock** (a host-process-lifetime lock, e.g. an
-  exclusively-held lock file under `<app-data>/`, held for the entire sequence from
-  "start selecting a release" through "publish-intent removed"). Every ordering
-  guarantee above (floor before pointer, publish-intent written before either) assumes
-  exactly one writer; two concurrent update polls, or a poll racing a manual rollback,
-  can otherwise interleave their steps and produce a floor/pointer pair neither writer
-  ever intended (e.g. an older poll's pointer publish landing after a newer one's).
-  `keld-update` owning this lock, not merely documenting the ordering, is what makes
-  the ordering guarantees actually hold.
-- The **previous** version's directory is kept, not deleted, until the new version has
-  been confirmed healthy (e.g. survives `keld-runtime`'s crash-loop breaker window,
-  KEL-70) — kept specifically for both rollback *and* as the next delta's base.
-- **Startup recovery, in order (holding the single-writer lock above):**
-  1. If `publish-intent` exists and `current` **already points at the version it
-     names**, the publish itself finished before the crash — only its removal
-     didn't. Durably remove `publish-intent` and stop; there is nothing else to
-     recover. (This case matters on its own: a `publish-intent` left over from an
-     already-completed publish, with no removal step ever reached, is exactly the
-     stale marker that a later rollback would otherwise leave sitting on disk —
-     without this step, step 2 below could see that stale intent, plus `current`
-     now behind the floor after the rollback, and wrongly conclude an update needs
-     completing, undoing the rollback.)
-  2. Otherwise, if `publish-intent` names a version whose directory carries a
-     durable `.complete` marker and matches the persisted floor, **and** `current`
-     does not already point there, complete the interrupted publish: republish
-     `current` to that directory, then remove `publish-intent`. No re-download, no
-     re-verification — the marker and the floor already prove this exact version was
-     fully verified before the crash; this is finishing an interrupted local write,
-     not trusting new, unverified state.
-  3. Otherwise, if `current` is behind the floor with **no** `publish-intent` on
-     disk, that is not an interrupted publish to fix — leave `current` exactly where
-     it is. This is the intentional-rollback case: the operator/host chose to run an
-     older, already-verified version, and startup recovery must not silently move it
-     forward again.
-  4. Otherwise, if `current` is missing, unreadable, or points at a versioned
-     directory with no `.complete` marker, fall back to the most recent kept
-     versioned directory that *does* have one.
-  5. If none of the above recovers to a valid state, startup fails closed with a
-     typed error — it never runs a partially-written install.
-- **Rollback** is a host/user-authorized local action: flipping `current` back to the
-  kept N-1 directory via the same durable-pointer mechanism above — no re-download, no
-  re-verification of already-verified bytes, and (as above) no `publish-intent`
-  written, since there is no in-flight publish to name. Rollback **does not** touch
-  the persisted version floor: it only changes what is currently running, so a
-  subsequent feed poll still can't be tricked by a replayed old signed manifest into
-  re-offering, as if new, anything at or below a version this host has already run.
-  Authorization for rollback (what triggers it — the crash-loop breaker automatically,
-  or an explicit host/operator action) is `keld-update`'s own decision to make when it
-  exists; this contract only fixes what rollback *does* to the pointer and the floor,
-  not what decides to invoke it.
-- **Version floor storage**: a small file alongside `current` (e.g. `version-floor`,
-  containing just the semver string), written durably as specified above, updated only
-  on a successful install (never by rollback). Missing on first run (no floor yet — any
-  signed release for this app/channel/target is accepted); unreadable or corrupt on a
-  run that has already installed at least one update is treated the same as an absent
-  `current` with no `.complete` marker — fail closed, do not silently treat it as "no
-  floor."
+**Package and channel admission.** The first support cell is Windows x64 direct
+distribution whose complete runnable tree fits v0's regular-file/directory-only archive.
+The canonical tar contains `.keld/update-policy.v1` with exact UTF-8 bytes
+`{"schema":1,"dataMigration":"none"}\n`; `contentBlake3` covers that
+file. Missing, duplicate or different policy refuses activation. macOS/Linux and any
+package requiring executable modes, links or other v0-excluded metadata remain blocked
+on an approved KEL-137 representation.
 
+The installer creates an OS-protected provenance record naming app id, channel, target,
+install root, update root, installed baseline artifact, compiled-in signing-key identity
+channel owner and the admitted strict/distinct-OS-principal security profile.
+`Direct` admits the updater only when every value matches the running host.
+`Managed(mechanism)` refuses mutation and names the store/package manager.
+Missing/mutable/mismatched provenance also refuses before feed access or filesystem
+mutation. Paths, executable names, registry-location guesses and writable config never
+infer direct ownership. Legacy same-user role mode refuses direct update because its
+role token cannot be ACL-distinguished from the per-user host. The installer first
+writes and synchronizes the immutable
+baseline version directory, then durably seeds `version-floor`, `current` and
+`last-known-good` to that exact baseline artifact/version, and publishes provenance
+last as the install transaction's commit record. Once direct provenance exists, a
+missing/corrupt floor fails closed; it never means “accept any signed version.” The
+first update therefore has both a replay floor and authenticated rollback destination.
+
+**Independent trust and runnable-state owners.**
+
+- `version-floor` is the monotonic trust/replay floor. It advances only to a
+  verified higher strict-semver candidate and never rolls back.
+- `current` names what the launcher may run. It may point below the floor after
+  an intentional local rollback.
+- `last-known-good` names the retained verified package that may replace
+  `current` after candidate failure. It stays unchanged until the exact
+  candidate's health is durable.
+- `previous-known-good` retains the immediately preceding health-confirmed
+  package for N-1/manual rollback and a future delta base. It may be absent only before
+  the first successful update.
+
+Each points only to an immutable version directory containing sibling
+`content.tar`, `tree/` and durable `.complete`; the policy and runnable
+files live below `tree/`. Files are flushed before directories, directories are
+synchronized bottom-up,
+the version parent is synchronized, and only then is `.complete` published and
+synchronized. An incomplete directory is never current, last-known-good, a delta base or
+a recovery source.
+
+A versioned local activation journal replaces a version-only
+`publish-intent`. It carries one fresh host-generated 32-byte attempt id, exact
+candidate `(app id, channel, target, version, contentBlake3)`, validated rollback
+target, exact prior floor, prior last-known-good, prior previous-known-good, the verified activation-
+coordinator/helper image digest, a fresh health-channel identity, and exactly one phase:
+
+```text
+publish-pending -> awaiting-health -> health-accepted -> journal removed
+                                 \-> rollback-pending -> journal removed
+```
+
+Every phase retains the common attempt context. `rollback-pending` additionally
+binds its target/prior current but never drops the expected floor, both known-good slots,
+coordinator/helper image or optional health-channel identity.
+
+Unknown journal versions, duplicate/missing fields, noncanonical values, replayed attempt
+ids, artifact/pointer mismatch and mixed component sets fail closed. Directory presence,
+the trust floor or a generic health marker cannot reconstruct or replace journal facts.
+
+**Single-writer transition.** One protected lock serializes selection through recovery:
+
+1. Validate direct-channel provenance; verify and stage `full`; validate the
+   policy; retain valid current as the rollback target plus both known-good slots.
+2. Durably write `publish-pending` with exact attempt/artifact identities.
+3. Durably advance `version-floor`. A crash cannot expose a candidate while
+   still allowing its version or an older one to be re-offered as new.
+4. Durably publish `current` to the candidate.
+5. Durably write `awaiting-health`, then launch that exact candidate with a
+   private attempt-bound health channel.
+6. On accepted health, durably write `health-accepted`, publish the prior
+   last-known-good to `previous-known-good`, publish
+   `last-known-good` to the candidate, remove the journal durably, and only then
+   apply bounded cleanup that retains both known-good slots.
+7. On launch/health failure, durably write `rollback-pending`, republish
+   `current` to the attempt's validated rollback target, remove the journal durably,
+   and report failure. Rollback never changes the floor. The failed candidate therefore
+   cannot be automatically selected again at the same version: selection returns the
+   successful no-update result until a newly signed release advances beyond that floor.
+   Failures that occur before step 3 may retry the same signed version after repair.
+
+No required pointer or journal is removed before its replacement is durable. A temporary
+file is created in the same directory as its target; cross-filesystem copy/delete is a
+hard error. The lock covers automated update, explicit rollback and startup recovery.
+An explicit rollback selects only `previous-known-good`, journals
+`rollback-pending`, publishes `current` to that package and keeps the trust
+floor plus both known-good slots unchanged.
+
+**Health identity.** A candidate receives a private host-owned channel minted for the
+journaled attempt. Its receipt repeats the attempt id and full artifact identity. The
+host must prove it booted from that exact version, reached application `Ready`,
+and remained alive for 30 monotonic seconds with no unexpected application-generation
+exit. A prior receipt, generic file marker, wrong artifact, clean early exit, lost
+channel, timeout, crash or crash-loop result cannot commit health. The 30-second window
+reuses KEL-70's default crash-window duration but treats any unexpected generation exit
+as failure; it delays commit/LKG replacement, not initial candidate launch.
+
+The coordinator passes the channel's client endpoint through the platform's protected
+inherited-handle mechanism. Its presence selects authenticated candidate-boot mode
+before ordinary updater startup. Candidate mode verifies the exact
+attempt/current/artifact, does not acquire the writer lock or invoke orphan recovery,
+starts the application and reports boot/Ready/health over that channel. It cannot write
+the journal or commit itself. A missing/replayed/mismatched endpoint fails before app
+code. A normal startup has no endpoint and follows the recovery path below.
+
+**Startup recovery.** With no journal, validate the protected provenance, floor,
+`current`, both known-good slots, policy and complete markers. If current is
+valid, it must equal last-known-good or previous-known-good; any other complete artifact
+is an orphan and halts. If current is invalid and last-known-good is valid, republish
+last-known-good. Missing/invalid last-known-good after installation halts;
+previous-known-good may be absent only before the first successful update. With a valid
+journal, first acquire its exclusive attempt lease. If another coordinator retains the
+lease, that owner continues and the new process performs no recovery. After acquisition,
+the platform process-family owner must prove the recorded coordinator and candidate
+have exited; an unknown/live process state halts rather than starting a second
+candidate. Windows places the candidate in the helper/host's kill-on-close Job and
+waits for its zero-active-process observation before recovery proceeds.
+
+1. For `publish-pending`, validate the floor and `current` against the exact
+   journaled values. If current still equals the rollback target, the floor must equal
+   either the recorded prior floor or the candidate: advance the former to the exact
+   candidate, then publish and enter `awaiting-health`. If current already equals
+   the candidate, the floor must equal that exact candidate and recovery enters
+   `awaiting-health` without republishing. Any third pointer/floor value, including
+   a floor above the candidate, halts. The journal is never cleared before health or
+   rollback.
+2. `awaiting-health` rolls back only after the process-family proof above; recovery
+   never accepts an old receipt.
+3. `health-accepted` completes both known-good publications and journal removal.
+4. `rollback-pending` completes current rollback and journal removal only when
+   floor, both known-good slots, coordinator/helper identity, optional health identity
+   and current exactly match its recorded context. Any substitution halts.
+
+Any corrupt or inconsistent journal halts without deleting evidence. Recovery never
+guesses the newest directory, treats the floor as health, or silently recreates trusted
+state.
+
+**Per-OS durability.** Every adapter fails closed when its required barrier or
+same-filesystem condition is unavailable, and each support cell retains native crash-cut
+evidence.
+
+- Windows: require a supported local volume. Stage the entire version as one unique
+  sibling directory under `versions/`; create `tree/`, `content.tar`
+  and `.complete` there in that order, call `FlushFileBuffers` on every
+  writable file handle, close all stage handles, then publish the absent final version
+  directory with same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Reopen the
+  final directory and read back every digest, policy and marker before pointer
+  publication. Journal/pointer/policy record replacement separately uses a
+  same-directory temporary file, `FlushFileBuffers`, and same-volume
+  `MoveFileExW` with replace-existing plus write-through. Neither path sets
+  `MOVEFILE_COPY_ALLOWED` or claims directory-handle `FlushFileBuffers`.
+  Real crash-cut evidence must establish this admitted filesystem cell before support.
+  Microsoft documents the
+  [file flush](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+  and [write-through move](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-movefileexw)
+  contracts.
+- Linux, after its package predecessor: `fsync` each file,
+  same-filesystem `rename`, then `fsync` every directory whose entry
+  changed, bottom-up. POSIX notes that directory synchronization is required for
+  durability; Linux likewise requires an explicit directory `fsync`
+  ([POSIX rationale](https://pubs.opengroup.org/onlinepubs/9799919799/xrat/V4_xbd_chap01.html),
+  [Linux `fsync(2)`](https://man7.org/linux/man-pages/man2/fsync.2.html)).
+- macOS, after its package predecessor: use `F_FULLFSYNC` for
+  ordering-sensitive file records before same-filesystem rename, then synchronize
+  changed directories bottom-up. If the selected filesystem does not support the
+  barriers, that cell is unsupported rather than downgraded
+  ([Apple `fcntl(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)).
+
+If Windows locked-file behavior requires a post-exit helper, it is a signed minimal
+package component, not a second updater. The trusted host passes only protected
+update-root/lock handles, its process wait handle, the observer/server endpoint and a
+sealed forward-once candidate endpoint for the already minted attempt-health channel.
+The helper waits for that exact host to exit, reads attempt/artifact/path identity from
+the protected journal, performs the journaled same-volume publish, passes only the
+sealed candidate endpoint in the explicit inherited-handle list, closes its copy after
+spawn, launches only that journaled executable, observes exact health, commits or rolls
+back, and exits. It has no feed, network, manifest/package parser, shell, arbitrary-path
+or caller-provided command authority. The journal binds the helper image and
+health-channel identities. Replayed attempt, endpoint substitution/reuse, helper
+substitution, mixed
+host/runtime/app/native-role set or path substitution rejects.
+
+In an admitted strict/distinct-OS-principal package, application roles and webviews
+cannot write provenance, trust root, floor, journal, packages, pointers, helper inputs
+or install state. Legacy same-user role mode refuses direct update. This boundary does
+not claim protection from administrators or arbitrary same-user native malware on an
+already compromised host account.
+
+The first slice exposes no migration hook and accepts only the content-hashed
+`dataMigration:"none"` policy. A release requiring data migration waits for a
+separately approved compatibility/backup/forward-recovery contract; binary rollback
+never implies data rollback.
+
+**Future delta.** A later measured implementation may select one delta whose
+`fromVersion` matches the retained exact prior `content.tar`. It
+verifies the patch artifact and reconstructed bytes against the selected release's
+`full.contentBlake3`; any failure tries `full` once in the same
+attempt. Delta never changes provenance, journal, health, trust-floor, LKG or rollback.
 ## 5. Dev loop targets
 
 - `keld dev` cold → window ≤ 2 s (host prebuilt, Bun start ~10 ms class, webview init
@@ -3297,7 +3434,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — Scoped filesystem request handling is implemented, guard-checked, and wire-tested, but no production host caller is wired; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, delta application, rollback, and feeds are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, full-package activation, rollback, feeds, and optional delta transport are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
