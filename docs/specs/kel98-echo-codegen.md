@@ -1,5 +1,5 @@
 # Spec: echo Rust-schema to TypeScript contract codegen
-Status: draft
+Status: approved
 Linear: KEL-98 · Owner: GYLDLAB · Updated: 2026-09-19
 
 ## 1. Goal & non-goals
