@@ -258,6 +258,9 @@ mod tests {
         let html = fs::read_to_string(root.join("index.html")).expect("html");
         assert!(html.contains("<title>demo</title>"), "{html}");
         assert!(html.contains("<h1>demo</h1>"), "{html}");
+        assert!(html.contains("background: #000;"), "{html}");
+        assert!(html.contains("color: #fff;"), "{html}");
+        assert!(html.contains("color-scheme: dark;"), "{html}");
         assert!(!html.contains("{{name}}"), "{html}");
 
         let main = fs::read_to_string(root.join("src/main.ts")).expect("main");
