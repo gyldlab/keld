@@ -20,6 +20,7 @@ const AGENT_CONTEXT_CHECKER: &str = "tools/agent_context.rs";
 const GITIGNORE: &str = ".gitignore";
 const JUSTFILE: &str = "justfile";
 const NEXTEST_CONFIG: &str = ".config/nextest.toml";
+const WINDOWS_MEDIA_ORACLE: &str = "crates/keld-wv/tests/windows_media_guard.ps1";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
@@ -216,6 +217,14 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "}",
     "$invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch $hashPattern -or $_.stderr_sha256 -cnotmatch $hashPattern })",
     "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
+];
+
+const WINDOWS_PROFILE_REGRESSION_TESTS: &[&str] = &[
+    "windows_com_engine_lifetime_subprocess",
+    "windows_dev_profile_cleanup_subprocess",
+    "windows_busy_ephemeral_scavenge_subprocess",
+    "windows_persistent_recovery_subprocess",
+    "windows_saved_media_reconciliation_subprocess",
 ];
 
 const FUZZ_WORKSPACE_COMMANDS: &[&str] =
@@ -1714,6 +1723,30 @@ fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_windows_profile_regression_oracle(root: &Path) -> Result<(), String> {
+    let oracle = read(root, WINDOWS_MEDIA_ORACLE)?;
+    for test in WINDOWS_PROFILE_REGRESSION_TESTS {
+        if oracle.matches(test).count() != 1 {
+            return Err(format!(
+                "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must run the exact ignored Windows profile regression `{test}` once."
+            ));
+        }
+    }
+    for required in [
+        "Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
+        "if ($profileRegressionCount -ne 5)",
+        "Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000",
+        "if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or",
+    ] {
+        if oracle.matches(required).count() != 1 {
+            return Err(format!(
+                "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact bounded, failure-preserving profile regression runner `{required}`."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -2218,6 +2251,7 @@ fn check(root: &Path) -> Result<(), String> {
     check_pr_template(root)?;
     check_issue_templates(root)?;
     check_workflow(root)?;
+    check_windows_profile_regression_oracle(root)?;
     check_keldbot_workflow(root)?;
     check_mermaid_gate_files(root)?;
     Ok(())
@@ -2315,6 +2349,17 @@ mod tests {
             .join("\n");
         format!(
             "      - name: Windows media guard acceptance (KEL-132)\n        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n        shell: pwsh\n        run: |\n{commands}"
+        )
+    }
+
+    fn valid_windows_media_oracle() -> String {
+        let cases = WINDOWS_PROFILE_REGRESSION_TESTS
+            .iter()
+            .map(|case| format!("        '{case}'"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!(
+            "function Invoke-ProfileRegressionCases {{\n    $cases = @(\n{cases}\n    )\n    $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000\n    if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or\n        -not $execution.stdout_text) {{ throw 'failed' }}\n}}\n$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\nif ($profileRegressionCount -ne 5) {{ throw 'wrong count' }}\n"
         )
     }
 
@@ -2549,6 +2594,7 @@ mod tests {
             "name: Bug\nbody:\n  - type: markdown\n",
         );
         temp.write(WORKFLOW, &valid_workflow());
+        temp.write(WINDOWS_MEDIA_ORACLE, &valid_windows_media_oracle());
         temp.write(KELDBOT_WORKFLOW, &valid_keldbot_workflow());
         temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
         temp.write(ATOMIC_PROTOCOL_CHECKER, "fn main() {}\n");
@@ -4046,6 +4092,25 @@ mod tests {
             temp.write(WORKFLOW, &valid_workflow().replacen(needle, replacement, 1));
             let error = check(temp.path()).expect_err("inert Windows media command must fail");
             assert!(error.contains("KEL-132"), "{needle}: {error}");
+        }
+    }
+
+    #[test]
+    fn windows_profile_regressions_cannot_be_omitted_or_unbounded() {
+        for (needle, replacement) in [
+            ("windows_persistent_recovery_subprocess", "echo skipped-recovery"),
+            (
+                "Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
+                "Write-Output skipped-profile-regressions",
+            ),
+            ("if ($profileRegressionCount -ne 5)", "if ($false)"),
+            ("-DeadlineMilliseconds 90000", "-DeadlineMilliseconds 0"),
+        ] {
+            let temp = complete_fixture();
+            let oracle = read(temp.path(), WINDOWS_MEDIA_ORACLE).expect("media oracle fixture");
+            temp.write(WINDOWS_MEDIA_ORACLE, &oracle.replacen(needle, replacement, 1));
+            let error = check(temp.path()).expect_err("weakened profile regression gate must fail");
+            assert!(error.contains("profile regression"), "{needle}: {error}");
         }
     }
 

@@ -311,9 +311,9 @@ container and the app id it covers:
   Ed25519 signature verifies the literal package-manifest bytes containing `app.id`
   against the installer-pinned key.
 
-Windows T2 freezes that package relationship as exactly one primary Authenticode
-signature whose authenticated `SPC_SP_OPUS_INFO` program name is
-`keld.app-id/v1:<canonical-app-id>`. The packager supplies the exact value through
+Windows T2 freezes that package relationship as exactly one Authenticode signature:
+one primary and zero secondary signatures. Its authenticated `SPC_SP_OPUS_INFO` program
+name is `keld.app-id/v1:<canonical-app-id>`. The packager supplies the exact value through
 SignTool `/d` before the signature is produced. Core verifies the current executable
 with `WINTRUST_ACTION_GENERIC_VERIFY_V2`, retains the provider state, derives publisher
 scope from the primary signer's leaf-certificate SPKI DER, and decodes the program name
@@ -378,13 +378,15 @@ owner-only Keld metadata, not WebKit storage. One `WkWebViewEngine` retains exac
 selected persistent or nonpersistent store and supplies it to every view it creates.
 
 Windows does not copy KEL-101's named-pipe DACL. The WebView2 runtime may need
-LowIL/AppContainer access inside its UDF. T2 starts from the normal per-user known-folder
-inheritance, rejects broad ordinary-user write access, observes the actual engine-created
-descriptor, and freezes a validation/read-back predicate rather than rewriting the
-Microsoft-managed ACL. Any ACL mutation requires a separately justified real-WebView2
-result and must preserve engine-managed ACEs and labels. This is a permission-model
-review gate, not an implementation guess in T0. T2 also rejects a remote/network final
-volume and sets WebView2 exclusive UDF access. After host crash, `ERROR_INVALID_STATE`
+LowIL/AppContainer access inside its UDF. T2 atomically creates each Keld-owned profile
+directory with a protected inheritable DACL granting full control only to the current
+user, SYSTEM and Administrators. Validation rejects any foreign ordinary-user
+read/write/execute access while preserving and reading back engine-created
+AppContainer/capability ACEs. Any later ACL mutation requires a separately justified
+real-WebView2 result and must preserve engine-managed ACEs and labels. This is a
+permission-model review gate, not an implementation guess in T0. T2 also rejects a
+remote/network final volume and sets WebView2 exclusive UDF access. After host crash,
+`ERROR_INVALID_STATE`
 or equivalent controller failure remains required until `BrowserProcessExited` proves
 the old collection released the UDF; a process-local Keld lease alone cannot pass.
 

@@ -90,13 +90,14 @@ use webview2_com::{
     PermissionRequestedEventHandler, SetPermissionStateCompletedHandler, wait_with_pump,
 };
 use windows::Win32::Foundation::{
-    E_POINTER, E_UNEXPECTED, ERROR_ACCESS_DENIED, ERROR_INVALID_STATE, FILETIME, HANDLE, HWND,
-    RECT, WAIT_FAILED,
+    E_POINTER, E_UNEXPECTED, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_STATE,
+    FILETIME, HANDLE, HWND, RECT, WAIT_FAILED,
 };
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW,
-    GetFileInformationByHandle, GetFinalPathNameByHandleW, GetVolumePathNameW,
+    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    GetDriveTypeW, GetFileInformationByHandle, GetFinalPathNameByHandleW, GetVolumePathNameW,
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, VOLUME_NAME_DOS,
 };
 use windows::Win32::System::Com::{
@@ -115,10 +116,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WINDOW_EX_STYLE, WM_QUIT, WS_OVERLAPPED,
 };
 use windows::core::{BOOL, HSTRING, IUnknown, Interface, PCWSTR, PWSTR, w};
-use windows_permissions::Acl;
 use windows_permissions::constants::{AccessRights, SeObjectType, SecurityInformation};
 use windows_permissions::utilities::current_process_sid;
-use windows_permissions::wrappers::{GetSecurityInfo, SetSecurityInfo};
+use windows_permissions::wrappers::{ConvertSidToStringSid, GetSecurityInfo};
+use windows_permissions::{Acl, LocalBox, SecurityDescriptor};
 
 use keld_guard::{PermissionsManifest, Principal};
 
@@ -454,13 +455,6 @@ fn open_directory_handle(path: &Path) -> Result<File, WvError> {
     open_directory_handle_with_access(path, AccessRights::ReadControl.bits())
 }
 
-fn open_created_directory_handle(path: &Path) -> Result<File, WvError> {
-    open_directory_handle_with_access(
-        path,
-        (AccessRights::ReadControl | AccessRights::WriteOwner).bits(),
-    )
-}
-
 fn open_directory_handle_with_access(path: &Path, access_mode: u32) -> Result<File, WvError> {
     let file = OpenOptions::new()
         .access_mode(access_mode)
@@ -475,6 +469,43 @@ fn open_directory_handle_with_access(path: &Path, access_mode: u32) -> Result<Fi
         return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
     }
     Ok(file)
+}
+
+fn create_profile_directory(path: &Path) -> Result<bool, WvError> {
+    let current =
+        current_process_sid().map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+    let sid = ConvertSidToStringSid(&current)
+        .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+    let sid = sid.to_string_lossy();
+    let descriptor: LocalBox<SecurityDescriptor> =
+        format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+            .parse()
+            .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+    let mut path_wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if path_wide.contains(&0) {
+        return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
+    }
+    path_wide.push(0);
+    let attributes_size = u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+        .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: attributes_size,
+        lpSecurityDescriptor: descriptor.as_ptr().cast(),
+        bInheritHandle: BOOL(0),
+    };
+    // SAFETY: the path is a live NUL-terminated UTF-16 buffer and the
+    // correctly sized attributes point to a live self-relative descriptor.
+    // CreateDirectoryW consumes both synchronously and inherits no handle.
+    match unsafe {
+        CreateDirectoryW(
+            PCWSTR(path_wide.as_ptr()),
+            Some(std::ptr::from_ref(&attributes)),
+        )
+    } {
+        Ok(()) => Ok(true),
+        Err(error) if error.code() == ERROR_ALREADY_EXISTS.to_hresult() => Ok(false),
+        Err(_) => Err(profile_failure(ProfileErrorKind::MarkerMismatch)),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -571,44 +602,16 @@ fn retain_directory_chain(
             return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
         };
         path.push(component);
-        let component_created = if create_missing {
-            match fs::create_dir(&path) {
-                Ok(()) => {
-                    if path == target {
-                        target_created = true;
-                    }
-                    true
-                }
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    if path == target && require_new_target {
-                        return Err(profile_failure(ProfileErrorKind::ProfileInUse));
-                    }
-                    false
-                }
-                Err(_) => return Err(profile_failure(ProfileErrorKind::MarkerMismatch)),
+        if create_missing {
+            let created = create_profile_directory(&path)?;
+            if path == target && !created && require_new_target {
+                return Err(profile_failure(ProfileErrorKind::ProfileInUse));
             }
-        } else {
-            false
-        };
-        let mut handle = if component_created {
-            open_created_directory_handle(&path)?
-        } else {
-            open_directory_handle(&path)?
-        };
-        if component_created {
-            let owner = current_process_sid()
-                .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
-            SetSecurityInfo(
-                &mut handle,
-                SeObjectType::SE_FILE_OBJECT,
-                SecurityInformation::Owner,
-                Some(&owner),
-                None,
-                None,
-                None,
-            )
-            .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+            if path == target {
+                target_created = created;
+            }
         }
+        let handle = open_directory_handle(&path)?;
         handles.push(handle);
     }
     Ok((handles, target_created))
@@ -1105,24 +1108,30 @@ fn validate_profile_acl(directory: &File) -> Result<(), WvError> {
     let dacl = descriptor
         .dacl()
         .ok_or_else(|| profile_failure(ProfileErrorKind::MarkerMismatch))?;
-    if dacl_has_untrusted_write(dacl, &current.to_string()) {
+    if dacl_has_untrusted_access(dacl, &current.to_string()) {
         return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
     }
     Ok(())
 }
 
-fn dacl_has_untrusted_write(dacl: &Acl, current_user_sid: &str) -> bool {
+fn dacl_has_untrusted_access(dacl: &Acl, current_user_sid: &str) -> bool {
     use windows_permissions::constants::AceType;
 
-    let write = AccessRights::GenericWrite
+    let profile_access = AccessRights::GenericRead
+        | AccessRights::GenericWrite
+        | AccessRights::GenericExecute
         | AccessRights::GenericAll
         | AccessRights::Delete
         | AccessRights::WriteDac
         | AccessRights::WriteOwner
+        | AccessRights::Bit0
         | AccessRights::Bit1
         | AccessRights::Bit2
+        | AccessRights::Bit3
         | AccessRights::Bit4
+        | AccessRights::Bit5
         | AccessRights::Bit6
+        | AccessRights::Bit7
         | AccessRights::Bit8;
     (0..dacl.len()).any(|index| {
         let Some(ace) = dacl.get_ace(index) else {
@@ -1134,7 +1143,7 @@ fn dacl_has_untrusted_write(dacl: &Acl, current_user_sid: &str) -> bool {
                 | AceType::ACCESS_ALLOWED_CALLBACK_ACE_TYPE
                 | AceType::ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE
                 | AceType::ACCESS_ALLOWED_OBJECT_ACE_TYPE
-        ) || !ace.mask().intersects(write)
+        ) || !ace.mask().intersects(profile_access)
         {
             return false;
         }
@@ -2912,7 +2921,7 @@ mod tests {
     use super::{
         COREWEBVIEW2_PERMISSION_STATE_ALLOW, COREWEBVIEW2_PERMISSION_STATE_DENY, PROFILE_LEASE,
         PROFILE_LIFECYCLE, PROFILE_MARKER, ProfileReleaseWait, SavedPermission, WebView2Engine,
-        app_window_slot_available, dacl_has_untrusted_write, initial_navigation_failure_is_fatal,
+        app_window_slot_available, dacl_has_untrusted_access, initial_navigation_failure_is_fatal,
         initialize_com_sta, initialize_process_dpi_awareness, prepare_windows_profile_at,
         purge_persistent_profile_at, runtime_version, saved_media_permission_needs_deny,
         try_scavenge_ephemeral_profile, wait_with_message_pump_until, webview2_permission_state,
@@ -3518,7 +3527,7 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_write_is_rejected_without_replacing_engine_aces() {
+    fn untrusted_profile_access_is_rejected_without_replacing_engine_aces() {
         use windows_permissions::{LocalBox, SecurityDescriptor};
 
         let owner_and_engine_access = concat!(
@@ -3527,7 +3536,7 @@ mod tests {
         )
         .parse::<LocalBox<SecurityDescriptor>>()
         .expect("safe descriptor");
-        assert!(!dacl_has_untrusted_write(
+        assert!(!dacl_has_untrusted_access(
             owner_and_engine_access.dacl().expect("safe DACL"),
             "S-1-5-21-1-2-3-1001"
         ));
@@ -3538,16 +3547,19 @@ mod tests {
             "BU",
             "S-1-5-21-3459511679-531530595-653566084-1006",
         ] {
-            let descriptor = format!("D:(A;;FA;;;S-1-5-21-1-2-3-1001)(A;;FW;;;{broad_sid})")
-                .parse::<LocalBox<SecurityDescriptor>>()
-                .expect("broad-write descriptor");
-            assert!(
-                dacl_has_untrusted_write(
-                    descriptor.dacl().expect("broad-write DACL"),
-                    "S-1-5-21-1-2-3-1001"
-                ),
-                "{broad_sid} write access must fail"
-            );
+            for rights in ["FR", "FW", "FX", "FA"] {
+                let descriptor =
+                    format!("D:(A;;FA;;;S-1-5-21-1-2-3-1001)(A;;{rights};;;{broad_sid})")
+                        .parse::<LocalBox<SecurityDescriptor>>()
+                        .expect("broad-access descriptor");
+                assert!(
+                    dacl_has_untrusted_access(
+                        descriptor.dacl().expect("broad-access DACL"),
+                        "S-1-5-21-1-2-3-1001"
+                    ),
+                    "{broad_sid} {rights} access must fail"
+                );
+            }
         }
     }
 

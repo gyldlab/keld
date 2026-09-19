@@ -113,10 +113,10 @@ use windows_sys::Win32::Security::Cryptography::{
 use windows_sys::Win32::Security::WinTrust::{
     CRYPT_PROVIDER_SGNR, SPC_SP_OPUS_INFO, SPC_SP_OPUS_INFO_OBJID, SPC_SP_OPUS_INFO_STRUCT,
     WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
-    WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_WHOLECHAIN,
-    WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE,
-    WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData,
-    WinVerifyTrust,
+    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CHOICE_FILE,
+    WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
+    WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
+    WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -1613,11 +1613,26 @@ fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, 
             "Use a supported 64-bit Windows Keld build.",
         )
     })?;
+    let signature_settings_size = u32::try_from(std::mem::size_of::<WINTRUST_SIGNATURE_SETTINGS>())
+        .map_err(|_| {
+            windows_identity_error(
+                "the WinTrust signature-settings size does not fit the platform ABI",
+                "Use a supported 64-bit Windows Keld build.",
+            )
+        })?;
     let mut file_info = WINTRUST_FILE_INFO {
         cbStruct: file_info_size,
         pcwszFilePath: executable_wide.as_ptr(),
         hFile: executable_file.as_raw_handle().cast(),
         pgKnownSubject: std::ptr::null_mut(),
+    };
+    let mut signature_settings = WINTRUST_SIGNATURE_SETTINGS {
+        cbStruct: signature_settings_size,
+        dwIndex: 0,
+        dwFlags: WSS_GET_SECONDARY_SIG_COUNT,
+        cSecondarySigs: 0,
+        dwVerifiedSigIndex: 0,
+        pCryptoPolicy: std::ptr::null_mut(),
     };
     let mut trust_data = WINTRUST_DATA {
         cbStruct: trust_data_size,
@@ -1634,12 +1649,13 @@ fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, 
         pwszURLReference: std::ptr::null_mut(),
         dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
         dwUIContext: WTD_UICONTEXT_EXECUTE,
-        pSignatureSettings: std::ptr::null_mut(),
+        pSignatureSettings: &raw mut signature_settings,
     };
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // SAFETY: `file_info`, its NUL-terminated path, the open read handle, and
-    // `trust_data` remain live and unmoved until the matching CLOSE call.
-    // Every optional pointer is null and the selected union arm is FILE.
+    // `signature_settings` remain live and unmoved with `trust_data` until the
+    // matching CLOSE call. Other optional pointers are null and the selected
+    // union arm is FILE.
     let trust_status = unsafe {
         WinVerifyTrust(
             std::ptr::null_mut(),
@@ -1674,7 +1690,11 @@ fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, 
         return Err(primary);
     }
 
-    let identity_result = windows_identity_from_verified_trust_state(&trust_data);
+    let identity_result = validate_windows_signature_cardinality(
+        signature_settings.cSecondarySigs,
+        signature_settings.dwVerifiedSigIndex,
+    )
+    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data));
     trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
     // SAFETY: this is the mandatory CLOSE for the successful VERIFY call;
     // action/data storage and every referenced input remain live here.
@@ -1696,6 +1716,22 @@ fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, 
         (Err(primary), Ok(())) => Err(primary),
         (Err(primary), Err(cleanup)) => Err(collapse_app_failures(&primary, [Err(cleanup)])),
     }
+}
+
+#[cfg(windows)]
+fn validate_windows_signature_cardinality(
+    secondary_signatures: u32,
+    verified_signature_index: u32,
+) -> Result<(), HostAppError> {
+    if secondary_signatures == 0 && verified_signature_index == 0 {
+        return Ok(());
+    }
+    Err(windows_identity_error(
+        format!(
+            "the verified package has one primary and {secondary_signatures} secondary Authenticode signatures, with verified index {verified_signature_index}; exactly one signature is required"
+        ),
+        "Sign the package once without appending a secondary Authenticode signature.",
+    ))
 }
 
 #[cfg(windows)]
@@ -4459,6 +4495,17 @@ mod tests {
         })
         .expect("explicit dev profile mode");
         assert!(matches!(development, WindowsProfileMode::EphemeralDev));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_signature_cardinality_rejects_secondary_or_nonprimary_selection() {
+        validate_windows_signature_cardinality(0, 0).expect("one primary signature");
+        for (secondary, verified_index) in [(1, 0), (u32::MAX, 0), (0, 1), (1, 1)] {
+            let error = validate_windows_signature_cardinality(secondary, verified_index)
+                .expect_err("ambiguous Authenticode signature set must fail");
+            assert_eq!(error.code(), "KELD-WV-009");
+        }
     }
 
     #[test]

@@ -876,6 +876,28 @@ mod tests {
         Ok(())
     }
 
+    fn assert_no_saved_media_allow(
+        profile: &super::super::ICoreWebView2Profile4,
+        origin: &str,
+    ) -> Result<(), WvError> {
+        if super::super::profile_permission_settings(profile)?
+            .iter()
+            .any(|setting| {
+                setting.origin == origin
+                    && matches!(
+                        setting.kind,
+                        COREWEBVIEW2_PERMISSION_KIND_CAMERA
+                            | COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                    )
+                    && setting.state == COREWEBVIEW2_PERMISSION_STATE_ALLOW
+            })
+        {
+            Err(failure("saved media Allow survived profile restart"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn assert_saved_permission_state(
         profile: &super::super::ICoreWebView2Profile4,
         origin: &str,
@@ -1339,7 +1361,9 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 ProfileIdentity::from_host_verified_parts([14; 32], "dev.keld.synthetic-recovery")?;
             let selection = WebProfileSelection::Persistent(identity);
             let plan = super::super::windows_profile_plan(&root, selection)?;
-            std::fs::create_dir_all(&plan.user_data_dir).map_err(failure)?;
+            let (profile_handles, _) =
+                super::super::retain_directory_chain(&root, &plan.user_data_dir, true, false)?;
+            drop(profile_handles);
             std::fs::write(
                 plan.control_dir.join(super::super::PROFILE_MARKER),
                 &plan.marker,
@@ -1406,12 +1430,25 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             assert_saved_media_state(&profile, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
             println!("KELD_PROFILE_SAVED_MEDIA seeded=allow camera=true microphone=true");
 
-            engine.destroy(first)?;
-            engine.saved_permissions_reconciled = false;
+            drop(profile);
+            let (restart_tx, restart_rx) = mpsc::channel();
+            restart_tx
+                .send(crate::AppWindowCommand::Quit)
+                .map_err(|_| failure("queue seeded-profile Quit"))?;
+            engine.run_app_until_quit(restart_rx, mpsc::channel().0)?;
+
+            let mut engine =
+                profile_fixture_engine(&root, WebProfileSelection::Persistent(identity))?;
             let second = engine.create(&blank_spec())?;
             let reconciled = super::super::webview_profile(&engine.view(second)?.webview)?;
-            assert_saved_media_state(&reconciled, origin, COREWEBVIEW2_PERMISSION_STATE_DENY)?;
-            println!("KELD_PROFILE_SAVED_MEDIA reconciled=deny camera=true microphone=true");
+            for setting in super::super::profile_permission_settings(&reconciled)? {
+                println!(
+                    "KELD_PROFILE_SAVED_MEDIA observed kind={} state={} origin={}",
+                    setting.kind.0, setting.state.0, setting.origin
+                );
+            }
+            assert_no_saved_media_allow(&reconciled, origin)?;
+            println!("KELD_PROFILE_SAVED_MEDIA reconciled=no-allow camera=true microphone=true");
 
             for kind in [
                 COREWEBVIEW2_PERMISSION_KIND_CAMERA,
