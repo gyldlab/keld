@@ -2127,6 +2127,27 @@ If it lands, binaries are fetched at build time and the selected app/vendor owns
 security updates. Verso/Servo remain later conformance candidates only when embedding
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
+Windows release startup selects its persistent [WebView2 user-data folder](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder)
+before creating a listener, Bun child, or window. `keld-core` accepts one signature with
+no secondary signatures under [WinVerifyTrust Authenticode policy](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust).
+It derives publisher scope from the verified leaf certificate's SPKI and reads the
+canonical app id only from that signer's authenticated `SPC_SP_OPUS_INFO` program name
+with the exact `keld.app-id/v1:` prefix. A missing or invalid trust chain, signer,
+attribute, or canonical id fails closed as `KELD-WV-009`. Only the authenticated
+`stdin-v1` dev lease selects a fresh ephemeral profile; release failures never fall
+back to a shared or temporary WebView2 store.
+
+Keld uses [`CreateDirectoryW` security attributes](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
+to create profile directories atomically with a protected inheritable DACL for the
+current user, SYSTEM, and Administrators. Subsequent validation follows the Windows
+[file-security access-right contract](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights):
+it rejects foreign ordinary-user read, write, execute, delete, or ACL/owner authority
+while retaining the AppContainer and capability ACEs WebView2 requires.
+
+Microsoft's upstream [WebView2 client support](https://learn.microsoft.com/microsoft-edge/webview2/#supported-windows-versions)
+includes Windows 10 SAC 1709 and later plus Windows 11. Keld has real-qualified this
+profile slice only on Windows 11 x64; older client releases remain unqualified for Keld.
+
 Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
 safe-mode. **Implemented (KEL-28/KEL-132):**
 `webkitgtk::prepare_gpu_safe_mode_process` detects NVIDIA + Wayland and, when
@@ -3292,7 +3313,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
 | `crate.keld-core` | All | **Partial** — Host lifecycle, hello, and macOS/Windows/Linux no-flag app sessions are implemented; full named-role and privileged dispatch remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-core/src/app_session.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96, KEL-102 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-wv` | All | **Partial** — WKWebView, WebView2, and WebKitGTK backends plus the common verified profile identity, marker, registry, intent, lease, and lock-order foundation exist; authenticated platform producers, native persistent store consumption, the destination engine policy, and the renderer bridge remain incomplete. | [code](../../crates/keld-wv/src/lib.rs), [test](../../crates/keld-wv/src/profile.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-27, KEL-28, KEL-65, KEL-135 | `80c314dd9556a488cf9ed2fe1d546bdd711f5e2d` |
+| `crate.keld-wv` | All | **Partial** — WKWebView, WebView2, and WebKitGTK backends plus the common verified profile foundation and Windows native persistent-store consumption exist; Windows real signed-package and second-user acceptance, macOS/Linux authenticated producers and persistent stores, the destination engine policy, and the renderer bridge remain incomplete. | [code](../../crates/keld-wv/src/lib.rs), [test](../../crates/keld-wv/src/profile.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-27, KEL-28, KEL-65, KEL-135 | `eed815e4a55ec9cec065be4ae50115377512d126` |
 | `crate.keld-ipc` | All | **Partial** — kipc framing, codecs, HELLO authentication, Unix bootstrap, and the Windows named-pipe app-link are implemented; channel registry and shared-memory lanes are absent. | [code](../../crates/keld-ipc/src/lib.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-30, KEL-101, KEL-133 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — Scoped filesystem request handling is implemented, guard-checked, and wire-tested, but no production host caller is wired; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -3331,7 +3352,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 |---|---|---|---|---|---|---|
 | `surface.windows-app-link` | Windows | **Partial** — The shipping app-link uses a current-user protected named pipe plus HELLO; distinct ordinary-user denial and authorized same-user successor echo are proven, while decimal diagnostic compatibility remains. | [code](../../crates/keld-ipc/src/windows_named_pipe.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/specs/kel101-windows-named-pipe-dacl.md) | KEL-101 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `surface.no-flag-macos` | macOS | **Partial** — The no-flag host, native window, app link, recovery, and ordered cleanup are implemented for the current slice. | [code](../../crates/keld-core/src/app_session.rs), [test](../../crates/keld-host/tests/no_flag_macos.rs) | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `surface.no-flag-windows` | Windows | **Partial** — The no-flag host, native window, named-pipe app link, recovery, and ordered cleanup are implemented for the current slice. | [code](../../crates/keld-core/src/app_session.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs) | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-96, KEL-101 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `surface.no-flag-windows` | Windows | **Partial** — The no-flag host, native window, named-pipe app link, recovery, ordered cleanup, and authenticated Authenticode identity-to-persistent-WebView2 wiring are implemented; real trusted signed App A/B/other-publisher and second-user acceptance remain incomplete. | [code](../../crates/keld-core/src/app_session.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs) | [Specified](../../docs/specs/kel135-persistent-profile-identity.md) | KEL-96, KEL-101, KEL-135 | `eed815e4a55ec9cec065be4ae50115377512d126` |
 | `surface.no-flag-linux` | Linux | **Partial** — The no-flag host, WebKitGTK window, authenticated app link, strict Bun generations, recovery, CLI/host-death cleanup, and relaunch are implemented for Ubuntu/Debian x86_64 Wayland; X11, non-Debian, and release packaging remain unverified. | [code](../../crates/keld-core/src/app_session.rs), [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/specs/kel96-no-flag-host-boot.md) | KEL-28, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
 
 ---

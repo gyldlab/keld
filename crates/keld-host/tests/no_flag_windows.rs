@@ -310,8 +310,7 @@ fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error()
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage exit-zero host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -353,8 +352,7 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage fast-g2 host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T4_GENERATION_MARKER", &marker)
         .stdout(Stdio::piped())
@@ -422,8 +420,7 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage crash-loop host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -471,8 +468,7 @@ fn run_same_window_recovery(failure_command: &str) {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage recovery host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -527,8 +523,7 @@ fn windows_pre_ready_crash_denies_successor_before_provisioning() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage pre-ready host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
         .env("KELD_T3_PRE_READY_MARKER", &marker)
@@ -1346,8 +1341,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage Windows product host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1402,6 +1396,15 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         bun_pid,
         app_link,
     }
+}
+
+fn dev_stage_command(root: &Path, host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command
+        .current_dir(root)
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .stdin(Stdio::piped());
+    command
 }
 
 struct RendererBeacon {
