@@ -1879,45 +1879,79 @@ fn check_windows_profile_regression_oracle(root: &Path) -> Result<(), String> {
         ("}".to_owned(), 2),
         ("$cases.Count".to_owned(), 1),
         ("}".to_owned(), 1),
+        ("$ErrorActionPreference = 'Stop'".to_owned(), 0),
+        (
+            "$sourceBinary = (Resolve-Path -LiteralPath $BinaryPath).Path".to_owned(),
+            0,
+        ),
+        (
+            "$evidenceRoot = [IO.Path]::GetFullPath($EvidenceDirectory)".to_owned(),
+            0,
+        ),
+        ("if (Test-Path -LiteralPath $evidenceRoot) {".to_owned(), 0),
+        (
+            "throw 'Evidence directory must be new; previous results must not be overwritten.'"
+                .to_owned(),
+            1,
+        ),
+        ("}".to_owned(), 1),
+        (
+            "[void](New-Item -ItemType Directory -Path $evidenceRoot)".to_owned(),
+            0,
+        ),
+        (
+            "$binary = Join-Path $evidenceRoot 'keld_wv_media_test.exe'".to_owned(),
+            0,
+        ),
+        (
+            "Copy-Item -LiteralPath $sourceBinary -Destination $binary".to_owned(),
+            0,
+        ),
+        (
+            "$sourceBinaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceBinary).Hash.ToLowerInvariant()".to_owned(),
+            0,
+        ),
+        (
+            "$binaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLowerInvariant()".to_owned(),
+            0,
+        ),
+        ("if ($binaryHash -ne $sourceBinaryHash) {".to_owned(), 0),
+        (
+            "throw \"Fixture executable copy mismatch: source=$sourceBinaryHash evidence=$binaryHash\"".to_owned(),
+            1,
+        ),
+        ("}".to_owned(), 1),
+        (
+            "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot".to_owned(),
+            0,
+        ),
+        (
+            "$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot".to_owned(),
+            0,
+        ),
+        (
+            "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot".to_owned(),
+            0,
+        ),
+        ("if ($profileRegressionCount -ne 5) {".to_owned(), 0),
+        (
+            "throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"".to_owned(),
+            1,
+        ),
+        ("}".to_owned(), 1),
+        ("$results = @()".to_owned(), 0),
     ]);
-    let function_bound = statements.windows(expected_function.len()).any(|window| {
+    let oracle_bound = statements.windows(expected_function.len()).any(|window| {
         window
             .iter()
             .zip(&expected_function)
             .all(|(actual, (text, depth))| actual.text == *text && actual.depth == *depth)
     });
-    let expected_call = [
-        (
-            "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
-            0,
-        ),
-        (
-            "$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot",
-            0,
-        ),
-        (
-            "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
-            0,
-        ),
-        ("if ($profileRegressionCount -ne 5) {", 0),
-        (
-            "throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"",
-            1,
-        ),
-        ("}", 1),
-        ("$results = @()", 0),
-    ];
-    let call_bound = statements.windows(expected_call.len()).any(|window| {
-        window
-            .iter()
-            .zip(expected_call)
-            .all(|(actual, (text, depth))| actual.text == text && actual.depth == depth)
-    });
     let function_identity_count = statements
         .iter()
         .filter(|statement| statement.text.contains("Invoke-ProfileRegressionCases"))
         .count();
-    if !function_bound || !call_bound || function_identity_count != 2 {
+    if !oracle_bound || function_identity_count != 2 {
         return Err(format!(
             "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact top-level, bounded, failure-preserving five-case Windows profile regression function and invocation."
         ));
@@ -2531,14 +2565,7 @@ mod tests {
     }
 
     fn valid_windows_media_oracle() -> String {
-        let cases = WINDOWS_PROFILE_REGRESSION_TESTS
-            .iter()
-            .map(|case| format!("        '{case}'"))
-            .collect::<Vec<_>>()
-            .join(",\n");
-        format!(
-            "function Invoke-ProfileRegressionCases {{\n    param([string]$Binary, [string]$EvidenceRoot)\n    $cases = @(\n{cases}\n    )\n    foreach ($case in $cases) {{\n        $stdoutPath = Join-Path $EvidenceRoot \"profile-$case.log\"\n        $stderrPath = Join-Path $EvidenceRoot \"profile-$case.stderr.log\"\n        $start = [Diagnostics.ProcessStartInfo]::new()\n        $start.FileName = $Binary\n        $start.Arguments = \"webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1\"\n        $start.UseShellExecute = $false\n        $start.CreateNoWindow = $true\n        $start.RedirectStandardOutput = $true\n        $start.RedirectStandardError = $true\n        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000\n        if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or\n            -not $execution.stdout_text.Contains(\"test webview2::media_acceptance::tests::$case\") -or\n            -not $execution.stdout_text.Contains('test result: ok. 1 passed; 0 failed')) {{\n            throw \"Windows profile regression failed: $case; outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)\"\n        }}\n        [Console]::Out.WriteLine(\"KELD_PROFILE_REGRESSION case=$case exit=0 stdout_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()) stderr_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant())\")\n    }}\n    $cases.Count\n}}\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot\n$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot\n$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\nif ($profileRegressionCount -ne 5) {{\n    throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"\n}}\n$results = @()\n"
-        )
+        include_str!("../crates/keld-wv/tests/windows_media_guard.ps1").to_owned()
     }
 
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
@@ -4306,6 +4333,10 @@ mod tests {
             (
                 "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
                 "Set-Item Function:Invoke-ProfileRegressionCases { return 5 }\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
+            ),
+            (
+                "$ErrorActionPreference = 'Stop'",
+                "$functionPath = 'Function:\\Invoke-' + 'ProfileRegressionCases'\nSet-Item -Path $functionPath -Value { 5 }\n$ErrorActionPreference = 'Stop'",
             ),
         ] {
             let temp = complete_fixture();
