@@ -1326,6 +1326,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "windows-permissions",
  "windows-sys 0.61.2",

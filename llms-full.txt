@@ -2127,6 +2127,15 @@ If it lands, binaries are fetched at build time and the selected app/vendor owns
 security updates. Verso/Servo remain later conformance candidates only when embedding
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
+Windows release startup selects its persistent WebView2 profile before creating a
+listener, Bun child, or window. `keld-core` accepts one primary Authenticode signature,
+derives publisher scope from the verified leaf certificate's SPKI, and reads the
+canonical app id only from that signer's authenticated `SPC_SP_OPUS_INFO` program name
+with the exact `keld.app-id/v1:` prefix. A missing or invalid trust chain, signer,
+attribute, or canonical id fails closed as `KELD-WV-009`. Only the authenticated
+`stdin-v1` dev lease selects a fresh ephemeral profile; release failures never fall
+back to a shared or temporary WebView2 store.
+
 Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
 safe-mode. **Implemented (KEL-28/KEL-132):**
 `webkitgtk::prepare_gpu_safe_mode_process` detects NVIDIA + Wayland and, when
