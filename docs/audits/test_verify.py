@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 MANIFEST = "2026-09-19-full-spectrum-technical-audit.json"
 REPORT = "2026-09-19-full-spectrum-technical-audit.md"
+UTF8 = "utf-8"
 
 
 class AuditVerifyTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class AuditVerifyTests(unittest.TestCase):
         registry = self.repo / "docs" / "audits" / "README.md"
         current_report = report_path.read_bytes()
         current_manifest = manifest_path.read_bytes()
-        current_registry = registry.read_text()
+        current_registry = registry.read_text(encoding=UTF8)
         current_data = json.loads(current_manifest)
         real_anchor = current_data["publication_commit"]
 
@@ -70,7 +71,7 @@ class AuditVerifyTests(unittest.TestCase):
 
         report_path.write_bytes(current_report)
         manifest_path.write_bytes(current_manifest)
-        registry.write_text(current_registry)
+        registry.write_text(current_registry, encoding=UTF8)
         data = json.loads(current_manifest)
         audited_keld_revision = data["audited_revisions"]["gyldlab/keld"]
         subprocess.run(
@@ -88,15 +89,15 @@ class AuditVerifyTests(unittest.TestCase):
         old_current_manifest = hashlib.sha256(current_manifest).hexdigest()
         data["publication_commit"] = anchor
         data["original_manifest_sha256"] = hashlib.sha256(original_manifest).hexdigest()
-        manifest_path.write_text(json.dumps(data, indent=2) + "\n")
+        manifest_path.write_text(json.dumps(data, indent=2) + "\n", encoding=UTF8)
         new_current_manifest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
-        registry_text = registry.read_text()
+        registry_text = registry.read_text(encoding=UTF8)
         registry_text = registry_text.replace(old_anchor, anchor).replace(
             old_anchor[:12], anchor[:12]
         )
         registry_text = registry_text.replace(old_current_manifest, new_current_manifest, 1)
-        registry.write_text(registry_text)
+        registry.write_text(registry_text, encoding=UTF8)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -113,20 +114,20 @@ class AuditVerifyTests(unittest.TestCase):
         return self.audits / REPORT
 
     def manifest(self) -> dict:
-        return json.loads(self.manifest_path.read_text())
+        return json.loads(self.manifest_path.read_text(encoding=UTF8))
 
     def write_manifest(self, data: dict) -> None:
-        self.manifest_path.write_text(json.dumps(data, indent=2) + "\n")
+        self.manifest_path.write_text(json.dumps(data, indent=2) + "\n", encoding=UTF8)
 
     def refresh_current_manifest_registry(self, old_hash: str) -> str:
         new_hash = hashlib.sha256(self.manifest_path.read_bytes()).hexdigest()
         registry = self.audits / "README.md"
         old = f"Current manifest: `evidence/{MANIFEST}` · SHA-256 `{old_hash}`."
         new = f"Current manifest: `evidence/{MANIFEST}` · SHA-256 `{new_hash}`."
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         if old not in text:
             raise AssertionError("current manifest registry anchor missing")
-        registry.write_text(text.replace(old, new, 1))
+        registry.write_text(text.replace(old, new, 1), encoding=UTF8)
         return new_hash
 
     def verify(self) -> subprocess.CompletedProcess[str]:
@@ -161,7 +162,10 @@ class AuditVerifyTests(unittest.TestCase):
         self.assert_rejected("finding classification differs from report: F-01")
 
     def test_silent_report_rewrite_is_rejected_even_with_new_current_hash(self) -> None:
-        self.report_path.write_text(self.report_path.read_text() + "\nsilent rewrite\n")
+        self.report_path.write_text(
+            self.report_path.read_text(encoding=UTF8) + "\nsilent rewrite\n",
+            encoding=UTF8,
+        )
         data = self.manifest()
         data["report_sha256"] = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
         data["corrections"] = []
@@ -174,27 +178,29 @@ class AuditVerifyTests(unittest.TestCase):
 
     def test_malformed_registry_row_is_rejected(self) -> None:
         registry = self.audits / "README.md"
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         marker = "| Published |\n"
-        registry.write_text(text.replace(marker, marker + "| malformed |\n", 1))
+        registry.write_text(
+            text.replace(marker, marker + "| malformed |\n", 1), encoding=UTF8
+        )
         self.assert_rejected("malformed published audit row")
 
     def test_indented_registry_row_is_rejected(self) -> None:
         registry = self.audits / "README.md"
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         row = next(line for line in text.splitlines() if line.startswith("| 2026-09-19 |"))
-        registry.write_text(text.replace(row, row + "\n  " + row, 1))
+        registry.write_text(text.replace(row, row + "\n  " + row, 1), encoding=UTF8)
         self.assert_rejected("indented table row")
 
     def test_duplicate_report_row_is_rejected(self) -> None:
         registry = self.audits / "README.md"
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         row = next(line for line in text.splitlines() if line.startswith("| 2026-09-19 |"))
         duplicate = row.replace(
             "evidence/2026-09-19-full-spectrum-technical-audit.json",
             "evidence/duplicate-report.json",
         )
-        registry.write_text(text.replace(row, row + "\n" + duplicate, 1))
+        registry.write_text(text.replace(row, row + "\n" + duplicate, 1), encoding=UTF8)
         shutil.copy2(
             self.manifest_path,
             self.audits / "evidence" / "duplicate-report.json",
@@ -217,7 +223,9 @@ class AuditVerifyTests(unittest.TestCase):
         current = self.manifest()["report_sha256"]
         old = f"Current report: `{REPORT}` · SHA-256 `{current}`."
         new = f"Current report: `{REPORT}` · SHA-256 `{'0' * 64}`."
-        registry.write_text(registry.read_text().replace(old, new, 1))
+        registry.write_text(
+            registry.read_text(encoding=UTF8).replace(old, new, 1), encoding=UTF8
+        )
         self.assert_rejected("registry current report hash is stale")
 
     def test_stale_registry_current_manifest_hash_is_rejected(self) -> None:
@@ -239,10 +247,10 @@ class AuditVerifyTests(unittest.TestCase):
         registry = self.audits / "README.md"
         old = f"Original snapshot: `{REPORT}` · SHA-256 `{old_original_report}`."
         new = f"Original snapshot: `{REPORT}` · SHA-256 `{current_report}`."
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         if old not in text:
             raise AssertionError("original report registry anchor missing")
-        registry.write_text(text.replace(old, new, 1))
+        registry.write_text(text.replace(old, new, 1), encoding=UTF8)
         self.refresh_current_manifest_registry(old_manifest)
         self.assert_rejected("semantic manifest change requires correction metadata")
 
@@ -262,22 +270,22 @@ class AuditVerifyTests(unittest.TestCase):
         self.refresh_current_manifest_registry(old_manifest)
 
         old_report = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
-        text = self.report_path.read_text()
+        text = self.report_path.read_text(encoding=UTF8)
         text = text.replace(
             "### 2026-09-19 — Publication evidence hardening",
             "```markdown\n### 2026-09-20 — hidden correction\n```",
             1,
         )
-        self.report_path.write_text(text)
+        self.report_path.write_text(text, encoding=UTF8)
         new_report = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
         registry = self.audits / "README.md"
-        current = registry.read_text()
+        current = registry.read_text(encoding=UTF8)
         current = current.replace(
             f"Current report: `{REPORT}` · SHA-256 `{old_report}`.",
             f"Current report: `{REPORT}` · SHA-256 `{new_report}`.",
             1,
         )
-        registry.write_text(current)
+        registry.write_text(current, encoding=UTF8)
         self.assert_rejected("correction dates differ from Errata headings")
 
     def test_multiple_corrections_require_distinct_git_states(self) -> None:
@@ -314,9 +322,10 @@ class AuditVerifyTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "bad-first-correction"], cwd=self.repo, check=True)
 
         old_report_hash = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
-        report_text = self.report_path.read_text()
+        report_text = self.report_path.read_text(encoding=UTF8)
         self.report_path.write_text(
-            report_text + "\n### 2026-09-20 — second correction\n\nTest-only correction.\n"
+            report_text + "\n### 2026-09-20 — second correction\n\nTest-only correction.\n",
+            encoding=UTF8,
         )
         new_report_hash = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
         data = self.manifest()
@@ -336,10 +345,10 @@ class AuditVerifyTests(unittest.TestCase):
         registry = self.audits / "README.md"
         old = f"Current report: `{REPORT}` · SHA-256 `{old_report_hash}`."
         new = f"Current report: `{REPORT}` · SHA-256 `{new_report_hash}`."
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         if old not in text:
             raise AssertionError("current report registry anchor missing")
-        registry.write_text(text.replace(old, new, 1))
+        registry.write_text(text.replace(old, new, 1), encoding=UTF8)
         self.refresh_current_manifest_registry(old_manifest)
         self.assert_rejected("historical correction 0 report hash is invalid")
 
@@ -348,15 +357,17 @@ class AuditVerifyTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "valid-first-correction"], cwd=self.repo, check=True)
 
         self.report_path.write_text(
-            self.report_path.read_text() + "\nuncorrected historical rewrite\n"
+            self.report_path.read_text(encoding=UTF8)
+            + "\nuncorrected historical rewrite\n",
+            encoding=UTF8,
         )
         subprocess.run(["git", "add", str(self.report_path)], cwd=self.repo, check=True)
         subprocess.run(["git", "commit", "-qm", "bad-report-only-state"], cwd=self.repo, check=True)
 
         old_report_hash = self.manifest()["report_sha256"]
-        report_text = self.report_path.read_text()
+        report_text = self.report_path.read_text(encoding=UTF8)
         report_text += "\n### 2026-09-20 — repair\n\nRepair the prior report state.\n"
-        self.report_path.write_text(report_text)
+        self.report_path.write_text(report_text, encoding=UTF8)
         new_report_hash = hashlib.sha256(self.report_path.read_bytes()).hexdigest()
 
         old_manifest = hashlib.sha256(self.manifest_path.read_bytes()).hexdigest()
@@ -374,12 +385,12 @@ class AuditVerifyTests(unittest.TestCase):
         self.write_manifest(data)
 
         registry = self.audits / "README.md"
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         old = f"Current report: `{REPORT}` · SHA-256 `{old_report_hash}`."
         new = f"Current report: `{REPORT}` · SHA-256 `{new_report_hash}`."
         if old not in text:
             raise AssertionError("current report registry anchor missing")
-        registry.write_text(text.replace(old, new, 1))
+        registry.write_text(text.replace(old, new, 1), encoding=UTF8)
         self.refresh_current_manifest_registry(old_manifest)
         subprocess.run(["git", "add", "."], cwd=self.repo, check=True)
         subprocess.run(["git", "commit", "-qm", "later-repair"], cwd=self.repo, check=True)
@@ -394,7 +405,9 @@ class AuditVerifyTests(unittest.TestCase):
         registry = self.audits / "README.md"
         old = f"Original manifest: `evidence/{MANIFEST}` · SHA-256 `{original}`."
         new = f"Original manifest: `evidence/{MANIFEST}` · SHA-256 `{'0' * 64}`."
-        registry.write_text(registry.read_text().replace(old, new, 1))
+        registry.write_text(
+            registry.read_text(encoding=UTF8).replace(old, new, 1), encoding=UTF8
+        )
         self.assert_rejected("original manifest hash differs from publication commit")
 
     def test_publication_anchor_cannot_move_to_later_commit(self) -> None:
@@ -418,11 +431,11 @@ class AuditVerifyTests(unittest.TestCase):
         new_current_manifest = hashlib.sha256(self.manifest_path.read_bytes()).hexdigest()
 
         registry = self.audits / "README.md"
-        text = registry.read_text()
+        text = registry.read_text(encoding=UTF8)
         text = text.replace(old_anchor, later).replace(old_anchor[:12], later[:12])
         text = text.replace(old_current_manifest, new_current_manifest, 1)
         text = text.replace(old_original_manifest, later_manifest_hash, 1)
-        registry.write_text(text)
+        registry.write_text(text, encoding=UTF8)
         self.assert_rejected("publication_commit is not the report introduction commit")
 
     def test_original_hash_cannot_be_rebased_to_rewritten_files(self) -> None:
@@ -433,19 +446,21 @@ class AuditVerifyTests(unittest.TestCase):
         registry = self.audits / "README.md"
         old = f"Original snapshot: `{REPORT}` · SHA-256 `{original}`."
         new = f"Original snapshot: `{REPORT}` · SHA-256 `{'0' * 64}`."
-        registry.write_text(registry.read_text().replace(old, new, 1))
+        registry.write_text(
+            registry.read_text(encoding=UTF8).replace(old, new, 1), encoding=UTF8
+        )
         self.assert_rejected("original report hash differs from publication commit")
 
     def test_upstream_receipt_hash_drift_is_rejected(self) -> None:
         receipt = self.audits / "evidence" / "upstream" / "2026-09-19-platform-semantics.json"
-        receipt.write_text(receipt.read_text() + " ")
+        receipt.write_text(receipt.read_text(encoding=UTF8) + " ", encoding=UTF8)
         self.assert_rejected("upstream receipt hash mismatch")
 
     def test_empty_upstream_receipt_is_rejected(self) -> None:
         receipt = self.audits / "evidence" / "upstream" / "2026-09-19-platform-semantics.json"
-        data = json.loads(receipt.read_text())
+        data = json.loads(receipt.read_text(encoding=UTF8))
         data["receipts"] = []
-        receipt.write_text(json.dumps(data, indent=2) + "\n")
+        receipt.write_text(json.dumps(data, indent=2) + "\n", encoding=UTF8)
         manifest = self.manifest()
         manifest["upstream_receipts"][0]["sha256"] = hashlib.sha256(receipt.read_bytes()).hexdigest()
         self.write_manifest(manifest)
