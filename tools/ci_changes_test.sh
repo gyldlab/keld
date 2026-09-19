@@ -124,6 +124,10 @@ docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
 expect_flags "docs-only change avoids Rust and GUI lanes" "$docs_only" "$docs_classification"
 expect_empty_packages "docs-only change selects no package" "$docs_classification"
 
+audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
+expect_flags "public audit verifier and evidence stay in docs gate" "$docs_only" "$audit_docs_classification"
+expect_empty_packages "public audit verifier selects no product package" "$audit_docs_classification"
+
 hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"
 

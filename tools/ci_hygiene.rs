@@ -82,6 +82,11 @@ const ATOMIC_PROTOCOL_COMMANDS: &[&str] = &[
     "target/atomic-protocol/atomic-protocol check .",
 ];
 
+const AUDIT_DOC_COMMANDS: &[&str] = &[
+    "python3 -B docs/audits/verify.py",
+    "python3 -B docs/audits/test_verify.py",
+];
+
 const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "mkdir -p target/agent-context",
     "rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test",
@@ -250,6 +255,42 @@ fn just_recipe_commands(text: &str, recipe: &str) -> Option<Vec<String>> {
         }
     }
     Some(commands)
+}
+
+fn check_root_audit_contract(root: &Path) -> Result<(), String> {
+    let justfile = read(root, JUSTFILE)?;
+    let ci_line = justfile
+        .lines()
+        .find(|line| line.starts_with("ci:"))
+        .ok_or_else(|| {
+            format!(
+                "CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."
+            )
+        })?;
+    if !ci_line.split_whitespace().any(|token| token == "audit-docs") {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` root `ci:` must depend on `audit-docs`."
+        ));
+    }
+    let commands = just_recipe_commands(&justfile, "audit-docs").ok_or_else(|| {
+        format!(
+            "CI-HYGIENE: `{JUSTFILE}` is missing the `audit-docs:` recipe."
+        )
+    })?;
+    let expected = [
+        "{{python_command}} -B docs/audits/verify.py",
+        "{{python_command}} -B docs/audits/test_verify.py",
+    ];
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(expected.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `audit-docs:` must run the verifier and mutation suite exactly."
+        ));
+    }
+    Ok(())
 }
 
 fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
@@ -1486,6 +1527,57 @@ fn check_agent_context_step(text: &str) -> Result<(), String> {
     )
 }
 
+fn check_public_audit_step(text: &str) -> Result<(), String> {
+    let Some(hygiene) = workflow_job_block(text, "hygiene") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for public audit contracts."
+        ));
+    };
+    if !workflow_has_checkout_fetch_depth_zero(&hygiene) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must checkout full history (`fetch-depth: 0`) because public audit verification binds historical commits."
+        ));
+    }
+    let step = "Public audit registry contracts";
+    if workflow_direct_named_step_count(&hygiene, step) != 1 {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `hygiene` must contain exactly one `{step}` step."
+        ));
+    }
+    let block = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
+        format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of hygiene.steps."
+        )
+    })?;
+    let expected_keys = ["if".to_owned(), "run".to_owned()];
+    if workflow_named_step_direct_keys(&block, step).as_deref()
+        != Some(expected_keys.as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its docs condition and direct run block."
+        ));
+    }
+    let condition = "needs.changes.outputs.docs == 'true'";
+    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(condition) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use exact condition `{condition}`."
+        ));
+    }
+    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable run block.")
+    })?;
+    if commands
+        .iter()
+        .map(String::as_str)
+        .ne(AUDIT_DOC_COMMANDS.iter().copied())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the public audit verifier and mutation suite exactly."
+        ));
+    }
+    Ok(())
+}
+
 fn check_product_status_step(text: &str) -> Result<(), String> {
     let Some(changes) = workflow_job_block(text, "changes") else {
         return Err(format!(
@@ -2056,6 +2148,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_windows_media_acceptance_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_agent_context_step(&text)?;
+    check_public_audit_step(&text)?;
     for needle in WORKFLOW_RUN_NEEDLES {
         if !workflow_has_executable_run_needle(&text, needle) {
             return Err(format!(
@@ -2119,6 +2212,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
 fn check(root: &Path) -> Result<(), String> {
     check_gitignore(root)?;
     check_ci_profile_does_not_retry(root)?;
+    check_root_audit_contract(root)?;
     check_root_test_display_contract(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
@@ -2309,6 +2403,7 @@ mod tests {
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
+            "          fetch-depth: 0",
             "          persist-credentials: false",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
@@ -2332,6 +2427,11 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
             "      - run: rustc --edition=2024 --test tools/product_status.rs",
             "      - run: product-status check .",
+            "      - name: Public audit registry contracts",
+            "        if: needs.changes.outputs.docs == 'true'",
+            "        run: |",
+            "          python3 -B docs/audits/verify.py",
+            "          python3 -B docs/audits/test_verify.py",
             "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
@@ -2456,6 +2556,10 @@ mod tests {
         temp.write(
             JUSTFILE,
             concat!(
+                "ci: audit-docs test\n",
+                "audit-docs:\n",
+                "    {{python_command}} -B docs/audits/verify.py\n",
+                "    {{python_command}} -B docs/audits/test_verify.py\n",
                 "test:\n",
                 "    #!/usr/bin/env bash\n",
                 "    set -euo pipefail\n",
@@ -2480,6 +2584,41 @@ mod tests {
     fn complete_fixture_passes() {
         let temp = complete_fixture();
         check(temp.path()).expect("complete KEL-39 fixture must pass");
+    }
+
+    #[test]
+    fn public_audit_gate_is_mandatory_locally_and_in_docs_ci() {
+        let temp = complete_fixture();
+        temp.write(
+            JUSTFILE,
+            &read(temp.path(), JUSTFILE)
+                .expect("just fixture")
+                .replacen("ci: audit-docs test", "ci: test", 1),
+        );
+        let error = check(temp.path()).expect_err("root ci must own public audit gate");
+        assert!(error.contains("audit-docs"), "{error}");
+
+        let temp = complete_fixture();
+        temp.write(
+            WORKFLOW,
+            &valid_workflow().replacen(
+                "          python3 -B docs/audits/test_verify.py\n",
+                "",
+                1,
+            ),
+        );
+        let error = check(temp.path()).expect_err("audit mutation suite must run in docs CI");
+        assert!(error.contains("Public audit registry contracts"), "{error}");
+
+        let temp = complete_fixture();
+        let workflow = valid_workflow().replacen(
+            "          fetch-depth: 0\n          persist-credentials: false\n      - uses: oven-sh/setup-bun",
+            "          persist-credentials: false\n      - uses: oven-sh/setup-bun",
+            1,
+        );
+        temp.write(WORKFLOW, &workflow);
+        let error = check(temp.path()).expect_err("audit CI needs full history");
+        assert!(error.contains("full history"), "{error}");
     }
 
     #[test]
