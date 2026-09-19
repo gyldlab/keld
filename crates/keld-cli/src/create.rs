@@ -150,6 +150,18 @@ mod tests {
         n
     }
 
+    fn css_block<'a>(document: &'a str, selector: &str) -> &'a str {
+        let opening = format!("{selector} {{");
+        let start = document
+            .find(&opening)
+            .unwrap_or_else(|| panic!("missing `{selector}` CSS block: {document}"));
+        let body = &document[start + opening.len()..];
+        let end = body
+            .find('}')
+            .unwrap_or_else(|| panic!("unterminated `{selector}` CSS block: {document}"));
+        &body[..end]
+    }
+
     #[test]
     fn rejects_empty_name() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -258,6 +270,12 @@ mod tests {
         let html = fs::read_to_string(root.join("index.html")).expect("html");
         assert!(html.contains("<title>demo</title>"), "{html}");
         assert!(html.contains("<h1>demo</h1>"), "{html}");
+        let root_style = css_block(&html, "html");
+        assert!(root_style.contains("background: #000;"), "{html}");
+        assert!(root_style.contains("color-scheme: dark;"), "{html}");
+        let body_style = css_block(&html, "body");
+        assert!(body_style.contains("background: #000;"), "{html}");
+        assert!(body_style.contains("color: #fff;"), "{html}");
         assert!(!html.contains("{{name}}"), "{html}");
 
         let main = fs::read_to_string(root.join("src/main.ts")).expect("main");

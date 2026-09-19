@@ -951,6 +951,9 @@ mod tests {
         let html = load_dev_window_html(&root).expect("renderer");
         assert!(html.contains("<h1>demo</h1>"), "{html}");
         assert!(html.contains("<title>demo</title>"), "{html}");
+        assert!(html.contains("background: #000;"), "{html}");
+        assert!(html.contains("color: #fff;"), "{html}");
+        assert!(html.contains("color-scheme: dark;"), "{html}");
         assert!(html.contains("Rendered by the Keld host webview"), "{html}");
         assert!(
             !html.contains("Hello from WKWebView"),
