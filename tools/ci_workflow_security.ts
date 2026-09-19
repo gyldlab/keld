@@ -1,12 +1,22 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 
 type Mapping = Record<string, unknown>;
 const baseRef = "${{ github.event.pull_request.base.sha || github.event.before }}";
 const headRef = "${{ github.event.pull_request.head.sha || github.sha }}";
+const windowsMediaOracle = "crates/keld-wv/tests/windows_media_guard.ps1";
+const windowsMediaOracleSha256 = "fba6622b6faf56a785f10e5dfbf4da7d0b781faecd0a66e5735e568d028c11aa";
 
 function fail(message: string): never {
   throw new Error(`CI-HYGIENE: ${message}`);
+}
+
+export function checkWindowsMediaOracle(source: Uint8Array): void {
+  const actual = createHash("sha256").update(source).digest("hex");
+  if (actual !== windowsMediaOracleSha256) {
+    fail(`${windowsMediaOracle} changed without updating its reviewed SHA-256 owner; expected ${windowsMediaOracleSha256}, got ${actual}.`);
+  }
 }
 
 function mapping(value: unknown, label: string): Mapping {
@@ -170,6 +180,7 @@ if (import.meta.main) {
     const [, , command, root = ".", ...extra] = process.argv;
     if (command !== "check" || extra.length) fail("use ci_workflow_security.ts check [workspace].");
     checkWorkflowSecurity(readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"));
+    checkWindowsMediaOracle(readFileSync(resolve(root, windowsMediaOracle)));
     console.log("CI workflow security semantics ok");
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
