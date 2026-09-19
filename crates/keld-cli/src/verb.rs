@@ -76,8 +76,9 @@ impl ReservedVerb {
                  Scaffold a hello app with `keld create <name>` then `keld dev`."
             }
             Self::Gen => {
-                "Schema codegen is parked (KEL-13 / KEL-30). \
-                 The echo demo uses in-process postcard types."
+                "General schema codegen is parked (KEL-13). \
+                 The echo demo uses KEL-98's checked-in Rust-derived types with its existing \
+                 postcard codec."
             }
             Self::Ext => {
                 "Plugin scaffolding is not in Phase 2 (KEL-19). \

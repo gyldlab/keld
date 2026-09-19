@@ -2,10 +2,14 @@
  * Hello echo adapter over the canonical kipc transport (KEL-136 / KEL-30).
  *
  * Framing, HELLO, deadlines, buffering, and serialized writes live in
- * `kipc-transport.ts`. This file owns echo postcard codecs and `AppLinkSession`.
+ * `kipc-transport.ts`. This file owns echo postcard codecs and `AppLinkSession`;
+ * `echo.generated.ts` owns only the Rust-derived compile-time payload declarations.
  * `keld create` concatenates this file with `main-body.ts` into `src/main.ts`.
  */
 export * from "./kipc-transport.ts";
+export type { EchoRequest, EchoResponse } from "./echo.generated.ts";
+
+import type { EchoRequest, EchoResponse } from "./echo.generated.ts";
 
 import {
   CLIENT_AWAIT_HELLO,
@@ -29,16 +33,6 @@ import {
   type FrameKindValue,
   type ReceivePolicy,
 } from "./kipc-transport.ts";
-
-export interface EchoRequest {
-  message: string;
-  count: number;
-}
-
-export interface EchoResponse {
-  message: string;
-  count: number;
-}
 
 const textEncoder = new TextEncoder();
 
