@@ -16,9 +16,9 @@ Load for agent-docs, generated docs, Mermaid, or public documentation changes.
 - This section owns audit publication/correction procedure; `docs/audits/README.md` owns
   registry data and reader-facing guarantees. Private systems, paths, and user data MUST
   NOT support or leak into published claims.
-- Reports are historical: implementation changes require a new dated audit. The registry
-  original-snapshot hash MUST NOT change; dated `Errata` preserve it and atomically
-  refresh the current manifest hash/registry metadata.
+- Reports are historical: implementation changes require a new dated audit. Original
+  hashes MUST NOT change; `Errata` are append-only and bind corrected report/evidence state.
+- Audit PRs MUST preserve ancestry (no squash/rebase); completion verifies landed `origin/main`.
 - Publication/correction MUST pass `python3 docs/audits/verify.py` and
   `python3 docs/audits/test_verify.py`.
 

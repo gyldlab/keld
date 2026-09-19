@@ -6,13 +6,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import sys
+import zlib
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent.parent
 EVIDENCE = ROOT / "evidence"
 REGISTRY = ROOT / "README.md"
-REPO_README = ROOT.parent.parent / "README.md"
+REPO_README = REPO / "README.md"
 PRIVATE_MARKERS = ("linear.app", "0monish", "prompt-tracker", "MemPalace")
 PRIVATE_PATTERNS = (
     re.compile(r"(?i)(?:^|[\s(\"`])/(?:Users|home|tmp|private|var/folders)/[^\s)\"`]+"),
@@ -38,6 +42,114 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def git_bytes(commit: str, path: str) -> bytes | None:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "show", f"{commit}:{path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def manifest_semantic_sha256(data: dict) -> str:
+    excluded = {
+        "publication_commit",
+        "original_report_sha256",
+        "report_sha256",
+        "original_manifest_sha256",
+        "corrections",
+    }
+    semantic = {key: value for key, value in data.items() if key not in excluded}
+    encoded = json.dumps(
+        semantic,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def visible_errata_dates(markdown: str) -> list[str]:
+    dates: list[str] = []
+    fence_char: str | None = None
+    fence_width = 0
+    in_comment = False
+    for raw_line in markdown.splitlines():
+        line = raw_line
+        if in_comment:
+            if "-->" in line:
+                line = line.split("-->", 1)[1]
+                in_comment = False
+            else:
+                continue
+        while "<!--" in line:
+            before, after = line.split("<!--", 1)
+            line = before
+            if "-->" in after:
+                line += after.split("-->", 1)[1]
+            else:
+                in_comment = True
+                break
+
+        fence = re.match(r"^ {0,3}([`~]{3,})(?:[^`~].*)?$", line)
+        if fence:
+            run = fence.group(1)
+            char = run[0]
+            if fence_char is None:
+                fence_char = char
+                fence_width = len(run)
+            elif char == fence_char and len(run) >= fence_width:
+                fence_char = None
+                fence_width = 0
+            continue
+        if fence_char is not None:
+            continue
+        match = re.match(r"^### (\d{4}-\d{2}-\d{2})\b", line)
+        if match:
+            dates.append(match.group(1))
+    return dates
+
+
+def historical_audit_states(
+    publication_commit: str, manifest_path: Path, report_path: Path
+) -> list[tuple[str, dict, bytes]]:
+    manifest_git_path = manifest_path.relative_to(REPO).as_posix()
+    report_git_path = report_path.relative_to(REPO).as_posix()
+    history = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPO),
+            "rev-list",
+            "--reverse",
+            f"{publication_commit}..HEAD",
+            "--",
+            manifest_git_path,
+            report_git_path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if history.returncode != 0:
+        return []
+    states: list[tuple[str, dict, bytes]] = []
+    for commit in (line for line in history.stdout.splitlines() if line):
+        manifest_raw = git_bytes(commit, manifest_git_path)
+        report_raw = git_bytes(commit, report_git_path)
+        if manifest_raw is None or report_raw is None:
+            continue
+        try:
+            historical = json.loads(manifest_raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(historical, dict):
+            states.append((commit, historical, report_raw))
+    return states
+
+
 def main() -> int:
     errors: list[str] = []
     registry = REGISTRY.read_text(encoding="utf-8")
@@ -51,7 +163,11 @@ def main() -> int:
     except IndexError:
         errors.append(f"{REGISTRY}: missing Published audits section")
         published = ""
-    table = [line for line in published.splitlines() if line.startswith("|")]
+    published_lines = published.splitlines()
+    for line in published_lines:
+        if line.lstrip().startswith("|") and not line.startswith("|"):
+            errors.append(f"{REGISTRY}: indented table row in Published audits section")
+    table = [line for line in published_lines if line.startswith("|")]
     expected_header = "| Date | Report | Audited KELD revision | Evidence | Status |"
     expected_rule = "|---|---|---|---|---|"
     if len(table) < 2 or table[0] != expected_header or table[1] != expected_rule:
@@ -64,12 +180,16 @@ def main() -> int:
             rows.append(match)
 
     registry_by_manifest: dict[Path, re.Match[str]] = {}
+    registry_by_report: dict[Path, re.Match[str]] = {}
     for row in rows:
         manifest = (ROOT / row.group("manifest")).resolve()
         report = (ROOT / row.group("report")).resolve()
         if manifest in registry_by_manifest:
             errors.append(f"{REGISTRY}: duplicate manifest row: {row.group('manifest')}")
+        if report in registry_by_report:
+            errors.append(f"{REGISTRY}: duplicate report row: {row.group('report')}")
         registry_by_manifest[manifest] = row
+        registry_by_report[report] = row
         if not manifest.is_file():
             errors.append(f"{REGISTRY}: missing manifest: {row.group('manifest')}")
         if not report.is_file():
@@ -87,6 +207,65 @@ def main() -> int:
         if data.get("schema") != "keld.public-audit-evidence/v1":
             errors.append(f"{manifest_path}: unknown schema")
 
+        publication_commit = data.get("publication_commit")
+        publication_valid = isinstance(publication_commit, str) and bool(
+            re.fullmatch(r"[0-9a-f]{40}", publication_commit)
+        )
+        if not publication_valid:
+            errors.append(f"{manifest_path}: invalid publication_commit")
+        else:
+            ancestor = subprocess.run(
+                ["git", "-C", str(REPO), "merge-base", "--is-ancestor", publication_commit, "HEAD"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if ancestor.returncode != 0:
+                errors.append(f"{manifest_path}: publication_commit is not an ancestor of HEAD")
+            anchor = (
+                f"Publication anchor: [`{publication_commit[:12]}`]"
+                f"(https://github.com/gyldlab/keld/commit/{publication_commit})."
+            )
+            if anchor not in registry:
+                errors.append(f"{manifest_path}: registry publication anchor is stale")
+
+        current_manifest_hash = sha256(manifest_path)
+        current_manifest_semantic_hash = manifest_semantic_sha256(data)
+        original_manifest_hash = data.get("original_manifest_sha256")
+        original_manifest_semantic_hash: str | None = None
+        manifest_name = f"evidence/{manifest_path.name}"
+        if not isinstance(original_manifest_hash, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", original_manifest_hash
+        ):
+            errors.append(f"{manifest_path}: invalid original_manifest_sha256")
+        else:
+            original_manifest_anchor = (
+                f"Original manifest: `{manifest_name}` · SHA-256 `{original_manifest_hash}`."
+            )
+            if original_manifest_anchor not in registry:
+                errors.append(f"{manifest_path}: registry original manifest hash is stale")
+            if publication_valid:
+                historical_path = manifest_path.relative_to(REPO).as_posix()
+                historical_manifest = git_bytes(publication_commit, historical_path)
+                if historical_manifest is None:
+                    errors.append(f"{manifest_path}: publication commit lacks original manifest")
+                elif hashlib.sha256(historical_manifest).hexdigest() != original_manifest_hash:
+                    errors.append(f"{manifest_path}: original manifest hash differs from publication commit")
+                else:
+                    try:
+                        original_manifest_data = json.loads(historical_manifest)
+                    except json.JSONDecodeError:
+                        errors.append(f"{manifest_path}: publication manifest is invalid JSON")
+                    else:
+                        original_manifest_semantic_hash = manifest_semantic_sha256(
+                            original_manifest_data
+                        )
+        current_manifest_anchor = (
+            f"Current manifest: `{manifest_name}` · SHA-256 `{current_manifest_hash}`."
+        )
+        if current_manifest_anchor not in registry:
+            errors.append(f"{manifest_path}: registry current manifest hash is stale")
+
         report_ref = data.get("report")
         if not isinstance(report_ref, str):
             errors.append(f"{manifest_path}: missing report path")
@@ -100,6 +279,30 @@ def main() -> int:
         if not report.is_file():
             errors.append(f"{manifest_path}: report does not exist: {report_ref}")
             continue
+        if publication_valid:
+            report_git_path = report.relative_to(REPO).as_posix()
+            introduction = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(REPO),
+                    "log",
+                    "--diff-filter=A",
+                    "--reverse",
+                    "--format=%H",
+                    "--",
+                    report_git_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            introduced = [line for line in introduction.stdout.splitlines() if line]
+            if not introduced or introduced[0] != publication_commit:
+                errors.append(
+                    f"{manifest_path}: publication_commit is not the report introduction commit"
+                )
 
         row = registry_by_manifest.get(manifest_path.resolve())
         if row is None:
@@ -164,6 +367,13 @@ def main() -> int:
             anchor = f"Original snapshot: `{report.name}` · SHA-256 `{original}`."
             if anchor not in registry:
                 errors.append(f"{manifest_path}: registry is missing immutable original snapshot")
+            if publication_valid:
+                historical_path = report.relative_to(REPO).as_posix()
+                historical = git_bytes(publication_commit, historical_path)
+                if historical is None:
+                    errors.append(f"{manifest_path}: publication commit lacks original report")
+                elif hashlib.sha256(historical).hexdigest() != original:
+                    errors.append(f"{manifest_path}: original report hash differs from publication commit")
         current_anchor = f"Current report: `{report.name}` · SHA-256 `{current}`."
         if current_anchor not in registry:
             errors.append(f"{manifest_path}: registry current report hash is stale")
@@ -173,22 +383,127 @@ def main() -> int:
             errors.append(f"{manifest_path}: findings must be an array")
             findings = []
         ids = [item.get("id") for item in findings if isinstance(item, dict)]
-        report_ids = re.findall(r"^\| (F-\d{2}) \|", text, re.MULTILINE)
+        report_rows = re.findall(
+            r"^\| (F-\d{2}) \| (S[0-4]) \| ([^|]+?) \|",
+            text,
+            re.MULTILINE,
+        )
+        report_ids = [finding_id for finding_id, _severity, _confidence in report_rows]
+        report_classes = {
+            finding_id: (severity, confidence.strip().lower())
+            for finding_id, severity, confidence in report_rows
+        }
         if ids != report_ids:
             errors.append(f"{manifest_path}: finding IDs/order differ from report")
         for item in findings:
             if not isinstance(item, dict):
                 errors.append(f"{manifest_path}: finding entry must be an object")
                 continue
-            if item.get("confidence") not in ALLOWED_CONFIDENCE:
-                errors.append(f"{manifest_path}: invalid confidence for {item.get('id')}")
-            if item.get("severity") not in ALLOWED_SEVERITY:
-                errors.append(f"{manifest_path}: invalid severity for {item.get('id')}")
+            finding_id = item.get("id")
+            confidence = item.get("confidence")
+            severity = item.get("severity")
+            if confidence not in ALLOWED_CONFIDENCE:
+                errors.append(f"{manifest_path}: invalid confidence for {finding_id}")
+            if severity not in ALLOWED_SEVERITY:
+                errors.append(f"{manifest_path}: invalid severity for {finding_id}")
+            report_class = report_classes.get(finding_id)
+            if report_class is not None and report_class != (severity, confidence):
+                errors.append(
+                    f"{manifest_path}: finding classification differs from report: {finding_id}"
+                )
 
         revisions = data.get("audited_revisions", {})
-        for revision in revisions.values():
-            if isinstance(revision, str) and revision not in text:
+        if not isinstance(revisions, dict):
+            errors.append(f"{manifest_path}: audited_revisions must be an object")
+            revisions = {}
+        for repository, revision in revisions.items():
+            if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+                errors.append(f"{manifest_path}: invalid audited revision for {repository}")
+                continue
+            if revision not in text:
                 errors.append(f"{manifest_path}: audited revision missing from report")
+        audited_keld_revision = revisions.get("gyldlab/keld")
+        if publication_valid and isinstance(audited_keld_revision, str):
+            ancestry = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(REPO),
+                    "merge-base",
+                    "--is-ancestor",
+                    audited_keld_revision,
+                    publication_commit,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if ancestry.returncode != 0:
+                errors.append(
+                    f"{manifest_path}: audited KELD revision is not ancestor of publication commit"
+                )
+        repository_receipts = data.get("repository_commit_receipts")
+        if not isinstance(repository_receipts, list):
+            errors.append(f"{manifest_path}: repository_commit_receipts must be an array")
+            repository_receipts = []
+        receipts_by_repo: dict[str, dict] = {}
+        for receipt in repository_receipts:
+            if not isinstance(receipt, dict) or not isinstance(receipt.get("repository"), str):
+                errors.append(f"{manifest_path}: invalid repository commit receipt entry")
+                continue
+            repository = receipt["repository"]
+            if repository in receipts_by_repo:
+                errors.append(f"{manifest_path}: duplicate repository commit receipt: {repository}")
+                continue
+            receipts_by_repo[repository] = receipt
+        if set(receipts_by_repo) != set(revisions):
+            errors.append(f"{manifest_path}: repository receipt set differs from audited revisions")
+        for repository, revision in revisions.items():
+            if not isinstance(revision, str):
+                continue
+            receipt = receipts_by_repo.get(repository)
+            if receipt is None or receipt.get("revision") != revision:
+                errors.append(f"{manifest_path}: missing repository commit receipt for {repository}")
+                continue
+            rel = receipt.get("path")
+            if not isinstance(rel, str) or not rel.startswith("evidence/git/") or not rel.endswith(".gitobj"):
+                errors.append(f"{manifest_path}: invalid repository commit receipt path for {repository}")
+                continue
+            receipt_path = (ROOT / rel).resolve()
+            try:
+                receipt_path.relative_to(EVIDENCE / "git")
+            except ValueError:
+                errors.append(f"{manifest_path}: repository commit receipt escapes evidence/git")
+                continue
+            if not receipt_path.is_file():
+                errors.append(f"{manifest_path}: repository commit receipt missing: {rel}")
+                continue
+            compressed = receipt_path.read_bytes()
+            if receipt.get("sha256") != hashlib.sha256(compressed).hexdigest():
+                errors.append(f"{manifest_path}: repository commit receipt hash mismatch: {repository}")
+            try:
+                decompressor = zlib.decompressobj()
+                loose = decompressor.decompress(compressed) + decompressor.flush()
+                if (
+                    decompressor.unused_data
+                    or decompressor.unconsumed_tail
+                    or not decompressor.eof
+                ):
+                    errors.append(
+                        f"{manifest_path}: trailing or incomplete compressed Git object receipt: {repository}"
+                    )
+                    continue
+                header, payload = loose.split(b"\0", 1)
+            except (zlib.error, ValueError):
+                errors.append(f"{manifest_path}: invalid loose Git object receipt: {repository}")
+                continue
+            canonical_header = f"commit {len(payload)}".encode()
+            if header != canonical_header:
+                errors.append(f"{manifest_path}: malformed Git commit object receipt: {repository}")
+                continue
+            oid = hashlib.sha1(loose).hexdigest()
+            if oid != revision:
+                errors.append(f"{manifest_path}: repository receipt object id mismatch: {repository}")
 
         verification = data.get("verification")
         if not isinstance(verification, dict):
@@ -253,6 +568,13 @@ def main() -> int:
             actual_hash = sha256(receipt_path)
             if expected_hash != actual_hash:
                 errors.append(f"{manifest_path}: upstream receipt hash mismatch: {rel}")
+            if publication_valid and isinstance(expected_hash, str):
+                historical_path = receipt_path.relative_to(REPO).as_posix()
+                historical_receipt = git_bytes(publication_commit, historical_path)
+                if historical_receipt is None:
+                    errors.append(f"{manifest_path}: publication commit lacks upstream receipt")
+                elif hashlib.sha256(historical_receipt).hexdigest() != expected_hash:
+                    errors.append(f"{manifest_path}: upstream receipt differs from publication commit")
             if rel not in text:
                 errors.append(f"{manifest_path}: upstream receipt is not linked from report")
             try:
@@ -264,13 +586,23 @@ def main() -> int:
                 errors.append(f"{manifest_path}: unknown upstream receipt schema: {rel}")
             if receipt_data.get("retrieved_date") != data.get("audit_date"):
                 errors.append(f"{manifest_path}: upstream receipt date differs from audit date")
-            for item in receipt_data.get("receipts", []):
-                if not isinstance(item, dict) or not str(item.get("source_url", "")).startswith("https://"):
-                    errors.append(f"{manifest_path}: upstream source URL is not public HTTPS")
+            source_receipts = receipt_data.get("receipts")
+            if not isinstance(source_receipts, list) or not source_receipts:
+                errors.append(f"{manifest_path}: upstream receipt must contain source entries")
+                source_receipts = []
+            for item in source_receipts:
+                if not isinstance(item, dict):
+                    errors.append(f"{manifest_path}: upstream source receipt must be an object")
                     continue
+                if not isinstance(item.get("id"), str) or not item["id"].strip():
+                    errors.append(f"{manifest_path}: upstream receipt id is missing")
+                if not isinstance(item.get("claim"), str) or not item["claim"].strip():
+                    errors.append(f"{manifest_path}: upstream receipt claim is missing")
+                if not str(item.get("source_url", "")).startswith("https://"):
+                    errors.append(f"{manifest_path}: upstream source URL is not public HTTPS")
                 quote = item.get("bounded_quote")
-                if not isinstance(quote, str) or len(quote.split()) > 25:
-                    errors.append(f"{manifest_path}: upstream quote exceeds 25-word bound")
+                if not isinstance(quote, str) or not quote.strip() or len(quote.split()) > 25:
+                    errors.append(f"{manifest_path}: upstream quote must contain 1-25 words")
             receipt_text = receipt_path.read_text(encoding="utf-8")
             for marker in PRIVATE_MARKERS:
                 if marker in receipt_text:
@@ -283,23 +615,188 @@ def main() -> int:
         if not isinstance(corrections, list):
             errors.append(f"{manifest_path}: corrections must be an array")
             corrections = []
+
+        correction_dates: list[str] = []
+        for index, correction in enumerate(corrections):
+            if not isinstance(correction, dict):
+                errors.append(f"{manifest_path}: correction {index} must be an object")
+                continue
+            correction_date = correction.get("date")
+            if not isinstance(correction_date, str):
+                errors.append(f"{manifest_path}: correction {index} date is missing")
+                continue
+            try:
+                date.fromisoformat(correction_date)
+            except ValueError:
+                errors.append(f"{manifest_path}: correction {index} date is invalid")
+                continue
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", correction_date):
+                errors.append(f"{manifest_path}: correction {index} date is invalid")
+                continue
+            correction_dates.append(correction_date)
+        if correction_dates != sorted(correction_dates):
+            errors.append(f"{manifest_path}: correction dates are not ordered")
+
+        if publication_valid:
+            historical_states = historical_audit_states(
+                publication_commit, manifest_path, report
+            )
+            prior: list[object] = []
+            for commit, historical_data, historical_report in historical_states:
+                historical = historical_data.get("corrections")
+                if not isinstance(historical, list):
+                    errors.append(
+                        f"{manifest_path}: historical audit state has invalid corrections"
+                    )
+                    continue
+                if historical[: len(prior)] != prior:
+                    errors.append(
+                        f"{manifest_path}: historical correction list is not append-only"
+                    )
+                    break
+                if len(historical) > len(prior) + 1:
+                    errors.append(
+                        f"{manifest_path}: multiple corrections introduced in one commit"
+                    )
+
+                historical_report_hash = hashlib.sha256(
+                    historical_report
+                ).hexdigest()
+                historical_semantic_hash = manifest_semantic_sha256(
+                    historical_data
+                )
+                historical_report_changed = historical_report_hash != original
+                historical_semantic_changed = (
+                    original_manifest_semantic_hash is not None
+                    and historical_semantic_hash
+                    != original_manifest_semantic_hash
+                )
+                historical_requires_correction = (
+                    historical_report_changed or historical_semantic_changed
+                )
+                historical_text = historical_report.decode(
+                    "utf-8", errors="replace"
+                )
+                historical_errata = historical_text.split("## Errata", 1)[-1]
+                historical_dates = visible_errata_dates(historical_errata)
+                historical_correction_dates = [
+                    correction.get("date")
+                    for correction in historical
+                    if isinstance(correction, dict)
+                    and isinstance(correction.get("date"), str)
+                ]
+
+                if historical_requires_correction and not historical:
+                    errors.append(
+                        f"{manifest_path}: historical changed audit state lacks correction metadata"
+                    )
+                if not historical_requires_correction and historical:
+                    errors.append(
+                        f"{manifest_path}: historical unchanged audit state has corrections"
+                    )
+                if historical and historical_correction_dates != historical_dates:
+                    errors.append(
+                        f"{manifest_path}: historical correction dates differ from Errata headings"
+                    )
+
+                for index in range(len(prior), len(historical)):
+                    correction = historical[index]
+                    if not isinstance(correction, dict):
+                        errors.append(
+                            f"{manifest_path}: historical correction {index} is not an object"
+                        )
+                        continue
+                    if correction.get("report_sha256") != historical_report_hash:
+                        errors.append(
+                            f"{manifest_path}: historical correction {index} report hash is invalid"
+                        )
+                    if (
+                        correction.get("manifest_semantic_sha256")
+                        != historical_semantic_hash
+                    ):
+                        errors.append(
+                            f"{manifest_path}: historical correction {index} semantic hash is invalid"
+                        )
+                    correction_date = correction.get("date")
+                    if (
+                        not isinstance(correction_date, str)
+                        or correction_date not in historical_dates
+                    ):
+                        errors.append(
+                            f"{manifest_path}: historical correction {index} date is absent from Errata"
+                        )
+
+                if historical:
+                    latest = historical[-1]
+                    if isinstance(latest, dict):
+                        if latest.get("report_sha256") != historical_report_hash:
+                            errors.append(
+                                f"{manifest_path}: historical latest correction does not bind report state"
+                            )
+                        if (
+                            latest.get("manifest_semantic_sha256")
+                            != historical_semantic_hash
+                        ):
+                            errors.append(
+                                f"{manifest_path}: historical latest correction does not bind semantic state"
+                            )
+                prior = historical
+
+            if corrections[: len(prior)] != prior:
+                errors.append(f"{manifest_path}: correction history is not append-only")
+            if len(corrections) > len(prior) + 1:
+                errors.append(
+                    f"{manifest_path}: multiple corrections introduced in current state"
+                )
+
+        report_changed = current != original
+        manifest_semantic_changed = (
+            original_manifest_semantic_hash is not None
+            and current_manifest_semantic_hash != original_manifest_semantic_hash
+        )
+        correction_required = report_changed or manifest_semantic_changed
         if "## Errata" not in text:
             errors.append(f"{manifest_path}: report is missing Errata section")
-        elif current == original:
-            if corrections:
-                errors.append(f"{manifest_path}: original report cannot have corrections metadata")
         else:
             errata = text.split("## Errata", 1)[1]
-            if not corrections:
-                errors.append(f"{manifest_path}: changed report requires correction metadata")
-            if not re.search(r"^### \d{4}-\d{2}-\d{2}\b", errata, re.MULTILINE):
-                errors.append(f"{manifest_path}: changed report requires dated Errata heading")
-            if corrections:
-                last = corrections[-1]
-                if not isinstance(last, dict) or last.get("report_sha256") != current:
-                    errors.append(f"{manifest_path}: latest correction must bind current report hash")
-                elif last.get("date") not in errata:
-                    errors.append(f"{manifest_path}: latest correction date is absent from Errata")
+            errata_dates = visible_errata_dates(errata)
+            if corrections and correction_dates != errata_dates:
+                errors.append(
+                    f"{manifest_path}: correction dates differ from Errata headings"
+                )
+            if not correction_required:
+                if corrections:
+                    errors.append(
+                        f"{manifest_path}: unchanged audit cannot have corrections metadata"
+                    )
+            else:
+                if not corrections:
+                    if manifest_semantic_changed and not report_changed:
+                        errors.append(
+                            f"{manifest_path}: semantic manifest change requires correction metadata"
+                        )
+                    else:
+                        errors.append(
+                            f"{manifest_path}: changed audit requires correction metadata"
+                        )
+                if not errata_dates:
+                    errors.append(
+                        f"{manifest_path}: changed audit requires dated Errata heading"
+                    )
+                if corrections:
+                    last = corrections[-1]
+                    if isinstance(last, dict):
+                        if last.get("report_sha256") != current:
+                            errors.append(
+                                f"{manifest_path}: latest correction must bind current report hash"
+                            )
+                        if (
+                            last.get("manifest_semantic_sha256")
+                            != current_manifest_semantic_hash
+                        ):
+                            errors.append(
+                                f"{manifest_path}: latest correction must bind semantic manifest hash"
+                            )
 
     if not manifests:
         errors.append(f"{EVIDENCE}: no audit manifests found")

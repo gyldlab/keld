@@ -13,8 +13,11 @@ certifications and they do not make future revisions inherit old conclusions.
 | 2026-09-19 | [Full-Spectrum Technical Audit](2026-09-19-full-spectrum-technical-audit.md) | [`0ea0780bb574`](https://github.com/gyldlab/keld/commit/0ea0780bb574ad242e9f1105fa4af5842872bad3) | [manifest](evidence/2026-09-19-full-spectrum-technical-audit.json) | Published |
 
 Original snapshot: `2026-09-19-full-spectrum-technical-audit.md` · SHA-256 `6f4ff0ca989ece1fce0b1627b1ee80e1f91403b6510f4cdf35cb0cd9d8f88ecf`.
-Current report: `2026-09-19-full-spectrum-technical-audit.md` · SHA-256 `6f4ff0ca989ece1fce0b1627b1ee80e1f91403b6510f4cdf35cb0cd9d8f88ecf`.
-The original content address is permanent; an Errata updates only the current hash.
+Current report: `2026-09-19-full-spectrum-technical-audit.md` · SHA-256 `5197c742180ba4b2e61bd7ef797803162420f2308487c4717e8fc96959fa307c`.
+Publication anchor: [`74eb5bb3cd33`](https://github.com/gyldlab/keld/commit/74eb5bb3cd3304be80a3af2d746644a75b315675).
+The anchor stores the original report, manifest, and upstream-receipt bytes; an Errata updates only current hashes.
+Original manifest: `evidence/2026-09-19-full-spectrum-technical-audit.json` · SHA-256 `cf108bbc2cb408904b2d1253010380c63e6ae8a831f0bf02468d0fc2c14974a6`.
+Current manifest: `evidence/2026-09-19-full-spectrum-technical-audit.json` · SHA-256 `1cdf780ed2cb36c2dc546a1ca083eec9357571d924f7006910965949c600df55`.
 
 ## Publication contract
 
@@ -25,9 +28,11 @@ The original content address is permanent; an Errata updates only the current ha
   authoritative upstream documentation. Private research, private work-management state,
   local machine paths, secrets, and user-specific data are not publication evidence.
 - **Historical integrity.** A report is a snapshot. Later implementation changes require
-  a new dated audit. The registry's original snapshot hash is permanent.
-- **Corrections visible to readers.** Published corrections appear as dated `Errata`;
-  the original snapshot hash remains. The maintainer procedure is owned by
+  a new dated audit. Original hashes are permanent, and audit PRs use a history-preserving
+  merge so the publication anchor remains reachable from public `main`.
+- **Corrections visible to readers.** Published corrections are append-only dated
+  `Errata`; original hashes remain, while each correction binds the corrected report and
+  semantic evidence state. The maintainer procedure is owned by
   [`.agents/docs.md`](../../.agents/docs.md#public-technical-audits).
 - **Uncertainty stays visible.** `Unverified`, `planned`, and `partially demonstrated`
   are valid outcomes. A lack of an established critical finding is not proof that none
@@ -36,6 +41,8 @@ The original content address is permanent; an Errata updates only the current ha
   planned work may be named as context but are not counted as landed behavior.
 - **Machine-readable evidence.** The public verifier checks manifest/report/registry
   agreement for revisions, scope, verification counts, findings, hashes, and corrections.
+  Audited repository commits use zlib-compressed loose Git objects; their public commit
+  metadata is cryptographic repository evidence and is not treated as private coordination data.
 - **Validation.** [`verify.py`](verify.py) is the checker required by the maintainer procedure.
 
 ## Severity and confidence

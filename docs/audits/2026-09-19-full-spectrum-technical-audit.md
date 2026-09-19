@@ -494,4 +494,9 @@ to the evidence above.
 
 ## Errata
 
-No errata at publication.
+### 2026-09-19 — Publication evidence hardening
+
+Before the first merge to public `main`, the machine-readable evidence manifest and its
+verification metadata were hardened with immutable publication anchors, repository commit
+receipts, and stricter provenance checks. The audit findings, severities, confidence
+classifications, audited source revisions, and technical conclusions did not change.

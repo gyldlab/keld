@@ -1,8 +1,10 @@
 {
   "schema": "keld.public-audit-evidence/v1",
   "report": "../2026-09-19-full-spectrum-technical-audit.md",
+  "publication_commit": "74eb5bb3cd3304be80a3af2d746644a75b315675",
   "original_report_sha256": "6f4ff0ca989ece1fce0b1627b1ee80e1f91403b6510f4cdf35cb0cd9d8f88ecf",
-  "report_sha256": "6f4ff0ca989ece1fce0b1627b1ee80e1f91403b6510f4cdf35cb0cd9d8f88ecf",
+  "report_sha256": "5197c742180ba4b2e61bd7ef797803162420f2308487c4717e8fc96959fa307c",
+  "original_manifest_sha256": "cf108bbc2cb408904b2d1253010380c63e6ae8a831f0bf02468d0fc2c14974a6",
   "audit_date": "2026-09-19",
   "audit_provenance": "AI-assisted maintainer technical audit, not a third-party certification",
   "public_only": true,
@@ -118,13 +120,34 @@
     "https://github.com/gyldlab/keld/tree/0ea0780bb574ad242e9f1105fa4af5842872bad3",
     "https://github.com/gyldlab/keld-benches/tree/da36dd9b26a0f4134d53899818a877b9e2f0620b"
   ],
+  "repository_commit_receipts": [
+    {
+      "repository": "gyldlab/keld",
+      "revision": "0ea0780bb574ad242e9f1105fa4af5842872bad3",
+      "path": "evidence/git/keld-0ea0780b.gitobj",
+      "sha256": "7188c728640a6e1c6e4c43a4a2a71ee360b63aa99180e28bb612f907b6437279"
+    },
+    {
+      "repository": "gyldlab/keld-benches",
+      "revision": "da36dd9b26a0f4134d53899818a877b9e2f0620b",
+      "path": "evidence/git/keld-benches-da36dd9b.gitobj",
+      "sha256": "c4d6b08f6a5b738e9fa4a25472ed82a0a929f784d7b7e03b587dbe0343243479"
+    }
+  ],
   "upstream_receipts": [
     {
       "path": "evidence/upstream/2026-09-19-platform-semantics.json",
       "sha256": "73c5fe8a7ea99b6f0e72480f14e2f1087c7b93aab6a4b42ada7c650aec72d062"
     }
   ],
-  "corrections": [],
+  "corrections": [
+    {
+      "date": "2026-09-19",
+      "reason": "Publication evidence hardening before first merge to public main; audit conclusions unchanged.",
+      "report_sha256": "5197c742180ba4b2e61bd7ef797803162420f2308487c4717e8fc96959fa307c",
+      "manifest_semantic_sha256": "790c32fb6ba71f7ab5b7f2501853186584194d56f882544b55ec4e4690f29f55"
+    }
+  ],
   "notes": [
     "Open pull requests were context only and were not counted as landed capability.",
     "No S0 or S1 finding was established; this does not prove that none exists.",
