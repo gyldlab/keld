@@ -1723,10 +1723,17 @@ fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn powershell_active_statements(text: &str) -> Vec<String> {
+#[derive(Debug, PartialEq, Eq)]
+struct PowerShellStatement {
+    text: String,
+    depth: usize,
+}
+
+fn powershell_active_statements(text: &str) -> Vec<PowerShellStatement> {
     let mut statements = Vec::new();
     let mut block_comment = false;
     let mut here_end: Option<&str> = None;
+    let mut depth = 0_usize;
     for line in text.lines() {
         let trimmed = line.trim();
         if let Some(end) = here_end {
@@ -1749,6 +1756,7 @@ fn powershell_active_statements(text: &str) -> Vec<String> {
         let mut single_quoted = false;
         let mut double_quoted = false;
         let mut escaped = false;
+        let depth_before = depth;
         while let Some(character) = chars.next() {
             let next = chars.peek().copied();
             if block_comment {
@@ -1786,11 +1794,21 @@ fn powershell_active_statements(text: &str) -> Vec<String> {
             if !single_quoted && !double_quoted && character == '#' {
                 break;
             }
+            if !single_quoted && !double_quoted {
+                if character == '{' {
+                    depth = depth.saturating_add(1);
+                } else if character == '}' {
+                    depth = depth.saturating_sub(1);
+                }
+            }
             code.push(character);
         }
         let code = code.trim();
         if !code.is_empty() {
-            statements.push(code.to_owned());
+            statements.push(PowerShellStatement {
+                text: code.to_owned(),
+                depth: depth_before,
+            });
         }
     }
     statements
@@ -1799,32 +1817,106 @@ fn powershell_active_statements(text: &str) -> Vec<String> {
 fn check_windows_profile_regression_oracle(root: &Path) -> Result<(), String> {
     let oracle = read(root, WINDOWS_MEDIA_ORACLE)?;
     let statements = powershell_active_statements(&oracle);
+    let mut expected_function = vec![
+        ("function Invoke-ProfileRegressionCases {".to_owned(), 0),
+        ("param([string]$Binary, [string]$EvidenceRoot)".to_owned(), 1),
+        ("$cases = @(".to_owned(), 1),
+    ];
     for (index, test) in WINDOWS_PROFILE_REGRESSION_TESTS.iter().enumerate() {
         let comma = if index + 1 == WINDOWS_PROFILE_REGRESSION_TESTS.len() {
             ""
         } else {
             ","
         };
-        let expected = format!("'{test}'{comma}");
-        if statements.iter().filter(|line| **line == expected).count() != 1 {
-            return Err(format!(
-                "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must run the exact ignored Windows profile regression `{test}` once."
-            ));
-        }
+        expected_function.push((format!("'{test}'{comma}"), 1));
     }
-    for required in [
-        "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
-        "if ($profileRegressionCount -ne 5) {",
-        "$execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000",
-        "if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or",
-        "function Invoke-ProfileRegressionCases {",
-        "foreach ($case in $cases) {",
-    ] {
-        if statements.iter().filter(|line| line.as_str() == required).count() != 1 {
-            return Err(format!(
-                "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact bounded, failure-preserving profile regression runner `{required}`."
-            ));
-        }
+    expected_function.extend([
+        (")".to_owned(), 1),
+        ("foreach ($case in $cases) {".to_owned(), 1),
+        (
+            "$stdoutPath = Join-Path $EvidenceRoot \"profile-$case.log\"".to_owned(),
+            2,
+        ),
+        (
+            "$stderrPath = Join-Path $EvidenceRoot \"profile-$case.stderr.log\"".to_owned(),
+            2,
+        ),
+        ("$start = [Diagnostics.ProcessStartInfo]::new()".to_owned(), 2),
+        ("$start.FileName = $Binary".to_owned(), 2),
+        (
+            "$start.Arguments = \"webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1\"".to_owned(),
+            2,
+        ),
+        ("$start.UseShellExecute = $false".to_owned(), 2),
+        ("$start.CreateNoWindow = $true".to_owned(), 2),
+        ("$start.RedirectStandardOutput = $true".to_owned(), 2),
+        ("$start.RedirectStandardError = $true".to_owned(), 2),
+        (
+            "$execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000".to_owned(),
+            2,
+        ),
+        (
+            "if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or".to_owned(),
+            2,
+        ),
+        (
+            "-not $execution.stdout_text.Contains(\"test webview2::media_acceptance::tests::$case\") -or".to_owned(),
+            2,
+        ),
+        (
+            "-not $execution.stdout_text.Contains('test result: ok. 1 passed; 0 failed')) {".to_owned(),
+            2,
+        ),
+        (
+            "throw \"Windows profile regression failed: $case; outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)\"".to_owned(),
+            3,
+        ),
+        ("}".to_owned(), 3),
+        (
+            "[Console]::Out.WriteLine(\"KELD_PROFILE_REGRESSION case=$case exit=0 stdout_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()) stderr_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant())\")".to_owned(),
+            2,
+        ),
+        ("}".to_owned(), 2),
+        ("$cases.Count".to_owned(), 1),
+        ("}".to_owned(), 1),
+    ]);
+    let function_bound = statements.windows(expected_function.len()).any(|window| {
+        window
+            .iter()
+            .zip(&expected_function)
+            .all(|(actual, (text, depth))| actual.text == *text && actual.depth == *depth)
+    });
+    let expected_call = [
+        (
+            "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
+            0,
+        ),
+        (
+            "$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot",
+            0,
+        ),
+        (
+            "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
+            0,
+        ),
+        ("if ($profileRegressionCount -ne 5) {", 0),
+        (
+            "throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"",
+            1,
+        ),
+        ("}", 1),
+        ("$results = @()", 0),
+    ];
+    let call_bound = statements.windows(expected_call.len()).any(|window| {
+        window
+            .iter()
+            .zip(expected_call)
+            .all(|(actual, (text, depth))| actual.text == text && actual.depth == depth)
+    });
+    if !function_bound || !call_bound {
+        return Err(format!(
+            "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact top-level, bounded, failure-preserving five-case Windows profile regression function and invocation."
+        ));
     }
     Ok(())
 }
@@ -2441,7 +2533,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",\n");
         format!(
-            "function Invoke-ProfileRegressionCases {{\n    $cases = @(\n{cases}\n    )\n    foreach ($case in $cases) {{\n        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000\n        if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or\n            -not $execution.stdout_text) {{\n            throw 'failed'\n        }}\n    }}\n}}\n$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\nif ($profileRegressionCount -ne 5) {{\n    throw 'wrong count'\n}}\n"
+            "function Invoke-ProfileRegressionCases {{\n    param([string]$Binary, [string]$EvidenceRoot)\n    $cases = @(\n{cases}\n    )\n    foreach ($case in $cases) {{\n        $stdoutPath = Join-Path $EvidenceRoot \"profile-$case.log\"\n        $stderrPath = Join-Path $EvidenceRoot \"profile-$case.stderr.log\"\n        $start = [Diagnostics.ProcessStartInfo]::new()\n        $start.FileName = $Binary\n        $start.Arguments = \"webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1\"\n        $start.UseShellExecute = $false\n        $start.CreateNoWindow = $true\n        $start.RedirectStandardOutput = $true\n        $start.RedirectStandardError = $true\n        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000\n        if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or\n            -not $execution.stdout_text.Contains(\"test webview2::media_acceptance::tests::$case\") -or\n            -not $execution.stdout_text.Contains('test result: ok. 1 passed; 0 failed')) {{\n            throw \"Windows profile regression failed: $case; outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)\"\n        }}\n        [Console]::Out.WriteLine(\"KELD_PROFILE_REGRESSION case=$case exit=0 stdout_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()) stderr_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant())\")\n    }}\n    $cases.Count\n}}\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot\n$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot\n$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\nif ($profileRegressionCount -ne 5) {{\n    throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"\n}}\n$results = @()\n"
         )
     }
 
@@ -4210,6 +4302,30 @@ mod tests {
             let error = check(temp.path()).expect_err("weakened profile regression gate must fail");
             assert!(error.contains("profile regression"), "{needle}: {error}");
         }
+
+        let temp = complete_fixture();
+        let oracle = read(temp.path(), WINDOWS_MEDIA_ORACLE).expect("media oracle fixture");
+        let live = concat!(
+            "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\n",
+            "if ($profileRegressionCount -ne 5) {\n",
+            "    throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"\n",
+            "}\n",
+        );
+        let unreachable = concat!(
+            "$profileRegressionCount = 5\n",
+            "if ($false) {\n",
+            "    $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\n",
+            "    if ($profileRegressionCount -ne 5) {\n",
+            "        throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"\n",
+            "    }\n",
+            "}\n",
+        );
+        temp.write(
+            WINDOWS_MEDIA_ORACLE,
+            &oracle.replacen(live, unreachable, 1),
+        );
+        let error = check(temp.path()).expect_err("unreachable profile invocation must fail");
+        assert!(error.contains("profile regression"), "{error}");
     }
 
     #[test]
