@@ -258,6 +258,18 @@ mod tests {
         let html = fs::read_to_string(root.join("index.html")).expect("html");
         assert!(html.contains("<title>demo</title>"), "{html}");
         assert!(html.contains("<h1>demo</h1>"), "{html}");
+        assert!(
+            html.contains("background: #000;"),
+            "created launch HTML must default to a true-black background: {html}"
+        );
+        assert!(
+            html.contains("color-scheme: dark;"),
+            "created launch HTML must advertise a dark color scheme: {html}"
+        );
+        assert!(
+            html.contains("color: #fff;"),
+            "created launch HTML must keep text readable on black: {html}"
+        );
         assert!(!html.contains("{{name}}"), "{html}");
 
         let main = fs::read_to_string(root.join("src/main.ts")).expect("main");
