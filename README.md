@@ -15,7 +15,7 @@ in another language**.
 
 [Run the demo](#run-the-demo) · [How it works](#how-it-works) ·
 [Coming from Electron](#coming-from-electron) · [Benchmarks](#early-benchmarks) ·
-[Docs](docs/onboarding/README.md) · [Roadmap](ROADMAP.md)
+[Docs](docs/onboarding/README.md) · [Audits](docs/audits/README.md) · [Roadmap](ROADMAP.md)
 
 ## Early benchmarks
 
@@ -252,6 +252,7 @@ Built by [GYLDLAB](https://github.com/gyldlab), in the open.
 | Run or troubleshoot an app | [Onboarding](docs/onboarding/README.md) · [Error reference](docs/engineering/keld-error-codes.md) |
 | Understand the runtime | [Architecture overview](docs/architecture/01-overview.md) |
 | Explore performance | [KELD Benches](https://github.com/gyldlab/keld-benches) |
+| Review technical audits | [Public audit registry](docs/audits/README.md) |
 | Work with a coding agent | [llms.txt](llms.txt) · [Local read-only MCP server setup](docs/onboarding/07-mcp-server.md) |
 | Make a contribution | [Contributing](CONTRIBUTING.md) · [Open issues](https://github.com/gyldlab/keld/issues) |
 

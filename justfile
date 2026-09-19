@@ -14,7 +14,7 @@ hello:
 
 # Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test hooks-test doc-placeholders-test doc-placeholders-check mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
 
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:
@@ -83,6 +83,11 @@ agents-md:
     done
     if [[ "$fail" -ne 0 ]]; then exit 1; fi
     echo "agents-md ok"
+
+# Public audit registry: fail closed on historical/report/evidence drift.
+audit-docs:
+    {{python_command}} -B docs/audits/verify.py
+    {{python_command}} -B docs/audits/test_verify.py
 
 # KEL-145: one canonical atomic problem-solving protocol plus narrow references.
 atomic-protocol:

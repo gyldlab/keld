@@ -471,6 +471,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05
         with:
@@ -507,6 +508,11 @@ jobs:
         run: |
           rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
           target/ci-hygiene/ci-hygiene check .
+      - name: Public audit registry contracts
+        if: needs.changes.outputs.docs == 'true'
+        run: |
+          python3 -B docs/audits/verify.py
+          python3 -B docs/audits/test_verify.py
       - name: llms contracts
         if: needs.changes.outputs.docs == 'true'
         run: |
