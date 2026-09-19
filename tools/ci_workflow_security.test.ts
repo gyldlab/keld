@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { checkWorkflowSecurity } from "./ci_workflow_security";
+import { checkWindowsMediaOracle, checkWorkflowSecurity } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
 type FixtureJob = {
@@ -12,6 +12,7 @@ type FixtureJob = {
 };
 type Fixture = { jobs: Record<string, FixtureJob> };
 const source = readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8");
+const windowsMediaOracle = readFileSync(join(import.meta.dir, "../crates/keld-wv/tests/windows_media_guard.ps1"));
 const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 
 function fixture(): Fixture {
@@ -29,6 +30,12 @@ function check(f: Fixture): void { checkWorkflowSecurity(Bun.YAML.stringify(f, n
 
 test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
+});
+
+test("Windows media oracle matches its reviewed full-file digest", () => {
+  expect(() => checkWindowsMediaOracle(windowsMediaOracle)).not.toThrow();
+  const mutated = Buffer.concat([windowsMediaOracle, Buffer.from("\n# inert override\n")]);
+  expect(() => checkWindowsMediaOracle(mutated)).toThrow("reviewed SHA-256 owner");
 });
 
 for (const language of ["rust", "javascript-typescript", "actions"]) {

@@ -20,7 +20,6 @@ const AGENT_CONTEXT_CHECKER: &str = "tools/agent_context.rs";
 const GITIGNORE: &str = ".gitignore";
 const JUSTFILE: &str = "justfile";
 const NEXTEST_CONFIG: &str = ".config/nextest.toml";
-const WINDOWS_MEDIA_ORACLE: &str = "crates/keld-wv/tests/windows_media_guard.ps1";
 const MERMAID_CHECKER: &str = "tools/mermaid_docs.rs";
 const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
@@ -217,14 +216,6 @@ const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
     "}",
     "$invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch $hashPattern -or $_.stderr_sha256 -cnotmatch $hashPattern })",
     "if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }",
-];
-
-const WINDOWS_PROFILE_REGRESSION_TESTS: &[&str] = &[
-    "windows_com_engine_lifetime_subprocess",
-    "windows_dev_profile_cleanup_subprocess",
-    "windows_busy_ephemeral_scavenge_subprocess",
-    "windows_persistent_recovery_subprocess",
-    "windows_saved_media_reconciliation_subprocess",
 ];
 
 const FUZZ_WORKSPACE_COMMANDS: &[&str] =
@@ -1723,242 +1714,6 @@ fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct PowerShellStatement {
-    text: String,
-    depth: usize,
-}
-
-fn powershell_active_statements(text: &str) -> Vec<PowerShellStatement> {
-    let mut statements = Vec::new();
-    let mut block_comment = false;
-    let mut here_end: Option<&str> = None;
-    let mut depth = 0_usize;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(end) = here_end {
-            if trimmed == end {
-                here_end = None;
-            }
-            continue;
-        }
-        if trimmed.ends_with("@'") {
-            here_end = Some("'@");
-            continue;
-        }
-        if trimmed.ends_with("@\"") {
-            here_end = Some("\"@");
-            continue;
-        }
-
-        let mut code = String::new();
-        let mut chars = line.chars().peekable();
-        let mut single_quoted = false;
-        let mut double_quoted = false;
-        let mut escaped = false;
-        let depth_before = depth;
-        while let Some(character) = chars.next() {
-            let next = chars.peek().copied();
-            if block_comment {
-                if character == '#' && next == Some('>') {
-                    let _ = chars.next();
-                    block_comment = false;
-                }
-                continue;
-            }
-            if !single_quoted && !double_quoted && character == '<' && next == Some('#') {
-                let _ = chars.next();
-                block_comment = true;
-                continue;
-            }
-            if escaped {
-                code.push(character);
-                escaped = false;
-                continue;
-            }
-            if double_quoted && character == '`' {
-                code.push(character);
-                escaped = true;
-                continue;
-            }
-            if !double_quoted && character == '\'' {
-                single_quoted = !single_quoted;
-                code.push(character);
-                continue;
-            }
-            if !single_quoted && character == '"' {
-                double_quoted = !double_quoted;
-                code.push(character);
-                continue;
-            }
-            if !single_quoted && !double_quoted && character == '#' {
-                break;
-            }
-            if !single_quoted && !double_quoted {
-                if character == '{' {
-                    depth = depth.saturating_add(1);
-                } else if character == '}' {
-                    depth = depth.saturating_sub(1);
-                }
-            }
-            code.push(character);
-        }
-        let code = code.trim();
-        if !code.is_empty() {
-            statements.push(PowerShellStatement {
-                text: code.to_owned(),
-                depth: depth_before,
-            });
-        }
-    }
-    statements
-}
-
-fn check_windows_profile_regression_oracle(root: &Path) -> Result<(), String> {
-    let oracle = read(root, WINDOWS_MEDIA_ORACLE)?;
-    let statements = powershell_active_statements(&oracle);
-    let mut expected_function = vec![
-        ("function Invoke-ProfileRegressionCases {".to_owned(), 0),
-        ("param([string]$Binary, [string]$EvidenceRoot)".to_owned(), 1),
-        ("$cases = @(".to_owned(), 1),
-    ];
-    for (index, test) in WINDOWS_PROFILE_REGRESSION_TESTS.iter().enumerate() {
-        let comma = if index + 1 == WINDOWS_PROFILE_REGRESSION_TESTS.len() {
-            ""
-        } else {
-            ","
-        };
-        expected_function.push((format!("'{test}'{comma}"), 1));
-    }
-    expected_function.extend([
-        (")".to_owned(), 1),
-        ("foreach ($case in $cases) {".to_owned(), 1),
-        (
-            "$stdoutPath = Join-Path $EvidenceRoot \"profile-$case.log\"".to_owned(),
-            2,
-        ),
-        (
-            "$stderrPath = Join-Path $EvidenceRoot \"profile-$case.stderr.log\"".to_owned(),
-            2,
-        ),
-        ("$start = [Diagnostics.ProcessStartInfo]::new()".to_owned(), 2),
-        ("$start.FileName = $Binary".to_owned(), 2),
-        (
-            "$start.Arguments = \"webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1\"".to_owned(),
-            2,
-        ),
-        ("$start.UseShellExecute = $false".to_owned(), 2),
-        ("$start.CreateNoWindow = $true".to_owned(), 2),
-        ("$start.RedirectStandardOutput = $true".to_owned(), 2),
-        ("$start.RedirectStandardError = $true".to_owned(), 2),
-        (
-            "$execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000".to_owned(),
-            2,
-        ),
-        (
-            "if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or".to_owned(),
-            2,
-        ),
-        (
-            "-not $execution.stdout_text.Contains(\"test webview2::media_acceptance::tests::$case\") -or".to_owned(),
-            2,
-        ),
-        (
-            "-not $execution.stdout_text.Contains('test result: ok. 1 passed; 0 failed')) {".to_owned(),
-            2,
-        ),
-        (
-            "throw \"Windows profile regression failed: $case; outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)\"".to_owned(),
-            3,
-        ),
-        ("}".to_owned(), 3),
-        (
-            "[Console]::Out.WriteLine(\"KELD_PROFILE_REGRESSION case=$case exit=0 stdout_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()) stderr_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant())\")".to_owned(),
-            2,
-        ),
-        ("}".to_owned(), 2),
-        ("$cases.Count".to_owned(), 1),
-        ("}".to_owned(), 1),
-        ("$ErrorActionPreference = 'Stop'".to_owned(), 0),
-        (
-            "$sourceBinary = (Resolve-Path -LiteralPath $BinaryPath).Path".to_owned(),
-            0,
-        ),
-        (
-            "$evidenceRoot = [IO.Path]::GetFullPath($EvidenceDirectory)".to_owned(),
-            0,
-        ),
-        ("if (Test-Path -LiteralPath $evidenceRoot) {".to_owned(), 0),
-        (
-            "throw 'Evidence directory must be new; previous results must not be overwritten.'"
-                .to_owned(),
-            1,
-        ),
-        ("}".to_owned(), 1),
-        (
-            "[void](New-Item -ItemType Directory -Path $evidenceRoot)".to_owned(),
-            0,
-        ),
-        (
-            "$binary = Join-Path $evidenceRoot 'keld_wv_media_test.exe'".to_owned(),
-            0,
-        ),
-        (
-            "Copy-Item -LiteralPath $sourceBinary -Destination $binary".to_owned(),
-            0,
-        ),
-        (
-            "$sourceBinaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceBinary).Hash.ToLowerInvariant()".to_owned(),
-            0,
-        ),
-        (
-            "$binaryHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLowerInvariant()".to_owned(),
-            0,
-        ),
-        ("if ($binaryHash -ne $sourceBinaryHash) {".to_owned(), 0),
-        (
-            "throw \"Fixture executable copy mismatch: source=$sourceBinaryHash evidence=$binaryHash\"".to_owned(),
-            1,
-        ),
-        ("}".to_owned(), 1),
-        (
-            "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot".to_owned(),
-            0,
-        ),
-        (
-            "$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot".to_owned(),
-            0,
-        ),
-        (
-            "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot".to_owned(),
-            0,
-        ),
-        ("if ($profileRegressionCount -ne 5) {".to_owned(), 0),
-        (
-            "throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"".to_owned(),
-            1,
-        ),
-        ("}".to_owned(), 1),
-        ("$results = @()".to_owned(), 0),
-    ]);
-    let oracle_bound = statements.windows(expected_function.len()).any(|window| {
-        window
-            .iter()
-            .zip(&expected_function)
-            .all(|(actual, (text, depth))| actual.text == *text && actual.depth == *depth)
-    });
-    let function_identity_count = statements
-        .iter()
-        .filter(|statement| statement.text.contains("Invoke-ProfileRegressionCases"))
-        .count();
-    if !oracle_bound || function_identity_count != 2 {
-        return Err(format!(
-            "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact top-level, bounded, failure-preserving five-case Windows profile regression function and invocation."
-        ));
-    }
-    Ok(())
-}
-
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -2463,7 +2218,6 @@ fn check(root: &Path) -> Result<(), String> {
     check_pr_template(root)?;
     check_issue_templates(root)?;
     check_workflow(root)?;
-    check_windows_profile_regression_oracle(root)?;
     check_keldbot_workflow(root)?;
     check_mermaid_gate_files(root)?;
     Ok(())
@@ -2562,10 +2316,6 @@ mod tests {
         format!(
             "      - name: Windows media guard acceptance (KEL-132)\n        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n        shell: pwsh\n        run: |\n{commands}"
         )
-    }
-
-    fn valid_windows_media_oracle() -> String {
-        include_str!("../crates/keld-wv/tests/windows_media_guard.ps1").to_owned()
     }
 
     // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
@@ -2799,7 +2549,6 @@ mod tests {
             "name: Bug\nbody:\n  - type: markdown\n",
         );
         temp.write(WORKFLOW, &valid_workflow());
-        temp.write(WINDOWS_MEDIA_ORACLE, &valid_windows_media_oracle());
         temp.write(KELDBOT_WORKFLOW, &valid_keldbot_workflow());
         temp.write(CI_REQUIRED_EVALUATOR, "#!/usr/bin/env bash\nexit 0\n");
         temp.write(ATOMIC_PROTOCOL_CHECKER, "fn main() {}\n");
@@ -4298,77 +4047,6 @@ mod tests {
             let error = check(temp.path()).expect_err("inert Windows media command must fail");
             assert!(error.contains("KEL-132"), "{needle}: {error}");
         }
-    }
-
-    #[test]
-    fn windows_profile_regressions_cannot_be_omitted_or_unbounded() {
-        for (needle, replacement) in [
-            ("windows_persistent_recovery_subprocess", "echo skipped-recovery"),
-            (
-                "        'windows_dev_profile_cleanup_subprocess',",
-                "        # 'windows_dev_profile_cleanup_subprocess',",
-            ),
-            (
-                "        'windows_busy_ephemeral_scavenge_subprocess',",
-                "        $decoy = 'windows_busy_ephemeral_scavenge_subprocess',",
-            ),
-            (
-                "        'windows_com_engine_lifetime_subprocess',",
-                "        $decoy = @'\nwindows_com_engine_lifetime_subprocess\n'@",
-            ),
-            (
-                "Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
-                "Write-Output skipped-profile-regressions",
-            ),
-            (
-                "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
-                "$profileRegressionCount = 5 # Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
-            ),
-            ("if ($profileRegressionCount -ne 5)", "if ($false)"),
-            ("-DeadlineMilliseconds 90000", "-DeadlineMilliseconds 0"),
-            (
-                "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
-                "function Invoke-ProfileRegressionCases { return 5 }\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
-            ),
-            (
-                "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
-                "Set-Item Function:Invoke-ProfileRegressionCases { return 5 }\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
-            ),
-            (
-                "$ErrorActionPreference = 'Stop'",
-                "$functionPath = 'Function:\\Invoke-' + 'ProfileRegressionCases'\nSet-Item -Path $functionPath -Value { 5 }\n$ErrorActionPreference = 'Stop'",
-            ),
-        ] {
-            let temp = complete_fixture();
-            let oracle = read(temp.path(), WINDOWS_MEDIA_ORACLE).expect("media oracle fixture");
-            temp.write(WINDOWS_MEDIA_ORACLE, &oracle.replacen(needle, replacement, 1));
-            let error = check(temp.path()).expect_err("weakened profile regression gate must fail");
-            assert!(error.contains("profile regression"), "{needle}: {error}");
-        }
-
-        let temp = complete_fixture();
-        let oracle = read(temp.path(), WINDOWS_MEDIA_ORACLE).expect("media oracle fixture");
-        let live = concat!(
-            "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\n",
-            "if ($profileRegressionCount -ne 5) {\n",
-            "    throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"\n",
-            "}\n",
-        );
-        let unreachable = concat!(
-            "$profileRegressionCount = 5\n",
-            "if ($false) {\n",
-            "    $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\n",
-            "    if ($profileRegressionCount -ne 5) {\n",
-            "        throw \"Expected five Windows profile regressions, observed $profileRegressionCount\"\n",
-            "    }\n",
-            "}\n",
-        );
-        temp.write(
-            WINDOWS_MEDIA_ORACLE,
-            &oracle.replacen(live, unreachable, 1),
-        );
-        let error = check(temp.path()).expect_err("unreachable profile invocation must fail");
-        assert!(error.contains("profile regression"), "{error}");
     }
 
     #[test]
