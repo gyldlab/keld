@@ -516,7 +516,7 @@ without a spec change.
 |---|---|---|---|
 | `keld.config.ts` | App identity, windows, runtime choice, engine policy, dev server | `keld migrate` / `create-keld` | **Partial** — the macOS/Windows dev compiler reads `name`, `entry`, and `renderer`; the full schema is absent, and the no-flag host consumes only compiled `keld.boot.json` |
 | `keld.permissions.jsonc` | Capability manifest — see [`03` §2](../architecture/03-security.md) | `keld migrate` + the doctor recorder | **No** |
-| `keld.build.ts` | Packaging: targets, signing, update feed, delta settings | `keld migrate`, from electron-builder config | **No** |
+| `keld.build.ts` | Packaging: targets, signing, full update feed, optional delta settings | `keld migrate`, from electron-builder config | **No** |
 | `keld.compat.ts` | Compat switches: quirks flags, `sendSync` policy, shim logging | `keld migrate`, migrated apps only | **No** |
 
 Two more files are *edited* rather than owned: `package.json` (scripts and `@keld/*` deps replacing

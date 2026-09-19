@@ -235,16 +235,31 @@ manifest decoder.
    injection,
    `keld://` isolation, navigation allow-lists, remote-content `channels: []`,
    and `web.devtools` are not in this slice.
-4. **Supply chain**: CLI adopts a 24 h `min-release-age` for template deps (Deno 2.9
-   lesson); host binaries + updates are ed25519-signed with a TUF-style rotating root;
-   `keld.lock` pins host/Bun/polyfill-pack versions.
+4. **Supply-chain destination**: the planned CLI uses a 24 h `min-release-age` for
+   template dependencies, while `keld.lock` pins host/Bun/polyfill-pack versions. The
+   v0 update contract selects one compiled-in ed25519 key; a TUF-style rotating root
+   remains later target behavior and requires a wire/trust review.
 
-## 5. Update security
+## 5. Update security (specified, not implemented)
 
-Update manifests signed (ed25519, key in `keld.build.ts` → CI secret); patches carry
-full-file BLAKE3 post-conditions (a bad/malicious diff cannot produce an unverified
-binary); rollback keeps N-1 with the same verification; channel pinning
-(stable/beta/canary) in the manifest. Threat model documented in `keld-update` crate docs.
+The repository currently has only the `keld-update::Channel` skeleton; it has no
+manifest verifier, activation journal, health owner, rollback engine or feed client.
+The following is the reviewed destination contract. V0 update manifests are signed with
+ed25519 and verified by the host's compiled-in public key. Every release has a bounded
+full package whose transport and canonical
+content have separate BLAKE3 checks; optional later deltas must reconstruct that same
+full-content digest. Protected installer provenance, rather than path heuristics,
+decides whether the direct updater owns the installation channel and records an
+admitted strict/distinct-OS-principal profile. Legacy same-user role mode refuses direct
+update. The host keeps the
+semantic-version trust floor separate from `current`, an exact attempt journal and
+`last-known-good`; candidate health cannot advance LKG unless its private receipt
+matches the journaled attempt and artifact. The optional signed Windows helper consumes
+only protected journal/handle inputs after the host exits. In the admitted profile,
+application roles and webviews cannot write this state. Administrators and arbitrary
+same-user native malware on an already compromised host account remain outside this
+boundary. Architecture 06
+§4a owns exact ordering, recovery and package-cell admission.
 
 ## 6. What we deliberately do NOT promise (honesty ledger)
 
