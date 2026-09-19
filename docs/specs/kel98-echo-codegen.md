@@ -45,8 +45,9 @@ existing Rust structs to remove today's duplicate hand-written interfaces. The a
 PR records that proposal without changing current implementation status. It does not
 change the eventual `@keld/schema` authoring direction.
 
-KEL-98's original “TS types + client stub” acceptance is satisfied by binding the
-already-live `AppLinkSession.echo` client stub to the generated Rust-owned payload types.
+KEL-98's original “TS types + client stub” acceptance will be satisfied by the
+implementation PR binding the already-live `AppLinkSession.echo` client stub to the
+generated Rust-owned payload types.
 The generator must not emit a second client method/interface whose operation name or
 request/response pairing is absent from its canonical Rust input.
 
