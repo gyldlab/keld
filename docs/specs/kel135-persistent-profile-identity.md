@@ -70,7 +70,11 @@ changes the public engine-construction boundary.
   `FOLDERID_LocalAppData` is a per-user known folder.
 - Microsoft, [`WinVerifyTrust`](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust):
   Windows T2 validates the packaged object under Authenticode policy before extracting
-  its signer scope and signed app manifest.
+  its signer scope and signed app-id carrier.
+- Microsoft, [`CMSG_SIGNER_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-cmsg_signer_info)
+  and [SignTool](https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool):
+  `AuthAttrs` contains the signer's authenticated attributes, and SignTool `/d` supplies
+  the signed-content description used by the Windows carrier below.
 - Apple, [`WKWebsiteDataStore`](https://developer.apple.com/documentation/webkit/wkwebsitedatastore):
   default is persistent, nonpersistent is memory-only, and identifier-addressed stores
   provide persistent profiles.
@@ -306,6 +310,17 @@ container and the app id it covers:
 - Linux: `SHA-256("keld.publisher.linux/v1\0" || ed25519_public_key)` after a detached
   Ed25519 signature verifies the literal package-manifest bytes containing `app.id`
   against the installer-pinned key.
+
+Windows T2 freezes that package relationship as exactly one primary Authenticode
+signature whose authenticated `SPC_SP_OPUS_INFO` program name is
+`keld.app-id/v1:<canonical-app-id>`. The packager supplies the exact value through
+SignTool `/d` before the signature is produced. Core verifies the current executable
+with `WINTRUST_ACTION_GENERIC_VERIFY_V2`, retains the provider state, derives publisher
+scope from the primary signer's leaf-certificate SPKI DER, and decodes the program name
+from that same signer's authenticated attributes before closing the state. Missing,
+duplicate, malformed, unsigned, untrusted, multi-primary-signer, noncanonical, or
+over-255-byte inputs fail with `KELD-WV-009`; no version resource, executable name,
+sidecar, config, page, or Bun value is a fallback carrier.
 
 `ProfileIdentity` is SHA-256 over the exact length-delimited byte sequence
 `"keld.profile.identity/v1\0" || publisher_scope || u16be(app_id.len) || app_id`.
