@@ -1913,7 +1913,11 @@ fn check_windows_profile_regression_oracle(root: &Path) -> Result<(), String> {
             .zip(expected_call)
             .all(|(actual, (text, depth))| actual.text == text && actual.depth == depth)
     });
-    if !function_bound || !call_bound {
+    let function_identity_count = statements
+        .iter()
+        .filter(|statement| statement.text.contains("Invoke-ProfileRegressionCases"))
+        .count();
+    if !function_bound || !call_bound || function_identity_count != 2 {
         return Err(format!(
             "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact top-level, bounded, failure-preserving five-case Windows profile regression function and invocation."
         ));
@@ -4295,6 +4299,14 @@ mod tests {
             ),
             ("if ($profileRegressionCount -ne 5)", "if ($false)"),
             ("-DeadlineMilliseconds 90000", "-DeadlineMilliseconds 0"),
+            (
+                "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
+                "function Invoke-ProfileRegressionCases { return 5 }\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
+            ),
+            (
+                "$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
+                "Set-Item Function:Invoke-ProfileRegressionCases { return 5 }\n$watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot",
+            ),
         ] {
             let temp = complete_fixture();
             let oracle = read(temp.path(), WINDOWS_MEDIA_ORACLE).expect("media oracle fixture");
