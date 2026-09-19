@@ -1723,22 +1723,104 @@ fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn powershell_active_statements(text: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut block_comment = false;
+    let mut here_end: Option<&str> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(end) = here_end {
+            if trimmed == end {
+                here_end = None;
+            }
+            continue;
+        }
+        if trimmed.ends_with("@'") {
+            here_end = Some("'@");
+            continue;
+        }
+        if trimmed.ends_with("@\"") {
+            here_end = Some("\"@");
+            continue;
+        }
+
+        let mut code = String::new();
+        let mut chars = line.chars().peekable();
+        let mut single_quoted = false;
+        let mut double_quoted = false;
+        let mut escaped = false;
+        while let Some(character) = chars.next() {
+            let next = chars.peek().copied();
+            if block_comment {
+                if character == '#' && next == Some('>') {
+                    let _ = chars.next();
+                    block_comment = false;
+                }
+                continue;
+            }
+            if !single_quoted && !double_quoted && character == '<' && next == Some('#') {
+                let _ = chars.next();
+                block_comment = true;
+                continue;
+            }
+            if escaped {
+                code.push(character);
+                escaped = false;
+                continue;
+            }
+            if double_quoted && character == '`' {
+                code.push(character);
+                escaped = true;
+                continue;
+            }
+            if !double_quoted && character == '\'' {
+                single_quoted = !single_quoted;
+                code.push(character);
+                continue;
+            }
+            if !single_quoted && character == '"' {
+                double_quoted = !double_quoted;
+                code.push(character);
+                continue;
+            }
+            if !single_quoted && !double_quoted && character == '#' {
+                break;
+            }
+            code.push(character);
+        }
+        let code = code.trim();
+        if !code.is_empty() {
+            statements.push(code.to_owned());
+        }
+    }
+    statements
+}
+
 fn check_windows_profile_regression_oracle(root: &Path) -> Result<(), String> {
     let oracle = read(root, WINDOWS_MEDIA_ORACLE)?;
-    for test in WINDOWS_PROFILE_REGRESSION_TESTS {
-        if oracle.matches(test).count() != 1 {
+    let statements = powershell_active_statements(&oracle);
+    for (index, test) in WINDOWS_PROFILE_REGRESSION_TESTS.iter().enumerate() {
+        let comma = if index + 1 == WINDOWS_PROFILE_REGRESSION_TESTS.len() {
+            ""
+        } else {
+            ","
+        };
+        let expected = format!("'{test}'{comma}");
+        if statements.iter().filter(|line| **line == expected).count() != 1 {
             return Err(format!(
                 "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must run the exact ignored Windows profile regression `{test}` once."
             ));
         }
     }
     for required in [
-        "Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
-        "if ($profileRegressionCount -ne 5)",
-        "Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000",
+        "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
+        "if ($profileRegressionCount -ne 5) {",
+        "$execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000",
         "if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or",
+        "function Invoke-ProfileRegressionCases {",
+        "foreach ($case in $cases) {",
     ] {
-        if oracle.matches(required).count() != 1 {
+        if statements.iter().filter(|line| line.as_str() == required).count() != 1 {
             return Err(format!(
                 "CI-HYGIENE: `{WINDOWS_MEDIA_ORACLE}` must retain the exact bounded, failure-preserving profile regression runner `{required}`."
             ));
@@ -2359,7 +2441,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",\n");
         format!(
-            "function Invoke-ProfileRegressionCases {{\n    $cases = @(\n{cases}\n    )\n    $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000\n    if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or\n        -not $execution.stdout_text) {{ throw 'failed' }}\n}}\n$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\nif ($profileRegressionCount -ne 5) {{ throw 'wrong count' }}\n"
+            "function Invoke-ProfileRegressionCases {{\n    $cases = @(\n{cases}\n    )\n    foreach ($case in $cases) {{\n        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000\n        if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or\n            -not $execution.stdout_text) {{\n            throw 'failed'\n        }}\n    }}\n}}\n$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot\nif ($profileRegressionCount -ne 5) {{\n    throw 'wrong count'\n}}\n"
         )
     }
 
@@ -4100,8 +4182,24 @@ mod tests {
         for (needle, replacement) in [
             ("windows_persistent_recovery_subprocess", "echo skipped-recovery"),
             (
+                "        'windows_dev_profile_cleanup_subprocess',",
+                "        # 'windows_dev_profile_cleanup_subprocess',",
+            ),
+            (
+                "        'windows_busy_ephemeral_scavenge_subprocess',",
+                "        $decoy = 'windows_busy_ephemeral_scavenge_subprocess',",
+            ),
+            (
+                "        'windows_com_engine_lifetime_subprocess',",
+                "        $decoy = @'\nwindows_com_engine_lifetime_subprocess\n'@",
+            ),
+            (
                 "Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
                 "Write-Output skipped-profile-regressions",
+            ),
+            (
+                "$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
+                "$profileRegressionCount = 5 # Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot",
             ),
             ("if ($profileRegressionCount -ne 5)", "if ($false)"),
             ("-DeadlineMilliseconds 90000", "-DeadlineMilliseconds 0"),
