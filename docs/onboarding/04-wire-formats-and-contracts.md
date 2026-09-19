@@ -493,12 +493,15 @@ separate bounds and qualification under load.
 **Cancellation.** `Cancel` frames carry the `corr` of the target `Call` or stream; handlers observe
 an `AbortSignal` in JS and a `CancelToken` in Rust.
 
-**Schema-first contracts.** Channels are meant to be declared in TypeScript `.k.ts` files using
+**Schema-first contracts.** The general destination is TypeScript `.k.ts` authoring through
 `@keld/schema`, from which `keld gen` emits TS client/server stubs, Rust `serde` types and handler
 traits, the channel table for the handshake, and — the part that matters most — the **permission
 stubs**, so that the manifest generator and the guard enforce the same source of truth
-([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor `keld gen` exists; `EchoRequest`
-is hand-written.
+([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists, and the
+current echo adapter still carries hand-written TypeScript payload interfaces. Approved KEL-98
+defines a bounded bootstrap whose implementation will derive compile-time TypeScript payload
+declarations from the already-shipped Rust `EchoRequest` / `EchoResponse` structs to retire that mirror; it does
+not become the general schema-authoring model or replace postcard/runtime validation.
 
 ---
 
