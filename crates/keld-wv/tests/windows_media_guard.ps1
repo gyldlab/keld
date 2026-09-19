@@ -128,6 +128,36 @@ function Invoke-MediaOuterDeadlineProbe {
     }
 }
 
+function Invoke-ProfileRegressionCases {
+    param([string]$Binary, [string]$EvidenceRoot)
+    $cases = @(
+        'windows_com_engine_lifetime_subprocess',
+        'windows_dev_profile_cleanup_subprocess',
+        'windows_busy_ephemeral_scavenge_subprocess',
+        'windows_persistent_recovery_subprocess',
+        'windows_saved_media_reconciliation_subprocess'
+    )
+    foreach ($case in $cases) {
+        $stdoutPath = Join-Path $EvidenceRoot "profile-$case.log"
+        $stderrPath = Join-Path $EvidenceRoot "profile-$case.stderr.log"
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = $Binary
+        $start.Arguments = "webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1"
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000
+        if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or
+            -not $execution.stdout_text.Contains("test webview2::media_acceptance::tests::$case") -or
+            -not $execution.stdout_text.Contains('test result: ok. 1 passed; 0 failed')) {
+            throw "Windows profile regression failed: $case; outerTimedOut=$($execution.outer_timed_out) exit=$($execution.exit_code)"
+        }
+        [Console]::Out.WriteLine("KELD_PROFILE_REGRESSION case=$case exit=0 stdout_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stdoutPath).Hash.ToLowerInvariant()) stderr_sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $stderrPath).Hash.ToLowerInvariant())")
+    }
+    $cases.Count
+}
+
 $ErrorActionPreference = 'Stop'
 $sourceBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 $evidenceRoot = [IO.Path]::GetFullPath($EvidenceDirectory)
@@ -144,6 +174,10 @@ if ($binaryHash -ne $sourceBinaryHash) {
 }
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot
+$profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
+if ($profileRegressionCount -ne 5) {
+    throw "Expected five Windows profile regressions, observed $profileRegressionCount"
+}
 $results = @()
 $seenNonces = @{}
 $seenRows = @{}
@@ -310,4 +344,4 @@ $record = [ordered]@{
     rows = $results
 }
 [IO.File]::WriteAllText((Join-Path $evidenceRoot 'result.json'), ($record | ConvertTo-Json -Depth 5))
-Write-Output "Windows media fixture: $($results.Count) rows passed; evidence $evidenceRoot"
+Write-Output "Windows media fixture: $($results.Count) rows and $profileRegressionCount profile regressions passed; evidence $evidenceRoot"
