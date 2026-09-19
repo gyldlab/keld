@@ -319,8 +319,10 @@ with `WINTRUST_ACTION_GENERIC_VERIFY_V2`, retains the provider state, derives pu
 scope from the primary signer's leaf-certificate SPKI DER, and decodes the program name
 from that same signer's authenticated attributes before closing the state. Missing,
 duplicate, malformed, unsigned, untrusted, multi-primary-signer, noncanonical, or
-over-255-byte inputs fail with `KELD-WV-009`; no version resource, executable name,
-sidecar, config, page, or Bun value is a fallback carrier.
+app-id portions over 255 bytes fail with `KELD-WV-009`. The fixed 15-byte prefix is not
+part of that app-id limit, so the complete ASCII carrier is at most 270 UTF-16 code
+units. No version resource, executable name, sidecar, config, page, or Bun value is a
+fallback carrier.
 
 `ProfileIdentity` is SHA-256 over the exact length-delimited byte sequence
 `"keld.profile.identity/v1\0" || publisher_scope || u16be(app_id.len) || app_id`.
