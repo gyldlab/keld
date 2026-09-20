@@ -905,6 +905,12 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
         !interrupted.status.success(),
         "purge fault fixture unexpectedly survived the post-intent crash"
     );
+    let interrupted_stdout =
+        String::from_utf8(interrupted.stdout).expect("interrupted purge stdout UTF-8");
+    assert!(
+        interrupted_stdout.contains("KELD_KEL135_PURGE_FAULT prepared"),
+        "purge fault fixture did not reach the durable prepared intent: {interrupted_stdout}"
+    );
     assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
 
     let recovered = SignedProfileStateCase {

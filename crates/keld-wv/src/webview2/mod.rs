@@ -976,6 +976,8 @@ fn purge_persistent_profile_at(
         write_new_control_record(&intent_path, &prepared.to_record_bytes()?)?;
         #[cfg(feature = "profile-test-hooks")]
         if std::env::var_os("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED").is_some() {
+            println!("KELD_KEL135_PURGE_FAULT prepared");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
             std::process::abort();
         }
         prepared
