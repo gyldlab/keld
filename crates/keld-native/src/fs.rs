@@ -11,7 +11,9 @@ use std::path::{Component, Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+#[cfg(not(target_os = "linux"))]
+use cap_fs_ext::DirExt;
+use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, OpenOptions};
 use keld_guard::verified_manifest::VerifiedManifest;
@@ -512,7 +514,7 @@ impl FsBroker {
                 progress.check_write(false, 0, bytes.len(), None)?;
                 let mut options = write_options();
                 options.create_new(true);
-                let result = parent.open_with(&leaf, &options);
+                let result = create_new_file(&parent, &leaf, &options);
                 match result {
                     Ok(file) => {
                         progress.check_write(true, 0, bytes.len(), None)?;
@@ -835,19 +837,21 @@ fn walk(
                         OpenPurpose::Read => read_options(),
                         OpenPurpose::Write => write_options(),
                     };
-                    let file = current.open_with(&name, &options).map_err(|source| {
-                        if matches!(
-                            source.kind(),
-                            ErrorKind::PermissionDenied | ErrorKind::InvalidInput
-                        ) {
-                            FsError::ResolvedOutOfScope {
-                                requested: requested.to_owned(),
-                                detail: "final object changed during no-follow open".to_owned(),
+                    let file = open_existing_file(current, &name, purpose, &options).map_err(
+                        |source| {
+                            if matches!(
+                                source.kind(),
+                                ErrorKind::PermissionDenied | ErrorKind::InvalidInput
+                            ) {
+                                FsError::ResolvedOutOfScope {
+                                    requested: requested.to_owned(),
+                                    detail: "final object changed during no-follow open".to_owned(),
+                                }
+                            } else {
+                                FsError::Io(source)
                             }
-                        } else {
-                            FsError::Io(source)
-                        }
-                    })?;
+                        },
+                    )?;
                     let opened = file.metadata().map_err(FsError::Io)?;
                     ensure_regular_and_device(&opened, grant, requested)?;
                     return Ok(WalkResult::File(file));
@@ -858,7 +862,7 @@ fn walk(
                         detail: "intermediate component is not a directory".to_owned(),
                     });
                 }
-                let directory = current.open_dir_nofollow(&name).map_err(|source| {
+                let directory = open_child_directory(current, &name).map_err(|source| {
                     if matches!(
                         source.kind(),
                         ErrorKind::PermissionDenied | ErrorKind::InvalidInput
@@ -957,6 +961,90 @@ fn write_options() -> OpenOptions {
     options.follow(FollowSymlinks::No);
     set_nonblocking(&mut options);
     options
+}
+
+#[cfg(target_os = "linux")]
+fn linux_resolve_flags() -> rustix::fs::ResolveFlags {
+    rustix::fs::ResolveFlags::BENEATH
+        | rustix::fs::ResolveFlags::NO_MAGICLINKS
+        | rustix::fs::ResolveFlags::NO_XDEV
+}
+
+#[cfg(target_os = "linux")]
+fn open_existing_file(
+    directory: &Dir,
+    name: &str,
+    purpose: OpenPurpose,
+    _options: &OpenOptions,
+) -> io::Result<File> {
+    let access = match purpose {
+        OpenPurpose::Read => rustix::fs::OFlags::RDONLY,
+        OpenPurpose::Write => rustix::fs::OFlags::WRONLY,
+    };
+    let descriptor = rustix::fs::openat2(
+        directory,
+        name,
+        access
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+        linux_resolve_flags(),
+    )?;
+    Ok(File::from_std(std::fs::File::from(descriptor)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_existing_file(
+    directory: &Dir,
+    name: &str,
+    _purpose: OpenPurpose,
+    options: &OpenOptions,
+) -> io::Result<File> {
+    directory.open_with(name, options)
+}
+
+#[cfg(target_os = "linux")]
+fn open_child_directory(directory: &Dir, name: &str) -> io::Result<Dir> {
+    let descriptor = rustix::fs::openat2(
+        directory,
+        name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+        linux_resolve_flags(),
+    )?;
+    Ok(Dir::from_std_file(std::fs::File::from(descriptor)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_child_directory(directory: &Dir, name: &str) -> io::Result<Dir> {
+    directory.open_dir_nofollow(name)
+}
+
+#[cfg(target_os = "linux")]
+fn create_new_file(directory: &Dir, name: &str, _options: &OpenOptions) -> io::Result<File> {
+    let descriptor = rustix::fs::openat2(
+        directory,
+        name,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::from_raw_mode(0o666),
+        linux_resolve_flags(),
+    )?;
+    Ok(File::from_std(std::fs::File::from(descriptor)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn create_new_file(directory: &Dir, name: &str, options: &OpenOptions) -> io::Result<File> {
+    directory.open_with(name, options)
 }
 
 #[cfg(unix)]
