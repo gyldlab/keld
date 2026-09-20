@@ -4516,6 +4516,28 @@ mod tests {
         assert_eq!(error.code(), "KELD-WV-009");
     }
 
+    /// Runs only from a deliberately signed copy of this libtest binary.
+    #[test]
+    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
+    #[cfg(windows)]
+    fn kel135_signed_package_acceptance_fixture() {
+        let identity = verified_windows_identity_from_current_exe()
+            .expect("the signed fixture must produce a verified Windows identity");
+        let app_id = identity.app_id.clone();
+        let publisher_scope = identity
+            .publisher_scope
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let profile_namespace = identity.profile_identity.namespace_segment();
+        let mode = select_windows_profile_mode_with(false, || Ok(identity))
+            .expect("the verified signed fixture must select a persistent profile");
+        assert!(matches!(mode, WindowsProfileMode::Persistent(_)));
+        println!(
+            "KELD_KEL135_SIGNED_IDENTITY app_id={app_id} publisher_scope={publisher_scope} profile_namespace={profile_namespace}"
+        );
+    }
+
     #[test]
     #[cfg(windows)]
     fn quit_peer_close_wait_is_bounded_for_a_non_closing_client() {
