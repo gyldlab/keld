@@ -2837,7 +2837,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   content post-conditions, protected install-channel provenance, a monotonic
   semantic-version trust floor, attempt-bound activation/health, retained
   last-known-good state and typed manual recovery. Store/package-manager-owned installs
-  refuse direct mutation. No updater runtime behavior is implemented today.
+  refuse direct mutation. Current T2 code implements logical protected-provenance
+  admission, signed v0 manifest validation/selection and streamed full-artifact
+  size/BLAKE3 verification. The platform adapter that proves provenance protection,
+  live feed orchestration, archive validation/extraction, activation, health and
+  recovery remain unimplemented.
 - Optional delta: only a measured later transport optimization. It reconstructs the
   same full-package content identity, retains a same-attempt full fallback and cannot
   change activation, health, trust-floor or rollback semantics.
@@ -4527,7 +4531,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -5208,6 +5212,66 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-UPDATE-001
+
+- crate: keld-update
+- message: Direct-update provenance is missing or not OS-protected
+- fix: Reinstall with a supported direct installer and restore its protected commit record before checking for updates.
+
+## KELD-UPDATE-002
+
+- crate: keld-update
+- message: A package manager or store owns this installation
+- fix: Use the mechanism named by protected provenance; Keld must not mutate the installation directly.
+
+## KELD-UPDATE-003
+
+- crate: keld-update
+- message: Protected direct-install provenance does not match the running host or baseline contract
+- fix: Stop before feed access and repair or reinstall the direct package.
+
+## KELD-UPDATE-004
+
+- crate: keld-update
+- message: Detached update-manifest authentication failed
+- fix: Do not parse or activate the feed; publish the literal manifest bytes signed by the compiled-in release key.
+
+## KELD-UPDATE-005
+
+- crate: keld-update
+- message: Authenticated update-manifest JSON is ambiguous or invalid for schema v0
+- fix: Publish one closed, duplicate-free v0 manifest with canonical sizes, digests, and strict semantic versions.
+
+## KELD-UPDATE-006
+
+- crate: keld-update
+- message: The signed manifest names another app, channel, or target
+- fix: Fetch the feed for the protected direct installation's exact app, channel, and compiled target.
+
+## KELD-UPDATE-007
+
+- crate: keld-update
+- message: The protected semantic-version floor is missing or invalid
+- fix: Restore the protected updater state from the installer or known-good record before polling.
+
+## KELD-UPDATE-008
+
+- crate: keld-update
+- message: Compressed or decompressed full-artifact bytes do not equal the signed exact count
+- fix: Discard the candidate and fetch the signed full artifact again.
+
+## KELD-UPDATE-009
+
+- crate: keld-update
+- message: Downloaded or decompressed full-artifact BLAKE3 does not match the signed digest
+- fix: Discard the candidate and fetch the signed full artifact again.
+
+## KELD-UPDATE-010
+
+- crate: keld-update
+- message: Full-artifact stream I/O or zstd decoding failed
+- fix: Preserve the current installation, repair the stream or staging sink, and retry.
 
 ---
 
