@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-fn owned_root(case: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
+fn owned_root_under(base: &Path, case: &str) -> PathBuf {
+    let root = base.join(format!(
         "keld-kel130-{case}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -19,6 +19,30 @@ fn owned_root(case: &str) -> PathBuf {
     ));
     std::fs::create_dir(&root).expect("create owned root");
     root
+}
+
+fn owned_root(case: &str) -> PathBuf {
+    owned_root_under(&std::env::temp_dir(), case)
+}
+
+#[cfg(target_os = "linux")]
+fn volume_root_owned_root(case: &str) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+
+    let base = Path::new("/var/tmp");
+    assert_eq!(
+        std::fs::metadata(base)
+            .expect("fixture base metadata")
+            .dev(),
+        std::fs::metadata("/").expect("volume root metadata").dev(),
+        "volume-root positive requires a writable fixture on the retained root device"
+    );
+    owned_root_under(base, case)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn volume_root_owned_root(case: &str) -> PathBuf {
+    owned_root(case)
 }
 
 fn spelling(path: &Path) -> String {
@@ -199,7 +223,7 @@ fn exact_absent_leaf_can_be_created_without_following_an_alias() {
 
 #[test]
 fn volume_root_scope_reaches_an_owned_descendant() {
-    let root = owned_root("volume-root");
+    let root = volume_root_owned_root("volume-root");
     let path = root.join("file");
     std::fs::write(&path, b"volume-root").expect("seed file");
     #[cfg(not(windows))]
