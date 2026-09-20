@@ -1,6 +1,6 @@
 # Spec: echo Rust-schema to TypeScript contract codegen
-Status: approved
-Linear: KEL-98 · Owner: GYLDLAB · Updated: 2026-09-19
+Status: done
+Linear: KEL-98 · Owner: GYLDLAB · Updated: 2026-09-20
 Approval: repository-owner maintainer session · approved content head `1be5ed88ccb1035df4e7c8fe2d5e6c98a2b80bd8` · [public receipt](https://github.com/gyldlab/keld/pull/257#issuecomment-5741478846) · decision SHA-256 `f1583577d2edcc3a1dc351415f675d8ec6e22103353a170920b865e4b9570ec5`
 
 {"schema":"keld.kel98-approval/v1","decision":"approved","approved_content_head":"1be5ed88ccb1035df4e7c8fe2d5e6c98a2b80bd8","approver_id":"amishabenramani","source":"active-maintainer-session-2026-09-19","public_receipt":"https://github.com/gyldlab/keld/pull/257#issuecomment-5741478846"}
@@ -234,9 +234,9 @@ Must not touch:
 
 ## 6. Tasks
 
-- [ ] T1 — approval PR: land this spec plus the bounded architecture/onboarding
+- [x] T1 — approval PR: land this spec plus the bounded architecture/onboarding
   current-vs-target clarification. No implementation starts while status is `draft`.
-- [ ] T2 — one vertical implementation PR: add the dependency-free Bun generator and
+- [x] T2 — one vertical implementation PR: add the dependency-free Bun generator and
   deterministic artifact; make the existing hello client consume and `keld create` emit
   it without staging it at runtime; land freshness, unsupported-shape, exact-production
   compile-drift, one-owner/type-import, generated-value runtime, and shared-wire-order
