@@ -222,7 +222,7 @@ fn source_receipt() -> SourceReceipt {
 fn emit_environment() -> SourceReceipt {
     let receipt = source_receipt();
     println!(
-        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=begin status=running source_head={} tree_state=clean device_id={} model={} os_version={} os_build={} arch={} virtualized=0",
+        "\nKEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=begin status=running source_head={} tree_state=clean device_id={} model={} os_version={} os_build={} arch={} virtualized=0",
         receipt.head,
         receipt.device_id,
         receipt.model,
