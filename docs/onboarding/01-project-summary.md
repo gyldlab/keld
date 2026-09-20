@@ -99,7 +99,7 @@ flowchart TB
         native["CURRENT keld-native<br/>scoped fs only<br/>other services target"]
         guard["CURRENT keld-guard<br/>capability evaluator plus fs dispatch<br/>target role binding"]
         runtime["CURRENT keld-runtime<br/>one generic supervisor<br/>target role identity"]
-        update["TARGET keld-update<br/>signed delta patches"]
+        update["TARGET keld-update<br/>verified full packages<br/>optional delta later"]
         native --> guard
         runtime --> guard
     end
