@@ -499,6 +499,8 @@ impl FsBroker {
         progress.check_write(false, 0, bytes.len(), None)?;
         let grant = selected_grant(&self.write_grants, permit, path)?;
         let resolved = walk(grant, path, OpenPurpose::Write, progress)?;
+        #[cfg(test)]
+        run_after_walk_test_hook();
         progress.check_write(false, 0, bytes.len(), None)?;
 
         let mut file = match resolved {
@@ -551,6 +553,19 @@ impl FsBroker {
         };
 
         write_content(&mut file, bytes, progress)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static AFTER_WALK_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_after_walk_test_hook() {
+    if let Some(hook) = AFTER_WALK_TEST_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook();
     }
 }
 
@@ -1358,6 +1373,10 @@ pub fn serve_fs_session<S: Read + Write>(
 mod tests {
     use super::*;
     use keld_guard::parse_manifest;
+    #[cfg(windows)]
+    use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
+    #[cfg(windows)]
+    use sha2::{Digest as _, Sha256};
 
     std::thread_local! {
         static TEST_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
@@ -1369,6 +1388,46 @@ mod tests {
 
     fn set_test_now(now: Instant) {
         TEST_NOW.with(|clock| clock.set(Some(now)));
+    }
+
+    #[cfg(windows)]
+    fn test_verified_manifest(fixture: &Path, root: &Path) -> VerifiedManifest {
+        let scope = root.to_str().expect("UTF-8 fixture").replace('\\', "/");
+        let text =
+            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
+        let path = fixture.join("permissions.jsonc");
+        std::fs::write(&path, &text).expect("write verified manifest");
+        let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+        load_verified_manifest(
+            std::fs::File::open(&path).expect("open verified manifest"),
+            path,
+            digest,
+        )
+        .expect("load verified manifest")
+    }
+
+    #[cfg(windows)]
+    fn test_owner_handle_count() -> usize {
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-Process -Id $env:KEL130_PARENT_PID).HandleCount",
+            ])
+            .env("KEL130_PARENT_PID", std::process::id().to_string())
+            .output()
+            .expect("query owner process handle count");
+        assert!(
+            output.status.success(),
+            "handle census failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("handle count is UTF-8")
+            .trim()
+            .parse()
+            .expect("handle count is an integer")
     }
 
     #[test]
@@ -1836,5 +1895,121 @@ mod tests {
         drop(result);
         drop(grant);
         std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_blocked_call_holds_handle_until_release_child() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        if std::env::var_os("KELD_KEL130_BLOCKED_CALL_CHILD").is_none() {
+            return;
+        }
+
+        let (watchdog_tx, watchdog_rx) = mpsc::sync_channel(0);
+        let watchdog = std::thread::spawn(move || {
+            if watchdog_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+                std::process::exit(2);
+            }
+        });
+
+        let fixture = race_owned_root("windows-blocked-call");
+        let root = fixture.join("granted");
+        std::fs::create_dir(&root).expect("granted root");
+        let path = root.join("sentinel");
+        std::fs::write(&path, b"unchanged").expect("seed sentinel");
+        let verified = Arc::new(test_verified_manifest(&fixture, &root));
+        let baseline = test_owner_handle_count();
+        let broker = Arc::new(FsBroker::prepare(&verified).expect("prepare broker"));
+        let prepared = test_owner_handle_count();
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        let (thread_ready_tx, thread_ready_rx) = mpsc::sync_channel(0);
+        let (start_tx, start_rx) = mpsc::sync_channel(0);
+        let (call_ready_tx, call_ready_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::sync_channel(0);
+        let thread_broker = Arc::clone(&broker);
+        let thread_verified = Arc::clone(&verified);
+        let thread_cancelled = Arc::clone(&cancelled);
+        let requested = path.to_str().expect("UTF-8 fixture").replace('\\', "/");
+        let writer = std::thread::spawn(move || {
+            thread_ready_tx.send(()).expect("publish thread readiness");
+            start_rx.recv().expect("start blocked call");
+            AFTER_WALK_TEST_HOOK.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    call_ready_tx.send(()).expect("publish live call handle");
+                    release_rx.recv().expect("release blocked call");
+                }));
+            });
+            let result = thread_broker.write(
+                &thread_verified,
+                Principal::AppProcess,
+                &requested,
+                b"changed",
+                &thread_cancelled,
+            );
+            result_tx.send(result).expect("publish terminal result");
+        });
+
+        thread_ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("writer thread ready");
+        let idle_thread = test_owner_handle_count();
+        start_tx.send(()).expect("start call");
+        call_ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("real call handle reached block");
+        let live_call = test_owner_handle_count();
+        assert!(
+            live_call > idle_thread,
+            "the blocked operation must retain a real per-call handle"
+        );
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            result_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release_tx.send(()).expect("release call");
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("terminal result after release");
+        writer.join().expect("join writer");
+        let error = result.expect_err("released call observes cancellation before commit");
+        assert_eq!(error.code(), "KELD-NATIVE-006");
+        assert_eq!(std::fs::read(&path).expect("sentinel bytes"), b"unchanged");
+        assert_eq!(
+            test_owner_handle_count(),
+            prepared,
+            "per-call handle closes before the terminal result is observed"
+        );
+
+        drop(broker);
+        drop(verified);
+        assert_eq!(test_owner_handle_count(), baseline);
+        std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+        watchdog_tx.send(()).expect("disarm watchdog");
+        watchdog.join().expect("join watchdog");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_blocked_call_lifecycle_is_subprocess_isolated() {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "fs::tests::windows_blocked_call_holds_handle_until_release_child",
+                "--nocapture",
+            ])
+            .env("KELD_KEL130_BLOCKED_CALL_CHILD", "1")
+            .output()
+            .expect("run isolated blocked-call fixture");
+        assert!(
+            output.status.success(),
+            "blocked-call fixture failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
