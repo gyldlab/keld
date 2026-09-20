@@ -829,6 +829,70 @@ fn kel135_signed_host_running_crash_releases_profile() {
     );
 }
 
+#[test]
+#[ignore = "requires signed KEL-135 host and package-purge fixtures"]
+fn kel135_signed_host_purge_removes_same_origin_state() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
+    let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
+        .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind purge control");
+    let state_server = ProfileStateServer::new();
+    let run_nonce = profile_state_run_nonce(&fixture);
+    let seeded_state = format!("{run_nonce}-seed");
+    let recovered_state = format!("{run_nonce}-recovered");
+    let seed = SignedProfileStateCase {
+        name: "purge-seed",
+        host: &signed_host,
+        before: "",
+        after: &seeded_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &seed,
+    );
+
+    let output = Command::new(&signed_purge)
+        .args([
+            "app_session::tests::kel135_signed_package_purge_acceptance_fixture",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("run signed authenticated package-purge fixture");
+    let stdout = String::from_utf8(output.stdout).expect("signed purge stdout UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("signed purge stderr UTF-8");
+    assert!(
+        output.status.success(),
+        "signed package purge failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("KELD_KEL135_SIGNED_PURGE profile_namespace="),
+        "signed package purge omitted its identity receipt: {stdout}"
+    );
+
+    let recovered = SignedProfileStateCase {
+        name: "purge-recovered",
+        host: &signed_host,
+        before: "",
+        after: &recovered_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &recovered,
+    );
+}
+
 struct SignedProfileStateCase<'a> {
     name: &'a str,
     host: &'a std::ffi::OsStr,

@@ -4541,6 +4541,19 @@ mod tests {
         );
     }
 
+    /// Runs only from a deliberately signed copy of this libtest binary.
+    #[test]
+    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
+    #[cfg(windows)]
+    fn kel135_signed_package_purge_acceptance_fixture() {
+        let identity = verified_windows_identity_from_current_exe()
+            .expect("the signed fixture must produce a verified Windows identity");
+        let profile_namespace = identity.profile_identity.namespace_segment();
+        WebView2Engine::purge_persistent_profile(identity.profile_identity)
+            .expect("the signed fixture must purge its authenticated idle profile");
+        println!("KELD_KEL135_SIGNED_PURGE profile_namespace={profile_namespace}");
+    }
+
     #[test]
     #[cfg(windows)]
     fn quit_peer_close_wait_is_bounded_for_a_non_closing_client() {
