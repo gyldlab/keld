@@ -1,7 +1,10 @@
 # Spec: reliable full-package activation before delta optimization
 
-Status: draft
+Status: approved
 Linear: KEL-53 · Owner: GYLDLAB · Updated: 2026-09-19
+Approval: Linear comment `aba995f0-74fc-4696-b15d-0fa2cbee3775` · approved content head `e44e21cace974cc33e8176c94b599491f31cb918` · decision SHA-256 `3fddfd72070062d9b024e3029bf8561d43728ff5590e5bfe5c9311f166d4e288`
+
+{"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"e44e21cace974cc33e8176c94b599491f31cb918","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"aba995f0-74fc-4696-b15d-0fa2cbee3775","source":"active-maintainer-session-2026-09-20"}
 
 ## 1. Goal & non-goals
 
@@ -24,7 +27,7 @@ Non-goals:
 - no arbitrary relaunch helper, shell command, self-update plugin, or role-writable
   update state;
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
-- no implementation before this draft is approved and landed.
+- no implementation before this approved specification lands.
 
 ## 2. Spec refs
 
@@ -44,9 +47,10 @@ Non-goals:
 - KEL-90/KEL-129 own measurements and budgets.
 - PR #30 landed the current signed-manifest/feed wire contract.
 
-This proposal keeps the v0 JSON bytes but intentionally revises its client-selection and
-canonical-package semantics before any updater implementation exists. Final approval of
-this exact draft therefore re-approves the v0 public contract; a post-implementation
+This approved contract keeps the v0 JSON bytes but intentionally revises its
+client-selection and canonical-package semantics before any updater implementation
+exists. Approval of the exact content head recorded above re-approves the v0 public
+contract; a post-implementation
 semantic change requires a new schema/version and wire review. The contract reuses the
 existing strict semantic-version floor. There is no release-sequence, expiry, or
 security-epoch field to validate. Adding one also requires a new manifest version.
@@ -356,7 +360,7 @@ Must not touch in Slice A:
 ## 6. Tasks
 
 - [ ] T1 — promote this spec with architecture 06 synchronization, generated docs and
-  exact-head review. No implementation starts while status is draft.
+  exact-head review. No implementation starts until this approved specification lands.
 - [ ] T2 — v0 manifest/full verifier plus protected provenance admission/refusal; no
   delta dependency.
 - [ ] T3 — after the shared KEL-130 Windows component classifier exists, consume it in
@@ -410,5 +414,6 @@ fallback rate and end-to-end success before adding complexity.
 
 ## 10. Open questions
 
-None in the technical contract. Promotion still requires explicit human approval bound
-to the corrected final SHA. This draft does not authorize implementation.
+None in the technical contract. Human approval is bound to the exact pre-promotion
+content head and Linear receipt recorded above. The updater remains unimplemented; this
+approved specification authorizes its ordered tasks only after the specification lands.
