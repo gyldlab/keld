@@ -896,6 +896,7 @@ fn walk_with_observer(
                     )
                 })?;
                 let opened = progress.finish_read_io(directory.dir_metadata())?;
+                ensure_acquired_not_reparse(&opened, requested)?;
                 if opened.dev() != grant.root_device {
                     return Err(FsError::UnsupportedObject {
                         requested: requested.to_owned(),
@@ -1148,6 +1149,7 @@ fn ensure_regular_and_device(
     grant: &RetainedGrant,
     requested: &str,
 ) -> Result<(), FsError> {
+    ensure_acquired_not_reparse(metadata, requested)?;
     if metadata.dev() != grant.root_device {
         return Err(FsError::UnsupportedObject {
             requested: requested.to_owned(),
@@ -1160,6 +1162,41 @@ fn ensure_regular_and_device(
             detail: "target is not a regular file".to_owned(),
         });
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+std::thread_local! {
+    static ACQUIRED_REPARSE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(windows)]
+fn ensure_acquired_not_reparse(
+    metadata: &cap_std::fs::Metadata,
+    requested: &str,
+) -> Result<(), FsError> {
+    use cap_std::fs::MetadataExt as _;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    #[cfg(test)]
+    ACQUIRED_REPARSE_CHECKS.with(|checks| checks.set(checks.get() + 1));
+
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(FsError::UnsupportedObject {
+            requested: requested.to_owned(),
+            detail: "acquired handle is an unsupported reparse object".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_acquired_not_reparse(
+    _metadata: &cap_std::fs::Metadata,
+    _requested: &str,
+) -> Result<(), FsError> {
     Ok(())
 }
 
@@ -1418,7 +1455,7 @@ mod tests {
         assert_eq!(strip_subtree_anchor("/tmp/root", "/tmp/rooted"), None);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn race_owned_root(case: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
             "keld-kel130-linux-race-{case}-{}-{}",
@@ -1432,14 +1469,18 @@ mod tests {
         root
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn race_grant(root: &Path) -> RetainedGrant {
         let directory = Dir::open_ambient_dir(root, ambient_authority()).expect("retain root");
         let root_device = directory.dir_metadata().expect("root metadata").dev();
+        #[cfg(windows)]
+        let anchor = root.to_str().expect("UTF-8 fixture").replace('\\', "/");
+        #[cfg(not(windows))]
+        let anchor = root.to_str().expect("UTF-8 fixture").to_owned();
         RetainedGrant {
             grant_index: 0,
             kind: PathScopeKind::Subtree,
-            anchor: root.to_str().expect("UTF-8 fixture").to_owned(),
+            anchor,
             exact_leaf: None,
             root: directory,
             root_device,
@@ -1569,6 +1610,85 @@ mod tests {
             b"outside"
         );
         assert_fresh_race_read(&grant, &granted, &progress);
+        drop(grant);
+        std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_acquired_metadata_rejects_reparse_objects_as_003() {
+        let fixture = race_owned_root("windows-acquired-reparse");
+        let target = fixture.join("target");
+        let alias = fixture.join("alias");
+        std::fs::create_dir(&target).expect("target directory");
+        std::fs::write(target.join("sentinel"), b"outside").expect("target file");
+        let junction = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:KEL130_LINK -Target $env:KEL130_TARGET | Out-Null",
+            ])
+            .env("KEL130_LINK", &alias)
+            .env("KEL130_TARGET", &target)
+            .output()
+            .expect("junction command");
+        assert!(
+            junction.status.success(),
+            "Windows refused the native junction fixture: {}",
+            String::from_utf8_lossy(&junction.stderr)
+        );
+        let directory =
+            Dir::open_ambient_dir(&fixture, ambient_authority()).expect("retain fixture root");
+        let metadata = directory
+            .symlink_metadata("alias")
+            .expect("read no-follow reparse metadata");
+        let error = ensure_acquired_not_reparse(&metadata, "alias")
+            .expect_err("acquired-handle validation must reject every reparse attribute");
+
+        assert_eq!(error.code(), "KELD-NATIVE-003");
+        assert!(
+            error
+                .to_string()
+                .contains("acquired handle is an unsupported reparse object")
+        );
+        assert_eq!(
+            std::fs::read(target.join("sentinel")).expect("target sentinel"),
+            b"outside"
+        );
+        drop(directory);
+        std::fs::remove_dir(&alias).expect("remove only owned junction");
+        std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_walk_validates_intermediate_and_final_acquired_handles() {
+        let fixture = race_owned_root("windows-acquired-check-wiring");
+        let granted = fixture.join("granted");
+        let nested = granted.join("nested");
+        std::fs::create_dir_all(&nested).expect("nested directory");
+        std::fs::write(nested.join("file"), b"inside").expect("inside file");
+        let grant = race_grant(&granted);
+        let cancelled = AtomicBool::new(false);
+        let progress = Progress::new(&cancelled);
+
+        ACQUIRED_REPARSE_CHECKS.with(|checks| checks.set(0));
+        let requested = granted
+            .join("nested/file")
+            .to_str()
+            .expect("UTF-8 fixture")
+            .replace('\\', "/");
+        let result =
+            walk(&grant, &requested, OpenPurpose::Read, &progress).expect("ordinary retained walk");
+        assert!(matches!(&result, WalkResult::File(_)));
+        assert_eq!(
+            ACQUIRED_REPARSE_CHECKS.with(std::cell::Cell::get),
+            2,
+            "both the intermediate directory and final file handles must be checked"
+        );
+
+        drop(result);
         drop(grant);
         std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
     }

@@ -658,8 +658,93 @@ fn reserved_device_is_not_a_regular_file() {
     drop(broker);
     std::fs::remove_dir_all(&root).expect("cleanup owned root");
     assert_eq!(control.expect("fresh allowed operation"), b"fresh");
-    assert!(
-        result.is_err(),
-        "reserved device cannot return successful file bytes"
+    assert_eq!(
+        result
+            .expect_err("reserved device must be rejected before filesystem entry")
+            .code(),
+        "KELD-GUARD002"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_request_path_bytes_accept_4096_and_reject_4097() {
+    assert_eq!(keld_native::fs::MAX_FS_PATH_BYTES, 4096);
+    let root = owned_root("path-byte-boundary");
+    let drive_root = format!("{}/", &spelling(&root)[..2]);
+    let scope = format!("{}/**", &spelling(&root)[..2]);
+    let text = format!(r#"{{"app":{{"fs":{{"read":["{scope}"]}}}}}}"#);
+    let verified = verified_from_text(&root, "path-boundary.jsonc", &text);
+    let broker = FsBroker::prepare(&verified).expect("prepare volume broker");
+    let cancelled = AtomicBool::new(false);
+    let maximum = format!("{drive_root}{}", "x".repeat(4096 - drive_root.len()));
+    let over = format!("{drive_root}{}", "x".repeat(4097 - drive_root.len()));
+    assert_eq!(maximum.len(), 4096);
+    assert_eq!(over.len(), 4097);
+
+    let maximum_error = broker
+        .read(&verified, Principal::AppProcess, &maximum, &cancelled)
+        .expect_err("the synthetic maximum path does not name a fixture file");
+    assert_ne!(
+        maximum_error.code(),
+        "KELD-NATIVE-004",
+        "4096 request bytes must pass the broker's literal size boundary"
+    );
+    let over_error = broker
+        .read(&verified, Principal::AppProcess, &over, &cancelled)
+        .expect_err("4097 request bytes must reject");
+    assert_eq!(over_error.code(), "KELD-NATIVE-004");
+
+    let control_path = root.join("fresh");
+    std::fs::write(&control_path, b"fresh").expect("fresh control file");
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&control_path),
+                &cancelled,
+            )
+            .expect("fresh allowed read"),
+        b"fresh"
+    );
+    drop(broker);
+    std::fs::remove_dir_all(&root).expect("cleanup owned root");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_retained_root_blocks_replacement_until_broker_destruction() {
+    let fixture = owned_root("retained-root-destruction");
+    let root = fixture.join("granted");
+    let moved = fixture.join("moved");
+    std::fs::create_dir(&root).expect("granted root");
+    std::fs::write(root.join("fresh"), b"fresh").expect("fresh control file");
+    let verified = manifest(&root);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let cancelled = AtomicBool::new(false);
+
+    let rename_error = std::fs::rename(&root, &moved)
+        .expect_err("retained Windows root handle must block ambient replacement");
+    assert!(
+        matches!(rename_error.kind(), std::io::ErrorKind::PermissionDenied)
+            || matches!(rename_error.raw_os_error(), Some(5 | 32)),
+        "unexpected retained-root rename failure: {rename_error}"
+    );
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&root.join("fresh")),
+                &cancelled,
+            )
+            .expect("fresh read while root is retained"),
+        b"fresh"
+    );
+
+    drop(broker);
+    std::fs::rename(&root, &moved).expect("broker destruction releases root rename");
+    std::fs::remove_dir_all(&moved).expect("broker destruction releases root deletion");
+    std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
 }
