@@ -932,7 +932,13 @@ mod tests {
         }
     }
 
-    fn saved_grant_root(run_id: &str) -> Result<std::path::PathBuf, WvError> {
+    fn saved_grant_root(
+        run_id: &str,
+        signed_identity: bool,
+    ) -> Result<std::path::PathBuf, WvError> {
+        if signed_identity {
+            return super::super::known_local_app_data();
+        }
         if run_id.len() != 32
             || !run_id
                 .bytes()
@@ -1003,8 +1009,9 @@ mod tests {
         };
         let run_id = std::env::var("KELD_PROFILE_SAVED_RUN_ID")
             .map_err(|_| failure("KELD_PROFILE_SAVED_RUN_ID is required"))?;
+        let signed_identity = std::env::var_os("KELD_PROFILE_SAVED_SIGNED_NAMESPACE").is_some();
         Ok(SavedGrantCase {
-            root: saved_grant_root(&run_id)?,
+            root: saved_grant_root(&run_id, signed_identity)?,
             nonce: u128::from_str_radix(&run_id, 16).map_err(failure)?,
             address: std::env::var("KELD_PROFILE_SAVED_ADDRESS")
                 .map_err(|_| failure("KELD_PROFILE_SAVED_ADDRESS is required"))?,
@@ -1115,14 +1122,21 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             return Err(failure("saved-grant persistent fixture is missing"));
         }
         let page = start_saved_grant_page(&case)?;
-        let selection = match case.phase.as_str() {
-            "dev-seed" => WebProfileSelection::ephemeral_dev(
+        let signed_identity = std::env::var("KELD_PROFILE_SAVED_SIGNED_NAMESPACE").ok();
+        let selection = match (signed_identity, case.phase.as_str()) {
+            (Some(_namespace), "dev-seed" | "dev-fresh") => {
+                return Err(failure("signed saved-grant fixture cannot select dev mode"));
+            }
+            (Some(namespace), _) => WebProfileSelection::Persistent(
+                ProfileIdentity::from_test_namespace_segment(&namespace).map_err(failure)?,
+            ),
+            (None, "dev-seed") => WebProfileSelection::ephemeral_dev(
                 crate::profile::EphemeralProfile::from_host_random([24; 32])?,
             ),
-            "dev-fresh" => WebProfileSelection::ephemeral_dev(
+            (None, "dev-fresh") => WebProfileSelection::ephemeral_dev(
                 crate::profile::EphemeralProfile::from_host_random([25; 32])?,
             ),
-            _ => {
+            (None, _) => {
                 let publisher = if case.phase == "replaced-profile" {
                     [22; 32]
                 } else {

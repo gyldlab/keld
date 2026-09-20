@@ -170,6 +170,14 @@ impl ProfileIdentity {
     fn from_namespace_segment(value: &str) -> Result<Self, ProfileError> {
         decode_lower_hex::<32>(value).map(Self)
     }
+
+    #[cfg(any(
+        feature = "profile-test-hooks",
+        all(feature = "media-acceptance", test)
+    ))]
+    pub(crate) fn from_test_namespace_segment(value: &str) -> Result<Self, ProfileError> {
+        Self::from_namespace_segment(value)
+    }
 }
 
 impl fmt::Debug for ProfileIdentity {
