@@ -52,16 +52,20 @@ pub fn dispatch_privileged<T>(
     path: &str,
     handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
-    match evaluate(manifest, principal, operation, path) {
-        Decision::Allow(permit) if filesystem_dispatch_path_is_valid(operation, path) => {
-            Ok(handler(&permit))
-        }
-        Decision::Allow(_) => Err(DenyReason::OutOfScope {
+    let decision = match evaluate(manifest, principal, operation, path) {
+        Decision::Deny(reason @ DenyReason::NotAppProcess { .. }) => return Err(reason),
+        decision => decision,
+    };
+    if !filesystem_dispatch_path_is_valid(operation, path) {
+        return Err(DenyReason::OutOfScope {
             capability: operation.to_owned(),
             scope: "absolute normalized filesystem request".to_owned(),
             json_pointer: json_pointer_for(operation),
             requested: path.to_owned(),
-        }),
+        });
+    }
+    match decision {
+        Decision::Allow(permit) => Ok(handler(&permit)),
         Decision::Deny(reason) => Err(reason),
     }
 }
@@ -235,6 +239,35 @@ mod tests {
         );
         assert!(!ran.load(Ordering::SeqCst));
         assert!(result.unwrap_err().to_string().contains("KELD-GUARD001"));
+    }
+
+    #[test]
+    fn malformed_filesystem_path_is_guard002_before_grant_shape() {
+        for text in [
+            "{}",
+            r#"{"app":{"fs":{"read":[]}}}"#,
+            r#"{"app":{"fs":{"read":"/appdata/**"}}}"#,
+        ] {
+            let manifest = parse_manifest(text).expect("manifest");
+            let ran = AtomicBool::new(false);
+            let result = dispatch_privileged(
+                &manifest,
+                Principal::AppProcess,
+                "fs.read",
+                "/appdata//secret",
+                |_| {
+                    ran.store(true, Ordering::SeqCst);
+                },
+            );
+            let reason = result.expect_err("malformed path must precede grant lookup");
+            assert_eq!(reason.code(), "KELD-GUARD002");
+            assert!(matches!(
+                reason,
+                DenyReason::OutOfScope { ref scope, .. }
+                    if scope == "absolute normalized filesystem request"
+            ));
+            assert!(!ran.load(Ordering::SeqCst));
+        }
     }
 
     #[test]
