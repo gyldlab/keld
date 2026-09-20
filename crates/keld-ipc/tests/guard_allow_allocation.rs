@@ -1,4 +1,4 @@
-//! Allocation oracle for the filesystem request-validation plus Allow path.
+//! Allocation oracle for privileged filesystem validation plus guard Allow.
 
 #![allow(
     unsafe_code,
@@ -9,7 +9,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use keld_guard::{Decision, Principal, evaluate, parse_manifest, validate_fs_request};
+use keld_guard::{Principal, parse_manifest};
+use keld_ipc::guard_dispatch::dispatch_privileged;
 
 struct CountingAllocator;
 
@@ -51,22 +52,26 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 #[test]
-fn windows_style_filesystem_allow_path_allocates_nothing() {
-    let manifest = parse_manifest(r#"{"app":{"fs":{"read":["C:/safe/**"]}}}"#).expect("manifest");
+fn privileged_filesystem_allow_path_allocates_nothing() {
+    #[cfg(windows)]
+    let (scope, requested) = ("C:/safe/**", "C:/safe/file.txt");
+    #[cfg(not(windows))]
+    let (scope, requested) = ("/safe/**", "/safe/file.txt");
+    let manifest =
+        parse_manifest(&format!(r#"{{"app":{{"fs":{{"read":["{scope}"]}}}}}}"#)).expect("manifest");
 
     ALLOCATIONS.store(0, Ordering::Relaxed);
     TRACKING.store(true, Ordering::SeqCst);
-    let syntax = validate_fs_request(&manifest, "fs.read", "C:/safe/file.txt");
-    let decision = evaluate(
+    let selected = dispatch_privileged(
         &manifest,
         Principal::AppProcess,
         "fs.read",
-        "C:/safe/file.txt",
+        requested,
+        keld_guard::ScopePermit::grant_index,
     );
     TRACKING.store(false, Ordering::SeqCst);
 
-    assert!(syntax.is_ok());
-    assert!(matches!(decision, Decision::Allow(_)));
+    assert_eq!(selected, Ok(0));
     assert_eq!(
         ALLOCATIONS.load(Ordering::Relaxed),
         0,

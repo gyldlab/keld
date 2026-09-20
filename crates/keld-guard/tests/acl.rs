@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use keld_guard::{
     Decision, DenyReason, ManifestError, PermissionsManifest, Principal, evaluate, load_manifest,
-    parse_manifest, validate_fs_request,
+    parse_manifest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +95,7 @@ const CASES: &[Case] = &[
         name: "dot segment inside prefix",
         operation: "fs.read",
         path: "/foo/bar/./child",
-        expected: OUT_OF_SCOPE,
+        expected: ALLOW,
     },
     Case {
         name: "dot segment before prefix",
@@ -107,7 +107,7 @@ const CASES: &[Case] = &[
         name: "repeated separator inside prefix",
         operation: "fs.read",
         path: "/foo/bar//child",
-        expected: OUT_OF_SCOPE,
+        expected: ALLOW,
     },
     Case {
         name: "repeated separator before prefix",
@@ -278,15 +278,8 @@ fn decision_text(decision: &Decision) -> String {
     }
 }
 
-fn privileged_decision(manifest: &PermissionsManifest, case: Case) -> Decision {
-    match validate_fs_request(manifest, case.operation, case.path) {
-        Ok(()) => evaluate(manifest, Principal::AppProcess, case.operation, case.path),
-        Err(reason) => Decision::Deny(reason),
-    }
-}
-
 fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
-    let actual = privileged_decision(manifest, case);
+    let actual = evaluate(manifest, Principal::AppProcess, case.operation, case.path);
     match (case.expected, actual) {
         (ExpectedDecision::Allow, Decision::Allow(_)) => "allow".to_owned(),
         (
@@ -355,7 +348,14 @@ fn fixture_decision_matrix_matches_authority_contract() {
 fn decision_snapshot(manifest: &PermissionsManifest) -> Vec<String> {
     CASES
         .iter()
-        .map(|case| decision_text(&privileged_decision(manifest, *case)))
+        .map(|case| {
+            decision_text(&evaluate(
+                manifest,
+                Principal::AppProcess,
+                case.operation,
+                case.path,
+            ))
+        })
         .collect()
 }
 

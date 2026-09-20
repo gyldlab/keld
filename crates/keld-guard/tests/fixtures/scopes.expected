@@ -5,9 +5,9 @@ prefix child: allow
 sibling prefix: deny KELD-GUARD002 out_of_scope
 slash traversal: deny KELD-GUARD002 out_of_scope
 backslash traversal: deny KELD-GUARD002 out_of_scope
-dot segment inside prefix: deny KELD-GUARD002 out_of_scope
+dot segment inside prefix: allow
 dot segment before prefix: deny KELD-GUARD002 out_of_scope
-repeated separator inside prefix: deny KELD-GUARD002 out_of_scope
+repeated separator inside prefix: allow
 repeated separator before prefix: deny KELD-GUARD002 out_of_scope
 variable-looking literal: allow
 resolved-looking variable value: deny KELD-GUARD002 out_of_scope

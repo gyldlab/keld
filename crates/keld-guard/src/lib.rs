@@ -815,68 +815,6 @@ fn is_filesystem_capability(operation: &str) -> bool {
     matches!(operation, "fs.read" | "fs.write")
 }
 
-/// Validates the retained filesystem consumer's request grammar before dispatch.
-///
-/// The capability-agnostic [`evaluate`] matcher deliberately preserves its public
-/// literal-string behavior for tooling such as permission explain. Privileged
-/// filesystem dispatch calls this guard-owned validator before `evaluate`, so a
-/// relative, variable-bearing, repeated-separator, `.` or otherwise unserviceable
-/// request is `KELD-GUARD002` without entering a broker handler.
-///
-/// # Errors
-///
-/// Returns [`DenyReason::OutOfScope`] for invalid `fs.read` / `fs.write` request
-/// syntax. Other capabilities are not filesystem paths and pass unchanged.
-pub fn validate_fs_request(
-    manifest: &PermissionsManifest,
-    operation: &str,
-    path: &str,
-) -> Result<(), DenyReason> {
-    if !is_filesystem_capability(operation) || validate_fs_request_path(path).is_ok() {
-        return Ok(());
-    }
-    let scopes = grant_node(manifest, operation)
-        .and_then(Value::as_array)
-        .map_or_else(Vec::new, |values| {
-            values.iter().filter_map(Value::as_str).collect()
-        });
-    Err(DenyReason::OutOfScope {
-        capability: operation.to_owned(),
-        scope: scopes.join(", "),
-        json_pointer: json_pointer_for(operation),
-        requested: path.to_owned(),
-    })
-}
-
-fn validate_fs_request_path(path: &str) -> Result<(), String> {
-    if path.is_empty() {
-        return Err("path is empty".to_owned());
-    }
-    if path.contains(['\0', '\\']) {
-        return Err("path contains NUL or a non-portable backslash separator".to_owned());
-    }
-    let (remainder, windows_style) = if let Some(remainder) = path.strip_prefix('/') {
-        (remainder, false)
-    } else {
-        let bytes = path.as_bytes();
-        if bytes.len() < 3 || !bytes[0].is_ascii_uppercase() || bytes[1] != b':' || bytes[2] != b'/'
-        {
-            return Err("path must be absolute".to_owned());
-        }
-        (&path[3..], true)
-    };
-    if remainder.is_empty() {
-        return Ok(());
-    }
-    for component in remainder.split('/') {
-        validate_portable_component(component)?;
-        if windows_style {
-            validate_windows_component(component)?;
-        }
-    }
-    Ok(())
-}
-
 fn is_fs_root(path: &str) -> bool {
     #[cfg(windows)]
     {
@@ -918,6 +856,7 @@ fn validate_fs_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn validate_windows_component(component: &str) -> Result<(), String> {
     if component.contains(':') {
         return Err("alternate data streams are not serviceable".to_owned());
@@ -932,6 +871,7 @@ fn validate_windows_component(component: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn is_windows_reserved_basename(basename: &str) -> bool {
     ["CON", "PRN", "AUX", "NUL"]
         .iter()
@@ -946,6 +886,7 @@ fn is_windows_reserved_basename(basename: &str) -> bool {
         })
 }
 
+#[cfg(windows)]
 fn strip_ascii_prefix<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
     let head = text.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix)
@@ -1857,30 +1798,12 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_request_grammar_denies_before_matching() {
-        let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["/tmp/root/**"]}}}"#).expect("manifest");
-        assert!(validate_fs_request(&manifest, "fs.read", "/tmp/root/file").is_ok());
-        for invalid in ["", ".", "relative", "/tmp/root//file", "/tmp/root/./file"] {
-            let decision = validate_fs_request(&manifest, "fs.read", invalid);
-            assert!(
-                matches!(decision, Err(DenyReason::OutOfScope { .. })),
-                "invalid filesystem request `{invalid}` must be guard out-of-scope: {decision:?}"
-            );
-        }
-    }
-
-    #[test]
     fn generic_evaluate_preserves_literal_variable_matching_for_tooling() {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
         assert!(matches!(
             eval_app(&manifest, "fs.read", "$APPDATA/file"),
             Decision::Allow(_)
-        ));
-        assert!(matches!(
-            validate_fs_request(&manifest, "fs.read", "$APPDATA/file"),
-            Err(DenyReason::OutOfScope { .. })
         ));
     }
 }

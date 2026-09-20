@@ -937,6 +937,9 @@ fn classify_component_open_error(source: io::Error, requested: &str, detail: &st
             | ErrorKind::PermissionDenied
             | ErrorKind::InvalidInput
     );
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let namespace_race =
+        namespace_race || source.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error());
     if namespace_race {
         FsError::ResolvedOutOfScope {
             requested: requested.to_owned(),
@@ -1415,8 +1418,8 @@ mod tests {
         assert_eq!(strip_subtree_anchor("/tmp/root", "/tmp/rooted"), None);
     }
 
-    #[cfg(target_os = "linux")]
-    fn linux_owned_root(case: &str) -> std::path::PathBuf {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn race_owned_root(case: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
             "keld-kel130-linux-race-{case}-{}-{}",
             std::process::id(),
@@ -1429,8 +1432,8 @@ mod tests {
         root
     }
 
-    #[cfg(target_os = "linux")]
-    fn linux_grant(root: &Path) -> RetainedGrant {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn race_grant(root: &Path) -> RetainedGrant {
         let directory = Dir::open_ambient_dir(root, ambient_authority()).expect("retain root");
         let root_device = directory.dir_metadata().expect("root metadata").dev();
         RetainedGrant {
@@ -1443,8 +1446,8 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn assert_fresh_linux_read(grant: &RetainedGrant, root: &Path, progress: &Progress<'_>) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn assert_fresh_race_read(grant: &RetainedGrant, root: &Path, progress: &Progress<'_>) {
         let requested = root.join("fresh");
         let result = walk(
             grant,
@@ -1461,20 +1464,20 @@ mod tests {
         assert_eq!(bytes, b"fresh");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn linux_final_swap_is_namespace_race_and_never_reads_outside() {
+    fn unix_final_swap_is_namespace_race_and_never_reads_outside() {
         use std::os::unix::fs::symlink;
         use std::sync::{Arc, Barrier};
 
-        let fixture = linux_owned_root("final");
+        let fixture = race_owned_root("final");
         let granted = fixture.join("granted");
         let outside = fixture.join("outside");
         std::fs::create_dir(&granted).expect("granted root");
         std::fs::write(granted.join("victim"), b"inside").expect("inside file");
         std::fs::write(granted.join("fresh"), b"fresh").expect("fresh file");
         std::fs::write(&outside, b"outside").expect("outside file");
-        let grant = linux_grant(&granted);
+        let grant = race_grant(&granted);
         let cancelled = AtomicBool::new(false);
         let progress = Progress::new(&cancelled);
         let reached = Arc::new(Barrier::new(2));
@@ -1509,18 +1512,18 @@ mod tests {
             std::fs::read(&outside).expect("outside sentinel"),
             b"outside"
         );
-        assert_fresh_linux_read(&grant, &granted, &progress);
+        assert_fresh_race_read(&grant, &granted, &progress);
         drop(grant);
         std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn linux_intermediate_swap_is_namespace_race_and_never_reads_outside() {
+    fn unix_intermediate_swap_is_namespace_race_and_never_reads_outside() {
         use std::os::unix::fs::symlink;
         use std::sync::{Arc, Barrier};
 
-        let fixture = linux_owned_root("intermediate");
+        let fixture = race_owned_root("intermediate");
         let granted = fixture.join("granted");
         let outside = fixture.join("outside");
         std::fs::create_dir(&granted).expect("granted root");
@@ -1529,7 +1532,7 @@ mod tests {
         std::fs::write(granted.join("fresh"), b"fresh").expect("fresh file");
         std::fs::create_dir(&outside).expect("outside directory");
         std::fs::write(outside.join("sentinel"), b"outside").expect("outside sentinel");
-        let grant = linux_grant(&granted);
+        let grant = race_grant(&granted);
         let cancelled = AtomicBool::new(false);
         let progress = Progress::new(&cancelled);
         let reached = Arc::new(Barrier::new(2));
@@ -1565,7 +1568,7 @@ mod tests {
             std::fs::read(outside.join("sentinel")).expect("outside sentinel"),
             b"outside"
         );
-        assert_fresh_linux_read(&grant, &granted, &progress);
+        assert_fresh_race_read(&grant, &granted, &progress);
         drop(grant);
         std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
     }

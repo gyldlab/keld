@@ -12,8 +12,8 @@
 //! (`crate::session::serve_echo_session` stays ungated).
 
 use keld_guard::{
-    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate,
-    validate_fs_request,
+    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate, json_pointer_for,
+    validate_fs_component,
 };
 
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
@@ -52,11 +52,45 @@ pub fn dispatch_privileged<T>(
     path: &str,
     handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
-    validate_fs_request(manifest, operation, path)?;
     match evaluate(manifest, principal, operation, path) {
-        Decision::Allow(permit) => Ok(handler(&permit)),
+        Decision::Allow(permit) if filesystem_dispatch_path_is_valid(operation, path) => {
+            Ok(handler(&permit))
+        }
+        Decision::Allow(_) => Err(DenyReason::OutOfScope {
+            capability: operation.to_owned(),
+            scope: "absolute normalized filesystem request".to_owned(),
+            json_pointer: json_pointer_for(operation),
+            requested: path.to_owned(),
+        }),
         Decision::Deny(reason) => Err(reason),
     }
+}
+
+fn filesystem_dispatch_path_is_valid(operation: &str, path: &str) -> bool {
+    if !matches!(operation, "fs.read" | "fs.write") {
+        return true;
+    }
+    if path.is_empty() || path.contains(['\0', '\\']) {
+        return false;
+    }
+    #[cfg(windows)]
+    let remainder = {
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_uppercase() || bytes[1] != b':' || bytes[2] != b'/'
+        {
+            return false;
+        }
+        &path[3..]
+    };
+    #[cfg(not(windows))]
+    let Some(remainder) = path.strip_prefix('/') else {
+        return false;
+    };
+
+    remainder.is_empty()
+        || remainder
+            .split('/')
+            .all(|component| validate_fs_component(component).is_ok())
 }
 
 #[cfg(test)]
@@ -135,11 +169,7 @@ mod tests {
     fn invalid_filesystem_grammar_never_runs_the_handler() {
         let manifest = manifest_granting_fs_read();
         let ran = AtomicBool::new(false);
-        for invalid in [
-            "$APPDATA/notes.txt",
-            "/appdata//notes.txt",
-            "/appdata/./notes.txt",
-        ] {
+        for invalid in ["/appdata//notes.txt", "/appdata/./notes.txt"] {
             let result =
                 dispatch_privileged(&manifest, Principal::AppProcess, "fs.read", invalid, |_| {
                     ran.store(true, Ordering::SeqCst);
@@ -148,6 +178,40 @@ mod tests {
                 matches!(result, Err(DenyReason::OutOfScope { .. })),
                 "{invalid}: {result:?}"
             );
+            assert!(!ran.load(Ordering::SeqCst));
+        }
+        let variable_manifest = parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#)
+            .expect("literal variable manifest");
+        let result = dispatch_privileged(
+            &variable_manifest,
+            Principal::AppProcess,
+            "fs.read",
+            "$APPDATA/notes.txt",
+            |_| ran.store(true, Ordering::SeqCst),
+        );
+        assert!(matches!(result, Err(DenyReason::OutOfScope { .. })));
+        assert!(!ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn principal_denial_precedes_invalid_filesystem_grammar_without_scope_disclosure() {
+        let manifest = manifest_granting_fs_read();
+        for principal in [
+            Principal::Webview {
+                id: 9,
+                generation: 2,
+            },
+            Principal::Plugin { id: 4 },
+        ] {
+            let ran = AtomicBool::new(false);
+            let result =
+                dispatch_privileged(&manifest, principal, "fs.read", "/appdata//secret", |_| {
+                    ran.store(true, Ordering::SeqCst);
+                });
+            let reason = result.expect_err("non-app principal must deny before grammar");
+            assert_eq!(reason.code(), "KELD-GUARD006");
+            assert!(matches!(reason, DenyReason::NotAppProcess { .. }));
+            assert!(!reason.to_string().contains("/appdata"));
             assert!(!ran.load(Ordering::SeqCst));
         }
     }
