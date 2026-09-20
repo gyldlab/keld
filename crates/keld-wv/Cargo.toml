@@ -11,6 +11,9 @@ authors.workspace = true
 [features]
 # Explicit development fixture; absent from the shipping default build.
 media-acceptance = []
+# Internal deterministic fault fixtures for downstream KEL-135 test binaries.
+# Release packages never enable this feature.
+profile-test-hooks = []
 
 [dependencies]
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`

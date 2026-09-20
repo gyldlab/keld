@@ -856,27 +856,7 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
         &seed,
     );
 
-    let output = Command::new(&signed_purge)
-        .args([
-            "app_session::tests::kel135_signed_package_purge_acceptance_fixture",
-            "--ignored",
-            "--exact",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .output()
-        .expect("run signed authenticated package-purge fixture");
-    let stdout = String::from_utf8(output.stdout).expect("signed purge stdout UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("signed purge stderr UTF-8");
-    assert!(
-        output.status.success(),
-        "signed package purge failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        output.status
-    );
-    assert!(
-        stdout.contains("KELD_KEL135_SIGNED_PURGE profile_namespace="),
-        "signed package purge omitted its identity receipt: {stdout}"
-    );
+    assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
 
     let recovered = SignedProfileStateCase {
         name: "purge-recovered",
@@ -890,6 +870,91 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
         &state_server,
         &run_nonce,
         &recovered,
+    );
+}
+
+#[test]
+#[ignore = "requires signed KEL-135 host and package-purge fixtures"]
+fn kel135_signed_host_recovers_an_interrupted_purge() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
+    let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
+        .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
+    let state_server = ProfileStateServer::new();
+    let run_nonce = profile_state_run_nonce(&fixture);
+    let seeded_state = format!("{run_nonce}-seed");
+    let recovered_state = format!("{run_nonce}-recovered");
+    let seed = SignedProfileStateCase {
+        name: "purge-crash-seed",
+        host: &signed_host,
+        before: "",
+        after: &seeded_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &seed,
+    );
+
+    let interrupted = run_signed_purge_fixture(&signed_purge, true);
+    assert!(
+        !interrupted.status.success(),
+        "purge fault fixture unexpectedly survived the post-intent crash"
+    );
+    assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
+
+    let recovered = SignedProfileStateCase {
+        name: "purge-crash-recovered",
+        host: &signed_host,
+        before: "",
+        after: &recovered_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &recovered,
+    );
+}
+
+fn run_signed_purge_fixture(
+    signed_purge: &std::ffi::OsStr,
+    crash_after_prepared: bool,
+) -> std::process::Output {
+    let mut command = Command::new(signed_purge);
+    command.args([
+        "app_session::tests::kel135_signed_package_purge_acceptance_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1",
+    ]);
+    if crash_after_prepared {
+        command.env("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED", "1");
+    } else {
+        command.env_remove("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED");
+    }
+    command
+        .output()
+        .expect("run signed authenticated package-purge fixture")
+}
+
+fn assert_signed_purge_success(output: std::process::Output) {
+    let stdout = String::from_utf8(output.stdout).expect("signed purge stdout UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("signed purge stderr UTF-8");
+    assert!(
+        output.status.success(),
+        "signed package purge failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("KELD_KEL135_SIGNED_PURGE profile_namespace="),
+        "signed package purge omitted its identity receipt: {stdout}"
     );
 }
 
