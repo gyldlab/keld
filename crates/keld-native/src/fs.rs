@@ -557,14 +557,15 @@ impl FsBroker {
             let end = (offset + FS_IO_CHUNK_BYTES).min(bytes.len());
             match file.write(&bytes[offset..end]) {
                 Ok(0) => {
-                    return Err(FsError::WriteEffect {
-                        cause: WriteInterruption::Io(io::Error::new(
+                    return progress.check_write(
+                        true,
+                        committed,
+                        bytes.len(),
+                        Some(io::Error::new(
                             ErrorKind::WriteZero,
                             "content write returned zero",
                         )),
-                        committed_bytes: committed,
-                        requested_bytes: bytes.len() as u64,
-                    });
+                    );
                 }
                 Ok(count) => {
                     offset += count;
