@@ -219,6 +219,30 @@ fn owner_handle_count() -> usize {
         .count()
 }
 
+#[cfg(windows)]
+fn owner_handle_count() -> usize {
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-Process -Id $env:KEL130_PARENT_PID).HandleCount",
+        ])
+        .env("KEL130_PARENT_PID", std::process::id().to_string())
+        .output()
+        .expect("query owner process handle count");
+    assert!(
+        output.status.success(),
+        "handle census failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("handle count is UTF-8")
+        .trim()
+        .parse()
+        .expect("handle count is an integer")
+}
+
 #[cfg(unix)]
 #[test]
 fn partial_prepare_handle_census_child() {
@@ -292,6 +316,213 @@ fn partial_prepare_failure_releases_roots_for_windows_rename() {
     assert_eq!(error.code(), "KELD-NATIVE-008");
     std::fs::rename(&valid, &moved).expect("provisional Windows handle was released");
     std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_broker_lifecycle_handle_census_child() {
+    if std::env::var_os("KELD_KEL130_WINDOWS_CENSUS_CHILD").is_none() {
+        return;
+    }
+    let root = owned_root("windows-broker-census");
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).expect("nested directory");
+    let file = nested.join("file");
+    std::fs::write(&file, b"inside").expect("seed file");
+    let verified = manifest(&root);
+    let baseline = owner_handle_count();
+
+    let deliberate = std::fs::File::open(&file).expect("deliberate owner handle");
+    assert!(
+        owner_handle_count() > baseline,
+        "census must detect a deliberate owner-process handle"
+    );
+    drop(deliberate);
+    assert_eq!(owner_handle_count(), baseline, "negative control cleanup");
+
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let prepared = owner_handle_count();
+    assert!(prepared > baseline, "prepared broker must retain roots");
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&file),
+                &AtomicBool::new(false),
+            )
+            .expect("broker read"),
+        b"inside"
+    );
+    assert_eq!(
+        owner_handle_count(),
+        prepared,
+        "a returned call must release its per-call handle"
+    );
+
+    let first = std::rc::Rc::new(broker);
+    let last = std::rc::Rc::clone(&first);
+    drop(first);
+    assert_eq!(
+        owner_handle_count(),
+        prepared,
+        "dropping one wrapper is not broker destruction"
+    );
+    drop(last);
+    assert_eq!(
+        owner_handle_count(),
+        baseline,
+        "actual broker destruction restores the owner baseline"
+    );
+
+    let threaded = std::sync::Arc::new(FsBroker::prepare(&verified).expect("prepare Arc broker"));
+    let clone = std::sync::Arc::clone(&threaded);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+    let holder = std::thread::spawn(move || {
+        ready_tx.send(()).expect("publish Arc readiness");
+        release_rx.recv().expect("await Arc release");
+        drop(clone);
+    });
+    ready_rx.recv().expect("Arc holder ready");
+    let wrapped = owner_handle_count();
+    drop(threaded);
+    assert_eq!(
+        owner_handle_count(),
+        wrapped,
+        "dropping one Arc wrapper must not release broker handles"
+    );
+    release_tx.send(()).expect("release Arc holder");
+    holder.join().expect("join Arc holder");
+    assert_eq!(
+        owner_handle_count(),
+        baseline,
+        "last Arc owner restores the handle baseline"
+    );
+
+    let moved = root.with_extension("moved");
+    std::fs::rename(&root, &moved).expect("destroyed broker releases rename");
+    std::fs::remove_dir_all(&moved).expect("destroyed broker releases delete");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_broker_lifecycle_restores_isolated_owner_handle_census() {
+    let output = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .args([
+            "--exact",
+            "windows_broker_lifecycle_handle_census_child",
+            "--nocapture",
+        ])
+        .env("KELD_KEL130_WINDOWS_CENSUS_CHILD", "1")
+        .output()
+        .expect("run isolated Windows broker census");
+    assert!(
+        output.status.success(),
+        "isolated Windows broker census failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_handle_inheritance_child_waits_for_parent_release() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    if std::env::var_os("KELD_KEL130_INHERITANCE_CHILD").is_none() {
+        return;
+    }
+
+    std::io::stdout()
+        .write_all(b"KEL130_CHILD_READY\n")
+        .expect("publish child readiness");
+    std::io::stdout().flush().expect("flush child readiness");
+    let (finished_tx, finished_rx) = mpsc::sync_channel(0);
+    let watchdog = std::thread::spawn(move || {
+        if finished_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+            std::process::exit(2);
+        }
+    });
+    let mut input = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut input)
+        .expect("wait for parent release");
+    finished_tx.send(()).expect("disarm child watchdog");
+    watchdog.join().expect("join child watchdog");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_broker_roots_are_not_inherited_by_a_live_child() {
+    use std::io::BufRead as _;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let fixture = owned_root("windows-noninheritance");
+    let root = fixture.join("granted");
+    let moved = fixture.join("moved");
+    std::fs::create_dir(&root).expect("granted root");
+    let verified = manifest(&root);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "windows_handle_inheritance_child_waits_for_parent_release",
+            "--nocapture",
+        ])
+        .env("KELD_KEL130_INHERITANCE_CHILD", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn inheritance child");
+    let stdout = child.stdout.take().expect("child stdout");
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || {
+        let lines = std::io::BufReader::new(stdout).lines();
+        let mut ready = false;
+        for line in lines {
+            if !ready && matches!(line.as_deref(), Ok("KEL130_CHILD_READY")) {
+                ready = true;
+                let _ = ready_tx.send(true);
+            }
+        }
+        if !ready {
+            let _ = ready_tx.send(false);
+        }
+    });
+    let ready = match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(ready) => ready,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            drop(broker);
+            std::fs::remove_dir_all(&fixture).expect("cleanup timed-out fixture");
+            panic!("child readiness timed out: {error}");
+        }
+    };
+    drop(broker);
+    let rename_result = std::fs::rename(&root, &moved);
+    drop(child.stdin.take());
+    let child_status = child.wait().expect("wait for bounded child");
+    reader.join().expect("join child output reader");
+    if rename_result.is_ok() {
+        std::fs::remove_dir_all(&moved).expect("remove moved root");
+    } else {
+        std::fs::remove_dir_all(&root).expect("remove root after child exit");
+    }
+    std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+    assert!(ready, "child exited before readiness");
+    rename_result.expect("live child did not inherit retained root handle");
+    assert!(
+        child_status.success(),
+        "inheritance child failed: {child_status}"
+    );
 }
 
 #[test]
