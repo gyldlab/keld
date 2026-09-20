@@ -90,7 +90,7 @@ prints **`KELD-CLI-046`** first, then the same block, and exits **2**.
 
 ### 1.5 `keld create <name>`
 
-Writes the seven embedded template files into `./<name>`. Nothing is downloaded and
+Writes the eight embedded template files into `./<name>`. Nothing is downloaded and
 nothing is installed; the files are compiled into the binary with `include_str!`
 ([`template.rs`](../../crates/keld-cli/src/template.rs)).
 
@@ -104,6 +104,7 @@ my-app/.gitignore
 my-app/index.html
 my-app/keld.config.ts
 my-app/package.json
+my-app/src/echo.generated.ts
 my-app/src/kipc-transport.ts
 my-app/src/kipc.ts
 my-app/src/main.ts
