@@ -667,9 +667,7 @@ pub fn evaluate(
     if arr.is_empty() || arr.iter().any(|value| !value.is_string()) {
         return deny_not_granted(operation, path);
     }
-    if path_has_dotdot(path)
-        || (is_filesystem_capability(operation) && validate_fs_request_path(path).is_err())
-    {
+    if path_has_dotdot(path) {
         return deny_out_of_scope(operation, path, arr);
     }
     let Some(grant_index) = arr.iter().position(|value| {
@@ -817,6 +815,39 @@ fn is_filesystem_capability(operation: &str) -> bool {
     matches!(operation, "fs.read" | "fs.write")
 }
 
+/// Validates the retained filesystem consumer's request grammar before dispatch.
+///
+/// The capability-agnostic [`evaluate`] matcher deliberately preserves its public
+/// literal-string behavior for tooling such as permission explain. Privileged
+/// filesystem dispatch calls this guard-owned validator before `evaluate`, so a
+/// relative, variable-bearing, repeated-separator, `.` or otherwise unserviceable
+/// request is `KELD-GUARD002` without entering a broker handler.
+///
+/// # Errors
+///
+/// Returns [`DenyReason::OutOfScope`] for invalid `fs.read` / `fs.write` request
+/// syntax. Other capabilities are not filesystem paths and pass unchanged.
+pub fn validate_fs_request(
+    manifest: &PermissionsManifest,
+    operation: &str,
+    path: &str,
+) -> Result<(), DenyReason> {
+    if !is_filesystem_capability(operation) || validate_fs_request_path(path).is_ok() {
+        return Ok(());
+    }
+    let scopes = grant_node(manifest, operation)
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |values| {
+            values.iter().filter_map(Value::as_str).collect()
+        });
+    Err(DenyReason::OutOfScope {
+        capability: operation.to_owned(),
+        scope: scopes.join(", "),
+        json_pointer: json_pointer_for(operation),
+        requested: path.to_owned(),
+    })
+}
+
 fn validate_fs_request_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("path is empty".to_owned());
@@ -895,39 +926,30 @@ fn validate_windows_component(component: &str) -> Result<(), String> {
         return Err("Windows components cannot end with dot or space".to_owned());
     }
     let basename = component.split('.').next().unwrap_or(component);
-    let upper = basename.to_ascii_uppercase();
-    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || matches!(
-            upper.as_str(),
-            "COM1"
-                | "COM2"
-                | "COM3"
-                | "COM4"
-                | "COM5"
-                | "COM6"
-                | "COM7"
-                | "COM8"
-                | "COM9"
-                | "LPT1"
-                | "LPT2"
-                | "LPT3"
-                | "LPT4"
-                | "LPT5"
-                | "LPT6"
-                | "LPT7"
-                | "LPT8"
-                | "LPT9"
-                | "COM¹"
-                | "COM²"
-                | "COM³"
-                | "LPT¹"
-                | "LPT²"
-                | "LPT³"
-        );
-    if reserved {
+    if is_windows_reserved_basename(basename) {
         return Err("Windows reserved device basename is not serviceable".to_owned());
     }
     Ok(())
+}
+
+fn is_windows_reserved_basename(basename: &str) -> bool {
+    ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|reserved| basename.eq_ignore_ascii_case(reserved))
+        || ["COM", "LPT"].iter().any(|prefix| {
+            strip_ascii_prefix(basename, prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+}
+
+fn strip_ascii_prefix<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
 }
 
 fn grant_node<'a>(manifest: &'a PermissionsManifest, capability: &str) -> Option<&'a Value> {
@@ -1838,16 +1860,27 @@ mod tests {
     fn filesystem_request_grammar_denies_before_matching() {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["/tmp/root/**"]}}}"#).expect("manifest");
-        assert!(matches!(
-            eval_app(&manifest, "fs.read", "/tmp/root/file"),
-            Decision::Allow(_)
-        ));
+        assert!(validate_fs_request(&manifest, "fs.read", "/tmp/root/file").is_ok());
         for invalid in ["", ".", "relative", "/tmp/root//file", "/tmp/root/./file"] {
-            let decision = eval_app(&manifest, "fs.read", invalid);
+            let decision = validate_fs_request(&manifest, "fs.read", invalid);
             assert!(
-                matches!(decision, Decision::Deny(DenyReason::OutOfScope { .. })),
+                matches!(decision, Err(DenyReason::OutOfScope { .. })),
                 "invalid filesystem request `{invalid}` must be guard out-of-scope: {decision:?}"
             );
         }
+    }
+
+    #[test]
+    fn generic_evaluate_preserves_literal_variable_matching_for_tooling() {
+        let manifest =
+            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+        assert!(matches!(
+            eval_app(&manifest, "fs.read", "$APPDATA/file"),
+            Decision::Allow(_)
+        ));
+        assert!(matches!(
+            validate_fs_request(&manifest, "fs.read", "$APPDATA/file"),
+            Err(DenyReason::OutOfScope { .. })
+        ));
     }
 }

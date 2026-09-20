@@ -1765,10 +1765,11 @@ manifest decoder.
   percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
   is a byte comparison, so spell destinations exactly as the host will send them.
   **v0:** the capability-agnostic matcher still treats `$VARS` as literals and
-  rejects `..`. The live `fs.read` / `fs.write` decision additionally requires
-  one absolute forward-slash spelling with no empty, `.` or `..` component;
-  malformed request syntax is `KELD-GUARD002` before the retained broker can
-  query a resource. `FsBroker::prepare` separately rejects variable-bearing or
+  rejects `..`, so permission-explain tooling preserves that literal contract.
+  Privileged `fs.read` / `fs.write` dispatch additionally requires one absolute
+  forward-slash spelling with no empty, `.` or `..` component; malformed request
+  syntax is `KELD-GUARD002` before the retained broker can query a resource.
+  `FsBroker::prepare` separately rejects variable-bearing or
   platform-inapplicable filesystem scopes as `KELD-NATIVE-008`. Symlink
   canonicalization is not performed by the string matcher: KEL-130's retained
   component walker owns link resolution after Allow. The authority rule above

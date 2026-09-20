@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use keld_guard::{
     Decision, DenyReason, ManifestError, PermissionsManifest, Principal, evaluate, load_manifest,
-    parse_manifest,
+    parse_manifest, validate_fs_request,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -278,8 +278,15 @@ fn decision_text(decision: &Decision) -> String {
     }
 }
 
+fn privileged_decision(manifest: &PermissionsManifest, case: Case) -> Decision {
+    match validate_fs_request(manifest, case.operation, case.path) {
+        Ok(()) => evaluate(manifest, Principal::AppProcess, case.operation, case.path),
+        Err(reason) => Decision::Deny(reason),
+    }
+}
+
 fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
-    let actual = evaluate(manifest, Principal::AppProcess, case.operation, case.path);
+    let actual = privileged_decision(manifest, case);
     match (case.expected, actual) {
         (ExpectedDecision::Allow, Decision::Allow(_)) => "allow".to_owned(),
         (
@@ -348,14 +355,7 @@ fn fixture_decision_matrix_matches_authority_contract() {
 fn decision_snapshot(manifest: &PermissionsManifest) -> Vec<String> {
     CASES
         .iter()
-        .map(|case| {
-            decision_text(&evaluate(
-                manifest,
-                Principal::AppProcess,
-                case.operation,
-                case.path,
-            ))
-        })
+        .map(|case| decision_text(&privileged_decision(manifest, *case)))
         .collect()
 }
 

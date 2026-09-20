@@ -725,6 +725,7 @@ enum OpenPurpose {
     Write,
 }
 
+#[derive(Debug)]
 enum WalkResult {
     File(File),
     Missing { parent: Dir, leaf: String },
@@ -737,14 +738,26 @@ enum PendingComponent {
     Normal(String),
 }
 
-// One explicit state machine keeps component counting, link expansion, retained
-// directory ownership, and final no-follow opening in one auditable policy owner.
-#[allow(clippy::too_many_lines, clippy::needless_continue)]
 fn walk(
     grant: &RetainedGrant,
     requested: &str,
     purpose: OpenPurpose,
     progress: &Progress<'_>,
+) -> Result<WalkResult, FsError> {
+    walk_with_observer(grant, requested, purpose, progress, |_, _| {})
+}
+
+// One explicit state machine keeps component counting, link expansion, retained
+// directory ownership, and final no-follow opening in one auditable policy owner.
+// The test observer runs after metadata and before open; production supplies a
+// zero-sized no-op closure, so race oracles exercise the same state machine.
+#[allow(clippy::too_many_lines, clippy::needless_continue)]
+fn walk_with_observer(
+    grant: &RetainedGrant,
+    requested: &str,
+    purpose: OpenPurpose,
+    progress: &Progress<'_>,
+    mut after_metadata: impl FnMut(&str, bool),
 ) -> Result<WalkResult, FsError> {
     let relative = relative_request(grant, requested)?;
     let mut pending = relative
@@ -798,6 +811,9 @@ fn walk(
                     })?;
                 let metadata_result = current.symlink_metadata(&name);
                 progress.check_read()?;
+                if metadata_result.is_ok() {
+                    after_metadata(&name, final_component);
+                }
                 let metadata = match metadata_result {
                     Ok(metadata) => metadata,
                     Err(source)
@@ -854,17 +870,11 @@ fn walk(
                     let file_result = open_existing_file(current, &name, purpose, &options);
                     progress.check_read()?;
                     let file = file_result.map_err(|source| {
-                        if matches!(
-                            source.kind(),
-                            ErrorKind::PermissionDenied | ErrorKind::InvalidInput
-                        ) {
-                            FsError::ResolvedOutOfScope {
-                                requested: requested.to_owned(),
-                                detail: "final object changed during no-follow open".to_owned(),
-                            }
-                        } else {
-                            FsError::Io(source)
-                        }
+                        classify_component_open_error(
+                            source,
+                            requested,
+                            "final object changed during no-follow open",
+                        )
                     })?;
                     let opened = progress.finish_read_io(file.metadata())?;
                     ensure_regular_and_device(&opened, grant, requested)?;
@@ -879,17 +889,11 @@ fn walk(
                 let directory_result = open_child_directory(current, &name);
                 progress.check_read()?;
                 let directory = directory_result.map_err(|source| {
-                    if matches!(
-                        source.kind(),
-                        ErrorKind::PermissionDenied | ErrorKind::InvalidInput
-                    ) {
-                        FsError::ResolvedOutOfScope {
-                            requested: requested.to_owned(),
-                            detail: "directory component changed during no-follow open".to_owned(),
-                        }
-                    } else {
-                        FsError::Io(source)
-                    }
+                    classify_component_open_error(
+                        source,
+                        requested,
+                        "directory component changed during no-follow open",
+                    )
                 })?;
                 let opened = progress.finish_read_io(directory.dir_metadata())?;
                 if opened.dev() != grant.root_device {
@@ -906,6 +910,41 @@ fn walk(
         ErrorKind::NotFound,
         "retained traversal produced no final object",
     )))
+}
+
+fn classify_component_open_error(source: io::Error, requested: &str, detail: &str) -> FsError {
+    #[cfg(target_os = "linux")]
+    let crosses_device = source.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error());
+    #[cfg(not(target_os = "linux"))]
+    let crosses_device = source.kind() == ErrorKind::CrossesDevices;
+    if crosses_device {
+        return FsError::UnsupportedObject {
+            requested: requested.to_owned(),
+            detail: "mount or volume boundary crossed".to_owned(),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    let namespace_race = source.raw_os_error().is_some_and(|raw| {
+        raw == rustix::io::Errno::LOOP.raw_os_error()
+            || raw == rustix::io::Errno::NOTDIR.raw_os_error()
+            || raw == rustix::io::Errno::NOENT.raw_os_error()
+    });
+    #[cfg(not(target_os = "linux"))]
+    let namespace_race = matches!(
+        source.kind(),
+        ErrorKind::NotADirectory
+            | ErrorKind::NotFound
+            | ErrorKind::PermissionDenied
+            | ErrorKind::InvalidInput
+    );
+    if namespace_race {
+        FsError::ResolvedOutOfScope {
+            requested: requested.to_owned(),
+            detail: detail.to_owned(),
+        }
+    } else {
+        FsError::Io(source)
+    }
 }
 
 fn relative_request<'a>(grant: &'a RetainedGrant, requested: &'a str) -> Result<&'a str, FsError> {
@@ -1374,5 +1413,160 @@ mod tests {
             Some("file")
         );
         assert_eq!(strip_subtree_anchor("/tmp/root", "/tmp/rooted"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_owned_root(case: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "keld-kel130-linux-race-{case}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("create fixture root");
+        root
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_grant(root: &Path) -> RetainedGrant {
+        let directory = Dir::open_ambient_dir(root, ambient_authority()).expect("retain root");
+        let root_device = directory.dir_metadata().expect("root metadata").dev();
+        RetainedGrant {
+            grant_index: 0,
+            kind: PathScopeKind::Subtree,
+            anchor: root.to_str().expect("UTF-8 fixture").to_owned(),
+            exact_leaf: None,
+            root: directory,
+            root_device,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_fresh_linux_read(grant: &RetainedGrant, root: &Path, progress: &Progress<'_>) {
+        let requested = root.join("fresh");
+        let result = walk(
+            grant,
+            requested.to_str().expect("UTF-8 fixture"),
+            OpenPurpose::Read,
+            progress,
+        )
+        .expect("fresh retained read");
+        let WalkResult::File(mut file) = result else {
+            panic!("fresh file must exist");
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read fresh file");
+        assert_eq!(bytes, b"fresh");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_final_swap_is_namespace_race_and_never_reads_outside() {
+        use std::os::unix::fs::symlink;
+        use std::sync::{Arc, Barrier};
+
+        let fixture = linux_owned_root("final");
+        let granted = fixture.join("granted");
+        let outside = fixture.join("outside");
+        std::fs::create_dir(&granted).expect("granted root");
+        std::fs::write(granted.join("victim"), b"inside").expect("inside file");
+        std::fs::write(granted.join("fresh"), b"fresh").expect("fresh file");
+        std::fs::write(&outside, b"outside").expect("outside file");
+        let grant = linux_grant(&granted);
+        let cancelled = AtomicBool::new(false);
+        let progress = Progress::new(&cancelled);
+        let reached = Arc::new(Barrier::new(2));
+        let swapped = Arc::new(Barrier::new(2));
+        let worker_reached = Arc::clone(&reached);
+        let worker_swapped = Arc::clone(&swapped);
+        let victim = granted.join("victim");
+        let outside_for_worker = outside.clone();
+        let worker = std::thread::spawn(move || {
+            worker_reached.wait();
+            std::fs::remove_file(&victim).expect("remove original final file");
+            symlink(&outside_for_worker, &victim).expect("install outside final link");
+            worker_swapped.wait();
+        });
+        let requested = granted.join("victim");
+        let error = walk_with_observer(
+            &grant,
+            requested.to_str().expect("UTF-8 fixture"),
+            OpenPurpose::Read,
+            &progress,
+            |name, final_component| {
+                if name == "victim" && final_component {
+                    reached.wait();
+                    swapped.wait();
+                }
+            },
+        )
+        .expect_err("final swap must fail closed");
+        worker.join().expect("swap worker");
+        assert_eq!(error.code(), "KELD-NATIVE-002");
+        assert_eq!(
+            std::fs::read(&outside).expect("outside sentinel"),
+            b"outside"
+        );
+        assert_fresh_linux_read(&grant, &granted, &progress);
+        drop(grant);
+        std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_intermediate_swap_is_namespace_race_and_never_reads_outside() {
+        use std::os::unix::fs::symlink;
+        use std::sync::{Arc, Barrier};
+
+        let fixture = linux_owned_root("intermediate");
+        let granted = fixture.join("granted");
+        let outside = fixture.join("outside");
+        std::fs::create_dir(&granted).expect("granted root");
+        std::fs::create_dir(granted.join("victim")).expect("inside directory");
+        std::fs::write(granted.join("victim/sentinel"), b"inside").expect("inside sentinel");
+        std::fs::write(granted.join("fresh"), b"fresh").expect("fresh file");
+        std::fs::create_dir(&outside).expect("outside directory");
+        std::fs::write(outside.join("sentinel"), b"outside").expect("outside sentinel");
+        let grant = linux_grant(&granted);
+        let cancelled = AtomicBool::new(false);
+        let progress = Progress::new(&cancelled);
+        let reached = Arc::new(Barrier::new(2));
+        let swapped = Arc::new(Barrier::new(2));
+        let worker_reached = Arc::clone(&reached);
+        let worker_swapped = Arc::clone(&swapped);
+        let victim = granted.join("victim");
+        let original = granted.join("original");
+        let outside_for_worker = outside.clone();
+        let worker = std::thread::spawn(move || {
+            worker_reached.wait();
+            std::fs::rename(&victim, &original).expect("move original directory");
+            symlink(&outside_for_worker, &victim).expect("install outside directory link");
+            worker_swapped.wait();
+        });
+        let requested = granted.join("victim/sentinel");
+        let error = walk_with_observer(
+            &grant,
+            requested.to_str().expect("UTF-8 fixture"),
+            OpenPurpose::Read,
+            &progress,
+            |name, final_component| {
+                if name == "victim" && !final_component {
+                    reached.wait();
+                    swapped.wait();
+                }
+            },
+        )
+        .expect_err("intermediate swap must fail closed");
+        worker.join().expect("swap worker");
+        assert_eq!(error.code(), "KELD-NATIVE-002");
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).expect("outside sentinel"),
+            b"outside"
+        );
+        assert_fresh_linux_read(&grant, &granted, &progress);
+        drop(grant);
+        std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
     }
 }

@@ -213,9 +213,71 @@ fn volume_root_scope_reaches_an_owned_descendant() {
 }
 
 #[cfg(unix)]
+fn owner_handle_count() -> usize {
+    std::fs::read_dir("/dev/fd")
+        .expect("open owner handle census")
+        .count()
+}
+
+#[cfg(unix)]
 #[test]
-fn partial_prepare_failure_releases_already_opened_roots() {
+fn partial_prepare_handle_census_child() {
+    if std::env::var_os("KELD_KEL130_HANDLE_CENSUS_CHILD").is_none() {
+        return;
+    }
     let fixture = owned_root("prepare-unwind");
+    let valid = fixture.join("valid");
+    let missing = fixture.join("missing");
+    std::fs::create_dir(&valid).expect("valid root");
+    let text = format!(
+        r#"{{"app":{{"fs":{{"read":["{}/**","{}/**"]}}}}}}"#,
+        spelling(&valid),
+        spelling(&missing)
+    );
+    let verified = verified_from_text(&fixture, "unwind.jsonc", &text);
+    let baseline = owner_handle_count();
+    let deliberate = std::fs::File::open(&valid).expect("deliberate retained directory handle");
+    assert_eq!(
+        owner_handle_count(),
+        baseline + 1,
+        "census must detect the deliberate retained-directory-handle mutation"
+    );
+    drop(deliberate);
+    assert_eq!(owner_handle_count(), baseline, "negative control cleanup");
+    let error = FsBroker::prepare(&verified).expect_err("second scope open fails");
+    assert_eq!(error.code(), "KELD-NATIVE-008");
+    assert_eq!(
+        owner_handle_count(),
+        baseline,
+        "partial preparation must release every provisional owner handle before returning"
+    );
+    std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_prepare_failure_restores_isolated_owner_handle_census() {
+    let output = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .args([
+            "--exact",
+            "partial_prepare_handle_census_child",
+            "--nocapture",
+        ])
+        .env("KELD_KEL130_HANDLE_CENSUS_CHILD", "1")
+        .output()
+        .expect("run isolated handle census");
+    assert!(
+        output.status.success(),
+        "isolated handle census failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn partial_prepare_failure_releases_roots_for_windows_rename() {
+    let fixture = owned_root("prepare-unwind-windows");
     let valid = fixture.join("valid");
     let moved = fixture.join("moved");
     let missing = fixture.join("missing");
@@ -228,7 +290,7 @@ fn partial_prepare_failure_releases_already_opened_roots() {
     let verified = verified_from_text(&fixture, "unwind.jsonc", &text);
     let error = FsBroker::prepare(&verified).expect_err("second scope open fails");
     assert_eq!(error.code(), "KELD-NATIVE-008");
-    std::fs::rename(&valid, &moved).expect("first provisional root was released");
+    std::fs::rename(&valid, &moved).expect("provisional Windows handle was released");
     std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
 }
 

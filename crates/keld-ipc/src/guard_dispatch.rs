@@ -11,7 +11,10 @@
 //! an unprivileged demo, not an operation with OS authority
 //! (`crate::session::serve_echo_session` stays ungated).
 
-use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate};
+use keld_guard::{
+    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate,
+    validate_fs_request,
+};
 
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
 /// `handler` on [`Decision::Allow`]. On [`Decision::Deny`], `handler`'s
@@ -49,6 +52,7 @@ pub fn dispatch_privileged<T>(
     path: &str,
     handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
+    validate_fs_request(manifest, operation, path)?;
     match evaluate(manifest, principal, operation, path) {
         Decision::Allow(permit) => Ok(handler(&permit)),
         Decision::Deny(reason) => Err(reason),
@@ -128,6 +132,27 @@ mod tests {
     }
 
     #[test]
+    fn invalid_filesystem_grammar_never_runs_the_handler() {
+        let manifest = manifest_granting_fs_read();
+        let ran = AtomicBool::new(false);
+        for invalid in [
+            "$APPDATA/notes.txt",
+            "/appdata//notes.txt",
+            "/appdata/./notes.txt",
+        ] {
+            let result =
+                dispatch_privileged(&manifest, Principal::AppProcess, "fs.read", invalid, |_| {
+                    ran.store(true, Ordering::SeqCst);
+                });
+            assert!(
+                matches!(result, Err(DenyReason::OutOfScope { .. })),
+                "{invalid}: {result:?}"
+            );
+            assert!(!ran.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
     fn missing_capability_is_not_granted_and_does_not_run_handler() {
         let manifest = parse_manifest("{}").expect("empty manifest");
         let ran = AtomicBool::new(false);
@@ -136,7 +161,9 @@ mod tests {
             Principal::AppProcess,
             "fs.write",
             "/appdata/x",
-            |_| ran.store(true, Ordering::SeqCst),
+            |_| {
+                ran.store(true, Ordering::SeqCst);
+            },
         );
         assert!(
             matches!(result, Err(DenyReason::NotGranted { .. })),
