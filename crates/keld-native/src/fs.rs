@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, ErrorKind, Read, Write};
-use std::path::{Component, Path};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -929,27 +929,45 @@ fn relative_request<'a>(grant: &'a RetainedGrant, requested: &'a str) -> Result<
 }
 
 fn link_components(target: &Path, requested: &str) -> Result<Vec<PendingComponent>, FsError> {
+    let target = target.to_str().ok_or_else(|| FsError::ResolvedOutOfScope {
+        requested: requested.to_owned(),
+        detail: "link target is not UTF-8".to_owned(),
+    })?;
+    #[cfg(windows)]
+    if Path::new(target).components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::Prefix(_) | std::path::Component::RootDir
+        )
+    }) {
+        return Err(FsError::ResolvedOutOfScope {
+            requested: requested.to_owned(),
+            detail: "absolute, rooted, or prefixed link target is forbidden".to_owned(),
+        });
+    }
+    #[cfg(not(windows))]
+    if target.starts_with('/') {
+        return Err(FsError::ResolvedOutOfScope {
+            requested: requested.to_owned(),
+            detail: "absolute, rooted, or prefixed link target is forbidden".to_owned(),
+        });
+    }
+
     let mut components = Vec::new();
-    for component in target.components() {
-        match component {
-            Component::CurDir => components.push(PendingComponent::Current),
-            Component::ParentDir => components.push(PendingComponent::Parent),
-            Component::Normal(name) => {
-                let name = name.to_str().ok_or_else(|| FsError::ResolvedOutOfScope {
-                    requested: requested.to_owned(),
-                    detail: "link target is not UTF-8".to_owned(),
-                })?;
+    #[cfg(windows)]
+    let names = target.split(['/', '\\']);
+    #[cfg(not(windows))]
+    let names = target.split('/');
+    for name in names.filter(|name| !name.is_empty()) {
+        match name {
+            "." => components.push(PendingComponent::Current),
+            ".." => components.push(PendingComponent::Parent),
+            name => {
                 validate_fs_component(name).map_err(|detail| FsError::ResolvedOutOfScope {
                     requested: requested.to_owned(),
                     detail,
                 })?;
                 components.push(PendingComponent::Normal(name.to_owned()));
-            }
-            Component::Prefix(_) | Component::RootDir => {
-                return Err(FsError::ResolvedOutOfScope {
-                    requested: requested.to_owned(),
-                    detail: "absolute, rooted, or prefixed link target is forbidden".to_owned(),
-                });
             }
         }
     }

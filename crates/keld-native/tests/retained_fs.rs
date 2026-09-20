@@ -435,10 +435,9 @@ fn post_expansion_component_limit_passes_256_and_denies_257() {
     use std::os::unix::fs::symlink;
 
     let root = owned_root("components");
-    std::fs::create_dir(root.join("x")).expect("counted directory");
     std::fs::write(root.join("file"), b"boundary").expect("boundary file");
-    let pass_target = format!("{}file", "x/../".repeat(127));
-    let deny_target = format!("./{}file", "x/../".repeat(127));
+    let pass_target = format!("{}file", "./".repeat(254));
+    let deny_target = format!("{}file", "./".repeat(255));
     symlink(&pass_target, root.join("pass")).expect("pass link");
     symlink(&deny_target, root.join("deny")).expect("deny link");
     let verified = manifest(&root);
