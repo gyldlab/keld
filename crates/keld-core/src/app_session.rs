@@ -4524,11 +4524,14 @@ mod tests {
         let identity = verified_windows_identity_from_current_exe()
             .expect("the signed fixture must produce a verified Windows identity");
         let app_id = identity.app_id.clone();
-        let publisher_scope = identity
-            .publisher_scope
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let publisher_scope = identity.publisher_scope.iter().fold(
+            String::with_capacity(identity.publisher_scope.len() * 2),
+            |mut text, byte| {
+                use std::fmt::Write as _;
+                write!(&mut text, "{byte:02x}").expect("format publisher scope");
+                text
+            },
+        );
         let profile_namespace = identity.profile_identity.namespace_segment();
         let mode = select_windows_profile_mode_with(false, || Ok(identity))
             .expect("the verified signed fixture must select a persistent profile");
