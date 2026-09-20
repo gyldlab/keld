@@ -505,13 +505,17 @@ release missing `full` is part of AC1):
   this host's update — accepting it on signature validity alone is exactly how feed
   misrouting, a shared signing key, or a wrong-target URL turns into a cross-app,
   cross-channel, or cross-platform install.
-- `version` **MUST** be strict semver (`MAJOR.MINOR.PATCH`, no build-metadata suffix
-  participating in ordering). Two `releases[]` entries with the same `version`, or two
-  `deltas[]` entries within one release with the same `fromVersion`, make the whole
-  manifest invalid — reject it outright (a schema violation, the same as an unknown
-  `schema` value), not "pick one arbitrarily." Different clients silently picking
-  different entries from the same signed manifest is the specific failure a duplicate
-  would cause if it were merely tolerated.
+- `version` **MUST** be strict SemVer. Pre-release identifiers participate in SemVer
+  precedence; build metadata may be present but does not. Any two `releases[]` versions
+  that compare equal in SemVer precedence make the whole manifest invalid, including
+  distinct strings such as `1.4.2+host` and `1.4.2+vendor`. Two `deltas[]` entries within
+  one release with the same exact `fromVersion` also make it invalid. Reject either case
+  outright (a schema violation, the same as an unknown `schema` value), not "pick one
+  arbitrarily." Different clients silently picking different entries from the same
+  signed manifest is the specific failure a duplicate would cause if it were merely
+  tolerated. Floor filtering and highest-release selection compare SemVer precedence;
+  the complete version string, including build metadata, remains part of the selected
+  artifact's exact identity. Delta `fromVersion` matching uses that exact identity.
 - Release selection is deterministic: among releases that pass the version-floor check
   (step 4 below), the client selects the single **highest** version, never "any
   newer" — there is exactly one answer to "what does this manifest ask me to install,"
@@ -521,6 +525,14 @@ release missing `full` is part of AC1):
   above) is a publish-time/`keld-pack` decision, not part of this wire contract — the
   client only ever looks for one entry whose `fromVersion` equals its own installed
   version.
+- Every `size` and `full.contentSize` value **MUST** use a positive base-10 JSON
+  integer with no sign, fraction or exponent, in the inclusive range
+  `1..=9007199254740991` (`2^53 - 1`, the interoperable JSON safe-integer ceiling).
+  Validate every release and delta entry before release selection or network access;
+  any other representation or value invalidates the manifest. Consumers use checked
+  `u64` counters and MUST NOT convert these values to `usize` or preallocate the declared
+  size. This wire ceiling preserves exact values across Rust and JavaScript; streaming
+  and ordinary storage failures still enforce practical resource limits.
 - `size` is **normative, not advisory**: downloads are bounded, streaming reads that
   reject an artifact once received bytes exceed `size` and reject a stream that ends
   short of it. A `size` field that nothing checks is not a contract; this fixture
@@ -530,7 +542,9 @@ release missing `full` is part of AC1):
   an enormous one). `full.contentSize` is the separate, explicit bound on that: the
   decompressor **MUST** be given that ceiling up front and abort mid-stream the moment
   produced output exceeds it, checked incrementally as bytes are produced — never by
-  fully decompressing first and measuring after.
+  fully decompressing first and measuring after. End-of-stream is valid only when the
+  produced canonical tar byte count exactly equals `full.contentSize`; both shorter and
+  longer output reject before extraction, even when `contentBlake3` otherwise matches.
 - Two hash domains, not one. `blake3` (present on both `full` and every `deltas[]`
   entry) is the digest of the **artifact's bytes as downloaded** — the `.zst` file
   exactly as served — and proves transport integrity of what was fetched, nothing
@@ -646,16 +660,17 @@ release missing `full` is part of AC1):
 2. Parse JSON only after step 1 passes, with a parser that rejects duplicate keys.
    Reject unknown `schema`. Reject if `app.id`, `channel`, or `target` do not match this
    host's identity/requested channel/own target (fail closed on any mismatch).
-3. Reject the whole manifest if any two `releases[]` entries share a `version`, or any
-   two `deltas[]` entries within one release share a `fromVersion` — see the schema
-   bullets above; this is a shape-validity check, independent of which release ends up
-   selected.
-4. **Filter** the remaining releases down to those whose `version` is **strictly
-   greater than the persisted version floor** (see below) — not merely greater than
-   the currently-installed version. This is filtering the eligible set, not rejecting
-   the manifest: a normal feed legitimately carries its whole release history (1.0,
-   1.1, … up to current), and a manifest is not invalid just because most of its
-   releases are older than this host's floor — only step 2/3's checks (signature,
+3. Reject the whole manifest if any two `releases[]` versions compare equal in SemVer
+   precedence (including strings that differ only in build metadata), or any two
+   `deltas[]` entries within one release share the same exact `fromVersion`. Reject any
+   `size` or `full.contentSize` outside the canonical safe-integer form and range above.
+   These are shape-validity checks, independent of which release ends up selected.
+4. **Filter** the remaining releases down to those whose `version` has SemVer
+   precedence **strictly greater than the persisted version floor** (see below) — not
+   merely greater than the currently-installed version. This is filtering the eligible
+   set, not rejecting the manifest: a normal feed legitimately carries its whole release
+   history (1.0, 1.1, … up to current), and a manifest is not invalid just because most
+   of its releases are older than this host's floor — only step 2/3's checks (signature,
    schema, identity, duplicates) reject the manifest as a whole. The floor, not the
    running version, is the replay/downgrade defense: after a local rollback the
    running version can be lower than the floor on purpose, so anything **remaining
@@ -670,9 +685,10 @@ release missing `full` is part of AC1):
    that ends short. Merely parsing a delta entry does not make delta support live.
 6. BLAKE3 the downloaded full artifact and compare it with `full.blake3`. Reject and
    discard on mismatch before decompression.
-7. Decompress while incrementally enforcing `full.contentSize`, then compare the
-   exact canonical tar bytes with `full.contentBlake3`. Only matching bytes may
-   enter the two-pass archive validation/extraction contract above.
+7. Decompress while incrementally enforcing `full.contentSize`, reject unless EOF lands
+   at exactly that byte count, then compare the exact canonical tar bytes with
+   `full.contentBlake3`. Only matching bytes may enter the two-pass archive
+   validation/extraction contract above.
 8. Future delta support may select one entry whose `fromVersion` matches the retained
    exact prior `content.tar`. It must bound and verify the patch artifact, verify
    reconstructed bytes against the selected release's `full.contentBlake3`, and on

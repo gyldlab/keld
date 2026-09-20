@@ -1,10 +1,10 @@
 # Spec: reliable full-package activation before delta optimization
 
-Status: approved
+Status: draft
 Linear: KEL-53 · Owner: GYLDLAB · Updated: 2026-09-19
-Approval: Linear comment `aba995f0-74fc-4696-b15d-0fa2cbee3775` · approved content head `e44e21cace974cc33e8176c94b599491f31cb918` · decision SHA-256 `3fddfd72070062d9b024e3029bf8561d43728ff5590e5bfe5c9311f166d4e288`
+Prior approval (superseded for this corrected draft): Linear comment `aba995f0-74fc-4696-b15d-0fa2cbee3775` · approved content head `e44e21cace974cc33e8176c94b599491f31cb918` · decision SHA-256 `3fddfd72070062d9b024e3029bf8561d43728ff5590e5bfe5c9311f166d4e288`
 
-{"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"e44e21cace974cc33e8176c94b599491f31cb918","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"aba995f0-74fc-4696-b15d-0fa2cbee3775","source":"active-maintainer-session-2026-09-20"}
+Previous approval payload: `{"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"e44e21cace974cc33e8176c94b599491f31cb918","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"aba995f0-74fc-4696-b15d-0fa2cbee3775","source":"active-maintainer-session-2026-09-20"}`
 
 ## 1. Goal & non-goals
 
@@ -27,7 +27,7 @@ Non-goals:
 - no arbitrary relaunch helper, shell command, self-update plugin, or role-writable
   update state;
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
-- no implementation before this approved specification lands.
+- no implementation before the corrected specification is approved and lands.
 
 ## 2. Spec refs
 
@@ -47,9 +47,9 @@ Non-goals:
 - KEL-90/KEL-129 own measurements and budgets.
 - PR #30 landed the current signed-manifest/feed wire contract.
 
-This approved contract keeps the v0 JSON bytes but intentionally revises its
+This proposal keeps the v0 JSON fields but intentionally revises their validation,
 client-selection and canonical-package semantics before any updater implementation
-exists. Approval of the exact content head recorded above re-approves the v0 public
+exists. Final approval of the corrected exact content head re-approves the v0 public
 contract; a post-implementation
 semantic change requires a new schema/version and wire review. The contract reuses the
 existing strict semantic-version floor. There is no release-sequence, expiry, or
@@ -75,20 +75,23 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
    a missing/corrupt floor fails closed even before the first update.
 2. Given `updates.json` and its detached signature, verification follows
    architecture 06's existing order: literal-byte signature; duplicate-member-rejecting
-   JSON; recognized schema; exact app/channel/target; strict semver; unique release and
-   delta entries; bounded sizes and valid digests. Invalid signatures, an unrecognized
-   schema value, duplicate JSON members, identity mismatch or malformed fields return a
-   typed actionable refusal and activate no bytes.
+   JSON; recognized schema; exact app/channel/target; strict SemVer; release versions
+   unique by SemVer precedence; exact-duplicate delta `fromVersion` rejection; canonical
+   positive `size`/`contentSize` integers in `1..=9007199254740991`; and valid
+   digests. Invalid signatures, an unrecognized schema value, duplicate JSON members,
+   equal-precedence releases, identity mismatch or malformed fields return a typed
+   actionable refusal and activate no bytes.
 3. Given a valid manifest, the existing persisted semantic-version floor filters for
-   versions strictly greater than the floor and the client selects the single highest
-   eligible version. If filtering leaves no eligible release, return a typed successful
+   versions with SemVer precedence strictly greater than the floor and the client selects
+   the single highest eligible version while retaining its complete version string as
+   artifact identity. If filtering leaves no eligible release, return a typed successful
    no-update result without downloading, staging or mutating update state. A signed
    release at or below the installed baseline is ineligible. Malformed manifests and a
    missing/corrupt floor under direct provenance still fail closed; rollback never lowers
    the floor.
-4. The first slice always downloads `full`, enforces compressed and
-   decompressed bounds, verifies both digests, validates the entire canonical archive
-   before extraction, and writes archive entries only beneath protected
+4. The first slice always downloads `full`, requires compressed and decompressed byte
+   counts to equal their declared bounds, verifies both digests, validates the entire
+   canonical archive before extraction, and writes archive entries only beneath protected
    `<version>/tree/`; retained `content.tar` and `.complete` are
    sibling updater metadata. A present delta entry has no effect. Exact ustar
    numeric/checksum/padding and complete-directory-entry golden vectors bind
@@ -182,7 +185,7 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
 
 | Atom / owner | Boundary and input → output | Failure mode | Independent observable |
 |---|---|---|---|
-| Feed wire / architecture 06 | signed v0 bytes → one highest eligible full release | invented fields or ambiguous parsing | immutable manifest bytes/signature fixtures |
+| Feed wire / architecture 06 | signed v0 bytes → one highest eligible full release | equal-precedence releases, noncanonical/unbounded sizes or ambiguous parsing | immutable manifest bytes/signature fixtures with SemVer and numeric boundary mutations |
 | Channel provenance / installer + host | protected receipt → direct admission or refusal | path heuristic mutates managed install | substitution table before feed/write counters |
 | Package / `keld-pack` | full artifact → one Windows v0 tree/policy | unsupported link/mode or hidden migration | canonical bytes and hostile archive corpus |
 | Trust / `keld-update` | verified version → monotonic semver floor | rollback lowers/bypasses floor | floor trace independent of runnable pointer |
@@ -360,7 +363,8 @@ Must not touch in Slice A:
 ## 6. Tasks
 
 - [ ] T1 — promote this spec with architecture 06 synchronization, generated docs and
-  exact-head review. No implementation starts until this approved specification lands.
+  exact-head review. No implementation starts until the corrected specification is
+  approved and lands.
 - [ ] T2 — v0 manifest/full verifier plus protected provenance admission/refusal; no
   delta dependency.
 - [ ] T3 — after the shared KEL-130 Windows component classifier exists, consume it in
@@ -381,7 +385,7 @@ Must not touch in Slice A:
 | Criteria | Proof and falsifier |
 |---|---|
 | 1, 11–12 | protected provenance/channel/profile/ACL table and installer seed crash cuts; legacy mode refuses before feed/write; mutate every identity/root/owner/floor and attempt hostile-role writes |
-| 2–4 | signed v0 fixtures, duplicate-member parser, floor selection including below-baseline replay, size/digest boundaries and complete ustar golden bytes; selecting a present delta fails Slice A |
+| 2–4 | signed v0 fixtures, duplicate-member parser, equal-precedence build-metadata release pair, floor selection including equal-precedence/different-metadata and below-baseline replay, numeric mutations (`0`, `-1`, fraction, exponent, `2^53 - 1`, `2^53`), shorter/exact/longer compressed and decompressed byte counts, digest boundaries and complete ustar golden bytes; selecting a present delta fails Slice A |
 | 5, 13 | canonical Windows tar/policy bytes; add link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases, extraction-order collisions, sibling-metadata names, or omit/change policy |
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
@@ -414,6 +418,7 @@ fallback rate and end-to-end success before adding complexity.
 
 ## 10. Open questions
 
-None in the technical contract. Human approval is bound to the exact pre-promotion
-content head and Linear receipt recorded above. The updater remains unimplemented; this
-approved specification authorizes its ordered tasks only after the specification lands.
+None in the technical contract. The prior exact-head approval is preserved above but is
+superseded for this corrected draft by the pre-merge review fixes. The updater remains
+unimplemented; implementation requires renewed human approval bound to the corrected
+exact content head and then the specification landing.
