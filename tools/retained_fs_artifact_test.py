@@ -99,6 +99,22 @@ class ArtifactTests(unittest.TestCase):
                 del changed[key]
                 self.reject(changed)
 
+    def test_unexpected_fields_reject_at_every_candidate_layer(self):
+        additions = [
+            ((), "extra"),
+            (("contract",), "extra"),
+            (("native_evidence", 0), "extra"),
+            (("native_evidence", 0, "raw_evidence"), "extra"),
+        ]
+        for path, key in additions:
+            with self.subTest(path=path):
+                changed = copy.deepcopy(self.candidate)
+                target = changed
+                for segment in path:
+                    target = target[segment]
+                target[key] = "ambiguous"
+                self.reject(changed)
+
     def test_contract_field_substitutions(self):
         for key, value in self.candidate["contract"].items():
             with self.subTest(field=key):

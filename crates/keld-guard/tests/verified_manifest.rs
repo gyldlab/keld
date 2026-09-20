@@ -97,15 +97,15 @@ fn one_shot_handle_is_the_only_hash_and_parse_source() {
     let verified = load_verified_manifest(file, display_path.clone(), expected)
         .expect("one-shot handle must supply both hash and parse bytes");
     assert_eq!(verified.verified_sha256(), expected);
-    assert_eq!(
+    assert!(matches!(
         evaluate(
             verified.manifest(),
             Principal::AppProcess,
             "fs.read",
             "/only-a/file.txt"
         ),
-        Decision::Allow
-    );
+        Decision::Allow(_)
+    ));
     let path_loaded = load_manifest(&display_path).expect("load display-path control");
     assert!(
         matches!(

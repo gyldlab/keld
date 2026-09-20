@@ -11,7 +11,7 @@
 //! an unprivileged demo, not an operation with OS authority
 //! (`crate::session::serve_echo_session` stays ungated).
 
-use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, evaluate};
+use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate};
 
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
 /// `handler` on [`Decision::Allow`]. On [`Decision::Deny`], `handler`'s
@@ -26,15 +26,31 @@ use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, evaluate}
 ///
 /// Returns the [`DenyReason`] `evaluate` produced when the decision is
 /// [`Decision::Deny`] — `handler` never runs in that case.
+///
+/// The result type cannot borrow the callback-only permit:
+///
+/// ```compile_fail
+/// # use keld_guard::{parse_manifest, Principal};
+/// # use keld_ipc::guard_dispatch::dispatch_privileged;
+/// # let manifest = parse_manifest(r#"{"app":{"fs":{"read":["/tmp/**"]}}}"#)?;
+/// let escaped = dispatch_privileged(
+///     &manifest,
+///     Principal::AppProcess,
+///     "fs.read",
+///     "/tmp/file",
+///     |permit| permit,
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn dispatch_privileged<T>(
     manifest: &PermissionsManifest,
     principal: Principal,
     operation: &str,
     path: &str,
-    handler: impl FnOnce() -> T,
+    handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
     match evaluate(manifest, principal, operation, path) {
-        Decision::Allow => Ok(handler()),
+        Decision::Allow(permit) => Ok(handler(&permit)),
         Decision::Deny(reason) => Err(reason),
     }
 }
@@ -58,7 +74,7 @@ mod tests {
             Principal::AppProcess,
             "fs.read",
             "$APPDATA/notes.txt",
-            || {
+            |_| {
                 // Real side effect, not `Decision::Allow` from a unit stub —
                 // observed via the flag after `dispatch_privileged` returns.
                 ran.store(true, Ordering::SeqCst);
@@ -67,6 +83,22 @@ mod tests {
         );
         assert_eq!(result, Ok(42));
         assert!(ran.load(Ordering::SeqCst), "handler must have run on Allow");
+    }
+
+    #[test]
+    fn allow_lends_the_first_matching_grant_index() {
+        let manifest = parse_manifest(
+            r#"{"app":{"fs":{"read":["/unmatched/**","/matched/**","/matched/file"]}}}"#,
+        )
+        .expect("manifest");
+        let selected = dispatch_privileged(
+            &manifest,
+            Principal::AppProcess,
+            "fs.read",
+            "/matched/file",
+            keld_guard::ScopePermit::grant_index,
+        );
+        assert_eq!(selected, Ok(1), "first matching grant remains final");
     }
 
     #[test]
@@ -79,7 +111,7 @@ mod tests {
             Principal::AppProcess,
             "fs.read",
             "$DOCUMENTS/secret.txt",
-            || {
+            |_| {
                 ran.store(true, Ordering::SeqCst);
             },
         );
@@ -104,7 +136,7 @@ mod tests {
             Principal::AppProcess,
             "fs.write",
             "$APPDATA/x",
-            || ran.store(true, Ordering::SeqCst),
+            |_| ran.store(true, Ordering::SeqCst),
         );
         assert!(
             matches!(result, Err(DenyReason::NotGranted { .. })),
@@ -128,7 +160,7 @@ mod tests {
             webview,
             "fs.read",
             "$APPDATA/notes.txt", // in scope for AppProcess
-            || ran.store(true, Ordering::SeqCst),
+            |_| ran.store(true, Ordering::SeqCst),
         );
         assert!(
             matches!(result, Err(DenyReason::NotAppProcess { .. })),

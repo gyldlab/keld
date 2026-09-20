@@ -195,7 +195,7 @@ mod tests {
         let manifest = parse_manifest("{}").expect("empty manifest");
         let reason = match evaluate(&manifest, Principal::AppProcess, "fs.read", "$APPDATA/x") {
             Decision::Deny(reason) => reason,
-            Decision::Allow => unreachable!("empty manifest must deny fs.read"),
+            Decision::Allow(_) => unreachable!("empty manifest must deny fs.read"),
         };
         let err = CallError::from(&reason);
         assert_eq!(err.code, "KELD-GUARD001");

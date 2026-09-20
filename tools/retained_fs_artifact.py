@@ -78,6 +78,13 @@ def validate(artifact_bytes, *, approved_t0, publication, repo, current_main, ev
     except (ValueError, UnicodeError) as error:
         raise Invalid("invalid artifact JSON") from error
     require(isinstance(artifact, dict), "artifact must be object")
+    require(
+        set(artifact) == {
+            "schema", "node_id", "issue_id", "task_id", "status", "publisher_id",
+            "claim_id", "landed_head", "contract", "tasks", "native_evidence",
+        },
+        "terminal artifact fields must be exact",
+    )
     identity = {"schema": "keld.execution-artifact/v1", "node_id": "retained-filesystem",
                 "issue_id": "KEL-130", "task_id": "KEL-130/T1", "status": "passed"}
     for field, expected in identity.items():
@@ -110,6 +117,10 @@ def validate(artifact_bytes, *, approved_t0, publication, repo, current_main, ev
         require(approved_t0.get(field) == expected, "invalid approved T0 " + field)
     contract = artifact.get("contract")
     require(isinstance(contract, dict), "missing contract")
+    require(
+        set(contract) == {"landed_head", "spec_blob", "spec_sha256", "decision_digest"},
+        "contract fields must be exact",
+    )
     for field, length in (("landed_head", 40), ("spec_blob", 40),
                           ("spec_sha256", 64), ("decision_digest", 64)):
         digest(approved_t0.get(field), length, "approved T0 " + field)
@@ -140,6 +151,13 @@ def validate(artifact_bytes, *, approved_t0, publication, repo, current_main, ev
     root = Path(evidence_root).resolve(strict=True)
     for row in native:
         require(isinstance(row, dict), "native row must be object")
+        require(
+            set(row) == {
+                "os", "native", "device_id", "os_build", "source_head", "command",
+                "exit_code", "observable", "raw_evidence",
+            },
+            "native row fields must be exact",
+        )
         system = row.get("os")
         require(system in {"macOS", "Windows", "Linux"} and system not in seen_os,
                 "missing or duplicate native OS")
@@ -158,6 +176,7 @@ def validate(artifact_bytes, *, approved_t0, publication, repo, current_main, ev
             text(argument, "command argument")
         raw = row.get("raw_evidence")
         require(isinstance(raw, dict), "raw evidence required")
+        require(set(raw) == {"path", "sha256"}, "raw evidence fields must be exact")
         text(raw.get("path"), "raw path")
         digest(raw.get("sha256"), 64, "raw evidence SHA256")
         path = Path(raw["path"])

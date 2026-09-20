@@ -155,7 +155,10 @@ pub fn media_permission_allowed(
     let Some(capability) = kind.capability() else {
         return false;
     };
-    media_permission_decision(manifest, principal, capability) == Decision::Allow
+    matches!(
+        media_permission_decision(manifest, principal, capability),
+        Decision::Allow(_)
+    )
 }
 
 /// Maps `WebView2` permission kinds onto Keld capabilities. Unknown kinds fail
@@ -218,7 +221,7 @@ fn wry_media_decision(
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn wry_response(decision: Option<&Decision>) -> wry::PermissionResponse {
-    if matches!(decision, Some(Decision::Allow)) {
+    if matches!(decision, Some(Decision::Allow(_))) {
         wry::PermissionResponse::Allow
     } else {
         wry::PermissionResponse::Deny
@@ -374,7 +377,7 @@ fn trace_linux_policy_decision(
         return;
     };
     let decision = match decision {
-        Some(Decision::Allow) => "allow",
+        Some(Decision::Allow(_)) => "allow",
         Some(Decision::Deny(reason)) => reason.code(),
         None => return,
     };
@@ -514,14 +517,16 @@ mod tests {
     #[test]
     fn remote_webview_does_not_inherit_app_process_media_grant() {
         let manifest = camera_grant();
-        assert_eq!(
-            evaluate(
-                &manifest,
-                Principal::AppProcess,
-                WEB_CAMERA,
-                WEB_MEDIA_ORIGIN
+        assert!(
+            matches!(
+                evaluate(
+                    &manifest,
+                    Principal::AppProcess,
+                    WEB_CAMERA,
+                    WEB_MEDIA_ORIGIN
+                ),
+                Decision::Allow(_)
             ),
-            Decision::Allow,
             "control: /app web.camera still allows AppProcess — the media path must not use that"
         );
         let other = other_webview();
@@ -538,7 +543,7 @@ mod tests {
                     "other webview must not start capture on an AppProcess camera grant"
                 );
             }
-            Decision::Allow => {
+            Decision::Allow(_) => {
                 panic!("other webview must not inherit AppProcess camera grant, got Allow")
             }
         }
@@ -570,7 +575,7 @@ mod tests {
                         "{presented:?} must not start capture"
                     );
                 }
-                Decision::Allow => {
+                Decision::Allow(_) => {
                     panic!("expected KELD-GUARD007, got Allow for {presented:?}")
                 }
             }
@@ -685,11 +690,11 @@ mod wry_tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        MediaPermission, WebviewId, WryPermissionCallback, WryPermissionInstaller,
-        media_permission_response, webview_media_principal, with_guarded_media_permissions,
-        wry_media_kind, wry_response,
+        MediaPermission, WEB_CAMERA, WEB_MEDIA_ORIGIN, WebviewId, WryPermissionCallback,
+        WryPermissionInstaller, media_permission_response, webview_media_principal,
+        with_guarded_media_permissions, wry_media_kind, wry_response,
     };
-    use keld_guard::parse_manifest;
+    use keld_guard::{Principal, evaluate, parse_manifest};
 
     struct FakeInstaller {
         installed: Arc<Mutex<Option<WryPermissionCallback>>>,
@@ -764,10 +769,14 @@ mod wry_tests {
 
     #[test]
     fn wry_response_mapper_preserves_allow_and_fails_closed() {
-        assert_eq!(
-            wry_response(Some(&keld_guard::Decision::Allow)),
-            wry::PermissionResponse::Allow
+        let manifest = parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
+        let allow = evaluate(
+            &manifest,
+            Principal::AppProcess,
+            WEB_CAMERA,
+            WEB_MEDIA_ORIGIN,
         );
+        assert_eq!(wry_response(Some(&allow)), wry::PermissionResponse::Allow);
         assert_eq!(wry_response(None), wry::PermissionResponse::Deny);
     }
 

@@ -85,13 +85,139 @@ impl Principal {
 }
 
 /// The outcome of a guard check.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// Operation may proceed.
-    Allow,
+    /// Operation may proceed under the first matching manifest grant.
+    Allow(ScopePermit),
     /// Operation is denied; the reason is safe to surface to developers.
     Deny(DenyReason),
 }
+
+/// Opaque proof naming the manifest grant selected by [`evaluate`].
+///
+/// Only the guard can mint a permit. Privileged dispatch lends it to one callback;
+/// callers may inspect the index while that callback runs but cannot manufacture a
+/// different match for a native broker.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScopePermit {
+    grant_index: usize,
+}
+
+impl ScopePermit {
+    /// Zero-based index of the first matching grant in manifest order.
+    #[must_use]
+    pub const fn grant_index(&self) -> usize {
+        self.grant_index
+    }
+}
+
+/// Filesystem scope shape retained by the native broker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathScopeKind {
+    /// One exact final leaf beneath a retained parent directory.
+    Exact,
+    /// A retained directory and all objects reachable beneath it.
+    Subtree,
+}
+
+/// One validated filesystem scope in manifest order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PathScope<'manifest> {
+    grant_index: usize,
+    pattern: &'manifest str,
+    kind: PathScopeKind,
+}
+
+impl<'manifest> PathScope<'manifest> {
+    /// Zero-based index in the capability's manifest array.
+    #[must_use]
+    pub const fn grant_index(&self) -> usize {
+        self.grant_index
+    }
+
+    /// Exact manifest spelling, including a terminal `/**` for subtrees.
+    #[must_use]
+    pub const fn pattern(&self) -> &'manifest str {
+        self.pattern
+    }
+
+    /// Whether this scope grants one leaf or a subtree root.
+    #[must_use]
+    pub const fn kind(&self) -> PathScopeKind {
+        self.kind
+    }
+}
+
+/// Validated filesystem scopes for one capability.
+#[derive(Debug)]
+pub struct PathScopes<'manifest> {
+    scopes: std::vec::IntoIter<PathScope<'manifest>>,
+}
+
+impl<'manifest> Iterator for PathScopes<'manifest> {
+    type Item = PathScope<'manifest>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.scopes.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.scopes.size_hint()
+    }
+}
+
+impl ExactSizeIterator for PathScopes<'_> {}
+
+/// Why a filesystem scope set cannot be retained safely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeSetError {
+    /// A capability declared more entries than the broker's fixed bound.
+    TooMany {
+        /// Number of declared entries.
+        actual: usize,
+        /// Maximum admitted entries.
+        maximum: usize,
+    },
+    /// The same literal scope appears more than once.
+    Duplicate {
+        /// First matching manifest index.
+        first_index: usize,
+        /// Later duplicate manifest index.
+        duplicate_index: usize,
+    },
+    /// A scope is not an absolute, normalized, serviceable filesystem path.
+    InvalidPath {
+        /// Manifest index of the invalid scope.
+        grant_index: usize,
+        /// Developer-facing reason.
+        detail: String,
+    },
+}
+
+impl fmt::Display for ScopeSetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooMany { actual, maximum } => {
+                write!(f, "{actual} scopes exceed the {maximum}-scope limit")
+            }
+            Self::Duplicate {
+                first_index,
+                duplicate_index,
+            } => write!(
+                f,
+                "scope {duplicate_index} duplicates earlier scope {first_index}"
+            ),
+            Self::InvalidPath {
+                grant_index,
+                detail,
+            } => write!(f, "scope {grant_index} is invalid: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for ScopeSetError {}
+
+const MAX_PATH_SCOPES: usize = 64;
 
 /// Why an operation was denied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -541,16 +667,216 @@ pub fn evaluate(
     if arr.is_empty() || arr.iter().any(|value| !value.is_string()) {
         return deny_not_granted(operation, path);
     }
-    if path_has_dotdot(path)
-        || !arr.iter().any(|value| {
-            value
-                .as_str()
-                .is_some_and(|scope| path_in_scope(path, scope))
-        })
-    {
+    if path_has_dotdot(path) {
         return deny_out_of_scope(operation, path, arr);
     }
-    Decision::Allow
+    let Some(grant_index) = arr.iter().position(|value| {
+        value
+            .as_str()
+            .is_some_and(|scope| path_in_scope(path, scope))
+    }) else {
+        return deny_out_of_scope(operation, path, arr);
+    };
+    Decision::Allow(ScopePermit { grant_index })
+}
+
+/// Returns the validated filesystem scopes for `fs.read` or `fs.write`.
+///
+/// Missing capabilities produce an empty iterator. Duplicate, excessive,
+/// malformed, relative, variable-bearing, or unsupported namespace scopes fail
+/// before the native broker opens any resource.
+///
+/// # Errors
+///
+/// Returns [`ScopeSetError`] when the capability is not a filesystem operation
+/// or its declared scope set is not serviceable by the retained broker.
+pub fn path_scopes<'manifest>(
+    manifest: &'manifest PermissionsManifest,
+    operation: &str,
+) -> Result<PathScopes<'manifest>, ScopeSetError> {
+    if !is_filesystem_capability(operation) {
+        return Err(ScopeSetError::InvalidPath {
+            grant_index: 0,
+            detail: format!("`{operation}` is not a filesystem capability"),
+        });
+    }
+    let Some(node) = grant_node(manifest, operation) else {
+        return Ok(PathScopes {
+            scopes: Vec::new().into_iter(),
+        });
+    };
+    let Some(values) = node.as_array() else {
+        return Err(ScopeSetError::InvalidPath {
+            grant_index: 0,
+            detail: "capability must be an array of path strings".to_owned(),
+        });
+    };
+    if values.len() > MAX_PATH_SCOPES {
+        return Err(ScopeSetError::TooMany {
+            actual: values.len(),
+            maximum: MAX_PATH_SCOPES,
+        });
+    }
+
+    let mut scopes = Vec::with_capacity(values.len());
+    for (grant_index, value) in values.iter().enumerate() {
+        let Some(pattern) = value.as_str() else {
+            return Err(ScopeSetError::InvalidPath {
+                grant_index,
+                detail: "scope must be a string".to_owned(),
+            });
+        };
+        if let Some(first_index) = scopes
+            .iter()
+            .find(|scope: &&PathScope<'_>| scope.pattern == pattern)
+            .map(|scope| scope.grant_index)
+        {
+            return Err(ScopeSetError::Duplicate {
+                first_index,
+                duplicate_index: grant_index,
+            });
+        }
+        if pattern.contains('$') {
+            return Err(ScopeSetError::InvalidPath {
+                grant_index,
+                detail: "unexpanded `$VAR` scopes are not serviceable".to_owned(),
+            });
+        }
+        let (path, kind) = if let Some(root) = pattern.strip_suffix("/**") {
+            let root = if root.is_empty() { "/" } else { root };
+            (root, PathScopeKind::Subtree)
+        } else {
+            (pattern, PathScopeKind::Exact)
+        };
+        validate_fs_path(path).map_err(|detail| ScopeSetError::InvalidPath {
+            grant_index,
+            detail,
+        })?;
+        if kind == PathScopeKind::Exact && is_fs_root(path) {
+            return Err(ScopeSetError::InvalidPath {
+                grant_index,
+                detail: "an exact scope must name a final file component".to_owned(),
+            });
+        }
+        scopes.push(PathScope {
+            grant_index,
+            pattern,
+            kind,
+        });
+    }
+    Ok(PathScopes {
+        scopes: scopes.into_iter(),
+    })
+}
+
+/// Validates one normal filesystem component using the guard-owned grammar.
+///
+/// Native traversal uses this for components introduced by link expansion so
+/// the broker cannot diverge from scope/request spelling rules.
+///
+/// # Errors
+///
+/// Returns a developer-facing reason when the component is empty, special, or
+/// reserved on the current platform.
+pub fn validate_fs_component(component: &str) -> Result<(), String> {
+    if component.is_empty() || matches!(component, "." | "..") {
+        return Err("empty, `.` and `..` components are not normal names".to_owned());
+    }
+    if component.contains(['\0', '/', '\\']) {
+        return Err("components cannot contain NUL or a path separator".to_owned());
+    }
+    #[cfg(windows)]
+    validate_windows_component(component)?;
+    Ok(())
+}
+
+fn is_filesystem_capability(operation: &str) -> bool {
+    matches!(operation, "fs.read" | "fs.write")
+}
+
+fn is_fs_root(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        path.len() == 3 && path.as_bytes()[1..] == *b":/"
+    }
+    #[cfg(not(windows))]
+    {
+        path == "/"
+    }
+}
+
+fn validate_fs_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("path is empty".to_owned());
+    }
+    if path.contains(['\0', '\\']) {
+        return Err("path contains NUL or a non-portable backslash separator".to_owned());
+    }
+    #[cfg(windows)]
+    let remainder = {
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_uppercase() || bytes[1] != b':' || bytes[2] != b'/'
+        {
+            return Err("path must begin with an uppercase drive and `:/`".to_owned());
+        }
+        &path[3..]
+    };
+    #[cfg(not(windows))]
+    let remainder = path
+        .strip_prefix('/')
+        .ok_or_else(|| "path must be absolute".to_owned())?;
+
+    if remainder.is_empty() {
+        return Ok(());
+    }
+    for component in remainder.split('/') {
+        validate_fs_component(component)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_component(component: &str) -> Result<(), String> {
+    if component.contains(':') {
+        return Err("alternate data streams are not serviceable".to_owned());
+    }
+    if component.ends_with(['.', ' ']) {
+        return Err("Windows components cannot end with dot or space".to_owned());
+    }
+    let basename = component.split('.').next().unwrap_or(component);
+    let upper = basename.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || matches!(
+            upper.as_str(),
+            "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+                | "COM¹"
+                | "COM²"
+                | "COM³"
+                | "LPT¹"
+                | "LPT²"
+                | "LPT³"
+        );
+    if reserved {
+        return Err("Windows reserved device basename is not serviceable".to_owned());
+    }
+    Ok(())
 }
 
 fn grant_node<'a>(manifest: &'a PermissionsManifest, capability: &str) -> Option<&'a Value> {
@@ -826,7 +1152,7 @@ mod tests {
                 assert_eq!(reason.code(), "KELD-GUARD001");
                 assert!(reason.fix().contains("/app/fs/read"), "{}", reason.fix());
             }
-            Decision::Allow => panic!("empty manifest must default-deny"),
+            Decision::Allow(_) => panic!("empty manifest must default-deny"),
         }
     }
 
@@ -1004,9 +1330,11 @@ mod tests {
             // `file:///etc` names the empty authority *and* a path under it.
             "file:///etc/shadow",
         ] {
-            assert_eq!(
-                eval_app(&manifest, "net.connect", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "net.connect", requested),
+                    Decision::Allow(_)
+                ),
                 "a grant that names its authority still owns its subtree: {requested}"
             );
         }
@@ -1030,9 +1358,11 @@ mod tests {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["C:/**","d:/data/**"]}}}"#).expect("manifest");
         for requested in ["C:/Users/app/x", "C://Users/app/x", "d:/data//cache/x"] {
-            assert_eq!(
-                eval_app(&manifest, "fs.read", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "fs.read", requested),
+                    Decision::Allow(_)
+                ),
                 "a drive-letter grant keeps plain path semantics: {requested}"
             );
         }
@@ -1059,9 +1389,11 @@ mod tests {
     fn a_one_letter_scheme_glob_is_a_path_glob_and_that_is_the_documented_residual() {
         let manifest =
             parse_manifest(r#"{"app":{"net":{"connect":["a:/**"]}}}"#).expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "net.connect", "a://evil.example.com"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&manifest, "net.connect", "a://evil.example.com"),
+                Decision::Allow(_)
+            ),
             "a one-letter scheme is indistinguishable from a drive root, so it \n             stays a path glob — architecture 03 §2 records it as the residual"
         );
         // The moment the scheme is longer than one character the ambiguity is
@@ -1095,9 +1427,11 @@ mod tests {
             "C:/Users/me/AppData/cache/https://example.com/index.html",
             "cache/https://example.com/index.html",
         ] {
-            assert_eq!(
-                eval_app(&manifest, "fs.read", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "fs.read", requested),
+                    Decision::Allow(_)
+                ),
                 "an embedded `://` must not turn a path into a URI: {requested}"
             );
         }
@@ -1135,9 +1469,11 @@ mod tests {
             (r#"{"app":{"fs":{"read":["//?/C:/**"]}}}"#, "//?/C:/Users/x"),
         ] {
             let manifest = parse_manifest(manifest_text).expect("manifest");
-            assert_eq!(
-                eval_app(&manifest, "fs.read", requested),
-                Decision::Allow,
+            assert!(
+                matches!(
+                    eval_app(&manifest, "fs.read", requested),
+                    Decision::Allow(_)
+                ),
                 "{manifest_text} names a destination and must still cover {requested}"
             );
         }
@@ -1155,16 +1491,21 @@ mod tests {
     fn allow_fails_if_deny_inverted() {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
+                Decision::Allow(_)
+            ),
             "in-scope path must allow — inverted deny/allow would fail this"
         );
-        assert_eq!(eval_app(&manifest, "fs.read", "$APPDATA"), Decision::Allow);
-        assert_ne!(
+        assert!(matches!(
+            eval_app(&manifest, "fs.read", "$APPDATA"),
+            Decision::Allow(_)
+        ));
+        assert!(!matches!(
             eval_app(&manifest, "fs.read", "$DOCUMENTS/notes.txt"),
-            Decision::Allow
-        );
+            Decision::Allow(_)
+        ));
     }
 
     #[test]
@@ -1183,9 +1524,11 @@ mod tests {
             "raw JSONC must not parse as JSON — otherwise this test cannot catch a missing stripper"
         );
         let manifest = parse_manifest(text).expect("jsonc with comments");
-        assert_eq!(
-            eval_app(&manifest, "fs.read", "https://example.com/x"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&manifest, "fs.read", "https://example.com/x"),
+                Decision::Allow(_)
+            ),
             "https:// inside a string must survive comment stripping"
         );
     }
@@ -1277,9 +1620,11 @@ mod tests {
 
         let camera_only =
             parse_manifest(r#"{"app":{"web":{"camera":["*"]}}}"#).expect("camera grant");
-        assert_eq!(
-            eval_app(&camera_only, "web.camera", "*"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&camera_only, "web.camera", "*"),
+                Decision::Allow(_)
+            ),
             "in-scope web.camera must allow — inverted deny/allow would fail this"
         );
         assert!(
@@ -1302,9 +1647,11 @@ mod tests {
     fn webview_does_not_inherit_app_grants() {
         let manifest =
             parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
-        assert_eq!(
-            eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
-            Decision::Allow,
+        assert!(
+            matches!(
+                eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
+                Decision::Allow(_)
+            ),
             "control: AppProcess must still allow the in-scope path"
         );
         let webview = Principal::Webview {
@@ -1363,5 +1710,72 @@ mod tests {
             Decision::Deny(DenyReason::NotGranted { .. }) => {}
             other => panic!("AppProcess + empty manifest must stay NotGranted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn filesystem_scope_iteration_preserves_order_and_shape() {
+        #[cfg(not(windows))]
+        let text = r#"{"app":{"fs":{"read":["/tmp/exact","/tmp/tree/**"]}}}"#;
+        #[cfg(windows)]
+        let text = r#"{"app":{"fs":{"read":["C:/tmp/exact","C:/tmp/tree/**"]}}}"#;
+        let manifest = parse_manifest(text).expect("manifest");
+        let scopes = path_scopes(&manifest, "fs.read")
+            .expect("valid scopes")
+            .collect::<Vec<_>>();
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0].grant_index(), 0);
+        assert_eq!(scopes[0].kind(), PathScopeKind::Exact);
+        assert_eq!(scopes[1].grant_index(), 1);
+        assert_eq!(scopes[1].kind(), PathScopeKind::Subtree);
+    }
+
+    #[test]
+    fn filesystem_scope_iteration_rejects_duplicate_relative_and_unexpanded_scopes() {
+        #[cfg(not(windows))]
+        let duplicate = r#"{"app":{"fs":{"read":["/tmp/x/**","/tmp/x/**"]}}}"#;
+        #[cfg(windows)]
+        let duplicate = r#"{"app":{"fs":{"read":["C:/tmp/x/**","C:/tmp/x/**"]}}}"#;
+        let manifest = parse_manifest(duplicate).expect("manifest");
+        assert!(matches!(
+            path_scopes(&manifest, "fs.read"),
+            Err(ScopeSetError::Duplicate {
+                first_index: 0,
+                duplicate_index: 1
+            })
+        ));
+        for invalid in ["relative/**", "$APPDATA/**"] {
+            let manifest =
+                parse_manifest(&format!(r#"{{"app":{{"fs":{{"read":["{invalid}"]}}}}}}"#))
+                    .expect("manifest");
+            assert!(matches!(
+                path_scopes(&manifest, "fs.read"),
+                Err(ScopeSetError::InvalidPath { grant_index: 0, .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn filesystem_scope_iteration_enforces_sixty_four_entry_limit() {
+        let scopes = (0..65)
+            .map(|index| {
+                #[cfg(not(windows))]
+                {
+                    format!("/tmp/keld-{index}/**")
+                }
+                #[cfg(windows)]
+                {
+                    format!("C:/tmp/keld-{index}/**")
+                }
+            })
+            .collect::<Vec<_>>();
+        let text = serde_json::json!({"app":{"fs":{"read":scopes}}}).to_string();
+        let manifest = parse_manifest(&text).expect("manifest");
+        assert!(matches!(
+            path_scopes(&manifest, "fs.read"),
+            Err(ScopeSetError::TooMany {
+                actual: 65,
+                maximum: 64
+            })
+        ));
     }
 }

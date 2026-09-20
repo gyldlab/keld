@@ -75,7 +75,7 @@ fn serve_marker_session<S: Read + Write>(
             FrameKind::Call if header.channel == MARKER_CHANNEL => {
                 let req: MarkerRequest = decode(&payload)?;
                 let outcome =
-                    dispatch_privileged(manifest, principal, "test.marker", &req.path, || {
+                    dispatch_privileged(manifest, principal, "test.marker", &req.path, |_| {
                         fs::write(&req.path, b"kel-69-marker")
                     });
                 match outcome {

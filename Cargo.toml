@@ -133,6 +133,20 @@ seccompiler = { version = "=0.5.0", default-features = false }
 # unprivileged Bubblewrap executable. Exact version is already lockfile-pinned
 # through tempfile; `fs` only, cold Linux admission path.
 rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"] }
+# --- Dependency review (KEL-130/T1 / AGENTS.md gate) ---
+# Names: cap-std =4.0.3 and cap-fs-ext =4.0.3
+# Purpose: safe retained-directory capabilities, handle-relative no-follow
+#   traversal, link inspection, and cross-platform handle metadata for the
+#   approved filesystem broker. Keld adds its own bounded explicit worklist,
+#   device-boundary checks, exact-leaf rule, and effect state machine.
+# Alternatives rejected: std ambient paths preserve authorize/reopen TOCTOU;
+#   keld-core's private loader is read-only and rejects all links; custom FFI
+#   would duplicate platform policy and require new production unsafe. Exact
+#   pins bind the reviewed Bytecode Alliance v4.0.3 source. Licenses are
+#   Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; neither crate declares
+#   an MSRV, so the workspace Rust 1.97 compile/test gates are the evidence.
+cap-std = { version = "=4.0.3", default-features = false }
+cap-fs-ext = { version = "=4.0.3", default-features = false, features = ["std"] }
 # KEL-78/T4: official safe Landlock ABI wrapper used by the in-sandbox
 # launcher after Bubblewrap's mount deny and before target exec. It applies the
 # highest supported filesystem/network ABI; a kernel without Landlock is

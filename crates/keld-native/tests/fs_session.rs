@@ -3,14 +3,17 @@
 #![allow(clippy::expect_used)] // extra test crate: expect is the assertion oracle
 
 use std::fs;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 
-use keld_guard::{PermissionsManifest, Principal, parse_manifest};
+use keld_guard::Principal;
+use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
 use keld_ipc::codec::decode;
 use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::link::{handshake_client, read_frame, write_frame};
 use keld_ipc::{CallError, IpcError, SessionToken};
-use keld_native::fs::{FS_CHANNEL, FsRequest, FsResponse, serve_fs_session};
+use keld_native::fs::{FS_CHANNEL, FsBroker, FsRequest, FsResponse, serve_fs_session};
+use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
 type Stream = std::os::unix::net::UnixStream;
@@ -55,12 +58,22 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-fn manifest_for(dir: &std::path::Path) -> PermissionsManifest {
-    parse_manifest(&format!(
-        r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#,
-        scope = scope_path(dir)
-    ))
-    .expect("manifest")
+fn verified_manifest(dir: &std::path::Path, text: &str) -> VerifiedManifest {
+    let path = dir.join("keld.permissions.jsonc");
+    fs::write(&path, text).expect("write manifest");
+    let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
+    load_verified_manifest(fs::File::open(&path).expect("open manifest"), path, digest)
+        .expect("verified manifest")
+}
+
+fn manifest_for(dir: &std::path::Path) -> VerifiedManifest {
+    verified_manifest(
+        dir,
+        &format!(
+            r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#,
+            scope = scope_path(dir)
+        ),
+    )
 }
 
 fn call_fs(
@@ -109,7 +122,16 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
         let manifest = manifest_for(&dir);
         let (mut client, mut server) = connected_pair();
         let handle = thread::spawn(move || {
-            serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+            let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+            let cancelled = AtomicBool::new(false);
+            serve_fs_session(
+                &mut server,
+                &test_token(),
+                &broker,
+                &manifest,
+                Principal::AppProcess,
+                &cancelled,
+            )
         });
 
         handshake_client(&mut client, &test_token()).expect("authenticate");
@@ -165,7 +187,16 @@ fn allow_write_then_read_over_a_real_kipc_session() {
 
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+        let cancelled = AtomicBool::new(false);
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &cancelled,
+        )
     });
 
     let write_result = call_fs(
@@ -204,7 +235,16 @@ fn allowed_read_of_a_missing_file_carries_the_broker_code_on_the_wire() {
 
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        let broker = FsBroker::prepare(&manifest).expect("prepare broker");
+        let cancelled = AtomicBool::new(false);
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &cancelled,
+        )
     });
 
     let result = call_fs(&mut client, &FsRequest::Read { path: missing }).expect("call");
@@ -230,11 +270,20 @@ fn deny_over_the_wire_leaves_no_file_and_carries_the_typed_reason() {
     let dir = temp_dir("deny");
     let file = scope_path(&dir.join("notes.txt"));
     // Empty manifest: no fs.write grant at all.
-    let manifest = parse_manifest("{}").expect("empty manifest");
+    let manifest = verified_manifest(&dir, "{}");
 
     let (mut client, mut server) = connected_pair();
     let handle = thread::spawn(move || {
-        serve_fs_session(&mut server, &test_token(), &manifest, Principal::AppProcess)
+        let broker = FsBroker::prepare(&manifest).expect("prepare empty broker");
+        let cancelled = AtomicBool::new(false);
+        serve_fs_session(
+            &mut server,
+            &test_token(),
+            &broker,
+            &manifest,
+            Principal::AppProcess,
+            &cancelled,
+        )
     });
 
     let result = call_fs(
