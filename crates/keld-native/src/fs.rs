@@ -473,6 +473,8 @@ impl FsBroker {
             progress.check_read()?;
             let remaining = MAX_FS_CONTENT_BYTES + 1 - output.len();
             let read_length = remaining.min(chunk.len());
+            #[cfg(test)]
+            fs_test_update_counters(|counters| counters.content_reads += 1);
             let count = progress.finish_read_io(file.read(&mut chunk[..read_length]))?;
             if count == 0 {
                 break;
@@ -508,6 +510,8 @@ impl FsBroker {
                 let metadata = progress.finish_read_io(file.metadata())?;
                 ensure_regular_and_device(&metadata, grant, path)?;
                 progress.check_write(false, 0, bytes.len(), None)?;
+                #[cfg(test)]
+                fs_test_update_counters(|counters| counters.truncate_calls += 1);
                 let result = file.set_len(0);
                 progress.check_write(true, 0, bytes.len(), result.err())?;
                 file
@@ -516,6 +520,8 @@ impl FsBroker {
                 progress.check_write(false, 0, bytes.len(), None)?;
                 let mut options = write_options();
                 options.create_new(true);
+                #[cfg(test)]
+                fs_test_update_counters(|counters| counters.create_calls += 1);
                 let result = create_new_file(&parent, &leaf, &options);
                 match result {
                     Ok(file) => {
@@ -560,6 +566,56 @@ impl FsBroker {
 std::thread_local! {
     static AFTER_WALK_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static FS_TEST_COUNTERS: std::cell::Cell<FsTestCounters> =
+        const { std::cell::Cell::new(FsTestCounters::new()) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FsTestCounters {
+    walk_entries: usize,
+    metadata_probes: usize,
+    target_opens: usize,
+    content_reads: usize,
+    create_calls: usize,
+    truncate_calls: usize,
+    content_writes: usize,
+    selected_grant_index: Option<usize>,
+}
+
+#[cfg(test)]
+impl FsTestCounters {
+    const fn new() -> Self {
+        Self {
+            walk_entries: 0,
+            metadata_probes: 0,
+            target_opens: 0,
+            content_reads: 0,
+            create_calls: 0,
+            truncate_calls: 0,
+            content_writes: 0,
+            selected_grant_index: None,
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn fs_test_reset_counters() {
+    FS_TEST_COUNTERS.with(|counters| counters.set(FsTestCounters::new()));
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn fs_test_counters() -> FsTestCounters {
+    FS_TEST_COUNTERS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn fs_test_update_counters(update: impl FnOnce(&mut FsTestCounters)) {
+    FS_TEST_COUNTERS.with(|slot| {
+        let mut counters = slot.get();
+        update(&mut counters);
+        slot.set(counters);
+    });
 }
 
 #[cfg(test)]
@@ -579,6 +635,8 @@ fn write_content<W: Write>(
     while offset < bytes.len() {
         progress.check_write(true, committed, bytes.len(), None)?;
         let end = (offset + FS_IO_CHUNK_BYTES).min(bytes.len());
+        #[cfg(test)]
+        fs_test_update_counters(|counters| counters.content_writes += 1);
         match writer.write(&bytes[offset..end]) {
             Ok(0) => {
                 return progress.check_write(
@@ -711,13 +769,18 @@ fn selected_grant<'a>(
     permit: &ScopePermit,
     requested: &str,
 ) -> Result<&'a RetainedGrant, FsError> {
-    grants
+    let grant = grants
         .iter()
         .find(|grant| grant.grant_index == permit.grant_index())
         .ok_or_else(|| FsError::ResolvedOutOfScope {
             requested: requested.to_owned(),
             detail: "matched guard grant has no retained resource".to_owned(),
-        })
+        })?;
+    #[cfg(test)]
+    fs_test_update_counters(|counters| {
+        counters.selected_grant_index = Some(grant.grant_index);
+    });
+    Ok(grant)
 }
 
 fn validate_request_shape(path: &str) -> Result<(), FsError> {
@@ -782,6 +845,8 @@ fn walk_with_observer(
     progress: &Progress<'_>,
     mut after_metadata: impl FnMut(&str, bool),
 ) -> Result<WalkResult, FsError> {
+    #[cfg(test)]
+    fs_test_update_counters(|counters| counters.walk_entries += 1);
     let relative = relative_request(grant, requested)?;
     let mut pending = relative
         .split('/')
@@ -832,6 +897,8 @@ fn walk_with_observer(
                         requested: requested.to_owned(),
                         detail: "retained directory stack became empty".to_owned(),
                     })?;
+                #[cfg(test)]
+                fs_test_update_counters(|counters| counters.metadata_probes += 1);
                 let metadata_result = current.symlink_metadata(&name);
                 progress.check_read()?;
                 if metadata_result.is_ok() {
@@ -890,6 +957,8 @@ fn walk_with_observer(
                         OpenPurpose::Read => read_options(),
                         OpenPurpose::Write => write_options(),
                     };
+                    #[cfg(test)]
+                    fs_test_update_counters(|counters| counters.target_opens += 1);
                     let file_result = open_existing_file(current, &name, purpose, &options);
                     progress.check_read()?;
                     let file = file_result.map_err(|source| {
@@ -2011,5 +2080,10 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    mod macos_acceptance {
+        include!("../tests/macos/retained_fs_acceptance.rs");
     }
 }
