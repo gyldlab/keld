@@ -1,10 +1,10 @@
 # Spec: reliable full-package activation before delta optimization
 
-Status: draft
+Status: approved
 Linear: KEL-53 · Owner: GYLDLAB · Updated: 2026-09-19
-Prior approval (superseded for this corrected draft): Linear comment `aba995f0-74fc-4696-b15d-0fa2cbee3775` · approved content head `e44e21cace974cc33e8176c94b599491f31cb918` · decision SHA-256 `3fddfd72070062d9b024e3029bf8561d43728ff5590e5bfe5c9311f166d4e288`
+Approval: Linear comment `b343d835-1528-461f-bda4-0fa5e238b5af` · approved corrected content head `a340acf0b5cfcbfab9111f938cd3ac2788219ccb` · decision SHA-256 `972b82947189b5d89c7c78d11547f0c0ef890a60bf36af1bdfb68d448fed2ed9`
 
-Previous approval payload: `{"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"e44e21cace974cc33e8176c94b599491f31cb918","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"aba995f0-74fc-4696-b15d-0fa2cbee3775","source":"active-maintainer-session-2026-09-20"}`
+{"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"a340acf0b5cfcbfab9111f938cd3ac2788219ccb","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"b343d835-1528-461f-bda4-0fa5e238b5af","source":"active-maintainer-session-2026-09-20"}
 
 ## 1. Goal & non-goals
 
@@ -27,7 +27,7 @@ Non-goals:
 - no arbitrary relaunch helper, shell command, self-update plugin, or role-writable
   update state;
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
-- no implementation before the corrected specification is approved and lands.
+- no implementation before this approved corrected specification lands.
 
 ## 2. Spec refs
 
@@ -47,9 +47,9 @@ Non-goals:
 - KEL-90/KEL-129 own measurements and budgets.
 - PR #30 landed the current signed-manifest/feed wire contract.
 
-This proposal keeps the v0 JSON fields but intentionally revises their validation,
+This approved corrected contract keeps the v0 JSON fields but intentionally revises their validation,
 client-selection and canonical-package semantics before any updater implementation
-exists. Final approval of the corrected exact content head re-approves the v0 public
+exists. Approval of the corrected exact content head recorded above re-approves the v0 public
 contract; a post-implementation
 semantic change requires a new schema/version and wire review. The contract reuses the
 existing strict semantic-version floor. There is no release-sequence, expiry, or
@@ -363,8 +363,8 @@ Must not touch in Slice A:
 ## 6. Tasks
 
 - [ ] T1 — promote this spec with architecture 06 synchronization, generated docs and
-  exact-head review. No implementation starts until the corrected specification is
-  approved and lands.
+  exact-head review. No implementation starts until this approved corrected specification
+  lands.
 - [ ] T2 — v0 manifest/full verifier plus protected provenance admission/refusal; no
   delta dependency.
 - [ ] T3 — after the shared KEL-130 Windows component classifier exists, consume it in
@@ -418,7 +418,6 @@ fallback rate and end-to-end success before adding complexity.
 
 ## 10. Open questions
 
-None in the technical contract. The prior exact-head approval is preserved above but is
-superseded for this corrected draft by the pre-merge review fixes. The updater remains
-unimplemented; implementation requires renewed human approval bound to the corrected
-exact content head and then the specification landing.
+None in the technical contract. Human approval is bound to the corrected exact content
+head and Linear receipt recorded above. The updater remains unimplemented; this approved
+corrected specification authorizes its ordered tasks only after the specification lands.
