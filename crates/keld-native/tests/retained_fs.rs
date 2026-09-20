@@ -310,6 +310,7 @@ fn hard_link_write_preserves_shared_object_identity() {
     let alias = root.join("alias");
     std::fs::write(&first, b"before").expect("seed file");
     std::fs::hard_link(&first, &alias).expect("hard link");
+    #[cfg(unix)]
     let before = std::fs::metadata(&first).expect("first metadata");
     let verified = manifest(&root);
     let broker = FsBroker::prepare(&verified).expect("prepare broker");
