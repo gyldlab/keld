@@ -985,14 +985,23 @@ mod tests {
     }
 
     #[test]
-    fn stage_copies_kipc_transport_sidecar_when_present() {
+    fn stage_copies_runtime_transport_but_not_source_time_echo_types() {
         let (_temp, project, source_host) = fixture();
         let bytes = b"export const KEL136 = 1;\n";
         fs::write(project.join("src/kipc-transport.ts"), bytes).expect("sidecar");
+        fs::write(
+            project.join("src/echo.generated.ts"),
+            b"export interface EchoRequest {}\n",
+        )
+        .expect("source-time generated types");
         let staged = stage_dev_boot(&project, &source_host).expect("stage with sidecar");
         assert_eq!(
             fs::read(staged.root().join("src/kipc-transport.ts")).expect("staged sidecar"),
             bytes
+        );
+        assert!(
+            !staged.root().join("src/echo.generated.ts").exists(),
+            "type-only generated declarations must not expand the private runtime stage"
         );
     }
 

@@ -5,10 +5,10 @@
  * `HELLO_TEMPLATE` list is an explicit allow-list, not a directory glob, and
  * this file is deliberately absent from it.
  *
- * Every expected byte sequence here is copied from the corresponding Rust
- * test (`crates/keld-ipc/src/{frame,codec,token}.rs`), not derived from this
- * file's own implementation — a wire-format bug on either side must fail
- * these, not just an internal roundtrip.
+ * Expected bytes either come from the shared receiver corpus or are copied
+ * from the corresponding Rust test (`crates/keld-ipc/src/{frame,codec,token}.rs`),
+ * never derived from this file's own implementation. A wire-format bug on
+ * either side must fail these, not just an internal roundtrip.
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -30,6 +30,23 @@ import {
   parseAppLink,
   parseWin32DiagnosticPort,
 } from "./kipc";
+
+const corpusPath = join(
+  import.meta.dir,
+  "../../../../keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
+);
+
+function corpusPayload(rowId: string): Uint8Array {
+  const line = readFileSync(corpusPath, "utf8")
+    .split("\n")
+    .find((candidate) => candidate.startsWith(`${rowId}\t`));
+  if (!line) throw new Error(`missing receiver corpus row ${rowId}`);
+  const payloadHex = line.split("\t")[3];
+  if (!payloadHex || payloadHex === "-" || payloadHex.length % 2 !== 0) {
+    throw new Error(`receiver corpus row ${rowId} has no complete payload`);
+  }
+  return Uint8Array.from(payloadHex.match(/../g)!.map((hex) => Number.parseInt(hex, 16)));
+}
 
 describe("frame header", () => {
   test("is 16 bytes and round-trips every kind", () => {
@@ -122,11 +139,9 @@ describe("postcard varint (LEB128)", () => {
 });
 
 describe("EchoRequest / EchoResponse postcard framing", () => {
-  test('matches the pinned Rust vector for {message:"kipc",count:3}', () => {
-    // Rust: crates/keld-ipc/src/codec.rs `echo_request_postcard_bytes_are_pinned`
-    // assert_eq!(bytes, [0x04, b'k', b'i', b'p', b'c', 0x03]);
+  test('matches shared echo-call-valid bytes for {message:"kipc",count:3}', () => {
     const bytes = encodeEchoRequest({ message: "kipc", count: 3 });
-    expect(Array.from(bytes)).toEqual([0x04, 0x6b, 0x69, 0x70, 0x63, 0x03]);
+    expect(bytes).toEqual(corpusPayload("echo-call-valid"));
   });
 
   test("empty message and zero count round-trip", () => {
@@ -303,7 +318,6 @@ describe("shared receiver rules (KEL-133)", () => {
   // In the Keld repository the canonical corpus is reachable relative to the
   // template; a generated app has no fixture and skips (its rules are pinned
   // above and by the @keld/electron corpus runner).
-  const corpusPath = join(import.meta.dir, "../../../../keld-ipc/tests/fixtures/receiver-semantics-v0.tsv");
   test.skipIf(!existsSync(corpusPath))("agrees with the canonical corpus for its two policies", () => {
     const lines = readFileSync(corpusPath, "utf8").split("\n").filter((l) => l.length > 0);
     expect(lines[0].startsWith("receiver-semantics-v0\tv1\t")).toBe(true);

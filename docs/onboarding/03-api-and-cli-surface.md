@@ -90,7 +90,7 @@ prints **`KELD-CLI-046`** first, then the same block, and exits **2**.
 
 ### 1.5 `keld create <name>`
 
-Writes the seven embedded template files into `./<name>`. Nothing is downloaded and
+Writes the eight embedded template files into `./<name>`. Nothing is downloaded and
 nothing is installed; the files are compiled into the binary with `include_str!`
 ([`template.rs`](../../crates/keld-cli/src/template.rs)).
 
@@ -104,6 +104,7 @@ my-app/.gitignore
 my-app/index.html
 my-app/keld.config.ts
 my-app/package.json
+my-app/src/echo.generated.ts
 my-app/src/kipc-transport.ts
 my-app/src/kipc.ts
 my-app/src/main.ts
@@ -609,7 +610,7 @@ and no hand edits to generated code.
 
 ## 5. The template app contract — what an app developer actually writes
 
-`keld create <name>` produces exactly seven files. This is, today, the whole "app
+`keld create <name>` produces exactly eight files. This is, today, the whole "app
 developer API".
 
 ```
@@ -621,6 +622,7 @@ my-app/
 └─ src/
    ├─ main.ts             echo adapter + app body (imports `./kipc-transport.ts`)
    ├─ kipc-transport.ts   embedded copy of `packages/@keld/kipc/src/transport.ts`
+   ├─ echo.generated.ts   Rust-derived echo request/response payload declarations
    └─ kipc.ts             compatibility re-export from main.ts; no second client copy
 ```
 
@@ -630,10 +632,11 @@ The hello echo adapter lives in
 [`templates/hello/src/kipc.ts`](../../crates/keld-cli/templates/hello/src/kipc.ts),
 with golden-vector tests in `templates/hello/src/kipc.test.ts` and the app body in
 `templates/hello/src/main-body.ts`. `template.rs` embeds the transport as
-`src/kipc-transport.ts` and concatenates the echo adapter and body into
-`src/main.ts`; generated `src/kipc.ts` only re-exports that module for source
-compatibility. This preserves one tested wire implementation without an npm
-dependency in the stock scaffold.
+`src/kipc-transport.ts`, emits the freshness-checked `src/echo.generated.ts`, and
+concatenates the echo adapter and body into `src/main.ts`; generated `src/kipc.ts` only
+re-exports that module for source compatibility. The generated payload file is a
+source-time type dependency and is not copied into the runtime stage. This preserves one
+tested wire implementation without an npm dependency in the stock scaffold.
 
 ### 5.1 `src/main.ts` — the main process
 
@@ -656,7 +659,9 @@ if (import.meta.main) {
     const response = await session.echo({ message: "keld", count: 1 });
     console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
     console.log("{{name}}: main process ready (IPC echo ok)");
-    await new Promise(() => {});
+    await quitAfterLastWindowClosed(session);
+    session.close();
+    process.exit(0);
   } finally {
     session.close();
   }
@@ -673,14 +678,17 @@ Read it as a contract statement in four parts:
    template.
 2. **The app process is Bun-specific**, not Node-compatible: the shared transport uses
    `Bun.connect` and the entry uses top-level `await`.
-3. **There is still no schema-driven TypeScript SDK** (`@keld/api`, `keld gen`, KEL-13
-   remain unbuilt), but as of KEL-30 the template no longer shells out to a second
-   process to fake one. KEL-136 owns one TypeScript transport
+3. **There is still no general schema-driven TypeScript SDK** (`@keld/api`, live
+   `keld gen`, and the KEL-13 destination remain unbuilt), but KEL-98's bounded echo
+   bootstrap generates `EchoRequest` / `EchoResponse` declarations from the current Rust
+   structs. As of KEL-30 the template no longer shells out to a second process to fake a
+   client. KEL-136 owns one TypeScript transport
    (`packages/@keld/kipc/src/transport.ts`) that `keld create` embeds as
    `src/kipc-transport.ts`; the echo adapter speaks postcard `EchoRequest`/`EchoResponse`
-   on that transport. The generated `src/kipc.ts` is only a compatibility re-export of
-   `src/main.ts`; it does not duplicate the implementation. Expect `@keld/api` codegen
-   later; until then this is real, tested transport, not a stub.
+   on that transport and consumes their generated declarations through type-only imports.
+   The generated `src/kipc.ts` is only a compatibility re-export of `src/main.ts`; it does
+   not duplicate the implementation. Expect general `@keld/api` codegen later; until then
+   this is real, tested transport, not a stub.
 4. **`{{name}}` is substituted at scaffold time**, so a project called `my-app` prints
    `my-app: main process ready (IPC echo ok)`.
 

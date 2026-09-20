@@ -739,11 +739,11 @@ an `AbortSignal` in JS and a `CancelToken` in Rust.
 `@keld/schema`, from which `keld gen` emits TS client/server stubs, Rust `serde` types and handler
 traits, the channel table for the handshake, and — the part that matters most — the **permission
 stubs**, so that the manifest generator and the guard enforce the same source of truth
-([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists, and the
-current echo adapter still carries hand-written TypeScript payload interfaces. Approved KEL-98
-defines a bounded bootstrap whose implementation will derive compile-time TypeScript payload
-declarations from the already-shipped Rust `EchoRequest` / `EchoResponse` structs to retire that mirror; it does
-not become the general schema-authoring model or replace postcard/runtime validation.
+([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists. KEL-98's
+bounded bootstrap derives checked-in compile-time TypeScript payload declarations from the
+already-shipped Rust `EchoRequest` / `EchoResponse` structs; the current echo adapter imports and
+re-exports those declarations as types while retaining its independently tested postcard codec.
+This does not become the general schema-authoring model or replace runtime validation.
 
 ---
 
@@ -768,14 +768,15 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes seven files (`crates/keld-cli/src/template.rs`):
-`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`, `src/main.ts`,
-`src/kipc.ts`, and `.gitignore`.
+`keld create <name>` writes eight files (`crates/keld-cli/src/template.rs`):
+`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`,
+`src/echo.generated.ts`, `src/main.ts`, `src/kipc.ts`, and `.gitignore`.
 The generated `src/kipc-transport.ts` is the embedded canonical transport
 (`packages/@keld/kipc/src/transport.ts`). The generated `src/main.ts` composes the
-hand-written, golden-vector-tested echo adapter with `src/main-body.ts`. The generated
-`src/kipc.ts` is a tiny compatibility re-export from `src/main.ts`, not a second wire
-implementation. The repository's
+golden-vector-tested echo adapter with `src/main-body.ts`; the adapter's type-only imports
+consume Rust-derived declarations from `src/echo.generated.ts`. That source-time-only file
+is not copied into the runtime stage. The generated `src/kipc.ts` is a tiny compatibility
+re-export from `src/main.ts`, not a second wire implementation. The repository's
 `src/kipc.test.ts` is deliberately not emitted. The config is this, in full, with `{{name}}`
 substituted at scaffold time:
 
@@ -1500,13 +1501,13 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 ## 4. Schema-first contracts
 
 The destination general contract model is TypeScript-native (no new IDL to learn) and
-compiled to both sides. Approved KEL-98 defines one bounded bootstrap exception: its
-implementation will derive generated TypeScript payload declarations from the
-already-shipped Rust `EchoRequest` / `EchoResponse` structs so the current hand-written
-echo mirror can be removed. Until that implementation lands, the hand-written mirror
-remains the live source on the TypeScript side. The approved echo-only bootstrap does not make Rust
-the general schema language, ship `@keld/schema` or live `keld gen`, or replace runtime
-postcard/golden-vector validation.
+compiled to both sides. KEL-98 implements one bounded bootstrap exception: cold
+maintainer tooling derives the checked-in TypeScript `EchoRequest` / `EchoResponse`
+payload declarations from the already-shipped Rust structs, and the hello adapter
+consumes them through type-only imports. The hand-written TypeScript payload mirror is
+gone; the independently implemented postcard codec and shared golden-vector validation
+remain the runtime wire oracle. This echo-only bootstrap does not make Rust the general
+schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
 
 The destination authoring shape remains:
 
@@ -2700,11 +2701,13 @@ The non-release boot compiler copies that sidecar
 into the owner-private stage when present so `keld dev` Bun can resolve it.
 Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,
 binds `src/kipc-transport.ts` to `/code/kipc-transport.ts` as a second file
-mount (directory-wide `/code` mounts stay forbidden). `keld gen` / `@keld/schema` codegen (KEL-13) is not
-built, so this shared transport plus the echo adapter is the actual
-"Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
-pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
-useful standalone; the template no longer shells out to it.
+mount (directory-wide `/code` mounts stay forbidden). KEL-98's bounded cold generator
+derives the checked-in `src/echo.generated.ts` payload declarations from the Rust echo
+structs for `keld create`; type-only use keeps that source-time file out of the runtime
+stage. General `keld gen` / `@keld/schema` codegen (KEL-13) is not built, so this shared
+transport plus the echo adapter remains the actual "Bun to Rust and back" vertical slice
+(KEL-30), not the destination codegen pipeline. `keld ipc-client echo` remains a separate
+CLI-side kipc client, useful standalone; the template no longer shells out to it.
 
 Target distribution (not implemented): an `@keld/cli` npm package with per-platform
 binaries under `optionalDependencies` (esbuild pattern). `bunx keld` / `npx keld`
@@ -3454,14 +3457,14 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-cli` | All | **Partial** — create, dev, doctor, MCP, hello, and IPC diagnostics exist; build, migrate, gen, and ext remain reserved. | [code](../../crates/keld-cli/src/lib.rs), [test](../../crates/keld-cli/tests/cli_kel29.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-29, KEL-42, KEL-96 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-cli` | All | **Partial** — create emits the checked-in Rust-derived echo payload declarations; dev, doctor, MCP, hello, and IPC diagnostics exist, while build, migrate, gen, and ext remain reserved. | [code](../../crates/keld-cli/src/template.rs), [test](../../crates/keld-cli/src/create.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-29, KEL-42, KEL-96, KEL-98 | `99f1ab45a3a88d4ed8e6276e1c5a9430ebcd393f` |
 
 ## Packages
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
 | `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client; the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport implements framing, HELLO, chunk-queued buffering, deadlines, serialized writes, and receiver validation; schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/src/transport.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-136 | `3fb9417af838e0848e374a3cde2ecccb51ca110c` |
+| `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs; general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `99f1ab45a3a88d4ed8e6276e1c5a9430ebcd393f` |
 | `package.keld-api` | All | **Specified only** — The typed SDK for supervised Bun roles is specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `package.keld-web` | All | **Specified only** — The renderer bridge and polyfill package are specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `package.keld-cli` | All | **Specified only** — The npm binary resolver is specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -3474,7 +3477,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 |---|---|---|---|---|---|---|
 | `phase.0` | All | **Partial** — The tracked workspace, architecture, agent workflow, and CI exist; the first attributed performance harness remains absent. | [code](../../crates/keld-core/src/lib.rs), [CI](../../.github/workflows/ci.yml) | [Specified](../../docs/architecture/01-overview.md) | KEL-39 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `phase.1` | All | **Partial** — macOS, Windows, and Linux no-flag app sessions exist; the full public role API and release artifact chain remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `phase.2` | All | **Partial** — MCP v1, permission evaluation, guard dispatch, and one filesystem broker exist; bulk IPC, codegen, and broad compatibility remain absent. | [code](../../crates/keld-guard/src/lib.rs), [code](../../crates/keld-cli/src/mcp/mod.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-42, KEL-69, KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `phase.2` | All | **Partial** — MCP v1, permission evaluation, guard dispatch, one filesystem broker, and bounded echo declaration generation exist; bulk IPC, general schema codegen, and broad compatibility remain absent. | [code](../../crates/keld-guard/src/lib.rs), [code](../../crates/keld-cli/src/mcp/mod.rs), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-42, KEL-69, KEL-71, KEL-98 | `99f1ab45a3a88d4ed8e6276e1c5a9430ebcd393f` |
 | `phase.3` | All | **Partial** — The Linux strict mechanism is implemented and consumed by the no-flag primary; distribution, signed updates, remaining OS/profile admission, limits, reporting, and addon workers remain incomplete. | [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
 | `phase.4` | All | **Specified only** — Compatibility-depth, corpus, pinned-engine, and stable-plugin goals are specified but not implemented. | — | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 

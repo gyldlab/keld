@@ -252,8 +252,8 @@ mod tests {
         let root = create_project(dir.path(), "demo").expect("create");
         assert_eq!(
             file_count(&root),
-            7,
-            "hello template is exactly seven files"
+            8,
+            "hello template is exactly eight files"
         );
 
         let config = fs::read_to_string(root.join("keld.config.ts")).expect("config");
@@ -296,6 +296,22 @@ mod tests {
             "the configured entry must not import the compatibility facade: {main}"
         );
         assert_created_hello_keeps_kipc_transport(&root, &main);
+        let echo_generated =
+            fs::read_to_string(root.join("src").join("echo.generated.ts")).expect("echo types");
+        assert_eq!(
+            echo_generated,
+            include_str!("../templates/hello/src/echo.generated.ts"),
+            "keld create must emit the exact freshness-checked generated artifact"
+        );
+        assert!(
+            main.contains("import type { EchoRequest, EchoResponse }")
+                && main.contains("export type { EchoRequest, EchoResponse }"),
+            "generated main must consume and re-export only generated payload types: {main}"
+        );
+        assert!(
+            !main.contains("interface EchoRequest") && !main.contains("interface EchoResponse"),
+            "generated main must not retain hand-written payload declarations: {main}"
+        );
         let transport =
             fs::read_to_string(root.join("src").join("kipc-transport.ts")).expect("kipc-transport");
         assert!(

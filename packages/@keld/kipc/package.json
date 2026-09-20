@@ -6,6 +6,8 @@
   "description": "Canonical TypeScript kipc v0 app-link transport (KEL-136)",
   "scripts": {
     "bench:fragmented": "bun run bench/fragmented-frame.ts",
+    "echo:check": "bun run scripts/echo-codegen.ts check",
+    "echo:generate": "bun run scripts/echo-codegen.ts generate",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

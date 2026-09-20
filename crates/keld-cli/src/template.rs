@@ -28,6 +28,10 @@ pub const HELLO_TEMPLATE: &[TemplateFile] = &[
         contents: include_str!("../../../packages/@keld/kipc/src/transport.ts"),
     },
     TemplateFile {
+        path: "src/echo.generated.ts",
+        contents: include_str!("../templates/hello/src/echo.generated.ts"),
+    },
+    TemplateFile {
         path: "src/main.ts",
         contents: concat!(
             include_str!("../templates/hello/src/kipc.ts"),
@@ -120,11 +124,11 @@ mod tests {
     }
 
     #[test]
-    fn template_writes_seven_scaffold_files() {
+    fn template_writes_eight_scaffold_files() {
         assert_eq!(
             HELLO_TEMPLATE.len(),
-            7,
-            "keld create emits config, package, html, transport, main, kipc facade, gitignore"
+            8,
+            "keld create emits config, package, html, transport, generated echo types, main, kipc facade, gitignore"
         );
     }
 
@@ -143,6 +147,28 @@ mod tests {
                 .iter()
                 .any(|file| file.path == "src/kipc-transport.ts"),
             "keld create must emit src/kipc-transport.ts whenever main.ts imports it"
+        );
+    }
+
+    #[test]
+    fn template_emits_the_checked_in_generated_echo_types() {
+        let generated = HELLO_TEMPLATE
+            .iter()
+            .find(|file| file.path == "src/echo.generated.ts")
+            .expect("keld create must emit generated echo declarations");
+        assert_eq!(
+            generated.contents,
+            include_str!("../templates/hello/src/echo.generated.ts"),
+            "template output must be byte-identical to the freshness-checked artifact"
+        );
+        assert!(
+            generated.contents.contains("export interface EchoRequest")
+                && generated.contents.contains("export interface EchoResponse"),
+            "generated artifact must own both echo payload declarations"
+        );
+        assert!(
+            !generated.contents.contains("EchoClient"),
+            "generated artifact must not invent a second client interface"
         );
     }
 }
