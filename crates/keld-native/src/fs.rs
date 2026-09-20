@@ -904,6 +904,7 @@ fn walk_with_observer(
                     )
                 })?;
                 let opened = progress.finish_read_io(directory.dir_metadata())?;
+                #[cfg(windows)]
                 ensure_acquired_not_reparse(&opened, requested)?;
                 if opened.dev() != grant.root_device {
                     return Err(FsError::UnsupportedObject {
@@ -1157,6 +1158,7 @@ fn ensure_regular_and_device(
     grant: &RetainedGrant,
     requested: &str,
 ) -> Result<(), FsError> {
+    #[cfg(windows)]
     ensure_acquired_not_reparse(metadata, requested)?;
     if metadata.dev() != grant.root_device {
         return Err(FsError::UnsupportedObject {
@@ -1197,14 +1199,6 @@ fn ensure_acquired_not_reparse(
             detail: "acquired handle is an unsupported reparse object".to_owned(),
         });
     }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn ensure_acquired_not_reparse(
-    _metadata: &cap_std::fs::Metadata,
-    _requested: &str,
-) -> Result<(), FsError> {
     Ok(())
 }
 
