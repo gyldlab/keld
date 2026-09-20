@@ -1,10 +1,11 @@
 // Private KEL-130 macOS acceptance module, included by `fs.rs` only for lib tests.
 // Focused receipt command:
-// `cargo test -p keld-native --lib fs::tests::macos_acceptance::macos_retained_filesystem_acceptance -- --exact --nocapture --test-threads=1`
+// `cargo test -p keld-native --lib fs::tests::macos_acceptance::macos_retained_filesystem_acceptance -- --ignored --exact --nocapture --test-threads=1`
 
 use super::*;
 use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
 use sha2::{Digest as _, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
@@ -14,6 +15,62 @@ use std::sync::{Arc, Barrier, mpsc};
 use std::time::{Duration, Instant};
 
 const RECORD_SCHEMA: &str = "keld.kel130-macos-acceptance/v1";
+const DEVICE_DOMAIN: &[u8] = b"keld/KEL-130/macos-device/v1\0";
+const REQUIRED_CASES_SHA256: &str =
+    "1683d06c802c003101f431d169648dbe898b6c9cec61a8cbbac8b84afd82e080";
+const REQUIRED_CASES: &[&str] = &[
+    "block-device",
+    "broker-first-match",
+    "character-device",
+    "component-race",
+    "create-new-race",
+    "fifo",
+    "final-race",
+    "first-write-error",
+    "full-write-late-cancel",
+    "full-write-late-deadline",
+    "handle-inheritance",
+    "handle-inheritance-control",
+    "handle-lifecycle",
+    "mount-crossing-devfs",
+    "parent-replacement",
+    "partial-cancel",
+    "partial-deadline",
+    "partial-io-error",
+    "path-4096",
+    "path-4097",
+    "path-backslash",
+    "path-dot",
+    "path-dot-component",
+    "path-empty",
+    "path-nul",
+    "path-parent-component",
+    "path-relative",
+    "path-repeated-separator",
+    "pre-effect-cancel-deadline-error",
+    "privilege-metadata-strip",
+    "scope-count-65",
+    "scope-dot-component",
+    "scope-duplicate",
+    "scope-empty-component",
+    "scope-exact-root",
+    "scope-nul",
+    "scope-parent-component",
+    "scope-partial-prepare-unwind",
+    "scope-relative",
+    "scope-variable",
+    "unix-socket",
+];
+
+#[derive(Debug, Eq, PartialEq)]
+struct SourceReceipt {
+    head: String,
+    device_id: String,
+    model: String,
+    version: String,
+    build: String,
+    arch: String,
+}
 
 struct OwnedRoot(PathBuf);
 
@@ -107,10 +164,25 @@ fn command_text(program: &str, arguments: &[&str]) -> String {
         .to_owned()
 }
 
-fn emit_environment() {
+fn platform_device_id() -> String {
+    let ioreg = command_text("/usr/sbin/ioreg", &["-rd1", "-c", "IOPlatformExpertDevice"]);
+    let prefix = "\"IOPlatformUUID\" = \"";
+    let uuid = ioreg
+        .lines()
+        .find_map(|line| line.split_once(prefix).map(|(_, value)| value))
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or_else(|| unsupported("device-identity", "platform-uuid-unavailable"));
+    let mut hasher = Sha256::new();
+    hasher.update(DEVICE_DOMAIN);
+    hasher.update(uuid.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    format!("kel130:{}", HexDigest(&digest))
+}
+
+fn source_receipt() -> SourceReceipt {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let head = command_text(
-        "git",
+        "/usr/bin/git",
         &[
             "-C",
             manifest_dir.to_str().expect("manifest path"),
@@ -119,12 +191,13 @@ fn emit_environment() {
         ],
     );
     let tree = command_text(
-        "git",
+        "/usr/bin/git",
         &[
             "-C",
             manifest_dir.to_str().expect("manifest path"),
             "status",
             "--porcelain=v1",
+            "--untracked-files=all",
         ],
     );
     let model = command_text("/usr/sbin/sysctl", &["-n", "hw.model"]);
@@ -133,9 +206,42 @@ fn emit_environment() {
     let build = command_text("/usr/bin/sw_vers", &["-buildVersion"]);
     let arch = command_text("/usr/bin/uname", &["-m"]);
     assert_eq!(virtualized, "0", "real-device row cannot run in a VM");
+    if !tree.is_empty() {
+        unsupported("source-provenance", "working-tree-is-dirty");
+    }
+    SourceReceipt {
+        head,
+        device_id: platform_device_id(),
+        model,
+        version,
+        build,
+        arch,
+    }
+}
+
+fn emit_environment() -> SourceReceipt {
+    let receipt = source_receipt();
     println!(
-        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=begin status=running source_head={head} tree_state={} device_id={model} os_version={version} os_build={build} arch={arch} virtualized={virtualized}",
-        if tree.is_empty() { "clean" } else { "dirty" }
+        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=begin status=running source_head={} tree_state=clean device_id={} model={} os_version={} os_build={} arch={} virtualized=0",
+        receipt.head,
+        receipt.device_id,
+        receipt.model,
+        receipt.version,
+        receipt.build,
+        receipt.arch,
+    );
+    receipt
+}
+
+fn emit_terminal(begin: &SourceReceipt) {
+    let end = source_receipt();
+    assert_eq!(
+        begin, &end,
+        "source/device provenance changed during receipt"
+    );
+    println!(
+        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=end status=passed source_head={} tree_state=clean device_id={} terminal=false rerun_after_exact_landing=true",
+        end.head, end.device_id
     );
 }
 
@@ -160,6 +266,278 @@ fn unsupported(case: &str, detail: &str) -> ! {
         "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case={case} status=unsupported detail={detail}"
     );
     panic!("required macOS acceptance primitive is unavailable: {case}: {detail}");
+}
+
+fn parse_record(line: &str) -> Result<BTreeMap<String, String>, String> {
+    let Some(fields) = line.strip_prefix("KEL130_MACOS_ACCEPTANCE ") else {
+        return Err("record marker missing".to_owned());
+    };
+    let mut parsed = BTreeMap::new();
+    for field in fields.split_ascii_whitespace() {
+        let Some((key, value)) = field.split_once('=') else {
+            return Err(format!("record field has no value: {field}"));
+        };
+        if key.is_empty() || value.is_empty() {
+            return Err(format!("record field is empty: {field}"));
+        }
+        if parsed.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(format!("duplicate record field: {key}"));
+        }
+    }
+    if parsed.get("schema").map(String::as_str) != Some(RECORD_SCHEMA) {
+        return Err("wrong record schema".to_owned());
+    }
+    Ok(parsed)
+}
+
+fn valid_sha256_pseudonym(value: &str) -> bool {
+    value.strip_prefix("kel130:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
+}
+
+fn require_field<'record>(
+    record: &'record BTreeMap<String, String>,
+    field: &str,
+) -> Result<&'record str, String> {
+    record
+        .get(field)
+        .map(String::as_str)
+        .ok_or_else(|| format!("missing record field: {field}"))
+}
+
+fn validate_receipt(raw: &str, expected_head: &str) -> Result<Vec<String>, String> {
+    let lines = raw
+        .lines()
+        .filter(|line| line.starts_with("KEL130_MACOS_ACCEPTANCE "))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if lines.len() != REQUIRED_CASES.len() + 2 {
+        return Err(format!(
+            "receipt row count mismatch: {} != {}",
+            lines.len(),
+            REQUIRED_CASES.len() + 2
+        ));
+    }
+    let records = lines
+        .iter()
+        .map(|line| parse_record(line))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_boundary_record(&records[0], "begin", "running", expected_head)?;
+    validate_boundary_record(
+        records
+            .last()
+            .ok_or_else(|| "end record missing".to_owned())?,
+        "end",
+        "passed",
+        expected_head,
+    )?;
+
+    let begin_device = require_field(&records[0], "device_id")?;
+    let end_device = require_field(
+        records
+            .last()
+            .ok_or_else(|| "end record missing".to_owned())?,
+        "device_id",
+    )?;
+    if !valid_sha256_pseudonym(begin_device) || begin_device != end_device {
+        return Err("device pseudonym is invalid or changed".to_owned());
+    }
+
+    let expected = REQUIRED_CASES.iter().copied().collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    for record in &records[1..records.len() - 1] {
+        let case = require_field(record, "case")?;
+        validate_case_record(record, case)?;
+        if !seen.insert(case) {
+            return Err(format!("duplicate case record: {case}"));
+        }
+    }
+    if seen != expected {
+        return Err("required case set mismatch".to_owned());
+    }
+    Ok(lines)
+}
+
+fn validate_boundary_record(
+    record: &BTreeMap<String, String>,
+    boundary: &str,
+    status: &str,
+    expected_head: &str,
+) -> Result<(), String> {
+    let expected_fields = if boundary == "begin" {
+        [
+            "arch",
+            "device_id",
+            "model",
+            "os_build",
+            "os_version",
+            "record",
+            "schema",
+            "source_head",
+            "status",
+            "tree_state",
+            "virtualized",
+        ]
+        .as_slice()
+    } else {
+        [
+            "device_id",
+            "record",
+            "rerun_after_exact_landing",
+            "schema",
+            "source_head",
+            "status",
+            "terminal",
+            "tree_state",
+        ]
+        .as_slice()
+    };
+    require_exact_fields(record, expected_fields)?;
+    if require_field(record, "record")? != boundary
+        || require_field(record, "status")? != status
+        || require_field(record, "source_head")? != expected_head
+        || require_field(record, "tree_state")? != "clean"
+    {
+        return Err(format!("invalid {boundary} record"));
+    }
+    if boundary == "end"
+        && (require_field(record, "terminal")? != "false"
+            || require_field(record, "rerun_after_exact_landing")? != "true")
+    {
+        return Err("invalid terminal qualification".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_case_record(record: &BTreeMap<String, String>, case: &str) -> Result<(), String> {
+    if require_field(record, "status")? != "passed" || require_field(record, "fresh")? != "ok" {
+        return Err(format!("case or fresh control did not pass: {case}"));
+    }
+    for field in ["code", "sentinel", "detail"] {
+        require_field(record, field)?;
+    }
+    match case {
+        "handle-inheritance" | "handle-inheritance-control" => {
+            require_exact_fields(
+                record,
+                &[
+                    "case",
+                    "code",
+                    "detail",
+                    "expected",
+                    "fresh",
+                    "inherited_root_handles",
+                    "schema",
+                    "sentinel",
+                    "status",
+                ],
+            )?;
+            let expected = usize::from(case != "handle-inheritance");
+            require_usize(record, "expected", expected)?;
+            require_usize(record, "inherited_root_handles", expected)?;
+        }
+        "handle-lifecycle" => {
+            require_exact_fields(
+                record,
+                &[
+                    "after_call",
+                    "after_destructor",
+                    "baseline",
+                    "case",
+                    "code",
+                    "detail",
+                    "fresh",
+                    "live_call",
+                    "prepared",
+                    "schema",
+                    "sentinel",
+                    "status",
+                ],
+            )?;
+            let baseline = parse_usize(record, "baseline")?;
+            let prepared = parse_usize(record, "prepared")?;
+            let live_call = parse_usize(record, "live_call")?;
+            if !(baseline < prepared && prepared < live_call)
+                || parse_usize(record, "after_call")? != prepared
+                || parse_usize(record, "after_destructor")? != baseline
+            {
+                return Err("invalid lifecycle census".to_owned());
+            }
+        }
+        _ => {
+            require_exact_fields(
+                record,
+                &[
+                    "case",
+                    "code",
+                    "content_read",
+                    "content_write",
+                    "create",
+                    "detail",
+                    "fresh",
+                    "grant_index",
+                    "metadata",
+                    "schema",
+                    "sentinel",
+                    "status",
+                    "target_open",
+                    "truncate",
+                    "walk",
+                ],
+            )?;
+            for field in [
+                "content_read",
+                "content_write",
+                "create",
+                "metadata",
+                "target_open",
+                "truncate",
+                "walk",
+            ] {
+                parse_usize(record, field)?;
+            }
+            let grant = require_field(record, "grant_index")?;
+            if grant != "none" {
+                grant
+                    .parse::<usize>()
+                    .map_err(|_| "invalid grant index".to_owned())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_exact_fields(
+    record: &BTreeMap<String, String>,
+    expected: &[&str],
+) -> Result<(), String> {
+    let actual = record.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err("record fields are not exact".to_owned());
+    }
+    Ok(())
+}
+
+fn parse_usize(record: &BTreeMap<String, String>, field: &str) -> Result<usize, String> {
+    require_field(record, field)?
+        .parse()
+        .map_err(|_| format!("invalid integer field: {field}"))
+}
+
+fn require_usize(
+    record: &BTreeMap<String, String>,
+    field: &str,
+    expected: usize,
+) -> Result<(), String> {
+    if parse_usize(record, field)? != expected {
+        return Err(format!("wrong integer field: {field}"));
+    }
+    Ok(())
 }
 
 fn fresh_read(broker: &FsBroker, verified: &VerifiedManifest, path: &Path, expected: &[u8]) {
@@ -187,42 +565,12 @@ fn grammar_and_first_match() {
     let root = fixture.path().join("granted");
     std::fs::create_dir(&root).expect("create grammar root");
     let fresh = root.join("fresh");
-    let selected = root.join("selected");
     std::fs::write(&fresh, b"fresh").expect("write fresh grammar control");
-    std::fs::write(&selected, b"selected").expect("write first-match target");
     let root_scope = format!("{}/**", spelling(&root));
-    let selected_scope = spelling(&selected);
-    let verified = verified_manifest(
-        fixture.path(),
-        "grammar.jsonc",
-        &[root_scope, selected_scope],
-        &[],
-    );
+    let verified = verified_manifest(fixture.path(), "grammar.jsonc", &[root_scope], &[]);
     let broker = FsBroker::prepare(&verified).expect("prepare grammar broker");
     let cancelled = AtomicBool::new(false);
-
-    fs_test_reset_counters();
-    assert_eq!(
-        broker
-            .read(
-                &verified,
-                Principal::AppProcess,
-                &spelling(&selected),
-                &cancelled,
-            )
-            .expect("first matching grant read"),
-        b"selected"
-    );
-    let counters = fs_test_counters();
-    assert_eq!(counters.selected_grant_index, Some(0));
-    fresh_read(&broker, &verified, &fresh, b"fresh");
-    emit(
-        "broker-first-match",
-        "ok",
-        "selected",
-        counters,
-        "first-index-0",
-    );
+    first_match_uses_selected_root(fixture.path());
 
     let root_prefix = format!("{}/", spelling(&root));
     let maximum = format!(
@@ -291,6 +639,100 @@ fn grammar_and_first_match() {
         fresh_read(&broker, &verified, &fresh, b"fresh");
         emit(case, error.code(), "unchanged", counters, "boundary-deny");
     }
+}
+
+fn retained_test_grant(
+    root_path: &Path,
+    grant_index: usize,
+    kind: PathScopeKind,
+    anchor: &str,
+    exact_leaf: Option<&str>,
+) -> RetainedGrant {
+    let root = Dir::open_ambient_dir(root_path, ambient_authority()).expect("retain test root");
+    let root_device = root.dir_metadata().expect("retained root metadata").dev();
+    RetainedGrant {
+        grant_index,
+        kind,
+        anchor: anchor.to_owned(),
+        exact_leaf: exact_leaf.map(str::to_owned),
+        root,
+        root_device,
+    }
+}
+
+fn first_match_uses_selected_root(fixture: &Path) {
+    let unrelated = fixture.join("unrelated-root");
+    let retained = fixture.join("retained-root");
+    std::fs::create_dir(&unrelated).expect("create unrelated retained root");
+    std::fs::create_dir(&retained).expect("create exact/subtree retained root");
+    std::fs::write(retained.join("target"), b"subtree-would-read-this")
+        .expect("seed internal alias target");
+    std::fs::write(retained.join("fresh"), b"fresh").expect("seed subtree fresh control");
+    symlink("target", retained.join("alias")).expect("create internal exact alias");
+    let virtual_root = "/keld-kel130-first-match";
+    let selected = format!("{virtual_root}/alias");
+    let fresh = format!("{virtual_root}/fresh");
+    let verified = verified_manifest(
+        fixture,
+        "first-match.jsonc",
+        &[
+            "/unrelated/**".to_owned(),
+            selected.clone(),
+            format!("{virtual_root}/**"),
+        ],
+        &[],
+    );
+    let broker = FsBroker {
+        prepared_digest: verified.verified_sha256(),
+        read_grants: vec![
+            retained_test_grant(&unrelated, 0, PathScopeKind::Subtree, "/unrelated", None),
+            retained_test_grant(
+                &retained,
+                1,
+                PathScopeKind::Exact,
+                virtual_root,
+                Some("alias"),
+            ),
+            retained_test_grant(&retained, 2, PathScopeKind::Subtree, virtual_root, None),
+        ],
+        write_grants: Vec::new(),
+    };
+    fs_test_reset_counters();
+    let error = broker
+        .read(
+            &verified,
+            Principal::AppProcess,
+            &selected,
+            &AtomicBool::new(false),
+        )
+        .expect_err("first matching exact grant must deny its final alias");
+    assert_eq!(error.code(), "KELD-NATIVE-002");
+    assert_eq!(
+        std::fs::read(retained.join("target")).expect("internal target sentinel"),
+        b"subtree-would-read-this"
+    );
+    let counters = fs_test_counters();
+    assert_eq!(counters.selected_grant_index, Some(1));
+    assert_eq!(counters.target_opens, 0);
+    assert_eq!(counters.content_reads, 0);
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &fresh,
+                &AtomicBool::new(false),
+            )
+            .expect("first-root fresh operation"),
+        b"fresh"
+    );
+    emit(
+        "broker-first-match",
+        error.code(),
+        "internal-target-unchanged",
+        counters,
+        "unrelated-0-exact-1-subtree-2-no-fallback",
+    );
 }
 
 fn scope_grammar() {
@@ -849,7 +1291,8 @@ fn run_effect_case(
     assert_eq!(actual_cause, case.expected_cause);
     assert_eq!(*committed_bytes, case.committed);
     assert_eq!(*requested_bytes, payload.len() as u64);
-    assert_eq!(writer.bytes.len() as u64, case.committed);
+    let committed = usize::try_from(case.committed).expect("bounded committed count fits usize");
+    assert_eq!(writer.bytes, payload[..committed]);
     let counters = fs_test_counters();
     fresh_read(broker, verified, fresh, b"fresh");
     emit(
@@ -902,12 +1345,17 @@ fn macos_inheritance_census_child() {
                 && std::os::unix::fs::MetadataExt::ino(metadata) == expected_ino
         })
         .count();
-    println!(
-        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case=handle-inheritance status=passed inherited_root_handles={inherited} expected={expected_inherited}"
-    );
     assert_eq!(
         inherited, expected_inherited,
         "child root-handle census disagrees with the expected control"
+    );
+    let case = if expected_inherited == 0 {
+        "handle-inheritance"
+    } else {
+        "handle-inheritance-control"
+    };
+    println!(
+        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case={case} status=passed code=ok sentinel=descriptor-census inherited_root_handles={inherited} expected={expected_inherited} fresh=ok detail=close-on-exec-sensor"
     );
 }
 
@@ -970,7 +1418,12 @@ fn run_blocked_call(
     (live_call, error)
 }
 
-fn assert_inheritance_controls(root: &Path) {
+fn assert_inheritance_controls(
+    root: &Path,
+    broker: &FsBroker,
+    verified: &VerifiedManifest,
+    fresh: &Path,
+) {
     let (root_dev, root_ino) = root_identity(root);
     let test_executable = std::env::current_exe().expect("test executable");
     let negative_control = Command::new("/bin/sh")
@@ -992,6 +1445,7 @@ fn assert_inheritance_controls(root: &Path) {
         String::from_utf8_lossy(&negative_control.stdout),
         String::from_utf8_lossy(&negative_control.stderr)
     );
+    fresh_read(broker, verified, fresh, b"fresh");
     print!("{}", String::from_utf8_lossy(&negative_control.stdout));
 
     let inheritance = Command::new(test_executable)
@@ -1012,6 +1466,7 @@ fn assert_inheritance_controls(root: &Path) {
         String::from_utf8_lossy(&inheritance.stdout),
         String::from_utf8_lossy(&inheritance.stderr)
     );
+    fresh_read(broker, verified, fresh, b"fresh");
     print!("{}", String::from_utf8_lossy(&inheritance.stdout));
 }
 
@@ -1065,6 +1520,7 @@ fn macos_handle_lifecycle_child() {
         prepared,
         "one Rc drop is not destruction"
     );
+    fresh_read(&last, &verified, &fresh, b"fresh");
     drop(last);
     assert_eq!(
         owner_handle_count(),
@@ -1076,7 +1532,7 @@ fn macos_handle_lifecycle_child() {
     let prepared = owner_handle_count();
     let (live_call, error) = run_blocked_call(&broker, &verified, &file, prepared);
     fresh_read(&broker, &verified, &fresh, b"fresh");
-    assert_inheritance_controls(&root);
+    assert_inheritance_controls(&root, &broker, &verified, &fresh);
 
     let survivor = Arc::clone(&broker);
     drop(broker);
@@ -1085,15 +1541,24 @@ fn macos_handle_lifecycle_child() {
         prepared,
         "one Arc drop is not destruction"
     );
+    fresh_read(&survivor, &verified, &fresh, b"fresh");
     drop(survivor);
-    drop(verified);
     assert_eq!(
         owner_handle_count(),
         baseline,
         "actual broker destructor restores baseline"
     );
+    let fresh_broker = FsBroker::prepare(&verified).expect("prepare post-destructor broker");
+    fresh_read(&fresh_broker, &verified, &fresh, b"fresh");
+    drop(fresh_broker);
+    assert_eq!(
+        owner_handle_count(),
+        baseline,
+        "fresh broker did not release roots"
+    );
+    drop(verified);
     println!(
-        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case=handle-lifecycle status=passed code={} sentinel=unchanged baseline={baseline} prepared={prepared} live_call={live_call} after_call={prepared} after_destructor={baseline} fresh=ok detail=blocked-no-terminal-until-release",
+        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case=handle-lifecycle status=passed code={} sentinel=unchanged baseline={baseline} prepared={prepared} live_call={live_call} after_call={prepared} after_destructor={baseline} fresh=ok detail=blocked-no-terminal-until-release-and-fresh-broker",
         error.code()
     );
 }
@@ -1178,8 +1643,9 @@ fn privilege_metadata_strip() {
 }
 
 #[test]
-fn macos_retained_filesystem_acceptance() {
-    emit_environment();
+#[ignore = "requires a non-virtualized macOS device with /dev/disk0 and set-ID semantics"]
+fn macos_retained_filesystem_acceptance_emitter() {
+    let begin = emit_environment();
     grammar_and_first_match();
     scope_grammar();
     mount_and_special_files();
@@ -1187,7 +1653,111 @@ fn macos_retained_filesystem_acceptance() {
     effect_and_deadline_ordering();
     handle_lifecycle();
     privilege_metadata_strip();
-    println!(
-        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=end status=passed cases=40 terminal=false rerun_after_exact_landing=true"
+    emit_terminal(&begin);
+}
+
+#[test]
+#[ignore = "requires a non-virtualized macOS device with /dev/disk0 and set-ID semantics"]
+fn macos_retained_filesystem_acceptance() {
+    let before = source_receipt();
+    let output = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--ignored",
+            "--exact",
+            "fs::tests::macos_acceptance::macos_retained_filesystem_acceptance_emitter",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("run isolated macOS receipt emitter");
+    assert!(
+        output.status.success(),
+        "macOS receipt emitter failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    let after = source_receipt();
+    assert_eq!(
+        before, after,
+        "source/device provenance changed around receipt"
+    );
+    let raw = String::from_utf8(output.stdout).expect("receipt output is UTF-8");
+    let records = validate_receipt(&raw, &before.head).expect("validate structured receipt");
+    for record in records {
+        println!("{record}");
+    }
+}
+
+fn synthetic_receipt() -> (String, String) {
+    let head = "a".repeat(40);
+    let device = format!("kel130:{}", "b".repeat(64));
+    let mut lines = vec![format!(
+        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=begin status=running source_head={head} tree_state=clean device_id={device} model=Mac0,0 os_version=test os_build=test arch=arm64 virtualized=0"
+    )];
+    lines.extend(REQUIRED_CASES.iter().map(|case| match *case {
+        "handle-inheritance" => format!(
+            "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case={case} status=passed code=ok sentinel=descriptor-census inherited_root_handles=0 expected=0 fresh=ok detail=synthetic"
+        ),
+        "handle-inheritance-control" => format!(
+            "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case={case} status=passed code=ok sentinel=descriptor-census inherited_root_handles=1 expected=1 fresh=ok detail=synthetic"
+        ),
+        "handle-lifecycle" => format!(
+            "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case={case} status=passed code=ok sentinel=unchanged baseline=4 prepared=6 live_call=7 after_call=6 after_destructor=4 fresh=ok detail=synthetic"
+        ),
+        _ => format!(
+            "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} case={case} status=passed code=ok sentinel=unchanged walk=0 metadata=0 target_open=0 content_read=0 create=0 truncate=0 content_write=0 grant_index=none fresh=ok detail=synthetic"
+        ),
+    }));
+    lines.push(format!(
+        "KEL130_MACOS_ACCEPTANCE schema={RECORD_SCHEMA} record=end status=passed source_head={head} tree_state=clean device_id={device} terminal=false rerun_after_exact_landing=true"
+    ));
+    (lines.join("\n"), head)
+}
+
+#[test]
+fn macos_receipt_parser_accepts_exact_contract() {
+    let (receipt, head) = synthetic_receipt();
+    let records = validate_receipt(&receipt, &head).expect("synthetic receipt");
+    assert_eq!(records.len(), REQUIRED_CASES.len() + 2);
+    assert_eq!(REQUIRED_CASES.len(), 41);
+    let mut encoded_cases = REQUIRED_CASES.join("\0").into_bytes();
+    encoded_cases.push(0);
+    let digest: [u8; 32] = Sha256::digest(&encoded_cases).into();
+    assert_eq!(format!("{}", HexDigest(&digest)), REQUIRED_CASES_SHA256);
+}
+
+#[test]
+fn macos_receipt_parser_rejects_field_and_case_mutations() {
+    let (receipt, head) = synthetic_receipt();
+    let case_line = receipt
+        .lines()
+        .find(|line| line.contains("case=fifo "))
+        .expect("fifo row");
+    let mutations = [
+        receipt.replacen("tree_state=clean", "tree_state=dirty", 1),
+        receipt.replace(&head, &"c".repeat(40)),
+        receipt.replace(
+            &format!("device_id=kel130:{}", "b".repeat(64)),
+            "device_id=Mac16,10",
+        ),
+        receipt.replacen("case=fifo status=passed", "case=fifo status=failed", 1),
+        receipt.replacen("case=fifo", "case=renamed", 1),
+        receipt
+            .lines()
+            .filter(|line| !line.contains("case=fifo "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        receipt.replacen(case_line, &format!("{case_line}\n{case_line}"), 1),
+        receipt
+            .lines()
+            .filter(|line| !line.contains("record=end"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ];
+    for (index, mutation) in mutations.into_iter().enumerate() {
+        assert!(
+            validate_receipt(&mutation, &head).is_err(),
+            "mutation {index} unexpectedly passed"
+        );
+    }
 }
