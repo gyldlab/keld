@@ -103,8 +103,28 @@ mod tests {
     use keld_guard::parse_manifest;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    #[cfg(windows)]
+    const APP_ROOT: &str = "C:/appdata";
+    #[cfg(not(windows))]
+    const APP_ROOT: &str = "/appdata";
+    #[cfg(windows)]
+    const APP_NOTE: &str = "C:/appdata/notes.txt";
+    #[cfg(not(windows))]
+    const APP_NOTE: &str = "/appdata/notes.txt";
+    #[cfg(windows)]
+    const OUTSIDE_NOTE: &str = "C:/documents/secret.txt";
+    #[cfg(not(windows))]
+    const OUTSIDE_NOTE: &str = "/documents/secret.txt";
+    #[cfg(windows)]
+    const MALFORMED_NOTE: &str = "C:/appdata//notes.txt";
+    #[cfg(not(windows))]
+    const MALFORMED_NOTE: &str = "/appdata//notes.txt";
+
     fn manifest_granting_fs_read() -> PermissionsManifest {
-        parse_manifest(r#"{"app":{"fs":{"read":["/appdata/**"]}}}"#).expect("manifest")
+        parse_manifest(&format!(
+            r#"{{"app":{{"fs":{{"read":["{APP_ROOT}/**"]}}}}}}"#
+        ))
+        .expect("manifest")
     }
 
     #[test]
@@ -115,7 +135,7 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "/appdata/notes.txt",
+            APP_NOTE,
             |_| {
                 // Real side effect, not `Decision::Allow` from a unit stub —
                 // observed via the flag after `dispatch_privileged` returns.
@@ -129,15 +149,19 @@ mod tests {
 
     #[test]
     fn allow_lends_the_first_matching_grant_index() {
-        let manifest = parse_manifest(
-            r#"{"app":{"fs":{"read":["/unmatched/**","/matched/**","/matched/file"]}}}"#,
-        )
+        #[cfg(windows)]
+        let (unmatched, matched, file) = ("C:/unmatched/**", "C:/matched/**", "C:/matched/file");
+        #[cfg(not(windows))]
+        let (unmatched, matched, file) = ("/unmatched/**", "/matched/**", "/matched/file");
+        let manifest = parse_manifest(&format!(
+            r#"{{"app":{{"fs":{{"read":["{unmatched}","{matched}","{file}"]}}}}}}"#
+        ))
         .expect("manifest");
         let selected = dispatch_privileged(
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "/matched/file",
+            file,
             keld_guard::ScopePermit::grant_index,
         );
         assert_eq!(selected, Ok(1), "first matching grant remains final");
@@ -152,7 +176,7 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "/documents/secret.txt",
+            OUTSIDE_NOTE,
             |_| {
                 ran.store(true, Ordering::SeqCst);
             },
@@ -173,7 +197,11 @@ mod tests {
     fn invalid_filesystem_grammar_never_runs_the_handler() {
         let manifest = manifest_granting_fs_read();
         let ran = AtomicBool::new(false);
-        for invalid in ["/appdata//notes.txt", "/appdata/./notes.txt"] {
+        #[cfg(windows)]
+        let invalid = ["C:/appdata//notes.txt", "C:/appdata/./notes.txt"];
+        #[cfg(not(windows))]
+        let invalid = ["/appdata//notes.txt", "/appdata/./notes.txt"];
+        for invalid in invalid {
             let result =
                 dispatch_privileged(&manifest, Principal::AppProcess, "fs.read", invalid, |_| {
                     ran.store(true, Ordering::SeqCst);
@@ -209,13 +237,13 @@ mod tests {
         ] {
             let ran = AtomicBool::new(false);
             let result =
-                dispatch_privileged(&manifest, principal, "fs.read", "/appdata//secret", |_| {
+                dispatch_privileged(&manifest, principal, "fs.read", MALFORMED_NOTE, |_| {
                     ran.store(true, Ordering::SeqCst);
                 });
             let reason = result.expect_err("non-app principal must deny before grammar");
             assert_eq!(reason.code(), "KELD-GUARD006");
             assert!(matches!(reason, DenyReason::NotAppProcess { .. }));
-            assert!(!reason.to_string().contains("/appdata"));
+            assert!(!reason.to_string().contains(APP_ROOT));
             assert!(!ran.load(Ordering::SeqCst));
         }
     }
@@ -228,7 +256,7 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.write",
-            "/appdata/x",
+            APP_NOTE,
             |_| {
                 ran.store(true, Ordering::SeqCst);
             },
@@ -254,7 +282,7 @@ mod tests {
                 &manifest,
                 Principal::AppProcess,
                 "fs.read",
-                "/appdata//secret",
+                MALFORMED_NOTE,
                 |_| {
                     ran.store(true, Ordering::SeqCst);
                 },
@@ -283,7 +311,7 @@ mod tests {
             &manifest,
             webview,
             "fs.read",
-            "/appdata/notes.txt", // in scope for AppProcess
+            APP_NOTE, // in scope for AppProcess
             |_| ran.store(true, Ordering::SeqCst),
         );
         assert!(
