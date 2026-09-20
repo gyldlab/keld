@@ -833,6 +833,12 @@ fn walk(
                     }
                     continue;
                 }
+                if final_component && !metadata.is_file() {
+                    return Err(FsError::UnsupportedObject {
+                        requested: requested.to_owned(),
+                        detail: "target is not a regular file".to_owned(),
+                    });
+                }
                 if final_component {
                     let options = match purpose {
                         OpenPurpose::Read => read_options(),
@@ -1297,6 +1303,24 @@ mod tests {
             FsError::WriteEffect {
                 cause: WriteInterruption::Cancelled,
                 committed_bytes: 3,
+                requested_bytes: 8
+            }
+        ));
+
+        let running = AtomicBool::new(false);
+        let expired = Progress {
+            cancelled: &running,
+            deadline: Instant::now(),
+        };
+        assert!(matches!(expired.check_read(), Err(FsError::Deadline)));
+        let error = expired
+            .check_write(true, 4, 8, Some(io::Error::other("late failure")))
+            .expect_err("deadline wins over returned error");
+        assert!(matches!(
+            error,
+            FsError::WriteEffect {
+                cause: WriteInterruption::Deadline,
+                committed_bytes: 4,
                 requested_bytes: 8
             }
         ));

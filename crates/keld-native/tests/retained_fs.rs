@@ -100,6 +100,114 @@ fn content_limit_rejects_read_and_write_without_mutating_target() {
 }
 
 #[test]
+fn zero_and_maximum_content_round_trip_exactly() {
+    let root = owned_root("content-boundaries");
+    let verified = manifest(&root);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let cancelled = AtomicBool::new(false);
+    for (name, bytes) in [
+        ("zero", Vec::new()),
+        ("maximum", vec![0x5a; keld_native::fs::MAX_FS_CONTENT_BYTES]),
+    ] {
+        let path = root.join(name);
+        broker
+            .write(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&path),
+                &bytes,
+                &cancelled,
+            )
+            .expect("boundary write");
+        let actual = broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&path),
+                &cancelled,
+            )
+            .expect("boundary read");
+        assert_eq!(actual, bytes, "{name} boundary bytes");
+    }
+    drop(broker);
+    std::fs::remove_dir_all(&root).expect("cleanup root");
+}
+
+#[test]
+fn empty_manifest_prepares_without_roots_and_stays_default_deny() {
+    let root = owned_root("empty-manifest");
+    let verified = verified_from_text(&root, "empty.jsonc", "{}");
+    let broker = FsBroker::prepare(&verified).expect("empty broker");
+    let error = broker
+        .read(
+            &verified,
+            Principal::AppProcess,
+            &spelling(&root.join("missing")),
+            &AtomicBool::new(false),
+        )
+        .expect_err("empty manifest denies");
+    assert_eq!(error.code(), "KELD-GUARD001");
+    drop(broker);
+    std::fs::remove_dir_all(&root).expect("cleanup root");
+}
+
+#[test]
+fn exact_absent_leaf_can_be_created_without_following_an_alias() {
+    let root = owned_root("exact-create");
+    let path = root.join("created");
+    let text = format!(
+        r#"{{"app":{{"fs":{{"write":["{}"],"read":["{}"]}}}}}}"#,
+        spelling(&path),
+        spelling(&path)
+    );
+    let verified = verified_from_text(&root, "exact-create.jsonc", &text);
+    let broker = FsBroker::prepare(&verified).expect("prepare exact broker");
+    let cancelled = AtomicBool::new(false);
+    broker
+        .write(
+            &verified,
+            Principal::AppProcess,
+            &spelling(&path),
+            b"created",
+            &cancelled,
+        )
+        .expect("create exact leaf");
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&path),
+                &cancelled,
+            )
+            .expect("read exact leaf"),
+        b"created"
+    );
+    drop(broker);
+    std::fs::remove_dir_all(&root).expect("cleanup root");
+}
+
+#[cfg(unix)]
+#[test]
+fn partial_prepare_failure_releases_already_opened_roots() {
+    let fixture = owned_root("prepare-unwind");
+    let valid = fixture.join("valid");
+    let moved = fixture.join("moved");
+    let missing = fixture.join("missing");
+    std::fs::create_dir(&valid).expect("valid root");
+    let text = format!(
+        r#"{{"app":{{"fs":{{"read":["{}/**","{}/**"]}}}}}}"#,
+        spelling(&valid),
+        spelling(&missing)
+    );
+    let verified = verified_from_text(&fixture, "unwind.jsonc", &text);
+    let error = FsBroker::prepare(&verified).expect_err("second scope open fails");
+    assert_eq!(error.code(), "KELD-NATIVE-008");
+    std::fs::rename(&valid, &moved).expect("first provisional root was released");
+    std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+}
+
+#[test]
 #[cfg(unix)]
 fn retained_root_survives_ambient_path_replacement() {
     let fixture = owned_root("retained-root");
@@ -292,6 +400,22 @@ fn directories_are_rejected_without_content_io_and_control_still_passes() {
         )
         .expect_err("directory must reject");
     assert_eq!(error.code(), "KELD-NATIVE-003");
+    #[cfg(unix)]
+    {
+        let socket = root.join("socket");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("unix socket");
+        let special = broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&socket),
+                &cancelled,
+            )
+            .expect_err("socket must reject without a content read");
+        assert_eq!(special.code(), "KELD-NATIVE-003");
+        drop(listener);
+        std::fs::remove_file(&socket).expect("remove socket");
+    }
     broker
         .write(
             &verified,
