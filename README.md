@@ -122,6 +122,7 @@ restart `keld dev`. **Live reload is not implemented yet.**
 |---|---|
 | `index.html` | The interface rendered in the native window. |
 | `src/main.ts` | The Bun-side app logic, including the demo's echo and shutdown handling. |
+| `src/echo.generated.ts` | Rust-derived compile-time declarations for the demo's echo payloads. |
 | `keld.config.ts` | The app's configuration, including its name and entry paths. |
 
 The scaffold also includes its KIPC transport; there are no package dependencies

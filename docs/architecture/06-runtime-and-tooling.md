@@ -377,11 +377,13 @@ The non-release boot compiler copies that sidecar
 into the owner-private stage when present so `keld dev` Bun can resolve it.
 Linux strict remaps the entry to `/code/main.ts` and, when the sidecar exists,
 binds `src/kipc-transport.ts` to `/code/kipc-transport.ts` as a second file
-mount (directory-wide `/code` mounts stay forbidden). `keld gen` / `@keld/schema` codegen (KEL-13) is not
-built, so this shared transport plus the echo adapter is the actual
-"Bun to Rust and back" vertical slice (KEL-30), not the destination codegen
-pipeline. `keld ipc-client echo` remains a separate CLI-side kipc client,
-useful standalone; the template no longer shells out to it.
+mount (directory-wide `/code` mounts stay forbidden). KEL-98's bounded cold generator
+derives the checked-in `src/echo.generated.ts` payload declarations from the Rust echo
+structs for `keld create`; type-only use keeps that source-time file out of the runtime
+stage. General `keld gen` / `@keld/schema` codegen (KEL-13) is not built, so this shared
+transport plus the echo adapter remains the actual "Bun to Rust and back" vertical slice
+(KEL-30), not the destination codegen pipeline. `keld ipc-client echo` remains a separate
+CLI-side kipc client, useful standalone; the template no longer shells out to it.
 
 Target distribution (not implemented): an `@keld/cli` npm package with per-platform
 binaries under `optionalDependencies` (esbuild pattern). `bunx keld` / `npx keld`

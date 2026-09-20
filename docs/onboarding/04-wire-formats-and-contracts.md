@@ -497,11 +497,11 @@ an `AbortSignal` in JS and a `CancelToken` in Rust.
 `@keld/schema`, from which `keld gen` emits TS client/server stubs, Rust `serde` types and handler
 traits, the channel table for the handshake, and — the part that matters most — the **permission
 stubs**, so that the manifest generator and the guard enforce the same source of truth
-([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists, and the
-current echo adapter still carries hand-written TypeScript payload interfaces. Approved KEL-98
-defines a bounded bootstrap whose implementation will derive compile-time TypeScript payload
-declarations from the already-shipped Rust `EchoRequest` / `EchoResponse` structs to retire that mirror; it does
-not become the general schema-authoring model or replace postcard/runtime validation.
+([`02` §4](../architecture/02-ipc.md)). Neither `@keld/schema` nor live `keld gen` exists. KEL-98's
+bounded bootstrap derives checked-in compile-time TypeScript payload declarations from the
+already-shipped Rust `EchoRequest` / `EchoResponse` structs; the current echo adapter imports and
+re-exports those declarations as types while retaining its independently tested postcard codec.
+This does not become the general schema-authoring model or replace runtime validation.
 
 ---
 
@@ -526,14 +526,15 @@ in the migration path.
 
 ### What `keld.config.ts` actually is today
 
-`keld create <name>` writes seven files (`crates/keld-cli/src/template.rs`):
-`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`, `src/main.ts`,
-`src/kipc.ts`, and `.gitignore`.
+`keld create <name>` writes eight files (`crates/keld-cli/src/template.rs`):
+`keld.config.ts`, `package.json`, `index.html`, `src/kipc-transport.ts`,
+`src/echo.generated.ts`, `src/main.ts`, `src/kipc.ts`, and `.gitignore`.
 The generated `src/kipc-transport.ts` is the embedded canonical transport
 (`packages/@keld/kipc/src/transport.ts`). The generated `src/main.ts` composes the
-hand-written, golden-vector-tested echo adapter with `src/main-body.ts`. The generated
-`src/kipc.ts` is a tiny compatibility re-export from `src/main.ts`, not a second wire
-implementation. The repository's
+golden-vector-tested echo adapter with `src/main-body.ts`; the adapter's type-only imports
+consume Rust-derived declarations from `src/echo.generated.ts`. That source-time-only file
+is not copied into the runtime stage. The generated `src/kipc.ts` is a tiny compatibility
+re-export from `src/main.ts`, not a second wire implementation. The repository's
 `src/kipc.test.ts` is deliberately not emitted. The config is this, in full, with `{{name}}`
 substituted at scaffold time:
 

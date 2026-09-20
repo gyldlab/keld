@@ -256,13 +256,13 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 ## 4. Schema-first contracts
 
 The destination general contract model is TypeScript-native (no new IDL to learn) and
-compiled to both sides. Approved KEL-98 defines one bounded bootstrap exception: its
-implementation will derive generated TypeScript payload declarations from the
-already-shipped Rust `EchoRequest` / `EchoResponse` structs so the current hand-written
-echo mirror can be removed. Until that implementation lands, the hand-written mirror
-remains the live source on the TypeScript side. The approved echo-only bootstrap does not make Rust
-the general schema language, ship `@keld/schema` or live `keld gen`, or replace runtime
-postcard/golden-vector validation.
+compiled to both sides. KEL-98 implements one bounded bootstrap exception: cold
+maintainer tooling derives the checked-in TypeScript `EchoRequest` / `EchoResponse`
+payload declarations from the already-shipped Rust structs, and the hello adapter
+consumes them through type-only imports. The hand-written TypeScript payload mirror is
+gone; the independently implemented postcard codec and shared golden-vector validation
+remain the runtime wire oracle. This echo-only bootstrap does not make Rust the general
+schema language, ship `@keld/schema` or live `keld gen`, or replace runtime validation.
 
 The destination authoring shape remains:
 
