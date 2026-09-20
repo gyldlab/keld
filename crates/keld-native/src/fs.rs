@@ -550,35 +550,43 @@ impl FsBroker {
             }
         };
 
-        let mut committed = 0_u64;
-        let mut offset = 0_usize;
-        while offset < bytes.len() {
-            progress.check_write(true, committed, bytes.len(), None)?;
-            let end = (offset + FS_IO_CHUNK_BYTES).min(bytes.len());
-            match file.write(&bytes[offset..end]) {
-                Ok(0) => {
-                    return progress.check_write(
-                        true,
-                        committed,
-                        bytes.len(),
-                        Some(io::Error::new(
-                            ErrorKind::WriteZero,
-                            "content write returned zero",
-                        )),
-                    );
-                }
-                Ok(count) => {
-                    offset += count;
-                    committed += count as u64;
-                    progress.check_write(true, committed, bytes.len(), None)?;
-                }
-                Err(source) => {
-                    return progress.check_write(true, committed, bytes.len(), Some(source));
-                }
+        write_content(&mut file, bytes, progress)
+    }
+}
+
+fn write_content<W: Write>(
+    writer: &mut W,
+    bytes: &[u8],
+    progress: &Progress<'_>,
+) -> Result<(), FsError> {
+    let mut committed = 0_u64;
+    let mut offset = 0_usize;
+    while offset < bytes.len() {
+        progress.check_write(true, committed, bytes.len(), None)?;
+        let end = (offset + FS_IO_CHUNK_BYTES).min(bytes.len());
+        match writer.write(&bytes[offset..end]) {
+            Ok(0) => {
+                return progress.check_write(
+                    true,
+                    committed,
+                    bytes.len(),
+                    Some(io::Error::new(
+                        ErrorKind::WriteZero,
+                        "content write returned zero",
+                    )),
+                );
+            }
+            Ok(count) => {
+                offset += count;
+                committed += count as u64;
+                progress.check_write(true, committed, bytes.len(), None)?;
+            }
+            Err(source) => {
+                return progress.check_write(true, committed, bytes.len(), Some(source));
             }
         }
-        progress.check_write(true, committed, bytes.len(), None)
     }
+    progress.check_write(true, committed, bytes.len(), None)
 }
 
 fn prepare_capability(
@@ -1216,6 +1224,8 @@ fn unsupported_reparse(_metadata: &cap_std::fs::Metadata) -> bool {
 struct Progress<'a> {
     cancelled: &'a AtomicBool,
     deadline: Instant,
+    #[cfg(test)]
+    now: fn() -> Instant,
 }
 
 impl<'a> Progress<'a> {
@@ -1225,16 +1235,24 @@ impl<'a> Progress<'a> {
         Self {
             cancelled,
             deadline,
+            #[cfg(test)]
+            now: Instant::now,
         }
     }
 
     fn cause(&self) -> Option<ProgressCause> {
         if self.cancelled.load(Ordering::Acquire) {
             Some(ProgressCause::Cancelled)
-        } else if Instant::now() >= self.deadline {
-            Some(ProgressCause::Deadline)
         } else {
-            None
+            #[cfg(test)]
+            let now = (self.now)();
+            #[cfg(not(test))]
+            let now = Instant::now();
+            if now >= self.deadline {
+                Some(ProgressCause::Deadline)
+            } else {
+                None
+            }
         }
     }
 
@@ -1347,6 +1365,18 @@ mod tests {
     use super::*;
     use keld_guard::parse_manifest;
 
+    std::thread_local! {
+        static TEST_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    }
+
+    fn test_now() -> Instant {
+        TEST_NOW.with(|now| now.get().expect("test clock initialized"))
+    }
+
+    fn set_test_now(now: Instant) {
+        TEST_NOW.with(|clock| clock.set(Some(now)));
+    }
+
     #[test]
     fn error_codes_and_messages_stay_bound() {
         let reason = match keld_guard::evaluate(
@@ -1408,6 +1438,7 @@ mod tests {
         let progress = Progress {
             cancelled: &cancelled,
             deadline: Instant::now(),
+            now: Instant::now,
         };
         assert!(matches!(progress.check_read(), Err(FsError::Cancelled)));
         let error = progress
@@ -1426,6 +1457,7 @@ mod tests {
         let expired = Progress {
             cancelled: &running,
             deadline: Instant::now(),
+            now: Instant::now,
         };
         assert!(matches!(expired.check_read(), Err(FsError::Deadline)));
         let error = expired
@@ -1436,6 +1468,125 @@ mod tests {
             FsError::WriteEffect {
                 cause: WriteInterruption::Deadline,
                 committed_bytes: 4,
+                requested_bytes: 8
+            }
+        ));
+    }
+
+    #[test]
+    fn production_write_loop_records_progress_before_selecting_terminal_cause() {
+        struct FirstWriteThen<'a> {
+            cancelled: &'a AtomicBool,
+            deadline: Instant,
+            action: AfterWrite,
+            writes: usize,
+        }
+
+        #[derive(Clone, Copy)]
+        enum AfterWrite {
+            CancelAndExpire,
+            Expire,
+        }
+
+        impl Write for FirstWriteThen<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                let count = bytes.len().min(3);
+                match self.action {
+                    AfterWrite::CancelAndExpire => {
+                        self.cancelled.store(true, Ordering::Release);
+                        set_test_now(self.deadline);
+                    }
+                    AfterWrite::Expire => set_test_now(self.deadline),
+                }
+                Ok(count)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let start = Instant::now();
+        let deadline = start + std::time::Duration::from_secs(1);
+        let cancelled = AtomicBool::new(false);
+        set_test_now(start);
+        let progress = Progress {
+            cancelled: &cancelled,
+            deadline,
+            now: test_now,
+        };
+        let mut cancel_writer = FirstWriteThen {
+            cancelled: &cancelled,
+            deadline,
+            action: AfterWrite::CancelAndExpire,
+            writes: 0,
+        };
+        let error = write_content(&mut cancel_writer, b"12345678", &progress)
+            .expect_err("late cancellation must preserve the first acknowledged write");
+        assert_eq!(cancel_writer.writes, 1);
+        assert!(matches!(
+            error,
+            FsError::WriteEffect {
+                cause: WriteInterruption::Cancelled,
+                committed_bytes: 3,
+                requested_bytes: 8
+            }
+        ));
+
+        cancelled.store(false, Ordering::Release);
+        set_test_now(start);
+        let mut deadline_writer = FirstWriteThen {
+            cancelled: &cancelled,
+            deadline,
+            action: AfterWrite::Expire,
+            writes: 0,
+        };
+        let error = write_content(&mut deadline_writer, b"12345678", &progress)
+            .expect_err("one absolute deadline must expire after partial progress");
+        assert_eq!(deadline_writer.writes, 1);
+        assert!(matches!(
+            error,
+            FsError::WriteEffect {
+                cause: WriteInterruption::Deadline,
+                committed_bytes: 3,
+                requested_bytes: 8
+            }
+        ));
+    }
+
+    #[test]
+    fn production_write_loop_counts_only_successful_write_returns() {
+        struct PartialThenError {
+            writes: usize,
+        }
+
+        impl Write for PartialThenError {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                if self.writes == 1 {
+                    Ok(bytes.len().min(3))
+                } else {
+                    Err(io::Error::other("injected write failure"))
+                }
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let cancelled = AtomicBool::new(false);
+        let progress = Progress::new(&cancelled);
+        let mut writer = PartialThenError { writes: 0 };
+        let error = write_content(&mut writer, b"12345678", &progress)
+            .expect_err("second write fails after one acknowledged partial write");
+        assert_eq!(writer.writes, 2);
+        assert!(matches!(
+            error,
+            FsError::WriteEffect {
+                cause: WriteInterruption::Io(_),
+                committed_bytes: 3,
                 requested_bytes: 8
             }
         ));
