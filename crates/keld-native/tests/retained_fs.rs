@@ -45,6 +45,16 @@ fn manifest(root: &Path) -> VerifiedManifest {
     verified_from_text(root, "keld.permissions.jsonc", &text)
 }
 
+#[cfg(unix)]
+fn file_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
+    std::os::unix::fs::symlink(target, link).expect("create file symlink");
+}
+
+#[cfg(windows)]
+fn file_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
+    std::os::windows::fs::symlink_file(target, link).expect("create file symlink");
+}
+
 #[test]
 fn content_limit_rejects_read_and_write_without_mutating_target() {
     let root = owned_root("content-limit");
@@ -557,11 +567,9 @@ fn retained_root_survives_ambient_path_replacement() {
     std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn subtree_internal_link_passes_while_exact_and_external_links_deny() {
-    use std::os::unix::fs::symlink;
-
     let fixture = owned_root("link-policy");
     let root = fixture.join("granted");
     let outside = fixture.join("outside");
@@ -569,8 +577,8 @@ fn subtree_internal_link_passes_while_exact_and_external_links_deny() {
     std::fs::create_dir(&outside).expect("outside root");
     std::fs::write(root.join("target"), b"inside").expect("inside target");
     std::fs::write(outside.join("sentinel"), b"outside").expect("outside sentinel");
-    symlink("target", root.join("internal")).expect("internal link");
-    symlink(outside.join("sentinel"), root.join("external")).expect("external link");
+    file_symlink("target", root.join("internal"));
+    file_symlink(outside.join("sentinel"), root.join("external"));
 
     let subtree = manifest(&root);
     let broker = FsBroker::prepare(&subtree).expect("prepare subtree");
@@ -748,17 +756,15 @@ fn directories_are_rejected_without_content_io_and_control_still_passes() {
     std::fs::remove_dir_all(&root).expect("cleanup root");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn post_expansion_component_limit_passes_256_and_denies_257() {
-    use std::os::unix::fs::symlink;
-
     let root = owned_root("components");
     std::fs::write(root.join("file"), b"boundary").expect("boundary file");
     let pass_target = format!("{}file", "./".repeat(254));
     let deny_target = format!("{}file", "./".repeat(255));
-    symlink(&pass_target, root.join("pass")).expect("pass link");
-    symlink(&deny_target, root.join("deny")).expect("deny link");
+    file_symlink(&pass_target, root.join("pass"));
+    file_symlink(&deny_target, root.join("deny"));
     let verified = manifest(&root);
     let broker = FsBroker::prepare(&verified).expect("prepare broker");
     let cancelled = AtomicBool::new(false);
@@ -777,6 +783,50 @@ fn post_expansion_component_limit_passes_256_and_denies_257() {
             &cancelled,
         )
         .expect_err("257 processed components");
+    assert_eq!(denied.code(), "KELD-NATIVE-004");
+    drop(broker);
+    std::fs::remove_dir_all(&root).expect("cleanup root");
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn symlink_expansion_limit_passes_40_and_denies_41() {
+    let root = owned_root("link-expansions");
+    std::fs::write(root.join("file"), b"boundary").expect("boundary file");
+
+    for (prefix, count) in [("pass", 40_usize), ("deny", 41_usize)] {
+        for index in 0..count {
+            let target = if index + 1 == count {
+                PathBuf::from("file")
+            } else {
+                PathBuf::from(format!("{prefix}-{}", index + 1))
+            };
+            file_symlink(target, root.join(format!("{prefix}-{index}")));
+        }
+    }
+
+    let verified = manifest(&root);
+    let broker = FsBroker::prepare(&verified).expect("prepare broker");
+    let cancelled = AtomicBool::new(false);
+    assert_eq!(
+        broker
+            .read(
+                &verified,
+                Principal::AppProcess,
+                &spelling(&root.join("pass-0")),
+                &cancelled,
+            )
+            .expect("40 expanded links"),
+        b"boundary"
+    );
+    let denied = broker
+        .read(
+            &verified,
+            Principal::AppProcess,
+            &spelling(&root.join("deny-0")),
+            &cancelled,
+        )
+        .expect_err("41 expanded links");
     assert_eq!(denied.code(), "KELD-NATIVE-004");
     drop(broker);
     std::fs::remove_dir_all(&root).expect("cleanup root");
