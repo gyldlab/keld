@@ -659,7 +659,9 @@ if (import.meta.main) {
     const response = await session.echo({ message: "keld", count: 1 });
     console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
     console.log("{{name}}: main process ready (IPC echo ok)");
-    await new Promise(() => {});
+    await quitAfterLastWindowClosed(session);
+    session.close();
+    process.exit(0);
   } finally {
     session.close();
   }
