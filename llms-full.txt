@@ -1113,7 +1113,7 @@ view and links each claim to tracked evidence.
 | `keld-native` | Guarded native services: filesystem, menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell and secure storage | ipc, guard |
 | `keld-guard` | Capability manifest, generated scopes, principal/window grants, evaluation and audit | sha2 |
 | `keld-runtime` | Supervised Bun process family, role identities, lifecycle policy, grants and virtual ports | ipc |
-| `keld-update` | Signed full-package activation, rollback and optional later delta transport | — |
+| `keld-update` | Signed full-package activation, rollback and optional later delta transport | guard |
 | `keld-pack` | Installer assembly, signing/notarization and cross-target packaging | — |
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |

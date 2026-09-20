@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ed25519_dalek::VerifyingKey;
 use keld_guard::ProfileDigest;
@@ -339,15 +339,15 @@ fn match_identity(
         observed.channel.as_str(),
     )?;
     compare(ProvenanceField::Target, &expected.target, &observed.target)?;
-    compare(
+    compare_path(
         ProvenanceField::InstallRoot,
-        &expected.install_root.display().to_string(),
-        &observed.install_root.display().to_string(),
+        &expected.install_root,
+        &observed.install_root,
     )?;
-    compare(
+    compare_path(
         ProvenanceField::UpdateRoot,
-        &expected.update_root.display().to_string(),
-        &observed.update_root.display().to_string(),
+        &expected.update_root,
+        &observed.update_root,
     )?;
     compare(
         ProvenanceField::SigningKey,
@@ -378,6 +378,22 @@ fn compare(field: ProvenanceField, expected: &str, observed: &str) -> Result<(),
         Ok(())
     } else {
         Err(mismatch(field, expected, observed))
+    }
+}
+
+fn compare_path(
+    field: ProvenanceField,
+    expected: &Path,
+    observed: &Path,
+) -> Result<(), UpdateError> {
+    if expected == observed {
+        Ok(())
+    } else {
+        Err(mismatch(
+            field,
+            &expected.display().to_string(),
+            &observed.display().to_string(),
+        ))
     }
 }
 

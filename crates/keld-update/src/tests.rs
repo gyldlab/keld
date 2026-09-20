@@ -219,6 +219,38 @@ fn provenance_requires_exact_identity_distinct_principals_and_floor() {
     assert_eq!(admitted_at("1.2.0").version_floor(), "1.2.0");
 }
 
+#[cfg(windows)]
+#[test]
+fn provenance_path_identity_does_not_compare_lossy_display_text() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut expected = expected_identity();
+    expected.update_root = PathBuf::from(OsString::from_wide(&[0xd800]));
+    let expected_display = expected.update_root.display().to_string();
+    let verifier = UpdateVerifier::new(expected.clone(), signing_key().verifying_key().to_bytes())
+        .expect("fixture verifier");
+    let mut observed = expected;
+    observed.update_root = PathBuf::from(OsString::from_wide(&[0xd801]));
+    assert_eq!(
+        expected_display,
+        observed.update_root.display().to_string(),
+        "control: lossy display collapses the distinct paths"
+    );
+
+    let error = verifier
+        .admit(&observation(observed, InstallOwner::Direct, Some("1.0.0")))
+        .unwrap_err();
+    assert_code(&error, "KELD-UPDATE-003");
+    assert!(matches!(
+        error,
+        UpdateError::ProvenanceMismatch {
+            field: ProvenanceField::UpdateRoot,
+            ..
+        }
+    ));
+}
+
 #[test]
 fn signature_authentication_precedes_json_meaning() {
     let invalid_json = br#"{"schema":1,"schema":1"#;
