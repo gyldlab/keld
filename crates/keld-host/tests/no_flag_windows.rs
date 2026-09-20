@@ -9,7 +9,7 @@ use std::env;
 use std::ffi::c_void;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -687,6 +687,546 @@ fn kel135_signed_host_persistent_profile_startup() {
         !process_exists(bun_pid),
         "signed host Bun survived orderly exit"
     );
+}
+
+struct SignedProfileStateCase<'a> {
+    name: &'a str,
+    host: &'a std::ffi::OsStr,
+    before: &'a str,
+    after: &'a str,
+}
+
+#[test]
+#[ignore = "requires signed KEL-135 host fixtures and WebView2 state acceptance"]
+fn kel135_signed_host_profile_state_isolation() {
+    let primary_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed host");
+    let sibling_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_B_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_B_P1 must point to a signed host");
+    let alternate_publisher_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P2")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P2 must point to a signed host");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind state control");
+    let state_server = ProfileStateServer::new();
+    let run_nonce = profile_state_run_nonce(&fixture);
+    let primary_state = format!("{run_nonce}-a");
+    let sibling_state = format!("{run_nonce}-b");
+    let publisher_two_value = format!("{run_nonce}-p2");
+    let cases = [
+        SignedProfileStateCase {
+            name: "a-seed",
+            host: &primary_carrier,
+            before: "",
+            after: &primary_state,
+        },
+        SignedProfileStateCase {
+            name: "a-restart",
+            host: &primary_carrier,
+            before: &primary_state,
+            after: &primary_state,
+        },
+        SignedProfileStateCase {
+            name: "b-isolated",
+            host: &sibling_carrier,
+            before: "",
+            after: &sibling_state,
+        },
+        SignedProfileStateCase {
+            name: "a-after-b",
+            host: &primary_carrier,
+            before: &primary_state,
+            after: &primary_state,
+        },
+        SignedProfileStateCase {
+            name: "a-p2-isolated",
+            host: &alternate_publisher_carrier,
+            before: "",
+            after: &publisher_two_value,
+        },
+        SignedProfileStateCase {
+            name: "a-final",
+            host: &primary_carrier,
+            before: &primary_state,
+            after: &primary_state,
+        },
+    ];
+    for case in &cases {
+        run_signed_profile_state_case(&fixture, &control_listener, &state_server, &run_nonce, case);
+    }
+}
+
+fn run_signed_profile_state_case(
+    fixture: &ProductFixture,
+    control_listener: &TcpListener,
+    state_server: &ProfileStateServer,
+    run_nonce: &str,
+    case: &SignedProfileStateCase<'_>,
+) {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    state_server.expect_case(case.name, deadline);
+    fs::write(
+        fixture.project.join("index.html"),
+        state_redirect_html(state_server.address(), case.name, run_nonce, case.after),
+    )
+    .expect("write state renderer");
+    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(case.host))
+        .expect("stage signed state host");
+    let control_port = control_listener
+        .local_addr()
+        .expect("state control address")
+        .port();
+    let child = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch signed state host");
+    let mut process = SignedStateProcessGuard::new(child);
+    let host_pid = process.host_pid();
+    let control = accept_control_or_host_failure(control_listener, process.child_mut(), deadline);
+    control
+        .set_read_timeout(Some(PRODUCT_DEADLINE))
+        .expect("state control timeout");
+    let mut reader = BufReader::new(control);
+    let hello = read_control_line(&mut reader);
+    let mut hello_fields = hello.split_whitespace();
+    assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
+    let bun_pid = hello_fields
+        .next()
+        .expect("state Bun PID")
+        .parse::<u32>()
+        .expect("state numeric Bun PID");
+    let _app_link = hello_fields.next().expect("state app link");
+    assert!(hello_fields.next().is_none(), "{hello}");
+    process.observe_bun(bun_pid);
+    assert_eq!(parse_descendant_pid(&read_control_line(&mut reader)), 0);
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state READY"),
+        "READY"
+    );
+    let mut writer = reader.get_ref().try_clone().expect("state control writer");
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO1"),
+        "ECHO1"
+    );
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO2"),
+        "ECHO2"
+    );
+    let observed = state_server.wait_for_case(case.name, deadline);
+    assert_eq!(observed.nonce, run_nonce, "{} run nonce", case.name);
+    assert_eq!(
+        observed.before, case.before,
+        "{} state before write",
+        case.name
+    );
+    assert_eq!(
+        observed.after, case.after,
+        "{} state after write",
+        case.name
+    );
+    let _window = wait_for_host_window(host_pid, deadline);
+    writer.write_all(b"QUIT\n").expect("state host Quit");
+    writer.flush().expect("flush state host Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = process.wait(deadline);
+    assert!(status.success(), "{} host exited with {status}", case.name);
+    assert!(!process_exists(bun_pid), "{} Bun survived exit", case.name);
+}
+
+fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
+    let leaf = fixture
+        .root
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("UTF-8 product fixture nonce");
+    format!("{}-{leaf}", std::process::id())
+}
+
+struct SignedStateProcessGuard {
+    child: Option<Child>,
+    bun: Option<OwnedHandle>,
+}
+
+impl SignedStateProcessGuard {
+    fn new(child: Child) -> Self {
+        Self {
+            child: Some(child),
+            bun: None,
+        }
+    }
+
+    fn host_pid(&self) -> u32 {
+        self.child.as_ref().expect("live signed host").id()
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("live signed host")
+    }
+
+    fn observe_bun(&mut self, pid: u32) {
+        self.bun = Some(open_process_for_wait(pid, true));
+    }
+
+    fn wait(mut self, deadline: Instant) -> ExitStatus {
+        let status = wait_child(self.child_mut(), deadline);
+        let _ = self.child.take();
+        if let Some(bun) = self.bun.take() {
+            assert_process_signaled(&bun, "signed-state Bun");
+        }
+        status
+    }
+}
+
+impl Drop for SignedStateProcessGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(bun) = self.bun.take()
+            // SAFETY: `bun` owns a live process handle opened for synchronize/terminate;
+            // this zero-time wait neither closes nor transfers it.
+            && unsafe { WaitForSingleObject(bun.as_raw_handle().cast(), 0) } != WAIT_OBJECT_0
+        {
+            // SAFETY: the guard owns the exact observed Bun process handle. Termination
+            // is test-failure cleanup, followed by a bounded wait before handle drop.
+            unsafe {
+                let _ = TerminateProcess(bun.as_raw_handle().cast(), 1);
+                let _ = WaitForSingleObject(bun.as_raw_handle().cast(), 5_000);
+            }
+        }
+    }
+}
+
+fn state_redirect_html(address: SocketAddr, case_name: &str, nonce: &str, value: &str) -> String {
+    format!(
+        "<!doctype html>{DARK_BG}<script>location.replace('http://127.0.0.1:{}/app?case={}&nonce={}&value={}')</script>\n",
+        address.port(),
+        case_name,
+        nonce,
+        value
+    )
+}
+
+struct ProfileStateServer {
+    address: SocketAddr,
+    observations: mpsc::Receiver<Result<ProfileStateObservation, String>>,
+    commands: mpsc::Sender<ProfileStateCommand>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ProfileStateObservation {
+    case_name: String,
+    nonce: String,
+    before: String,
+    after: String,
+}
+
+enum ProfileStateCommand {
+    Expect {
+        case_name: String,
+        deadline: Instant,
+    },
+    Stop,
+}
+
+impl ProfileStateServer {
+    fn new() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind profile state server");
+        let address = listener.local_addr().expect("profile state server address");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking profile state server");
+        let (observed_tx, observations) = mpsc::channel();
+        let (commands, command_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            if let Err(error) = serve_profile_state_loop(&listener, &command_rx, &observed_tx) {
+                let _ = observed_tx.send(Err(error));
+            }
+        });
+        Self {
+            address,
+            observations,
+            commands,
+            worker: Some(worker),
+        }
+    }
+
+    fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    fn expect_case(&self, case_name: &str, deadline: Instant) {
+        self.commands
+            .send(ProfileStateCommand::Expect {
+                case_name: case_name.to_owned(),
+                deadline,
+            })
+            .expect("arm profile state case");
+    }
+
+    fn wait_for_case(&self, expected: &str, deadline: Instant) -> ProfileStateObservation {
+        let remaining = renderer_beacon_remaining(deadline, Instant::now())
+            .expect("profile state deadline remains");
+        let observation = self
+            .observations
+            .recv_timeout(remaining)
+            .expect("profile state report")
+            .unwrap_or_else(|error| panic!("profile state server failed: {error}"));
+        assert_eq!(observation.case_name, expected, "profile state case order");
+        observation
+    }
+}
+
+impl Drop for ProfileStateServer {
+    fn drop(&mut self) {
+        let _ = self.commands.send(ProfileStateCommand::Stop);
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn serve_profile_state_loop(
+    listener: &TcpListener,
+    commands: &mpsc::Receiver<ProfileStateCommand>,
+    observations: &mpsc::Sender<Result<ProfileStateObservation, String>>,
+) -> Result<(), String> {
+    let mut pending = Vec::<PendingRendererRequest>::new();
+    let mut expected: Option<(String, Instant)> = None;
+    let mut last_observation = None;
+    loop {
+        if expected.is_none() {
+            match commands.recv_timeout(RENDERER_ACCEPT_POLL) {
+                Ok(ProfileStateCommand::Expect {
+                    case_name,
+                    deadline,
+                }) => expected = Some((case_name, deadline)),
+                Ok(ProfileStateCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Ok(());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            }
+        }
+        match commands.try_recv() {
+            Ok(ProfileStateCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                return Ok(());
+            }
+            Ok(ProfileStateCommand::Expect { case_name, .. }) => {
+                return Err(format!(
+                    "profile state case `{case_name}` armed before the prior case completed"
+                ));
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        let (expected_case, deadline) = expected.as_ref().expect("armed profile state case");
+        let remaining = renderer_beacon_remaining(*deadline, Instant::now())?;
+
+        let mut index = 0;
+        while index < pending.len() {
+            let request = {
+                let PendingRendererRequest { stream, request } = &mut pending[index];
+                read_renderer_request_line(request, |buffer| stream.read(buffer))
+            }?;
+            match request {
+                RendererRequestRead::Pending => index += 1,
+                RendererRequestRead::Empty => {
+                    pending.swap_remove(index);
+                }
+                RendererRequestRead::Complete(request) => {
+                    let mut matched = pending.swap_remove(index);
+                    let path = renderer_request_path(&request)?;
+                    let response =
+                        profile_state_response(path, expected_case, last_observation.as_ref())?;
+                    matched.stream.set_nonblocking(false).map_err(|error| {
+                        format!("set profile state reply stream blocking: {error}")
+                    })?;
+                    matched
+                        .stream
+                        .set_write_timeout(Some(remaining))
+                        .map_err(|error| format!("set profile state reply deadline: {error}"))?;
+                    write_profile_state_response(&mut matched.stream, &response)?;
+                    if let Some(observation) = response.observation {
+                        last_observation = Some(observation.clone());
+                        observations
+                            .send(Ok(observation))
+                            .map_err(|_| "profile state observation owner ended".to_owned())?;
+                        expected = None;
+                        break;
+                    }
+                }
+            }
+        }
+
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if pending.len() == RENDERER_CONNECTION_LIMIT {
+                    return Err(format!(
+                        "profile state server exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+                    ));
+                }
+                stream
+                    .set_nonblocking(true)
+                    .map_err(|error| format!("set profile state stream nonblocking: {error}"))?;
+                pending.push(PendingRendererRequest {
+                    stream,
+                    request: Vec::new(),
+                });
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(format!("accept profile state request: {error}")),
+        }
+        thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
+    }
+}
+
+struct ProfileStateResponse {
+    status: &'static str,
+    content_type: &'static str,
+    body: String,
+    observation: Option<ProfileStateObservation>,
+}
+
+fn renderer_request_path(request: &[u8]) -> Result<&str, String> {
+    let request = std::str::from_utf8(request)
+        .map_err(|error| format!("profile state request line is not UTF-8: {error}"))?;
+    let mut fields = request.split_whitespace();
+    if fields.next() != Some("GET") {
+        return Err(format!("profile state request is not GET: {request}"));
+    }
+    let path = fields
+        .next()
+        .ok_or_else(|| format!("profile state request has no path: {request}"))?;
+    if fields.next() != Some("HTTP/1.1") || fields.next().is_some() {
+        return Err(format!("profile state request shape is invalid: {request}"));
+    }
+    Ok(path)
+}
+
+fn write_profile_state_response(
+    stream: &mut TcpStream,
+    response: &ProfileStateResponse,
+) -> Result<(), String> {
+    let header = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        response.status,
+        response.content_type,
+        response.body.len()
+    );
+    stream
+        .write_all(header.as_bytes())
+        .and_then(|()| stream.write_all(response.body.as_bytes()))
+        .map_err(|error| format!("write profile state response: {error}"))
+}
+
+fn profile_state_response(
+    path: &str,
+    expected_case: &str,
+    last_observation: Option<&ProfileStateObservation>,
+) -> Result<ProfileStateResponse, String> {
+    if path == "/favicon.ico" {
+        return Ok(ProfileStateResponse {
+            status: "204 No Content",
+            content_type: "text/plain",
+            body: String::new(),
+            observation: None,
+        });
+    }
+    if let Some(query) = path.strip_prefix("/state?") {
+        let fields = profile_state_query(query)?;
+        let case_name = required_profile_state_field(&fields, "case")?;
+        let observation = ProfileStateObservation {
+            case_name: case_name.to_owned(),
+            nonce: required_profile_state_field(&fields, "nonce")?.to_owned(),
+            before: required_profile_state_field(&fields, "before")?.to_owned(),
+            after: required_profile_state_field(&fields, "after")?.to_owned(),
+        };
+        if case_name != expected_case {
+            if last_observation == Some(&observation) {
+                return Ok(empty_profile_state_response());
+            }
+            return Err(format!(
+                "profile state report case `{case_name}` did not match `{expected_case}`"
+            ));
+        }
+        return Ok(ProfileStateResponse {
+            status: "204 No Content",
+            content_type: "text/plain",
+            body: String::new(),
+            observation: Some(observation),
+        });
+    }
+    let Some(query) = path.strip_prefix("/app?") else {
+        return Ok(ProfileStateResponse {
+            status: "404 Not Found",
+            content_type: "text/plain",
+            body: String::new(),
+            observation: None,
+        });
+    };
+    let fields = profile_state_query(query)?;
+    let case_name = required_profile_state_field(&fields, "case")?;
+    let nonce = required_profile_state_field(&fields, "nonce")?;
+    let value = required_profile_state_field(&fields, "value")?;
+    if case_name != expected_case {
+        if last_observation.is_some_and(|prior| {
+            prior.case_name == case_name && prior.nonce == nonce && prior.after == value
+        }) {
+            return Ok(empty_profile_state_response());
+        }
+        return Err(format!(
+            "profile state app case `{case_name}` did not match `{expected_case}`"
+        ));
+    }
+    let body = format!(
+        "<!doctype html>{DARK_BG}<script>const k='keld135.profile-state.v1';const before=localStorage.getItem(k)||'';const after=before||'{value}';localStorage.setItem(k,after);fetch('/state?case={case_name}&nonce={nonce}&before='+encodeURIComponent(before)+'&after='+encodeURIComponent(after)).catch(()=>{{}})</script>"
+    );
+    Ok(ProfileStateResponse {
+        status: "200 OK",
+        content_type: "text/html; charset=utf-8",
+        body,
+        observation: None,
+    })
+}
+
+fn empty_profile_state_response() -> ProfileStateResponse {
+    ProfileStateResponse {
+        status: "204 No Content",
+        content_type: "text/plain",
+        body: String::new(),
+        observation: None,
+    }
+}
+
+fn profile_state_query(query: &str) -> Result<Vec<(&str, &str)>, String> {
+    let mut fields = Vec::new();
+    for pair in query.split('&') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("profile state query pair is malformed: {pair}"))?;
+        if fields.iter().any(|(found, _)| *found == key) {
+            return Err(format!("profile state query duplicates `{key}`"));
+        }
+        fields.push((key, value));
+    }
+    Ok(fields)
+}
+
+fn required_profile_state_field<'a>(
+    fields: &'a [(&str, &str)],
+    expected: &str,
+) -> Result<&'a str, String> {
+    fields
+        .iter()
+        .find_map(|(key, value)| (*key == expected).then_some(*value))
+        .ok_or_else(|| format!("profile state query omits `{expected}`"))
 }
 
 #[test]
