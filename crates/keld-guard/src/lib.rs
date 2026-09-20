@@ -667,7 +667,9 @@ pub fn evaluate(
     if arr.is_empty() || arr.iter().any(|value| !value.is_string()) {
         return deny_not_granted(operation, path);
     }
-    if path_has_dotdot(path) {
+    if path_has_dotdot(path)
+        || (is_filesystem_capability(operation) && validate_fs_request_path(path).is_err())
+    {
         return deny_out_of_scope(operation, path, arr);
     }
     let Some(grant_index) = arr.iter().position(|value| {
@@ -795,19 +797,53 @@ pub fn path_scopes<'manifest>(
 /// Returns a developer-facing reason when the component is empty, special, or
 /// reserved on the current platform.
 pub fn validate_fs_component(component: &str) -> Result<(), String> {
+    validate_portable_component(component)?;
+    #[cfg(windows)]
+    validate_windows_component(component)?;
+    Ok(())
+}
+
+fn validate_portable_component(component: &str) -> Result<(), String> {
     if component.is_empty() || matches!(component, "." | "..") {
         return Err("empty, `.` and `..` components are not normal names".to_owned());
     }
     if component.contains(['\0', '/', '\\']) {
         return Err("components cannot contain NUL or a path separator".to_owned());
     }
-    #[cfg(windows)]
-    validate_windows_component(component)?;
     Ok(())
 }
 
 fn is_filesystem_capability(operation: &str) -> bool {
     matches!(operation, "fs.read" | "fs.write")
+}
+
+fn validate_fs_request_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("path is empty".to_owned());
+    }
+    if path.contains(['\0', '\\']) {
+        return Err("path contains NUL or a non-portable backslash separator".to_owned());
+    }
+    let (remainder, windows_style) = if let Some(remainder) = path.strip_prefix('/') {
+        (remainder, false)
+    } else {
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_uppercase() || bytes[1] != b':' || bytes[2] != b'/'
+        {
+            return Err("path must be absolute".to_owned());
+        }
+        (&path[3..], true)
+    };
+    if remainder.is_empty() {
+        return Ok(());
+    }
+    for component in remainder.split('/') {
+        validate_portable_component(component)?;
+        if windows_style {
+            validate_windows_component(component)?;
+        }
+    }
+    Ok(())
 }
 
 fn is_fs_root(path: &str) -> bool {
@@ -851,7 +887,6 @@ fn validate_fs_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn validate_windows_component(component: &str) -> Result<(), String> {
     if component.contains(':') {
         return Err("alternate data streams are not serviceable".to_owned());
@@ -1371,18 +1406,18 @@ mod tests {
     /// it. A single character before the colon is therefore a drive letter.
     #[test]
     fn a_windows_drive_glob_is_a_path_not_a_scheme() {
-        let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["C:/**","d:/data/**"]}}}"#).expect("manifest");
+        let manifest = parse_manifest(r#"{"app":{"matcher":{"read":["C:/**","d:/data/**"]}}}"#)
+            .expect("manifest");
         for requested in ["C:/Users/app/x", "C://Users/app/x", "d:/data//cache/x"] {
             assert!(
                 matches!(
-                    eval_app(&manifest, "fs.read", requested),
+                    eval_app(&manifest, "matcher.read", requested),
                     Decision::Allow(_)
                 ),
                 "a drive-letter grant keeps plain path semantics: {requested}"
             );
         }
-        let outside = eval_app(&manifest, "fs.read", "E:/other/x");
+        let outside = eval_app(&manifest, "matcher.read", "E:/other/x");
         assert!(
             matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
             "an ungranted drive is still out of scope: {outside:?}"
@@ -1433,7 +1468,7 @@ mod tests {
     #[test]
     fn a_path_containing_a_scheme_separator_keeps_its_path_grant() {
         let manifest = parse_manifest(
-            r#"{"app":{"fs":{"read":["$APPDATA/**","/var/cache/**","C:/Users/me/AppData/**","cache/**"]}}}"#,
+            r#"{"app":{"matcher":{"read":["$APPDATA/**","/var/cache/**","C:/Users/me/AppData/**","cache/**"]}}}"#,
         )
         .expect("manifest");
         for requested in [
@@ -1445,7 +1480,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    eval_app(&manifest, "fs.read", requested),
+                    eval_app(&manifest, "matcher.read", requested),
                     Decision::Allow(_)
                 ),
                 "an embedded `://` must not turn a path into a URI: {requested}"
@@ -1453,7 +1488,7 @@ mod tests {
         }
         // The same manifest still denies a genuine scheme-qualified destination,
         // so the cases above are not passing because everything is allowed.
-        let outside = eval_app(&manifest, "fs.read", "https://example.com/index.html");
+        let outside = eval_app(&manifest, "matcher.read", "https://example.com/index.html");
         assert!(
             matches!(outside, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a real URI is still outside the path grants: {outside:?}"
@@ -1470,24 +1505,27 @@ mod tests {
     fn a_colon_outside_scheme_position_still_names_a_destination() {
         for (manifest_text, requested) in [
             (
-                r#"{"app":{"fs":{"read":["$APPDATA/cache/https:/**"]}}}"#,
+                r#"{"app":{"matcher":{"read":["$APPDATA/cache/https:/**"]}}}"#,
                 "$APPDATA/cache/https://example.com/index.html",
             ),
             (
-                r#"{"app":{"fs":{"read":["/srv/backup:/**"]}}}"#,
+                r#"{"app":{"matcher":{"read":["/srv/backup:/**"]}}}"#,
                 "/srv/backup:/x",
             ),
-            (r#"{"app":{"fs":{"read":["/C:/**"]}}}"#, "/C:/Users/x"),
+            (r#"{"app":{"matcher":{"read":["/C:/**"]}}}"#, "/C:/Users/x"),
             (
-                r#"{"app":{"fs":{"read":["\\\\?\\C:/**"]}}}"#,
+                r#"{"app":{"matcher":{"read":["\\\\?\\C:/**"]}}}"#,
                 "\\\\?\\C:/Users/x",
             ),
-            (r#"{"app":{"fs":{"read":["//?/C:/**"]}}}"#, "//?/C:/Users/x"),
+            (
+                r#"{"app":{"matcher":{"read":["//?/C:/**"]}}}"#,
+                "//?/C:/Users/x",
+            ),
         ] {
             let manifest = parse_manifest(manifest_text).expect("manifest");
             assert!(
                 matches!(
-                    eval_app(&manifest, "fs.read", requested),
+                    eval_app(&manifest, "matcher.read", requested),
                     Decision::Allow(_)
                 ),
                 "{manifest_text} names a destination and must still cover {requested}"
@@ -1495,8 +1533,9 @@ mod tests {
         }
         // A grant whose colon *is* in scheme position stays refused, so the
         // cases above are not passing because the rule was switched off.
-        let scheme = parse_manifest(r#"{"app":{"fs":{"read":["https:/**"]}}}"#).expect("manifest");
-        let denied = eval_app(&scheme, "fs.read", "https:/evil.example.com");
+        let scheme =
+            parse_manifest(r#"{"app":{"matcher":{"read":["https:/**"]}}}"#).expect("manifest");
+        let denied = eval_app(&scheme, "matcher.read", "https:/evil.example.com");
         assert!(
             matches!(denied, Decision::Deny(DenyReason::OutOfScope { .. })),
             "a scheme-position colon is still refused: {denied:?}"
@@ -1506,20 +1545,20 @@ mod tests {
     #[test]
     fn allow_fails_if_deny_inverted() {
         let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+            parse_manifest(r#"{"app":{"matcher":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
         assert!(
             matches!(
-                eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
+                eval_app(&manifest, "matcher.read", "$APPDATA/notes.txt"),
                 Decision::Allow(_)
             ),
             "in-scope path must allow — inverted deny/allow would fail this"
         );
         assert!(matches!(
-            eval_app(&manifest, "fs.read", "$APPDATA"),
+            eval_app(&manifest, "matcher.read", "$APPDATA"),
             Decision::Allow(_)
         ));
         assert!(!matches!(
-            eval_app(&manifest, "fs.read", "$DOCUMENTS/notes.txt"),
+            eval_app(&manifest, "matcher.read", "$DOCUMENTS/notes.txt"),
             Decision::Allow(_)
         ));
     }
@@ -1531,7 +1570,7 @@ mod tests {
 {
   /* block comment */
   "app": {
-    "fs": { "read": ["https://example.com/**"] }
+    "matcher": { "read": ["https://example.com/**"] }
   }
 }
 "#;
@@ -1542,7 +1581,7 @@ mod tests {
         let manifest = parse_manifest(text).expect("jsonc with comments");
         assert!(
             matches!(
-                eval_app(&manifest, "fs.read", "https://example.com/x"),
+                eval_app(&manifest, "matcher.read", "https://example.com/x"),
                 Decision::Allow(_)
             ),
             "https:// inside a string must survive comment stripping"
@@ -1662,10 +1701,10 @@ mod tests {
     #[test]
     fn webview_does_not_inherit_app_grants() {
         let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+            parse_manifest(r#"{"app":{"fs":{"read":["/appdata/**"]}}}"#).expect("manifest");
         assert!(
             matches!(
-                eval_app(&manifest, "fs.read", "$APPDATA/notes.txt"),
+                eval_app(&manifest, "fs.read", "/appdata/notes.txt"),
                 Decision::Allow(_)
             ),
             "control: AppProcess must still allow the in-scope path"
@@ -1674,7 +1713,7 @@ mod tests {
             id: 7,
             generation: 1,
         };
-        match evaluate(&manifest, webview, "fs.read", "$APPDATA/notes.txt") {
+        match evaluate(&manifest, webview, "fs.read", "/appdata/notes.txt") {
             Decision::Deny(reason @ DenyReason::NotAppProcess { principal }) => {
                 assert_eq!(principal, webview);
                 assert_eq!(principal.label(), "webview");
@@ -1693,9 +1732,9 @@ mod tests {
     #[test]
     fn plugin_does_not_inherit_app_grants() {
         let manifest =
-            parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest");
+            parse_manifest(r#"{"app":{"fs":{"read":["/appdata/**"]}}}"#).expect("manifest");
         let plugin = Principal::Plugin { id: 3 };
-        match evaluate(&manifest, plugin, "fs.read", "$APPDATA/notes.txt") {
+        match evaluate(&manifest, plugin, "fs.read", "/appdata/notes.txt") {
             Decision::Deny(DenyReason::NotAppProcess { principal }) => {
                 assert_eq!(principal, plugin);
                 assert_eq!(principal.label(), "plugin");
@@ -1793,5 +1832,22 @@ mod tests {
                 maximum: 64
             })
         ));
+    }
+
+    #[test]
+    fn filesystem_request_grammar_denies_before_matching() {
+        let manifest =
+            parse_manifest(r#"{"app":{"fs":{"read":["/tmp/root/**"]}}}"#).expect("manifest");
+        assert!(matches!(
+            eval_app(&manifest, "fs.read", "/tmp/root/file"),
+            Decision::Allow(_)
+        ));
+        for invalid in ["", ".", "relative", "/tmp/root//file", "/tmp/root/./file"] {
+            let decision = eval_app(&manifest, "fs.read", invalid);
+            assert!(
+                matches!(decision, Decision::Deny(DenyReason::OutOfScope { .. })),
+                "invalid filesystem request `{invalid}` must be guard out-of-scope: {decision:?}"
+            );
+        }
     }
 }

@@ -924,14 +924,25 @@ fn relative_request<'a>(grant: &'a RetainedGrant, requested: &'a str) -> Result<
             if requested == grant.anchor {
                 return Ok("");
             }
-            requested
-                .strip_prefix(&grant.anchor)
-                .and_then(|suffix| suffix.strip_prefix('/'))
-                .ok_or_else(|| FsError::ResolvedOutOfScope {
+            strip_subtree_anchor(&grant.anchor, requested).ok_or_else(|| {
+                FsError::ResolvedOutOfScope {
                     requested: requested.to_owned(),
                     detail: "request does not share the selected retained root spelling".to_owned(),
-                })
+                }
+            })
         }
+    }
+}
+
+fn strip_subtree_anchor<'requested>(
+    anchor: &str,
+    requested: &'requested str,
+) -> Option<&'requested str> {
+    let suffix = requested.strip_prefix(anchor)?;
+    if anchor.ends_with('/') {
+        Some(suffix)
+    } else {
+        suffix.strip_prefix('/')
     }
 }
 
@@ -1349,5 +1360,19 @@ mod tests {
                 requested_bytes: 8
             }
         ));
+    }
+
+    #[test]
+    fn volume_root_anchors_keep_descendant_suffixes() {
+        assert_eq!(strip_subtree_anchor("/", "/tmp/file"), Some("tmp/file"));
+        assert_eq!(
+            strip_subtree_anchor("C:/", "C:/Users/file"),
+            Some("Users/file")
+        );
+        assert_eq!(
+            strip_subtree_anchor("/tmp/root", "/tmp/root/file"),
+            Some("file")
+        );
+        assert_eq!(strip_subtree_anchor("/tmp/root", "/tmp/rooted"), None);
     }
 }

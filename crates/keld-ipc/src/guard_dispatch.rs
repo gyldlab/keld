@@ -62,7 +62,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn manifest_granting_fs_read() -> PermissionsManifest {
-        parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest")
+        parse_manifest(r#"{"app":{"fs":{"read":["/appdata/**"]}}}"#).expect("manifest")
     }
 
     #[test]
@@ -73,7 +73,7 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "$APPDATA/notes.txt",
+            "/appdata/notes.txt",
             |_| {
                 // Real side effect, not `Decision::Allow` from a unit stub —
                 // observed via the flag after `dispatch_privileged` returns.
@@ -105,12 +105,12 @@ mod tests {
     fn deny_never_runs_the_handler() {
         let manifest = manifest_granting_fs_read();
         let ran = AtomicBool::new(false);
-        // Out-of-scope path: granted only $APPDATA/**.
+        // Out-of-scope path: granted only /appdata/**.
         let result = dispatch_privileged(
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "$DOCUMENTS/secret.txt",
+            "/documents/secret.txt",
             |_| {
                 ran.store(true, Ordering::SeqCst);
             },
@@ -135,7 +135,7 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.write",
-            "$APPDATA/x",
+            "/appdata/x",
             |_| ran.store(true, Ordering::SeqCst),
         );
         assert!(
@@ -159,7 +159,7 @@ mod tests {
             &manifest,
             webview,
             "fs.read",
-            "$APPDATA/notes.txt", // in scope for AppProcess
+            "/appdata/notes.txt", // in scope for AppProcess
             |_| ran.store(true, Ordering::SeqCst),
         );
         assert!(

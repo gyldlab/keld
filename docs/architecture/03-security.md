@@ -149,9 +149,15 @@ manifest decoder.
   URL scopes additionally become origin-aware (case folding, default ports,
   percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
   is a byte comparison, so spell destinations exactly as the host will send them.
-  **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
-  not in this slice. The authority rule above **is** live in `keld-guard`
-  (KEL-208); no URL-valued capability is wired to it yet.
+  **v0:** the capability-agnostic matcher still treats `$VARS` as literals and
+  rejects `..`. The live `fs.read` / `fs.write` decision additionally requires
+  one absolute forward-slash spelling with no empty, `.` or `..` component;
+  malformed request syntax is `KELD-GUARD002` before the retained broker can
+  query a resource. `FsBroker::prepare` separately rejects variable-bearing or
+  platform-inapplicable filesystem scopes as `KELD-NATIVE-008`. Symlink
+  canonicalization is not performed by the string matcher: KEL-130's retained
+  component walker owns link resolution after Allow. The authority rule above
+  **is** live in `keld-guard` (KEL-208); no URL-valued capability is wired to it yet.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of

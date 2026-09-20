@@ -95,7 +95,7 @@ const CASES: &[Case] = &[
         name: "dot segment inside prefix",
         operation: "fs.read",
         path: "/foo/bar/./child",
-        expected: ALLOW,
+        expected: OUT_OF_SCOPE,
     },
     Case {
         name: "dot segment before prefix",
@@ -107,7 +107,7 @@ const CASES: &[Case] = &[
         name: "repeated separator inside prefix",
         operation: "fs.read",
         path: "/foo/bar//child",
-        expected: ALLOW,
+        expected: OUT_OF_SCOPE,
     },
     Case {
         name: "repeated separator before prefix",
@@ -117,25 +117,25 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "variable-looking literal",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "$APPDATA/notes.db",
         expected: ALLOW,
     },
     Case {
         name: "resolved-looking variable value",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "/Users/example/AppData/notes.db",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "line-comment marker inside string",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "https://example.com/a//b",
         expected: ALLOW,
     },
     Case {
         name: "block-comment marker inside string",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "/foo/*literal*/bar",
         expected: ALLOW,
     },

@@ -187,6 +187,31 @@ fn exact_absent_leaf_can_be_created_without_following_an_alias() {
     std::fs::remove_dir_all(&root).expect("cleanup root");
 }
 
+#[test]
+fn volume_root_scope_reaches_an_owned_descendant() {
+    let root = owned_root("volume-root");
+    let path = root.join("file");
+    std::fs::write(&path, b"volume-root").expect("seed file");
+    #[cfg(not(windows))]
+    let scope = "/**".to_owned();
+    #[cfg(windows)]
+    let scope = format!("{}/**", &spelling(&root)[..2]);
+    let text = format!(r#"{{"app":{{"fs":{{"read":["{scope}"],"write":["{scope}"]}}}}}}"#);
+    let verified = verified_from_text(&root, "volume-root.jsonc", &text);
+    let broker = FsBroker::prepare(&verified).expect("prepare volume-root broker");
+    let bytes = broker
+        .read(
+            &verified,
+            Principal::AppProcess,
+            &spelling(&path),
+            &AtomicBool::new(false),
+        )
+        .expect("read volume-root descendant");
+    assert_eq!(bytes, b"volume-root");
+    drop(broker);
+    std::fs::remove_dir_all(&root).expect("cleanup root");
+}
+
 #[cfg(unix)]
 #[test]
 fn partial_prepare_failure_releases_already_opened_roots() {
