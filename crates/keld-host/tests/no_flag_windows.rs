@@ -5,6 +5,7 @@
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: process and OS observations are assertion oracles
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::env;
 use std::ffi::c_void;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -635,6 +636,57 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         "delegated Bun survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
+}
+
+#[test]
+#[ignore = "requires a signed KEL-135 Windows host fixture"]
+fn kel135_signed_host_persistent_profile_startup() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
+        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind signed control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("signed control address")
+        .port();
+    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind signed beacon");
+    let beacon_port = beacon_listener
+        .local_addr()
+        .expect("signed beacon address")
+        .port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+        ),
+    )
+    .expect("write signed renderer");
+    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage the signed KEL-135 host");
+    let mut host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch signed host without KELD_DEV_LEASE");
+    let host_pid = host.id();
+    let (mut reader, mut writer, bun_pid, _) =
+        accept_ready_generation(&control_listener, &mut host);
+    expect_renderer_beacon(beacon, "signed host renderer beacon");
+    let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    assert_eq!(window["title"], PRODUCT_TITLE);
+    writer.write_all(b"QUIT\n").expect("signed host Quit");
+    writer.flush().expect("flush signed host Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
+    assert!(status.success(), "signed host exited with {status}");
+    assert!(
+        !process_exists(bun_pid),
+        "signed host Bun survived orderly exit"
+    );
 }
 
 #[test]
