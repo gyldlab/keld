@@ -471,7 +471,9 @@ impl FsBroker {
         let mut chunk = vec![0_u8; FS_IO_CHUNK_BYTES].into_boxed_slice();
         loop {
             progress.check_read()?;
-            let count = progress.finish_read_io(file.read(&mut chunk))?;
+            let remaining = MAX_FS_CONTENT_BYTES + 1 - output.len();
+            let read_length = remaining.min(chunk.len());
+            let count = progress.finish_read_io(file.read(&mut chunk[..read_length]))?;
             if count == 0 {
                 break;
             }
@@ -549,9 +551,11 @@ impl FsBroker {
         };
 
         let mut committed = 0_u64;
-        for chunk in bytes.chunks(FS_IO_CHUNK_BYTES) {
+        let mut offset = 0_usize;
+        while offset < bytes.len() {
             progress.check_write(true, committed, bytes.len(), None)?;
-            match file.write(chunk) {
+            let end = (offset + FS_IO_CHUNK_BYTES).min(bytes.len());
+            match file.write(&bytes[offset..end]) {
                 Ok(0) => {
                     return Err(FsError::WriteEffect {
                         cause: WriteInterruption::Io(io::Error::new(
@@ -563,18 +567,9 @@ impl FsBroker {
                     });
                 }
                 Ok(count) => {
+                    offset += count;
                     committed += count as u64;
                     progress.check_write(true, committed, bytes.len(), None)?;
-                    if count != chunk.len() {
-                        return Err(FsError::WriteEffect {
-                            cause: WriteInterruption::Io(io::Error::new(
-                                ErrorKind::WriteZero,
-                                "short content write",
-                            )),
-                            committed_bytes: committed,
-                            requested_bytes: bytes.len() as u64,
-                        });
-                    }
                 }
                 Err(source) => {
                     return progress.check_write(true, committed, bytes.len(), Some(source));
