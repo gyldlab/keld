@@ -52,6 +52,27 @@ If it lands, binaries are fetched at build time and the selected app/vendor owns
 security updates. Verso/Servo remain later conformance candidates only when embedding
 stabilizes—the trait is the insurance policy, not evidence that those backends ship.
 
+Windows release startup selects its persistent [WebView2 user-data folder](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder)
+before creating a listener, Bun child, or window. `keld-core` accepts one signature with
+no secondary signatures under [WinVerifyTrust Authenticode policy](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust).
+It derives publisher scope from the verified leaf certificate's SPKI and reads the
+canonical app id only from that signer's authenticated `SPC_SP_OPUS_INFO` program name
+with the exact `keld.app-id/v1:` prefix. A missing or invalid trust chain, signer,
+attribute, or canonical id fails closed as `KELD-WV-009`. Only the authenticated
+`stdin-v1` dev lease selects a fresh ephemeral profile; release failures never fall
+back to a shared or temporary WebView2 store.
+
+Keld uses [`CreateDirectoryW` security attributes](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createdirectoryw)
+to create profile directories atomically with a protected inheritable DACL for the
+current user, SYSTEM, and Administrators. Subsequent validation follows the Windows
+[file-security access-right contract](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights):
+it rejects foreign ordinary-user read, write, execute, delete, or ACL/owner authority
+while retaining the AppContainer and capability ACEs WebView2 requires.
+
+Microsoft's upstream [WebView2 client support](https://learn.microsoft.com/microsoft-edge/webview2/#supported-windows-versions)
+includes Windows 10 SAC 1709 and later plus Windows 11. Keld has real-qualified this
+profile slice only on Windows 11 x64; older client releases remain unqualified for Keld.
+
 Linux resilience (`docs/research/library/host-platforms/06-webview-reality.md`): GPU-driver probe at startup → auto-apply
 safe-mode. **Implemented (KEL-28/KEL-132):**
 `webkitgtk::prepare_gpu_safe_mode_process` detects NVIDIA + Wayland and, when

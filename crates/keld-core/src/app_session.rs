@@ -20,9 +20,9 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 #[cfg(windows)]
-use std::os::windows::ffi::OsStringExt as _;
+use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 #[cfg(windows)]
-use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "macos")]
@@ -87,6 +87,10 @@ use keld_wv::{AppWindowCommand, AppWindowEvent};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
 #[cfg(windows)]
+use keld_wv::{ProfileIdentity, WebProfileSelection};
+#[cfg(windows)]
+use sha2::{Digest as _, Sha256};
+#[cfg(windows)]
 use windows_permissions::constants::{
     AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
 };
@@ -99,6 +103,20 @@ use windows_sys::Win32::Foundation::GetHandleInformation;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
     HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Security::Cryptography::{
+    CRYPT_INTEGER_BLOB, CryptDecodeObjectEx, CryptEncodeObjectEx, PKCS_7_ASN_ENCODING,
+    X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Security::WinTrust::{
+    CRYPT_PROVIDER_SGNR, SPC_SP_OPUS_INFO, SPC_SP_OPUS_INFO_OBJID, SPC_SP_OPUS_INFO_STRUCT,
+    WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
+    WINTRUST_SIGNATURE_SETTINGS, WSS_GET_SECONDARY_SIG_COUNT, WTD_CHOICE_FILE,
+    WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
+    WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvCertFromChain,
+    WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -131,6 +149,16 @@ const WINDOWS_DEV_STAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(5);
 const WINDOWS_SHARING_VIOLATION: i32 = 32;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_STDIN_V1: &str = "stdin-v1";
+#[cfg(windows)]
+const WINDOWS_SIGNED_APP_ID_PREFIX: &str = "keld.app-id/v1:";
+#[cfg(windows)]
+const WINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS: usize = WINDOWS_SIGNED_APP_ID_PREFIX.len() + 255;
+#[cfg(windows)]
+const WINDOWS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.windows/v1\0";
+#[cfg(windows)]
+const WINDOWS_SIGNER_SPKI_MAX_BYTES: u32 = 64 * 1024;
+#[cfg(windows)]
+const WINDOWS_OPUS_INFO_MAX_BYTES: u32 = 4 * 1024;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const DEV_LEASE_DRAIN_READS: usize = 64;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -1438,6 +1466,571 @@ fn run_app(
     })
 }
 
+#[cfg(windows)]
+#[derive(Debug)]
+struct ValidatedAppIdentity {
+    publisher_scope: [u8; 32],
+    app_id: Box<str>,
+    profile_identity: ProfileIdentity,
+}
+
+#[cfg(windows)]
+impl ValidatedAppIdentity {
+    fn from_verified_parts(
+        publisher_scope: [u8; 32],
+        signed_program_name: &str,
+    ) -> Result<Self, HostAppError> {
+        let app_id = parse_windows_signed_program_name(signed_program_name)?;
+        let profile_identity = ProfileIdentity::from_host_verified_parts(publisher_scope, app_id)
+            .map_err(|source| {
+                windows_identity_error(
+                    source.to_string(),
+                    "Sign the package with an exact canonical `keld.app-id/v1:<app.id>` description, then rebuild it.",
+                )
+            })?;
+        Ok(Self {
+            publisher_scope,
+            app_id: app_id.into(),
+            profile_identity,
+        })
+    }
+
+    fn into_profile_selection(self) -> Result<WebProfileSelection, HostAppError> {
+        debug_assert_eq!(
+            ProfileIdentity::from_host_verified_parts(self.publisher_scope, &self.app_id),
+            Ok(self.profile_identity)
+        );
+        WebProfileSelection::persistent(Some(self.profile_identity)).map_err(|source| {
+            windows_identity_error(
+                source.to_string(),
+                "Restore the authenticated Windows package identity and relaunch.",
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+enum WindowsProfileMode {
+    Persistent(WebProfileSelection),
+    EphemeralDev,
+}
+
+#[cfg(windows)]
+fn parse_windows_signed_program_name(value: &str) -> Result<&str, HostAppError> {
+    let Some(app_id) = value.strip_prefix(WINDOWS_SIGNED_APP_ID_PREFIX) else {
+        return Err(windows_identity_error(
+            "the verified Authenticode signature has no Keld app-id description",
+            "Sign the package with `/d \"keld.app-id/v1:<canonical-app.id>\"`, then rebuild it.",
+        ));
+    };
+    if app_id.is_empty()
+        || app_id.len() > 255
+        || value.len() > WINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS
+    {
+        return Err(windows_identity_error(
+            "the verified Authenticode app-id description is empty or exceeds 255 app-id bytes",
+            "Use 1-255 lowercase ASCII bytes after the exact `keld.app-id/v1:` prefix.",
+        ));
+    }
+    Ok(app_id)
+}
+
+#[cfg(windows)]
+fn windows_identity_error(detail: impl Into<String>, fix: &'static str) -> HostAppError {
+    HostAppError::new(
+        "KELD-WV-009",
+        "Windows authenticated app identity",
+        detail,
+        fix,
+    )
+}
+
+#[cfg(windows)]
+fn select_windows_profile_mode_with(
+    has_authenticated_dev_lease: bool,
+    release_identity: impl FnOnce() -> Result<ValidatedAppIdentity, HostAppError>,
+) -> Result<WindowsProfileMode, HostAppError> {
+    if has_authenticated_dev_lease {
+        return Ok(WindowsProfileMode::EphemeralDev);
+    }
+    let identity = release_identity()?;
+    identity
+        .into_profile_selection()
+        .map(WindowsProfileMode::Persistent)
+}
+
+#[cfg(windows)]
+fn windows_profile_mode(
+    dev_lease: Option<&WindowsDevLeaseMonitor>,
+) -> Result<WindowsProfileMode, HostAppError> {
+    select_windows_profile_mode_with(
+        dev_lease.is_some(),
+        verified_windows_identity_from_current_exe,
+    )
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code, clippy::too_many_lines)] // one linear VERIFY/extract/CLOSE state owner avoids a leaked trust handle
+fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, HostAppError> {
+    let executable = std::env::current_exe().map_err(|source| {
+        windows_identity_error(
+            format!("the current executable path is unavailable: {source}"),
+            "Restore the signed package executable and relaunch it.",
+        )
+    })?;
+    let executable = executable.canonicalize().map_err(|source| {
+        windows_identity_error(
+            format!("the current executable path cannot be resolved: {source}"),
+            "Restore the signed package executable and relaunch it.",
+        )
+    })?;
+    let executable_file = File::open(&executable).map_err(|source| {
+        windows_identity_error(
+            format!("the current executable cannot be opened for trust verification: {source}"),
+            "Restore the signed package executable and relaunch it.",
+        )
+    })?;
+    let mut executable_wide: Vec<u16> = executable.as_os_str().encode_wide().collect();
+    if executable_wide.contains(&0) {
+        return Err(windows_identity_error(
+            "the current executable path contains an embedded NUL",
+            "Install the signed package at a normal Windows filesystem path.",
+        ));
+    }
+    executable_wide.push(0);
+
+    let file_info_size =
+        u32::try_from(std::mem::size_of::<WINTRUST_FILE_INFO>()).map_err(|_| {
+            windows_identity_error(
+                "the WinTrust file structure size does not fit the platform ABI",
+                "Use a supported 64-bit Windows Keld build.",
+            )
+        })?;
+    let trust_data_size = u32::try_from(std::mem::size_of::<WINTRUST_DATA>()).map_err(|_| {
+        windows_identity_error(
+            "the WinTrust data structure size does not fit the platform ABI",
+            "Use a supported 64-bit Windows Keld build.",
+        )
+    })?;
+    let signature_settings_size = u32::try_from(std::mem::size_of::<WINTRUST_SIGNATURE_SETTINGS>())
+        .map_err(|_| {
+            windows_identity_error(
+                "the WinTrust signature-settings size does not fit the platform ABI",
+                "Use a supported 64-bit Windows Keld build.",
+            )
+        })?;
+    let mut file_info = WINTRUST_FILE_INFO {
+        cbStruct: file_info_size,
+        pcwszFilePath: executable_wide.as_ptr(),
+        hFile: executable_file.as_raw_handle().cast(),
+        pgKnownSubject: std::ptr::null_mut(),
+    };
+    let mut signature_settings = WINTRUST_SIGNATURE_SETTINGS {
+        cbStruct: signature_settings_size,
+        dwIndex: 0,
+        dwFlags: WSS_GET_SECONDARY_SIG_COUNT,
+        cSecondarySigs: 0,
+        dwVerifiedSigIndex: 0,
+        pCryptoPolicy: std::ptr::null_mut(),
+    };
+    let mut trust_data = WINTRUST_DATA {
+        cbStruct: trust_data_size,
+        pPolicyCallbackData: std::ptr::null_mut(),
+        pSIPClientData: std::ptr::null_mut(),
+        dwUIChoice: WTD_UI_NONE,
+        fdwRevocationChecks: WTD_REVOKE_WHOLECHAIN,
+        dwUnionChoice: WTD_CHOICE_FILE,
+        Anonymous: WINTRUST_DATA_0 {
+            pFile: &raw mut file_info,
+        },
+        dwStateAction: WTD_STATEACTION_VERIFY,
+        hWVTStateData: std::ptr::null_mut(),
+        pwszURLReference: std::ptr::null_mut(),
+        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        dwUIContext: WTD_UICONTEXT_EXECUTE,
+        pSignatureSettings: &raw mut signature_settings,
+    };
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    // SAFETY: `file_info`, its NUL-terminated path, the open read handle, and
+    // `signature_settings` remain live and unmoved with `trust_data` until the
+    // matching CLOSE call. Other optional pointers are null and the selected
+    // union arm is FILE.
+    let trust_status = unsafe {
+        WinVerifyTrust(
+            std::ptr::null_mut(),
+            &raw mut action,
+            (&raw mut trust_data).cast(),
+        )
+    };
+    if trust_status != 0 {
+        let primary = windows_identity_error(
+            format!(
+                "WinVerifyTrust rejected the current executable with status 0x{:08x}",
+                u32::from_ne_bytes(trust_status.to_ne_bytes())
+            ),
+            "Install a package signed by a trusted Authenticode publisher with a valid chain and revocation status.",
+        );
+        if !trust_data.hWVTStateData.is_null() {
+            trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
+            // SAFETY: this closes only state created by the VERIFY call above
+            // while the same action/data storage is still live.
+            let close_status = unsafe {
+                WinVerifyTrust(
+                    std::ptr::null_mut(),
+                    &raw mut action,
+                    (&raw mut trust_data).cast(),
+                )
+            };
+            if close_status != 0 {
+                let cleanup = windows_trust_close_error(close_status);
+                return Err(collapse_app_failures(&primary, [Err(cleanup)]));
+            }
+        }
+        return Err(primary);
+    }
+
+    let identity_result = validate_windows_signature_cardinality(
+        signature_settings.cSecondarySigs,
+        signature_settings.dwVerifiedSigIndex,
+    )
+    .and_then(|()| windows_identity_from_verified_trust_state(&trust_data));
+    trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
+    // SAFETY: this is the mandatory CLOSE for the successful VERIFY call;
+    // action/data storage and every referenced input remain live here.
+    let close_status = unsafe {
+        WinVerifyTrust(
+            std::ptr::null_mut(),
+            &raw mut action,
+            (&raw mut trust_data).cast(),
+        )
+    };
+    let close_result = if close_status == 0 {
+        Ok(())
+    } else {
+        Err(windows_trust_close_error(close_status))
+    };
+    match (identity_result, close_result) {
+        (Ok(identity), Ok(())) => Ok(identity),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(collapse_app_failures(&primary, [Err(cleanup)])),
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_signature_cardinality(
+    secondary_signatures: u32,
+    verified_signature_index: u32,
+) -> Result<(), HostAppError> {
+    if secondary_signatures == 0 && verified_signature_index == 0 {
+        return Ok(());
+    }
+    Err(windows_identity_error(
+        format!(
+            "the verified package has one primary and {secondary_signatures} secondary Authenticode signatures, with verified index {verified_signature_index}; exactly one signature is required"
+        ),
+        "Sign the package once without appending a secondary Authenticode signature.",
+    ))
+}
+
+#[cfg(windows)]
+fn windows_trust_close_error(status: i32) -> HostAppError {
+    windows_identity_error(
+        format!(
+            "WinVerifyTrust could not close verified state (status 0x{:08x})",
+            u32::from_ne_bytes(status.to_ne_bytes())
+        ),
+        "Restart Windows and retry the signed package; if this persists, repair the package trust installation.",
+    )
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // read-only walk of provider memory retained by the live WinTrust state
+fn windows_identity_from_verified_trust_state(
+    trust_data: &WINTRUST_DATA,
+) -> Result<ValidatedAppIdentity, HostAppError> {
+    // SAFETY: the caller invokes this only after a successful VERIFY and
+    // before CLOSE, so the state owns the returned provider graph.
+    let provider = unsafe { WTHelperProvDataFromStateData(trust_data.hWVTStateData) };
+    if provider.is_null() {
+        return Err(windows_identity_error(
+            "WinTrust returned no verified provider state",
+            "Re-sign the package with one supported primary Authenticode signature.",
+        ));
+    }
+    // SAFETY: `provider` is non-null and owned by the live WinTrust state.
+    let provider_ref = unsafe { &*provider };
+    if provider_ref.csSigners != 1 {
+        return Err(windows_identity_error(
+            format!(
+                "the verified package has {} primary signers; exactly one is required",
+                provider_ref.csSigners
+            ),
+            "Sign the package with exactly one primary Authenticode signer.",
+        ));
+    }
+    // SAFETY: signer index zero is in range because `csSigners == 1`; the
+    // provider graph remains live until the caller performs CLOSE.
+    let signer = unsafe { WTHelperGetProvSignerFromChain(provider, 0, 0, 0) };
+    if signer.is_null() {
+        return Err(windows_identity_error(
+            "WinTrust returned no primary signer",
+            "Re-sign the package with one supported primary Authenticode signature.",
+        ));
+    }
+    let publisher_scope = windows_publisher_scope_from_signer(signer)?;
+    let signed_program_name = windows_signed_program_name_from_signer(signer)?;
+    ValidatedAppIdentity::from_verified_parts(publisher_scope, &signed_program_name)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // bounded read and DER encoding of the live WinTrust leaf certificate
+fn windows_publisher_scope_from_signer(
+    signer: *mut CRYPT_PROVIDER_SGNR,
+) -> Result<[u8; 32], HostAppError> {
+    // SAFETY: the caller supplies the non-null primary signer from the live
+    // provider graph and keeps that WinTrust state open for this call.
+    let signer_ref = unsafe { &*signer };
+    if signer_ref.dwError != 0 || signer_ref.csCertChain == 0 {
+        return Err(windows_identity_error(
+            "the verified primary signer has no error-free certificate chain",
+            "Repair the Authenticode certificate chain and re-sign the package.",
+        ));
+    }
+    // SAFETY: certificate index zero is in range because the signer chain is
+    // nonempty; the provider graph remains live for this call.
+    let certificate = unsafe { WTHelperGetProvCertFromChain(signer, 0) };
+    if certificate.is_null() {
+        return Err(windows_identity_error(
+            "WinTrust returned no leaf signing certificate",
+            "Repair the Authenticode certificate chain and re-sign the package.",
+        ));
+    }
+    // SAFETY: `certificate` is non-null and owned by the live provider graph.
+    let certificate_ref = unsafe { &*certificate };
+    if certificate_ref.dwError != 0 || certificate_ref.pCert.is_null() {
+        return Err(windows_identity_error(
+            "the Authenticode leaf signing certificate is invalid",
+            "Repair the Authenticode certificate chain and re-sign the package.",
+        ));
+    }
+    // SAFETY: the non-null certificate context belongs to the live provider.
+    let certificate_context = unsafe { &*certificate_ref.pCert };
+    if certificate_context.pCertInfo.is_null() {
+        return Err(windows_identity_error(
+            "the Authenticode leaf certificate has no certificate information",
+            "Repair the Authenticode certificate and re-sign the package.",
+        ));
+    }
+    // SAFETY: `pCertInfo` is non-null and remains owned by the provider.
+    let certificate_info = unsafe { &*certificate_context.pCertInfo };
+    let mut spki_size = 0_u32;
+    // SAFETY: the public-key-info value belongs to the live certificate; this
+    // call supplies no output buffer and asks Crypt32 for the size.
+    let sized = unsafe {
+        CryptEncodeObjectEx(
+            X509_ASN_ENCODING,
+            X509_PUBLIC_KEY_INFO,
+            std::ptr::from_ref(&certificate_info.SubjectPublicKeyInfo).cast(),
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            &raw mut spki_size,
+        )
+    };
+    if sized == 0 || spki_size == 0 || spki_size > WINDOWS_SIGNER_SPKI_MAX_BYTES {
+        return Err(windows_identity_error(
+            "the Authenticode leaf public key cannot be encoded within the bounded SPKI limit",
+            "Use a supported Authenticode signing certificate and re-sign the package.",
+        ));
+    }
+    let mut spki_der = vec![0_u8; spki_size as usize];
+    let mut encoded_size = spki_size;
+    // SAFETY: `spki_der` is writable for `spki_size` bytes, and the input
+    // public-key-info remains live in the provider graph.
+    let encoded = unsafe {
+        CryptEncodeObjectEx(
+            X509_ASN_ENCODING,
+            X509_PUBLIC_KEY_INFO,
+            std::ptr::from_ref(&certificate_info.SubjectPublicKeyInfo).cast(),
+            0,
+            std::ptr::null(),
+            spki_der.as_mut_ptr().cast(),
+            &raw mut encoded_size,
+        )
+    };
+    if encoded == 0 || encoded_size == 0 || encoded_size > spki_size {
+        return Err(windows_identity_error(
+            "the Authenticode leaf public key DER encoding failed",
+            "Use a supported Authenticode signing certificate and re-sign the package.",
+        ));
+    }
+    spki_der.truncate(encoded_size as usize);
+    let mut publisher_hasher = Sha256::new();
+    publisher_hasher.update(WINDOWS_PUBLISHER_SCOPE_DOMAIN);
+    publisher_hasher.update(&spki_der);
+    let publisher_digest = publisher_hasher.finalize();
+    let mut publisher_scope = [0_u8; 32];
+    publisher_scope.copy_from_slice(&publisher_digest);
+    Ok(publisher_scope)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // bounded decode of the authenticated signer-description attribute
+fn windows_signed_program_name_from_signer(
+    signer: *mut CRYPT_PROVIDER_SGNR,
+) -> Result<String, HostAppError> {
+    // SAFETY: the caller supplies the non-null primary signer from the live
+    // WinTrust provider graph and retains that state for this call.
+    let signer_ref = unsafe { &*signer };
+    if signer_ref.psSigner.is_null() {
+        return Err(windows_identity_error(
+            "the verified primary signer has no signed attribute record",
+            "Sign the package with `/d \"keld.app-id/v1:<canonical-app.id>\"`.",
+        ));
+    }
+    // SAFETY: `psSigner` is non-null and retained by the live provider.
+    let signer_info = unsafe { &*signer_ref.psSigner };
+    let attributes = &signer_info.AuthAttrs;
+    if attributes.cAttr == 0 || attributes.cAttr > 64 || attributes.rgAttr.is_null() {
+        return Err(windows_identity_error(
+            "the verified primary signer has no bounded authenticated attribute set",
+            "Sign the package with `/d \"keld.app-id/v1:<canonical-app.id>\"`.",
+        ));
+    }
+    // SAFETY: WinTrust supplied `cAttr` entries at `rgAttr`; the explicit
+    // upper bound prevents an attacker-controlled unbounded slice.
+    let attribute_slice =
+        unsafe { std::slice::from_raw_parts(attributes.rgAttr, attributes.cAttr as usize) };
+    let mut opus_blob = None;
+    for attribute in attribute_slice {
+        if attribute.pszObjId.is_null() {
+            continue;
+        }
+        // SAFETY: WinTrust/Crypt32 define attribute OIDs as NUL-terminated
+        // strings owned by the provider graph. The state is still live.
+        let oid = unsafe { std::ffi::CStr::from_ptr(attribute.pszObjId.cast()) };
+        // SAFETY: this SDK constant is a static NUL-terminated OID string.
+        let expected_oid = unsafe { std::ffi::CStr::from_ptr(SPC_SP_OPUS_INFO_OBJID.cast()) };
+        if oid == expected_oid {
+            if opus_blob.is_some() || attribute.cValue != 1 || attribute.rgValue.is_null() {
+                return Err(windows_identity_error(
+                    "the verified signature has duplicate or noncanonical app-id attributes",
+                    "Sign exactly one Authenticode description with `/d \"keld.app-id/v1:<canonical-app.id>\"`.",
+                ));
+            }
+            // SAFETY: `cValue == 1` and `rgValue` is non-null.
+            opus_blob = Some(unsafe { *attribute.rgValue });
+        }
+    }
+    let opus_blob = opus_blob.ok_or_else(|| {
+        windows_identity_error(
+            "the verified signature has no authenticated Keld app-id attribute",
+            "Sign the package with `/d \"keld.app-id/v1:<canonical-app.id>\"`.",
+        )
+    })?;
+    if opus_blob.cbData == 0 || opus_blob.pbData.is_null() {
+        return Err(windows_identity_error(
+            "the authenticated Keld app-id attribute is empty",
+            "Sign the package with `/d \"keld.app-id/v1:<canonical-app.id>\"`.",
+        ));
+    }
+    decode_windows_opus_program_name(opus_blob)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)] // bounded Crypt32 decode; source blob remains owned by the live signer
+fn decode_windows_opus_program_name(opus_blob: CRYPT_INTEGER_BLOB) -> Result<String, HostAppError> {
+    let mut decoded_size = 0_u32;
+    // SAFETY: the encoded attribute blob belongs to the live signer; this
+    // first call asks Crypt32 for the decoded structure size only.
+    let decoded_size_ok = unsafe {
+        CryptDecodeObjectEx(
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            SPC_SP_OPUS_INFO_STRUCT,
+            opus_blob.pbData,
+            opus_blob.cbData,
+            0,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            &raw mut decoded_size,
+        )
+    };
+    let minimum_opus_size =
+        u32::try_from(std::mem::size_of::<SPC_SP_OPUS_INFO>()).map_err(|_| {
+            windows_identity_error(
+                "the Authenticode description structure size does not fit the platform ABI",
+                "Use a supported 64-bit Windows Keld build.",
+            )
+        })?;
+    if decoded_size_ok == 0
+        || decoded_size < minimum_opus_size
+        || decoded_size > WINDOWS_OPUS_INFO_MAX_BYTES
+    {
+        return Err(windows_identity_error(
+            "the authenticated Keld app-id attribute is malformed or exceeds its bound",
+            "Re-sign the package with one short canonical Keld app-id description.",
+        ));
+    }
+    let word_size = std::mem::size_of::<usize>();
+    let decoded_words = (decoded_size as usize).div_ceil(word_size);
+    let mut decoded = vec![0_usize; decoded_words];
+    let mut actual_decoded_size = decoded_size;
+    // SAFETY: the usize buffer is suitably aligned for SPC_SP_OPUS_INFO and
+    // writable for at least `decoded_size` bytes; the source blob is live.
+    let decoded_ok = unsafe {
+        CryptDecodeObjectEx(
+            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            SPC_SP_OPUS_INFO_STRUCT,
+            opus_blob.pbData,
+            opus_blob.cbData,
+            0,
+            std::ptr::null(),
+            decoded.as_mut_ptr().cast(),
+            &raw mut actual_decoded_size,
+        )
+    };
+    if decoded_ok == 0
+        || actual_decoded_size < minimum_opus_size
+        || actual_decoded_size > decoded_size
+    {
+        return Err(windows_identity_error(
+            "the authenticated Keld app-id attribute cannot be decoded",
+            "Re-sign the package with one canonical Keld app-id description.",
+        ));
+    }
+    // SAFETY: the aligned buffer contains at least one decoded
+    // SPC_SP_OPUS_INFO according to the successful Crypt32 call.
+    let opus_info = unsafe { &*decoded.as_ptr().cast::<SPC_SP_OPUS_INFO>() };
+    if opus_info.pwszProgramName.is_null() {
+        return Err(windows_identity_error(
+            "the authenticated Authenticode description has no program name",
+            "Sign the package with `/d \"keld.app-id/v1:<canonical-app.id>\"`.",
+        ));
+    }
+    let mut program_name_utf16 = Vec::with_capacity(WINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS);
+    for index in 0..=WINDOWS_SIGNED_PROGRAM_NAME_MAX_UNITS {
+        // SAFETY: Crypt32 returned a NUL-terminated program-name pointer
+        // inside the retained decoded buffer. Reads stop at the approved
+        // maximum plus its required terminator.
+        let unit = unsafe { *opus_info.pwszProgramName.add(index) };
+        if unit == 0 {
+            return String::from_utf16(&program_name_utf16).map_err(|_| {
+                windows_identity_error(
+                    "the authenticated Authenticode description is not valid UTF-16",
+                    "Re-sign the package with an ASCII canonical Keld app-id description.",
+                )
+            });
+        }
+        program_name_utf16.push(unit);
+    }
+    Err(windows_identity_error(
+        "the authenticated Authenticode description has no terminator within the app-id bound",
+        "Re-sign the package with a 1-255 byte canonical Keld app-id description.",
+    ))
+}
+
 #[cfg(any(target_os = "linux", windows))]
 #[allow(clippy::too_many_lines)] // one shared direct-owner state machine keeps Linux/Windows lifecycle transitions identical
 fn run_app_direct(
@@ -1463,6 +2056,8 @@ fn run_app_direct(
     drop(entry_file);
     #[cfg(windows)]
     let dev_lease = prepare_windows_dev_lease(&shutdown)?;
+    #[cfg(windows)]
+    let windows_profile_mode = windows_profile_mode(dev_lease.as_ref())?;
     #[cfg(target_os = "linux")]
     let mut dev_lease = DevHostLease::from_environment()?;
     #[cfg(target_os = "linux")]
@@ -1606,8 +2201,11 @@ fn run_app_direct(
     };
     let engine = run_direct_startup_if_session_running(&shutdown, || {
         #[cfg(windows)]
-        let mut direct_engine = WebView2Engine::new()
-            .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
+        let mut direct_engine = match windows_profile_mode {
+            WindowsProfileMode::Persistent(selection) => WebView2Engine::new(selection),
+            WindowsProfileMode::EphemeralDev => WebView2Engine::new_dev_ephemeral(),
+        }
+        .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
         #[cfg(target_os = "linux")]
         let mut direct_engine = direct_engine;
         WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
@@ -3814,6 +4412,146 @@ mod tests {
             Ok(_) => panic!("{message}"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_signed_program_name_carrier_is_exact_and_bounded() {
+        assert_eq!(
+            parse_windows_signed_program_name("keld.app-id/v1:com.example.app")
+                .expect("exact signed carrier"),
+            "com.example.app"
+        );
+        for invalid in [
+            "",
+            "com.example.app",
+            "keld.app-id/v1:",
+            "KELD.app-id/v1:com.example.app",
+        ] {
+            assert!(
+                parse_windows_signed_program_name(invalid).is_err(),
+                "accepted signed carrier: {invalid:?}"
+            );
+        }
+        let maximum = format!("keld.app-id/v1:{}", "a".repeat(255));
+        assert_eq!(
+            parse_windows_signed_program_name(&maximum)
+                .expect("255-byte signed app id")
+                .len(),
+            255
+        );
+        let over = format!("keld.app-id/v1:{}", "a".repeat(256));
+        assert!(parse_windows_signed_program_name(&over).is_err());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn synthetic_windows_verified_parts_keep_publisher_and_app_separate() {
+        let first =
+            ValidatedAppIdentity::from_verified_parts([1; 32], "keld.app-id/v1:com.example.app")
+                .expect("synthetic verified identity");
+        let publisher_changed =
+            ValidatedAppIdentity::from_verified_parts([2; 32], "keld.app-id/v1:com.example.app")
+                .expect("synthetic publisher change");
+        let app_changed =
+            ValidatedAppIdentity::from_verified_parts([1; 32], "keld.app-id/v1:com.example.other")
+                .expect("synthetic app change");
+        assert_ne!(first.profile_identity, publisher_changed.profile_identity);
+        assert_ne!(first.profile_identity, app_changed.profile_identity);
+        assert!(
+            ValidatedAppIdentity::from_verified_parts([1; 32], "keld.app-id/v1:Com.Example.App")
+                .is_err()
+        );
+        assert!(
+            ValidatedAppIdentity::from_verified_parts([1; 32], "keld.app-id/v1:com.example.app\n")
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_release_selection_never_falls_back_after_identity_failure() {
+        let error = select_windows_profile_mode_with(false, || {
+            Err(windows_identity_error(
+                "synthetic verifier rejection",
+                "Use a real signed package fixture.",
+            ))
+        })
+        .expect_err("release must fail closed");
+        assert_eq!(error.code(), "KELD-WV-009");
+        assert!(error.to_string().contains("synthetic verifier rejection"));
+
+        let persistent = select_windows_profile_mode_with(false, || {
+            ValidatedAppIdentity::from_verified_parts(
+                [9; 32],
+                "keld.app-id/v1:com.example.synthetic",
+            )
+        })
+        .expect("synthetic verified release selection");
+        assert!(matches!(persistent, WindowsProfileMode::Persistent(_)));
+
+        let development = select_windows_profile_mode_with(true, || {
+            panic!("explicit dev must not inspect release identity")
+        })
+        .expect("explicit dev profile mode");
+        assert!(matches!(development, WindowsProfileMode::EphemeralDev));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_signature_cardinality_rejects_secondary_or_nonprimary_selection() {
+        validate_windows_signature_cardinality(0, 0).expect("one primary signature");
+        for (secondary, verified_index) in [(1, 0), (u32::MAX, 0), (0, 1), (1, 1)] {
+            let error = validate_windows_signature_cardinality(secondary, verified_index)
+                .expect_err("ambiguous Authenticode signature set must fail");
+            assert_eq!(error.code(), "KELD-WV-009");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn current_test_executable_is_rejected_as_a_release_carrier() {
+        let error = verified_windows_identity_from_current_exe()
+            .expect_err("the test executable is not an approved signed Keld package carrier");
+        assert_eq!(error.code(), "KELD-WV-009");
+    }
+
+    /// Runs only from a deliberately signed copy of this libtest binary.
+    #[test]
+    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
+    #[cfg(windows)]
+    fn kel135_signed_package_acceptance_fixture() {
+        let identity = verified_windows_identity_from_current_exe()
+            .expect("the signed fixture must produce a verified Windows identity");
+        let app_id = identity.app_id.clone();
+        let publisher_scope = identity.publisher_scope.iter().fold(
+            String::with_capacity(identity.publisher_scope.len() * 2),
+            |mut text, byte| {
+                use std::fmt::Write as _;
+                write!(&mut text, "{byte:02x}").expect("format publisher scope");
+                text
+            },
+        );
+        let profile_namespace = identity.profile_identity.namespace_segment();
+        let mode = select_windows_profile_mode_with(false, || Ok(identity))
+            .expect("the verified signed fixture must select a persistent profile");
+        assert!(matches!(mode, WindowsProfileMode::Persistent(_)));
+        println!(
+            "KELD_KEL135_SIGNED_IDENTITY app_id={app_id} publisher_scope={publisher_scope} profile_namespace={profile_namespace}"
+        );
+    }
+
+    /// Runs only from a deliberately signed copy of this libtest binary.
+    #[test]
+    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
+    #[cfg(windows)]
+    fn kel135_signed_package_purge_acceptance_fixture() {
+        let identity = verified_windows_identity_from_current_exe()
+            .expect("the signed fixture must produce a verified Windows identity");
+        let profile_namespace = identity.profile_identity.namespace_segment();
+        WebView2Engine::purge_persistent_profile(identity.profile_identity)
+            .expect("the signed fixture must purge its authenticated idle profile");
+        println!("KELD_KEL135_SIGNED_PURGE profile_namespace={profile_namespace}");
     }
 
     #[test]

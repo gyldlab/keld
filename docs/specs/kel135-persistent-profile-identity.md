@@ -70,7 +70,11 @@ changes the public engine-construction boundary.
   `FOLDERID_LocalAppData` is a per-user known folder.
 - Microsoft, [`WinVerifyTrust`](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-winverifytrust):
   Windows T2 validates the packaged object under Authenticode policy before extracting
-  its signer scope and signed app manifest.
+  its signer scope and signed app-id carrier.
+- Microsoft, [`CMSG_SIGNER_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-cmsg_signer_info)
+  and [SignTool](https://learn.microsoft.com/en-us/windows/win32/seccrypto/signtool):
+  `AuthAttrs` contains the signer's authenticated attributes, and SignTool `/d` supplies
+  the signed-content description used by the Windows carrier below.
 - Apple, [`WKWebsiteDataStore`](https://developer.apple.com/documentation/webkit/wkwebsitedatastore):
   default is persistent, nonpersistent is memory-only, and identifier-addressed stores
   provide persistent profiles.
@@ -307,6 +311,19 @@ container and the app id it covers:
   Ed25519 signature verifies the literal package-manifest bytes containing `app.id`
   against the installer-pinned key.
 
+Windows T2 freezes that package relationship as exactly one Authenticode signature:
+one primary and zero secondary signatures. Its authenticated `SPC_SP_OPUS_INFO` program
+name is `keld.app-id/v1:<canonical-app-id>`. The packager supplies the exact value through
+SignTool `/d` before the signature is produced. Core verifies the current executable
+with `WINTRUST_ACTION_GENERIC_VERIFY_V2`, retains the provider state, derives publisher
+scope from the primary signer's leaf-certificate SPKI DER, and decodes the program name
+from that same signer's authenticated attributes before closing the state. Missing,
+duplicate, malformed, unsigned, untrusted, multi-primary-signer, noncanonical, or
+app-id portions over 255 bytes fail with `KELD-WV-009`. The fixed 15-byte prefix is not
+part of that app-id limit, so the complete ASCII carrier is at most 270 UTF-16 code
+units. No version resource, executable name, sidecar, config, page, or Bun value is a
+fallback carrier.
+
 `ProfileIdentity` is SHA-256 over the exact length-delimited byte sequence
 `"keld.profile.identity/v1\0" || publisher_scope || u16be(app_id.len) || app_id`.
 `CanonicalAppId` is 1–255 bytes of lowercase ASCII dot-separated segments; each segment
@@ -361,13 +378,15 @@ owner-only Keld metadata, not WebKit storage. One `WkWebViewEngine` retains exac
 selected persistent or nonpersistent store and supplies it to every view it creates.
 
 Windows does not copy KEL-101's named-pipe DACL. The WebView2 runtime may need
-LowIL/AppContainer access inside its UDF. T2 starts from the normal per-user known-folder
-inheritance, rejects broad ordinary-user write access, observes the actual engine-created
-descriptor, and freezes a validation/read-back predicate rather than rewriting the
-Microsoft-managed ACL. Any ACL mutation requires a separately justified real-WebView2
-result and must preserve engine-managed ACEs and labels. This is a permission-model
-review gate, not an implementation guess in T0. T2 also rejects a remote/network final
-volume and sets WebView2 exclusive UDF access. After host crash, `ERROR_INVALID_STATE`
+LowIL/AppContainer access inside its UDF. T2 atomically creates each Keld-owned profile
+directory with a protected inheritable DACL granting full control only to the current
+user, SYSTEM and Administrators. Validation rejects any foreign ordinary-user
+read/write/execute access while preserving and reading back engine-created
+AppContainer/capability ACEs. Any later ACL mutation requires a separately justified
+real-WebView2 result and must preserve engine-managed ACEs and labels. This is a
+permission-model review gate, not an implementation guess in T0. T2 also rejects a
+remote/network final volume and sets WebView2 exclusive UDF access. After host crash,
+`ERROR_INVALID_STATE`
 or equivalent controller failure remains required until `BrowserProcessExited` proves
 the old collection released the UDF; a process-local Keld lease alone cannot pass.
 
