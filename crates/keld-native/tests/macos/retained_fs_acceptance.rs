@@ -362,6 +362,10 @@ fn validate_receipt(raw: &str, expected_head: &str) -> Result<Vec<String>, Strin
     Ok(lines)
 }
 
+fn render_receipt(records: &[String]) -> String {
+    format!("\n{}\n", records.join("\n"))
+}
+
 fn validate_boundary_record(
     record: &BTreeMap<String, String>,
     boundary: &str,
@@ -1683,9 +1687,7 @@ fn macos_retained_filesystem_acceptance() {
     );
     let raw = String::from_utf8(output.stdout).expect("receipt output is UTF-8");
     let records = validate_receipt(&raw, &before.head).expect("validate structured receipt");
-    for record in records {
-        println!("{record}");
-    }
+    print!("{}", render_receipt(&records));
 }
 
 fn synthetic_receipt() -> (String, String) {
@@ -1724,6 +1726,8 @@ fn macos_receipt_parser_accepts_exact_contract() {
     encoded_cases.push(0);
     let digest: [u8; 32] = Sha256::digest(&encoded_cases).into();
     assert_eq!(format!("{}", HexDigest(&digest)), REQUIRED_CASES_SHA256);
+    let captured = format!("test acceptance ... {}", render_receipt(&records));
+    validate_receipt(&captured, &head).expect("libtest-prefixed captured stdout");
 }
 
 #[test]
