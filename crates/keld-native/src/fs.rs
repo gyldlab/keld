@@ -619,7 +619,18 @@ fn prepare_grant(
     let (anchor, exact_leaf) = match scope.kind() {
         PathScopeKind::Subtree => {
             let root = pattern.strip_suffix("/**").unwrap_or(pattern);
-            ((if root.is_empty() { "/" } else { root }).to_owned(), None)
+            #[cfg(windows)]
+            let root = if root.len() == 2
+                && root.as_bytes()[0].is_ascii_uppercase()
+                && root.as_bytes()[1] == b':'
+            {
+                format!("{root}/")
+            } else {
+                (if root.is_empty() { "/" } else { root }).to_owned()
+            };
+            #[cfg(not(windows))]
+            let root = (if root.is_empty() { "/" } else { root }).to_owned();
+            (root, None)
         }
         PathScopeKind::Exact => {
             split_exact_scope(pattern).ok_or_else(|| FsPrepareError::InvalidScope {

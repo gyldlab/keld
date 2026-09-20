@@ -748,7 +748,23 @@ pub fn path_scopes<'manifest>(
         } else {
             (pattern, PathScopeKind::Exact)
         };
-        validate_fs_path(path).map_err(|detail| ScopeSetError::InvalidPath {
+        #[cfg(windows)]
+        let service_path = if kind == PathScopeKind::Subtree
+            && path.len() == 2
+            && path.as_bytes()[0].is_ascii_uppercase()
+            && path.as_bytes()[1] == b':'
+        {
+            format!("{path}/")
+        } else {
+            path.to_owned()
+        };
+        #[cfg(not(windows))]
+        let service_path = path;
+        #[cfg(windows)]
+        let validation = validate_fs_path(&service_path);
+        #[cfg(not(windows))]
+        let validation = validate_fs_path(service_path);
+        validation.map_err(|detail| ScopeSetError::InvalidPath {
             grant_index,
             detail,
         })?;
