@@ -452,8 +452,7 @@ impl FsBroker {
             }
         };
         progress.check_read()?;
-        let metadata = file.metadata().map_err(FsError::Io)?;
-        progress.check_read()?;
+        let metadata = progress.finish_read_io(file.metadata())?;
         ensure_regular_and_device(&metadata, grant, path)?;
         if metadata.len() > MAX_FS_CONTENT_BYTES as u64 {
             return Err(FsError::LimitExceeded {
@@ -472,8 +471,7 @@ impl FsBroker {
         let mut chunk = vec![0_u8; FS_IO_CHUNK_BYTES].into_boxed_slice();
         loop {
             progress.check_read()?;
-            let count = file.read(&mut chunk).map_err(FsError::Io)?;
-            progress.check_read()?;
+            let count = progress.finish_read_io(file.read(&mut chunk))?;
             if count == 0 {
                 break;
             }
@@ -503,7 +501,7 @@ impl FsBroker {
 
         let mut file = match resolved {
             WalkResult::File(file) => {
-                let metadata = file.metadata().map_err(FsError::Io)?;
+                let metadata = progress.finish_read_io(file.metadata())?;
                 ensure_regular_and_device(&metadata, grant, path)?;
                 progress.check_write(false, 0, bytes.len(), None)?;
                 let result = file.set_len(0);
@@ -518,11 +516,15 @@ impl FsBroker {
                 match result {
                     Ok(file) => {
                         progress.check_write(true, 0, bytes.len(), None)?;
-                        let metadata = file.metadata().map_err(|source| FsError::WriteEffect {
-                            cause: WriteInterruption::Io(source),
-                            committed_bytes: 0,
-                            requested_bytes: bytes.len() as u64,
-                        })?;
+                        let metadata = match file.metadata() {
+                            Ok(metadata) => {
+                                progress.check_write(true, 0, bytes.len(), None)?;
+                                metadata
+                            }
+                            Err(source) => {
+                                return progress.check_write(true, 0, bytes.len(), Some(source));
+                            }
+                        };
                         ensure_regular_and_device(&metadata, grant, path).map_err(|error| {
                             FsError::WriteEffect {
                                 cause: WriteInterruption::Io(io::Error::other(error.to_string())),
@@ -533,17 +535,14 @@ impl FsBroker {
                         file
                     }
                     Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+                        progress.check_write(false, 0, bytes.len(), None)?;
                         return Err(FsError::ResolvedOutOfScope {
                             requested: path.to_owned(),
                             detail: "final leaf appeared before create-new".to_owned(),
                         });
                     }
                     Err(source) => {
-                        return Err(FsError::WriteEffect {
-                            cause: WriteInterruption::Io(source),
-                            committed_bytes: 0,
-                            requested_bytes: bytes.len() as u64,
-                        });
+                        return progress.check_write(true, 0, bytes.len(), Some(source));
                     }
                 }
             }
@@ -752,7 +751,7 @@ fn walk(
             detail: "scope root is a directory, not a regular file".to_owned(),
         });
     }
-    let mut directories = vec![grant.root.try_clone().map_err(FsError::Io)?];
+    let mut directories = vec![progress.finish_read_io(grant.root.try_clone())?];
     let mut components = 0_usize;
     let mut links = 0_usize;
 
@@ -790,7 +789,9 @@ fn walk(
                         requested: requested.to_owned(),
                         detail: "retained directory stack became empty".to_owned(),
                     })?;
-                let metadata = match current.symlink_metadata(&name) {
+                let metadata_result = current.symlink_metadata(&name);
+                progress.check_read()?;
+                let metadata = match metadata_result {
                     Ok(metadata) => metadata,
                     Err(source)
                         if source.kind() == ErrorKind::NotFound
@@ -798,7 +799,7 @@ fn walk(
                             && matches!(purpose, OpenPurpose::Write) =>
                     {
                         return Ok(WalkResult::Missing {
-                            parent: current.try_clone().map_err(FsError::Io)?,
+                            parent: progress.finish_read_io(current.try_clone())?,
                             leaf: name,
                         });
                     }
@@ -825,7 +826,7 @@ fn walk(
                             MAX_FS_SYMLINK_EXPANSIONS,
                         ));
                     }
-                    let target = current.read_link_contents(&name).map_err(FsError::Io)?;
+                    let target = progress.finish_read_io(current.read_link_contents(&name))?;
                     let inserted = link_components(&target, requested)?;
                     for target_component in inserted.into_iter().rev() {
                         pending.push_front(target_component);
@@ -837,22 +838,22 @@ fn walk(
                         OpenPurpose::Read => read_options(),
                         OpenPurpose::Write => write_options(),
                     };
-                    let file = open_existing_file(current, &name, purpose, &options).map_err(
-                        |source| {
-                            if matches!(
-                                source.kind(),
-                                ErrorKind::PermissionDenied | ErrorKind::InvalidInput
-                            ) {
-                                FsError::ResolvedOutOfScope {
-                                    requested: requested.to_owned(),
-                                    detail: "final object changed during no-follow open".to_owned(),
-                                }
-                            } else {
-                                FsError::Io(source)
+                    let file_result = open_existing_file(current, &name, purpose, &options);
+                    progress.check_read()?;
+                    let file = file_result.map_err(|source| {
+                        if matches!(
+                            source.kind(),
+                            ErrorKind::PermissionDenied | ErrorKind::InvalidInput
+                        ) {
+                            FsError::ResolvedOutOfScope {
+                                requested: requested.to_owned(),
+                                detail: "final object changed during no-follow open".to_owned(),
                             }
-                        },
-                    )?;
-                    let opened = file.metadata().map_err(FsError::Io)?;
+                        } else {
+                            FsError::Io(source)
+                        }
+                    })?;
+                    let opened = progress.finish_read_io(file.metadata())?;
                     ensure_regular_and_device(&opened, grant, requested)?;
                     return Ok(WalkResult::File(file));
                 }
@@ -862,7 +863,9 @@ fn walk(
                         detail: "intermediate component is not a directory".to_owned(),
                     });
                 }
-                let directory = open_child_directory(current, &name).map_err(|source| {
+                let directory_result = open_child_directory(current, &name);
+                progress.check_read()?;
+                let directory = directory_result.map_err(|source| {
                     if matches!(
                         source.kind(),
                         ErrorKind::PermissionDenied | ErrorKind::InvalidInput
@@ -875,7 +878,7 @@ fn walk(
                         FsError::Io(source)
                     }
                 })?;
-                let opened = directory.dir_metadata().map_err(FsError::Io)?;
+                let opened = progress.finish_read_io(directory.dir_metadata())?;
                 if opened.dev() != grant.root_device {
                     return Err(FsError::UnsupportedObject {
                         requested: requested.to_owned(),
@@ -1120,6 +1123,11 @@ impl<'a> Progress<'a> {
             Some(ProgressCause::Deadline) => Err(FsError::Deadline),
             None => Ok(()),
         }
+    }
+
+    fn finish_read_io<T>(&self, result: io::Result<T>) -> Result<T, FsError> {
+        self.check_read()?;
+        result.map_err(FsError::Io)
     }
 
     fn check_write(
