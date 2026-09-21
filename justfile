@@ -125,6 +125,16 @@ work-run *args:
     set -euo pipefail
     {{python_command}} -B tools/workspace.py run "$@"
 
+work-finish *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py finish "$@"
+
+work-clean *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py clean "$@"
+
 work-check:
     {{python_command}} -B tools/workspace.py check
 
