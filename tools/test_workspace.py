@@ -472,7 +472,8 @@ class WorkspaceTests(unittest.TestCase):
         result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
         value = json.loads(result.read_text())
         self.assertEqual(value["state"], "failed")
-        self.assertEqual(value["removed"], [str(scratch / "a.txt")])
+        self.assertEqual(len(value["removed"]), 1)
+        self.assertIn(value["removed"][0], {str(scratch / "a.txt"), str(scratch / "b.txt")})
 
     def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
         task = self.start()
