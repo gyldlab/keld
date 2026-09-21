@@ -532,8 +532,10 @@ only releases the local task record. `work-clean` previews the exact released se
 scratch directory by default; `--apply` requires a prepared current-turn receipt,
 revalidates it then removes scratch only and validates the receipt after the mutation. It
 retains evidence, the Git worktree and branch, all caches, all legacy folders and any
-unsupported/link/reparse/mount/nested-Git target. A failed validation performs no
-deletion. Full worktree retirement, evidence archival and legacy import remain explicit
+unsupported/link/reparse/mount/nested-Git target. Pre-mutation admission failures perform
+no deletion. A post-mutation receipt failure is recorded as failed cleanup with exact
+removed paths and requires handoff; it is never reported as success. Full worktree
+retirement, evidence archival and legacy import remain explicit
 later KEL-245 work, not hidden behavior in this command.
 
 External contributors do not need this setup. Maintainers with access to the separate

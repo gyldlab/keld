@@ -488,6 +488,15 @@ class WorkspaceTests(unittest.TestCase):
         result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
         self.assertEqual(json.loads(result.read_text())["state"], "failed")
 
+    def test_empty_apply_still_validates_and_records_its_receipt(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        receipt = self.cleanup_receipt(task, scratch)
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt))
+        result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
+        self.assertEqual(json.loads(result.read_text())["state"], "complete")
+
 
 if __name__ == "__main__":
     unittest.main()

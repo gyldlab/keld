@@ -541,7 +541,7 @@ def clean(ctx, name, session, apply, receipt=None):
             receipt_value = session_closeout.read_json(receipt_path)
             require(same(receipt_value.get("repo", ""), checkout) and receipt_value.get("session_id") == session,
                     "Cleanup receipt belongs to another task or session. Preserve scratch and use the owning receipt.")
-        if apply and nodes:
+        if apply:
             evidence = safe_path(ctx.root / "sessions" / session / "evidence" / ("clean-" + uuid.uuid4().hex))
             mkdir(evidence)
             result = dict(schema="keld.workspace-clean/v1", state="running", removed=[], **plan)
