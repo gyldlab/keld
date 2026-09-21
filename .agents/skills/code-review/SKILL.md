@@ -35,10 +35,16 @@ coderabbit --version 2>/dev/null || echo "NOT_INSTALLED"
 coderabbit auth status 2>&1
 ```
 
-On Windows, a native miss is not absence: agents MUST check the default WSL distribution with
-`wsl.exe -e sh -lc "command -v coderabbit && coderabbit --version"`, use the WSL CLI
-with a `wslpath -a` translated repo path when present, and MUST NOT suggest installation
-until both native and default-WSL checks fail.
+On Windows, if native lookup misses, probe default WSL with
+`wsl.exe -e sh -lc "command -v coderabbit && coderabbit --version"`; all later commands MUST use it:
+`wsl.exe -e sh -lc "coderabbit auth status"` / `"coderabbit auth login"`. For reviews:
+```powershell
+$repo = (wsl.exe -e wslpath -a -- (Get-Location).Path).Trim()
+wsl.exe -e sh -lc 'coderabbit review --agent --dir "$1"' sh $repo
+```
+Put flags inside the WSL command. MUST NOT use native `coderabbit`/`cr` or suggest
+installation unless both discovery checks fail.
+Native examples below are native-only; WSL-only Windows MUST use the wrapper above.
 
 If the CLI is already installed, confirm it is an expected version from an official source before proceeding.
 
