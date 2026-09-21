@@ -81,7 +81,7 @@ evidence only when a plausible defect can make it fail.
   cannot detect a reversed edge, misleading grouping or clipped semantic label.
 - The PR or hand-off MUST contain an actual render report: source files and block count,
   renderer name, version and digest, exact command, output format, and observed pass/fail.
-  Temporary render output SHOULD live outside the repository and MUST NOT be committed
+  Temporary render output SHOULD live in managed scratch and MUST NOT be committed
   unless it is itself a reviewed documentation artifact. If rendering cannot run, report
   the blocker and do not call the diagram change verified.
 

@@ -87,9 +87,9 @@ claim no enforcement; report unsupported/untrusted clients.
 2. **Spec gate.** Larger than a bug fix and no spec? Write one from
    `docs/agents/spec-template.md` and stop for human approval. Never implement from an
    unapproved spec. Bug fixes skip the spec but not the regression test.
-3. **Isolate.** Work in a git worktree sibling directory (`../keld-<issue>`), branch
-   `agent/kel-<n>-<slug>` from `origin/main` (`.agents/review.md`). One
-   issue per worktree. Never two agents in one tree.
+3. **Isolate.** `just work-start kel-<n> <slug> --session <id>` creates a task;
+   coordination owns `.keld-work/worktrees/` placement. Use `agent/kel-<n>-<slug>`
+   from `origin/main`. One issue per tree, one writer.
 4. **Implement and coordinate.** Tests with the change (conformance entries *first* for
    compat work). Before a material design/scope decision and before integration,
    refresh Linear to pick up other-agent changes. Post a Linear progress comment after
@@ -162,7 +162,7 @@ acceptance cannot move between agents.
 - Device: <host the work actually runs on>
 - Model/effort: e.g. opus-5 | gpt-5.6-sol@max
 - Repo: <actual repository>
-- Worktree: ../keld-<issue>
+- Worktree: .keld-work/worktrees/kel-<n>-<slug>
 - Branch: agent/kel-<n>-<slug>
 - Expected paths: <globs this work will write>
 - Single-writer files/keys needed: none | <human-designated shared files/keys>

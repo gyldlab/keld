@@ -95,6 +95,8 @@ const AGENT_CONTEXT_COMMANDS: &[&str] = &[
     "target/agent-context/agent-context check .",
     "python3 -B tools/test_session_closeout.py",
     "python3 -B tools/test_session_closeout_hook.py",
+    "python3 -B tools/workspace.py check",
+    "python3 -B tools/test_workspace.py",
 ];
 
 const PRODUCT_STATUS_COMMANDS: &[&str] = &[
@@ -262,21 +264,17 @@ fn check_root_audit_contract(root: &Path) -> Result<(), String> {
     let ci_line = justfile
         .lines()
         .find(|line| line.starts_with("ci:"))
-        .ok_or_else(|| {
-            format!(
-                "CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."
-            )
-        })?;
-    if !ci_line.split_whitespace().any(|token| token == "audit-docs") {
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
+    if !ci_line
+        .split_whitespace()
+        .any(|token| token == "audit-docs")
+    {
         return Err(format!(
             "CI-HYGIENE: `{JUSTFILE}` root `ci:` must depend on `audit-docs`."
         ));
     }
-    let commands = just_recipe_commands(&justfile, "audit-docs").ok_or_else(|| {
-        format!(
-            "CI-HYGIENE: `{JUSTFILE}` is missing the `audit-docs:` recipe."
-        )
-    })?;
+    let commands = just_recipe_commands(&justfile, "audit-docs")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the `audit-docs:` recipe."))?;
     let expected = [
         "{{python_command}} -B docs/audits/verify.py",
         "{{python_command}} -B docs/audits/test_verify.py",
@@ -1545,14 +1543,10 @@ fn check_public_audit_step(text: &str) -> Result<(), String> {
         ));
     }
     let block = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
-        format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of hygiene.steps."
-        )
+        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of hygiene.steps.")
     })?;
     let expected_keys = ["if".to_owned(), "run".to_owned()];
-    if workflow_named_step_direct_keys(&block, step).as_deref()
-        != Some(expected_keys.as_slice())
-    {
+    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only its docs condition and direct run block."
         ));
@@ -1563,9 +1557,8 @@ fn check_public_audit_step(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{step}` must use exact condition `{condition}`."
         ));
     }
-    let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable run block.")
-    })?;
+    let commands = workflow_named_step_shell_commands(&block, step)
+        .ok_or_else(|| format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable run block."))?;
     if commands
         .iter()
         .map(String::as_str)
@@ -2424,6 +2417,8 @@ mod tests {
             "          target/agent-context/agent-context check .",
             "          python3 -B tools/test_session_closeout.py",
             "          python3 -B tools/test_session_closeout_hook.py",
+            "          python3 -B tools/workspace.py check",
+            "          python3 -B tools/test_workspace.py",
             "      - run: rustc --edition=2024 --test tools/ci_hygiene.rs",
             "      - run: rustc --edition=2024 --test tools/product_status.rs",
             "      - run: product-status check .",
@@ -2591,9 +2586,11 @@ mod tests {
         let temp = complete_fixture();
         temp.write(
             JUSTFILE,
-            &read(temp.path(), JUSTFILE)
-                .expect("just fixture")
-                .replacen("ci: audit-docs test", "ci: test", 1),
+            &read(temp.path(), JUSTFILE).expect("just fixture").replacen(
+                "ci: audit-docs test",
+                "ci: test",
+                1,
+            ),
         );
         let error = check(temp.path()).expect_err("root ci must own public audit gate");
         assert!(error.contains("audit-docs"), "{error}");
@@ -2601,11 +2598,7 @@ mod tests {
         let temp = complete_fixture();
         temp.write(
             WORKFLOW,
-            &valid_workflow().replacen(
-                "          python3 -B docs/audits/test_verify.py\n",
-                "",
-                1,
-            ),
+            &valid_workflow().replacen("          python3 -B docs/audits/test_verify.py\n", "", 1),
         );
         let error = check(temp.path()).expect_err("audit mutation suite must run in docs CI");
         assert!(error.contains("Public audit registry contracts"), "{error}");
@@ -2625,7 +2618,10 @@ mod tests {
     fn root_test_recipe_requires_linux_xvfb_without_weakening_other_platforms() {
         for (needle, replacement) in [
             ("xvfb-run -a ", ""),
-            ("if [[ \"$(uname -s)\" == \"Linux\" ]]; then", "if false; then"),
+            (
+                "if [[ \"$(uname -s)\" == \"Linux\" ]]; then",
+                "if false; then",
+            ),
             ("cargo nextest run --workspace --profile ci", "true"),
         ] {
             let temp = complete_fixture();
@@ -2839,6 +2835,8 @@ mod tests {
             "          target/agent-context/agent-context check .\n",
             "          python3 -B tools/test_session_closeout.py\n",
             "          python3 -B tools/test_session_closeout_hook.py\n",
+            "          python3 -B tools/workspace.py check\n",
+            "          python3 -B tools/test_workspace.py\n",
         );
         temp.write(WORKFLOW, &valid_workflow().replacen(context_step, "", 1));
         let error = check(temp.path()).expect_err("missing context gate must fail");
@@ -2864,6 +2862,8 @@ mod tests {
         for command in [
             "python3 -B tools/test_session_closeout.py",
             "python3 -B tools/test_session_closeout_hook.py",
+            "python3 -B tools/workspace.py check",
+            "python3 -B tools/test_workspace.py",
         ] {
             for replacement in [
                 String::new(),
@@ -3937,10 +3937,7 @@ mod tests {
                 "$result.watchdog_probe.exit_code -ne 124",
                 "$result.watchdog_probe.exit_code -ne $result.watchdog_probe.exit_code",
             ),
-            (
-                "$result.watchdog_probe.exit_code -isnot [int]",
-                "$false",
-            ),
+            ("$result.watchdog_probe.exit_code -isnot [int]", "$false"),
             (
                 "$result.outer_deadline_probe.outer_timed_out -ne $true",
                 "$result.outer_deadline_probe.outer_timed_out -eq $true",
@@ -4005,14 +4002,8 @@ mod tests {
                 "$profileReceipts.Count -ne 1",
                 "$profileReceipts.Count -lt 0",
             ),
-            (
-                "(?<nonce>[1-9][0-9]*)",
-                "(?<nonce>[0-9]+)",
-            ),
-            (
-                "(?<adapter_tid>0|[1-9][0-9]*)",
-                "(?<adapter_tid>[0-9]+)",
-            ),
+            ("(?<nonce>[1-9][0-9]*)", "(?<nonce>[0-9]+)"),
+            ("(?<adapter_tid>0|[1-9][0-9]*)", "(?<adapter_tid>[0-9]+)"),
             (
                 "$originPort -gt 65535",
                 "$originPort -gt [uint32]::MaxValue",
@@ -4029,10 +4020,7 @@ mod tests {
                 "[int]$receiptFields.permission_kind -ne $row.permission_kind",
                 "[int]$receiptFields.permission_kind -ne [int]$receiptFields.permission_kind",
             ),
-            (
-                "$seenNonces.ContainsKey($receiptFields.nonce)",
-                "$false",
-            ),
+            ("$seenNonces.ContainsKey($receiptFields.nonce)", "$false"),
             (
                 "$row.permission_kind -ne $expectedPermissionKind",
                 "$row.permission_kind -ne $row.permission_kind",

@@ -106,6 +106,30 @@ agent-context:
     target/agent-context/agent-context check .
     {{python_command}} -B tools/test_session_closeout.py
     {{python_command}} -B tools/test_session_closeout_hook.py
+    {{python_command}} -B tools/workspace.py check
+    {{python_command}} -B tools/test_workspace.py
+
+# KEL-245: local-only allocation and execution; all roots derive from Git identity.
+work-start *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py start "$@"
+
+work-status *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py status "$@"
+
+work-run *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py run "$@"
+
+work-check:
+    {{python_command}} -B tools/workspace.py check
+
+work-test:
+    {{python_command}} -B tools/test_workspace.py
 
 # Generate the canonical Current/Target/Evidence status view.
 product-status:
@@ -230,12 +254,17 @@ deny:
 # Clone or ff-only pull private research into gitignored docs/research/.
 # HTTPS first, SSH fallback. No access → warn on stderr and exit 0 (hooks-safe).
 research-sync:
+    {{python_command}} -B tools/workspace.py reference-run -- just _research-sync
+
+[private]
+_research-sync:
     #!/usr/bin/env bash
     set -uo pipefail
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         echo "warning: research-sync: not inside a git work tree; skip" >&2
         exit 0
     }
+    ROOT="$({{python_command}} -B "$ROOT/tools/workspace.py" reference-root)" || exit 1
     DEST="$ROOT/docs/research"
     HTTPS="https://github.com/0monish/keld-research.git"
     SSH="git@github.com:0monish/keld-research.git"
@@ -300,11 +329,18 @@ research-sync:
 # Optional: just research-push "your message"
 research-push message="chore: sync research notes":
     #!/usr/bin/env bash
+    set -euo pipefail
+    {{python_command}} -B tools/workspace.py reference-run -- just _research-push "$1"
+
+[private]
+_research-push message:
+    #!/usr/bin/env bash
     set -uo pipefail
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         echo "warning: research-push: not inside a git work tree; skip" >&2
         exit 0
     }
+    ROOT="$({{python_command}} -B "$ROOT/tools/workspace.py" reference-root)" || exit 1
     DEST="$ROOT/docs/research"
     MSG={{quote(message)}}
 
@@ -361,7 +397,14 @@ research-push message="chore: sync research notes":
 competitors-sync *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{python_command}} -B tools/workspace.py reference-run -- just _competitors-sync "$@"
+
+[private]
+_competitors-sync *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
     ROOT="$(git rev-parse --show-toplevel)"
+    ROOT="$({{python_command}} -B "$ROOT/tools/workspace.py" reference-root)"
     mkdir -p "$ROOT/target/competitors-sync"
     rustc --edition=2024 -D warnings "$ROOT/tools/competitors_sync.rs" \
         -o "$ROOT/target/competitors-sync/competitors-sync"

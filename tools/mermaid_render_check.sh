@@ -220,7 +220,7 @@ keep_output=${KELD_MERMAID_KEEP_OUTPUT:-0}
   echo 'KELD-DOCS006: KELD_MERMAID_KEEP_OUTPUT must be 0 or 1. Correct it, then rerun.' >&2
   exit 1
 }
-docker_config_dir=$(mktemp -d /tmp/keld-mermaid-docker-config.XXXXXX)
+docker_config_dir=$(mktemp -d "${TMPDIR:-/tmp}/keld-mermaid-docker-config.XXXXXX")
 readonly docker_config_dir
 export DOCKER_HOST=$docker_host
 export DOCKER_CONFIG=$docker_config_dir

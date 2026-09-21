@@ -471,6 +471,57 @@ the PR rather than fixing it silently in an unrelated diff.
 
 ## Optional maintainer checkout setup
 
+### Local agent workspace
+
+Keld keeps new task worktrees and command scratch below the primary checkout's
+gitignored `.keld-work/`. Git remains the worktree authority and Linear the issue/claim
+authority. Commands resolve the same primary directory when invoked inside a linked
+checkout; this is cooperative file management, not an OS sandbox.
+
+From a reviewed checkout, after claiming the issue:
+
+```text
+just work-start kel-245 workspace --session manual-session-1
+just work-status
+just work-run kel-245-workspace --session manual-session-1 -- just ci
+just work-status --sizes
+just work-check
+just work-test
+```
+
+Use the native client's session ID when available. Manual callers may omit `--session`
+on start to generate one; retain the returned ID for subsequent runs. Start defaults to
+local `origin/main`, resolves a commit before writes, and accepts an explicit `--base`.
+Fetch explicitly when the local remote-tracking ref needs updating. Existing task paths,
+branches and another session's ownership are never overwritten. Repeating the same
+start returns that session's valid task. These records do not replace the Linear claim.
+
+The returned task path is `.keld-work/worktrees/kel-245-workspace`. Run evidence lives in
+`.keld-work/sessions/manual-session-1/evidence/run-ID/`, with scratch in the sibling
+`scratch/run-ID/`. Each run streams output and retains at most 4 MiB per stdout/stderr
+tail by default; `--log-limit-mib` accepts 1–64 per stream before the `--` separator.
+`result.json` records exit status and omitted bytes, never an environment or raw argv
+dump. Truncated output is not complete evidence. Internal capture/spawn failures return
+nonzero; an inherited pipe that stays open after child exit is recorded as incomplete.
+
+Only the child process receives the scoped `TMPDIR`, `TEMP` and `TMP`. Per-checkout
+Cargo `target/` and package `node_modules/` keep their established locations. Reference
+checkouts remain at primary `docs/research/` and `competitors/`: linked-checkout sync/push
+is refused; update from the primary only after reconciling active reference consumers.
+With active tasks, set `KELD_WORK_SESSION` to their owning session ID in the invoking
+shell. Admission requires all active tasks to belong to that account/session and no
+task command to be running; another active session blocks the update. Public helper
+recipes hold a shared reference guard through completion, excluding new task commands.
+This coordinates these tools; it is not an OS lock on external reference editors.
+No command automatically clones references on task creation.
+
+This initial slice provides start/status/run/check/test. Finish, cleanup and import
+commands and new-session native hook paths are still implementation work in KEL-245;
+existing closeout hooks and legacy evidence locations remain valid. Status lists
+unmanaged legacy worktrees; it neither adopts nor deletes them. A failed/interrupted
+allocation may leave a tree or operation lock for explicit inspection, never automatic
+takeover. Keep evidence and source while completing the remaining cleanup integration.
+
 External contributors do not need this setup. Maintainers with access to the separate
 research repository can run `just research-sync` after reviewing the checked-out
 revision, and `just competitors-sync` for the pinned local competitor trees.
