@@ -1,9 +1,10 @@
 # Spec: repository-contained agent workspace
-Status: draft
+Status: approved
 Linear: KEL-245 · Owner: repository maintainer · Updated: 2026-09-21
 
-This is an implementation proposal, not active policy or an available command set.
-The repository's specification approval gate applies before implementation.
+Approved by the repository owner on 2026-09-21 through the instruction to audit and
+merge the design if ready. This specification defines the implementation target;
+commands and hook enforcement become available only as the tasks below land.
 
 ## 1. Goal & non-goals
 
@@ -92,7 +93,9 @@ No external benchmark or runtime performance conclusion is inferred from this au
    managed content. A linked tree never creates another workspace inside itself.
 4. A managed command receives scratch/temp paths below its session, runs in the
    assigned checkout, preserves argument boundaries and returns its actual exit code.
-   Failure retains its log and marks unfinished work; it cannot silently become success.
+   Failure retains its bounded log and marks unfinished work; it cannot silently become
+   success. Exceeding the log cap records truncation and total bytes without changing
+   the child's exit status or growing the retained log past its declared limit.
 5. Clean without an apply option changes nothing and reports exact paths, ownership,
    reclaimable logical bytes, retention reasons and unknowns. No home/disk-wide walk.
 6. Cleanup refuses primary roots, traversal, foreign repositories, active sessions,
@@ -234,6 +237,15 @@ scratch. Application-profile/native-containment acceptance keeps its real platfo
 locations when that location is the tested contract; it records and cleans those
 exceptions rather than masking them with a changed temp environment.
 
+Command output streams to the operator; retained diagnostic tails default to at most
+4 MiB per stdout/stderr stream (8 MiB combined per run), with total/omitted byte counts
+and an explicit truncation marker. A task needing complete logs must choose an explicit
+per-run limit and cannot call truncated diagnostics complete evidence. Do not dump
+environment variables, credentials or raw argument values into metadata. Retained logs
+are local/private; publication requires deliberate selection and review. Work-status
+with sizes reports retained evidence separately from reclaimable scratch/cache so
+preservation does not conceal accumulating storage.
+
 The local task record stores schema version, task/issue ID, branch, starting commit,
 session IDs, relative category paths and active/released disposition. Git status,
 PR status and sizes are derived on demand, not cached as truth. Records are created
@@ -272,6 +284,12 @@ the PR merge and preserved source identity; ahead/behind alone does not prove ab
 of unique work after squash. The existing closeout validator requires a retained
 `source_ref` for removed checkouts: preserve that invariant or explicitly version its
 replacement before removing the ref. Deletion errors remain failures with exact paths.
+
+Work-finish validates the pre-cleanup disposition and releases only its own session.
+Cleanup records each actual removal/failure, then writes a new current-turn receipt
+and runs the existing validator after the final state change. Preserve previous
+receipts as historical evidence; never replay an earlier pass as proof of cleanup.
+A crash between removal and the new receipt remains an explicit recovery/handoff.
 
 ### Hook audit and integration
 
@@ -360,7 +378,7 @@ handlers. New command recipes land with their implementations and tests.
 | Criteria | Independent proof |
 |---|---|
 | 1–3 | Real nested Git fixture; same resolver from primary/linked tree; ignored fake AGENTS/TSV excluded; tracked decoy and force-added local content rejected |
-| 4 | Child reports cwd/temp/argv and exits nonzero; spaces and Unicode retained; literal shell metacharacters remain argv data |
+| 4 | Child reports cwd/temp/argv and exits nonzero; spaces and Unicode retained; literal shell metacharacters remain argv data; over-cap output has bounded tails and exact omitted-byte counts |
 | 5–7 | Snapshot before preview; active/dirty/untracked/open/unknown/foreign/unique fixtures survive; merged clean fixture removed only through Git |
 | 6, 11 | Outside sentinel survives symlink/junction/path traversal; operation interrupted at allocation/move/remove; second writer refused |
 | 8, 10 | Hash-bound evidence remains after cleanup; legacy baseline roundtrip; changed import inventory refused; nested clone and submodule cases held |
@@ -395,9 +413,6 @@ numeric improvements require a before/after census on the same machine.
 
 ## 10. Open questions
 
-The proposed defaults are one primary-owned `.keld-work/`, purpose-based retention,
-preview-first cleanup, legacy evidence compatibility and no blanket filesystem sandbox.
-Maintainer approval of this specification is required by `docs/agents/workflow.md`
-step 2 before implementing the new commands and hook/process changes. Native macOS/
-Linux and per-client nested instruction traces remain implementation acceptance work,
-not evidence established by this Windows audit.
+None blocking the approved design. Native macOS/Linux and per-client nested instruction
+traces remain implementation acceptance work, not evidence established by this Windows
+audit. Merging this specification does not complete T1–T3 or close KEL-245.
