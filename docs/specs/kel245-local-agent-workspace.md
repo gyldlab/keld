@@ -85,9 +85,11 @@ No external benchmark or runtime performance conclusion is inferred from this au
 1. Commands invoked from the primary checkout or any managed linked tree resolve the
    same `.keld-work/` root. Bare, missing-primary, ambiguous or unsupported separate
    Git-directory arrangements fail with a repair message before writes.
-2. Start creates one registered tree at the exact issue/slug destination from an
-   explicit base. Existing paths, branches or active ownership collisions refuse
-   overwrite. Repeating start for the same owner returns the existing valid task.
+2. Start resolves `--base` to a commit, defaulting to the locally available
+   `origin/main`, never the invoking branch's HEAD. A missing/unresolvable ref refuses
+   writes with guidance to fetch `origin main` or supply a valid base. Record the
+   resolved SHA before tree creation. Existing paths, branches or active ownership
+   collisions refuse overwrite; same-owner reuse preserves the existing task's base.
 3. Root Git status excludes managed resources. Source scanners exclude the managed
    root but continue checking tracked source and detect an attempted force-add of
    managed content. A linked tree never creates another workspace inside itself.
@@ -219,7 +221,7 @@ These are proposed interfaces; they do not exist until T1/T2 land.
 | Command | Contract |
 |---|---|
 | `just work-status` | Read-only task/session/legacy summary; sizes only with `--sizes` |
-| `just work-start kel-245 workspace` | Create/reuse the issue tree and print canonical paths; explicit `--base` supported |
+| `just work-start kel-245 workspace` | Create/reuse the issue tree; default base is local `origin/main`; `--base` overrides it |
 | `just work-run kel-245-workspace -- just ci` | Run argv in the registered tree with scoped scratch and captured evidence |
 | `just work-finish kel-245-workspace` | Release this session after valid closeout; print eligible cleanup plan |
 | `just work-clean kel-245-workspace` | Preview disposable resources for exactly this task |
@@ -234,13 +236,21 @@ Do not redirect Cargo target output across active checkouts: existing recipes de
 on local target paths and concurrent reuse can serialize or confuse artifact identity.
 Repo-owned helpers with literal external temp paths are changed to use explicit
 scratch. Application-profile/native-containment acceptance keeps its real platform
-locations when that location is the tested contract; it records and cleans those
-exceptions rather than masking them with a changed temp environment.
+locations when that location is the tested contract. Each owning test allocates an
+exclusive unique resource and records its exact path and creation identity before use;
+its fixture cleanup revalidates that identity and removes only that created resource.
+Pre-existing files, credentials and profiles are preserved. Unknown/replaced ownership
+is a retained failure. `work-clean` never deletes these external exceptions; it reports
+them for the owning fixture/operator. A pre-existing outside sentinel must survive.
 
 Command output streams to the operator; retained diagnostic tails default to at most
 4 MiB per stdout/stderr stream (8 MiB combined per run), with total/omitted byte counts
-and an explicit truncation marker. A task needing complete logs must choose an explicit
-per-run limit and cannot call truncated diagnostics complete evidence. Do not dump
+and an explicit truncation marker. A task needing larger logs selects a finite integer
+`--log-limit-mib` from 1 through 64 per stream; invalid/unlimited/over-64 requests refuse
+before launch. Thus all runs have a maximum retained payload of 128 MiB combined.
+This is an operational per-run bound, not a claimed total workspace quota: accumulated
+evidence still needs explicit retention review. Output beyond the selected cap remains
+diagnostic tails and cannot be called complete evidence. Do not dump
 environment variables, credentials or raw argument values into metadata. Retained logs
 are local/private; publication requires deliberate selection and review. Work-status
 with sizes reports retained evidence separately from reclaimable scratch/cache so
@@ -377,10 +387,10 @@ handlers. New command recipes land with their implementations and tests.
 
 | Criteria | Independent proof |
 |---|---|
-| 1–3 | Real nested Git fixture; same resolver from primary/linked tree; ignored fake AGENTS/TSV excluded; tracked decoy and force-added local content rejected |
-| 4 | Child reports cwd/temp/argv and exits nonzero; spaces and Unicode retained; literal shell metacharacters remain argv data; over-cap output has bounded tails and exact omitted-byte counts |
+| 1–3 | Real nested Git fixture; same resolver from primary/linked tree; omitted base uses local origin/main; explicit base overrides; missing ref refuses; ignored fake AGENTS/TSV excluded; tracked decoy and force-added local content rejected |
+| 4 | Child reports cwd/temp/argv and exits nonzero; spaces and Unicode retained; literal shell metacharacters remain argv data; default, 1/64 MiB and rejected 0/65/unlimited log limits; over-cap tails report exact omitted counts |
 | 5–7 | Snapshot before preview; active/dirty/untracked/open/unknown/foreign/unique fixtures survive; merged clean fixture removed only through Git |
-| 6, 11 | Outside sentinel survives symlink/junction/path traversal; operation interrupted at allocation/move/remove; second writer refused |
+| 6, 11 | Outside sentinel survives symlink/junction/path traversal and platform-fixture cleanup; created fixture removed only with matching identity; operation interrupted at allocation/move/remove; second writer refused |
 | 8, 10 | Hash-bound evidence remains after cleanup; legacy baseline roundtrip; changed import inventory refused; nested clone and submodule cases held |
 | 9, 12 | Inactive/start/stop/stale/repeated-error adapter tests plus real supported client traces on each claimed OS |
 | 13–14 | Primary-start session retains its baseline after issue selection/steering and stop; linked-tree sync/push resolves the one primary reference without cloning |
