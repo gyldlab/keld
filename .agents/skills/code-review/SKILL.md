@@ -35,6 +35,11 @@ coderabbit --version 2>/dev/null || echo "NOT_INSTALLED"
 coderabbit auth status 2>&1
 ```
 
+On Windows, a native miss is not absence: agents MUST check the default WSL distribution with
+`wsl.exe -e sh -lc "command -v coderabbit && coderabbit --version"`, use the WSL CLI
+with a `wslpath -a` translated repo path when present, and MUST NOT suggest installation
+until both native and default-WSL checks fail.
+
 If the CLI is already installed, confirm it is an expected version from an official source before proceeding.
 
 > **Note:** The `--agent` flag requires CodeRabbit CLI v0.4.0 or later. If the installed version is older, ask the user to upgrade.
