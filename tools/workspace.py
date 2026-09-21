@@ -435,7 +435,7 @@ def run(ctx, name, session, argv, limit_mib):
 def clean_checkout(checkout):
     require(not git(checkout, "status", "--porcelain", "-z").stdout,
             "Task checkout is dirty or has untracked files. Preserve and reconcile it before release or cleanup.")
-    merged = git(checkout, "diff", "--quiet", "origin/main...HEAD", check=False)
+    merged = git(checkout, "diff", "--quiet", "origin/main", "HEAD", check=False)
     require(merged.returncode == 0,
             "Task has content not present in origin/main. Preserve its branch and merged PR evidence before release.")
 
@@ -467,7 +467,7 @@ def safe_disposable_tree(root):
         require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and
                 not getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT,
                 f"Disposable cleanup target is not a real directory: {path}. Preserve it for inspection.")
-        require(path == root or not os.path.ismount(path),
+        require(not os.path.ismount(path),
                 f"Nested mount refused during cleanup: {path}. Preserve it for inspection.")
         require(not (path / ".git").exists(),
                 f"Nested Git repository refused during cleanup: {path}. Preserve it for inspection.")
@@ -488,7 +488,7 @@ def safe_disposable_tree(root):
     return nodes
 
 
-def remove_disposable_tree(nodes):
+def remove_disposable_tree(nodes, recorded):
     for path, device, inode, directory in sorted(nodes, key=lambda item: len(item[0].parts), reverse=True):
         info = path.lstat()
         require((info.st_dev, info.st_ino) == (device, inode),
@@ -497,6 +497,7 @@ def remove_disposable_tree(nodes):
             path.rmdir()
         else:
             path.unlink()
+        recorded(path)
 
 
 def receipt_evidence_paths(value):
@@ -510,17 +511,23 @@ def receipt_evidence_paths(value):
             yield from receipt_evidence_paths(nested)
 
 
-def clean(ctx, name, session, apply):
+def clean(ctx, name, session, apply, receipt=None):
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session, active=False)
         require(record["state"] == "released", "Task is active. Finish it with a complete closeout receipt before cleanup.")
+        directory = safe_path(ctx.root / "worktrees")
+        if directory.exists():
+            for file in directory.glob("*.json"):
+                other, _ = load_task(ctx, file.stem)
+                require(other["task"] == record["task"] or session not in other["sessions"] or other["state"] != "active",
+                        "Another active task owns this session scratch. Finish or use a distinct session before cleanup.")
         clean_checkout(checkout)
         target = safe_path(ctx.root / "sessions" / component(session, "session") / "scratch")
-        receipt = session_closeout.read_json(Path(record["receipt"]))
+        release_receipt = session_closeout.read_json(Path(record["receipt"]))
         require(session_closeout.check(Path(record["receipt"])) == "complete",
                 "Released task closeout receipt no longer validates. Preserve scratch and repair its evidence first.")
-        for evidence in receipt_evidence_paths(receipt):
+        for evidence in receipt_evidence_paths(release_receipt):
             require(not evidence.resolve().is_relative_to(target.resolve()),
                     f"Scratch is referenced by closeout evidence: {evidence}. Preserve it and archive/rewrite the evidence first.")
         nodes = safe_disposable_tree(target)
@@ -528,11 +535,31 @@ def clean(ctx, name, session, apply):
         plan = dict(task=name, session=session, applied=apply, targets=[str(target)] if nodes else [],
                     scratch_bytes=byte_count, retained_evidence=str(ctx.root / "sessions" / session / "evidence"),
                     retained_worktree=str(checkout), reason="released task scratch only; evidence, source branch and worktree are retained")
+        if apply:
+            require(receipt is not None, "Cleanup apply requires a prepared current-turn --receipt; preview is read-only.")
+            receipt_path = Path(receipt)
+            receipt_value = session_closeout.read_json(receipt_path)
+            require(same(receipt_value.get("repo", ""), checkout) and receipt_value.get("session_id") == session,
+                    "Cleanup receipt belongs to another task or session. Preserve scratch and use the owning receipt.")
         if apply and nodes:
-            remove_disposable_tree(nodes)
             evidence = safe_path(ctx.root / "sessions" / session / "evidence" / ("clean-" + uuid.uuid4().hex))
             mkdir(evidence)
-            write_record(evidence / "result.json", dict(schema="keld.workspace-clean/v1", **plan))
+            result = dict(schema="keld.workspace-clean/v1", state="running", removed=[], **plan)
+            result_file = evidence / "result.json"
+            write_record(result_file, result, exclusive=True)
+            def recorded(path):
+                result["removed"].append(str(path))
+                write_record(result_file, result)
+            try:
+                remove_disposable_tree(nodes, recorded)
+                require(session_closeout.check(receipt_path) == "complete",
+                        "Cleanup receipt is not complete after deletion. Record an explicit handoff; scratch removal is not a successful cleanup.")
+            except (WorkspaceError, session_closeout.Invalid, OSError) as error:
+                result.update(state="failed", error_type=type(error).__name__)
+                write_record(result_file, result)
+                raise
+            result["state"] = "complete"
+            write_record(result_file, result)
         return plan
 
 
@@ -556,6 +583,7 @@ def main(argv=None):
     clean_parser.add_argument("task")
     clean_parser.add_argument("--session", default=os.environ.get("KELD_WORK_SESSION"), required=not os.environ.get("KELD_WORK_SESSION"))
     clean_parser.add_argument("--apply", action="store_true")
+    clean_parser.add_argument("--receipt")
     status_parser = commands.add_parser("status")
     status_parser.add_argument("--sizes", action="store_true")
     start_parser = commands.add_parser("start")
@@ -579,7 +607,7 @@ def main(argv=None):
         elif options.operation == "finish":
             print(json.dumps(finish(ctx, options.task, options.session, options.receipt), indent=2))
         elif options.operation == "clean":
-            print(json.dumps(clean(ctx, options.task, options.session, options.apply), indent=2))
+            print(json.dumps(clean(ctx, options.task, options.session, options.apply, options.receipt), indent=2))
         elif options.operation == "reference-root":
             reference_admission(ctx)
             print(ctx.primary.as_posix())

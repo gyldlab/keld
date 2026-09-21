@@ -8,6 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+
+import workspace
 
 TOOL = Path(__file__).with_name("workspace.py").resolve()
 REPO = TOOL.parent.parent
@@ -56,7 +59,7 @@ class WorkspaceTests(unittest.TestCase):
         if not proof.exists():
             proof.write_text("reviewed release in isolated fixture\n", encoding="utf-8")
         directory = self.root / ".git" / "keld-closeout" / "test-session"
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
         baseline = directory / "baseline.json"
         baseline.write_text(json.dumps({
             "schema": "keld.session-baseline/v1", "session_id": "test-session", "repo": task["path"],
@@ -72,6 +75,16 @@ class WorkspaceTests(unittest.TestCase):
             "checks": [{"name": "release proof", "status": "passed", "source_head": head, "evidence": [self.proof(proof)]}],
             "outcome": "complete"}), encoding="utf-8")
         return receipt
+
+    def cleanup_receipt(self, task, scratch, original=None):
+        original = original or self.closeout(task)
+        receipt = json.loads(original.read_text(encoding="utf-8"))
+        receipt.update(turn_id="cleanup", resources=[{
+            "id": "scratch", "path": str(scratch), "status": "removed",
+            "reason": "Released session scratch removed by the isolated cleanup fixture"}])
+        current = original.with_name("cleanup.json")
+        current.write_text(json.dumps(receipt), encoding="utf-8")
+        return current
 
     def test_root_does_not_allocate_and_is_identical_from_linked_tree(self):
         expected = self.root / ".keld-work"
@@ -376,7 +389,9 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse(preview["applied"])
         self.assertEqual(preview["targets"], [str(scratch.parent)])
         self.assertEqual(before, {str(item): item.read_bytes() for item in self.root.rglob("*") if item.is_file()})
-        self.cli("clean", task["task"], "--session", "test-session", "--apply")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.cli("clean", task["task"], "--session", "test-session", "--apply",
+                 "--receipt", str(self.cleanup_receipt(task, scratch.parent)))
         self.assertFalse(scratch.parent.exists())
         self.assertTrue((evidence / "proof.txt").exists())
         self.assertTrue(Path(task["path"]).exists())
@@ -396,7 +411,7 @@ class WorkspaceTests(unittest.TestCase):
             scratch.symlink_to(outside, target_is_directory=True)
         except OSError as error:
             self.skipTest("OS did not permit test symlink: " + str(error))
-        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(self.cleanup_receipt(task, scratch)), ok=False)
         self.assertEqual((outside / "keep.txt").read_text(), "keep")
 
     def test_clean_refuses_scratch_referenced_by_its_closeout(self):
@@ -405,9 +420,73 @@ class WorkspaceTests(unittest.TestCase):
         scratch.mkdir(parents=True)
         proof = scratch / "referenced-proof.txt"
         proof.write_text("must survive", encoding="utf-8")
-        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task, proof)))
-        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        closeout = self.closeout(task, proof)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(closeout))
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(self.cleanup_receipt(task, scratch, closeout)), ok=False)
         self.assertEqual(proof.read_text(), "must survive")
+
+    def test_finish_uses_content_equivalence_after_squash_merge(self):
+        task = self.start()
+        (self.root / "landed.txt").write_text("same landed content", encoding="utf-8")
+        self.git("add", "landed.txt")
+        self.git("commit", "-m", "squashed landing")
+        landed = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("update-ref", "refs/remotes/origin/main", landed)
+        (Path(task["path"]) / "landed.txt").write_text("same landed content", encoding="utf-8")
+        self.git("add", "landed.txt", cwd=task["path"])
+        self.git("commit", "-m", "original feature commit", cwd=task["path"])
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+
+    def test_clean_refuses_session_shared_by_an_active_task(self):
+        task = self.start()
+        self.cli("start", "kel-246", "other", "--session", "test-session")
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        marker = self.root / ".keld-work" / "sessions" / "test-session" / "scratch" / "active-marker.txt"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("must survive", encoding="utf-8")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.assertEqual(marker.read_text(), "must survive")
+
+    def test_cleanup_refuses_mount_at_the_scratch_root(self):
+        root = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        root.mkdir(parents=True)
+        with mock.patch.object(workspace.os.path, "ismount", return_value=True):
+            with self.assertRaisesRegex(workspace.WorkspaceError, "mount"):
+                workspace.safe_disposable_tree(root)
+
+    def test_partial_cleanup_records_removed_entries_and_failure(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        scratch.mkdir(parents=True)
+        (scratch / "a.txt").write_text("a", encoding="utf-8")
+        (scratch / "b.txt").write_text("b", encoding="utf-8")
+        context = workspace.context(self.root)
+        original = workspace.remove_disposable_tree
+        def fail_after_first(nodes, recorded):
+            original([next(node for node in nodes if not node[3])], recorded)
+            raise workspace.WorkspaceError("injected removal fault")
+        with mock.patch.object(workspace, "remove_disposable_tree", fail_after_first):
+            with self.assertRaisesRegex(workspace.WorkspaceError, "injected removal fault"):
+                workspace.clean(context, task["task"], "test-session", True, self.cleanup_receipt(task, scratch))
+        result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
+        value = json.loads(result.read_text())
+        self.assertEqual(value["state"], "failed")
+        self.assertEqual(value["removed"], [str(scratch / "a.txt")])
+
+    def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        scratch.mkdir(parents=True)
+        (scratch / "remove.txt").write_text("scratch", encoding="utf-8")
+        receipt = self.cleanup_receipt(task, scratch)
+        value = json.loads(receipt.read_text())
+        value["resources"][0]["status"] = "retained"
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt), ok=False)
+        result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
+        self.assertEqual(json.loads(result.read_text())["state"], "failed")
 
 
 if __name__ == "__main__":

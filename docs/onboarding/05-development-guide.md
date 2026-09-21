@@ -487,7 +487,7 @@ just work-run kel-245-workspace --session manual-session-1 -- just ci
 just work-status --sizes
 just work-finish kel-245-workspace --session manual-session-1 --receipt /absolute/closeout.json
 just work-clean kel-245-workspace --session manual-session-1
-just work-clean kel-245-workspace --session manual-session-1 --apply
+just work-clean kel-245-workspace --session manual-session-1 --apply --receipt /absolute/cleanup-closeout.json
 just work-check
 just work-test
 ```
@@ -529,7 +529,8 @@ takeover. Keep evidence and source while completing the remaining cleanup integr
 `work-finish` requires an owned task, a clean checkout with no content missing from
 local `origin/main`, and a complete closeout receipt for the same checkout/session. It
 only releases the local task record. `work-clean` previews the exact released session's
-scratch directory by default; `--apply` revalidates it then removes scratch only. It
+scratch directory by default; `--apply` requires a prepared current-turn receipt,
+revalidates it then removes scratch only and validates the receipt after the mutation. It
 retains evidence, the Git worktree and branch, all caches, all legacy folders and any
 unsupported/link/reparse/mount/nested-Git target. A failed validation performs no
 deletion. Full worktree retirement, evidence archival and legacy import remain explicit
