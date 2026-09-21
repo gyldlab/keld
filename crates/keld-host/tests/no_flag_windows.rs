@@ -5,10 +5,11 @@
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: process and OS observations are assertion oracles
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::env;
 use std::ffi::c_void;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -310,8 +311,7 @@ fn windows_status_zero_self_termination_keeps_pid_and_status_in_the_host_error()
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage exit-zero host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -353,8 +353,7 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage fast-g2 host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T4_GENERATION_MARKER", &marker)
         .stdout(Stdio::piped())
@@ -422,8 +421,7 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage crash-loop host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -471,8 +469,7 @@ fn run_same_window_recovery(failure_command: &str) {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage recovery host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -527,8 +524,7 @@ fn windows_pre_ready_crash_denies_successor_before_provisioning() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage pre-ready host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
         .env("KELD_T3_PRE_READY_MARKER", &marker)
@@ -640,6 +636,968 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         "delegated Bun survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
+}
+
+#[test]
+#[ignore = "requires a signed KEL-135 Windows host fixture"]
+fn kel135_signed_host_persistent_profile_startup() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
+        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind signed control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("signed control address")
+        .port();
+    let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind signed beacon");
+    let beacon_port = beacon_listener
+        .local_addr()
+        .expect("signed beacon address")
+        .port();
+    let beacon = spawn_renderer_beacon(beacon_listener);
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+        ),
+    )
+    .expect("write signed renderer");
+    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage the signed KEL-135 host");
+    let mut host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch signed host without KELD_DEV_LEASE");
+    let host_pid = host.id();
+    let (mut reader, mut writer, bun_pid, _) =
+        accept_ready_generation(&control_listener, &mut host);
+    expect_renderer_beacon(beacon, "signed host renderer beacon");
+    let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    assert_eq!(window["title"], PRODUCT_TITLE);
+    writer.write_all(b"QUIT\n").expect("signed host Quit");
+    writer.flush().expect("flush signed host Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
+    assert!(status.success(), "signed host exited with {status}");
+    assert!(
+        !process_exists(bun_pid),
+        "signed host Bun survived orderly exit"
+    );
+}
+
+#[test]
+#[ignore = "requires a signed KEL-135 Windows host fixture"]
+fn kel135_signed_host_profile_concurrency() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
+        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let fixture = ProductFixture::new();
+    let first_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind first control");
+    let first_port = first_listener
+        .local_addr()
+        .expect("first control address")
+        .port();
+    let first_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage first signed host");
+    let first_child = Command::new(first_stage.host())
+        .current_dir(first_stage.root())
+        .env("KELD_T1B_CONTROL", first_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch first signed host without KELD_DEV_LEASE");
+    let mut first = SignedStateProcessGuard::new(first_child);
+    let (mut reader, mut writer, bun_pid, _) =
+        accept_ready_generation(&first_listener, first.child_mut());
+    first.observe_bun(bun_pid);
+    let _window = wait_for_host_window(first.host_pid(), Instant::now() + PRODUCT_DEADLINE);
+
+    let second_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind second control");
+    let second_port = second_listener
+        .local_addr()
+        .expect("second control address")
+        .port();
+    let second_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage second signed host");
+    let mut second = Command::new(second_stage.host())
+        .current_dir(second_stage.root())
+        .env("KELD_T1B_CONTROL", second_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch competing signed host without KELD_DEV_LEASE");
+    let second_pid = second.id();
+    let status = wait_child(&mut second, Instant::now() + PRODUCT_DEADLINE);
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    second
+        .stdout
+        .take()
+        .expect("captured competing host stdout")
+        .read_to_string(&mut stdout)
+        .expect("read competing host stdout");
+    second
+        .stderr
+        .take()
+        .expect("captured competing host stderr")
+        .read_to_string(&mut stderr)
+        .expect("read competing host stderr");
+    assert!(!status.success(), "competing host unexpectedly succeeded");
+    assert!(
+        stderr.contains("KELD-WV-009") && stderr.contains("already in use"),
+        "competing host must fail with profile-in-use, status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !process_exists(second_pid),
+        "competing host survived its profile-in-use rejection"
+    );
+
+    writer.write_all(b"QUIT\n").expect("first signed host Quit");
+    writer.flush().expect("flush first signed host Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = first.wait(Instant::now() + PRODUCT_DEADLINE);
+    assert!(status.success(), "first signed host exited with {status}");
+}
+
+#[test]
+#[ignore = "requires a signed KEL-135 Windows host fixture"]
+fn kel135_signed_host_running_crash_releases_profile() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
+        .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let fixture = ProductFixture::new();
+    let first_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind crashing control");
+    let first_port = first_listener
+        .local_addr()
+        .expect("crashing control address")
+        .port();
+    let first_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage crashing signed host");
+    let first_child = Command::new(first_stage.host())
+        .current_dir(first_stage.root())
+        .env("KELD_T1B_CONTROL", first_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch crashing signed host without KELD_DEV_LEASE");
+    let mut first = SignedStateProcessGuard::new(first_child);
+    let (_reader, _writer, bun_pid, _) =
+        accept_ready_generation(&first_listener, first.child_mut());
+    first.observe_bun(bun_pid);
+    let host = open_process_for_wait(first.host_pid(), true);
+    let _window = wait_for_host_window(first.host_pid(), Instant::now() + PRODUCT_DEADLINE);
+    terminate_test_process(&host);
+    assert_process_signaled(&host, "signed running host");
+    let status = first.wait(Instant::now() + PRODUCT_DEADLINE);
+    assert!(
+        !status.success(),
+        "terminated signed host unexpectedly succeeded"
+    );
+
+    let second_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovered control");
+    let second_port = second_listener
+        .local_addr()
+        .expect("recovered control address")
+        .port();
+    let second_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
+        .expect("stage recovered signed host");
+    let second_child = Command::new(second_stage.host())
+        .current_dir(second_stage.root())
+        .env("KELD_T1B_CONTROL", second_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch recovered signed host without KELD_DEV_LEASE");
+    let mut second = SignedStateProcessGuard::new(second_child);
+    let (mut reader, mut writer, bun_pid, _) =
+        accept_ready_generation(&second_listener, second.child_mut());
+    second.observe_bun(bun_pid);
+    let _window = wait_for_host_window(second.host_pid(), Instant::now() + PRODUCT_DEADLINE);
+    writer
+        .write_all(b"QUIT\n")
+        .expect("recovered signed host Quit");
+    writer.flush().expect("flush recovered signed host Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = second.wait(Instant::now() + PRODUCT_DEADLINE);
+    assert!(
+        status.success(),
+        "recovered signed host exited with {status}"
+    );
+}
+
+#[test]
+#[ignore = "requires signed KEL-135 host and package-purge fixtures"]
+fn kel135_signed_host_purge_removes_same_origin_state() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
+    let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
+        .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind purge control");
+    let state_server = ProfileStateServer::new();
+    let run_nonce = profile_state_run_nonce(&fixture);
+    let seeded_state = format!("{run_nonce}-seed");
+    let recovered_state = format!("{run_nonce}-recovered");
+    let seed = SignedProfileStateCase {
+        name: "purge-seed",
+        host: &signed_host,
+        before: "",
+        after: &seeded_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &seed,
+    );
+
+    assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
+
+    let recovered = SignedProfileStateCase {
+        name: "purge-recovered",
+        host: &signed_host,
+        before: "",
+        after: &recovered_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &recovered,
+    );
+}
+
+#[test]
+#[ignore = "requires signed KEL-135 host and package-purge fixtures"]
+fn kel135_signed_host_recovers_an_interrupted_purge() {
+    let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed A/P1 host");
+    let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
+        .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
+    let state_server = ProfileStateServer::new();
+    let run_nonce = profile_state_run_nonce(&fixture);
+    let seeded_state = format!("{run_nonce}-seed");
+    let recovered_state = format!("{run_nonce}-recovered");
+    let seed = SignedProfileStateCase {
+        name: "purge-crash-seed",
+        host: &signed_host,
+        before: "",
+        after: &seeded_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &seed,
+    );
+
+    let interrupted = run_signed_purge_fixture(&signed_purge, true);
+    assert!(
+        !interrupted.status.success(),
+        "purge fault fixture unexpectedly survived the post-intent crash"
+    );
+    let interrupted_stdout =
+        String::from_utf8(interrupted.stdout).expect("interrupted purge stdout UTF-8");
+    assert!(
+        interrupted_stdout.contains("KELD_KEL135_PURGE_FAULT prepared"),
+        "purge fault fixture did not reach the durable prepared intent: {interrupted_stdout}"
+    );
+    assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
+
+    let recovered = SignedProfileStateCase {
+        name: "purge-crash-recovered",
+        host: &signed_host,
+        before: "",
+        after: &recovered_state,
+    };
+    run_signed_profile_state_case(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &recovered,
+    );
+}
+
+#[test]
+#[ignore = "requires signed KEL-135 identity and media fixtures"]
+fn kel135_signed_profile_saved_media_grants_are_revoked() {
+    let signed_identity = env::var_os("KELD_KEL135_SIGNED_IDENTITY_FIXTURE")
+        .expect("KELD_KEL135_SIGNED_IDENTITY_FIXTURE must point to signed A/P1 core fixture");
+    let media_fixture = env::var_os("KELD_KEL135_MEDIA_FIXTURE")
+        .expect("KELD_KEL135_MEDIA_FIXTURE must point to the media-acceptance libtest");
+    let namespace = signed_fixture_profile_namespace(&signed_identity);
+    for (kind, run_id) in [
+        ("camera", "f1e2d3c4b5a69788796a5b4c3d2e1f00"),
+        ("microphone", "001f2e3d4c5b6a798897a6b5c4d3e2f1"),
+    ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve media origin");
+        let address = listener.local_addr().expect("media origin address");
+        drop(listener);
+        let address = address.to_string();
+        run_signed_media_phase(
+            &media_fixture,
+            &namespace,
+            kind,
+            run_id,
+            &address,
+            "seed",
+            "resolved",
+        );
+        run_signed_media_phase(
+            &media_fixture,
+            &namespace,
+            kind,
+            run_id,
+            &address,
+            "deny",
+            "error:NotAllowedError",
+        );
+    }
+}
+
+fn signed_fixture_profile_namespace(signed_identity: &std::ffi::OsStr) -> String {
+    let output = Command::new(signed_identity)
+        .args([
+            "app_session::tests::kel135_signed_package_acceptance_fixture",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .expect("run signed identity fixture");
+    let stdout = String::from_utf8(output.stdout).expect("signed identity stdout UTF-8");
+    assert!(
+        output.status.success(),
+        "signed identity fixture failed: {stdout}"
+    );
+    stdout
+        .lines()
+        .find_map(|line| line.split("profile_namespace=").nth(1))
+        .map(str::to_owned)
+        .expect("signed identity fixture omitted profile namespace")
+}
+
+fn run_signed_media_phase(
+    media_fixture: &std::ffi::OsStr,
+    namespace: &str,
+    kind: &str,
+    run_id: &str,
+    address: &str,
+    phase: &str,
+    expected: &str,
+) {
+    let output = Command::new(media_fixture)
+        .args([
+            "webview2::media_acceptance::tests::windows_saved_grant_phase_subprocess",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("KELD_PROFILE_SAVED_SIGNED_NAMESPACE", namespace)
+        .env("KELD_PROFILE_SAVED_KIND", kind)
+        .env("KELD_PROFILE_SAVED_RUN_ID", run_id)
+        .env("KELD_PROFILE_SAVED_ADDRESS", address)
+        .env("KELD_PROFILE_SAVED_PHASE", phase)
+        .output()
+        .expect("run signed media phase");
+    let stdout = String::from_utf8(output.stdout).expect("signed media stdout UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("signed media stderr UTF-8");
+    assert!(
+        output.status.success(),
+        "signed {kind} {phase} failed: {stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("KELD_PROFILE_SAVED_RESULT") && stdout.contains(expected),
+        "signed {kind} {phase} receipt missing expected {expected}: {stdout}"
+    );
+}
+
+fn run_signed_purge_fixture(
+    signed_purge: &std::ffi::OsStr,
+    crash_after_prepared: bool,
+) -> std::process::Output {
+    let mut command = Command::new(signed_purge);
+    command.args([
+        "app_session::tests::kel135_signed_package_purge_acceptance_fixture",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1",
+    ]);
+    if crash_after_prepared {
+        command.env("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED", "1");
+    } else {
+        command.env_remove("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED");
+    }
+    command
+        .output()
+        .expect("run signed authenticated package-purge fixture")
+}
+
+fn assert_signed_purge_success(output: std::process::Output) {
+    let stdout = String::from_utf8(output.stdout).expect("signed purge stdout UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("signed purge stderr UTF-8");
+    assert!(
+        output.status.success(),
+        "signed package purge failed with {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("KELD_KEL135_SIGNED_PURGE profile_namespace="),
+        "signed package purge omitted its identity receipt: {stdout}"
+    );
+}
+
+struct SignedProfileStateCase<'a> {
+    name: &'a str,
+    host: &'a std::ffi::OsStr,
+    before: &'a str,
+    after: &'a str,
+}
+
+#[test]
+#[ignore = "requires signed KEL-135 host fixtures and WebView2 state acceptance"]
+fn kel135_signed_host_profile_state_isolation() {
+    let primary_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P1 must point to a signed host");
+    let sibling_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_B_P1")
+        .expect("KELD_KEL135_SIGNED_HOST_B_P1 must point to a signed host");
+    let alternate_publisher_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P2")
+        .expect("KELD_KEL135_SIGNED_HOST_A_P2 must point to a signed host");
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind state control");
+    let state_server = ProfileStateServer::new();
+    let run_nonce = profile_state_run_nonce(&fixture);
+    let primary_state = format!("{run_nonce}-a");
+    let sibling_state = format!("{run_nonce}-b");
+    let publisher_two_value = format!("{run_nonce}-p2");
+    let cases = [
+        SignedProfileStateCase {
+            name: "a-seed",
+            host: &primary_carrier,
+            before: "",
+            after: &primary_state,
+        },
+        SignedProfileStateCase {
+            name: "a-restart",
+            host: &primary_carrier,
+            before: &primary_state,
+            after: &primary_state,
+        },
+        SignedProfileStateCase {
+            name: "b-isolated",
+            host: &sibling_carrier,
+            before: "",
+            after: &sibling_state,
+        },
+        SignedProfileStateCase {
+            name: "a-after-b",
+            host: &primary_carrier,
+            before: &primary_state,
+            after: &primary_state,
+        },
+        SignedProfileStateCase {
+            name: "a-p2-isolated",
+            host: &alternate_publisher_carrier,
+            before: "",
+            after: &publisher_two_value,
+        },
+        SignedProfileStateCase {
+            name: "a-final",
+            host: &primary_carrier,
+            before: &primary_state,
+            after: &primary_state,
+        },
+    ];
+    for case in &cases {
+        run_signed_profile_state_case(&fixture, &control_listener, &state_server, &run_nonce, case);
+    }
+}
+
+fn run_signed_profile_state_case(
+    fixture: &ProductFixture,
+    control_listener: &TcpListener,
+    state_server: &ProfileStateServer,
+    run_nonce: &str,
+    case: &SignedProfileStateCase<'_>,
+) {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    state_server.expect_case(case.name, deadline);
+    fs::write(
+        fixture.project.join("index.html"),
+        state_redirect_html(state_server.address(), case.name, run_nonce, case.after),
+    )
+    .expect("write state renderer");
+    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(case.host))
+        .expect("stage signed state host");
+    let control_port = control_listener
+        .local_addr()
+        .expect("state control address")
+        .port();
+    let child = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch signed state host");
+    let mut process = SignedStateProcessGuard::new(child);
+    let host_pid = process.host_pid();
+    let control = accept_control_or_host_failure(control_listener, process.child_mut(), deadline);
+    control
+        .set_read_timeout(Some(PRODUCT_DEADLINE))
+        .expect("state control timeout");
+    let mut reader = BufReader::new(control);
+    let hello = read_control_line(&mut reader);
+    let mut hello_fields = hello.split_whitespace();
+    assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
+    let bun_pid = hello_fields
+        .next()
+        .expect("state Bun PID")
+        .parse::<u32>()
+        .expect("state numeric Bun PID");
+    let _app_link = hello_fields.next().expect("state app link");
+    assert!(hello_fields.next().is_none(), "{hello}");
+    process.observe_bun(bun_pid);
+    assert_eq!(parse_descendant_pid(&read_control_line(&mut reader)), 0);
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state READY"),
+        "READY"
+    );
+    let mut writer = reader.get_ref().try_clone().expect("state control writer");
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO1"),
+        "ECHO1"
+    );
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO2"),
+        "ECHO2"
+    );
+    let observed = state_server.wait_for_case(case.name, deadline);
+    assert_eq!(observed.nonce, run_nonce, "{} run nonce", case.name);
+    assert_eq!(
+        observed.before, case.before,
+        "{} state before write",
+        case.name
+    );
+    assert_eq!(
+        observed.after, case.after,
+        "{} state after write",
+        case.name
+    );
+    let _window = wait_for_host_window(host_pid, deadline);
+    writer.write_all(b"QUIT\n").expect("state host Quit");
+    writer.flush().expect("flush state host Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = process.wait(deadline);
+    assert!(status.success(), "{} host exited with {status}", case.name);
+    assert!(!process_exists(bun_pid), "{} Bun survived exit", case.name);
+}
+
+fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
+    let leaf = fixture
+        .root
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("UTF-8 product fixture nonce");
+    format!("{}-{leaf}", std::process::id())
+}
+
+struct SignedStateProcessGuard {
+    child: Option<Child>,
+    bun: Option<OwnedHandle>,
+}
+
+impl SignedStateProcessGuard {
+    fn new(child: Child) -> Self {
+        Self {
+            child: Some(child),
+            bun: None,
+        }
+    }
+
+    fn host_pid(&self) -> u32 {
+        self.child.as_ref().expect("live signed host").id()
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("live signed host")
+    }
+
+    fn observe_bun(&mut self, pid: u32) {
+        self.bun = Some(open_process_for_wait(pid, true));
+    }
+
+    fn wait(mut self, deadline: Instant) -> ExitStatus {
+        let status = wait_child(self.child_mut(), deadline);
+        let _ = self.child.take();
+        if let Some(bun) = self.bun.take() {
+            assert_process_signaled(&bun, "signed-state Bun");
+        }
+        status
+    }
+}
+
+impl Drop for SignedStateProcessGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(bun) = self.bun.take()
+            // SAFETY: `bun` owns a live process handle opened for synchronize/terminate;
+            // this zero-time wait neither closes nor transfers it.
+            && unsafe { WaitForSingleObject(bun.as_raw_handle().cast(), 0) } != WAIT_OBJECT_0
+        {
+            // SAFETY: the guard owns the exact observed Bun process handle. Termination
+            // is test-failure cleanup, followed by a bounded wait before handle drop.
+            unsafe {
+                let _ = TerminateProcess(bun.as_raw_handle().cast(), 1);
+                let _ = WaitForSingleObject(bun.as_raw_handle().cast(), 5_000);
+            }
+        }
+    }
+}
+
+fn state_redirect_html(address: SocketAddr, case_name: &str, nonce: &str, value: &str) -> String {
+    format!(
+        "<!doctype html>{DARK_BG}<script>location.replace('http://127.0.0.1:{}/app?case={}&nonce={}&value={}')</script>\n",
+        address.port(),
+        case_name,
+        nonce,
+        value
+    )
+}
+
+struct ProfileStateServer {
+    address: SocketAddr,
+    observations: mpsc::Receiver<Result<ProfileStateObservation, String>>,
+    commands: mpsc::Sender<ProfileStateCommand>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ProfileStateObservation {
+    case_name: String,
+    nonce: String,
+    before: String,
+    after: String,
+}
+
+enum ProfileStateCommand {
+    Expect {
+        case_name: String,
+        deadline: Instant,
+    },
+    Stop,
+}
+
+impl ProfileStateServer {
+    fn new() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind profile state server");
+        let address = listener.local_addr().expect("profile state server address");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking profile state server");
+        let (observed_tx, observations) = mpsc::channel();
+        let (commands, command_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            if let Err(error) = serve_profile_state_loop(&listener, &command_rx, &observed_tx) {
+                let _ = observed_tx.send(Err(error));
+            }
+        });
+        Self {
+            address,
+            observations,
+            commands,
+            worker: Some(worker),
+        }
+    }
+
+    fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    fn expect_case(&self, case_name: &str, deadline: Instant) {
+        self.commands
+            .send(ProfileStateCommand::Expect {
+                case_name: case_name.to_owned(),
+                deadline,
+            })
+            .expect("arm profile state case");
+    }
+
+    fn wait_for_case(&self, expected: &str, deadline: Instant) -> ProfileStateObservation {
+        let remaining = renderer_beacon_remaining(deadline, Instant::now())
+            .expect("profile state deadline remains");
+        let observation = self
+            .observations
+            .recv_timeout(remaining)
+            .expect("profile state report")
+            .unwrap_or_else(|error| panic!("profile state server failed: {error}"));
+        assert_eq!(observation.case_name, expected, "profile state case order");
+        observation
+    }
+}
+
+impl Drop for ProfileStateServer {
+    fn drop(&mut self) {
+        let _ = self.commands.send(ProfileStateCommand::Stop);
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn serve_profile_state_loop(
+    listener: &TcpListener,
+    commands: &mpsc::Receiver<ProfileStateCommand>,
+    observations: &mpsc::Sender<Result<ProfileStateObservation, String>>,
+) -> Result<(), String> {
+    let mut pending = Vec::<PendingRendererRequest>::new();
+    let mut expected: Option<(String, Instant)> = None;
+    let mut last_observation = None;
+    loop {
+        if expected.is_none() {
+            match commands.recv_timeout(RENDERER_ACCEPT_POLL) {
+                Ok(ProfileStateCommand::Expect {
+                    case_name,
+                    deadline,
+                }) => expected = Some((case_name, deadline)),
+                Ok(ProfileStateCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Ok(());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            }
+        }
+        match commands.try_recv() {
+            Ok(ProfileStateCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                return Ok(());
+            }
+            Ok(ProfileStateCommand::Expect { case_name, .. }) => {
+                return Err(format!(
+                    "profile state case `{case_name}` armed before the prior case completed"
+                ));
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        let (expected_case, deadline) = expected.as_ref().expect("armed profile state case");
+        let remaining = renderer_beacon_remaining(*deadline, Instant::now())?;
+
+        let mut index = 0;
+        while index < pending.len() {
+            let request = {
+                let PendingRendererRequest { stream, request } = &mut pending[index];
+                read_renderer_request_line(request, |buffer| stream.read(buffer))
+            }?;
+            match request {
+                RendererRequestRead::Pending => index += 1,
+                RendererRequestRead::Empty => {
+                    pending.swap_remove(index);
+                }
+                RendererRequestRead::Complete(request) => {
+                    let mut matched = pending.swap_remove(index);
+                    let path = renderer_request_path(&request)?;
+                    let response =
+                        profile_state_response(path, expected_case, last_observation.as_ref())?;
+                    matched.stream.set_nonblocking(false).map_err(|error| {
+                        format!("set profile state reply stream blocking: {error}")
+                    })?;
+                    matched
+                        .stream
+                        .set_write_timeout(Some(remaining))
+                        .map_err(|error| format!("set profile state reply deadline: {error}"))?;
+                    write_profile_state_response(&mut matched.stream, &response)?;
+                    if let Some(observation) = response.observation {
+                        last_observation = Some(observation.clone());
+                        observations
+                            .send(Ok(observation))
+                            .map_err(|_| "profile state observation owner ended".to_owned())?;
+                        expected = None;
+                        break;
+                    }
+                }
+            }
+        }
+
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if pending.len() == RENDERER_CONNECTION_LIMIT {
+                    return Err(format!(
+                        "profile state server exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
+                    ));
+                }
+                stream
+                    .set_nonblocking(true)
+                    .map_err(|error| format!("set profile state stream nonblocking: {error}"))?;
+                pending.push(PendingRendererRequest {
+                    stream,
+                    request: Vec::new(),
+                });
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(format!("accept profile state request: {error}")),
+        }
+        thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
+    }
+}
+
+struct ProfileStateResponse {
+    status: &'static str,
+    content_type: &'static str,
+    body: String,
+    observation: Option<ProfileStateObservation>,
+}
+
+fn renderer_request_path(request: &[u8]) -> Result<&str, String> {
+    let request = std::str::from_utf8(request)
+        .map_err(|error| format!("profile state request line is not UTF-8: {error}"))?;
+    let mut fields = request.split_whitespace();
+    if fields.next() != Some("GET") {
+        return Err(format!("profile state request is not GET: {request}"));
+    }
+    let path = fields
+        .next()
+        .ok_or_else(|| format!("profile state request has no path: {request}"))?;
+    if fields.next() != Some("HTTP/1.1") || fields.next().is_some() {
+        return Err(format!("profile state request shape is invalid: {request}"));
+    }
+    Ok(path)
+}
+
+fn write_profile_state_response(
+    stream: &mut TcpStream,
+    response: &ProfileStateResponse,
+) -> Result<(), String> {
+    let header = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        response.status,
+        response.content_type,
+        response.body.len()
+    );
+    stream
+        .write_all(header.as_bytes())
+        .and_then(|()| stream.write_all(response.body.as_bytes()))
+        .map_err(|error| format!("write profile state response: {error}"))
+}
+
+fn profile_state_response(
+    path: &str,
+    expected_case: &str,
+    last_observation: Option<&ProfileStateObservation>,
+) -> Result<ProfileStateResponse, String> {
+    if path == "/favicon.ico" {
+        return Ok(ProfileStateResponse {
+            status: "204 No Content",
+            content_type: "text/plain",
+            body: String::new(),
+            observation: None,
+        });
+    }
+    if let Some(query) = path.strip_prefix("/state?") {
+        let fields = profile_state_query(query)?;
+        let case_name = required_profile_state_field(&fields, "case")?;
+        let observation = ProfileStateObservation {
+            case_name: case_name.to_owned(),
+            nonce: required_profile_state_field(&fields, "nonce")?.to_owned(),
+            before: required_profile_state_field(&fields, "before")?.to_owned(),
+            after: required_profile_state_field(&fields, "after")?.to_owned(),
+        };
+        if case_name != expected_case {
+            if last_observation == Some(&observation) {
+                return Ok(empty_profile_state_response());
+            }
+            return Err(format!(
+                "profile state report case `{case_name}` did not match `{expected_case}`"
+            ));
+        }
+        return Ok(ProfileStateResponse {
+            status: "204 No Content",
+            content_type: "text/plain",
+            body: String::new(),
+            observation: Some(observation),
+        });
+    }
+    let Some(query) = path.strip_prefix("/app?") else {
+        return Ok(ProfileStateResponse {
+            status: "404 Not Found",
+            content_type: "text/plain",
+            body: String::new(),
+            observation: None,
+        });
+    };
+    let fields = profile_state_query(query)?;
+    let case_name = required_profile_state_field(&fields, "case")?;
+    let nonce = required_profile_state_field(&fields, "nonce")?;
+    let value = required_profile_state_field(&fields, "value")?;
+    if case_name != expected_case {
+        if last_observation.is_some_and(|prior| {
+            prior.case_name == case_name && prior.nonce == nonce && prior.after == value
+        }) {
+            return Ok(empty_profile_state_response());
+        }
+        return Err(format!(
+            "profile state app case `{case_name}` did not match `{expected_case}`"
+        ));
+    }
+    let body = format!(
+        "<!doctype html>{DARK_BG}<script>const k='keld135.profile-state.v1';const before=localStorage.getItem(k)||'';const after=before||'{value}';localStorage.setItem(k,after);fetch('/state?case={case_name}&nonce={nonce}&before='+encodeURIComponent(before)+'&after='+encodeURIComponent(after)).catch(()=>{{}})</script>"
+    );
+    Ok(ProfileStateResponse {
+        status: "200 OK",
+        content_type: "text/html; charset=utf-8",
+        body,
+        observation: None,
+    })
+}
+
+fn empty_profile_state_response() -> ProfileStateResponse {
+    ProfileStateResponse {
+        status: "204 No Content",
+        content_type: "text/plain",
+        body: String::new(),
+        observation: None,
+    }
+}
+
+fn profile_state_query(query: &str) -> Result<Vec<(&str, &str)>, String> {
+    let mut fields = Vec::new();
+    for pair in query.split('&') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("profile state query pair is malformed: {pair}"))?;
+        if fields.iter().any(|(found, _)| *found == key) {
+            return Err(format!("profile state query duplicates `{key}`"));
+        }
+        fields.push((key, value));
+    }
+    Ok(fields)
+}
+
+fn required_profile_state_field<'a>(
+    fields: &'a [(&str, &str)],
+    expected: &str,
+) -> Result<&'a str, String> {
+    fields
+        .iter()
+        .find_map(|(key, value)| (*key == expected).then_some(*value))
+        .ok_or_else(|| format!("profile state query omits `{expected}`"))
 }
 
 #[test]
@@ -1346,8 +2304,7 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage Windows product host");
-    let mut child = Command::new(stage.host())
-        .current_dir(stage.root())
+    let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1402,6 +2359,15 @@ fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
         bun_pid,
         app_link,
     }
+}
+
+fn dev_stage_command(root: &Path, host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command
+        .current_dir(root)
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .stdin(Stdio::piped());
+    command
 }
 
 struct RendererBeacon {
