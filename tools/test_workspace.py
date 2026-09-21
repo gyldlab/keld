@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import hashlib
 import socket
 import subprocess
 import sys
@@ -45,6 +46,32 @@ class WorkspaceTests(unittest.TestCase):
 
     def start(self):
         return json.loads(self.cli("start", "kel-245", "probe", "--session", "test-session").stdout)
+
+    def proof(self, path):
+        return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+    def closeout(self, task, proof=None):
+        """Create a real minimal receipt; the production validator is the oracle."""
+        proof = proof or self.root.parent / "release-proof.txt"
+        if not proof.exists():
+            proof.write_text("reviewed release in isolated fixture\n", encoding="utf-8")
+        directory = self.root / ".git" / "keld-closeout" / "test-session"
+        directory.mkdir(parents=True)
+        baseline = directory / "baseline.json"
+        baseline.write_text(json.dumps({
+            "schema": "keld.session-baseline/v1", "session_id": "test-session", "repo": task["path"],
+            "objectives": [{"id": "release", "summary": "Release isolated task"}],
+            "findings": [], "resources": [], "checks": ["release proof"], "untracked": []}), encoding="utf-8")
+        receipt = directory / "release.json"
+        head = self.git("rev-parse", "HEAD", cwd=task["path"]).stdout.strip()
+        receipt.write_text(json.dumps({
+            "schema": "keld.session-closeout/v1", "session_id": "test-session", "turn_id": "release",
+            "repo": task["path"], "head": head, "baseline": self.proof(baseline),
+            "objectives": [{"id": "release", "summary": "Release isolated task", "status": "complete", "evidence": [self.proof(proof)]}],
+            "findings": [], "findings_review": [self.proof(proof)], "resources": [],
+            "checks": [{"name": "release proof", "status": "passed", "source_head": head, "evidence": [self.proof(proof)]}],
+            "outcome": "complete"}), encoding="utf-8")
+        return receipt
 
     def test_root_does_not_allocate_and_is_identical_from_linked_tree(self):
         expected = self.root / ".keld-work"
@@ -332,6 +359,55 @@ class WorkspaceTests(unittest.TestCase):
                  sys.executable, "-c", "print('linked')", cwd=task["path"])
         self.assertFalse((Path(task["path"]) / ".keld-work").exists())
         self.assertEqual(len(list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").iterdir())), 1)
+
+    def test_finish_requires_real_closeout_and_clean_preview_is_read_only(self):
+        task = self.start()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.root / "missing.json"), ok=False)
+        receipt = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch" / "old-run"
+        scratch.mkdir(parents=True)
+        (scratch / "remove.txt").write_text("scratch", encoding="utf-8")
+        evidence = self.root / ".keld-work" / "sessions" / "test-session" / "evidence" / "keep"
+        evidence.mkdir(parents=True)
+        (evidence / "proof.txt").write_text("evidence", encoding="utf-8")
+        before = {str(item): item.read_bytes() for item in self.root.rglob("*") if item.is_file()}
+        preview = json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)
+        self.assertFalse(preview["applied"])
+        self.assertEqual(preview["targets"], [str(scratch.parent)])
+        self.assertEqual(before, {str(item): item.read_bytes() for item in self.root.rglob("*") if item.is_file()})
+        self.cli("clean", task["task"], "--session", "test-session", "--apply")
+        self.assertFalse(scratch.parent.exists())
+        self.assertTrue((evidence / "proof.txt").exists())
+        self.assertTrue(Path(task["path"]).exists())
+
+    def test_finish_and_clean_refuse_dirty_or_hostile_targets(self):
+        task = self.start()
+        (Path(task["path"]) / "untracked.txt").write_text("preserve", encoding="utf-8")
+        receipt = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt), ok=False)
+        (Path(task["path"]) / "untracked.txt").unlink()
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt))
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        outside = self.root.parent / "outside-sentinel"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        try:
+            scratch.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest("OS did not permit test symlink: " + str(error))
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.assertEqual((outside / "keep.txt").read_text(), "keep")
+
+    def test_clean_refuses_scratch_referenced_by_its_closeout(self):
+        task = self.start()
+        scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
+        scratch.mkdir(parents=True)
+        proof = scratch / "referenced-proof.txt"
+        proof.write_text("must survive", encoding="utf-8")
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task, proof)))
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", ok=False)
+        self.assertEqual(proof.read_text(), "must survive")
 
 
 if __name__ == "__main__":

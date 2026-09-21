@@ -485,6 +485,9 @@ just work-start kel-245 workspace --session manual-session-1
 just work-status
 just work-run kel-245-workspace --session manual-session-1 -- just ci
 just work-status --sizes
+just work-finish kel-245-workspace --session manual-session-1 --receipt /absolute/closeout.json
+just work-clean kel-245-workspace --session manual-session-1
+just work-clean kel-245-workspace --session manual-session-1 --apply
 just work-check
 just work-test
 ```
@@ -515,12 +518,22 @@ recipes hold a shared reference guard through completion, excluding new task com
 This coordinates these tools; it is not an OS lock on external reference editors.
 No command automatically clones references on task creation.
 
-This initial slice provides start/status/run/check/test. Finish, cleanup and import
-commands and new-session native hook paths are still implementation work in KEL-245;
+This initial slice provides start/status/run/check/test plus release and scratch-only
+cleanup. Full worktree retirement, import commands and new-session native hook paths
+are still implementation work in KEL-245;
 existing closeout hooks and legacy evidence locations remain valid. Status lists
 unmanaged legacy worktrees; it neither adopts nor deletes them. A failed/interrupted
 allocation may leave a tree or operation lock for explicit inspection, never automatic
 takeover. Keep evidence and source while completing the remaining cleanup integration.
+
+`work-finish` requires an owned task, a clean checkout with no content missing from
+local `origin/main`, and a complete closeout receipt for the same checkout/session. It
+only releases the local task record. `work-clean` previews the exact released session's
+scratch directory by default; `--apply` revalidates it then removes scratch only. It
+retains evidence, the Git worktree and branch, all caches, all legacy folders and any
+unsupported/link/reparse/mount/nested-Git target. A failed validation performs no
+deletion. Full worktree retirement, evidence archival and legacy import remain explicit
+later KEL-245 work, not hidden behavior in this command.
 
 External contributors do not need this setup. Maintainers with access to the separate
 research repository can run `just research-sync` after reviewing the checked-out
