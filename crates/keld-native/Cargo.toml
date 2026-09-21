@@ -9,9 +9,15 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+cap-fs-ext = { workspace = true }
+cap-std = { workspace = true }
 keld-guard = { workspace = true }
 keld-ipc = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

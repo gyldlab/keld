@@ -74,7 +74,7 @@ pub(crate) fn observe_adapter_decision(
     EVIDENCE.with_borrow_mut(|evidence| {
         if evidence.active {
             let code = match decision {
-                Decision::Allow => "allow",
+                Decision::Allow(_) => "allow",
                 Decision::Deny(reason) => reason.code(),
             };
             // SAFETY: querying the current thread needs no handles or initialization.

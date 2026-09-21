@@ -538,8 +538,50 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-NATIVE-001
 
 - crate: keld-native
-- message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
-- fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+- message: A retained filesystem operation failed before a confirmed content effect
+- fix: Repair the path, access, or storage failure and issue a fresh request.
+
+## KELD-NATIVE-002
+
+- crate: keld-native
+- message: Retained traversal escaped, raced, or selected a forbidden final alias
+- fix: Move the target beneath the granted root or use a direct approved scope.
+
+## KELD-NATIVE-003
+
+- crate: keld-native
+- message: The selected filesystem object is non-regular, crosses a mount or volume boundary, or uses an unsupported reparse form
+- fix: Use a local regular file under one retained filesystem root.
+
+## KELD-NATIVE-004
+
+- crate: keld-native
+- message: A filesystem path, content, processed-component, or link-expansion limit was exceeded
+- fix: Shorten the path/traversal or transfer at most 8 MiB in one request.
+
+## KELD-NATIVE-005
+
+- crate: keld-native
+- message: The five-second cooperative filesystem budget expired before a write-content effect, or a read expired
+- fix: Diagnose the filesystem and issue a fresh request only when it is safe.
+
+## KELD-NATIVE-006
+
+- crate: keld-native
+- message: The filesystem operation observed cancellation before a write-content effect, or a read was cancelled
+- fix: Wait for a fresh session generation before issuing another request.
+
+## KELD-NATIVE-007
+
+- crate: keld-native
+- message: A write failed, expired, or was cancelled after create/truncate/write crossed the content-effect boundary
+- fix: Inspect or explicitly rewrite the target using the reported acknowledged/requested byte counts; never auto-retry.
+
+## KELD-NATIVE-008
+
+- crate: keld-native
+- message: Filesystem broker preparation failed or a call presented a different verified manifest snapshot
+- fix: Repair the absolute serviceable scopes or use the same verified snapshot, then start a fresh session.
 
 ## KELD-COMPAT-001
 

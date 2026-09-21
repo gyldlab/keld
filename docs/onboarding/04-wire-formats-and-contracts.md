@@ -390,13 +390,16 @@ proves nor claims default denial for those cases; they block full KEL-132
 closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
 and oldest-supported-macOS evidence land.
 
-**FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
-`fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
-touching disk. A deny or I/O failure is a `FrameKind::Err` carrying a postcard
+**The FS library is gated but not shipping-routed.** `FS_CHANNEL`
+(`keld-native::fs`, KEL-130) runs every admitted `fs.read` / `fs.write` `Call`
+through `keld_ipc::guard_dispatch::dispatch_privileged`, borrows its first-match
+permit, and uses the matching retained `FsBroker` scope before touching disk.
+A deny or broker failure is a `FrameKind::Err` carrying a postcard
 `CallError { code, message }` (spec 02 §2) whose `code` is the guard's
-`KELD-GUARD*` or the broker's own `KELD-NATIVE-001` — read as a field, never
-parsed out of the text. Echo remaining ungated does not mean privileged frames
-skip the guard.
+`KELD-GUARD*` or one of `KELD-NATIVE-001..008` — read as a field, never parsed
+out of the text. The no-flag host does not register this channel yet;
+KEL-102/T3 owns reachable routing and in-flight lifecycle. Echo remaining
+ungated does not mean privileged frames skip the guard.
 
 **Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)
 sends `FrameKind::Event` `Ready` / `LastWindowClosed` and accepts `Call` `Quit`.

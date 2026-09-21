@@ -95,8 +95,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   (`crates/keld-ipc/src/call_error.rs`), written by `write_call_error` on the
   channel and correlation id of the `CALL` being answered. `code` is the
   registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
-  for a guard denial, the broker's own code (e.g. `KELD-NATIVE-001`) for a
-  post-allow OS failure — and `message` is that error's full `Display` text,
+  for a guard denial, the broker's own code (`KELD-NATIVE-001` through
+  `KELD-NATIVE-008` for the retained filesystem broker) for a post-allow,
+  traversal, limit, interruption, effect, or snapshot failure — and `message`
+  is that error's full `Display` text,
   which already contains the imperative fix sentence (07 §2).
   **Two narrowings are approved but not live** (`docs/specs/keld-auth.md` §3,
   AC13(c) and AC13(d)), and they touch different halves of this bullet.

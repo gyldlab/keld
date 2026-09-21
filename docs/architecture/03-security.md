@@ -37,10 +37,19 @@ are not evaluated. Echo dispatch does not call the guard — it is an
 unprivileged demo channel (KEL-30), deliberately not routed through this.
 `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) is the sanctioned
 guard-before-handler entry point for a privileged `Call`: it runs
-`evaluate` and only invokes the handler closure on `Allow`, verified
+`evaluate`, receives the first matching manifest index as an opaque
+`ScopePermit`, and lends that permit to the handler closure only on `Allow`.
+The callback result cannot borrow the permit; native code cannot mint a permit
+or choose a grant index. This is verified
 end-to-end over a real kipc session (real socket, real `HELLO` handshake,
-real filesystem side effect gated on the decision). Host `fs.read` /
-`fs.write` (KEL-71) is the first production capability on that path.
+real filesystem side effect gated on the decision). The KEL-130 library path
+prepares a non-cloneable `FsBroker` from one digest-verified manifest, retains
+each absolute filesystem scope anchor, and resolves bounded per-call traversal
+relative to the guard-selected retained grant. It rejects unserviceable scopes,
+snapshot mismatches, final exact-scope aliases, escapes, mount/volume crossings,
+non-regular objects, and fixed path/content/component/link limits before exposing
+bytes. The shipping no-flag host still does not register `FS_CHANNEL`; KEL-102/T3
+owns that later route and in-flight lifecycle integration.
 Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
 `LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
 OS-authority handlers, and stay ungated like echo.
@@ -140,9 +149,16 @@ manifest decoder.
   URL scopes additionally become origin-aware (case folding, default ports,
   percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
   is a byte comparison, so spell destinations exactly as the host will send them.
-  **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
-  not in this slice. The authority rule above **is** live in `keld-guard`
-  (KEL-208); no URL-valued capability is wired to it yet.
+  **v0:** the capability-agnostic matcher still treats `$VARS` as literals and
+  rejects `..`, so permission-explain tooling preserves that literal contract.
+  Privileged `fs.read` / `fs.write` dispatch additionally requires one absolute
+  forward-slash spelling with no empty, `.` or `..` component; malformed request
+  syntax is `KELD-GUARD002` before the retained broker can query a resource.
+  `FsBroker::prepare` separately rejects variable-bearing or
+  platform-inapplicable filesystem scopes as `KELD-NATIVE-008`. Symlink
+  canonicalization is not performed by the string matcher: KEL-130's retained
+  component walker owns link resolution after Allow. The authority rule above
+  **is** live in `keld-guard` (KEL-208); no URL-valued capability is wired to it yet.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of

@@ -117,25 +117,25 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "variable-looking literal",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "$APPDATA/notes.db",
         expected: ALLOW,
     },
     Case {
         name: "resolved-looking variable value",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "/Users/example/AppData/notes.db",
         expected: OUT_OF_SCOPE,
     },
     Case {
         name: "line-comment marker inside string",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "https://example.com/a//b",
         expected: ALLOW,
     },
     Case {
         name: "block-comment marker inside string",
-        operation: "fs.read",
+        operation: "matcher.read",
         path: "/foo/*literal*/bar",
         expected: ALLOW,
     },
@@ -273,7 +273,7 @@ fn load_fixture(name: &str) -> PermissionsManifest {
 /// checked-in matrix, the comparing path for a reduced fixture — so it has one owner.
 fn decision_text(decision: &Decision) -> String {
     match decision {
-        Decision::Allow => "allow".to_owned(),
+        Decision::Allow(_) => "allow".to_owned(),
         Decision::Deny(reason) => format!("deny {} {}", reason.code(), reason.kind()),
     }
 }
@@ -281,7 +281,7 @@ fn decision_text(decision: &Decision) -> String {
 fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
     let actual = evaluate(manifest, Principal::AppProcess, case.operation, case.path);
     match (case.expected, actual) {
-        (ExpectedDecision::Allow, Decision::Allow) => "allow".to_owned(),
+        (ExpectedDecision::Allow, Decision::Allow(_)) => "allow".to_owned(),
         (
             ExpectedDecision::Deny {
                 variant,
@@ -305,9 +305,8 @@ fn assert_case(manifest: &PermissionsManifest, case: Case) -> String {
             decision_text(&Decision::Deny(reason))
         }
         (ExpectedDecision::Allow, actual) => {
-            assert_eq!(
-                actual,
-                Decision::Allow,
+            assert!(
+                matches!(actual, Decision::Allow(_)),
                 "{} must match its independent allow expectation",
                 case.name
             );

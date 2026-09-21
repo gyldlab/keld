@@ -148,7 +148,7 @@ pub fn permissions_explain(
         &args.operation.capability,
         path,
     ) {
-        Decision::Allow => Ok(PermissionsExplainResult {
+        Decision::Allow(_) => Ok(PermissionsExplainResult {
             decision: "allow".to_owned(),
             deny_reason: None,
             error: None,

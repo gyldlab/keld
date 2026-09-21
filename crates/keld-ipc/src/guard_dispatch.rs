@@ -11,7 +11,10 @@
 //! an unprivileged demo, not an operation with OS authority
 //! (`crate::session::serve_echo_session` stays ungated).
 
-use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, evaluate};
+use keld_guard::{
+    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, evaluate, json_pointer_for,
+    validate_fs_component,
+};
 
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
 /// `handler` on [`Decision::Allow`]. On [`Decision::Deny`], `handler`'s
@@ -26,17 +29,72 @@ use keld_guard::{Decision, DenyReason, PermissionsManifest, Principal, evaluate}
 ///
 /// Returns the [`DenyReason`] `evaluate` produced when the decision is
 /// [`Decision::Deny`] — `handler` never runs in that case.
+///
+/// The result type cannot borrow the callback-only permit:
+///
+/// ```compile_fail
+/// # use keld_guard::{parse_manifest, Principal};
+/// # use keld_ipc::guard_dispatch::dispatch_privileged;
+/// # let manifest = parse_manifest(r#"{"app":{"fs":{"read":["/tmp/**"]}}}"#)?;
+/// let escaped = dispatch_privileged(
+///     &manifest,
+///     Principal::AppProcess,
+///     "fs.read",
+///     "/tmp/file",
+///     |permit| permit,
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn dispatch_privileged<T>(
     manifest: &PermissionsManifest,
     principal: Principal,
     operation: &str,
     path: &str,
-    handler: impl FnOnce() -> T,
+    handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
-    match evaluate(manifest, principal, operation, path) {
-        Decision::Allow => Ok(handler()),
+    let decision = match evaluate(manifest, principal, operation, path) {
+        Decision::Deny(reason @ DenyReason::NotAppProcess { .. }) => return Err(reason),
+        decision => decision,
+    };
+    if !filesystem_dispatch_path_is_valid(operation, path) {
+        return Err(DenyReason::OutOfScope {
+            capability: operation.to_owned(),
+            scope: "absolute normalized filesystem request".to_owned(),
+            json_pointer: json_pointer_for(operation),
+            requested: path.to_owned(),
+        });
+    }
+    match decision {
+        Decision::Allow(permit) => Ok(handler(&permit)),
         Decision::Deny(reason) => Err(reason),
     }
+}
+
+fn filesystem_dispatch_path_is_valid(operation: &str, path: &str) -> bool {
+    if !matches!(operation, "fs.read" | "fs.write") {
+        return true;
+    }
+    if path.is_empty() || path.contains(['\0', '\\']) {
+        return false;
+    }
+    #[cfg(windows)]
+    let remainder = {
+        let bytes = path.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_uppercase() || bytes[1] != b':' || bytes[2] != b'/'
+        {
+            return false;
+        }
+        &path[3..]
+    };
+    #[cfg(not(windows))]
+    let Some(remainder) = path.strip_prefix('/') else {
+        return false;
+    };
+
+    remainder.is_empty()
+        || remainder
+            .split('/')
+            .all(|component| validate_fs_component(component).is_ok())
 }
 
 #[cfg(test)]
@@ -45,8 +103,28 @@ mod tests {
     use keld_guard::parse_manifest;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    #[cfg(windows)]
+    const APP_ROOT: &str = "C:/appdata";
+    #[cfg(not(windows))]
+    const APP_ROOT: &str = "/appdata";
+    #[cfg(windows)]
+    const APP_NOTE: &str = "C:/appdata/notes.txt";
+    #[cfg(not(windows))]
+    const APP_NOTE: &str = "/appdata/notes.txt";
+    #[cfg(windows)]
+    const OUTSIDE_NOTE: &str = "C:/documents/secret.txt";
+    #[cfg(not(windows))]
+    const OUTSIDE_NOTE: &str = "/documents/secret.txt";
+    #[cfg(windows)]
+    const MALFORMED_NOTE: &str = "C:/appdata//notes.txt";
+    #[cfg(not(windows))]
+    const MALFORMED_NOTE: &str = "/appdata//notes.txt";
+
     fn manifest_granting_fs_read() -> PermissionsManifest {
-        parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#).expect("manifest")
+        parse_manifest(&format!(
+            r#"{{"app":{{"fs":{{"read":["{APP_ROOT}/**"]}}}}}}"#
+        ))
+        .expect("manifest")
     }
 
     #[test]
@@ -57,8 +135,8 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "$APPDATA/notes.txt",
-            || {
+            APP_NOTE,
+            |_| {
                 // Real side effect, not `Decision::Allow` from a unit stub —
                 // observed via the flag after `dispatch_privileged` returns.
                 ran.store(true, Ordering::SeqCst);
@@ -70,16 +148,36 @@ mod tests {
     }
 
     #[test]
+    fn allow_lends_the_first_matching_grant_index() {
+        #[cfg(windows)]
+        let (unmatched, matched, file) = ("C:/unmatched/**", "C:/matched/**", "C:/matched/file");
+        #[cfg(not(windows))]
+        let (unmatched, matched, file) = ("/unmatched/**", "/matched/**", "/matched/file");
+        let manifest = parse_manifest(&format!(
+            r#"{{"app":{{"fs":{{"read":["{unmatched}","{matched}","{file}"]}}}}}}"#
+        ))
+        .expect("manifest");
+        let selected = dispatch_privileged(
+            &manifest,
+            Principal::AppProcess,
+            "fs.read",
+            file,
+            keld_guard::ScopePermit::grant_index,
+        );
+        assert_eq!(selected, Ok(1), "first matching grant remains final");
+    }
+
+    #[test]
     fn deny_never_runs_the_handler() {
         let manifest = manifest_granting_fs_read();
         let ran = AtomicBool::new(false);
-        // Out-of-scope path: granted only $APPDATA/**.
+        // Out-of-scope path: granted only /appdata/**.
         let result = dispatch_privileged(
             &manifest,
             Principal::AppProcess,
             "fs.read",
-            "$DOCUMENTS/secret.txt",
-            || {
+            OUTSIDE_NOTE,
+            |_| {
                 ran.store(true, Ordering::SeqCst);
             },
         );
@@ -96,6 +194,61 @@ mod tests {
     }
 
     #[test]
+    fn invalid_filesystem_grammar_never_runs_the_handler() {
+        let manifest = manifest_granting_fs_read();
+        let ran = AtomicBool::new(false);
+        #[cfg(windows)]
+        let invalid = ["C:/appdata//notes.txt", "C:/appdata/./notes.txt"];
+        #[cfg(not(windows))]
+        let invalid = ["/appdata//notes.txt", "/appdata/./notes.txt"];
+        for invalid in invalid {
+            let result =
+                dispatch_privileged(&manifest, Principal::AppProcess, "fs.read", invalid, |_| {
+                    ran.store(true, Ordering::SeqCst);
+                });
+            assert!(
+                matches!(result, Err(DenyReason::OutOfScope { .. })),
+                "{invalid}: {result:?}"
+            );
+            assert!(!ran.load(Ordering::SeqCst));
+        }
+        let variable_manifest = parse_manifest(r#"{"app":{"fs":{"read":["$APPDATA/**"]}}}"#)
+            .expect("literal variable manifest");
+        let result = dispatch_privileged(
+            &variable_manifest,
+            Principal::AppProcess,
+            "fs.read",
+            "$APPDATA/notes.txt",
+            |_| ran.store(true, Ordering::SeqCst),
+        );
+        assert!(matches!(result, Err(DenyReason::OutOfScope { .. })));
+        assert!(!ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn principal_denial_precedes_invalid_filesystem_grammar_without_scope_disclosure() {
+        let manifest = manifest_granting_fs_read();
+        for principal in [
+            Principal::Webview {
+                id: 9,
+                generation: 2,
+            },
+            Principal::Plugin { id: 4 },
+        ] {
+            let ran = AtomicBool::new(false);
+            let result =
+                dispatch_privileged(&manifest, principal, "fs.read", MALFORMED_NOTE, |_| {
+                    ran.store(true, Ordering::SeqCst);
+                });
+            let reason = result.expect_err("non-app principal must deny before grammar");
+            assert_eq!(reason.code(), "KELD-GUARD006");
+            assert!(matches!(reason, DenyReason::NotAppProcess { .. }));
+            assert!(!reason.to_string().contains(APP_ROOT));
+            assert!(!ran.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
     fn missing_capability_is_not_granted_and_does_not_run_handler() {
         let manifest = parse_manifest("{}").expect("empty manifest");
         let ran = AtomicBool::new(false);
@@ -103,8 +256,10 @@ mod tests {
             &manifest,
             Principal::AppProcess,
             "fs.write",
-            "$APPDATA/x",
-            || ran.store(true, Ordering::SeqCst),
+            APP_NOTE,
+            |_| {
+                ran.store(true, Ordering::SeqCst);
+            },
         );
         assert!(
             matches!(result, Err(DenyReason::NotGranted { .. })),
@@ -112,6 +267,35 @@ mod tests {
         );
         assert!(!ran.load(Ordering::SeqCst));
         assert!(result.unwrap_err().to_string().contains("KELD-GUARD001"));
+    }
+
+    #[test]
+    fn malformed_filesystem_path_is_guard002_before_grant_shape() {
+        for text in [
+            "{}",
+            r#"{"app":{"fs":{"read":[]}}}"#,
+            r#"{"app":{"fs":{"read":"/appdata/**"}}}"#,
+        ] {
+            let manifest = parse_manifest(text).expect("manifest");
+            let ran = AtomicBool::new(false);
+            let result = dispatch_privileged(
+                &manifest,
+                Principal::AppProcess,
+                "fs.read",
+                MALFORMED_NOTE,
+                |_| {
+                    ran.store(true, Ordering::SeqCst);
+                },
+            );
+            let reason = result.expect_err("malformed path must precede grant lookup");
+            assert_eq!(reason.code(), "KELD-GUARD002");
+            assert!(matches!(
+                reason,
+                DenyReason::OutOfScope { ref scope, .. }
+                    if scope == "absolute normalized filesystem request"
+            ));
+            assert!(!ran.load(Ordering::SeqCst));
+        }
     }
 
     #[test]
@@ -127,8 +311,8 @@ mod tests {
             &manifest,
             webview,
             "fs.read",
-            "$APPDATA/notes.txt", // in scope for AppProcess
-            || ran.store(true, Ordering::SeqCst),
+            APP_NOTE, // in scope for AppProcess
+            |_| ran.store(true, Ordering::SeqCst),
         );
         assert!(
             matches!(result, Err(DenyReason::NotAppProcess { .. })),

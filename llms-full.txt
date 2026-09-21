@@ -632,13 +632,16 @@ proves nor claims default denial for those cases; they block full KEL-132
 closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
 and oldest-supported-macOS evidence land.
 
-**FS is gated.** `FS_CHANNEL` (`keld-native::fs`, KEL-71) runs every `fs.read` /
-`fs.write` `Call` through `keld_ipc::guard_dispatch::dispatch_privileged` before
-touching disk. A deny or I/O failure is a `FrameKind::Err` carrying a postcard
+**The FS library is gated but not shipping-routed.** `FS_CHANNEL`
+(`keld-native::fs`, KEL-130) runs every admitted `fs.read` / `fs.write` `Call`
+through `keld_ipc::guard_dispatch::dispatch_privileged`, borrows its first-match
+permit, and uses the matching retained `FsBroker` scope before touching disk.
+A deny or broker failure is a `FrameKind::Err` carrying a postcard
 `CallError { code, message }` (spec 02 §2) whose `code` is the guard's
-`KELD-GUARD*` or the broker's own `KELD-NATIVE-001` — read as a field, never
-parsed out of the text. Echo remaining ungated does not mean privileged frames
-skip the guard.
+`KELD-GUARD*` or one of `KELD-NATIVE-001..008` — read as a field, never parsed
+out of the text. The no-flag host does not register this channel yet;
+KEL-102/T3 owns reachable routing and in-flight lifecycle. Echo remaining
+ungated does not mean privileged frames skip the guard.
 
 **Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)
 sends `FrameKind::Event` `Ready` / `LastWindowClosed` and accepts `Call` `Quit`.
@@ -1340,8 +1343,10 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   (`crates/keld-ipc/src/call_error.rs`), written by `write_call_error` on the
   channel and correlation id of the `CALL` being answered. `code` is the
   registered `KELD-*` code owned by the crate that failed — `DenyReason::code()`
-  for a guard denial, the broker's own code (e.g. `KELD-NATIVE-001`) for a
-  post-allow OS failure — and `message` is that error's full `Display` text,
+  for a guard denial, the broker's own code (`KELD-NATIVE-001` through
+  `KELD-NATIVE-008` for the retained filesystem broker) for a post-allow,
+  traversal, limit, interruption, effect, or snapshot failure — and `message`
+  is that error's full `Display` text,
   which already contains the imperative fix sentence (07 §2).
   **Two narrowings are approved but not live** (`docs/specs/keld-auth.md` §3,
   AC13(c) and AC13(d)), and they touch different halves of this bullet.
@@ -1647,10 +1652,19 @@ are not evaluated. Echo dispatch does not call the guard — it is an
 unprivileged demo channel (KEL-30), deliberately not routed through this.
 `keld_ipc::guard_dispatch::dispatch_privileged` (KEL-69) is the sanctioned
 guard-before-handler entry point for a privileged `Call`: it runs
-`evaluate` and only invokes the handler closure on `Allow`, verified
+`evaluate`, receives the first matching manifest index as an opaque
+`ScopePermit`, and lends that permit to the handler closure only on `Allow`.
+The callback result cannot borrow the permit; native code cannot mint a permit
+or choose a grant index. This is verified
 end-to-end over a real kipc session (real socket, real `HELLO` handshake,
-real filesystem side effect gated on the decision). Host `fs.read` /
-`fs.write` (KEL-71) is the first production capability on that path.
+real filesystem side effect gated on the decision). The KEL-130 library path
+prepares a non-cloneable `FsBroker` from one digest-verified manifest, retains
+each absolute filesystem scope anchor, and resolves bounded per-call traversal
+relative to the guard-selected retained grant. It rejects unserviceable scopes,
+snapshot mismatches, final exact-scope aliases, escapes, mount/volume crossings,
+non-regular objects, and fixed path/content/component/link limits before exposing
+bytes. The shipping no-flag host still does not register `FS_CHANNEL`; KEL-102/T3
+owns that later route and in-flight lifecycle integration.
 Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
 `LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
 OS-authority handlers, and stay ungated like echo.
@@ -1750,9 +1764,16 @@ manifest decoder.
   URL scopes additionally become origin-aware (case folding, default ports,
   percent-encoding, userinfo, IDN); until then a scope beyond the authority rule
   is a byte comparison, so spell destinations exactly as the host will send them.
-  **v0:** `$VARS` match as literals; `..` is rejected; symlink canonicalization is
-  not in this slice. The authority rule above **is** live in `keld-guard`
-  (KEL-208); no URL-valued capability is wired to it yet.
+  **v0:** the capability-agnostic matcher still treats `$VARS` as literals and
+  rejects `..`, so permission-explain tooling preserves that literal contract.
+  Privileged `fs.read` / `fs.write` dispatch additionally requires one absolute
+  forward-slash spelling with no empty, `.` or `..` component; malformed request
+  syntax is `KELD-GUARD002` before the retained broker can query a resource.
+  `FsBroker::prepare` separately rejects variable-bearing or
+  platform-inapplicable filesystem scopes as `KELD-NATIVE-008`. Symlink
+  canonicalization is not performed by the string matcher: KEL-130's retained
+  component walker owns link resolution after Allow. The authority rule above
+  **is** live in `keld-guard` (KEL-208); no URL-valued capability is wired to it yet.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of
@@ -2283,6 +2304,23 @@ sequenceDiagram
 Every module is: Rust implementation per platform → guard check → kipc channel → typed
 TS in `@keld/api` → (optionally) an Electron-compat facade. No module ships without all
 three OS implementations or an explicit documented gap.
+
+**Current filesystem library boundary (KEL-130):** `FsBroker::prepare` consumes one
+`VerifiedManifest` and retains the directory capability for every serviceable
+`fs.read`/`fs.write` scope. Calls first bind the same verified digest, validate the
+4,096-byte request and 8 MiB content ceilings, and then borrow the first-match
+`ScopePermit` from `dispatch_privileged`. An explicit worklist resolves at most 256
+post-link components and 40 relative links from the retained root; exact-file leaves
+never follow aliases, and each final handle must be a regular file on the retained
+root's device. Reads use 64 KiB chunks and stop at limit-plus-one. Writes use the same
+opened file handle, truncate/write in place, preserve hard-link object identity, and
+report any cancellation, deadline, or I/O failure after create/truncate as
+`KELD-NATIVE-007` with acknowledged content-byte counts. The five-second clock is a
+cooperative progress budget, not a promise to preempt a wedged kernel call. `FsBroker`
+alone owns the roots; calls and `serve_fs_session` borrow it, and dropping a wrapper is
+not broker destruction while another owner remains. The channel is library-tested but
+remains unreachable from the shipping no-flag host until KEL-102/T3 supplies admission,
+in-flight cancellation/drain, and ordered broker destruction.
 
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
 `process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must
@@ -3472,20 +3510,20 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-wv` | All | **Partial** — WKWebView, WebView2, and WebKitGTK backends plus the common verified profile foundation and Windows native persistent-store consumption exist; Windows real signed-package and second-user acceptance, macOS/Linux authenticated producers and persistent stores, the destination engine policy, and the renderer bridge remain incomplete. | [code](../../crates/keld-wv/src/lib.rs), [test](../../crates/keld-wv/src/profile.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-27, KEL-28, KEL-65, KEL-135 | `19ec34f3c31c63672f60ae58b2fa814d1a412133` |
 | `crate.keld-ipc` | All | **Partial** — kipc framing, codecs, HELLO authentication, Unix bootstrap, and the Windows named-pipe app-link are implemented; channel registry and shared-memory lanes are absent. | [code](../../crates/keld-ipc/src/lib.rs), [test](../../crates/keld-ipc/tests/echo_link.rs) | [Specified](../../docs/architecture/02-ipc.md) | KEL-30, KEL-101, KEL-133 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `crate.keld-native` | All | **Partial** — Scoped filesystem request handling is implemented, guard-checked, and wire-tested, but no production host caller is wired; the other planned native services are absent. | [code](../../crates/keld-native/src/lib.rs), [test](../../crates/keld-native/tests/fs_session.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-71 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-native` | All | **Partial** — The retained filesystem broker is implemented with verified-snapshot binding, guard-selected retained scopes, bounded no-follow traversal and regular-file I/O, but no production host caller is wired and real Windows/Linux evidence remains open; the other planned native services are absent. | [code](../../crates/keld-native/src/fs.rs), [test](../../crates/keld-native/tests/retained_fs.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-130 | `b4634076508e2d6043f82b4eb1c5ecf276cb1597` |
 | `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
 | `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, full-package activation, rollback, feeds, and optional delta transport are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-cli` | All | **Partial** — create emits the checked-in Rust-derived echo payload declarations; dev, doctor, MCP, hello, and IPC diagnostics exist, while build, migrate, gen, and ext remain reserved. | [code](../../crates/keld-cli/src/template.rs), [test](../../crates/keld-cli/src/create.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-29, KEL-42, KEL-96, KEL-98 | `bde521c47793c2abf85863ef610e93c71fc6d5ab` |
+| `crate.keld-cli` | All | **Partial** — create emits the checked-in Rust-derived echo payload declarations; dev, doctor, MCP, hello, and IPC diagnostics exist, while build, migrate, gen, and ext remain reserved. | [code](../../crates/keld-cli/src/template.rs), [test](../../crates/keld-cli/src/create.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-29, KEL-42, KEL-96, KEL-98 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
 
 ## Packages
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
 | `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client; the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
-| `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs; general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `bde521c47793c2abf85863ef610e93c71fc6d5ab` |
+| `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs; general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
 | `package.keld-api` | All | **Specified only** — The typed SDK for supervised Bun roles is specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `package.keld-web` | All | **Specified only** — The renderer bridge and polyfill package are specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `package.keld-cli` | All | **Specified only** — The npm binary resolver is specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -3498,7 +3536,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 |---|---|---|---|---|---|---|
 | `phase.0` | All | **Partial** — The tracked workspace, architecture, agent workflow, and CI exist; the first attributed performance harness remains absent. | [code](../../crates/keld-core/src/lib.rs), [CI](../../.github/workflows/ci.yml) | [Specified](../../docs/architecture/01-overview.md) | KEL-39 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `phase.1` | All | **Partial** — macOS, Windows, and Linux no-flag app sessions exist; the full public role API and release artifact chain remain absent. | [code](../../crates/keld-core/src/lib.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `phase.2` | All | **Partial** — MCP v1, permission evaluation, guard dispatch, one filesystem broker, and bounded echo declaration generation exist; bulk IPC, general schema codegen, and broad compatibility remain absent. | [code](../../crates/keld-guard/src/lib.rs), [code](../../crates/keld-cli/src/mcp/mod.rs), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-42, KEL-69, KEL-71, KEL-98 | `bde521c47793c2abf85863ef610e93c71fc6d5ab` |
+| `phase.2` | All | **Partial** — MCP v1, permission evaluation, guard dispatch, one filesystem broker, and bounded echo declaration generation exist; bulk IPC, general schema codegen, and broad compatibility remain absent. | [code](../../crates/keld-guard/src/lib.rs), [code](../../crates/keld-cli/src/mcp/mod.rs), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-42, KEL-69, KEL-71, KEL-98 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
 | `phase.3` | All | **Partial** — The Linux strict mechanism is implemented and consumed by the no-flag primary; distribution, signed updates, remaining OS/profile admission, limits, reporting, and addon workers remain incomplete. | [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
 | `phase.4` | All | **Specified only** — Compatibility-depth, corpus, pinned-engine, and stable-plugin goals are specified but not implemented. | — | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 
@@ -4979,8 +5017,50 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-NATIVE-001
 
 - crate: keld-native
-- message: A host fs.read/fs.write call was allowed by the guard but the OS call itself failed
-- fix: Check the path exists and is accessible (permissions, disk, or a bad path passed by the app).
+- message: A retained filesystem operation failed before a confirmed content effect
+- fix: Repair the path, access, or storage failure and issue a fresh request.
+
+## KELD-NATIVE-002
+
+- crate: keld-native
+- message: Retained traversal escaped, raced, or selected a forbidden final alias
+- fix: Move the target beneath the granted root or use a direct approved scope.
+
+## KELD-NATIVE-003
+
+- crate: keld-native
+- message: The selected filesystem object is non-regular, crosses a mount or volume boundary, or uses an unsupported reparse form
+- fix: Use a local regular file under one retained filesystem root.
+
+## KELD-NATIVE-004
+
+- crate: keld-native
+- message: A filesystem path, content, processed-component, or link-expansion limit was exceeded
+- fix: Shorten the path/traversal or transfer at most 8 MiB in one request.
+
+## KELD-NATIVE-005
+
+- crate: keld-native
+- message: The five-second cooperative filesystem budget expired before a write-content effect, or a read expired
+- fix: Diagnose the filesystem and issue a fresh request only when it is safe.
+
+## KELD-NATIVE-006
+
+- crate: keld-native
+- message: The filesystem operation observed cancellation before a write-content effect, or a read was cancelled
+- fix: Wait for a fresh session generation before issuing another request.
+
+## KELD-NATIVE-007
+
+- crate: keld-native
+- message: A write failed, expired, or was cancelled after create/truncate/write crossed the content-effect boundary
+- fix: Inspect or explicitly rewrite the target using the reported acknowledged/requested byte counts; never auto-retry.
+
+## KELD-NATIVE-008
+
+- crate: keld-native
+- message: Filesystem broker preparation failed or a call presented a different verified manifest snapshot
+- fix: Repair the absolute serviceable scopes or use the same verified snapshot, then start a fresh session.
 
 ## KELD-COMPAT-001
 

@@ -193,6 +193,23 @@ Every module is: Rust implementation per platform → guard check → kipc chann
 TS in `@keld/api` → (optionally) an Electron-compat facade. No module ships without all
 three OS implementations or an explicit documented gap.
 
+**Current filesystem library boundary (KEL-130):** `FsBroker::prepare` consumes one
+`VerifiedManifest` and retains the directory capability for every serviceable
+`fs.read`/`fs.write` scope. Calls first bind the same verified digest, validate the
+4,096-byte request and 8 MiB content ceilings, and then borrow the first-match
+`ScopePermit` from `dispatch_privileged`. An explicit worklist resolves at most 256
+post-link components and 40 relative links from the retained root; exact-file leaves
+never follow aliases, and each final handle must be a regular file on the retained
+root's device. Reads use 64 KiB chunks and stop at limit-plus-one. Writes use the same
+opened file handle, truncate/write in place, preserve hard-link object identity, and
+report any cancellation, deadline, or I/O failure after create/truncate as
+`KELD-NATIVE-007` with acknowledged content-byte counts. The five-second clock is a
+cooperative progress budget, not a promise to preempt a wedged kernel call. `FsBroker`
+alone owns the roots; calls and `serve_fs_session` borrow it, and dropping a wrapper is
+not broker destruction while another owner remains. The channel is library-tested but
+remains unreachable from the shipping no-flag host until KEL-102/T3 supplies admission,
+in-flight cancellation/drain, and ordered broker destruction.
+
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
 `process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must
 approve and ship real behavior for `process`/`pty` rather than adding placeholder
