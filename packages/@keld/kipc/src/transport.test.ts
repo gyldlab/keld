@@ -54,6 +54,7 @@ const CORPUS_PATH = join(
 const CORPUS_SHA256 = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
 const SKIP_DIR_NAMES = new Set([".git", "node_modules", "target"]);
 const SKIP_REPO_DIRS = new Set([
+  join(REPO_ROOT, ".keld-work"),
   join(REPO_ROOT, "competitors"),
   join(REPO_ROOT, "docs", "research"),
 ]);
@@ -824,6 +825,8 @@ describe("one source / no second copy", () => {
         "owned.ts",
       ]);
       expect(skipDirectory(join(REPO_ROOT, "competitors"), "competitors")).toBe(true);
+      expect(skipDirectory(join(REPO_ROOT, ".keld-work"), ".keld-work")).toBe(true);
+      expect(skipDirectory(join(REPO_ROOT, "packages", ".keld-work"), ".keld-work")).toBe(false);
       expect(skipDirectory(join(REPO_ROOT, "docs", "research"), "research")).toBe(true);
       expect(
         skipDirectory(join(REPO_ROOT, "packages", "@keld", "example", "research"), "research"),

@@ -9,7 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod markdown_contract;
+mod repo_path_contract;
 use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
+use repo_path_contract::{LOCAL_WORKSPACE_DIR, escapes_public_repo};
 
 const MANIFEST: &str = ".agents/instruction-budget.tsv";
 const ROOT: &str = "AGENTS.md";
@@ -102,6 +104,12 @@ fn parse_manifest(root: &Path) -> Result<Vec<Entry>, String> {
                 fields[1]
             ));
         };
+        if escapes_public_repo(Path::new(fields[0])) {
+            return Err(format!(
+                "AGENT-CONTEXT: instruction path `{}` is outside the public repository contract. Use an owned source path.",
+                fields[0]
+            ));
+        }
         let expected = expected_class(fields[0]);
         if class != expected {
             return Err(format!(
@@ -173,7 +181,9 @@ fn walk(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Result<(
             .map_err(|error| format!("AGENT-CONTEXT: path escape: {error}"))?;
         let relative_text = relative.to_string_lossy().replace('\\', "/");
         let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        let skipped_directory = should_skip_dir(&relative_text) || should_skip_dir(name);
+        let skipped_directory = relative_text == LOCAL_WORKSPACE_DIR
+            || should_skip_dir(&relative_text)
+            || should_skip_dir(name);
         let file_type = item.file_type().map_err(|error| {
             format!(
                 "AGENT-CONTEXT: cannot inspect `{}`: {error}. Fix the filesystem entry before checking instruction inventory.",
@@ -869,6 +879,25 @@ docs/agents/learnings.md\tevidence\t4096\tlearnings\tquery:area\n"
     fn complete_inventory_passes() {
         let temp = fixture();
         check(&temp.path).expect("complete fixture");
+    }
+
+    #[test]
+    fn only_root_managed_workspace_is_excluded() {
+        let temp = fixture();
+        temp.write(
+            ".keld-work/worktrees/other/AGENTS.md",
+            "# Local\n\nAn unrelated checkout.",
+        );
+        check(&temp.path).expect("managed root is not the public instruction chain");
+        temp.write(
+            "crates/.keld-work/AGENTS.md",
+            "# Hidden\n\nThis is not the managed root.",
+        );
+        assert!(
+            check(&temp.path)
+                .expect_err("nested name stays checked")
+                .contains("unknown")
+        );
     }
 
     #[test]

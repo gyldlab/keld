@@ -7,14 +7,14 @@ system/client/exact-model identity.
 
 ## Worktrees and ownership
 
-- At start/resume, resource creation and closeout, inventory owned worktrees, clones,
-  caches and evidence by exact path and PR/claim. Remove authorized clean merged/unused
-  trees; preserve primary, dirty, active, open-PR, unique-commit and user content.
-- Before deletion, refresh live state, resolve boundaries/reparse points and preserve
-  evidence elsewhere. Use Git for registered worktrees; verify absence/registration
-  before pruning stale metadata. No prefix-only janitor or tool-denial bypass.
-- Record each resource as removed, retained with reason, or blocked with exact failure,
-  owner and next action. Workflow owns claims and session completion.
+- New task trees MUST use `just work-start` under primary `.keld-work/worktrees/`.
+  `work-run` owns session scratch/logs; `work-status` inventories managed/legacy trees.
+- Preserve primary, dirty, active, open-PR, unique and user work. Before authorized
+  deletion, refresh exact paths/claims, reject reparse escapes and preserve evidence.
+  Use Git for registered trees; verify absence before pruning. No prefix-only janitor
+  or tool-denial bypass.
+- Record removed/retained/blocked resources, reason, owner and next action. Workflow
+  owns claims/closeout. Legacy resources stay until explicit migration.
 
 ## OS acceptance
 
