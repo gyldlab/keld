@@ -590,6 +590,11 @@ Claude uses exact argument execution; Cursor uses its native command string. Cur
 receives a session-start pointer and refreshes a small `current.json` before each prompt
 under the Git common directory's session namespace. It contains IDs and receipt
 instructions, never prompts or transcripts, and does not activate a task by itself.
+Codex and Claude prompt hooks additionally emit the verified primary
+`.keld-work/sessions/<session-id>/` pointer without creating it. The hash-bound hook
+registration includes the workspace resolver, so a changed resolver refuses until the
+tracked Codex configuration is regenerated and reviewed. Historical closeout baselines
+and receipts remain under the Git common directory in this slice.
 The adapter rejects ambiguous/foreign workspace roots. The validator remains read-only.
 The adapter requests repair only when the native `loop_count` is zero and configures
 `loop_limit: 1`. Interactive CLI 2026.09.08-6caf4ff on Windows/Linux reset the count on

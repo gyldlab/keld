@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 import session_closeout
+import workspace
 
 ID = r"[A-Za-z0-9_-]{1,128}"
 
@@ -32,6 +33,10 @@ def response(payload):
         receipt_path = common / "keld-closeout" / ids[0] / (ids[1] + ".json")
         baseline_path = common / "keld-closeout" / ids[0] / "baseline.json"
         binding = ids[0]
+        managed = workspace.context(root)
+        session_closeout.require(managed.common.resolve() == common.resolve(),
+                                 "workspace resolver belongs to another Git repository")
+        workspace_pointer = managed.root / "sessions" / binding
         if event == "UserPromptSubmit":
             return {"hookSpecificOutput": {
                 "hookEventName": event,
@@ -44,6 +49,8 @@ def response(payload):
                     + str(receipt_path) + "; session_id must be " + binding + "; turn_id must be " + ids[1] + ". "
                     "Use the task checkout as repo, in the same Git repository as " + str(root) +
                     ". Before cleanup, retain baseline git_common_dir and source_ref (refs/heads/branch). "
+                    "Local workspace pointer: " + str(workspace_pointer) +
+                    ". This pointer does not create or activate a session. "
                     "This hook verifies local evidence only.")}}
         if not os.path.lexists(baseline_path):
             return {"systemMessage": "No activated Keld task; closeout enforcement not claimed."}
@@ -201,7 +208,7 @@ def configuration(harness="codex", platform=None):
     session_closeout.require(platform in {None, "windows", "posix"}, "unsupported platform")
     selected = platform or ("windows" if os.name == "nt" else "posix")
     specs = [(name, hashlib.sha256(Path(__file__).with_name(name + ".py").read_bytes()).hexdigest())
-             for name in ("session_closeout", "session_closeout_hook")]
+             for name in ("session_closeout", "workspace", "session_closeout_hook")]
     bootstrap = """import hashlib,json,pathlib,subprocess,sys,types
 try:
  root=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True,encoding='utf-8').strip())

@@ -78,29 +78,32 @@ const BREADCRUMB: &str = "kel105-app-stderr-breadcrumb";
 fn project_with_pid_breadcrumb(
     dir: &std::path::Path,
     name: &str,
-) -> (std::path::PathBuf, std::path::PathBuf) {
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let root = create_project(dir, name).expect("create");
     let pid_path = root.join("kel105-app.pid");
+    let generation_path = root.join("kel105-generation-2");
     let main = root.join("src/main.ts");
     let scaffolded = fs::read_to_string(&main).expect("scaffolded main.ts");
     let pid_lit = pid_path.display().to_string();
+    let generation_lit = generation_path.display().to_string();
     fs::write(
         &main,
         format!(
-            "import {{ writeFileSync as kel105WritePid }} from \"node:fs\";\n\
+            "import {{ existsSync as kel105Exists, writeFileSync as kel105WritePid }} from \"node:fs\";\n\
+             if (kel105Exists({pid_lit:?})) kel105WritePid({generation_lit:?}, \"restarted\");\n\
              kel105WritePid({pid_lit:?}, String(process.pid));\n\
              console.error({BREADCRUMB:?});\n{scaffolded}"
         ),
     )
     .expect("write fixture main");
-    (root, pid_path)
+    (root, pid_path, generation_path)
 }
 
 #[test]
 fn window_phase_app_death_is_surfaced_not_reported_as_success() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("w{}", std::process::id());
-    let (root, pid_path) = project_with_pid_breadcrumb(dir.path(), &name);
+    let (root, pid_path, generation_path) = project_with_pid_breadcrumb(dir.path(), &name);
 
     let mut killed = None;
     let result = run_dev_with_window(&root, |_title, _html| {
@@ -115,7 +118,22 @@ fn window_phase_app_death_is_surfaced_not_reported_as_success() {
             process_is_alive(pid),
             "precondition: supervised Bun pid {pid} must be alive before the kill"
         );
+        assert!(
+            !generation_path.exists(),
+            "restart marker must be absent before the kill"
+        );
         kill_process(pid);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(
+            fs::read_to_string(&generation_path).as_deref(),
+            Ok("restarted")
+        ) {
+            assert!(
+                Instant::now() < deadline,
+                "supervisor did not record/restart the killed generation"
+            );
+            std::thread::yield_now();
+        }
         killed = Some(pid);
         Ok(())
     });
@@ -159,7 +177,7 @@ fn window_phase_app_death_is_surfaced_not_reported_as_success() {
 fn healthy_window_phase_still_exits_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
     let name = format!("s{}", std::process::id());
-    let (root, pid_path) = project_with_pid_breadcrumb(dir.path(), &name);
+    let (root, pid_path, _generation_path) = project_with_pid_breadcrumb(dir.path(), &name);
 
     let mut observed = None;
     run_dev_with_window(&root, |_title, _html| {
