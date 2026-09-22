@@ -26,7 +26,7 @@ the current **initial** evidence says:
 | KELD vs Tauri host working set, Windows | **22,788 KiB vs 26,856 KiB** over 30 paired rounds; paired median ratio **0.8484**, CI95 **[0.846864, 0.849548]** | KELD's native host used about **15.2% less resident memory** in this paired campaign. Host scope only; KELD's supervised Bun child is outside the scored comparison. |
 | KELD vs Electron main-process RSS, Windows direct-COM session | **19,552 KB vs 89,140 KB** | KELD's native host process used about **78% less RSS**; Electron's main process used about **4.6× as much**. This does **not** mean lower total application RSS; Electron's smaller process tree won total RSS in the broader Windows measurements. |
 | KELD vs Tauri host executable, Windows | **484,864 B vs 8,634,880 B** | KELD's current direct-COM host is about **94.4% smaller by bytes**; Tauri's recorded host executable is about **17.8× as large**. This is not an installer comparison. |
-| First paint, Windows direct-COM session | KELD **469 ms**, Tauri **479 ms**, Electron **275 ms** | KELD and Tauri were close; the 10 ms margin is too small against run noise for a directional speed claim. Electron led this session. |
+| First paint, Windows direct-COM host-only `keld-host --hello` diagnostic | KELD **469 ms**, Tauri **479 ms**, Electron **275 ms** | Host-only diagnostic; the full product-boot arm remains unmeasured. KELD and Tauri were close; the 10 ms margin is too small against run noise for a directional speed claim. Electron led this session. |
 
 These rows are intentionally **metric-specific**. They show where the current
 architecture is already lean, while preserving the places where KELD does not
