@@ -17,9 +17,42 @@ in another language**.
 [Coming from Electron](#coming-from-electron) · [Benchmarks](#early-benchmarks) ·
 [Docs](docs/onboarding/README.md) · [Audits](docs/audits/README.md) · [Roadmap](ROADMAP.md)
 
-## Early benchmarks
+## Early benchmark snapshot
 
-**KIPC round-trip latency · Apple M4 Mac mini · macOS 26.5.1 / arm64**
+KELD is still **pre-alpha**, so these are **initial benchmarks**, not a claim
+that KELD wins every workload. The useful question is simpler: **what is the
+architecture already buying us today?**
+
+### The clearest signals so far
+
+| What we measured | KELD | Comparison | What that means in plain English |
+|---|---:|---:|---|
+| **Windows host working set** · 30 paired rounds | **22,788 KiB** | Tauri **26,856 KiB** | **~15.2% less resident memory in KELD's native host.** This is the strongest paired KELD-vs-Tauri memory result so far; CI95 for the paired ratio is **[0.846864, 0.849548]**. |
+| **Windows main-process RSS** · same direct-COM benchmark session | **19,552 KB** | Electron **89,140 KB** | **~4.6× lower main-process memory.** KELD's native host is much lighter than Electron's main process. This is **not total application memory**. |
+| **Windows host executable** | **484,864 B** | Tauri **8,634,880 B** | **~17.8× smaller native host binary.** This shows how small KELD's native shell can be; it is **not installer-to-installer** because KELD packaging is not shipped yet. |
+| **Windows first paint** · direct-COM session | **469 ms** | Tauri **479 ms** · Electron **275 ms** | KELD and Tauri were close in this session; the KELD/Tauri margin is too small to call a speed win. Electron was faster here. |
+
+**Why these matter:** lower host memory leaves more RAM for the application;
+a smaller host binary reduces the native framework footprint; and first paint
+shows how quickly a user can see the first rendered frame. They answer different
+questions, so we do not combine them into one "overall winner" score.
+
+[See the reproducible benchmark repository](https://github.com/gyldlab/keld-benches) ·
+[Full engineering scoreboard](docs/engineering/budget-scoreboard.md) ·
+[Paired KELD vs Tauri memory result](https://github.com/gyldlab/keld-benches/blob/main/windows/bench/results/mem-idle/2026-08-25.kel25-windows-keld-vs-tauri-canonical-30.fresh-process.json)
+
+> **Read the scope, not just the headline.** KELD does not currently lead every
+> metric. Electron had lower **total process-tree RSS** and faster first paint in
+> the cited Windows sessions. Current Linux KELD-vs-Tauri paint intervals cross
+> 1.0, so they do not support a directional speed claim. We publish those
+> non-wins too.
+
+<details>
+<summary><strong>Inside KELD: IPC latency</strong></summary>
+
+On macOS, the authenticated Rust-to-Rust KIPC library path recorded p99 round
+trips of **9.375 µs** for a 6-byte payload and **10.25 µs** for a 1,024-byte
+payload on an Apple M4 Mac mini.
 
 | Message payload | Recorded p99 round trip |
 |---|---:|
@@ -28,28 +61,17 @@ in another language**.
 
 These September 10, 2026 measurements use two separate **Rust processes** over
 an authenticated Unix socket. They measure the KIPC library, **not** Bun-to-host
-latency, app startup, or a complete KELD application. P99 is the latency threshold
-covering 99% of the sampled round trips.
+latency, app startup, or a complete KELD application. Each payload tier uses
+**20 independent sessions × 100,000 calls**; the first call is recorded with
+the handshake and the remaining **99,999 calls per session** are timed
+separately.
 
 [Fixture and reproduction steps](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/keld/kipc-rust-echo) ·
-[Raw sessions](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/bench/results/ipc-rtt) ·
-[More measurements](docs/engineering/budget-scoreboard.md)
+[Raw sessions](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/bench/results/ipc-rtt)
 
-<details>
-<summary>Measurement details</summary>
-
-Each payload tier uses **20 independent sessions × 100,000 calls**. The first
-call is recorded with the handshake; the remaining **99,999 calls per session**
-are timed separately. The table reports pooled p99, not the median of session
-percentiles. Reported session-block bootstrap 95% intervals are
-**9.25–9.625 µs** and **10.083–10.459 µs**, respectively.
-
-KELD source: `4fbf94bbb755854058067b986877177f00b25a39`.
-Fresh client/server processes per session; client-owned monotonic clock;
-handshake excluded from the per-call timings.
-[Campaign record](https://github.com/gyldlab/keld-benches/pull/21).
-These are recorded results for that revision and machine, not a fresh benchmark
-of the current branch or a comparison with another framework.
+Reported session-block bootstrap 95% intervals are **9.25–9.625 µs** and
+**10.083–10.459 µs**, respectively. KELD source:
+`4fbf94bbb755854058067b986877177f00b25a39`.
 
 </details>
 
