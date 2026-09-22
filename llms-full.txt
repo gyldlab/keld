@@ -5192,6 +5192,32 @@ memory metrics use KiB and MiB; historical external quotations retain their sour
 labels and are not Keld budget units. A memory figure is never a paint pass/fail. A
 paint-opportunity proxy is never an idle-RSS pass/fail.
 
+## Public benchmark highlights
+
+This file is the detailed engineering ledger. For a quick product-level reading,
+the current **initial** evidence says:
+
+| Signal | Current evidence | Interpretation |
+|---|---|---|
+| KELD vs Tauri host working set, Windows | **22,788 KiB vs 26,856 KiB** over 30 paired rounds; paired median ratio **0.8484**, CI95 **[0.846864, 0.849548]** | KELD's native host used about **15.2% less resident memory** in this paired campaign. Host scope only; KELD's supervised Bun child is outside the scored comparison. |
+| KELD vs Electron main-process RSS, Windows direct-COM session | **19,552 KB vs 89,140 KB** | KELD's native host process used about **78% less RSS**; Electron's main process used about **4.6× as much**. This does **not** mean lower total application RSS; Electron's smaller process tree won total RSS in the broader Windows measurements. |
+| KELD vs Tauri host executable, Windows | **484,864 B vs 8,634,880 B** | KELD's current direct-COM host is about **94.4% smaller by bytes**; Tauri's recorded host executable is about **17.8× as large**. This is not an installer comparison. |
+| First paint, Windows direct-COM session | KELD **469 ms**, Tauri **479 ms**, Electron **275 ms** | KELD and Tauri were close; the 10 ms margin is too small against run noise for a directional speed claim. Electron led this session. |
+
+These rows are intentionally **metric-specific**. They show where the current
+architecture is already lean, while preserving the places where KELD does not
+lead. Do not turn them into an overall framework score.
+
+### Plain-language metric guide
+
+| Metric | What it tells a user |
+|---|---|
+| **Host working set / main-process RSS** | How much physical memory the framework's native host process is keeping resident while the app is running. Lower can leave more RAM for the user's actual application. |
+| **Total process-tree RSS** | Memory across the whole owned process tree. This is broader than host RSS and can tell a different story. |
+| **Host executable size** | The size of the native framework binary itself. It is not the same as download or installer size. |
+| **First paint** | Time from launch until the first rendered frame is observable. Lower generally means the app feels visible sooner. |
+| **IPC RTT** | Time for one message to travel to another KELD process and back. It describes framework communication overhead, not whole-app startup. |
+
 ## What is not first paint
 
 | Signal | What it actually is | Use |
