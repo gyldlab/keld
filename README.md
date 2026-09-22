@@ -27,14 +27,15 @@ architecture already buying us today?**
 
 | What we measured | KELD | Comparison | What that means in plain English |
 |---|---:|---:|---|
-| **Windows host working set** · 30 paired rounds | **22,788 KiB** | Tauri **26,856 KiB** | **~15.2% less resident memory in KELD's native host.** This is the strongest paired KELD-vs-Tauri memory result so far; CI95 for the paired ratio is **[0.846864, 0.849548]**. |
+| **Windows host working set** · 30 paired rounds | **22,788 KiB** | Tauri **26,856 KiB** | **~15.2% less resident memory in KELD's native host.** Host scope only: this excludes KELD's supervised Bun child and is **not total application memory**. This is the strongest paired KELD-vs-Tauri memory result so far; CI95 for the paired ratio is **[0.846864, 0.849548]**. |
 | **Windows main-process RSS** · same direct-COM benchmark session | **19,552 KB** | Electron **89,140 KB** | **~78% less main-process RSS.** Electron's main process used about **4.6× as much** as KELD's in this session. This is **not total application memory**. |
 | **Windows host executable** | **484,864 B** | Tauri **8,634,880 B** | **~94.4% smaller by bytes.** Tauri's recorded host executable is about **17.8× as large** as KELD's current direct-COM host. This is **not installer-to-installer** because KELD packaging is not shipped yet. |
 | **Windows first paint** · direct-COM session | **469 ms** | Tauri **479 ms** · Electron **275 ms** | KELD and Tauri were close in this session; the KELD/Tauri margin is too small to call a speed win. Electron was faster here. |
 
 **Why these matter:** lower host memory leaves more RAM for the application;
-a smaller host binary reduces the native framework footprint; and first paint
-shows how quickly a user can see the first rendered frame. They answer different
+a smaller host binary reduces the native framework footprint; and the first-paint
+benchmark records a double-rAF **paint-opportunity proxy**, not compositor completion
+or display scanout. They answer different
 questions, so we do not combine them into one "overall winner" score.
 
 [See the reproducible benchmark repository](https://github.com/gyldlab/keld-benches) ·
@@ -62,15 +63,16 @@ payload on an Apple M4 Mac mini.
 These September 10, 2026 measurements use two separate **Rust processes** over
 an authenticated Unix socket. They measure the KIPC library, **not** Bun-to-host
 latency, app startup, or a complete KELD application. Each payload tier uses
-**20 independent sessions × 100,000 calls**; the first call is recorded with
-the handshake and the remaining **99,999 calls per session** are timed
-separately.
+**20 independent sessions × 100,000 calls**. Each session performs the
+handshake first, then records **99,999 post-handshake CALL→REPLY round trips**.
+The handshake is excluded from the reported p99. **p99 (99th percentile)** is
+the round-trip time at or below which 99% of those timed calls fall.
 
 [Fixture and reproduction steps](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/keld/kipc-rust-echo) ·
 [Raw sessions](https://github.com/gyldlab/keld-benches/tree/43ec7358fe6a5baeb7b183be17f07708198982ba/macos/bench/results/ipc-rtt)
 
-Reported session-block bootstrap 95% intervals are **9.25–9.625 µs** and
-**10.083–10.459 µs**, respectively. KELD source:
+Reported session-block bootstrap 95% intervals for those p99 values are
+**9.25–9.625 µs** and **10.083–10.459 µs**, respectively. KELD source:
 `4fbf94bbb755854058067b986877177f00b25a39`.
 
 </details>
