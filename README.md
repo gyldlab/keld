@@ -28,8 +28,8 @@ architecture already buying us today?**
 | What we measured | KELD | Comparison | What that means in plain English |
 |---|---:|---:|---|
 | **Windows host working set** · 30 paired rounds | **22,788 KiB** | Tauri **26,856 KiB** | **~15.2% less resident memory in KELD's native host.** This is the strongest paired KELD-vs-Tauri memory result so far; CI95 for the paired ratio is **[0.846864, 0.849548]**. |
-| **Windows main-process RSS** · same direct-COM benchmark session | **19,552 KB** | Electron **89,140 KB** | **~4.6× lower main-process memory.** KELD's native host is much lighter than Electron's main process. This is **not total application memory**. |
-| **Windows host executable** | **484,864 B** | Tauri **8,634,880 B** | **~17.8× smaller native host binary.** This shows how small KELD's native shell can be; it is **not installer-to-installer** because KELD packaging is not shipped yet. |
+| **Windows main-process RSS** · same direct-COM benchmark session | **19,552 KB** | Electron **89,140 KB** | **~78% less main-process RSS.** Electron's main process used about **4.6× as much** as KELD's in this session. This is **not total application memory**. |
+| **Windows host executable** | **484,864 B** | Tauri **8,634,880 B** | **~94.4% smaller by bytes.** Tauri's recorded host executable is about **17.8× as large** as KELD's current direct-COM host. This is **not installer-to-installer** because KELD packaging is not shipped yet. |
 | **Windows first paint** · direct-COM session | **469 ms** | Tauri **479 ms** · Electron **275 ms** | KELD and Tauri were close in this session; the KELD/Tauri margin is too small to call a speed win. Electron was faster here. |
 
 **Why these matter:** lower host memory leaves more RAM for the application;
