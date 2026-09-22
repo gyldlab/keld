@@ -1083,46 +1083,79 @@ fn kel135_signed_host_profile_state_isolation() {
     let primary_state = format!("{run_nonce}-a");
     let sibling_state = format!("{run_nonce}-b");
     let publisher_two_value = format!("{run_nonce}-p2");
-    let cases = [
-        SignedProfileStateCase {
-            name: "a-seed",
-            host: &primary_carrier,
-            before: "",
-            after: &primary_state,
-        },
-        SignedProfileStateCase {
-            name: "a-restart",
-            host: &primary_carrier,
-            before: &primary_state,
-            after: &primary_state,
-        },
-        SignedProfileStateCase {
-            name: "b-isolated",
-            host: &sibling_carrier,
-            before: "",
-            after: &sibling_state,
-        },
-        SignedProfileStateCase {
-            name: "a-after-b",
-            host: &primary_carrier,
-            before: &primary_state,
-            after: &primary_state,
-        },
-        SignedProfileStateCase {
-            name: "a-p2-isolated",
-            host: &alternate_publisher_carrier,
-            before: "",
-            after: &publisher_two_value,
-        },
-        SignedProfileStateCase {
-            name: "a-final",
-            host: &primary_carrier,
-            before: &primary_state,
-            after: &primary_state,
-        },
+    let identity_paths = [
+        ("A/P1", "KELD_KEL135_SIGNED_IDENTITY_A_P1"),
+        ("B/P1", "KELD_KEL135_SIGNED_IDENTITY_B_P1"),
+        ("A/P2", "KELD_KEL135_SIGNED_IDENTITY_A_P2"),
     ];
-    for case in &cases {
-        run_signed_profile_state_case(&fixture, &control_listener, &state_server, &run_nonce, case);
+    let identities = identity_paths.map(|(label, variable)| {
+        let path = env::var_os(variable).expect("matching signed identity fixture is required");
+        let namespace = signed_fixture_profile_namespace(&path);
+        assert_eq!(namespace.len(), 64, "{label} profile namespace width");
+        assert!(namespace.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        (label, namespace)
+    });
+    assert_ne!(
+        identities[0].1, identities[1].1,
+        "A and B must have distinct authenticated identities"
+    );
+    assert_ne!(
+        identities[0].1, identities[2].1,
+        "publisher scopes must produce distinct identities"
+    );
+    println!(
+        "KELD_KEL135_IDENTITIES {}",
+        serde_json::json!({
+            "user_sid": profile_test_user_sid(),
+            "identities": identities,
+            "origin": format!("http://{}", state_server.address()),
+        })
+    );
+    let cases: [(&str, &std::ffi::OsStr, &str, &str); 9] = [
+        ("a-seed", &primary_carrier, "", &primary_state),
+        (
+            "a-restart",
+            &primary_carrier,
+            &primary_state,
+            &primary_state,
+        ),
+        ("b-isolated", &sibling_carrier, "", &sibling_state),
+        (
+            "a-after-b",
+            &primary_carrier,
+            &primary_state,
+            &primary_state,
+        ),
+        (
+            "a-p2-isolated",
+            &alternate_publisher_carrier,
+            "",
+            &publisher_two_value,
+        ),
+        ("a-final", &primary_carrier, &primary_state, &primary_state),
+        ("a-cleanup", &primary_carrier, &primary_state, ""),
+        ("b-cleanup", &sibling_carrier, &sibling_state, ""),
+        (
+            "p2-cleanup",
+            &alternate_publisher_carrier,
+            &publisher_two_value,
+            "",
+        ),
+    ];
+    for (name, host, before, after) in cases {
+        let case = SignedProfileStateCase {
+            name,
+            host,
+            before,
+            after,
+        };
+        run_signed_profile_state_case(
+            &fixture,
+            &control_listener,
+            &state_server,
+            &run_nonce,
+            &case,
+        );
     }
 }
 
@@ -1187,15 +1220,21 @@ fn run_signed_profile_state_case(
     );
     let observed = state_server.wait_for_case(case.name, deadline);
     assert_eq!(observed.nonce, run_nonce, "{} run nonce", case.name);
-    assert_eq!(
-        observed.before, case.before,
-        "{} state before write",
-        case.name
-    );
-    assert_eq!(
-        observed.after, case.after,
-        "{} state after write",
-        case.name
+    observed
+        .before
+        .assert_value(case.before, case.name, "before");
+    observed.after.assert_value(case.after, case.name, "after");
+    println!(
+        "KELD_KEL135_STORAGE {}",
+        serde_json::json!({
+            "case": case.name,
+            "nonce": run_nonce,
+            "origin": format!("http://{}", state_server.address()),
+            "before": observed.before.json(),
+            "after": observed.after.json(),
+            "host_pid": host_pid,
+            "bun_pid": bun_pid,
+        })
     );
     let _window = wait_for_host_window(host_pid, deadline);
     writer.write_all(b"QUIT\n").expect("state host Quit");
@@ -1215,6 +1254,22 @@ fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
         .and_then(|name| name.to_str())
         .expect("UTF-8 product fixture nonce");
     format!("{}-{leaf}", std::process::id())
+}
+
+fn profile_test_user_sid() -> String {
+    let output = Command::new("whoami.exe")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .expect("observe the fixture process's actual Windows user SID");
+    assert!(output.status.success(), "whoami user observation failed");
+    // The SID is ASCII even when the account-name column uses the local code page.
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut identifiers = text
+        .split(|character: char| character == ',' || character == '"' || character.is_whitespace())
+        .filter(|field| field.starts_with("S-1-"));
+    let sid = identifiers.next().expect("whoami must report one SID");
+    assert!(identifiers.next().is_none(), "ambiguous Windows user SID");
+    sid.to_owned()
 }
 
 struct SignedStateProcessGuard {
@@ -1290,12 +1345,70 @@ struct ProfileStateServer {
     worker: Option<thread::JoinHandle<()>>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProfileStateObservation {
     case_name: String,
     nonce: String,
-    before: String,
-    after: String,
+    before: ProfileStorageState,
+    after: ProfileStorageState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProfileStorageState {
+    cookie: String,
+    local_storage: String,
+    indexed_db: String,
+    cache_storage: String,
+    service_worker: String,
+}
+
+impl ProfileStorageState {
+    fn from_fields(fields: &[(&str, &str)], phase: &str) -> Result<Self, String> {
+        let value = |prefix: &str| {
+            let name = if prefix.is_empty() {
+                phase.to_owned()
+            } else {
+                format!("{prefix}_{phase}")
+            };
+            required_profile_state_field(fields, &name).map(str::to_owned)
+        };
+        Ok(Self {
+            cookie: value("cookie")?,
+            local_storage: value("")?,
+            indexed_db: value("indexed_db")?,
+            cache_storage: value("cache")?,
+            service_worker: value("worker")?,
+        })
+    }
+
+    fn values(&self) -> [(&str, &str); 5] {
+        [
+            ("cookie", &self.cookie),
+            ("localStorage", &self.local_storage),
+            ("IndexedDB", &self.indexed_db),
+            ("CacheStorage", &self.cache_storage),
+            ("serviceWorker", &self.service_worker),
+        ]
+    }
+
+    fn assert_value(&self, expected: &str, case: &str, phase: &str) {
+        for (store, value) in self.values() {
+            assert_eq!(value, expected, "{case} {store} {phase}");
+        }
+    }
+
+    fn is_uniform(&self, expected: &str) -> bool {
+        self.values().iter().all(|(_, value)| *value == expected)
+    }
+
+    fn json(&self) -> Value {
+        Value::Object(
+            self.values()
+                .into_iter()
+                .map(|(store, value)| (store.to_owned(), Value::String(value.to_owned())))
+                .collect(),
+        )
+    }
 }
 
 enum ProfileStateCommand {
@@ -1513,11 +1626,16 @@ fn profile_state_response(
     if let Some(query) = path.strip_prefix("/state?") {
         let fields = profile_state_query(query)?;
         let case_name = required_profile_state_field(&fields, "case")?;
+        if let Some((_, error)) = fields.iter().find(|(key, _)| *key == "error") {
+            return Err(format!(
+                "browser storage case `{case_name}` failed: {error}"
+            ));
+        }
         let observation = ProfileStateObservation {
             case_name: case_name.to_owned(),
             nonce: required_profile_state_field(&fields, "nonce")?.to_owned(),
-            before: required_profile_state_field(&fields, "before")?.to_owned(),
-            after: required_profile_state_field(&fields, "after")?.to_owned(),
+            before: ProfileStorageState::from_fields(&fields, "before")?,
+            after: ProfileStorageState::from_fields(&fields, "after")?,
         };
         if case_name != expected_case {
             if last_observation == Some(&observation) {
@@ -1534,6 +1652,22 @@ fn profile_state_response(
             observation: Some(observation),
         });
     }
+    if let Some(query) = path.strip_prefix("/profile-worker.js?") {
+        let fields = profile_state_query(query)?;
+        let nonce = required_profile_state_field(&fields, "nonce")?;
+        let value = required_profile_state_field(&fields, "value")?;
+        validate_profile_state_atom(nonce, false)?;
+        validate_profile_state_atom(value, false)?;
+        let value = serde_json::to_string(value).expect("serialize fixture worker nonce");
+        return Ok(ProfileStateResponse {
+            status: "200 OK",
+            content_type: "application/javascript",
+            body: format!(
+                "const nonce={value};self.addEventListener('install',e=>e.waitUntil(self.skipWaiting()));self.addEventListener('message',e=>{{if(e.data==='read-nonce'&&e.ports[0]){{e.ports[0].postMessage(nonce);e.ports[0].close();}}}});"
+            ),
+            observation: None,
+        });
+    }
     let Some(query) = path.strip_prefix("/app?") else {
         return Ok(ProfileStateResponse {
             status: "404 Not Found",
@@ -1546,9 +1680,12 @@ fn profile_state_response(
     let case_name = required_profile_state_field(&fields, "case")?;
     let nonce = required_profile_state_field(&fields, "nonce")?;
     let value = required_profile_state_field(&fields, "value")?;
+    validate_profile_state_atom(case_name, false)?;
+    validate_profile_state_atom(nonce, false)?;
+    validate_profile_state_atom(value, true)?;
     if case_name != expected_case {
         if last_observation.is_some_and(|prior| {
-            prior.case_name == case_name && prior.nonce == nonce && prior.after == value
+            prior.case_name == case_name && prior.nonce == nonce && prior.after.is_uniform(value)
         }) {
             return Ok(empty_profile_state_response());
         }
@@ -1556,8 +1693,10 @@ fn profile_state_response(
             "profile state app case `{case_name}` did not match `{expected_case}`"
         ));
     }
+    let config = serde_json::json!({ "caseName": case_name, "nonce": nonce, "value": value });
+    let browser = include_str!("fixtures/profile_state.js");
     let body = format!(
-        "<!doctype html>{DARK_BG}<script>const k='keld135.profile-state.v1';const before=localStorage.getItem(k)||'';const after=before||'{value}';localStorage.setItem(k,after);fetch('/state?case={case_name}&nonce={nonce}&before='+encodeURIComponent(before)+'&after='+encodeURIComponent(after)).catch(()=>{{}})</script>"
+        "<!doctype html>{DARK_BG}<script>globalThis.keldProfileState={config};\n{browser}</script>"
     );
     Ok(ProfileStateResponse {
         status: "200 OK",
@@ -1567,6 +1706,18 @@ fn profile_state_response(
     })
 }
 
+fn validate_profile_state_atom(value: &str, empty_allowed: bool) -> Result<(), String> {
+    if (value.is_empty() && !empty_allowed)
+        || value.len() > 96
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("profile state fixture identifier is invalid".to_owned());
+    }
+    Ok(())
+}
+
 fn empty_profile_state_response() -> ProfileStateResponse {
     ProfileStateResponse {
         status: "204 No Content",
@@ -1574,6 +1725,85 @@ fn empty_profile_state_response() -> ProfileStateResponse {
         body: String::new(),
         observation: None,
     }
+}
+
+#[test]
+fn profile_state_report_requires_the_complete_storage_census() {
+    let fields = [
+        "case=a-seed",
+        "nonce=run1",
+        "before=",
+        "after=value-a",
+        "cookie_before=",
+        "cookie_after=value-a",
+        "indexed_db_before=",
+        "indexed_db_after=value-a",
+        "cache_before=",
+        "cache_after=value-a",
+        "worker_before=",
+        "worker_after=value-a",
+    ];
+    let complete = format!("/state?{}", fields.join("&"));
+    assert!(profile_state_response(&complete, "a-seed", None).is_ok());
+    for omitted in 2..fields.len() {
+        let query = fields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| (index != omitted).then_some(*field))
+            .collect::<Vec<_>>()
+            .join("&");
+        assert!(
+            profile_state_response(&format!("/state?{query}"), "a-seed", None).is_err(),
+            "missing storage observation must fail: {}",
+            fields[omitted]
+        );
+    }
+}
+
+#[test]
+fn profile_state_browser_failure_cannot_become_an_empty_success() {
+    let result = profile_state_response(
+        "/state?case=a-seed&nonce=run1&error=indexedDB-write%3AAbortError",
+        "a-seed",
+        None,
+    );
+    assert_eq!(
+        result.err().as_deref(),
+        Some("browser storage case `a-seed` failed: indexedDB-write%3AAbortError")
+    );
+}
+
+#[test]
+fn profile_state_report_retains_each_store_observation() {
+    let response = profile_state_response(
+        "/state?case=a-restart&nonce=run1&before=local-a&after=local-b&cookie_before=cookie-a&cookie_after=cookie-b&indexed_db_before=idb-a&indexed_db_after=idb-b&cache_before=cache-a&cache_after=cache-b&worker_before=worker-a&worker_after=worker-b",
+        "a-restart",
+        None,
+    )
+    .expect("complete storage observation");
+    let observed = response
+        .observation
+        .expect("semantic observation, not a resource reply");
+    assert_eq!(
+        observed.before.values(),
+        [
+            ("cookie", "cookie-a"),
+            ("localStorage", "local-a"),
+            ("IndexedDB", "idb-a"),
+            ("CacheStorage", "cache-a"),
+            ("serviceWorker", "worker-a"),
+        ]
+    );
+    assert_eq!(
+        observed.after.values(),
+        [
+            ("cookie", "cookie-b"),
+            ("localStorage", "local-b"),
+            ("IndexedDB", "idb-b"),
+            ("CacheStorage", "cache-b"),
+            ("serviceWorker", "worker-b"),
+        ]
+    );
 }
 
 fn profile_state_query(query: &str) -> Result<Vec<(&str, &str)>, String> {
