@@ -5215,7 +5215,7 @@ lead. Do not turn them into an overall framework score.
 | **Host working set / main-process RSS** | How much physical memory the framework's native host process is keeping resident while the app is running. Lower can leave more RAM for the user's actual application. |
 | **Total process-tree RSS** | Memory across the whole owned process tree. This is broader than host RSS and can tell a different story. |
 | **Host executable size** | The size of the native framework binary itself. It is not the same as download or installer size. |
-| **First paint** | Time from launch until the first rendered frame is observable. Lower generally means the app feels visible sooner. |
+| **First paint** | Time from launch until the harness observes a double-rAF paint opportunity. It is a proxy, not compositor completion or display scanout. Lower generally means the app feels visible sooner. |
 | **IPC RTT** | Time for one message to travel to another KELD process and back. It describes framework communication overhead, not whole-app startup. |
 
 ## What is not first paint
