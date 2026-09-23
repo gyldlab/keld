@@ -38,6 +38,7 @@ const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
 const RENDERER_CONNECTION_LIMIT: usize = 16;
 const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
 const RENDERER_REQUEST_HEADER_LIMIT: usize = 8192;
+const CONTROL_LINE_LIMIT: usize = 4096;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
@@ -1169,57 +1170,34 @@ fn run_signed_profile_state_case(
 ) {
     let deadline = Instant::now() + PRODUCT_DEADLINE;
     state_server.expect_case(case.name, deadline);
-    fs::write(
-        fixture.project.join("index.html"),
-        state_redirect_html(state_server.address(), case.name, run_nonce, case.after),
-    )
-    .expect("write state renderer");
-    let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(case.host))
-        .expect("stage signed state host");
-    let control_port = control_listener
-        .local_addr()
-        .expect("state control address")
-        .port();
-    let child = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch signed state host");
-    let mut process = SignedStateProcessGuard::new(child);
-    let host_pid = process.host_pid();
-    let control = accept_control_or_host_failure(control_listener, process.child_mut(), deadline);
-    control
-        .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("state control timeout");
-    let mut reader = BufReader::new(control);
-    let hello = read_control_line(&mut reader);
-    let mut hello_fields = hello.split_whitespace();
-    assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
-    let bun_pid = hello_fields
-        .next()
-        .expect("state Bun PID")
-        .parse::<u32>()
-        .expect("state numeric Bun PID");
-    let _app_link = hello_fields.next().expect("state app link");
-    assert!(hello_fields.next().is_none(), "{hello}");
-    process.observe_bun(bun_pid);
-    assert_eq!(parse_descendant_pid(&read_control_line(&mut reader)), 0);
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state READY"),
-        "READY"
-    );
-    let mut writer = reader.get_ref().try_clone().expect("state control writer");
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO1"),
-        "ECHO1"
-    );
-    assert_eq!(
-        read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO2"),
-        "ECHO2"
+    let run = SignedProfileStateRun::start(
+        fixture,
+        control_listener,
+        state_server.address(),
+        run_nonce,
+        case,
+        deadline,
     );
     let observed = state_server.wait_for_case(case.name, deadline);
+    record_profile_state_case(
+        &observed,
+        case,
+        run_nonce,
+        state_server.address(),
+        run.process.host_pid(),
+        run.bun_pid,
+    );
+    run.finish();
+}
+
+fn record_profile_state_case(
+    observed: &ProfileStateObservation,
+    case: &SignedProfileStateCase<'_>,
+    run_nonce: &str,
+    address: SocketAddr,
+    host_pid: u32,
+    bun_pid: u32,
+) {
     assert_eq!(observed.nonce, run_nonce, "{} run nonce", case.name);
     observed
         .before
@@ -1228,23 +1206,117 @@ fn run_signed_profile_state_case(
     println!(
         "KELD_KEL135_STORAGE {}",
         serde_json::json!({
-            "case": case.name,
-            "nonce": run_nonce,
-            "origin": format!("http://{}", state_server.address()),
-            "before": observed.before.json(),
-            "after": observed.after.json(),
-            "host_pid": host_pid,
-            "bun_pid": bun_pid,
+            "case": case.name, "nonce": run_nonce, "origin": format!("http://{address}"),
+            "before": observed.before.json(), "after": observed.after.json(),
+            "host_pid": host_pid, "bun_pid": bun_pid,
         })
     );
-    let _window = wait_for_host_window(host_pid, deadline);
-    writer.write_all(b"QUIT\n").expect("state host Quit");
-    writer.flush().expect("flush state host Quit");
-    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
-    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = process.wait(deadline);
-    assert!(status.success(), "{} host exited with {status}", case.name);
-    assert!(!process_exists(bun_pid), "{} Bun survived exit", case.name);
+}
+
+struct SignedProfileStateRun {
+    // Drop the process guard before releasing the staged namespace pins.
+    process: SignedStateProcessGuard,
+    reader: BufReader<TcpStream>,
+    bun_pid: u32,
+    deadline: Instant,
+    case_name: String,
+    _stage: keld_cli::boot::DevBootStage,
+}
+
+impl SignedProfileStateRun {
+    fn start(
+        fixture: &ProductFixture,
+        control_listener: &TcpListener,
+        address: SocketAddr,
+        run_nonce: &str,
+        case: &SignedProfileStateCase<'_>,
+        deadline: Instant,
+    ) -> Self {
+        fs::write(
+            fixture.project.join("index.html"),
+            state_redirect_html(address, case.name, run_nonce, case.after),
+        )
+        .expect("write state renderer");
+        let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(case.host))
+            .expect("stage signed state host");
+        let control_port = control_listener
+            .local_addr()
+            .expect("state control address")
+            .port();
+        let child = Command::new(stage.host())
+            .current_dir(stage.root())
+            .env("KELD_T1B_CONTROL", control_port.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch signed state host");
+        let mut process = SignedStateProcessGuard::new(child);
+        let control =
+            accept_control_or_host_failure(control_listener, process.child_mut(), deadline);
+        control
+            .set_read_timeout(Some(PRODUCT_DEADLINE))
+            .expect("state control timeout");
+        let mut reader = BufReader::new(control);
+        let hello = read_control_line(&mut reader);
+        let mut hello_fields = hello.split_whitespace();
+        assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
+        let bun_pid = hello_fields
+            .next()
+            .expect("state Bun PID")
+            .parse::<u32>()
+            .expect("state numeric Bun PID");
+        let _app_link = hello_fields.next().expect("state app link");
+        assert!(hello_fields.next().is_none(), "{hello}");
+        process.observe_bun(bun_pid);
+        assert_eq!(parse_descendant_pid(&read_control_line(&mut reader)), 0);
+        assert_eq!(
+            read_control_line_or_host_failure(&mut reader, process.child_mut(), "state READY"),
+            "READY"
+        );
+        assert_eq!(
+            read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO1"),
+            "ECHO1"
+        );
+        assert_eq!(
+            read_control_line_or_host_failure(&mut reader, process.child_mut(), "state ECHO2"),
+            "ECHO2"
+        );
+
+        Self {
+            process,
+            reader,
+            bun_pid,
+            deadline,
+            case_name: case.name.to_owned(),
+            _stage: stage,
+        }
+    }
+
+    fn finish(mut self) {
+        let host_pid = self.process.host_pid();
+        let _window = wait_for_host_window(host_pid, self.deadline);
+        self.reader
+            .get_mut()
+            .write_all(b"QUIT\n")
+            .expect("state host Quit");
+        self.reader
+            .get_mut()
+            .flush()
+            .expect("flush state host Quit");
+        assert_eq!(read_control_line(&mut self.reader), "QUIT_REPLY");
+        assert_eq!(read_control_line(&mut self.reader), "LINK_EOF");
+        let status = self.process.wait(self.deadline);
+        assert!(
+            status.success(),
+            "{} host exited with {status}",
+            self.case_name
+        );
+        assert!(
+            !process_exists(self.bun_pid),
+            "{} Bun survived exit",
+            self.case_name
+        );
+    }
 }
 
 fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
@@ -1258,19 +1330,358 @@ fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
 }
 
 fn profile_test_user_sid() -> String {
+    let identifiers = profile_test_token_sids("/user");
+    assert_eq!(identifiers.len(), 1, "whoami must report one user SID");
+    identifiers
+        .into_iter()
+        .next()
+        .expect("one Windows user SID")
+}
+
+fn profile_test_token_sids(kind: &str) -> Vec<String> {
     let output = Command::new("whoami.exe")
-        .args(["/user", "/fo", "csv", "/nh"])
+        .args([kind, "/fo", "csv", "/nh"])
         .output()
         .expect("observe the fixture process's actual Windows user SID");
     assert!(output.status.success(), "whoami user observation failed");
     // The SID is ASCII even when the account-name column uses the local code page.
     let text = String::from_utf8_lossy(&output.stdout);
-    let mut identifiers = text
-        .split(|character: char| character == ',' || character == '"' || character.is_whitespace())
-        .filter(|field| field.starts_with("S-1-"));
-    let sid = identifiers.next().expect("whoami must report one SID");
-    assert!(identifiers.next().is_none(), "ambiguous Windows user SID");
-    sid.to_owned()
+    text.split(|character: char| character == ',' || character == '"' || character.is_whitespace())
+        .filter(|field| field.starts_with("S-1-"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+#[ignore = "requires an operator-authenticated second ordinary user and shared signed fixtures"]
+fn kel135_signed_host_cross_user_storage_isolation() {
+    let host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1").expect("signed A/P1 host");
+    let identity =
+        env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1").expect("signed A/P1 identity fixture");
+    let shared = env::var_os("KELD_KEL135_SHARED_DIRECTORY")
+        .expect("owned directory readable by the second user");
+    let namespace = signed_fixture_profile_namespace(&identity);
+    let first_sid = profile_test_user_sid();
+    let fixture = ProductFixture::new();
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("first-user control");
+    let server = ProfileStateServer::new();
+    let nonce = profile_state_run_nonce(&fixture);
+    let first_value = format!("{nonce}-u1");
+    let second_value = format!("{nonce}-u2");
+    let seed = SignedProfileStateCase {
+        name: "u1-seed",
+        host: &host,
+        before: "",
+        after: &first_value,
+    };
+    run_signed_profile_state_case(&fixture, &control, &server, &nonce, &seed);
+    let coordinator = TcpListener::bind(("127.0.0.1", 0)).expect("cross-user coordinator");
+    let mut request = tempfile::Builder::new()
+        .prefix("kel135-user2-")
+        .suffix(".json")
+        .tempfile_in(shared)
+        .expect("unique cross-user request file");
+    serde_json::to_writer(
+        request.as_file_mut(),
+        &serde_json::json!({
+            "coordinator": coordinator.local_addr().expect("coordinator address").to_string(),
+            "server": server.address().to_string(), "nonce": nonce,
+            "host": Path::new(&host), "identity": Path::new(&identity),
+            "controller": env::current_exe().expect("current acceptance controller"),
+        }),
+    )
+    .expect("write cross-user request");
+    request
+        .as_file_mut()
+        .flush()
+        .expect("publish complete request");
+    println!(
+        "KELD_KEL135_SECOND_USER_REQUEST {}",
+        request.path().display()
+    );
+    std::io::stdout()
+        .flush()
+        .expect("publish operator action before waiting");
+    let stream = accept_control_until(&coordinator, None, Instant::now() + Duration::from_mins(10));
+    let mut peer = BufReader::new(stream);
+    let greeting = read_profile_coordinator(&mut peer);
+    let second_sid =
+        validate_profile_second_user(&greeting, &nonce, &namespace, &first_sid, server.address())
+            .expect("second user must be distinct, ordinary and bound to the same app/origin");
+    println!(
+        "KELD_KEL135_CROSS_USER {}",
+        serde_json::json!({
+            "first_sid": first_sid, "second_sid": second_sid,
+            "namespace": namespace, "origin": format!("http://{}", server.address()),
+        })
+    );
+    for (name, before, after) in [
+        ("u2-isolated", "", second_value.as_str()),
+        ("u2-restart", second_value.as_str(), second_value.as_str()),
+        ("u2-cleanup", second_value.as_str(), ""),
+    ] {
+        let case = SignedProfileStateCase {
+            name,
+            host: &host,
+            before,
+            after,
+        };
+        run_remote_profile_state_case(&mut peer, &server, &nonce, &case);
+    }
+    write_profile_coordinator(peer.get_mut(), &serde_json::json!({"kind": "stop"}));
+    assert_eq!(read_profile_coordinator(&mut peer)["kind"], "stopped");
+    for (name, before, after) in [
+        ("u1-after-u2", first_value.as_str(), first_value.as_str()),
+        ("u1-cleanup", first_value.as_str(), ""),
+    ] {
+        let case = SignedProfileStateCase {
+            name,
+            host: &host,
+            before,
+            after,
+        };
+        run_signed_profile_state_case(&fixture, &control, &server, &nonce, &case);
+    }
+}
+
+#[test]
+#[ignore = "operator launches this controller under the second ordinary account"]
+fn kel135_second_user_storage_helper() {
+    let request_path = env::var_os("KELD_KEL135_SECOND_USER_REQUEST")
+        .expect("operator supplies the live request path");
+    let mut bytes = Vec::new();
+    fs::File::open(request_path)
+        .expect("open parent request")
+        .take(u64::try_from(CONTROL_LINE_LIMIT + 1).expect("request limit fits u64"))
+        .read_to_end(&mut bytes)
+        .expect("read bounded parent request");
+    assert!(
+        bytes.len() <= CONTROL_LINE_LIMIT,
+        "cross-user request is bounded"
+    );
+    let request: Value = serde_json::from_slice(&bytes).expect("cross-user request JSON");
+    let coordinator = profile_request_address(&request, "coordinator");
+    let address = profile_request_address(&request, "server");
+    let nonce = request["nonce"].as_str().expect("request nonce");
+    validate_profile_state_atom(nonce, false).expect("request nonce domain");
+    let host = std::ffi::OsStr::new(request["host"].as_str().expect("signed host path"));
+    let identity =
+        std::ffi::OsStr::new(request["identity"].as_str().expect("signed identity path"));
+    let namespace = signed_fixture_profile_namespace(identity);
+    let user_sid = profile_test_user_sid();
+    let administrator = profile_test_token_sids("/groups")
+        .iter()
+        .any(|sid| sid == "S-1-5-32-544");
+    assert!(
+        !administrator,
+        "the second user must not be an administrator"
+    );
+    let stream = TcpStream::connect_timeout(&coordinator, PRODUCT_DEADLINE)
+        .expect("connect to waiting controller");
+    let mut peer = BufReader::new(stream);
+    write_profile_coordinator(
+        peer.get_mut(),
+        &serde_json::json!({
+            "kind": "hello", "nonce": nonce, "namespace": namespace,
+            "user_sid": user_sid, "administrator": administrator, "server": address.to_string(),
+        }),
+    );
+    let fixture = ProductFixture::new();
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("second-user host control");
+    loop {
+        let message = read_profile_coordinator(&mut peer);
+        if message["kind"] == "stop" {
+            write_profile_coordinator(peer.get_mut(), &serde_json::json!({"kind": "stopped"}));
+            break;
+        }
+        assert_eq!(message["kind"], "run");
+        let case = SignedProfileStateCase {
+            name: message["case"].as_str().expect("remote case name"),
+            host,
+            before: message["before"].as_str().expect("remote before value"),
+            after: message["after"].as_str().expect("remote after value"),
+        };
+        let run = SignedProfileStateRun::start(
+            &fixture,
+            &control,
+            address,
+            nonce,
+            &case,
+            Instant::now() + PRODUCT_DEADLINE,
+        );
+        write_profile_coordinator(
+            peer.get_mut(),
+            &serde_json::json!({
+                "kind": "ready", "case": case.name, "host_pid": run.process.host_pid(), "bun_pid": run.bun_pid,
+            }),
+        );
+        assert_eq!(read_profile_coordinator(&mut peer)["kind"], "finish");
+        run.finish();
+        write_profile_coordinator(
+            peer.get_mut(),
+            &serde_json::json!({"kind": "finished", "case": case.name}),
+        );
+    }
+}
+
+fn profile_request_address(request: &Value, field: &str) -> SocketAddr {
+    let address: SocketAddr = request[field]
+        .as_str()
+        .expect("loopback address field")
+        .parse()
+        .expect("socket address");
+    assert!(
+        address.ip().is_loopback() && address.port() != 0,
+        "fixture only contacts a live loopback endpoint"
+    );
+    address
+}
+
+fn validate_profile_second_user(
+    greeting: &Value,
+    nonce: &str,
+    namespace: &str,
+    first_sid: &str,
+    address: SocketAddr,
+) -> Result<String, String> {
+    if greeting["kind"] != "hello"
+        || greeting["nonce"] != nonce
+        || greeting["namespace"] != namespace
+        || greeting["server"] != address.to_string()
+    {
+        return Err("second-user context does not match the live request".to_owned());
+    }
+    let sid = greeting["user_sid"]
+        .as_str()
+        .ok_or("second-user SID is missing")?;
+    if sid == first_sid || !sid.starts_with("S-1-") || greeting["administrator"] != false {
+        return Err("second-user context is not a distinct ordinary user".to_owned());
+    }
+    Ok(sid.to_owned())
+}
+
+fn run_remote_profile_state_case(
+    peer: &mut BufReader<TcpStream>,
+    server: &ProfileStateServer,
+    nonce: &str,
+    case: &SignedProfileStateCase<'_>,
+) {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    server.expect_case(case.name, deadline);
+    write_profile_coordinator(
+        peer.get_mut(),
+        &serde_json::json!({
+            "kind": "run", "case": case.name, "before": case.before, "after": case.after,
+        }),
+    );
+    let ready = read_profile_coordinator(peer);
+    assert_eq!(ready["kind"], "ready");
+    assert_eq!(ready["case"], case.name);
+    let pid = |field: &str| {
+        u32::try_from(ready[field].as_u64().expect("observed native PID")).expect("PID width")
+    };
+    let observation = server.wait_for_case(case.name, deadline);
+    record_profile_state_case(
+        &observation,
+        case,
+        nonce,
+        server.address(),
+        pid("host_pid"),
+        pid("bun_pid"),
+    );
+    write_profile_coordinator(peer.get_mut(), &serde_json::json!({"kind": "finish"}));
+    let finished = read_profile_coordinator(peer);
+    assert_eq!(finished["kind"], "finished");
+    assert_eq!(finished["case"], case.name);
+}
+
+fn read_profile_coordinator(reader: &mut BufReader<TcpStream>) -> Value {
+    serde_json::from_str(&read_control_line(reader)).expect("bounded coordinator JSON")
+}
+
+fn write_profile_coordinator(stream: &mut TcpStream, message: &Value) {
+    let mut bytes = serde_json::to_vec(message).expect("coordinator JSON");
+    bytes.push(b'\n');
+    assert!(bytes.len() <= CONTROL_LINE_LIMIT);
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let mut pending = bytes.as_slice();
+    while !pending.is_empty() {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .expect("coordinator write deadline");
+        stream
+            .set_write_timeout(Some(remaining))
+            .expect("coordinator write timeout");
+        let written = stream.write(pending).expect("write coordinator message");
+        assert_ne!(written, 0, "coordinator stopped accepting bytes");
+        pending = &pending[written..];
+    }
+}
+
+#[test]
+fn profile_second_user_requires_distinct_ordinary_context_and_the_same_origin() {
+    let address: SocketAddr = "127.0.0.1:12345".parse().expect("fixture address");
+    let good = serde_json::json!({
+        "kind": "hello", "nonce": "run1", "namespace": "namespace-a",
+        "user_sid": "S-1-5-21-2000", "administrator": false, "server": "127.0.0.1:12345",
+    });
+    assert_eq!(
+        validate_profile_second_user(&good, "run1", "namespace-a", "S-1-5-21-1000", address)
+            .expect("different ordinary user at the same origin"),
+        "S-1-5-21-2000"
+    );
+    for (field, value) in [
+        ("user_sid", Value::String("S-1-5-21-1000".to_owned())),
+        ("administrator", Value::Bool(true)),
+        ("administrator", Value::Null),
+        ("namespace", Value::String("namespace-b".to_owned())),
+        ("nonce", Value::String("old-run".to_owned())),
+        ("server", Value::String("127.0.0.1:12346".to_owned())),
+    ] {
+        let mut wrong = good.clone();
+        wrong[field] = value;
+        assert!(
+            validate_profile_second_user(&wrong, "run1", "namespace-a", "S-1-5-21-1000", address)
+                .is_err(),
+            "{field} mismatch cannot count as cross-user acceptance"
+        );
+    }
+}
+
+#[test]
+fn control_line_preserves_the_byte_limit_and_expired_read_does_not_consume_data() {
+    assert_eq!(CONTROL_LINE_LIMIT, 4096);
+    for size in [4096, 4097] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("control boundary listener");
+        let mut peer =
+            TcpStream::connect(listener.local_addr().expect("address")).expect("control peer");
+        let (stream, _) = listener.accept().expect("accept control peer");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("original timeout");
+        let mut reader = BufReader::new(stream);
+        let mut message = vec![b'x'; size - 1];
+        message.push(b'\n');
+        peer.write_all(&message).expect("send control boundary");
+        let expired = try_read_control_line(&mut reader, Instant::now());
+        assert_eq!(
+            expired.err().as_deref(),
+            Some("control line deadline elapsed")
+        );
+        let actual = try_read_control_line(&mut reader, Instant::now() + Duration::from_secs(1));
+        if size == 4096 {
+            assert_eq!(actual.expect("exact control bound").len(), 4095);
+        } else {
+            assert_eq!(
+                actual.err().as_deref(),
+                Some("control line exceeds 4096 bytes")
+            );
+        }
+        assert_eq!(
+            reader.get_ref().read_timeout().expect("restored timeout"),
+            Some(Duration::from_secs(2))
+        );
+    }
 }
 
 struct SignedStateProcessGuard {
@@ -3315,6 +3726,14 @@ fn accept_control_or_host_failure(
     child: &mut Child,
     deadline: Instant,
 ) -> TcpStream {
+    accept_control_until(listener, Some(child), deadline)
+}
+
+fn accept_control_until(
+    listener: &TcpListener,
+    mut child: Option<&mut Child>,
+    deadline: Instant,
+) -> TcpStream {
     listener
         .set_nonblocking(true)
         .expect("nonblocking product control listener");
@@ -3329,7 +3748,9 @@ fn accept_control_or_host_failure(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => panic!("product control accept failed: {error}"),
         }
-        if let Some(status) = child.try_wait().expect("observe early host exit") {
+        if let Some(child) = child.as_mut()
+            && let Some(status) = child.try_wait().expect("observe early host exit")
+        {
             let mut stdout = String::new();
             let mut stderr = String::new();
             child
@@ -3357,11 +3778,55 @@ fn accept_control_or_host_failure(
 }
 
 fn read_control_line(reader: &mut BufReader<TcpStream>) -> String {
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("read control line");
-    assert!(line.ends_with('\n'), "incomplete control line: {line:?}");
-    line.pop();
-    line
+    try_read_control_line(reader, Instant::now() + PRODUCT_DEADLINE)
+        .expect("complete bounded control line")
+}
+
+fn try_read_control_line(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> Result<String, String> {
+    let original = reader
+        .get_ref()
+        .read_timeout()
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        let mut line = Vec::new();
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|value| !value.is_zero())
+                .ok_or_else(|| "control line deadline elapsed".to_owned())?;
+            reader
+                .get_mut()
+                .set_read_timeout(Some(remaining))
+                .map_err(|error| error.to_string())?;
+            let bytes = reader
+                .fill_buf()
+                .map_err(|error| format!("read control line: {error}"))?;
+            if bytes.is_empty() {
+                return Err("control stream ended before newline".to_owned());
+            }
+            let newline = bytes.iter().position(|byte| *byte == b'\n');
+            let count = newline.map_or(bytes.len(), |index| index + 1);
+            if line.len() + count > CONTROL_LINE_LIMIT {
+                return Err("control line exceeds 4096 bytes".to_owned());
+            }
+            line.extend_from_slice(&bytes[..count]);
+            reader.consume(count);
+            if newline.is_some() {
+                line.pop();
+                return String::from_utf8(line)
+                    .map_err(|error| format!("control line is not UTF-8: {error}"));
+            }
+        }
+    })();
+    let restored = reader.get_mut().set_read_timeout(original);
+    match (result, restored) {
+        (result, Ok(())) => result,
+        (Err(read), Err(restore)) => Err(format!("{read}; restore control timeout: {restore}")),
+        (Ok(_), Err(error)) => Err(format!("restore control timeout: {error}")),
+    }
 }
 
 fn read_control_line_or_host_failure(
@@ -3369,12 +3834,8 @@ fn read_control_line_or_host_failure(
     child: &mut Child,
     label: &str,
 ) -> String {
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(_) if line.ends_with('\n') => {
-            line.pop();
-            line
-        }
+    match try_read_control_line(reader, Instant::now() + PRODUCT_DEADLINE) {
+        Ok(line) => line,
         result => {
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
@@ -3394,12 +3855,12 @@ fn read_control_line_or_host_failure(
                         .read_to_string(&mut stderr)
                         .expect("read failed host stderr");
                     panic!(
-                        "host exited while awaiting {label}: {status}; read={result:?}; line={line:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                        "host exited while awaiting {label}: {status}; read={result:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
                     );
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "control failed while awaiting {label}: read={result:?}; line={line:?}"
+                    "control failed while awaiting {label}: read={result:?}"
                 );
                 thread::park_timeout(Duration::from_millis(10));
             }
