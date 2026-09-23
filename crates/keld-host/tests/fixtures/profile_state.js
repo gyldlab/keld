@@ -8,6 +8,12 @@ const cacheUrl = new URL(`/cache-entry/${config.nonce}`, location.origin).href;
 const workerScope = new URL(`/worker-scope/${config.nonce}/`, location.origin).href;
 let phase = "capabilities";
 
+async function markPhase(name) {
+  phase = name;
+  await report({ progress: name });
+}
+
+
 function cookieValue() {
   const prefix = `${key}=`;
   return document.cookie.split(";").map((part) => part.trim())
@@ -107,32 +113,32 @@ async function workerValue() {
 }
 
 async function readStores() {
-  phase = "cookie-read";
+  await markPhase("cookie-read");
   const cookie = cookieValue();
-  phase = "localStorage-read";
+  await markPhase("localStorage-read");
   const local = localStorage.getItem(key) ?? "";
-  phase = "indexedDB-read";
+  await markPhase("indexedDB-read");
   const indexed = await databaseValue();
-  phase = "CacheStorage-read";
+  await markPhase("CacheStorage-read");
   const cache = await cacheValue();
-  phase = "serviceWorker-read";
+  await markPhase("serviceWorker-read");
   const worker = await workerValue();
   return { cookie, local, indexed, cache, worker };
 }
 
 async function seedStores(before) {
-  phase = "cookie-write";
+  await markPhase("cookie-write");
   if (before.cookie === "") document.cookie = `${key}=${config.value}; Max-Age=3600; Path=/; SameSite=Lax`;
-  phase = "localStorage-write";
+  await markPhase("localStorage-write");
   if (before.local === "") localStorage.setItem(key, config.value);
-  phase = "indexedDB-write";
+  await markPhase("indexedDB-write");
   if (before.indexed === "") await databaseValue(config.value);
-  phase = "CacheStorage-write";
+  await markPhase("CacheStorage-write");
   if (before.cache === "") {
     const cache = await caches.open(cacheName);
     await cache.put(cacheUrl, new Response(config.value));
   }
-  phase = "serviceWorker-write";
+  await markPhase("serviceWorker-write");
   if (before.worker === "") {
     const query = new URLSearchParams({ nonce: config.nonce, value: config.value });
     const registration = await navigator.serviceWorker.register(`/profile-worker.js?${query}`, {
@@ -143,15 +149,15 @@ async function seedStores(before) {
 }
 
 async function clearStores() {
-  phase = "cookie-clear";
+  await markPhase("cookie-clear");
   document.cookie = `${key}=; Max-Age=0; Path=/; SameSite=Lax`;
-  phase = "localStorage-clear";
+  await markPhase("localStorage-clear");
   localStorage.removeItem(key);
-  phase = "indexedDB-clear";
+  await markPhase("indexedDB-clear");
   await deleteDatabase();
-  phase = "CacheStorage-clear";
+  await markPhase("CacheStorage-clear");
   await caches.delete(cacheName);
-  phase = "serviceWorker-clear";
+  await markPhase("serviceWorker-clear");
   const registration = await navigator.serviceWorker.getRegistration(workerScope);
   if (registration !== undefined && !await registration.unregister()) {
     throw new Error("worker-unregister-failed");
@@ -165,6 +171,7 @@ async function report(fields) {
 }
 
 async function main() {
+  await markPhase("capabilities");
   if (!isSecureContext || !globalThis.indexedDB || !globalThis.caches || !navigator.serviceWorker) {
     throw new Error("required-storage-api-unavailable");
   }
@@ -175,7 +182,7 @@ async function main() {
   // Reading absent IDB/cache entries creates empty containers. Remove only the
   // current run's containers again after verifying their contents are empty.
   if (config.value === "") await clearStores();
-  phase = "report";
+  await markPhase("report");
   await report({
     before: before.local, after: after.local,
     cookie_before: before.cookie, cookie_after: after.cookie,

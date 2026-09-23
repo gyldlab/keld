@@ -1631,6 +1631,13 @@ fn profile_state_response(
                 "browser storage case `{case_name}` failed: {error}"
             ));
         }
+        if let Some((_, progress)) = fields.iter().find(|(key, _)| *key == "progress") {
+            if case_name != expected_case {
+                return Err("browser storage progress belongs to the wrong case".to_owned());
+            }
+            eprintln!("KELD_KEL135_STORAGE_PROGRESS case={case_name} phase={progress}");
+            return Ok(empty_profile_state_response());
+        }
         let observation = ProfileStateObservation {
             case_name: case_name.to_owned(),
             nonce: required_profile_state_field(&fields, "nonce")?.to_owned(),
