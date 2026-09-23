@@ -937,7 +937,7 @@ fn kel135_signed_profile_saved_media_grants_are_revoked() {
         .expect("KELD_KEL135_SIGNED_IDENTITY_FIXTURE must point to signed A/P1 core fixture");
     let media_fixture = env::var_os("KELD_KEL135_MEDIA_FIXTURE")
         .expect("KELD_KEL135_MEDIA_FIXTURE must point to the media-acceptance libtest");
-    let namespace = signed_fixture_profile_namespace(&signed_identity);
+    let namespace = signed_fixture_profile_namespace(&signed_identity, None);
     for (kind, run_id) in [
         ("camera", "f1e2d3c4b5a69788796a5b4c3d2e1f00"),
         ("microphone", "001f2e3d4c5b6a798897a6b5c4d3e2f1"),
@@ -967,8 +967,16 @@ fn kel135_signed_profile_saved_media_grants_are_revoked() {
     }
 }
 
-fn signed_fixture_profile_namespace(signed_identity: &std::ffi::OsStr) -> String {
-    let output = Command::new(signed_identity)
+fn signed_fixture_profile_namespace(
+    signed_identity: &std::ffi::OsStr,
+    carrier: Option<&std::ffi::OsStr>,
+) -> String {
+    let mut command = Command::new(signed_identity);
+    command.env_remove("KELD_KEL135_CARRIER_UNDER_TEST");
+    if let Some(carrier) = carrier {
+        command.env("KELD_KEL135_CARRIER_UNDER_TEST", carrier);
+    }
+    let output = command
         .args([
             "app_session::tests::kel135_signed_package_acceptance_fixture",
             "--ignored",
@@ -1086,13 +1094,17 @@ fn kel135_signed_host_profile_state_isolation() {
     let sibling_state = format!("{run_nonce}-b");
     let publisher_two_value = format!("{run_nonce}-p2");
     let identity_paths = [
-        ("A/P1", "KELD_KEL135_SIGNED_IDENTITY_A_P1"),
-        ("B/P1", "KELD_KEL135_SIGNED_IDENTITY_B_P1"),
-        ("A/P2", "KELD_KEL135_SIGNED_IDENTITY_A_P2"),
+        ("A/P1", "KELD_KEL135_SIGNED_IDENTITY_A_P1", &primary_carrier),
+        ("B/P1", "KELD_KEL135_SIGNED_IDENTITY_B_P1", &sibling_carrier),
+        (
+            "A/P2",
+            "KELD_KEL135_SIGNED_IDENTITY_A_P2",
+            &alternate_publisher_carrier,
+        ),
     ];
-    let identities = identity_paths.map(|(label, variable)| {
+    let identities = identity_paths.map(|(label, variable, carrier)| {
         let path = env::var_os(variable).expect("matching signed identity fixture is required");
-        let namespace = signed_fixture_profile_namespace(&path);
+        let namespace = signed_fixture_profile_namespace(&path, Some(carrier));
         assert_eq!(namespace.len(), 64, "{label} profile namespace width");
         assert!(namespace.bytes().all(|byte| byte.is_ascii_hexdigit()));
         (label, namespace)
@@ -1360,7 +1372,7 @@ fn kel135_signed_host_cross_user_storage_isolation() {
         env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1").expect("signed A/P1 identity fixture");
     let shared = env::var_os("KELD_KEL135_SHARED_DIRECTORY")
         .expect("owned directory readable by the second user");
-    let namespace = signed_fixture_profile_namespace(&identity);
+    let namespace = signed_fixture_profile_namespace(&identity, Some(&host));
     let first_sid = profile_test_user_sid();
     let fixture = ProductFixture::new();
     let control = TcpListener::bind(("127.0.0.1", 0)).expect("first-user control");
@@ -1467,7 +1479,7 @@ fn kel135_second_user_storage_helper() {
     let host = std::ffi::OsStr::new(request["host"].as_str().expect("signed host path"));
     let identity =
         std::ffi::OsStr::new(request["identity"].as_str().expect("signed identity path"));
-    let namespace = signed_fixture_profile_namespace(identity);
+    let namespace = signed_fixture_profile_namespace(identity, Some(host));
     let user_sid = profile_test_user_sid();
     let administrator = profile_test_token_sids("/groups")
         .iter()

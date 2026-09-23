@@ -1571,7 +1571,6 @@ fn windows_profile_mode(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code, clippy::too_many_lines)] // one linear VERIFY/extract/CLOSE state owner avoids a leaked trust handle
 fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, HostAppError> {
     let executable = std::env::current_exe().map_err(|source| {
         windows_identity_error(
@@ -1579,6 +1578,14 @@ fn verified_windows_identity_from_current_exe() -> Result<ValidatedAppIdentity, 
             "Restore the signed package executable and relaunch it.",
         )
     })?;
+    verified_windows_identity_from_executable(&executable)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code, clippy::too_many_lines)] // one linear VERIFY/extract/CLOSE state owner avoids a leaked trust handle
+fn verified_windows_identity_from_executable(
+    executable: &Path,
+) -> Result<ValidatedAppIdentity, HostAppError> {
     let executable = executable.canonicalize().map_err(|source| {
         windows_identity_error(
             format!("the current executable path cannot be resolved: {source}"),
@@ -4516,12 +4523,16 @@ mod tests {
         assert_eq!(error.code(), "KELD-WV-009");
     }
 
-    /// Runs only from a deliberately signed copy of this libtest binary.
+    /// Verifies the specified host carrier, or this signed libtest for older fixtures.
     #[test]
     #[ignore = "requires a trusted Authenticode-signed fixture executable"]
     #[cfg(windows)]
     fn kel135_signed_package_acceptance_fixture() {
-        let identity = verified_windows_identity_from_current_exe()
+        let carrier = std::env::var_os("KELD_KEL135_CARRIER_UNDER_TEST");
+        let identity = carrier
+            .map_or_else(verified_windows_identity_from_current_exe, |path| {
+                verified_windows_identity_from_executable(Path::new(&path))
+            })
             .expect("the signed fixture must produce a verified Windows identity");
         let app_id = identity.app_id.clone();
         let publisher_scope = identity.publisher_scope.iter().fold(
