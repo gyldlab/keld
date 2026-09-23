@@ -37,6 +37,7 @@ const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
 const RENDERER_CONNECTION_LIMIT: usize = 16;
 const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
+const RENDERER_REQUEST_HEADER_LIMIT: usize = 8192;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
 const OBJ_INHERIT: u32 = 0x0000_0002;
@@ -2799,13 +2800,13 @@ fn read_renderer_request_line(
     mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
 ) -> Result<RendererRequestRead, String> {
     loop {
-        if request.len() == RENDERER_REQUEST_LINE_LIMIT {
+        if request.len() == RENDERER_REQUEST_HEADER_LIMIT {
             return Err(format!(
-                "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
+                "renderer beacon request headers exceeded {RENDERER_REQUEST_HEADER_LIMIT} bytes"
             ));
         }
         let mut chunk = [0_u8; 256];
-        let available = (RENDERER_REQUEST_LINE_LIMIT - request.len()).min(chunk.len());
+        let available = (RENDERER_REQUEST_HEADER_LIMIT - request.len()).min(chunk.len());
         let read = match read_chunk(&mut chunk[..available]) {
             Ok(read) => read,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -2841,16 +2842,30 @@ fn read_renderer_request_line(
                 Ok(RendererRequestRead::Empty)
             } else {
                 Err(format!(
-                    "renderer beacon request ended before CRLF: {}",
+                    "renderer beacon request ended before the header terminator: {}",
                     String::from_utf8_lossy(request)
                 ))
             };
         }
         request.extend_from_slice(&chunk[..read]);
         if let Some(line_end) = request.windows(2).position(|bytes| bytes == b"\r\n") {
-            let mut complete = std::mem::take(request);
-            complete.truncate(line_end);
-            return Ok(RendererRequestRead::Complete(complete));
+            if line_end + 2 > RENDERER_REQUEST_LINE_LIMIT {
+                return Err(format!(
+                    "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
+                ));
+            }
+            // Consume the complete request headers before a Connection: close
+            // response. Closing with unread incoming bytes can reset the socket
+            // and discard a larger HTML/worker response in the browser.
+            if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut complete = std::mem::take(request);
+                complete.truncate(line_end);
+                return Ok(RendererRequestRead::Complete(complete));
+            }
+        } else if request.len() >= RENDERER_REQUEST_LINE_LIMIT {
+            return Err(format!(
+                "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
+            ));
         }
     }
 }
@@ -2875,6 +2890,58 @@ fn renderer_beacon_accumulates_a_fragmented_request_line() {
         result,
         RendererRequestRead::Complete(b"GET /ready.png HTTP/1.1".to_vec())
     );
+}
+
+#[test]
+fn renderer_request_line_waits_for_the_complete_header_block() {
+    let mut request = Vec::new();
+    let mut first = true;
+    let partial = read_renderer_request_line(&mut request, |buffer| {
+        if first {
+            first = false;
+            let bytes = b"GET /app HTTP/1.1\r\n";
+            buffer[..bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        } else {
+            Err(std::io::ErrorKind::WouldBlock.into())
+        }
+    })
+    .expect("incomplete headers are pending, not an I/O failure");
+    assert_eq!(partial, RendererRequestRead::Pending);
+    let complete = read_renderer_request_line(&mut request, |buffer| {
+        let bytes = b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        Ok(bytes.len())
+    })
+    .expect("complete request headers");
+    assert_eq!(
+        complete,
+        RendererRequestRead::Complete(b"GET /app HTTP/1.1".to_vec())
+    );
+}
+
+#[test]
+fn renderer_request_header_budget_is_independent_of_the_request_line_budget() {
+    assert_eq!(RENDERER_REQUEST_LINE_LIMIT, 2048);
+    assert_eq!(RENDERER_REQUEST_HEADER_LIMIT, 8192);
+    for total in [8192, 8193] {
+        let mut wire = b"GET /app HTTP/1.1\r\nX-Fixture: ".to_vec();
+        wire.resize(total - 4, b'a');
+        wire.extend_from_slice(b"\r\n\r\n");
+        let mut cursor = std::io::Cursor::new(wire);
+        let result = read_renderer_request_line(&mut Vec::new(), |buffer| cursor.read(buffer));
+        if total == 8192 {
+            assert_eq!(
+                result.expect("exact header budget admits"),
+                RendererRequestRead::Complete(b"GET /app HTTP/1.1".to_vec())
+            );
+        } else {
+            assert_eq!(
+                result.err().as_deref(),
+                Some("renderer beacon request headers exceeded 8192 bytes")
+            );
+        }
+    }
 }
 
 #[test]
@@ -2956,7 +3023,7 @@ fn renderer_beacon_preserves_initial_timeout_when_worker_publishes_nothing() {
 fn renderer_beacon_request_line_enforces_exact_maximum_and_maximum_plus_one() {
     let exact = vec![b'a'; RENDERER_REQUEST_LINE_LIMIT - 2];
     let mut exact_wire = exact.clone();
-    exact_wire.extend_from_slice(b"\r\n");
+    exact_wire.extend_from_slice(b"\r\n\r\n");
     let mut exact_cursor = std::io::Cursor::new(exact_wire);
     let mut request = Vec::new();
     let result = read_renderer_request_line(&mut request, |buffer| exact_cursor.read(buffer))
