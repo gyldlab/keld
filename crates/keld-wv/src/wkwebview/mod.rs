@@ -29,13 +29,23 @@ use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Window, WindowBuilder};
+use wry::WebViewExtMacOS;
 
 use crate::WebviewId;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
 use crate::media::guarded_default_media_builder;
+use crate::profile::{
+    EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,
+};
 use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
+
+mod macos_profile;
+
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use macos_profile::MacMediaPromptProbe;
+use macos_profile::MacProfileOwner;
 
 const INITIAL_NAVIGATION_DEADLINE: Duration = Duration::from_secs(5);
 
@@ -46,6 +56,10 @@ struct View {
     window: Window,
 }
 
+enum WkUserEvent {
+    App(AppWindowCommand),
+}
+
 /// The macOS [`WebEngine`] backend.
 ///
 /// Owns the tao event loop until [`WkWebViewEngine::run_until_closed`]
@@ -53,9 +67,13 @@ struct View {
 /// after the last window closes (KEL-30 concurrent hello app-link).
 pub struct WkWebViewEngine {
     /// Present until the run loop starts; consumed by `run_until_closed`.
-    event_loop: Option<EventLoop<AppWindowCommand>>,
+    event_loop: Option<EventLoop<WkUserEvent>>,
     views: BTreeMap<u32, View>,
     next_id: u32,
+    profile: MacProfileOwner,
+    profile_test_media_seed_allow: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    media_prompt_probe: Option<MacMediaPromptProbe>,
     /// KEL-62: navigation completion (`PageLoadEvent::Finished`), not window create.
     startup: Arc<Mutex<StartupTrace>>,
 }
@@ -65,27 +83,112 @@ impl fmt::Debug for WkWebViewEngine {
         f.debug_struct("WkWebViewEngine")
             .field("views", &self.views.len())
             .field("running", &self.event_loop.is_none())
+            .field("profile_mode", &self.profile.mode_name())
             .field("next_id", &self.next_id)
             .finish_non_exhaustive()
     }
 }
 
 impl WkWebViewEngine {
-    /// Creates the engine and its event loop.
+    /// Creates the engine with one host-selected persistent or ephemeral store.
     ///
     /// Must be called on the process main thread — `AppKit`'s platform
     /// contract, enforced by tao (which aborts otherwise).
-    #[must_use]
-    pub fn new() -> Self {
+    /// # Errors
+    ///
+    /// Returns [`WvError::ProfileSelection`] when identity, UUID binding,
+    /// lifecycle, ownership, or the macOS persistent-store version gate fails.
+    pub fn new(selection: WebProfileSelection) -> Result<Self, WvError> {
+        Self::new_with_profile_test_media(selection, false)
+    }
+
+    /// Creates the private real-OS profile fixture with one explicit test-only
+    /// media seed override. This symbol is absent from normal builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError::ProfileSelection`] when the selected profile cannot
+    /// be acquired or verified.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    pub fn new_profile_test_fixture(
+        selection: WebProfileSelection,
+        seed_media_allow: bool,
+    ) -> Result<Self, WvError> {
+        let mut engine = Self::new_with_profile_test_media(selection, seed_media_allow)?;
+        engine.media_prompt_probe = Some(MacMediaPromptProbe::new()?);
+        Ok(engine)
+    }
+
+    fn new_with_profile_test_media(
+        selection: WebProfileSelection,
+        profile_test_media_seed_allow: bool,
+    ) -> Result<Self, WvError> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
-        let event_loop = EventLoopBuilder::with_user_event().build();
+        let mut event_loop = EventLoopBuilder::with_user_event().build();
+        let profile = MacProfileOwner::new(selection, &mut event_loop)?;
         mark_startup(&startup, StartupPhase::EventLoop);
-        Self {
+        Ok(Self {
             event_loop: Some(event_loop),
             views: BTreeMap::new(),
             next_id: 1,
+            profile,
+            profile_test_media_seed_allow,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            media_prompt_probe: None,
             startup,
-        }
+        })
+    }
+
+    /// Creates an explicitly ephemeral engine for a standalone development window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError::ProfileSelection`] if OS randomness or the
+    /// nonpersistent `WebKit` store is unavailable.
+    pub fn new_dev_ephemeral() -> Result<Self, WvError> {
+        let mut launch_nonce = [0_u8; 32];
+        getrandom::fill(&mut launch_nonce).map_err(|_| {
+            WvError::from(ProfileError::platform_failure(
+                ProfileErrorKind::InvalidEphemeralNonce,
+            ))
+        })?;
+        let ephemeral = EphemeralProfile::from_host_random(launch_nonce)?;
+        Self::new(WebProfileSelection::ephemeral_dev(ephemeral))
+    }
+
+    /// Removes only the persistent store for one Core-verified app identity.
+    ///
+    /// The caller must run this in a clean signed host process after every
+    /// process that used the profile has exited. `WebKit`'s completion callback
+    /// and a follow-up identifier enumeration are required before Keld clears
+    /// its exact-identity binding records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WvError::ProfileSelection`] when the identity binding is
+    /// invalid, the store is still in use, `WebKit` removal fails, or recovery
+    /// metadata cannot prove the exact purge target.
+    pub fn purge_persistent_profile(identity: ProfileIdentity) -> Result<(), WvError> {
+        let mut event_loop = EventLoopBuilder::with_user_event().build();
+        MacProfileOwner::purge_persistent_profile(identity, &mut event_loop)
+    }
+
+    /// Checks a persistent store identifier in the current app's `WebKit` registry.
+    ///
+    /// This read-only fixture hook initializes `WebKit` with a memory-only store and
+    /// enumerates identifiers. It never opens or creates the requested persistent
+    /// store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `WebKit` cannot enumerate the current app's store
+    /// identifiers or the macOS lifecycle cannot be proven.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    pub fn persistent_store_identifier_present_for_test(
+        identifier: [u8; 16],
+    ) -> Result<bool, WvError> {
+        let mut event_loop = EventLoopBuilder::with_user_event().build();
+        MacProfileOwner::persistent_store_identifier_present_for_test(identifier, &mut event_loop)
     }
 
     /// Runs the event loop until the user closes the last window, then
@@ -118,16 +221,24 @@ impl WkWebViewEngine {
                 }
             }
         });
+        let profile_result = self.profile.clean_shutdown();
         match self.startup.lock() {
             Ok(guard) => guard.emit_if_nav_never_finished(),
             Err(poisoned) => poisoned.into_inner().emit_if_nav_never_finished(),
         }
-        if code == 0 {
+        let loop_result = if code == 0 {
             Ok(())
         } else {
             Err(WvError::EventLoop(format!(
                 "event loop exited with status {code}"
             )))
+        };
+        match (loop_result, profile_result) {
+            (Ok(()), result) => result,
+            (Err(primary), Ok(())) => Err(primary),
+            (Err(primary), Err(cleanup)) => Err(WvError::EventLoop(format!(
+                "{primary}; profile cleanup failed: {cleanup}"
+            ))),
         }
     }
 
@@ -150,14 +261,16 @@ impl WkWebViewEngine {
     /// `commands` is bridged through tao's [`tao::event_loop::EventLoopProxy`],
     /// so I/O threads never touch a window handle and the UI thread does not
     /// poll. Closing the last window emits [`AppWindowEvent::LastWindowClosed`]
-    /// but keeps the event loop alive until the app sends Quit.
+    /// but keeps the event loop alive until the app sends Quit. The engine is
+    /// borrowed so its profile owner and exclusive locks outlive Core's ordered
+    /// app-link and child cleanup after this method returns.
     ///
     /// # Errors
     ///
     /// Returns [`WvError::EventLoop`] if the loop already ran, the bridge/UI
     /// reports a fatal session command, or tao exits non-zero.
     pub fn run_app_until_quit(
-        mut self,
+        &mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
     ) -> Result<(), WvError> {
@@ -171,15 +284,21 @@ impl WkWebViewEngine {
         let stop_for_bridge = Arc::clone(&stop_bridge);
         let terminal_intent = Arc::new(AtomicBool::new(false));
         let terminal_intent_for_bridge = Arc::clone(&terminal_intent);
-        let bridge =
-            spawn_app_wake_bridge(commands, proxy, stop_for_bridge, terminal_intent_for_bridge)?;
-        let fatal = Arc::new(AtomicBool::new(false));
-        let fatal_in_loop = Arc::clone(&fatal);
+        let fatal_outcome = Arc::new(AtomicBool::new(false));
+        let fatal_for_bridge = Arc::clone(&fatal_outcome);
+        let bridge = spawn_app_wake_bridge(
+            commands,
+            proxy,
+            stop_for_bridge,
+            terminal_intent_for_bridge,
+            fatal_for_bridge,
+        )?;
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_deadline = Instant::now() + INITIAL_NAVIGATION_DEADLINE;
         let startup_in_loop = Arc::clone(&self.startup);
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
+        let fatal_in_loop = Arc::clone(&fatal_outcome);
         let mut views = std::mem::take(&mut self.views);
         let code = event_loop.run_return(move |event, _, control_flow| {
             let terminal =
@@ -195,11 +314,11 @@ impl WkWebViewEngine {
                 *control_flow = ControlFlow::WaitUntil(navigation_deadline);
             }
             match event {
-                Event::UserEvent(AppWindowCommand::Quit) => {
+                Event::UserEvent(WkUserEvent::App(AppWindowCommand::Quit)) => {
                     views.clear();
                     *control_flow = ControlFlow::Exit;
                 }
-                Event::UserEvent(AppWindowCommand::Fatal) => {
+                Event::UserEvent(WkUserEvent::App(AppWindowCommand::Fatal)) => {
                     fatal_in_loop.store(true, Ordering::Release);
                     views.clear();
                     *control_flow = ControlFlow::Exit;
@@ -219,26 +338,43 @@ impl WkWebViewEngine {
         });
         stop_bridge.store(true, Ordering::Release);
         let _ = bridge.join();
-        if navigation_timed_out.load(Ordering::Acquire) {
-            return Err(WvError::Navigate(String::from(
-                "initial renderer navigation did not finish before the startup deadline",
-            )));
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if let Some(probe) = self.media_prompt_probe.take() {
+            probe.finish();
         }
-        if fatal.load(Ordering::Acquire) {
-            return Err(WvError::EventLoop(String::from(
-                "primary app session failed while the macOS event loop was live",
-            )));
-        }
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(WvError::EventLoop(format!(
-                "event loop exited with status {code}"
-            )))
+        let profile_result = self.profile.clean_shutdown();
+        let loop_result = app_loop_result(
+            navigation_timed_out.load(Ordering::Acquire),
+            fatal_outcome.load(Ordering::Acquire),
+            code,
+        );
+        match (loop_result, profile_result) {
+            (Ok(()), result) => result,
+            (Err(primary), Ok(())) => Err(primary),
+            (Err(primary), Err(cleanup)) => Err(WvError::EventLoop(format!(
+                "{primary}; profile cleanup failed: {cleanup}"
+            ))),
         }
     }
 
     fn create_internal(
+        &mut self,
+        spec: &WebviewSpec,
+        app_events: Option<Sender<AppWindowEvent>>,
+    ) -> Result<WebviewId, WvError> {
+        let result = self.create_internal_inner(spec, app_events);
+        if result.is_err()
+            && self.views.is_empty()
+            && let Err(cleanup) = self.profile.clean_shutdown()
+        {
+            return Err(WvError::EventLoop(format!(
+                "initial WebView creation failed; profile rollback failed: {cleanup}"
+            )));
+        }
+        result
+    }
+
+    fn create_internal_inner(
         &mut self,
         spec: &WebviewSpec,
         app_events: Option<Sender<AppWindowEvent>>,
@@ -261,11 +397,16 @@ impl WkWebViewEngine {
             .map_err(|error| WvError::Window(error.to_string()))?;
         mark_startup(&self.startup, StartupPhase::WindowCreated);
         let id = self.next_id;
+        let configuration = self.profile.configuration_for_view()?;
         let builder = guarded_default_media_builder(
             WebviewId(id),
             page_load_trace_handler(Arc::clone(&self.startup), app_events),
-        );
+            self.profile_test_media_seed_allow,
+        )
+        .with_webview_configuration(configuration);
         let webview = builder.build_initial_window(&spec.initial, &window)?;
+        let native_webview = webview.webview();
+        self.profile.verify_webview(&native_webview)?;
         mark_startup(&self.startup, StartupPhase::WebviewAttached);
         self.next_id += 1;
         self.views.insert(id, View { webview, window });
@@ -276,12 +417,6 @@ impl WkWebViewEngine {
         self.views
             .get(&id.0)
             .ok_or(WvError::UnknownWebview { id: id.0 })
-    }
-}
-
-impl Default for WkWebViewEngine {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -356,9 +491,10 @@ fn navigation_finished(startup: &Mutex<StartupTrace>) -> bool {
 
 fn spawn_app_wake_bridge(
     commands: Receiver<AppWindowCommand>,
-    proxy: EventLoopProxy<AppWindowCommand>,
+    proxy: EventLoopProxy<WkUserEvent>,
     stop: Arc<AtomicBool>,
     terminal_intent: Arc<AtomicBool>,
+    fatal_outcome: Arc<AtomicBool>,
 ) -> Result<thread::JoinHandle<()>, WvError> {
     thread::Builder::new()
         .name("keld-wv-macos-app-wake".to_owned())
@@ -367,7 +503,10 @@ fn spawn_app_wake_bridge(
                 match commands.recv_timeout(Duration::from_millis(100)) {
                     Ok(command) => {
                         let terminal = mark_terminal_intent(&terminal_intent, command);
-                        let _ = proxy.send_event(command);
+                        if command == AppWindowCommand::Fatal {
+                            fatal_outcome.store(true, Ordering::Release);
+                        }
+                        let _ = proxy.send_event(WkUserEvent::App(command));
                         if terminal {
                             return;
                         }
@@ -376,7 +515,8 @@ fn spawn_app_wake_bridge(
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => {
                         mark_terminal_intent(&terminal_intent, AppWindowCommand::Fatal);
-                        let _ = proxy.send_event(AppWindowCommand::Fatal);
+                        fatal_outcome.store(true, Ordering::Release);
+                        let _ = proxy.send_event(WkUserEvent::App(AppWindowCommand::Fatal));
                         return;
                     }
                 }
@@ -385,10 +525,30 @@ fn spawn_app_wake_bridge(
         .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
 }
 
-fn is_terminal_app_event(event: &Event<'_, AppWindowCommand>) -> bool {
+fn app_loop_result(navigation_timed_out: bool, fatal: bool, code: i32) -> Result<(), WvError> {
+    if fatal {
+        Err(WvError::EventLoop(String::from(
+            "fatal app session command",
+        )))
+    } else if navigation_timed_out {
+        Err(WvError::Navigate(String::from(
+            "initial renderer navigation did not finish before the startup deadline",
+        )))
+    } else if code == 0 {
+        Ok(())
+    } else {
+        Err(WvError::EventLoop(format!(
+            "event loop exited with status {code}"
+        )))
+    }
+}
+
+fn is_terminal_app_event(event: &Event<'_, WkUserEvent>) -> bool {
     matches!(
         event,
-        Event::UserEvent(AppWindowCommand::Quit | AppWindowCommand::Fatal)
+        Event::UserEvent(WkUserEvent::App(
+            AppWindowCommand::Quit | AppWindowCommand::Fatal
+        ))
     )
 }
 
@@ -413,7 +573,17 @@ fn page_load_trace_handler(
     startup: Arc<Mutex<StartupTrace>>,
     app_events: Option<Sender<AppWindowEvent>>,
 ) -> impl Fn(wry::PageLoadEvent, String) + 'static {
-    move |event, _url| {
+    move |event, url| {
+        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+        let _ = url;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if std::env::var_os("KELD_PROFILE_ACCEPTANCE_REPORT").is_some() {
+            let phase = match event {
+                wry::PageLoadEvent::Started => "started",
+                wry::PageLoadEvent::Finished => "finished",
+            };
+            eprintln!("KELD_KEL135_PAGE_LOAD event={phase} url={url}");
+        }
         let mut guard = match startup.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -554,6 +724,19 @@ mod startup_tests {
             &startup, expired, false
         ));
     }
+
+    #[test]
+    fn fatal_app_command_is_an_error_even_when_tao_exits_zero() {
+        assert!(matches!(
+            super::app_loop_result(false, true, 0),
+            Err(super::WvError::EventLoop(_))
+        ));
+        assert!(super::app_loop_result(false, false, 0).is_ok());
+        assert!(matches!(
+            super::app_loop_result(true, false, 0),
+            Err(super::WvError::Navigate(_))
+        ));
+    }
 }
 
 /// Opens a window from `spec` and runs until the user closes it.
@@ -565,7 +748,7 @@ mod startup_tests {
 ///
 /// Returns [`WvError`] if window or webview creation fails.
 pub fn run_hello(spec: &WebviewSpec) -> Result<(), WvError> {
-    let mut engine = WkWebViewEngine::new();
+    let mut engine = WkWebViewEngine::new_dev_ephemeral()?;
     engine.create(spec)?;
     engine.run_until_closed()
 }

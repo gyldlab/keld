@@ -270,6 +270,22 @@ impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl GuardedWryBuilder<wry::WebViewBuilder<'_>> {
+    /// Applies the engine-owned `WKWebView` configuration without exposing an
+    /// unguarded builder or replacing Keld's permission callback.
+    pub(crate) fn with_webview_configuration(
+        self,
+        configuration: objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>,
+    ) -> Self {
+        use wry::WebViewBuilderExtMacos;
+
+        Self {
+            inner: self.inner.with_webview_configuration(configuration),
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
     /// Applies initial content and performs the only Linux build operation
@@ -312,12 +328,18 @@ impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
 pub(crate) fn guarded_default_media_builder(
     id: WebviewId,
     on_page_load: impl Fn(wry::PageLoadEvent, String) + 'static,
+    profile_test_seed_allow: bool,
 ) -> GuardedWryBuilder<wry::WebViewBuilder<'static>> {
     let builder = wry::WebViewBuilder::new();
     #[cfg(debug_assertions)]
     let builder = builder.with_devtools(true);
     let builder = builder.with_on_page_load_handler(on_page_load);
-    with_guarded_media_permissions(builder, PermissionsManifest::default(), id)
+    with_guarded_media_permissions(
+        builder,
+        PermissionsManifest::default(),
+        id,
+        profile_test_seed_allow,
+    )
 }
 
 /// Installs a default-deny media-capture handler backed by `keld-guard`.
@@ -341,6 +363,7 @@ pub(crate) fn with_guarded_media_permissions<I>(
     installer: I,
     manifest: PermissionsManifest,
     id: WebviewId,
+    profile_test_seed_allow: bool,
 ) -> I::Guarded
 where
     I: WryPermissionInstaller,
@@ -349,7 +372,45 @@ where
     let callback = Box::new(move |kind| {
         let media_kind = wry_media_kind(kind);
         let decision = wry_media_decision(&manifest, principal, media_kind);
-        let response = wry_response(decision.as_ref());
+        let guarded_response = wry_response(decision.as_ref());
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions, target_os = "macos"))]
+        let profile_test_seed_prompt = std::env::var_os("KELD_PROFILE_TEST_MEDIA_SEED_PROMPT")
+            .is_some_and(|value| value == "1");
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions, target_os = "macos"))]
+        let response = if profile_test_seed_allow
+            && matches!(
+                media_kind,
+                MediaPermission::Camera | MediaPermission::Microphone
+            ) {
+            if profile_test_seed_prompt {
+                wry::PermissionResponse::Default
+            } else {
+                wry::PermissionResponse::Allow
+            }
+        } else {
+            guarded_response
+        };
+        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions, target_os = "macos")))]
+        let response = {
+            let _ = profile_test_seed_allow;
+            guarded_response
+        };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if std::env::var_os("KELD_PROFILE_ACCEPTANCE_REPORT").is_some() {
+            let kind = match media_kind {
+                MediaPermission::Camera => "camera",
+                MediaPermission::Microphone => "microphone",
+                MediaPermission::Other => "other",
+            };
+            let response = match response {
+                wry::PermissionResponse::Allow => "allow",
+                wry::PermissionResponse::Deny => "deny",
+                wry::PermissionResponse::Default => "prompt",
+            };
+            eprintln!(
+                "KELD_KEL135_MEDIA_CALLBACK kind={kind} response={response} principal={principal:?} guard_decision={decision:?} policy={manifest:?}"
+            );
+        }
         trace_linux_policy_decision(
             principal,
             media_kind,
@@ -789,6 +850,7 @@ mod wry_tests {
             },
             parse_manifest("{}").expect("empty manifest"),
             WebviewId(7),
+            false,
         );
         let callback = installed
             .lock()

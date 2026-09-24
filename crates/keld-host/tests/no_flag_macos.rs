@@ -26,6 +26,8 @@ const TITLE: &str = "KEL96 T1b Fixture";
 const MARKER: &str = "KEL96_T1B_EXACT_RENDERER_7e2d9b";
 const FORWARDED_LOG: &str = "KEL96_T2_FORWARDED_LOG";
 const EVENT_DEADLINE: Duration = Duration::from_secs(15);
+#[cfg(feature = "profile-test-hooks")]
+const MEDIA_PROMPT_DEADLINE: Duration = Duration::from_mins(2);
 const PROCESS_DEADLINE: Duration = Duration::from_secs(5);
 
 unsafe extern "C" {
@@ -755,12 +757,15 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
     listener
         .set_nonblocking(true)
         .expect("nonblocking navigation control");
-    let child = Command::new(stage.host())
+    let mut child = Command::new(stage.host())
+        .env("KELD_DEV_LEASE", "stdin-v1")
         .env("KELD_T1B_CONTROL", &control_path)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch navigation-timeout host");
+    let dev_lease_writer = child.stdin.take();
     let host_pid = child.id();
     let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
     control
@@ -782,6 +787,8 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
         .connected
         .recv_timeout(EVENT_DEADLINE)
         .expect("WKWebView requested stalled resource");
+    await_no_native_windows(host_pid, TITLE);
+    drop(dev_lease_writer);
     let output = wait_child_output(child, EVENT_DEADLINE);
     blocker
         .release
@@ -810,13 +817,16 @@ fn pre_ready_bun_crash_is_startup_failure_not_a_recovered_window() {
     let fixture = ProductFixture::new("t3-pre-ready-crash");
     let stage = fixture.stage();
     let attempt_marker = fixture.root.path().join("pre-ready-attempt");
-    let child = Command::new(stage.host())
+    let mut child = Command::new(stage.host())
+        .env("KELD_DEV_LEASE", "stdin-v1")
         .env("KELD_T3_CRASH_BEFORE_HELLO", "1")
         .env("KELD_T3_PRE_READY_MARKER", &attempt_marker)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch pre-Ready crash host");
+    let _dev_lease_writer = child.stdin.take();
     let host_pid = child.id();
     let output = wait_child_output(child, EVENT_DEADLINE);
     assert!(!output.status.success(), "pre-Ready crash became success");
@@ -1017,6 +1027,7 @@ fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
 
 struct RecoveryCycle {
     host: Option<Child>,
+    dev_lease_writer: Option<ChildStdin>,
     host_pid: u32,
     listener: UnixListener,
     window: Vec<u32>,
@@ -1052,12 +1063,15 @@ impl RecoveryCycle {
             .set_nonblocking(true)
             .expect("nonblocking T3 fixture control");
         let mut presentation = fixture.observe_initial_window();
-        let child = Command::new(stage.host())
+        let mut command = Command::new(stage.host());
+        command
+            .env("KELD_DEV_LEASE", "stdin-v1")
+            .stdin(Stdio::piped())
             .env("KELD_T1B_CONTROL", &control_path)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("launch T3 no-flag host");
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().expect("launch T3 no-flag host");
+        let dev_lease_writer = child.stdin.take();
         let host_pid = child.id();
         let mut cleanup = ShippingLaunchCleanup::new(child);
         let mut current = RecoveryGeneration::accept(&listener, "initial");
@@ -1070,6 +1084,7 @@ impl RecoveryCycle {
         cleanup.bun_group = Some(first_group);
         let mut cycle = Self {
             host: Some(cleanup.release()),
+            dev_lease_writer,
             host_pid,
             listener,
             window: Vec::new(),
@@ -1199,6 +1214,7 @@ impl RecoveryCycle {
     }
 
     fn wait_host(&mut self) -> Output {
+        drop(self.dev_lease_writer.take());
         wait_child_output(self.host.take().expect("live T3 host"), EVENT_DEADLINE)
     }
 
@@ -1914,19 +1930,16 @@ impl ProductFixture {
     }
 
     fn launch_cycle(&self, cycle: &str) -> LiveCycle {
-        self.launch_cycle_inner(cycle, false).0
+        self.launch_cycle_inner(cycle)
     }
 
     fn launch_leased_cycle(&self, cycle: &str) -> (LiveCycle, ChildStdin) {
-        let (cycle, lease) = self.launch_cycle_inner(cycle, true);
-        (cycle, lease.expect("leased cycle writer"))
+        let mut cycle = self.launch_cycle_inner(cycle);
+        let lease = cycle.dev_lease_writer.take().expect("leased cycle writer");
+        (cycle, lease)
     }
 
-    fn launch_cycle_inner(
-        &self,
-        cycle: &str,
-        with_dev_lease: bool,
-    ) -> (LiveCycle, Option<ChildStdin>) {
+    fn launch_cycle_inner(&self, cycle: &str) -> LiveCycle {
         let beacon = Beacon::bind(MARKER);
         fs::write(
             self.project.join("index.html"),
@@ -1954,17 +1967,14 @@ impl ProductFixture {
             .current_dir(&substitution_cwd)
             .env("KELD_T1B_CONTROL", &control_path)
             .env("KELD_BOOT_PATH", substitution_cwd.join("keld.boot.json"))
+            .env("KELD_DEV_LEASE", "stdin-v1")
+            .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if with_dev_lease {
-            command
-                .env("KELD_DEV_LEASE", "stdin-v1")
-                .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
-                .stdin(Stdio::piped());
-        }
         let presentation = self.observe_initial_window();
         let mut child = command.spawn().expect("launch staged no-flag host");
-        let lease_writer = child.stdin.take();
+        let dev_lease_writer = child.stdin.take();
         let host_pid = child.id();
         let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
         control
@@ -1973,6 +1983,7 @@ impl ProductFixture {
         let control_reader = BufReader::new(control.try_clone().expect("control reader clone"));
         let mut cycle = LiveCycle {
             host: Some(child),
+            dev_lease_writer,
             host_pid,
             guardian_pid: 0,
             bun_pid: 0,
@@ -2007,7 +2018,7 @@ impl ProductFixture {
         cycle.expect_line("ECHO1");
         cycle.expect_line("ECHO2");
         cycle.beacon.take().expect("beacon owner").assert_exact();
-        (cycle, lease_writer)
+        cycle
     }
 }
 
@@ -2568,6 +2579,7 @@ fn await_process_state(pid: u32, wanted: char) {
 
 struct LiveCycle {
     host: Option<Child>,
+    dev_lease_writer: Option<ChildStdin>,
     host_pid: u32,
     guardian_pid: u32,
     bun_pid: u32,
@@ -2640,6 +2652,7 @@ impl LiveCycle {
     }
 
     fn wait_host(&mut self) -> Output {
+        drop(self.dev_lease_writer.take());
         let mut child = self.host.take().expect("live host");
         let deadline = Instant::now() + EVENT_DEADLINE;
         loop {
@@ -2869,7 +2882,11 @@ fn wait_child_output_observing(
         stdout: stdout_reader.join().expect("stdout reader joins"),
         stderr: stderr_reader.join().expect("stderr reader joins"),
     };
-    assert!(!timed_out, "child exceeded exit deadline: {output:?}");
+    assert!(
+        !timed_out,
+        "child exceeded exit deadline (status={})",
+        output.status
+    );
     output
 }
 
@@ -3556,6 +3573,20 @@ fn await_same_native_windows(pid: u32, title: &str, expected: &[u32]) -> Vec<u32
     )
 }
 
+fn await_no_native_windows(pid: u32, title: &str) {
+    let windows = query_native_windows(
+        pid,
+        title,
+        NativeWindowScope::All,
+        NativeWindowExpectation::Exact(&[]),
+        "initial-navigation-window-release",
+    );
+    assert!(
+        windows.is_empty(),
+        "native window remained after startup rollback: {windows:?}"
+    );
+}
+
 #[derive(Clone, Copy)]
 enum NativeWindowScope {
     OnScreen,
@@ -3635,4 +3666,3759 @@ fn session_dirs_for(pid: u32) -> Vec<PathBuf> {
     .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
     .map(|entry| entry.path())
     .collect()
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires local Apple code-signing identities and a real signed host fixture"]
+fn kel135_macos_package_identity_uses_only_validated_running_signature_facts() {
+    let fixture = ProductFixture::new("kel135-signed-profile-host");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed fixture parent");
+    let signing_hashes = valid_macos_codesign_hashes();
+    assert!(
+        !signing_hashes.is_empty(),
+        "no valid Apple code-signing identity is available"
+    );
+
+    let app_a = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppA",
+        "dev.keld.fixture.profile.a",
+        &signing_hashes[0],
+    );
+    let app_b = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppB",
+        "dev.keld.fixture.profile.b",
+        &signing_hashes[0],
+    );
+    let identity_a = run_signed_identity_report(&app_a);
+    let identity_b = run_signed_identity_report(&app_b);
+    assert_eq!(identity_a["team_id"], identity_b["team_id"]);
+    assert_ne!(
+        identity_a["signing_identifier"],
+        identity_b["signing_identifier"]
+    );
+    assert_ne!(
+        identity_a["profile_identity"],
+        identity_b["profile_identity"]
+    );
+    assert_ne!(identity_a["store_uuid"], identity_b["store_uuid"]);
+
+    let mut other_publisher = None;
+    for (index, signer) in signing_hashes.iter().skip(1).enumerate() {
+        let candidate = build_signed_profile_app(
+            stage.root(),
+            &app_root,
+            &format!("OtherPublisher{index}"),
+            "dev.keld.fixture.profile.a",
+            signer,
+        );
+        let observed = run_signed_identity_report(&candidate);
+        if observed["team_id"] != identity_a["team_id"] {
+            other_publisher = Some((candidate, observed));
+            break;
+        }
+    }
+    let (_other_publisher_app, identity_other) = other_publisher
+        .expect("a valid different-publisher signing fixture is required for KEL-135/T3");
+    assert_eq!(
+        identity_a["signing_identifier"],
+        identity_other["signing_identifier"]
+    );
+    assert_ne!(identity_a["team_id"], identity_other["team_id"]);
+    assert_ne!(
+        identity_a["profile_identity"],
+        identity_other["profile_identity"]
+    );
+    assert_ne!(identity_a["store_uuid"], identity_other["store_uuid"]);
+
+    let ad_hoc_app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppAdHoc",
+        &format!("dev.keld.fixture.profile.adhoc.{}", std::process::id()),
+        "-",
+    );
+    let ad_hoc_verification = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&ad_hoc_app)
+        .output()
+        .expect("verify ad-hoc control signature");
+    assert!(
+        ad_hoc_verification.status.success(),
+        "ad-hoc control must have an intact signature: {ad_hoc_verification:?}"
+    );
+    let ad_hoc_output = Command::new(signed_host_executable(&ad_hoc_app))
+        .arg("--keld-profile-identity-fixture-v1")
+        .output()
+        .expect("run ad-hoc identity negative control");
+    let ad_hoc_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ad_hoc_output.stdout),
+        String::from_utf8_lossy(&ad_hoc_output.stderr)
+    );
+    assert!(!ad_hoc_output.status.success());
+    assert!(
+        !ad_hoc_text.contains("KELD_KEL135_SIGNED_IDENTITY"),
+        "non-Apple ad-hoc signature disclosed package identity: {ad_hoc_text}"
+    );
+
+    let invalid_app = app_root.join("ProfileAppInvalid");
+    fs::create_dir(&invalid_app).expect("create invalid-signature fixture directory");
+    fs::set_permissions(&invalid_app, fs::Permissions::from_mode(0o700))
+        .expect("protect invalid-signature fixture directory");
+    copy_profile_fixture_tree(&app_a, &invalid_app);
+    let invalid_executable = signed_host_executable(&invalid_app);
+    fs::set_permissions(&invalid_executable, fs::Permissions::from_mode(0o700))
+        .expect("enable signed Mach-O mutation control");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&invalid_executable)
+        .and_then(|mut file| file.write_all(&[0]))
+        .expect("mutate signed Mach-O bytes");
+    let invalid_verify = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(&invalid_executable)
+        .output()
+        .expect("verify tampered signed app");
+    assert!(
+        !invalid_verify.status.success(),
+        "tampered app signature verified"
+    );
+    let invalid_output = Command::new(&invalid_executable)
+        .arg("--keld-profile-identity-fixture-v1")
+        .output()
+        .expect("launch tampered app identity control");
+    let invalid_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&invalid_output.stdout),
+        String::from_utf8_lossy(&invalid_output.stderr)
+    );
+    assert!(
+        !invalid_text.contains("KELD_KEL135_SIGNED_IDENTITY"),
+        "invalid signature disclosed an app identity: {invalid_text}"
+    );
+    eprintln!(
+        "KELD_KEL135_MACOS_PACKAGE_IDENTITY macos={} team={} app_a_identifier={} app_b_identifier={} other_publisher_team={} other_publisher_identifier={} app_a_profile={} app_b_profile={} other_publisher_profile={} invalid_signature_rejected=true ad_hoc_rejected=true",
+        sw_vers_value("-productVersion"),
+        identity_a["team_id"],
+        identity_a["signing_identifier"],
+        identity_b["signing_identifier"],
+        identity_other["team_id"],
+        identity_other["signing_identifier"],
+        identity_a["profile_identity"],
+        identity_b["profile_identity"],
+        identity_other["profile_identity"],
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires local Apple code-signing identities and a real signed host fixture"]
+fn kel135_macos_signed_profiles_isolate_same_origin_state_across_launches() {
+    let fixture = ProductFixture::new("kel135-signed-profile-ab");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed fixture parent");
+    let signing_hashes = valid_macos_codesign_hashes();
+    let signer = signing_hashes
+        .first()
+        .expect("a valid Apple code-signing identity is required");
+    let fixture_id = format!("{}", std::process::id());
+    let app_a = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppA",
+        &format!("dev.keld.fixture.profile.a.{fixture_id}"),
+        signer,
+    );
+    let app_b = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppB",
+        &format!("dev.keld.fixture.profile.b.{fixture_id}"),
+        signer,
+    );
+    let identity_a = run_signed_identity_report(&app_a);
+    let identity_b = run_signed_identity_report(&app_b);
+    assert_eq!(identity_a["team_id"], identity_b["team_id"]);
+    assert_ne!(
+        identity_a["signing_identifier"],
+        identity_b["signing_identifier"]
+    );
+    assert_ne!(identity_a["store_uuid"], identity_b["store_uuid"]);
+
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let mut origin = ProfileOrigin::new();
+
+    let seeded = origin.run_profile(
+        &app_a,
+        &support_root,
+        "seed",
+        "app-a-seed",
+        Some("keld-kel135-A-state"),
+    );
+    assert_eq!(
+        seeded.get("local"),
+        Some(&String::from("keld-kel135-A-state"))
+    );
+    assert_eq!(
+        seeded.get("cookie"),
+        Some(&String::from("keld-kel135-A-state"))
+    );
+    assert_eq!(
+        seeded.get("idb"),
+        Some(&String::from("keld-kel135-A-state"))
+    );
+    assert_eq!(
+        seeded.get("cache"),
+        Some(&String::from("keld-kel135-A-state"))
+    );
+    assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+
+    let persisted_a = origin.run_profile(&app_a, &support_root, "read", "app-a-read", None);
+    for key in ["local", "cookie", "idb", "cache", "sw"] {
+        assert_eq!(
+            persisted_a.get(key),
+            seeded.get(key),
+            "same app {key} state"
+        );
+    }
+
+    let isolated_b = origin.run_profile(&app_b, &support_root, "read", "app-b-read", None);
+    assert_eq!(isolated_b.get("local").map(String::as_str), Some(""));
+    assert_eq!(isolated_b.get("cookie").map(String::as_str), Some(""));
+    assert_eq!(isolated_b.get("idb").map(String::as_str), Some(""));
+    assert_eq!(isolated_b.get("cache").map(String::as_str), Some(""));
+    assert_eq!(isolated_b.get("sw").map(String::as_str), Some("false"));
+
+    let log_a = fs::read_to_string(support_root.join("app-a-read.log"))
+        .expect("read signed app A report log");
+    let log_b = fs::read_to_string(support_root.join("app-b-read.log"))
+        .expect("read signed app B report log");
+    assert_store_report_matches(&log_a, &identity_a["store_uuid"]);
+    assert_store_report_matches(&log_b, &identity_b["store_uuid"]);
+    let purge_crash = run_signed_purge_crash_probe(&app_a, &support_root);
+    assert_eq!(purge_crash.status.code(), Some(86));
+    assert!(
+        String::from_utf8_lossy(&purge_crash.stderr).contains("after_removal_callback=true"),
+        "purge interruption did not occur after WebKit's removal barrier"
+    );
+    let purge_a = run_signed_purge_report(&app_a, &support_root);
+    let purge_b = run_signed_purge_report(&app_b, &support_root);
+    assert!(purge_a.contains(&format!("store_uuid={}", identity_a["store_uuid"])));
+    assert!(purge_a.contains("store_absent=true"));
+    assert!(purge_b.contains(&format!("store_uuid={}", identity_b["store_uuid"])));
+    assert!(purge_b.contains("store_absent=true"));
+    eprintln!(
+        "KELD_KEL135_MACOS_APP_AB os={} webkit={} origin={} app_a_team={} app_a_identifier={} app_a_uuid={} app_b_team={} app_b_identifier={} app_b_uuid={} state=localStorage,cookie,indexedDB,CacheStorage,serviceWorker lifecycle=clean-stop purge=callback-and-enumeration-and-recovery negative_control=same-origin-empty",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        origin.address,
+        identity_a["team_id"],
+        identity_a["signing_identifier"],
+        identity_a["store_uuid"],
+        identity_b["team_id"],
+        identity_b["signing_identifier"],
+        identity_b["store_uuid"],
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn exercise_fsynced_purge_phase_recovery(
+    stage: &keld_cli::boot::DevBootStage,
+    app_root: &Path,
+    support_root: &Path,
+    signer: &str,
+    origin: &mut ProfileOrigin,
+    phase: &str,
+) -> String {
+    let app = build_signed_profile_app(
+        stage.root(),
+        app_root,
+        &format!("ProfileAppPurgeRecovery-{phase}"),
+        &format!(
+            "dev.keld.fixture.profile.purge.{}.{}",
+            std::process::id(),
+            phase.to_ascii_lowercase()
+        ),
+        signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let phase_support = support_root.join(phase);
+    fs::create_dir(&phase_support).expect("create isolated purge recovery metadata root");
+    fs::set_permissions(&phase_support, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated purge recovery metadata root");
+    let nonce = format!("keld-kel135-purge-{phase}");
+    let seeded = origin.run_profile(
+        &app,
+        &phase_support,
+        "seed",
+        &format!("purge-{phase}-seed"),
+        Some(&nonce),
+    );
+    assert_eq!(seeded.get("local"), Some(&nonce));
+    let seed_log = fs::read_to_string(phase_support.join(format!("purge-{phase}-seed.log")))
+        .expect("read purge recovery seed store report");
+    assert_store_report_matches(&seed_log, &identity["store_uuid"]);
+    let interrupted = run_signed_purge_phase_crash_probe(&app, &phase_support, phase);
+    assert_eq!(
+        interrupted.status.code(),
+        Some(88),
+        "phase {phase} missed crash"
+    );
+    assert!(
+        String::from_utf8_lossy(&interrupted.stderr)
+            .contains(&format!("after_fsynced_phase={phase}")),
+        "phase {phase} crash was not after its durable intent write"
+    );
+    let resumed = run_signed_purge_report(&app, &phase_support);
+    assert!(resumed.contains(&format!("store_uuid={}", identity["store_uuid"])));
+    assert!(resumed.contains("store_absent=true"));
+    let presence = run_signed_store_presence_report(&app);
+    assert!(presence.contains(&format!("store_uuid={}", identity["store_uuid"])));
+    assert!(presence.contains("present=false"));
+    format!("{phase}:crash88,recovered,enumerated-absent")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires Apple signing and real WKWebsiteDataStore purge callbacks"]
+fn kel135_macos_purge_recovers_after_fsynced_later_phase_writes() {
+    let fixture = ProductFixture::new("kel135-signed-purge-later-phase-recovery");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed purge recovery fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed purge recovery fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("a valid Apple code-signing identity is required");
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated purge recovery support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated purge recovery support root");
+    let mut origin = ProfileOrigin::new();
+    let results = [
+        "StoreAbsent",
+        "ReverseRemoved",
+        "ForwardRemoved",
+        "Inactive",
+    ]
+    .into_iter()
+    .map(|phase| {
+        exercise_fsynced_purge_phase_recovery(
+            &stage,
+            &app_root,
+            &support_root,
+            &signer,
+            &mut origin,
+            phase,
+        )
+    })
+    .collect::<Vec<_>>();
+    eprintln!(
+        "KELD_KEL135_MACOS_PURGE_PHASE_RECOVERY os={} webkit={} phases={} exact_enumeration=true",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        results.join(","),
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires a second standard macOS account, an authenticated sudo session, and a signed host fixture"]
+fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
+    let username = std::env::var("KELD_KEL135_SECOND_USER")
+        .expect("set KELD_KEL135_SECOND_USER to the temporary standard macOS login");
+    assert!(
+        !username.is_empty()
+            && username
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'),
+        "second-user login name must be lowercase ASCII, digits, or underscore"
+    );
+    let second_uid = account_numeric_value(&username);
+    let first_uid = current_account_numeric_id();
+    assert!(
+        first_uid != second_uid,
+        "second user UID must differ from the current user"
+    );
+    assert!(second_uid >= 501, "second user is a system/service account");
+    let groups = account_groups(&username);
+    assert!(
+        !groups.split_whitespace().any(|group| group == "admin"),
+        "second account must be an ordinary non-admin user"
+    );
+    let home = account_home(&username);
+    let current_home = std::env::var_os("HOME").map(PathBuf::from);
+    assert!(
+        home.starts_with("/Users/") && Some(&home) != current_home.as_ref(),
+        "second account must have its own local home directory: {}",
+        home.display()
+    );
+
+    let sudo_probe = run_as_local_user(&username, "/usr/bin/id", &["-u"], &[]);
+    assert!(
+        sudo_probe.status.success(),
+        "authenticate this Mac's administrator account in Terminal with `sudo -v`, then rerun this acceptance row"
+    );
+    let run_as_uid_matches = String::from_utf8_lossy(&sudo_probe.stdout)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        == Some(second_uid);
+    assert!(
+        run_as_uid_matches,
+        "run-as identity must match the isolated standard user"
+    );
+
+    let fixture = ProductFixture::new("kel135-second-user-profile");
+    let stage = fixture.stage();
+    let shared_temp = tempfile::Builder::new()
+        .prefix("keld-kel135-second-user-")
+        .tempdir_in("/Users/Shared")
+        .expect("create cross-user-readable signed fixture directory");
+    fs::set_permissions(shared_temp.path(), fs::Permissions::from_mode(0o755))
+        .expect("allow the standard test account to traverse its private fixture directory");
+    let first_profile_temp = tempfile::Builder::new()
+        .prefix("keld-kel135-first-profile-")
+        .tempdir()
+        .expect("create persistent first-user test metadata root");
+    fs::set_permissions(first_profile_temp.path(), fs::Permissions::from_mode(0o700))
+        .expect("protect first-user profile metadata root");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("an Apple Development signing identity is required");
+    let app = build_signed_profile_app(
+        stage.root(),
+        shared_temp.path(),
+        "ProfileAppSecondUser",
+        &format!(
+            "dev.keld.fixture.profile.second-user.{}",
+            std::process::id()
+        ),
+        &signer,
+    );
+    make_signed_fixture_readable_by_standard_users(&app);
+    let first_identity = run_signed_identity_report(&app);
+
+    let mut origin = ProfileOrigin::new();
+    let user_fixture_root = home
+        .join("Library/Caches/Keld/KEL-135")
+        .join(format!("second-user-{}", std::process::id()));
+    let user_temp = user_fixture_root.join("tmp");
+    let user_profile_root = user_temp.join("profile");
+    let mut preflight_cleanup = MacSecondUserPreflightCleanup {
+        username: username.clone(),
+        user_fixture_root: user_fixture_root.clone(),
+        armed: true,
+    };
+    let create_roots = run_as_local_user(
+        &username,
+        "/bin/mkdir",
+        &["-p", path_text(&user_temp), path_text(&user_profile_root)],
+        &[],
+    );
+    assert!(
+        create_roots.status.success(),
+        "create owner-private second-user profile roots: {create_roots:?}"
+    );
+    let second_codesign = run_as_local_user(
+        &username,
+        "/usr/bin/codesign",
+        &["--verify", "--deep", "--strict", path_text(&app)],
+        &[],
+    );
+    assert!(
+        second_codesign.status.success(),
+        "second user cannot verify the readable signed fixture: {second_codesign:?}"
+    );
+    let second_identity = run_signed_identity_report_as_user(&username, &user_temp, &app);
+    for field in [
+        "team_id",
+        "signing_identifier",
+        "profile_identity",
+        "store_uuid",
+    ] {
+        assert_eq!(
+            first_identity.get(field),
+            second_identity.get(field),
+            "the OS user is the only identity dimension changed"
+        );
+    }
+
+    let shared = shared_temp.keep();
+    let first_profile_root = first_profile_temp.keep();
+    eprintln!(
+        "KELD_KEL135_MACOS_SECOND_USER_RECOVERY app={} first_profile_root={} second_profile_root={}",
+        app.display(),
+        first_profile_root.display(),
+        user_profile_root.display(),
+    );
+    let mut cleanup = MacSecondUserProfileCleanup {
+        username: username.clone(),
+        user_temp: user_temp.clone(),
+        user_fixture_root: user_fixture_root.clone(),
+        user_profile_root: user_profile_root.clone(),
+        app: app.clone(),
+        first_profile_root: first_profile_root.clone(),
+        shared_fixture_root: shared.clone(),
+        first_profile_purged: false,
+        second_profile_purged: false,
+        armed: true,
+    };
+    preflight_cleanup.armed = false;
+    let seeded = origin.run_profile(
+        &app,
+        &first_profile_root,
+        "seed",
+        "same-user-seed",
+        Some("keld-kel135-second-user-state"),
+    );
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            seeded.get(key).map(String::as_str),
+            Some("keld-kel135-second-user-state"),
+            "same-user positive control for {key}"
+        );
+    }
+    assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+
+    let (second_user_state, second_user_output) = origin.run_profile_as_user(
+        &username,
+        &user_temp,
+        &user_profile_root,
+        &app,
+        "read",
+        "other-user-read",
+        None,
+    );
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            second_user_state.get(key).map(String::as_str),
+            Some(""),
+            "second standard user's same-origin {key} must start empty"
+        );
+    }
+    assert_eq!(
+        second_user_state.get("sw").map(String::as_str),
+        Some("false")
+    );
+    let second_user_log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&second_user_output.stdout),
+        String::from_utf8_lossy(&second_user_output.stderr)
+    );
+    assert_store_report_matches(&second_user_log, &first_identity["store_uuid"]);
+
+    let second_purge =
+        run_signed_purge_report_as_user(&username, &user_temp, &user_profile_root, &app);
+    assert!(
+        second_purge.status.success()
+            && String::from_utf8_lossy(&second_purge.stdout)
+                .contains(&format!("store_uuid={}", first_identity["store_uuid"]))
+            && String::from_utf8_lossy(&second_purge.stdout).contains("store_absent=true"),
+        "second user's exact-identity purge failed: {second_purge:?}"
+    );
+    cleanup.second_profile_purged = true;
+    let first_after = origin.run_profile(
+        &app,
+        &first_profile_root,
+        "read",
+        "same-user-after-other-user-purge",
+        None,
+    );
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            first_after.get(key),
+            seeded.get(key),
+            "second-user access and purge must not alter the first user's {key}"
+        );
+    }
+    assert_eq!(first_after.get("sw"), seeded.get("sw"));
+    let first_purge = run_signed_purge_report(&app, &first_profile_root);
+    assert!(first_purge.contains("store_absent=true"));
+    cleanup.first_profile_purged = true;
+
+    let user_root_cleanup = run_as_local_user(
+        &username,
+        "/bin/rm",
+        &["-rf", "--", path_text(&user_fixture_root)],
+        &[],
+    );
+    assert!(
+        user_root_cleanup.status.success(),
+        "remove second-user test roots: {user_root_cleanup:?}"
+    );
+    fs::remove_dir_all(&first_profile_root)
+        .expect("remove first-user profile metadata only after WebKit purge verification");
+    fs::remove_dir_all(&shared)
+        .expect("remove signed fixture after both users pass exact-profile purge");
+    cleanup.armed = false;
+    eprintln!(
+        "KELD_KEL135_MACOS_SECOND_USER_SAFE_TO_DELETE_ACCOUNT exact_purge_a=true exact_purge_b=true second_user_test_root_removed=true"
+    );
+    eprintln!(
+        "KELD_KEL135_MACOS_SECOND_USER os={} webkit={} origin={} team={} identifier={} profile_identity={} store_uuid={} uid_a_and_b_distinct=true state=localStorage,cookie,IndexedDB,CacheStorage,serviceWorker user_b_same_origin=empty user_a_after_b=preserved lifecycle=clean-stop purge=both-user-exact-identity platform_path_acl_claim=none",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        origin.address,
+        first_identity["team_id"],
+        first_identity["signing_identifier"],
+        first_identity["profile_identity"],
+        first_identity["store_uuid"],
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+struct MacSecondUserPreflightCleanup {
+    username: String,
+    user_fixture_root: PathBuf,
+    armed: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+impl Drop for MacSecondUserPreflightCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let removed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_as_local_user(
+                &self.username,
+                "/bin/rm",
+                &["-rf", "--", path_text(&self.user_fixture_root)],
+                &[],
+            )
+            .status
+            .success()
+        }));
+        if matches!(removed, Ok(true)) {
+            eprintln!(
+                "KELD_KEL135_MACOS_SECOND_USER_SAFE_TO_DELETE_ACCOUNT preflight_no_webkit_store=true"
+            );
+        } else {
+            eprintln!(
+                "KELD_KEL135_MACOS_SECOND_USER_CLEANUP_INCOMPLETE preflight_test_root_retained=true"
+            );
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+struct MacSecondUserProfileCleanup {
+    username: String,
+    user_temp: PathBuf,
+    user_fixture_root: PathBuf,
+    user_profile_root: PathBuf,
+    app: PathBuf,
+    first_profile_root: PathBuf,
+    shared_fixture_root: PathBuf,
+    first_profile_purged: bool,
+    second_profile_purged: bool,
+    armed: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+impl Drop for MacSecondUserProfileCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let second_ok = if self.second_profile_purged {
+                true
+            } else {
+                let second = run_signed_purge_report_as_user(
+                    &self.username,
+                    &self.user_temp,
+                    &self.user_profile_root,
+                    &self.app,
+                );
+                second.status.success()
+                    && String::from_utf8_lossy(&second.stdout).contains("store_absent=true")
+            };
+            let first_ok = if self.first_profile_purged {
+                true
+            } else {
+                run_signed_purge_report(&self.app, &self.first_profile_root)
+                    .contains("store_absent=true")
+            };
+            let roots_removed = if second_ok && first_ok {
+                let user_root_removed = run_as_local_user(
+                    &self.username,
+                    "/bin/rm",
+                    &["-rf", "--", path_text(&self.user_fixture_root)],
+                    &[],
+                )
+                .status
+                .success();
+                let first_root_removed = if self.first_profile_root.exists() {
+                    fs::remove_dir_all(&self.first_profile_root).is_ok()
+                } else {
+                    true
+                };
+                let shared_root_removed = if self.shared_fixture_root.exists() {
+                    fs::remove_dir_all(&self.shared_fixture_root).is_ok()
+                } else {
+                    true
+                };
+                user_root_removed && first_root_removed && shared_root_removed
+            } else {
+                false
+            };
+            second_ok && first_ok && roots_removed
+        }));
+        match cleanup {
+            Ok(true) => eprintln!(
+                "KELD_KEL135_MACOS_SECOND_USER_SAFE_TO_DELETE_ACCOUNT exact_purge_a=true exact_purge_b=true second_user_test_root_removed=true failure_cleanup=true"
+            ),
+            _ => eprintln!(
+                "KELD_KEL135_MACOS_SECOND_USER_CLEANUP_INCOMPLETE retain_account_and_profile_metadata=true"
+            ),
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+fn kel135_macos_dev_profiles_are_ephemeral_across_launches() {
+    let fixture = ProductFixture::new("kel135-dev-ephemeral-profile");
+    let stage = fixture.stage();
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let mut origin = ProfileOrigin::new();
+
+    let seeded = origin.run_ephemeral_profile(
+        stage.host(),
+        &support_root,
+        "seed",
+        "dev-seed",
+        Some("keld-kel135-dev-state"),
+    );
+    assert_eq!(
+        seeded.get("local").map(String::as_str),
+        Some("keld-kel135-dev-state")
+    );
+    assert_eq!(
+        seeded.get("cookie").map(String::as_str),
+        Some("keld-kel135-dev-state")
+    );
+    assert_eq!(
+        seeded.get("idb").map(String::as_str),
+        Some("keld-kel135-dev-state")
+    );
+    assert_eq!(
+        seeded.get("cache").map(String::as_str),
+        Some("keld-kel135-dev-state")
+    );
+    assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+
+    let next_launch =
+        origin.run_ephemeral_profile(stage.host(), &support_root, "read", "dev-read", None);
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            next_launch.get(key).map(String::as_str),
+            Some(""),
+            "dev {key}"
+        );
+    }
+    assert_eq!(next_launch.get("sw").map(String::as_str), Some("false"));
+    let first_log = fs::read_to_string(support_root.join("dev-seed.log"))
+        .expect("read first ephemeral store evidence");
+    let second_log = fs::read_to_string(support_root.join("dev-read.log"))
+        .expect("read second ephemeral store evidence");
+    assert_ephemeral_store_report(&first_log);
+    assert_ephemeral_store_report(&second_log);
+    eprintln!(
+        "KELD_KEL135_MACOS_DEV_EPHEMERAL os={} webkit={} origin={} first_launch_state=stored next_launch_state=empty store_identifier=none persistent=false",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        origin.address,
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires the real macOS WKWebView event loop"]
+fn kel135_macos_fatal_fixture_command_reports_failure_after_cleanup() {
+    let fixture = ProductFixture::new("kel135-macos-fatal-profile-fixture");
+    let stage = fixture.stage();
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create fatal fixture support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect fatal fixture support root");
+    let mut origin = ProfileOrigin::new();
+    let log_path = support_root.join("fatal-fixture.log");
+    let log = fs::File::create(&log_path).expect("create fatal fixture log");
+    let stderr = log.try_clone().expect("clone fatal fixture log");
+    let mut child = Command::new(stage.host())
+        .arg("--keld-profile-webview-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", &support_root)
+        .env("KELD_PROFILE_FIXTURE_EPHEMERAL", "1")
+        .env("KELD_PROFILE_FIXTURE_FATAL_ON_STDIN", "1")
+        .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
+        .env(
+            "KELD_PROFILE_FIXTURE_URL",
+            format!("http://{}/read", origin.address),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("launch real macOS fatal fixture host");
+    origin
+        .wait_for_report("read", None)
+        .expect("fatal fixture rendered before command");
+    drop(child.stdin.take());
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll fatal fixture host") {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "fatal fixture did not exit");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!status.success(), "Fatal was reported as a successful Quit");
+    let output = fs::read_to_string(&log_path).expect("read fatal fixture result");
+    assert_ephemeral_store_report(&output);
+    assert!(output.contains("fatal app session command"), "{output}");
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires local Apple code-signing identities and a real signed host fixture"]
+fn kel135_macos_same_signed_profile_rejects_concurrent_owner() {
+    let fixture = ProductFixture::new("kel135-signed-profile-concurrency");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("a valid Apple code-signing identity is required");
+    let app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppConcurrent",
+        &format!("dev.keld.fixture.profile.concurrent.{}", std::process::id()),
+        &signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let mut origin = ProfileOrigin::new();
+
+    let mut first = spawn_profile_host(
+        signed_host_executable(&app),
+        &support_root,
+        &origin.address,
+        "seed",
+        "concurrency-owner",
+    );
+    let state = origin
+        .wait_for_report("seed", Some("keld-kel135-concurrency-state"))
+        .expect("owning app rendered the shared origin");
+    assert_eq!(
+        state.get("local").map(String::as_str),
+        Some("keld-kel135-concurrency-state")
+    );
+
+    let second = Command::new(signed_host_executable(&app))
+        .arg("--keld-profile-webview-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", &support_root)
+        .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
+        .env(
+            "KELD_PROFILE_FIXTURE_URL",
+            format!("http://{}/unused", origin.address),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch competing same-identity host");
+    assert!(!second.status.success(), "second same-profile host started");
+    let second_error = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second_error.contains("already in use"),
+        "competing host failed for an unexpected reason: {second_error}"
+    );
+    stop_profile_host(&mut first);
+    let log = fs::read_to_string(support_root.join("concurrency-owner.log"))
+        .expect("read active owner WebKit store evidence");
+    assert_store_report_matches(&log, &identity["store_uuid"]);
+    let purge = run_signed_purge_report(&app, &support_root);
+    assert!(purge.contains("store_absent=true"));
+    eprintln!(
+        "KELD_KEL135_MACOS_CONCURRENCY os={} webkit={} team={} identifier={} uuid={} first_owner=active second_owner=rejected_by_lock cleanup=exact-identity-purge",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+struct MacProfilePurgeCleanup {
+    apps: Vec<PathBuf>,
+    support_root: PathBuf,
+    fixture_root: PathBuf,
+    armed: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct MediaRestartProof {
+    seed: MediaSeedProof,
+    continuity: MediaContinuityProof,
+    denial: MediaDenialProof,
+    same_origin: bool,
+    nonce_survived: bool,
+    allow_capture: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct MediaSeedProof {
+    qualified_capture: bool,
+    site_prompt_observed: bool,
+    same_page_repeat_capture: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct MediaContinuityProof {
+    clean_restart: bool,
+    same_signed_identity: bool,
+    same_store: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct MediaDenialProof {
+    tcc_authorized: bool,
+    guarded_callback: bool,
+    no_capture_or_prompt: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+impl MediaRestartProof {
+    fn is_complete(&self) -> bool {
+        self.seed.qualified_capture
+            && self.seed.site_prompt_observed
+            && self.seed.same_page_repeat_capture
+            && self.continuity.clean_restart
+            && self.continuity.same_signed_identity
+            && self.continuity.same_store
+            && self.denial.tcc_authorized
+            && self.same_origin
+            && self.nonce_survived
+            && self.denial.guarded_callback
+            && self.denial.no_capture_or_prompt
+            && self.allow_capture
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone)]
+struct MediaRecordedRun {
+    report: std::collections::BTreeMap<String, String>,
+    log: String,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+struct MediaScenario {
+    kind: &'static str,
+    track: &'static str,
+    seed: MediaRecordedRun,
+    denied: MediaRecordedRun,
+    allowed: MediaRecordedRun,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn same_present_run_fact(runs: &[&MediaRecordedRun], key: &str) -> bool {
+    let Some(first) = runs[0].report.get(key).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    runs.iter().all(|run| run.report.get(key) == Some(first))
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn same_verified_signed_run(runs: &[&MediaRecordedRun]) -> bool {
+    [
+        "host_executable",
+        "host_sha256",
+        "host_cdhash",
+        "signed_team_id",
+        "signed_signing_identifier",
+        "signed_profile_identity",
+        "signed_store_uuid",
+    ]
+    .iter()
+    .all(|key| same_present_run_fact(runs, key))
+        && runs.iter().all(|run| {
+            run.report
+                .get("signed_signature_validated_before_identity_read")
+                .map(String::as_str)
+                == Some("true")
+        })
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn distinct_clean_host_runs(runs: &[&MediaRecordedRun]) -> bool {
+    let pids = runs
+        .iter()
+        .map(|run| run.report.get("host_pid").filter(|value| !value.is_empty()))
+        .collect::<Vec<_>>();
+    pids.iter().all(Option::is_some)
+        && pids
+            .iter()
+            .enumerate()
+            .all(|(index, pid)| pids.iter().skip(index + 1).all(|other| pid != other))
+        && runs
+            .iter()
+            .all(|run| run.report.get("host_clean_exit").map(String::as_str) == Some("true"))
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn media_callback_matches(log: &str, kind: &str, response: &str) -> bool {
+    log.matches("KELD_KEL135_MEDIA_CALLBACK").count() == 1
+        && log.contains(&format!(
+            "KELD_KEL135_MEDIA_CALLBACK kind={kind} response={response}"
+        ))
+        && log.contains("principal=Webview {")
+        && log.contains("guard_decision=Some(Deny(")
+        && log.contains("policy=PermissionsManifest { app: {} }")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn media_qualified_label(
+    kind: &str,
+    track: &str,
+    report: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let expected_live = format!("resolved-{track}-live");
+    if report.get("media").map(String::as_str) != Some(expected_live.as_str()) {
+        return None;
+    }
+    if kind == "camera" && report.get("frame_progress").map(String::as_str) != Some("progressed") {
+        return None;
+    }
+    let label = report
+        .get("device_label_hex")
+        .filter(|value| !value.is_empty())?;
+    let label = media_label_from_hex(label);
+    let required_class = if kind == "camera" {
+        "os-virtual-camo"
+    } else {
+        "physical-builtin"
+    };
+    (selected_media_source_class(kind, &label) == required_class).then_some(label)
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn media_restart_proof(
+    kind: &str,
+    track: &str,
+    nonce: &str,
+    seed: &MediaRecordedRun,
+    restarted: &MediaRecordedRun,
+    allowed: &MediaRecordedRun,
+) -> MediaRestartProof {
+    let seed_report = &seed.report;
+    let restart_report = &restarted.report;
+    let allow_report = &allowed.report;
+    let seed_label = media_qualified_label(kind, track, seed_report);
+    let allow_label = media_qualified_label(kind, track, allow_report);
+    let expected_live = format!("resolved-{track}-live");
+    let seed_sheet_count = media_probe_sheet_count(seed_report);
+    let runs = [seed, restarted, allowed];
+    let same_app = same_verified_signed_run(&runs);
+    let same_store = same_present_run_fact(&runs, "store_actual_identifier")
+        && same_present_run_fact(&runs, "store_profile_identity")
+        && seed_report
+            .get("store_actual_identifier")
+            .is_some_and(|value| value != "none")
+        && runs.iter().all(|run| {
+            run.report.get("store_persistent").map(String::as_str) == Some("true")
+                && run.report.get("store_actual_identifier")
+                    == run.report.get("store_expected_store_uuid")
+                && run.report.get("store_actual_identifier") == run.report.get("signed_store_uuid")
+                && run.report.get("store_profile_identity")
+                    == run.report.get("signed_profile_identity")
+        });
+    let same_origin = same_present_run_fact(&runs, "origin");
+    MediaRestartProof {
+        seed: MediaSeedProof {
+            qualified_capture: seed_label.is_some()
+                && media_callback_matches(&seed.log, kind, "prompt"),
+            site_prompt_observed: seed_sheet_count > 0,
+            same_page_repeat_capture: seed_report.get("media_repeat").map(String::as_str)
+                == Some(expected_live.as_str())
+                && seed_report.get("repeat_label_hex") == seed_report.get("device_label_hex")
+                && (kind != "camera"
+                    || seed_report.get("repeat_frame_progress").map(String::as_str)
+                        == Some("progressed"))
+                && seed.log.matches("KELD_KEL135_MEDIA_CALLBACK").count() == 1,
+        },
+        continuity: MediaContinuityProof {
+            clean_restart: distinct_clean_host_runs(&runs),
+            same_signed_identity: same_app,
+            same_store,
+        },
+        same_origin,
+        nonce_survived: seed_report.get("local").map(String::as_str) == Some(nonce)
+            && restart_report.get("local").map(String::as_str) == Some(nonce)
+            && allow_report.get("local").map(String::as_str) == Some(nonce),
+        denial: MediaDenialProof {
+            tcc_authorized: media_probe_tcc_authorized(restart_report, kind)
+                && media_probe_tcc_authorized(allow_report, kind),
+            guarded_callback: media_callback_matches(&restarted.log, kind, "deny"),
+            no_capture_or_prompt: restart_report.get("media").map(String::as_str)
+                == Some("error-NotAllowedError")
+                && restart_report
+                    .get("device_label_hex")
+                    .is_some_and(String::is_empty)
+                && restart_report.get("media_repeat").map(String::as_str) == Some("not-requested")
+                && seed_sheet_count > 0
+                && media_probe_sheet_count(restart_report) == 0,
+        },
+        allow_capture: allow_label.is_some()
+            && seed_label == allow_label
+            && media_callback_matches(&allowed.log, kind, "allow")
+            && media_probe_sheet_count(allow_report) == 0,
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct DevMediaProof {
+    seed: DevSeedProof,
+    continuity: DevContinuityProof,
+    fresh: DevFreshProof,
+    denial: DevDenialProof,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct DevSeedProof {
+    live_track: bool,
+    nonce_committed: bool,
+    second_view_saw_nonce: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct DevContinuityProof {
+    same_signed_identity: bool,
+    same_origin: bool,
+    clean_restart: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct DevFreshProof {
+    ephemeral: bool,
+    nonce_absent: bool,
+    tcc_authorized: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy, Default)]
+struct DevDenialProof {
+    guarded_callback: bool,
+    no_capture: bool,
+    no_prompt: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+impl DevMediaProof {
+    fn is_complete(&self) -> bool {
+        self.seed.live_track
+            && self.seed.nonce_committed
+            && self.seed.second_view_saw_nonce
+            && self.continuity.same_signed_identity
+            && self.continuity.same_origin
+            && self.continuity.clean_restart
+            && self.fresh.ephemeral
+            && self.fresh.nonce_absent
+            && self.fresh.tcc_authorized
+            && self.denial.guarded_callback
+            && self.denial.no_capture
+            && self.denial.no_prompt
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn dev_media_proof(
+    kind: &str,
+    track: &str,
+    nonce: &str,
+    seed: &MediaRecordedRun,
+    restarted: &MediaRecordedRun,
+) -> DevMediaProof {
+    let seed_report = &seed.report;
+    let restart_report = &restarted.report;
+    let expected_live = format!("resolved-{track}-live");
+    let runs = [seed, restarted];
+    DevMediaProof {
+        seed: DevSeedProof {
+            live_track: media_qualified_label(kind, track, seed_report).is_some()
+                && media_callback_matches(&seed.log, kind, "allow")
+                && seed_report.get("media_repeat").map(String::as_str)
+                    == Some(expected_live.as_str())
+                && seed_report.get("repeat_label_hex") == seed_report.get("device_label_hex")
+                && (kind != "camera"
+                    || seed_report.get("repeat_frame_progress").map(String::as_str)
+                        == Some("progressed")),
+            nonce_committed: seed_report.get("local").map(String::as_str) == Some(nonce),
+            second_view_saw_nonce: seed_report.get("reuse_local").map(String::as_str)
+                == Some(nonce)
+                && seed_report.get("reuse_media").map(String::as_str) == Some("not-requested"),
+        },
+        continuity: DevContinuityProof {
+            same_signed_identity: same_verified_signed_run(&runs),
+            same_origin: same_present_run_fact(&runs, "origin"),
+            clean_restart: distinct_clean_host_runs(&runs),
+        },
+        fresh: DevFreshProof {
+            ephemeral: seed_report.get("store_persistent").map(String::as_str) == Some("false")
+                && restart_report.get("store_persistent").map(String::as_str) == Some("false")
+                && seed_report
+                    .get("store_actual_identifier")
+                    .map(String::as_str)
+                    == Some("none")
+                && restart_report
+                    .get("store_actual_identifier")
+                    .map(String::as_str)
+                    == Some("none")
+                && seed_report.get("store_mode").map(String::as_str) == Some("ephemeral-dev")
+                && restart_report.get("store_mode").map(String::as_str) == Some("ephemeral-dev"),
+            nonce_absent: restart_report.get("local").map(String::as_str) == Some(""),
+            tcc_authorized: media_probe_tcc_authorized(restart_report, kind),
+        },
+        denial: DevDenialProof {
+            guarded_callback: media_callback_matches(&restarted.log, kind, "deny"),
+            no_capture: restart_report.get("media").map(String::as_str)
+                == Some("error-NotAllowedError")
+                && restart_report
+                    .get("device_label_hex")
+                    .is_some_and(String::is_empty),
+            no_prompt: media_probe_sheet_count(restart_report) == 0,
+        },
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn media_probe_sheet_count(report: &std::collections::BTreeMap<String, String>) -> usize {
+    assert_eq!(
+        report.get("probe_scope").map(String::as_str),
+        Some("process-wide")
+    );
+    report
+        .get("probe_sheet_count")
+        .expect("signed-host sheet count")
+        .parse()
+        .expect("numeric signed-host sheet count")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn media_probe_tcc_authorized(
+    report: &std::collections::BTreeMap<String, String>,
+    kind: &str,
+) -> bool {
+    let key = match kind {
+        "camera" => "probe_camera_tcc",
+        "microphone" => "probe_microphone_tcc",
+        _ => panic!("unknown media kind in TCC probe"),
+    };
+    report.get(key).map(String::as_str) == Some("3")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn media_label_from_hex(value: &str) -> String {
+    let bytes = value.as_bytes();
+    assert_eq!(bytes.len() % 2, 0, "device label hex has an odd length");
+    let decoded = bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).expect("ASCII device label hex");
+            u8::from_str_radix(pair, 16).expect("valid device label hex")
+        })
+        .collect::<Vec<_>>();
+    String::from_utf8(decoded).expect("UTF-8 device label")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn camo_extension_matches_reviewed_version() -> bool {
+    let extension = "/Applications/Camo Studio.app/Contents/Library/SystemExtensions/com.reincubate.macos.cam.avextension.systemextension/Contents/Info.plist";
+    let read_plist = |key| {
+        Command::new("/usr/libexec/PlistBuddy")
+            .args(["-c", &format!("Print :{key}"), extension])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let extensions = Command::new("/usr/bin/systemextensionsctl")
+        .arg("list")
+        .output()
+        .ok()
+        .filter(|output| output.status.success());
+    read_plist("CFBundleShortVersionString").as_deref() == Some("2.4.0")
+        && read_plist("CFBundleVersion").as_deref() == Some("17515")
+        && extensions.is_some_and(|output| {
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.trim_start().starts_with('*')
+                    && line.contains("Q248YREB53")
+                    && line.contains("com.reincubate.macos.cam.avextension (2.4.0/17515)")
+                    && line.contains("[activated enabled]")
+            })
+        })
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn selected_media_source_class(kind: &str, label: &str) -> &'static str {
+    let output = Command::new("/usr/sbin/system_profiler")
+        .args(["SPCameraDataType", "SPAudioDataType", "-json"])
+        .output()
+        .expect("read independent OS media-device inventory");
+    assert!(
+        output.status.success(),
+        "system_profiler media census failed"
+    );
+    let inventory: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse OS media-device inventory");
+    match kind {
+        "camera" => {
+            let camera = inventory["SPCameraDataType"]
+                .as_array()
+                .and_then(|devices| {
+                    devices
+                        .iter()
+                        .find(|device| device["_name"].as_str() == Some(label))
+                })
+                .expect("selected camera label appears in OS device inventory");
+            if label == "Camo Camera"
+                && camera["spcamera_unique-id"].as_str() == Some("Camo")
+                && camo_extension_matches_reviewed_version()
+            {
+                "os-virtual-camo"
+            } else {
+                "camera-inventory-matched-unclassified"
+            }
+        }
+        "microphone" => {
+            let audio = inventory["SPAudioDataType"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|section| section["_items"].as_array().into_iter().flatten())
+                .find(|device| {
+                    device["_name"].as_str() == Some(label)
+                        && device["coreaudio_device_input"].as_u64().unwrap_or(0) > 0
+                })
+                .expect("selected microphone label appears as an OS input device");
+            match audio["coreaudio_device_transport"].as_str() {
+                Some("coreaudio_device_type_builtin") => "physical-builtin",
+                Some("coreaudio_device_type_virtual") => "os-virtual",
+                _ => "audio-inventory-matched-unclassified",
+            }
+        }
+        _ => panic!("unknown media source kind"),
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+fn kel135_macos_media_restart_oracle_rejects_missing_boundaries() {
+    let complete = MediaRestartProof {
+        seed: MediaSeedProof {
+            qualified_capture: true,
+            site_prompt_observed: true,
+            same_page_repeat_capture: true,
+        },
+        continuity: MediaContinuityProof {
+            clean_restart: true,
+            same_signed_identity: true,
+            same_store: true,
+        },
+        denial: MediaDenialProof {
+            tcc_authorized: true,
+            guarded_callback: true,
+            no_capture_or_prompt: true,
+        },
+        same_origin: true,
+        nonce_survived: true,
+        allow_capture: true,
+    };
+    assert!(complete.is_complete());
+    let query_only = MediaRestartProof {
+        nonce_survived: true,
+        ..MediaRestartProof::default()
+    };
+    assert!(!query_only.is_complete());
+    let mut missing_seed = complete;
+    missing_seed.seed.qualified_capture = false;
+    assert!(!missing_seed.is_complete());
+    let mut wrong_store = complete;
+    wrong_store.continuity.same_store = false;
+    assert!(!wrong_store.is_complete());
+    let mut retained_page = complete;
+    retained_page.continuity.clean_restart = false;
+    assert!(!retained_page.is_complete());
+    let mut allow_response = complete;
+    allow_response.denial.no_capture_or_prompt = false;
+    assert!(!allow_response.is_complete());
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+impl Drop for MacProfilePurgeCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut all_purged = true;
+            for app in &self.apps {
+                let purged = std::panic::catch_unwind(|| {
+                    run_signed_purge_report(app, &self.support_root).contains("store_absent=true")
+                })
+                .unwrap_or(false);
+                all_purged &= purged;
+            }
+            if !all_purged {
+                return false;
+            }
+            fs::remove_dir_all(&self.fixture_root).is_ok()
+        }));
+        match cleanup {
+            Ok(true) => eprintln!(
+                "KELD_KEL135_MACOS_MEDIA_FAILURE_CLEANUP exact_purge=true fixture_removed=true"
+            ),
+            _ => eprintln!(
+                "KELD_KEL135_MACOS_MEDIA_FAILURE_CLEANUP incomplete=true retained_root={}",
+                self.fixture_root.display()
+            ),
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires Apple signing, live camera/microphone devices, and operator acceptance of the test site's permission prompt"]
+fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
+    let fixture = ProductFixture::new("kel135-signed-profile-saved-media");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("a valid Apple code-signing identity is required");
+    let app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppSavedMedia",
+        &format!("dev.keld.fixture.profile.media.{}", std::process::id()),
+        &signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let fixture_root = fixture.root.keep();
+    let mut cleanup = MacProfilePurgeCleanup {
+        apps: vec![app.clone()],
+        support_root: support_root.clone(),
+        fixture_root: fixture_root.clone(),
+        armed: true,
+    };
+    let mut origin = ProfileOrigin::new();
+    let omitted = origin.run_media_profile(
+        &app,
+        &support_root,
+        "media-nonce-omitted",
+        "media-nonce-omitted",
+        None,
+        None,
+    );
+    assert_eq!(omitted.get("local").map(String::as_str), Some(""));
+    assert_eq!(
+        omitted.get("media").map(String::as_str),
+        Some("not-requested")
+    );
+    let omitted_log = fs::read_to_string(support_root.join("media-nonce-omitted.log"))
+        .expect("read omitted-seed control log");
+    assert_store_report_matches(&omitted_log, &identity["store_uuid"]);
+    let nonce = format!("keld-kel135-media-{}", std::process::id());
+    let mut evidence = Vec::new();
+    let mut scenarios = Vec::new();
+
+    for (kind, track) in [("camera", "video"), ("microphone", "audio")] {
+        let seeded = origin.run_media_profile(
+            &app,
+            &support_root,
+            &format!("media-seed-{kind}"),
+            &format!("media-seed-{kind}"),
+            Some(&nonce),
+            Some("prompt"),
+        );
+        assert_eq!(seeded.get("local"), Some(&nonce));
+        assert_eq!(
+            seeded.get("media").map(String::as_str),
+            Some(&format!("resolved-{track}-live")[..]),
+            "qualified live {kind} seed"
+        );
+        assert_eq!(
+            seeded.get("media_repeat").map(String::as_str),
+            Some(&format!("resolved-{track}-live")[..]),
+            "same-page {kind} grant reuse control"
+        );
+        let selected_label = seeded
+            .get("device_label_hex")
+            .filter(|label| !label.is_empty())
+            .expect("seed capture reported its selected device label");
+        let selected_label = media_label_from_hex(selected_label);
+        assert_eq!(
+            seeded
+                .get("repeat_label_hex")
+                .map(|label| media_label_from_hex(label)),
+            Some(selected_label.clone()),
+            "same-page {kind} repeat selected a different device"
+        );
+        let selected_class = selected_media_source_class(kind, &selected_label);
+        let qualified_class = if kind == "camera" {
+            "os-virtual-camo"
+        } else {
+            "physical-builtin"
+        };
+        assert_eq!(
+            selected_class, qualified_class,
+            "selected {kind} source requires independent qualification: {selected_label}"
+        );
+        if kind == "camera" {
+            assert_eq!(
+                seeded.get("frame_progress").map(String::as_str),
+                Some("progressed"),
+                "camera seed did not deliver advancing video frames"
+            );
+            assert_eq!(
+                seeded.get("repeat_frame_progress").map(String::as_str),
+                Some("progressed"),
+                "same-page camera repeat did not deliver advancing video frames"
+            );
+        }
+        assert!(
+            media_probe_sheet_count(&seeded) > 0,
+            "public Prompt seed did not produce an observable AppKit sheet for {kind}"
+        );
+        let seed_log = fs::read_to_string(support_root.join(format!("media-seed-{kind}.log")))
+            .expect("read saved-media seed callback evidence");
+        assert!(
+            seed_log.contains(&format!(
+                "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=prompt"
+            )),
+            "seed callback did not defer {kind} to WebKit's user permission prompt"
+        );
+        let seed_callback_count = seed_log.matches("KELD_KEL135_MEDIA_CALLBACK").count();
+        assert_eq!(
+            seed_callback_count, 1,
+            "same-page {kind} repeat unexpectedly invoked a new delegate decision"
+        );
+        assert_store_report_matches(&seed_log, &identity["store_uuid"]);
+
+        let denied = origin.run_media_profile(
+            &app,
+            &support_root,
+            &format!("media-deny-{kind}"),
+            &format!("media-deny-{kind}"),
+            None,
+            None,
+        );
+        assert_eq!(denied.get("local"), Some(&nonce));
+        assert_eq!(
+            denied.get("media").map(String::as_str),
+            Some("error-NotAllowedError"),
+            "restarted Keld policy denies after {kind} Allow seed"
+        );
+        assert!(
+            media_probe_tcc_authorized(&denied, kind),
+            "signed denying host lacked pre-request {kind} TCC authorization"
+        );
+        assert_eq!(
+            media_probe_sheet_count(&denied),
+            0,
+            "restarted {kind} denial presented an AppKit permission sheet"
+        );
+        let deny_log = fs::read_to_string(support_root.join(format!("media-deny-{kind}.log")))
+            .expect("read saved-media deny callback evidence");
+        assert!(
+            deny_log.contains(&format!(
+                "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=deny"
+            )),
+            "Keld's denying callback did not run for saved {kind}"
+        );
+        assert_eq!(
+            deny_log.matches("KELD_KEL135_MEDIA_CALLBACK").count(),
+            1,
+            "restarted {kind} request did not reach the guarded callback exactly once"
+        );
+        assert!(
+            deny_log.contains("principal=Webview {")
+                && deny_log.contains("guard_decision=Some(Deny(")
+                && deny_log.contains("policy=PermissionsManifest { app: {} }"),
+            "restarted {kind} denial lacks requesting principal or guard decision provenance"
+        );
+        let allow_phase = format!("media-allow-{kind}");
+        let allowed = origin.run_media_profile(
+            &app,
+            &support_root,
+            &allow_phase,
+            &allow_phase,
+            None,
+            Some("allow"),
+        );
+        assert_eq!(allowed.get("local"), Some(&nonce));
+        assert!(
+            media_probe_tcc_authorized(&allowed, kind),
+            "signed Allow counterfactual host lacked pre-request {kind} TCC authorization"
+        );
+        assert_eq!(
+            allowed.get("media").map(String::as_str),
+            Some(&format!("resolved-{track}-live")[..]),
+            "fixture Allow must falsify the restarted {kind} denial oracle"
+        );
+        let allowed_label = allowed
+            .get("device_label_hex")
+            .filter(|label| !label.is_empty())
+            .expect("Allow capture reported its selected device label");
+        let allowed_label = media_label_from_hex(allowed_label);
+        assert_eq!(
+            selected_media_source_class(kind, &allowed_label),
+            selected_class,
+            "Allow control used a different source class"
+        );
+        if kind == "camera" {
+            assert_eq!(
+                allowed.get("frame_progress").map(String::as_str),
+                Some("progressed"),
+                "Allow control camera capture did not deliver advancing video frames"
+            );
+        }
+        let allow_log = fs::read_to_string(support_root.join(format!("{allow_phase}.log")))
+            .expect("read Allow counterfactual log");
+        assert_store_report_matches(&allow_log, &identity["store_uuid"]);
+        assert!(
+            allow_log.contains(&format!(
+                "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=allow"
+            )) && allow_log.contains("guard_decision=Some(Deny("),
+            "Allow counterfactual did not override a real guarded denial"
+        );
+
+        let ephemeral = origin.run_ephemeral_media_profile(
+            stage.host(),
+            &support_root,
+            &format!("media-control-{kind}"),
+            &format!("media-control-{kind}"),
+        );
+        assert_eq!(
+            ephemeral.get("media").map(String::as_str),
+            Some("error-NotAllowedError"),
+            "fresh ephemeral {kind} control must deny through Keld's callback"
+        );
+        let seed_permission = seeded
+            .get("permission_after")
+            .map_or("missing", String::as_str);
+        let restart_permission = denied
+            .get("permission_before")
+            .map_or("missing", String::as_str);
+        let fresh_permission = ephemeral
+            .get("permission_before")
+            .map_or("missing", String::as_str);
+        let control_log =
+            fs::read_to_string(support_root.join(format!("media-control-{kind}.log")))
+                .expect("read fresh ephemeral media permission control");
+        assert_ephemeral_store_report(&control_log);
+        assert_store_report_matches(&deny_log, &identity["store_uuid"]);
+        evidence.push(format!(
+            "{kind}=live-track,seed-label:{selected_label},allow-label:{allowed_label},source-class:{selected_class},seed-after:{seed_permission},restart-before:{restart_permission},fresh-profile-before:{fresh_permission},restart-deny"
+        ));
+        scenarios.push(MediaScenario {
+            kind,
+            track,
+            seed: MediaRecordedRun {
+                report: seeded,
+                log: seed_log,
+            },
+            denied: MediaRecordedRun {
+                report: denied,
+                log: deny_log,
+            },
+            allowed: MediaRecordedRun {
+                report: allowed,
+                log: allow_log,
+            },
+        });
+    }
+
+    let mut wrong_origin = ProfileOrigin::new();
+    assert_ne!(wrong_origin.address, origin.address);
+    let changed_origin = wrong_origin.run_media_profile(
+        &app,
+        &support_root,
+        "media-nonce-wrong-origin",
+        "media-nonce-wrong-origin",
+        None,
+        None,
+    );
+    assert_eq!(changed_origin.get("local").map(String::as_str), Some(""));
+    let changed_origin_log = fs::read_to_string(support_root.join("media-nonce-wrong-origin.log"))
+        .expect("read changed-origin control log");
+    assert_store_report_matches(&changed_origin_log, &identity["store_uuid"]);
+
+    let other_app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppOtherMedia",
+        &format!(
+            "dev.keld.fixture.profile.other-media.{}",
+            std::process::id()
+        ),
+        &signer,
+    );
+    cleanup.apps.push(other_app.clone());
+    let other_identity = run_signed_identity_report(&other_app);
+    assert_ne!(other_identity["store_uuid"], identity["store_uuid"]);
+    let changed_profile = origin.run_media_profile(
+        &other_app,
+        &support_root,
+        "media-nonce-wrong-profile",
+        "media-nonce-wrong-profile",
+        None,
+        None,
+    );
+    assert_eq!(changed_profile.get("local").map(String::as_str), Some(""));
+    let changed_profile_log =
+        fs::read_to_string(support_root.join("media-nonce-wrong-profile.log"))
+            .expect("read changed-profile control log");
+    assert_store_report_matches(&changed_profile_log, &other_identity["store_uuid"]);
+
+    let omitted = MediaRecordedRun {
+        report: omitted,
+        log: omitted_log,
+    };
+    let changed_origin = MediaRecordedRun {
+        report: changed_origin,
+        log: changed_origin_log,
+    };
+    let changed_profile = MediaRecordedRun {
+        report: changed_profile,
+        log: changed_profile_log,
+    };
+
+    let other_purge = run_signed_purge_report(&other_app, &support_root);
+    assert!(other_purge.contains("store_absent=true"));
+    let purge = run_signed_purge_report(&app, &support_root);
+    assert!(purge.contains("store_absent=true"));
+    cleanup.armed = false;
+    fs::remove_dir_all(&fixture_root)
+        .expect("remove media fixture after exact WebKit purge verification");
+    for scenario in &scenarios {
+        let kind = scenario.kind;
+        let evaluate = |seed: &MediaRecordedRun, restarted: &MediaRecordedRun| {
+            media_restart_proof(
+                kind,
+                scenario.track,
+                &nonce,
+                seed,
+                restarted,
+                &scenario.allowed,
+            )
+        };
+        assert!(
+            evaluate(&scenario.seed, &scenario.denied).is_complete(),
+            "{kind} restart-denial proof is incomplete"
+        );
+        let omitted_result = evaluate(&omitted, &scenario.denied);
+        assert!(!omitted_result.seed.qualified_capture && !omitted_result.is_complete());
+        let changed_origin_result = evaluate(&scenario.seed, &changed_origin);
+        assert!(!changed_origin_result.same_origin && !changed_origin_result.is_complete());
+        let changed_profile_result = evaluate(&scenario.seed, &changed_profile);
+        assert!(
+            !changed_profile_result.continuity.same_store && !changed_profile_result.is_complete()
+        );
+        let retained_page_result = evaluate(&scenario.seed, &scenario.seed);
+        assert!(
+            !retained_page_result.continuity.clean_restart && !retained_page_result.is_complete()
+        );
+        let allow_result = evaluate(&scenario.seed, &scenario.allowed);
+        assert!(
+            !allow_result.denial.no_capture_or_prompt && !allow_result.is_complete(),
+            "fixture Allow {kind} capture falsely passed the denial oracle"
+        );
+    }
+    eprintln!(
+        "KELD_KEL135_MACOS_MEDIA_SAVED_GRANT macos_media_contract=public-grant-restart-v1 os={} webkit={} team={} identifier={} uuid={} origin={} nonce_store=indexeddb nonce_survived=true seed_decision=WKPermissionDecisionPrompt site_prompt_observed=true post_restart_policy=deny denial_site_prompt_absent=true tcc_status=authorized allow_counterfactual=captured controls=omitted-seed,changed-origin,changed-store,retained-page,allow-response-rejected results={}",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        origin.address,
+        evidence.join(","),
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_persistent_media_query_modes(
+    origin: &mut ProfileOrigin,
+    app: &Path,
+    support_root: &Path,
+    store_uuid: &str,
+    nonce: &str,
+) -> (Vec<String>, (String, String)) {
+    let mut states = Vec::new();
+    let mut baseline = None;
+    for (policy, seed) in [("deny", Some(nonce)), ("prompt", None), ("allow", None)] {
+        let phase = format!("query-{policy}");
+        let report = origin.run_media_profile(
+            app,
+            support_root,
+            &phase,
+            &phase,
+            seed,
+            if policy == "deny" { None } else { Some(policy) },
+        );
+        assert_eq!(
+            report.get("local").map(String::as_str),
+            Some(nonce),
+            "{policy} lost persistent nonce"
+        );
+        assert_eq!(
+            report.get("media").map(String::as_str),
+            Some("not-requested")
+        );
+        let log = fs::read_to_string(support_root.join(format!("{phase}.log")))
+            .expect("read signed query-only log");
+        assert_store_report_matches(&log, store_uuid);
+        assert!(
+            !log.contains("KELD_KEL135_MEDIA_CALLBACK"),
+            "query-only {policy} unexpectedly invoked a capture permission callback"
+        );
+        let camera = report.get("camera").expect("camera query result");
+        let microphone = report.get("microphone").expect("microphone query result");
+        for state in [camera.as_str(), microphone.as_str()] {
+            assert!(
+                matches!(state, "prompt" | "granted" | "denied"),
+                "invalid permission query state: {state}"
+            );
+        }
+        let pair = (camera.clone(), microphone.clone());
+        if let Some(expected) = &baseline {
+            assert_eq!(&pair, expected, "callback mode changed query state");
+        } else {
+            baseline = Some(pair);
+        }
+        states.push(format!("{policy}:camera={camera},microphone={microphone}"));
+    }
+    (states, baseline.expect("persistent query baseline"))
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires a local Apple signing identity and a real signed WKWebView host"]
+fn kel135_macos_media_permission_query_is_observed_without_capture() {
+    let fixture = ProductFixture::new("kel135-signed-profile-media-query");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("a valid Apple code-signing identity is required");
+    let app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppMediaQuery",
+        &format!(
+            "dev.keld.fixture.profile.media-query.{}",
+            std::process::id()
+        ),
+        &signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let fixture_root = fixture.root.keep();
+    let mut cleanup = MacProfilePurgeCleanup {
+        apps: vec![app.clone()],
+        support_root: support_root.clone(),
+        fixture_root: fixture_root.clone(),
+        armed: true,
+    };
+    let mut origin = ProfileOrigin::new();
+    let nonce = format!("keld-kel135-query-{}", std::process::id());
+    let (mut states, baseline) = run_persistent_media_query_modes(
+        &mut origin,
+        &app,
+        &support_root,
+        &identity["store_uuid"],
+        &nonce,
+    );
+
+    let ephemeral = origin.run_ephemeral_media_profile(
+        stage.host(),
+        &support_root,
+        "query-ephemeral",
+        "query-ephemeral",
+    );
+    assert_eq!(ephemeral.get("local").map(String::as_str), Some(""));
+    assert_eq!(
+        ephemeral.get("media").map(String::as_str),
+        Some("not-requested")
+    );
+    let ephemeral_log = fs::read_to_string(support_root.join("query-ephemeral.log"))
+        .expect("read ephemeral query-only log");
+    assert_ephemeral_store_report(&ephemeral_log);
+    assert!(
+        !ephemeral_log.contains("KELD_KEL135_MEDIA_CALLBACK"),
+        "ephemeral query unexpectedly invoked a capture permission callback: {ephemeral_log}"
+    );
+    let camera = ephemeral
+        .get("camera")
+        .expect("ephemeral camera query result");
+    let microphone = ephemeral
+        .get("microphone")
+        .expect("ephemeral microphone query result");
+    assert_eq!(
+        &(camera.clone(), microphone.clone()),
+        &baseline,
+        "ephemeral and persistent query states differ before any capture request"
+    );
+    states.push(format!("ephemeral:camera={camera},microphone={microphone}"));
+    let purge = run_signed_purge_report(&app, &support_root);
+    assert!(purge.contains("store_absent=true"));
+    cleanup.armed = false;
+    fs::remove_dir_all(&fixture_root).expect("remove query fixture after exact WebKit purge");
+    eprintln!(
+        "KELD_KEL135_MACOS_MEDIA_QUERY os={} webkit={} team={} identifier={} uuid={} origin={} persistent_nonce=true ephemeral_nonce=false callback_count=0 capture=none states={}",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        origin.address,
+        states.join(","),
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn checked_dev_seed_report(
+    report: &std::collections::BTreeMap<String, String>,
+    log: &str,
+    nonce: &str,
+    kind: &str,
+    track: &str,
+) -> (&'static str, String) {
+    assert_eq!(report.get("local").map(String::as_str), Some(nonce));
+    assert_eq!(report.get("reuse_local").map(String::as_str), Some(nonce));
+    assert_eq!(
+        report.get("reuse_media").map(String::as_str),
+        Some("not-requested")
+    );
+    let live = format!("resolved-{track}-live");
+    for field in ["media", "media_repeat"] {
+        assert_eq!(report.get(field).map(String::as_str), Some(live.as_str()));
+    }
+    if kind == "camera" {
+        for field in ["frame_progress", "repeat_frame_progress"] {
+            assert_eq!(report.get(field).map(String::as_str), Some("progressed"));
+        }
+    }
+    let label = media_label_from_hex(report.get("device_label_hex").expect("dev device label"));
+    assert!(!label.is_empty());
+    let source_class = selected_media_source_class(kind, &label);
+    assert_eq!(
+        source_class,
+        if kind == "camera" {
+            "os-virtual-camo"
+        } else {
+            "physical-builtin"
+        },
+        "dev {kind} selected an unqualified source"
+    );
+    assert_ephemeral_store_report(log);
+    assert!(media_callback_matches(log, kind, "allow"));
+    assert_eq!(media_probe_sheet_count(report), 0);
+    (source_class, label)
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_dev_media_kind(
+    origin: &mut ProfileOrigin,
+    app: &Path,
+    support_root: &Path,
+    nonce: &str,
+    kind: &str,
+    track: &str,
+) -> String {
+    let seed_phase = format!("media-seed-{kind}");
+    let seeded = origin.run_profile_executable(
+        signed_host_executable(app),
+        support_root,
+        &seed_phase,
+        &format!("dev-{seed_phase}"),
+        Some(nonce),
+        true,
+        None,
+        Some("allow-reuse"),
+    );
+    let seed_log = fs::read_to_string(support_root.join(format!("dev-{seed_phase}.log")))
+        .expect("read dev seed log");
+    let (source_class, seed_label) =
+        checked_dev_seed_report(&seeded, &seed_log, nonce, kind, track);
+
+    let deny_phase = format!("media-deny-{kind}");
+    let denied = origin.run_profile_executable(
+        signed_host_executable(app),
+        support_root,
+        &deny_phase,
+        &format!("dev-{deny_phase}"),
+        None,
+        true,
+        None,
+        None,
+    );
+    assert_eq!(denied.get("local").map(String::as_str), Some(""));
+    assert_eq!(
+        denied.get("media").map(String::as_str),
+        Some("error-NotAllowedError")
+    );
+    assert!(media_probe_tcc_authorized(&denied, kind));
+    assert_eq!(media_probe_sheet_count(&denied), 0);
+    let deny_log = fs::read_to_string(support_root.join(format!("dev-{deny_phase}.log")))
+        .expect("read dev denial log");
+    assert_ephemeral_store_report(&deny_log);
+    assert_eq!(deny_log.matches("KELD_KEL135_MEDIA_CALLBACK").count(), 1);
+    assert!(
+        deny_log.contains(&format!("kind={kind} response=deny"))
+            && deny_log.contains("principal=Webview {")
+            && deny_log.contains("guard_decision=Some(Deny(")
+            && deny_log.contains("policy=PermissionsManifest { app: {} }")
+    );
+
+    let seed_run = MediaRecordedRun {
+        report: seeded,
+        log: seed_log,
+    };
+    let denied_run = MediaRecordedRun {
+        report: denied,
+        log: deny_log,
+    };
+    assert!(
+        dev_media_proof(kind, track, nonce, &seed_run, &denied_run).is_complete(),
+        "dev {kind} fresh-launch denial proof is incomplete"
+    );
+    let mut reused_store_run = seed_run.clone();
+    reused_store_run.report.insert(
+        String::from("local"),
+        seed_run.report["reuse_local"].clone(),
+    );
+    reused_store_run.report.insert(
+        String::from("media"),
+        seed_run.report["reuse_media"].clone(),
+    );
+    let reused_result = dev_media_proof(kind, track, nonce, &seed_run, &reused_store_run);
+    assert!(
+        !reused_result.fresh.nonce_absent && !reused_result.is_complete(),
+        "reusing dev A's nonpersistent store falsely passed the fresh-store oracle"
+    );
+    let retained_result = dev_media_proof(kind, track, nonce, &seed_run, &seed_run);
+    assert!(
+        !retained_result.continuity.clean_restart && !retained_result.is_complete(),
+        "retaining dev A's granted page falsely passed the lifecycle oracle"
+    );
+    format!(
+        "{kind}=source:{source_class},label:{seed_label},seed-live,second-view-nonce,fresh-deny"
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires a local Apple signing identity and live camera/microphone devices"]
+fn kel135_macos_dev_media_grants_do_not_survive_fresh_ephemeral_launch() {
+    let fixture = ProductFixture::new("kel135-signed-dev-media-ephemeral");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed dev media fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("a valid Apple code-signing identity is required");
+    let app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppDevMedia",
+        &format!("dev.keld.fixture.profile.dev-media.{}", std::process::id()),
+        &signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let mut origin = ProfileOrigin::new();
+    let nonce = format!("keld-kel135-dev-media-{}", std::process::id());
+    let evidence = [("camera", "video"), ("microphone", "audio")]
+        .into_iter()
+        .map(|(kind, track)| {
+            run_dev_media_kind(&mut origin, &app, &support_root, &nonce, kind, track)
+        })
+        .collect::<Vec<_>>();
+    eprintln!(
+        "KELD_KEL135_MACOS_DEV_MEDIA macos_media_contract=public-grant-restart-v1 os={} webkit={} team={} identifier={} origin={} nonce_store=indexeddb seed_store=ephemeral second_view_store=reused fresh_store=ephemeral fresh_nonce_absent=true fresh_denial=guarded/no-track/no-sheet controls=reused-store,retained-page results={}",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        origin.address,
+        evidence.join(","),
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "requires local Apple code-signing identities and a real signed host fixture"]
+fn kel135_macos_binding_recovers_after_process_crash() {
+    let fixture = ProductFixture::new("kel135-signed-profile-binding-recovery");
+    let stage = fixture.stage();
+    let app_root = fixture.root.path().join("signed-apps");
+    fs::create_dir(&app_root).expect("create signed fixture parent");
+    fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+        .expect("protect signed fixture parent");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("a valid Apple code-signing identity is required");
+    let app = build_signed_profile_app(
+        stage.root(),
+        &app_root,
+        "ProfileAppBindingRecovery",
+        &format!("dev.keld.fixture.profile.binding.{}", std::process::id()),
+        &signer,
+    );
+    let identity = run_signed_identity_report(&app);
+    let support_root = fixture.root.path().join("application-support");
+    fs::create_dir(&support_root).expect("create isolated support root");
+    fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+        .expect("protect isolated support root");
+    let interrupted = Command::new(signed_host_executable(&app))
+        .arg("--keld-profile-webview-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", &support_root)
+        .env("KELD_PROFILE_TEST_BINDING_CRASH_AFTER_REVERSE", "1")
+        .env("KELD_PROFILE_FIXTURE_URL", "http://127.0.0.1:1/unused")
+        .stdin(Stdio::null())
+        .output()
+        .expect("launch binding interruption fixture");
+    assert_eq!(interrupted.status.code(), Some(87));
+    assert!(
+        String::from_utf8_lossy(&interrupted.stderr).contains("after_reverse_record=true"),
+        "binding interruption did not follow a durable reverse record"
+    );
+
+    let mut origin = ProfileOrigin::new();
+    let seeded = origin.run_profile(
+        &app,
+        &support_root,
+        "seed",
+        "binding-recovered-seed",
+        Some("keld-kel135-binding-recovered"),
+    );
+    assert_eq!(
+        seeded.get("local").map(String::as_str),
+        Some("keld-kel135-binding-recovered")
+    );
+    let report = fs::read_to_string(support_root.join("binding-recovered-seed.log"))
+        .expect("read recovered binding store report");
+    assert_store_report_matches(&report, &identity["store_uuid"]);
+    let purge = run_signed_purge_report(&app, &support_root);
+    assert!(purge.contains("store_absent=true"));
+    let mut recovered_phases = vec!["after-reverse-record"];
+    for (phase, expected_status) in [("store-created", 88), ("store-verified", 89)] {
+        let phase_app = build_signed_profile_app(
+            stage.root(),
+            &app_root,
+            &format!("ProfileAppBindingRecovery-{phase}"),
+            &format!(
+                "dev.keld.fixture.profile.binding.{}.{}",
+                std::process::id(),
+                phase
+            ),
+            &signer,
+        );
+        let phase_identity = run_signed_identity_report(&phase_app);
+        let phase_support = support_root.join(phase);
+        fs::create_dir(&phase_support).expect("create binding-recovery support root");
+        fs::set_permissions(&phase_support, fs::Permissions::from_mode(0o700))
+            .expect("protect binding-recovery support root");
+        let interrupted = Command::new(signed_host_executable(&phase_app))
+            .arg("--keld-profile-webview-fixture-v1")
+            .env("KELD_PROFILE_TEST_ROOT", &phase_support)
+            .env("KELD_PROFILE_TEST_BINDING_CRASH_AFTER", phase)
+            .env("KELD_PROFILE_FIXTURE_URL", "http://127.0.0.1:1/unused")
+            .stdin(Stdio::null())
+            .output()
+            .expect("launch binding phase interruption fixture");
+        assert_eq!(interrupted.status.code(), Some(expected_status));
+        assert!(
+            String::from_utf8_lossy(&interrupted.stderr).contains(&format!("after={phase}")),
+            "binding interruption missed {phase}"
+        );
+        let phase_state = origin.run_profile_after_test_boot_change(
+            &phase_app,
+            &phase_support,
+            "seed",
+            "binding-phase-recovered",
+            Some("keld-kel135-binding-phase"),
+        );
+        assert_eq!(
+            phase_state.get("local").map(String::as_str),
+            Some("keld-kel135-binding-phase"),
+            "binding recovery after {phase}"
+        );
+        let report = fs::read_to_string(phase_support.join("binding-phase-recovered.log"))
+            .expect("read recovered phase store report");
+        assert_store_report_matches(&report, &phase_identity["store_uuid"]);
+        assert!(run_signed_purge_report(&phase_app, &phase_support).contains("store_absent=true"));
+        recovered_phases.push(phase);
+    }
+    eprintln!(
+        "KELD_KEL135_MACOS_BINDING_RECOVERY os={} webkit={} team={} identifier={} uuid={} crash_phases={} result=recovered-and-opened purge=exact-identity",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        recovered_phases.join(","),
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+#[ignore = "two-phase real reboot test; run prepare, restart macOS, then resume"]
+fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
+    assert!(
+        std::env::var_os("KELD_PROFILE_TEST_BOOT_UUID").is_none(),
+        "real reboot acceptance cannot use the synthetic boot UUID hook"
+    );
+    let phase = std::env::var("KELD_KEL135_REBOOT_PHASE")
+        .expect("set KELD_KEL135_REBOOT_PHASE to prepare or resume");
+    let run_root = PathBuf::from(
+        std::env::var_os("KELD_KEL135_REBOOT_ROOT")
+            .expect("set KELD_KEL135_REBOOT_ROOT below the persistent TMPDIR"),
+    );
+    let temp_root = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize configured TMPDIR");
+    assert!(
+        run_root.is_absolute(),
+        "reboot fixture root must be absolute"
+    );
+    if phase == "prepare" {
+        fs::create_dir(&run_root).expect("create durable reboot fixture root once");
+        fs::set_permissions(&run_root, fs::Permissions::from_mode(0o700))
+            .expect("protect durable reboot fixture root");
+    } else {
+        assert_eq!(phase, "resume", "unknown reboot fixture phase");
+        assert!(
+            run_root.is_dir(),
+            "resume requires the preserved prepare root"
+        );
+    }
+    let canonical_root = run_root.canonicalize().expect("canonicalize reboot root");
+    assert!(canonical_root.starts_with(temp_root));
+    let manifest_path = canonical_root.join("manifest.json");
+    let support_root = canonical_root.join("application-support");
+    let project_root = canonical_root.join("project");
+    let mut fixture = ProductFixture::new("kel135-reboot-runner");
+    fixture.project = project_root.clone();
+    fs::create_dir_all(project_root.join("src"))
+        .expect("create persistent reboot fixture project and entry directory");
+    let stage = fixture.stage();
+
+    if phase == "prepare" {
+        fs::create_dir(&support_root).expect("create persistent profile metadata root");
+        fs::set_permissions(&support_root, fs::Permissions::from_mode(0o700))
+            .expect("protect persistent profile metadata root");
+        let app_root = canonical_root.join("signed-apps");
+        fs::create_dir(&app_root).expect("create durable signed fixture parent");
+        fs::set_permissions(&app_root, fs::Permissions::from_mode(0o700))
+            .expect("protect durable signed fixture parent");
+        let signer = valid_macos_codesign_hashes()
+            .into_iter()
+            .next()
+            .expect("an Apple Development signing identity is required");
+        let bundle_id = format!("dev.keld.fixture.profile.reboot.{}", std::process::id());
+        let app = build_signed_profile_app(
+            stage.root(),
+            &app_root,
+            "ProfileAppRebootRecovery",
+            &bundle_id,
+            &signer,
+        );
+        let identity = run_signed_identity_report(&app);
+        let os_boot_before = system_boot_uuid_hex();
+        let mut origin = ProfileOrigin::new();
+        let nonce = String::from("keld-kel135-reboot-preserved-state");
+        let mut owner = spawn_profile_host(
+            signed_host_executable(&app),
+            &support_root,
+            &origin.address,
+            "seed",
+            "reboot-crash-owner",
+        );
+        let seeded = origin
+            .wait_for_report("seed", Some(&nonce))
+            .expect("signed profile owner rendered its seed page");
+        for key in ["local", "cookie", "idb", "cache"] {
+            assert_eq!(seeded.get(key).map(String::as_str), Some(nonce.as_str()));
+        }
+        assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+        let owner_log = fs::read_to_string(support_root.join("reboot-crash-owner.log"))
+            .expect("read active owner store evidence");
+        assert_store_report_matches(&owner_log, &identity["store_uuid"]);
+        let prior_boot = boot_uuid_from_log(&owner_log);
+        assert!(
+            prior_boot == os_boot_before,
+            "Keld boot readback must equal the independent sysctl oracle"
+        );
+        let crashed = kill_profile_host(&mut owner);
+        assert_eq!(crashed.signal(), Some(9), "owner must terminate by SIGKILL");
+
+        let same_boot = Command::new(signed_host_executable(&app))
+            .arg("--keld-profile-webview-fixture-v1")
+            .env("KELD_PROFILE_TEST_ROOT", &support_root)
+            .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
+            .env_remove("KELD_PROFILE_TEST_BOOT_UUID")
+            .env(
+                "KELD_PROFILE_FIXTURE_URL",
+                format!("http://{}/unused", origin.address),
+            )
+            .stdin(Stdio::null())
+            .output()
+            .expect("launch same-boot quarantine negative control");
+        assert!(!same_boot.status.success());
+        let same_boot_text = String::from_utf8_lossy(&same_boot.stderr);
+        assert!(
+            same_boot_text.contains("recovery state cannot be proven"),
+            "same-boot quarantine must report unproven recovery"
+        );
+        assert!(
+            same_boot_text.contains("startup-resource-attempts listener=0 child=0 window=0"),
+            "same-boot quarantine must fail before app resources"
+        );
+
+        let manifest = std::collections::BTreeMap::from([
+            (String::from("app"), app.display().to_string()),
+            (
+                String::from("support_root"),
+                support_root.display().to_string(),
+            ),
+            (String::from("origin"), origin.address.clone()),
+            (String::from("team_id"), identity["team_id"].clone()),
+            (
+                String::from("signing_identifier"),
+                identity["signing_identifier"].clone(),
+            ),
+            (
+                String::from("profile_identity"),
+                identity["profile_identity"].clone(),
+            ),
+            (String::from("store_uuid"), identity["store_uuid"].clone()),
+            (String::from("nonce"), nonce),
+            (String::from("boot_uuid_hex"), prior_boot.clone()),
+        ]);
+        let encoded = serde_json::to_vec(&manifest).expect("encode durable reboot manifest");
+        fs::write(&manifest_path, encoded).expect("persist reboot resume manifest");
+        fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o600))
+            .expect("protect reboot resume manifest");
+        eprintln!(
+            "KELD_KEL135_MACOS_REBOOT_PREPARED os={} team={} identifier={} uuid={} boot_identity_recorded=true same_boot=quarantined owner_exit=SIGKILL root={} next=physically-restart-macOS",
+            sw_vers_value("-productVersion"),
+            identity["team_id"],
+            identity["signing_identifier"],
+            identity["store_uuid"],
+            canonical_root.display(),
+        );
+        return;
+    }
+
+    let manifest: std::collections::BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read prepare manifest"))
+            .expect("decode prepare manifest");
+    let app = PathBuf::from(&manifest["app"]);
+    let support_root = PathBuf::from(&manifest["support_root"]);
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("an Apple Development signing identity is required");
+    refresh_signed_profile_app(stage.root(), &app, &signer);
+    let identity = run_signed_identity_report(&app);
+    let os_boot_after = system_boot_uuid_hex();
+    let os_boot_time = system_boot_time_seconds();
+    for key in [
+        "team_id",
+        "signing_identifier",
+        "profile_identity",
+        "store_uuid",
+    ] {
+        assert_eq!(
+            identity[key], manifest[key],
+            "stable reboot identity field {key}"
+        );
+    }
+    let mut origin = ProfileOrigin::bind(&manifest["origin"]);
+    let state = origin.run_profile(&app, &support_root, "read", "reboot-recovered-read", None);
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            state.get(key).map(String::as_str),
+            Some(manifest["nonce"].as_str())
+        );
+    }
+    assert_eq!(state.get("sw").map(String::as_str), Some("true"));
+    let report = fs::read_to_string(support_root.join("reboot-recovered-read.log"))
+        .expect("read post-reboot selected store report");
+    assert_store_report_matches(&report, &manifest["store_uuid"]);
+    let next_boot = boot_uuid_from_log(&report);
+    assert!(
+        next_boot == os_boot_after,
+        "Keld boot readback must equal the independent sysctl oracle"
+    );
+    let previous_boot_evidence = if let Some(previous_boot) = manifest.get("boot_uuid_hex") {
+        assert!(
+            next_boot != *previous_boot,
+            "recovered boot must differ from the retained pre-reboot boot"
+        );
+        "uuid-distinct"
+    } else {
+        let owner_log_mtime = fs::metadata(support_root.join("reboot-crash-owner.log"))
+            .expect("read pre-reboot owner log metadata")
+            .modified()
+            .expect("read pre-reboot owner log timestamp")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("owner log timestamp follows UNIX epoch")
+            .as_secs();
+        assert!(
+            os_boot_time > owner_log_mtime,
+            "independent kern.boottime must postdate the SIGKILL owner log"
+        );
+        "legacy-prepare-omitted-uuid-boot-time-proven"
+    };
+    let purge = run_signed_purge_report(&app, &support_root);
+    assert!(purge.contains("store_absent=true"));
+    drop(origin);
+    eprintln!(
+        "KELD_KEL135_MACOS_REBOOT_RECOVERY os={} webkit={} team={} identifier={} uuid={} boot_uuid_matches_sysctl=true previous_boot_evidence={} kern_boottime_epoch={} boot_transition=real-reboot same_boot_quarantine=passed state=all-five-preserved purge=exact-identity",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        previous_boot_evidence,
+        os_boot_time,
+    );
+    fs::remove_dir_all(&canonical_root).expect("remove completed isolated reboot fixture root");
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn valid_macos_codesign_hashes() -> Vec<String> {
+    let output = Command::new("/usr/bin/security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output()
+        .expect("query local code-signing identities");
+    assert!(
+        output.status.success(),
+        "security find-identity failed: {output:?}"
+    );
+    String::from_utf8(output.stdout)
+        .expect("valid signing identity output is UTF-8")
+        .lines()
+        .filter(|line| !line.contains("CSSMERR_"))
+        .filter_map(|line| {
+            let rest = line.split_once(") ")?.1;
+            let candidate = rest.split_whitespace().next()?;
+            (candidate.len() == 40
+                && candidate
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| candidate.to_owned())
+        })
+        .collect()
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn build_signed_profile_app(
+    stage_root: &Path,
+    app_parent: &Path,
+    app_name: &str,
+    bundle_id: &str,
+    signer: &str,
+) -> PathBuf {
+    let app = app_parent.join(format!("{app_name}.app"));
+    fs::create_dir(&app).expect("create signed host fixture directory");
+    fs::set_permissions(&app, fs::Permissions::from_mode(0o700))
+        .expect("protect signed host fixture directory");
+    let contents = app.join("Contents");
+    let macos = contents.join("MacOS");
+    fs::create_dir_all(&macos).expect("create signed app executable directory");
+    fs::set_permissions(&contents, fs::Permissions::from_mode(0o700))
+        .expect("protect signed app contents directory");
+    fs::set_permissions(&macos, fs::Permissions::from_mode(0o700))
+        .expect("protect signed app executable directory");
+    fs::copy(stage_root.join("keld-host"), macos.join("keld-host"))
+        .expect("copy KEL-135 host executable into app bundle");
+    let signed_executable = signed_host_executable(&app);
+    fs::set_permissions(&signed_executable, fs::Permissions::from_mode(0o700))
+        .expect("make signed app executable runnable");
+    let info = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>keld-host</string><key>CFBundleIdentifier</key><string>{bundle_id}</string><key>CFBundleName</key><string>{app_name}</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>CFBundleShortVersionString</key><string>1.0</string><key>NSCameraUsageDescription</key><string>KEL-135 acceptance fixture validates saved camera grant isolation.</string><key>NSMicrophoneUsageDescription</key><string>KEL-135 acceptance fixture validates saved microphone grant isolation.</string></dict></plist>"
+    );
+    fs::write(contents.join("Info.plist"), info).expect("write signed app bundle metadata");
+    let signature = Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", signer, "--timestamp=none"])
+        .arg("--identifier")
+        .arg(bundle_id)
+        .arg(&app)
+        .output()
+        .expect("sign KEL-135 host fixture app");
+    assert!(signature.status.success(), "codesign failed: {signature:?}");
+    let verification = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&app)
+        .output()
+        .expect("verify KEL-135 host app");
+    assert!(
+        verification.status.success(),
+        "signed host executable did not verify: {verification:?}"
+    );
+    app
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn signed_host_executable(app: &Path) -> PathBuf {
+    app.join("Contents/MacOS/keld-host")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn signed_media_executable_facts(executable: &Path) -> Option<(String, String)> {
+    let bundle = executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|extension| extension == "app"))?;
+    let verified = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(bundle)
+        .output()
+        .expect("verify signed media fixture bundle before launch");
+    assert!(
+        verified.status.success(),
+        "signed media fixture lost validity"
+    );
+    let digest = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(executable)
+        .output()
+        .expect("hash signed media fixture executable");
+    assert!(digest.status.success(), "signed executable hash failed");
+    let sha256 = String::from_utf8_lossy(&digest.stdout)
+        .split_whitespace()
+        .next()
+        .expect("signed executable SHA-256")
+        .to_owned();
+    let details = Command::new("/usr/bin/codesign")
+        .args(["-d", "--verbose=4"])
+        .arg(bundle)
+        .output()
+        .expect("read signed media fixture CDHash");
+    assert!(details.status.success(), "signed media CDHash read failed");
+    let cdhash = String::from_utf8_lossy(&details.stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("CDHash="))
+        .expect("signed media fixture CDHash")
+        .to_owned();
+    Some((sha256, cdhash))
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn configure_profile_media_mode(
+    command: &mut Command,
+    mode: Option<&str>,
+    phase: &str,
+    address: &str,
+    log_name: &str,
+) {
+    match mode {
+        Some("allow" | "allow-reuse") => {
+            command.env("KELD_PROFILE_TEST_MEDIA_SEED_ALLOW", "1");
+            if mode == Some("allow-reuse") {
+                eprintln!(
+                    "KELD_KEL135_MEDIA_ALLOW_READY phase={phase} action=if-macOS-TCC-prompts-click-Allow deadline_seconds=120"
+                );
+            }
+        }
+        Some("prompt" | "prompt-reuse") => {
+            if let Some(kind) = phase.strip_prefix("media-seed-") {
+                eprintln!(
+                    "KELD_KEL135_MEDIA_PROMPT_READY kind={kind} action=click-Allow-in-profile-fixture-window deadline_seconds=120"
+                );
+            } else {
+                assert!(
+                    phase.starts_with("query-"),
+                    "unexpected prompt fixture phase"
+                );
+            }
+            command
+                .env("KELD_PROFILE_TEST_MEDIA_SEED_ALLOW", "1")
+                .env("KELD_PROFILE_TEST_MEDIA_SEED_PROMPT", "1");
+        }
+        None => {}
+        Some(_) => panic!("unknown KEL-135 media fixture mode"),
+    }
+    if matches!(mode, Some("prompt-reuse" | "allow-reuse")) {
+        command.env(
+            "KELD_PROFILE_FIXTURE_SECOND_URL",
+            format!("http://{address}/media-nonce-reuse?run={log_name}"),
+        );
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn attach_profile_run_evidence(
+    report: &mut std::collections::BTreeMap<String, String>,
+    output: &str,
+    phase: &str,
+    executable: &Path,
+    signed_facts: Option<(String, String)>,
+) {
+    if let Some((sha256, cdhash)) = signed_facts {
+        assert_eq!(
+            signed_media_executable_facts(executable),
+            Some((sha256.clone(), cdhash.clone())),
+            "signed media executable changed during its fixture launch"
+        );
+        report.insert(String::from("host_sha256"), sha256.clone());
+        report.insert(String::from("host_cdhash"), cdhash.clone());
+        let identity = output
+            .lines()
+            .find(|line| line.starts_with("KELD_KEL135_SIGNED_IDENTITY "))
+            .expect("current signed media host emitted its validated identity");
+        for field in identity.split_whitespace().skip(1) {
+            if let Some((key, value)) = field.split_once('=') {
+                report.insert(format!("signed_{key}"), value.to_owned());
+            }
+        }
+        eprintln!(
+            "KELD_KEL135_SIGNED_MEDIA_RUN phase={phase} sha256={sha256} cdhash={cdhash} {identity}"
+        );
+    }
+    let store = output
+        .lines()
+        .find(|line| line.starts_with("KELD_KEL135_STORE "))
+        .expect("read selected WebKit store report");
+    for field in store.split_whitespace().skip(1) {
+        if let Some((key, value)) = field.split_once('=') {
+            report.insert(format!("store_{key}"), value.to_owned());
+        }
+    }
+    if phase.starts_with("media-") || phase.starts_with("query-") {
+        let probe = output
+            .lines()
+            .find(|line| line.starts_with("KELD_KEL135_MEDIA_PROBE "))
+            .expect("read signed-host AppKit/TCC media probe result");
+        for field in probe.split_whitespace().skip(1) {
+            if let Some((key, value)) = field.split_once('=') {
+                report.insert(format!("probe_{key}"), value.to_owned());
+            }
+        }
+        eprintln!("KELD_KEL135_MEDIA_PROBE_RESULT phase={phase} {probe}");
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn refresh_signed_profile_app(stage_root: &Path, app: &Path, signer: &str) {
+    let executable = signed_host_executable(app);
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+        .expect("make signed reboot fixture executable replaceable");
+    fs::copy(stage_root.join("keld-host"), &executable)
+        .expect("update reboot fixture executable with the current Keld build");
+    let signature = Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", signer, "--timestamp=none"])
+        .arg(app)
+        .output()
+        .expect("re-sign reboot fixture with its same code identity");
+    assert!(
+        signature.status.success(),
+        "re-sign fixture failed: {signature:?}"
+    );
+    let verification = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(app)
+        .output()
+        .expect("verify refreshed reboot fixture signature");
+    assert!(
+        verification.status.success(),
+        "refreshed fixture signature failed: {verification:?}"
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+struct ProfileOrigin {
+    listener: TcpListener,
+    address: String,
+    pending_reports: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn spawn_profile_host(
+    executable: PathBuf,
+    support_root: &Path,
+    address: &str,
+    phase: &str,
+    log_name: &str,
+) -> Child {
+    let log = fs::File::create(support_root.join(format!("{log_name}.log")))
+        .expect("create profile evidence log");
+    let stderr = log.try_clone().expect("clone evidence log");
+    Command::new(executable)
+        .arg("--keld-profile-webview-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", support_root)
+        .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
+        .env_remove("KELD_PROFILE_TEST_BOOT_UUID")
+        .env_remove("KELD_PROFILE_FIXTURE_FATAL_ON_STDIN")
+        .env(
+            "KELD_PROFILE_FIXTURE_URL",
+            format!("http://{address}/{phase}?run={log_name}"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("launch signed profile owner")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn stop_profile_host(child: &mut Child) {
+    drop(child.stdin.take());
+    let deadline = Instant::now() + PROCESS_DEADLINE;
+    loop {
+        match child.try_wait().expect("wait for signed profile owner") {
+            Some(status) => {
+                assert!(status.success(), "signed profile owner failed: {status}");
+                return;
+            }
+            None if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+            None => {
+                let _ = child.kill();
+                let status = child.wait().expect("reap stuck signed profile owner");
+                panic!("signed profile owner did not stop cleanly: {status}");
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn kill_profile_host(child: &mut Child) -> std::process::ExitStatus {
+    child.kill().expect("SIGKILL active profile host");
+    child.wait().expect("reap crashed profile host")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+impl ProfileOrigin {
+    fn new() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind KEL-135 local origin");
+        listener
+            .set_nonblocking(true)
+            .expect("make KEL-135 origin pollable");
+        let address = listener
+            .local_addr()
+            .expect("local origin address")
+            .to_string();
+        Self {
+            listener,
+            address,
+            pending_reports: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn bind(address: &str) -> Self {
+        let listener = TcpListener::bind(address)
+            .expect("rebind the exact loopback origin saved before reboot");
+        listener
+            .set_nonblocking(true)
+            .expect("make reboot origin pollable");
+        let address = listener
+            .local_addr()
+            .expect("rebound local origin address")
+            .to_string();
+        Self {
+            listener,
+            address,
+            pending_reports: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn run_profile(
+        &mut self,
+        app: &Path,
+        support_root: &Path,
+        phase: &str,
+        log_name: &str,
+        seed: Option<&str>,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.run_profile_executable(
+            signed_host_executable(app),
+            support_root,
+            phase,
+            log_name,
+            seed,
+            false,
+            None,
+            None,
+        )
+    }
+
+    fn run_profile_as_user(
+        &mut self,
+        username: &str,
+        user_temp: &Path,
+        profile_root: &Path,
+        app: &Path,
+        phase: &str,
+        log_name: &str,
+        seed: Option<&str>,
+    ) -> (std::collections::BTreeMap<String, String>, Output) {
+        let url = format!("http://{}/{phase}?run={log_name}", self.address);
+        let executable = signed_host_executable(app);
+        let environment = [
+            ("TMPDIR", user_temp.to_string_lossy().into_owned()),
+            (
+                "KELD_PROFILE_TEST_ROOT",
+                profile_root.to_string_lossy().into_owned(),
+            ),
+            ("KELD_PROFILE_ACCEPTANCE_REPORT", String::from("1")),
+            ("KELD_PROFILE_FIXTURE_URL", url),
+        ];
+        let mut child = run_as_local_user_command(
+            username,
+            executable.as_os_str(),
+            &["--keld-profile-webview-fixture-v1"],
+            &environment,
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch signed profile host as second standard user");
+        let Some(report) = self.wait_for_report(phase, seed) else {
+            if let Some(status) = child.try_wait().expect("inspect second-user profile host") {
+                let _output = wait_child_output(child, PROCESS_DEADLINE);
+                panic!(
+                    "second-user host exited before the browser report (status={status}); private output suppressed"
+                );
+            }
+            let _ = child.kill();
+            let output = wait_child_output(child, PROCESS_DEADLINE);
+            panic!(
+                "second-user host did not report {phase} state (status={}); private output suppressed",
+                output.status
+            );
+        };
+        drop(child.stdin.take());
+        let output = wait_child_output(child, PROCESS_DEADLINE);
+        assert!(
+            output.status.success(),
+            "second-user profile host failed (status={})",
+            output.status
+        );
+        (report, output)
+    }
+
+    fn run_ephemeral_profile(
+        &mut self,
+        executable: &Path,
+        support_root: &Path,
+        phase: &str,
+        log_name: &str,
+        seed: Option<&str>,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.run_profile_executable(
+            executable.to_owned(),
+            support_root,
+            phase,
+            log_name,
+            seed,
+            true,
+            None,
+            None,
+        )
+    }
+
+    fn run_profile_after_test_boot_change(
+        &mut self,
+        app: &Path,
+        support_root: &Path,
+        phase: &str,
+        log_name: &str,
+        seed: Option<&str>,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.run_profile_executable(
+            signed_host_executable(app),
+            support_root,
+            phase,
+            log_name,
+            seed,
+            false,
+            Some("11111111-2222-4333-8444-555555555555"),
+            None,
+        )
+    }
+
+    fn run_media_profile(
+        &mut self,
+        app: &Path,
+        support_root: &Path,
+        phase: &str,
+        log_name: &str,
+        seed: Option<&str>,
+        media_mode: Option<&str>,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.run_profile_executable(
+            signed_host_executable(app),
+            support_root,
+            phase,
+            log_name,
+            seed,
+            false,
+            None,
+            media_mode,
+        )
+    }
+
+    fn run_ephemeral_media_profile(
+        &mut self,
+        executable: &Path,
+        support_root: &Path,
+        phase: &str,
+        log_name: &str,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.run_profile_executable(
+            executable.to_owned(),
+            support_root,
+            phase,
+            log_name,
+            None,
+            true,
+            None,
+            None,
+        )
+    }
+
+    fn run_profile_executable(
+        &mut self,
+        executable: PathBuf,
+        support_root: &Path,
+        phase: &str,
+        log_name: &str,
+        seed: Option<&str>,
+        dev_ephemeral: bool,
+        boot_uuid: Option<&str>,
+        media_mode: Option<&str>,
+    ) -> std::collections::BTreeMap<String, String> {
+        let log_path = support_root.join(format!("{log_name}.log"));
+        let log = fs::File::create(&log_path).expect("create profile evidence log");
+        let stderr = log.try_clone().expect("clone evidence log");
+        let url = format!("http://{}/{phase}?run={log_name}", self.address);
+        let executable_path = executable.display().to_string();
+        let signed_facts = if phase.starts_with("media-") || phase.starts_with("query-") {
+            signed_media_executable_facts(&executable)
+        } else {
+            None
+        };
+        let executable_for_check = executable.clone();
+        let mut command = Command::new(executable);
+        command
+            .arg("--keld-profile-webview-fixture-v1")
+            .env("KELD_PROFILE_TEST_ROOT", support_root)
+            .env("KELD_PROFILE_ACCEPTANCE_REPORT", "1")
+            .env_remove("KELD_PROFILE_TEST_BOOT_UUID")
+            .env_remove("KELD_PROFILE_TEST_MEDIA_SEED_ALLOW")
+            .env_remove("KELD_PROFILE_TEST_MEDIA_SEED_PROMPT")
+            .env_remove("KELD_PROFILE_FIXTURE_EPHEMERAL")
+            .env_remove("KELD_PROFILE_FIXTURE_SECOND_URL")
+            .env_remove("KELD_PROFILE_FIXTURE_SIGNED_ATTEST")
+            .env_remove("KELD_PROFILE_FIXTURE_FATAL_ON_STDIN")
+            .env("KELD_PROFILE_FIXTURE_URL", &url)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(stderr));
+        if signed_facts.is_some() {
+            command.env("KELD_PROFILE_FIXTURE_SIGNED_ATTEST", "1");
+        }
+        if dev_ephemeral {
+            command.env("KELD_PROFILE_FIXTURE_EPHEMERAL", "1");
+        }
+        if let Some(boot_uuid) = boot_uuid {
+            command.env("KELD_PROFILE_TEST_BOOT_UUID", boot_uuid);
+        }
+        configure_profile_media_mode(&mut command, media_mode, phase, &self.address, log_name);
+        let mut child = command.spawn().expect("launch signed KEL-135 profile host");
+        let host_pid = child.id().to_string();
+        let report_deadline =
+            if matches!(media_mode, Some("prompt" | "prompt-reuse" | "allow-reuse"))
+                && phase.starts_with("media-seed-")
+            {
+                MEDIA_PROMPT_DEADLINE
+            } else {
+                EVENT_DEADLINE
+            };
+        let Some(mut report) = self.wait_for_report_with_timeout(phase, seed, report_deadline)
+        else {
+            if let Some(status) = child.try_wait().expect("inspect failed profile host") {
+                panic!(
+                    "signed profile host exited before browser report (status={status}); private log retained for inspection"
+                );
+            }
+            let _ = child.kill();
+            let status = child.wait().expect("reap timed-out signed profile host");
+            panic!(
+                "signed profile host did not report browser state (phase={phase}, status={status}); private log retained for inspection"
+            );
+        };
+        if matches!(media_mode, Some("prompt-reuse" | "allow-reuse")) {
+            let reuse = self
+                .wait_for_report_with_timeout("media-nonce-reuse", None, EVENT_DEADLINE)
+                .expect("second view reported same-store nonce without capture");
+            report.insert(
+                String::from("reuse_local"),
+                reuse.get("local").cloned().unwrap_or_default(),
+            );
+            report.insert(
+                String::from("reuse_media"),
+                reuse.get("media").cloned().unwrap_or_default(),
+            );
+        }
+        stop_profile_host(&mut child);
+        report.insert(String::from("host_pid"), host_pid);
+        report.insert(String::from("host_executable"), executable_path);
+        report.insert(String::from("host_clean_exit"), String::from("true"));
+        report.insert(String::from("origin"), self.address.clone());
+        let output = fs::read_to_string(&log_path).expect("read signed profile host log");
+        attach_profile_run_evidence(
+            &mut report,
+            &output,
+            phase,
+            &executable_for_check,
+            signed_facts,
+        );
+        report
+    }
+
+    fn wait_for_report(
+        &mut self,
+        phase: &str,
+        seed: Option<&str>,
+    ) -> Option<std::collections::BTreeMap<String, String>> {
+        self.wait_for_report_with_timeout(phase, seed, EVENT_DEADLINE)
+    }
+
+    fn wait_for_report_with_timeout(
+        &mut self,
+        phase: &str,
+        seed: Option<&str>,
+        timeout: Duration,
+    ) -> Option<std::collections::BTreeMap<String, String>> {
+        if let Some(report) = self.pending_reports.remove(phase) {
+            return Some(report);
+        }
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .expect("bound origin request read");
+                    let mut request = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while request.len() < 8192 {
+                        match stream.read(&mut byte) {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                request.push(byte[0]);
+                                if byte[0] == b'\n' {
+                                    break;
+                                }
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                ) =>
+                            {
+                                break;
+                            }
+                            Err(error) => panic!("read KEL-135 origin request: {error}"),
+                        }
+                    }
+                    if request.is_empty() {
+                        continue;
+                    }
+                    let request = String::from_utf8_lossy(&request);
+                    let line = request.lines().next().unwrap_or_default();
+                    eprintln!("KELD_KEL135_ORIGIN_REQUEST {line}");
+                    let path = line.split_whitespace().nth(1).unwrap_or("/");
+                    if let Some(query) = path.strip_prefix("/report?") {
+                        let fields = query
+                            .split('&')
+                            .filter_map(|part| part.split_once('='))
+                            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                            .collect::<std::collections::BTreeMap<_, _>>();
+                        if fields.get("phase").map(String::as_str) == Some(phase) {
+                            write_profile_http(&mut stream, 204, "");
+                            return Some(fields);
+                        }
+                        write_profile_http(&mut stream, 204, "");
+                        if let Some(other_phase) = fields.get("phase") {
+                            assert!(
+                                self.pending_reports.len() < 4,
+                                "too many unmatched fixture reports"
+                            );
+                            self.pending_reports.insert(other_phase.clone(), fields);
+                        }
+                    } else if path.starts_with("/script-started?") {
+                        write_profile_http(&mut stream, 204, "");
+                    } else if path.starts_with("/favicon") {
+                        write_profile_http(&mut stream, 204, "");
+                    } else if path.starts_with("/sw.js") {
+                        write_profile_http_type(
+                            &mut stream,
+                            200,
+                            "application/javascript; charset=utf-8",
+                            service_worker_script(),
+                        );
+                    } else {
+                        let request_phase = path
+                            .trim_start_matches('/')
+                            .split_once('?')
+                            .map_or(path.trim_start_matches('/'), |(route, _)| route);
+                        let page_seed =
+                            if request_phase.starts_with("media-seed-") || request_phase == phase {
+                                seed
+                            } else {
+                                None
+                            };
+                        let html = profile_origin_html(request_phase, page_seed);
+                        write_profile_http(&mut stream, 200, &html);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept KEL-135 local origin request: {error}"),
+            }
+        }
+        None
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn profile_nonce_script() -> &'static str {
+    r#"async function profileNonce(database,key,value){
+ const request=indexedDB.open(database,1);
+ const db=await new Promise((resolve,reject)=>{request.onupgradeneeded=()=>request.result.createObjectStore("state");request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+ if(value)await new Promise((resolve,reject)=>{const tx=db.transaction("state","readwrite");tx.objectStore("state").put(value,key);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});
+ const current=await new Promise((resolve,reject)=>{const tx=db.transaction("state","readonly");const read=tx.objectStore("state").get(key);read.onsuccess=()=>resolve(read.result||"");read.onerror=()=>reject(read.error);});
+ db.close();return current;
+}"#
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn query_origin_html(phase: &str, seed: &str, nonce_script: &str) -> String {
+    format!(
+        r#"<!doctype html><meta charset="utf-8"><title>KEL-135 media query {phase}</title>
+<script>
+const phase={phase:?}, value={seed:?}, key="keld-kel135-query-nonce";
+{nonce_script}
+async function state(name){{try{{return (await navigator.permissions.query({{name}})).state;}}catch(error){{return "error-"+error.name;}}}}
+async function run(){{const local=await profileNonce("keld-kel135-query",key,value),camera=await state("camera"),microphone=await state("microphone");await fetch("/report?"+new URLSearchParams({{phase,local,media:"not-requested",camera,microphone}}));}}
+run().catch(error=>fetch("/report?"+new URLSearchParams({{phase,local:"",media:"error-"+error.name,camera:"unavailable",microphone:"unavailable"}})));
+</script>"#
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn profile_origin_html(phase: &str, seed: Option<&str>) -> String {
+    let seed = seed.unwrap_or_default();
+    let nonce_script = profile_nonce_script();
+    if phase.starts_with("query-") {
+        return query_origin_html(phase, seed, nonce_script);
+    }
+    if phase.starts_with("media-nonce-") {
+        return format!(
+            r#"<!doctype html><meta charset="utf-8"><title>KEL-135 media nonce {phase}</title>
+<script>
+const phase={phase:?}, key="keld-kel135-media-nonce";
+{nonce_script}
+async function run(){{
+ const channel=new BroadcastChannel("keld-kel135-media-nonce");
+ const committed=new Promise(resolve=>{{channel.onmessage=resolve;}});
+ let local=await profileNonce("keld-kel135-media",key,"");
+ if(!local&&phase==="media-nonce-reuse"){{await committed;local=await profileNonce("keld-kel135-media",key,"");}}
+ channel.close();
+ await fetch("/report?"+new URLSearchParams({{phase,local,media:"not-requested"}}));
+}}
+run().catch(error=>fetch("/report?"+new URLSearchParams({{phase,local:"",media:"error-"+error.name}})));
+</script>"#
+        );
+    }
+    if let Some(media_phase) = phase.strip_prefix("media-") {
+        let Some((mode, kind)) = media_phase.split_once('-') else {
+            panic!("invalid media fixture phase");
+        };
+        let constraint = match kind {
+            "camera" => "{video:true}",
+            "microphone" => "{audio:true}",
+            _ => panic!("invalid media fixture kind"),
+        };
+        return format!(
+            r#"<!doctype html><meta charset="utf-8"><title>KEL-135 media {phase}</title>
+<script>
+const phase={phase:?}, mode={mode:?}, kind={kind:?}, value={seed:?}, key="keld-kel135-media-nonce";
+{nonce_script}
+let nonce="";
+fetch("/script-started?phase="+encodeURIComponent(phase)+"&media="+Boolean(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)).catch(()=>{{}});
+async function permissionState(){{try{{if(!navigator.permissions||!navigator.permissions.query)return "unavailable";return (await navigator.permissions.query({{name:kind}})).state;}}catch(error){{return "error-"+error.name;}}}}
+async function capture(){{
+ const stream=await navigator.mediaDevices.getUserMedia({constraint});const tracks=stream.getTracks(),expected=kind==="camera"?"video":"audio";
+ const live=tracks.length===1&&tracks[0].kind===expected&&tracks[0].readyState==="live";
+ const deviceIdPresent=Boolean(tracks[0]&&tracks[0].getSettings().deviceId),label=tracks[0]?.label||"";
+ let frameProgress="not-applicable";
+ try{{
+  if(live&&expected==="video"){{
+   const video=document.createElement("video");video.muted=true;video.playsInline=true;video.style.display="none";video.srcObject=stream;document.documentElement.append(video);
+   try{{
+    await video.play();
+    frameProgress=await new Promise(resolve=>{{
+     if(typeof video.requestVideoFrameCallback!=="function"){{resolve("unsupported");return;}}
+     const timeout=setTimeout(()=>resolve("timeout"),10000);let first=null;
+     const onFrame=(_,metadata)=>{{if(first!==null&&metadata.presentedFrames>first){{clearTimeout(timeout);resolve("progressed");}}else{{first=metadata.presentedFrames;video.requestVideoFrameCallback(onFrame);}}}};
+     video.requestVideoFrameCallback(onFrame);
+    }});
+   }}finally{{video.pause();video.srcObject=null;video.remove();}}
+  }}
+ }}finally{{for(const track of tracks)track.stop();}}
+ return {{result:live?"resolved-"+expected+"-live":"invalid-track-state",deviceIdPresent,label,frameProgress}};
+}}
+const labelHex=label=>Array.from(new TextEncoder().encode(label),byte=>byte.toString(16).padStart(2,"0")).join("");
+async function run(){{
+ nonce=await profileNonce("keld-kel135-media",key,mode==="seed"?value:"");
+ if(mode==="seed"){{const channel=new BroadcastChannel("keld-kel135-media-nonce");channel.postMessage("committed");channel.close();}}
+ const permissionBefore=await permissionState();let permissionAfter="unavailable",media="",mediaRepeat="not-requested",deviceIdPresent="unavailable",deviceLabel="",repeatLabel="",frameProgress="unavailable",repeatFrameProgress="not-requested";
+ try{{const first=await capture();media=first.result;deviceIdPresent=String(first.deviceIdPresent);deviceLabel=first.label;frameProgress=first.frameProgress;permissionAfter=await permissionState();if(mode==="seed"){{try{{const repeat=await capture();mediaRepeat=repeat.result;repeatLabel=repeat.label;repeatFrameProgress=repeat.frameProgress;}}catch(error){{mediaRepeat="error-"+error.name;}}}}}}
+ catch(error){{media="error-"+error.name;permissionAfter=await permissionState();}}
+ await fetch("/report?"+new URLSearchParams({{phase,local:nonce,media,media_repeat:mediaRepeat,device_id_present:deviceIdPresent,device_label_hex:labelHex(deviceLabel),repeat_label_hex:labelHex(repeatLabel),frame_progress:frameProgress,repeat_frame_progress:repeatFrameProgress,permission_before:permissionBefore,permission_after:permissionAfter}}));
+}}
+run().catch(error=>fetch("/report?"+new URLSearchParams({{phase,local:nonce,media:"error-"+error.name,media_repeat:"unavailable",permission_before:"unavailable",permission_after:"unavailable"}})));
+</script>"#
+        );
+    }
+    format!(
+        r#"<!doctype html><meta charset="utf-8"><title>KEL-135 {phase}</title>
+<script>
+const phase={phase:?}, value={seed:?}, key="keld-kel135-profile-state";
+const report=(local,cookie,idb,cache,sw)=>fetch("/report?"+new URLSearchParams({{phase,local,cookie,idb,cache,sw}}));
+const cookie=()=>{{const item=document.cookie.split("; ").find(part=>part.startsWith("keld_kel135="));return item?item.slice("keld_kel135=".length):"";}};
+function openDb(){{return new Promise((resolve,reject)=>{{const request=indexedDB.open("keld-kel135-profile",1);request.onupgradeneeded=()=>request.result.createObjectStore("state");request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);}});}}
+async function readCache(){{try{{const cache=await caches.open("keld-kel135-profile");const response=await cache.match("/keld-cache-state");return response?await response.text():"";}}catch{{return "";}}}}
+async function run(){{
+ if(phase==="seed"){{
+  localStorage.setItem(key,value);document.cookie="keld_kel135="+value+"; path=/; max-age=3600; SameSite=Lax";
+  const db=await openDb();await new Promise((resolve,reject)=>{{const tx=db.transaction("state","readwrite");tx.objectStore("state").put(value,"value");tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);}});db.close();
+  const cache=await caches.open("keld-kel135-profile");await cache.put("/keld-cache-state",new Response(value));
+  const registration=await navigator.serviceWorker.register("/sw.js");await navigator.serviceWorker.ready;
+  report(localStorage.getItem(key)||"",cookie(),value,await readCache(),registration.active?"true":"false");
+ }} else {{
+  let idb="";try{{const db=await openDb();idb=await new Promise((resolve,reject)=>{{const tx=db.transaction("state","readonly");const request=tx.objectStore("state").get("value");request.onsuccess=()=>resolve(request.result||"");request.onerror=()=>reject(request.error);}});db.close();}}catch{{}}
+  const registrations=await navigator.serviceWorker.getRegistrations();const sw=registrations.some(registration=>Boolean(registration.active));
+  report(localStorage.getItem(key)||"",cookie(),idb,await readCache(),sw?"true":"false");
+ }}
+}}
+run().catch(()=>report("ERROR","ERROR","ERROR","ERROR","ERROR"));
+</script>"#
+    )
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn write_profile_http(stream: &mut TcpStream, status: u16, body: &str) {
+    write_profile_http_type(stream, status, "text/html; charset=utf-8", body);
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn write_profile_http_type(stream: &mut TcpStream, status: u16, content_type: &str, body: &str) {
+    let reason = if status == 200 {
+        "OK"
+    } else if status == 204 {
+        "No Content"
+    } else {
+        "Bad Request"
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("write KEL-135 origin response");
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn service_worker_script() -> &'static str {
+    "self.addEventListener('install', event => event.waitUntil(self.skipWaiting())); self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));"
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn assert_store_report_matches(log: &str, store_uuid: &str) {
+    let report = log
+        .lines()
+        .find(|line| line.contains("KELD_KEL135_STORE"))
+        .expect("selected WKWebsiteDataStore report");
+    assert!(
+        report.contains(&format!("expected_store_uuid={store_uuid}")),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("actual_identifier={store_uuid}")),
+        "{report}"
+    );
+    assert!(report.contains("persistent=true"), "{report}");
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn assert_ephemeral_store_report(log: &str) {
+    let report = log
+        .lines()
+        .find(|line| line.contains("KELD_KEL135_STORE"))
+        .expect("selected ephemeral WKWebsiteDataStore report");
+    assert!(report.contains("mode=ephemeral-dev"), "{report}");
+    assert!(report.contains("actual_identifier=none"), "{report}");
+    assert!(report.contains("persistent=false"), "{report}");
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn boot_uuid_from_log(log: &str) -> String {
+    log.lines()
+        .find_map(|line| line.strip_prefix("KELD_KEL135_LIFECYCLE boot_uuid_hex="))
+        .expect("real current kern.bootsessionuuid evidence")
+        .to_owned()
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn system_boot_uuid_hex() -> String {
+    let output = Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.bootsessionuuid"])
+        .output()
+        .expect("read independent current boot UUID");
+    assert!(output.status.success(), "sysctl boot UUID query failed");
+    let value = std::str::from_utf8(&output.stdout)
+        .expect("sysctl boot UUID is UTF-8")
+        .trim()
+        .replace('-', "")
+        .to_ascii_lowercase();
+    assert_eq!(value.len(), 32, "sysctl must return one canonical UUID");
+    assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    value
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn system_boot_time_seconds() -> u64 {
+    let output = Command::new("/usr/sbin/sysctl")
+        .args(["kern.boottime"])
+        .output()
+        .expect("read independent kernel boot time");
+    assert!(
+        output.status.success(),
+        "sysctl boottime failed: {output:?}"
+    );
+    let report = String::from_utf8(output.stdout).expect("sysctl boottime is UTF-8");
+    report
+        .split_once("sec = ")
+        .and_then(|(_, suffix)| {
+            suffix
+                .split(|character: char| !character.is_ascii_digit())
+                .next()
+        })
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("sysctl boottime has a seconds field")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_purge_report(app: &Path, support_root: &Path) -> String {
+    let output = Command::new(signed_host_executable(app))
+        .arg("--keld-profile-purge-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", support_root)
+        .output()
+        .expect("launch signed exact-identity purge process");
+    assert!(
+        output.status.success(),
+        "signed exact-identity purge failed: {output:?}"
+    );
+    String::from_utf8(output.stdout).expect("purge report is UTF-8")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_purge_crash_probe(app: &Path, support_root: &Path) -> Output {
+    Command::new(signed_host_executable(app))
+        .arg("--keld-profile-purge-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", support_root)
+        .env("KELD_PROFILE_TEST_PURGE_CRASH_AFTER_CALLBACK", "1")
+        .output()
+        .expect("launch purge recovery interruption fixture")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_purge_phase_crash_probe(app: &Path, support_root: &Path, phase: &str) -> Output {
+    Command::new(signed_host_executable(app))
+        .arg("--keld-profile-purge-fixture-v1")
+        .env("KELD_PROFILE_TEST_ROOT", support_root)
+        .env("KELD_PROFILE_TEST_PURGE_CRASH_AFTER_PHASE", phase)
+        .output()
+        .expect("launch fsynced purge phase interruption fixture")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_store_presence_report(app: &Path) -> String {
+    let output = Command::new(signed_host_executable(app))
+        .arg("--keld-profile-presence-fixture-v1")
+        .output()
+        .expect("enumerate signed app's exact WebKit store registry");
+    assert!(
+        output.status.success(),
+        "signed store enumeration failed: {output:?}"
+    );
+    String::from_utf8(output.stdout).expect("store presence report is UTF-8")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn webkit_version() -> String {
+    let output = Command::new("/usr/libexec/PlistBuddy")
+        .args([
+            "-c",
+            "Print:CFBundleVersion",
+            "/System/Library/Frameworks/WebKit.framework/Versions/A/Resources/Info.plist",
+        ])
+        .output()
+        .expect("read system WebKit framework version");
+    assert!(output.status.success(), "read WebKit version: {output:?}");
+    String::from_utf8(output.stdout)
+        .expect("WebKit version is UTF-8")
+        .trim()
+        .to_owned()
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_identity_report(app: &Path) -> std::collections::BTreeMap<String, String> {
+    let output = Command::new(signed_host_executable(app))
+        .arg("--keld-profile-identity-fixture-v1")
+        .output()
+        .expect("run signed current-process identity probe");
+    parse_signed_identity_report(output)
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_identity_report_as_user(
+    username: &str,
+    user_temp: &Path,
+    app: &Path,
+) -> std::collections::BTreeMap<String, String> {
+    let executable = signed_host_executable(app);
+    let environment = [("TMPDIR", user_temp.to_string_lossy().into_owned())];
+    let output = run_as_local_user_command(
+        username,
+        executable.as_os_str(),
+        &["--keld-profile-identity-fixture-v1"],
+        &environment,
+    )
+    .output()
+    .expect("run signed identity probe as second standard user");
+    parse_signed_identity_report(output)
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn parse_signed_identity_report(output: Output) -> std::collections::BTreeMap<String, String> {
+    assert!(
+        output.status.success(),
+        "signed identity probe failed: {output:?}"
+    );
+    let report = String::from_utf8(output.stdout).expect("signed identity report is UTF-8");
+    let line = report
+        .lines()
+        .find(|line| line.starts_with("KELD_KEL135_SIGNED_IDENTITY "))
+        .expect("validated signed identity report marker");
+    let fields: std::collections::BTreeMap<String, String> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|field| {
+            field
+                .split_once('=')
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        })
+        .collect();
+    assert_eq!(
+        fields
+            .get("signature_validated_before_identity_read")
+            .map(String::as_str),
+        Some("true")
+    );
+    fields
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn make_signed_fixture_readable_by_standard_users(app: &Path) {
+    for directory in [
+        app,
+        &app.join("Contents"),
+        &app.join("Contents/MacOS"),
+        &app.join("Contents/_CodeSignature"),
+    ] {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o755))
+            .expect("make signed fixture directories traversable by the test account");
+    }
+    fs::set_permissions(
+        &app.join("Contents/Info.plist"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("make signed app metadata readable by the test account");
+    fs::set_permissions(
+        &signed_host_executable(app),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("make signed host executable readable by the test account");
+    let verification = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(app)
+        .output()
+        .expect("re-verify cross-user fixture after setting traversal permissions");
+    assert!(
+        verification.status.success(),
+        "cross-user fixture signature did not survive permission setup: {verification:?}"
+    );
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_signed_purge_report_as_user(
+    username: &str,
+    user_temp: &Path,
+    profile_root: &Path,
+    app: &Path,
+) -> Output {
+    let executable = signed_host_executable(app);
+    let environment = [
+        ("TMPDIR", user_temp.to_string_lossy().into_owned()),
+        (
+            "KELD_PROFILE_TEST_ROOT",
+            profile_root.to_string_lossy().into_owned(),
+        ),
+    ];
+    run_as_local_user_command(
+        username,
+        executable.as_os_str(),
+        &["--keld-profile-purge-fixture-v1"],
+        &environment,
+    )
+    .output()
+    .expect("run exact-identity purge as second standard user")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_as_local_user(
+    username: &str,
+    executable: &str,
+    arguments: &[&str],
+    environment: &[(&str, String)],
+) -> Output {
+    run_as_local_user_command(
+        username,
+        std::ffi::OsStr::new(executable),
+        arguments,
+        environment,
+    )
+    .output()
+    .expect("run command as the second ordinary macOS user")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn run_as_local_user_command(
+    username: &str,
+    executable: &std::ffi::OsStr,
+    arguments: &[&str],
+    environment: &[(&str, String)],
+) -> Command {
+    assert!(
+        !username.is_empty()
+            && username
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'),
+        "local test username has a rejected form"
+    );
+    let mut command = Command::new("/usr/bin/sudo");
+    command.args(["-n", "-H", "-u", username, "--", "/usr/bin/env"]);
+    for (name, value) in environment {
+        command.arg(format!("{name}={value}"));
+    }
+    command.arg(executable).args(arguments);
+    command
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn account_numeric_value(username: &str) -> u32 {
+    let output = Command::new("/usr/bin/id")
+        .args(["-u", username])
+        .output()
+        .expect("read macOS account UID");
+    assert!(output.status.success(), "account UID lookup command failed");
+    std::str::from_utf8(&output.stdout)
+        .expect("account UID is UTF-8")
+        .trim()
+        .parse()
+        .expect("account UID is numeric")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn current_account_numeric_id() -> u32 {
+    let output = Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .expect("read current macOS account UID");
+    assert!(output.status.success(), "current UID lookup command failed");
+    std::str::from_utf8(&output.stdout)
+        .expect("current UID is UTF-8")
+        .trim()
+        .parse()
+        .expect("current UID is numeric")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn account_groups(username: &str) -> String {
+    let output = Command::new("/usr/bin/id")
+        .args(["-Gn", username])
+        .output()
+        .expect("read macOS account groups");
+    assert!(
+        output.status.success(),
+        "account group lookup command failed"
+    );
+    std::str::from_utf8(&output.stdout)
+        .expect("account groups are UTF-8")
+        .trim()
+        .to_owned()
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn account_home(username: &str) -> PathBuf {
+    assert!(
+        !username.is_empty()
+            && username
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'),
+        "local test username has a rejected form"
+    );
+    let record = Command::new("/usr/bin/dscl")
+        .args([
+            ".",
+            "-read",
+            &format!("/Users/{username}"),
+            "NFSHomeDirectory",
+        ])
+        .output()
+        .expect("read macOS account home");
+    assert!(
+        record.status.success(),
+        "account home lookup failed: {record:?}"
+    );
+    let text = String::from_utf8(record.stdout).expect("account home is UTF-8");
+    let path = text
+        .trim()
+        .strip_prefix("NFSHomeDirectory: ")
+        .expect("account record includes its home path");
+    PathBuf::from(path)
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn path_text(path: &Path) -> &str {
+    path.to_str().expect("macOS test fixture path is UTF-8")
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn copy_profile_fixture_tree(source: &Path, destination: &Path) {
+    for entry in fs::read_dir(source).expect("list signed fixture source") {
+        let entry = entry.expect("signed fixture directory entry");
+        let source = entry.path();
+        let target = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source).expect("inspect signed fixture source");
+        if metadata.file_type().is_symlink() {
+            panic!("test fixture contains a symlink: {source:?}");
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&target).expect("create signed fixture directory");
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o700))
+                .expect("protect signed fixture directory");
+            copy_profile_fixture_tree(&source, &target);
+        } else if metadata.is_file() {
+            fs::copy(&source, &target).expect("copy signed fixture file");
+            fs::set_permissions(&target, metadata.permissions())
+                .expect("preserve staged fixture file permissions");
+        } else {
+            panic!("unsupported signed fixture node: {source:?}");
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+fn sw_vers_value(key: &str) -> String {
+    let output = Command::new("/usr/bin/sw_vers")
+        .arg(key)
+        .output()
+        .expect("read current macOS version");
+    assert!(output.status.success(), "sw_vers {key} failed: {output:?}");
+    String::from_utf8(output.stdout)
+        .expect("sw_vers output is UTF-8")
+        .trim()
+        .to_owned()
 }

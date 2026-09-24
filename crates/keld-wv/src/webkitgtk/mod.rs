@@ -523,14 +523,18 @@ impl WebKitGtkEngine {
 
         let ready = Arc::clone(&self.navigation_ready);
         let id = self.next_id;
-        let builder = guarded_default_media_builder(WebviewId(id), move |event, _url| {
-            if matches!(event, wry::PageLoadEvent::Finished)
-                && !ready.swap(true, Ordering::AcqRel)
-                && let Some(events) = app_events.as_ref()
-            {
-                let _ = events.send(AppWindowEvent::NavigationReady);
-            }
-        });
+        let builder = guarded_default_media_builder(
+            WebviewId(id),
+            move |event, _url| {
+                if matches!(event, wry::PageLoadEvent::Finished)
+                    && !ready.swap(true, Ordering::AcqRel)
+                    && let Some(events) = app_events.as_ref()
+                {
+                    let _ = events.send(AppWindowEvent::NavigationReady);
+                }
+            },
+            false,
+        );
         // KEL-59/KEL-132: Linux defaults an unhandled request to deny, but
         // that is not proof Keld evaluated the right manifest/principal. The
         // guarded witness mints the webview principal and is required to apply

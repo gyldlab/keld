@@ -169,6 +169,22 @@ landlock = { version = "=0.4.7", default-features = false }
 #   Already in Cargo.lock at 0.10.9
 #   via wry. License: MIT OR Apache-2.0 (deny.toml allow-list).
 sha2 = "0.10"
+# --- Dependency review (KEL-135/T3 / AGENTS.md gate) ---
+# macOS code identity uses the existing Security/CoreFoundation FFI owners;
+# WKWebsiteDataStore uses Wry's pinned objc2 API and CoreFoundation run-loop
+# pump without a second tao NSApplication.run cycle. Exact versions already
+# exist in Cargo.lock through Wry; no package/version is added.
+core-foundation = "=0.10.1"
+objc2 = { version = "=0.6.4", default-features = false }
+objc2-core-foundation = { version = "=0.3.2", default-features = false }
+objc2-foundation = { version = "=0.3.2", default-features = false }
+# Debug-only KEL-135 media sheet observer; these exact versions already enter
+# Cargo.lock through Wry. No new package/version; see §7.3 acceptance evidence.
+# objc2-app-kit 0.3.2: Zlib OR Apache-2.0 OR MIT, MSRV 1.71.
+# block2 0.6.2: MIT, MSRV 1.71. Both are below the workspace MSRV.
+objc2-app-kit = { version = "=0.3.2", default-features = false }
+block2 = { version = "=0.6.2", default-features = false }
+objc2-web-kit = { version = "=0.3.2", default-features = false }
 # --- Dependency review (KEL-96/T4 / AGENTS.md gate) ---
 # Name: windows-permissions 0.2.4 (danieldulaney/windows-permissions-rs)
 # Purpose: safe target-only TokenUser SID plus protected DACL creation/readback

@@ -42,6 +42,10 @@ fn main() {
         return;
     }
     let args: Vec<String> = env::args().collect();
+    #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+    if run_macos_profile_fixture_role(&args) {
+        return;
+    }
     #[cfg(target_os = "macos")]
     if args.get(1).map(String::as_str)
         == Some(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
@@ -113,6 +117,66 @@ fn main() {
     }
     if failed {
         process::exit(1);
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+fn run_macos_profile_fixture_role(args: &[String]) -> bool {
+    match args.get(1).map(String::as_str) {
+        Some("--keld-profile-identity-fixture-v1") => {
+            if args.len() != 2 {
+                eprintln!("KELD-WV-009: malformed private profile identity fixture invocation.");
+                process::exit(2);
+            }
+            match keld_core::app_session::macos_profile_identity_fixture_report() {
+                Ok(report) => println!("{report}"),
+                Err(error) => {
+                    eprintln!("{error}");
+                    process::exit(1);
+                }
+            }
+            true
+        }
+        Some("--keld-profile-presence-fixture-v1") => {
+            if args.len() != 2 {
+                eprintln!("KELD-WV-009: malformed private profile presence fixture invocation.");
+                process::exit(2);
+            }
+            match keld_core::app_session::macos_profile_store_presence_fixture_report() {
+                Ok(report) => println!("{report}"),
+                Err(error) => {
+                    eprintln!("{error}");
+                    process::exit(1);
+                }
+            }
+            true
+        }
+        Some("--keld-profile-purge-fixture-v1") => {
+            if args.len() != 2 {
+                eprintln!("KELD-WV-009: malformed private profile purge fixture invocation.");
+                process::exit(2);
+            }
+            match keld_core::app_session::macos_profile_purge_fixture() {
+                Ok(report) => println!("{report}"),
+                Err(error) => {
+                    eprintln!("{error}");
+                    process::exit(1);
+                }
+            }
+            true
+        }
+        Some("--keld-profile-webview-fixture-v1") => {
+            if args.len() != 2 {
+                eprintln!("KELD-WV-009: malformed private profile WebView fixture invocation.");
+                process::exit(2);
+            }
+            if let Err(error) = keld_core::app_session::run_macos_profile_webview_fixture() {
+                eprintln!("{error}");
+                process::exit(1);
+            }
+            true
+        }
+        _ => false,
     }
 }
 

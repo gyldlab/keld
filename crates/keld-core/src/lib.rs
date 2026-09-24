@@ -9,6 +9,8 @@ mod echo_link;
 mod hello;
 mod hello_session;
 mod lifecycle;
+#[cfg(target_os = "macos")]
+mod macos_profile_identity;
 
 #[cfg(windows)]
 pub use echo_link::EchoEndpoint;

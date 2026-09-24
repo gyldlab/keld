@@ -9,6 +9,9 @@
 //!
 //! Platform backends may use `unsafe` (see crate `AGENTS.md`).
 
+#[cfg(all(feature = "profile-test-hooks", not(debug_assertions)))]
+compile_error!("KEL-135 profile test hooks are available only in debug builds");
+
 mod engine;
 mod error;
 mod hello;

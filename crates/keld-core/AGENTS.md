@@ -9,6 +9,13 @@ Extends root `AGENTS.md`; this file owns the shipping host-session composition.
   cleanup-sentinel process acquire/image/wait, and KEL-135 Authenticode
   trust-state/signer/SPKI reads in `app_session.rs`. Every call needs a local
   `// SAFETY:` proof and independent unsafe/security review.
+- macOS KEL-135/T3 Core `unsafe` is limited to `SecCodeCopySelf` →
+  `SecRequirementCreateWithString` → `SecCodeCheckValidity` → `SecCodeCopyStaticCode` →
+  `SecCodeCopySigningInformation` and owned CF-reference conversion in
+  `src/macos_profile_identity.rs`. It accepts current-process code; identity
+  fields follow Apple-chain validation.
+  API or missing-fact failure is `KELD-WV-009`; no arbitrary code/path or
+  blanket `unsafe`. Every block needs a local `// SAFETY:` proof.
 - Startup remains resource-free until validated boot and immutable guard
   preflight pass. Revocation, link close, child reap, window exit, and cleanup
   errors remain ordered and independently observable.
