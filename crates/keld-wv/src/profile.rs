@@ -104,7 +104,7 @@ impl fmt::Display for ProfileError {
                 "profile locks were acquired or released out of order. Use package lifecycle, platform registry, profile lease, then engine/store intent order"
             }
             ProfileErrorKind::LifecycleUnproven => {
-                "durable profile lifecycle state cannot prove safe reuse on this platform/version. If persistent profiles are unsupported here, use explicit ephemeral mode; otherwise complete engine-release or boot recovery before lookup"
+                "durable profile lifecycle state cannot prove safe reuse because recovery state cannot be proven on this platform/version. If persistent profiles are unsupported here, use explicit ephemeral mode; otherwise complete engine-release or boot recovery before lookup"
             }
         };
         write!(f, "KELD-WV-009: profile selection failed: {detail}.")
@@ -1926,6 +1926,17 @@ mod tests {
         next_lifecycle_action, next_marker_action, next_registry_action,
         next_windows_lifecycle_action,
     };
+
+    #[test]
+    fn lifecycle_unproven_error_keeps_cross_platform_and_version_guidance() {
+        let message = ProfileError::new(ProfileErrorKind::LifecycleUnproven).to_string();
+        assert!(message.contains("lifecycle state"), "{message}");
+        assert!(
+            message.contains("recovery state cannot be proven"),
+            "{message}"
+        );
+        assert!(message.contains("unsupported here"), "{message}");
+    }
 
     #[test]
     fn identity_vectors() {
