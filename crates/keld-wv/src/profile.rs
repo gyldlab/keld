@@ -1283,7 +1283,7 @@ impl BootIdentity {
         Ok(Self(bytes))
     }
 
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
     pub(crate) const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
