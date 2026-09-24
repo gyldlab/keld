@@ -66,6 +66,11 @@ impl ProfileError {
     pub(crate) const fn platform_failure(kind: ProfileErrorKind) -> Self {
         Self::new(kind)
     }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) const fn platform_failure(kind: ProfileErrorKind) -> Self {
+        Self::new(kind)
+    }
 }
 
 impl fmt::Display for ProfileError {
@@ -99,7 +104,7 @@ impl fmt::Display for ProfileError {
                 "profile locks were acquired or released out of order. Use package lifecycle, platform registry, profile lease, then engine/store intent order"
             }
             ProfileErrorKind::LifecycleUnproven => {
-                "durable profile lifecycle state cannot prove safe reuse. Complete the platform release oracle or required boot-scoped quarantine recovery before lookup"
+                "the selected persistent profile is unsupported on this platform/version or its recovery state cannot be proven. Use a supported version or complete the required engine-release/boot recovery before lookup"
             }
         };
         write!(f, "KELD-WV-009: profile selection failed: {detail}.")
@@ -887,13 +892,14 @@ fn next_binding_action(
             }
         }
         BindingPhase::StoreVerified => {
-            if !forward || !reverse || store != Some(true) {
+            if !forward || !reverse {
                 return Err(ProfileError::new(ProfileErrorKind::RegistryCorruption));
             }
-            if snapshot.active {
-                Ok(RegistryAction::ClearIntent)
-            } else {
-                Ok(RegistryAction::MarkBindingActive)
+            match store {
+                None => Ok(RegistryAction::EnumerateStores),
+                Some(false) => Err(ProfileError::new(ProfileErrorKind::RegistryCorruption)),
+                Some(true) if snapshot.active => Ok(RegistryAction::ClearIntent),
+                Some(true) => Ok(RegistryAction::MarkBindingActive),
             }
         }
     }
@@ -944,8 +950,11 @@ fn next_purge_action(
             }
         }
         PurgePhase::StoreAbsent => {
-            if store != Some(false) || !snapshot.active || !forward {
+            if !snapshot.active || !forward {
                 return Err(ProfileError::new(ProfileErrorKind::RegistryCorruption));
+            }
+            if let Some(action) = absent_store_purge_action(store)? {
+                return Ok(action);
             }
             if reverse {
                 Ok(RegistryAction::RemoveReverseRecord)
@@ -956,8 +965,11 @@ fn next_purge_action(
             }
         }
         PurgePhase::ReverseRemoved => {
-            if store != Some(false) || reverse || !snapshot.active {
+            if reverse || !snapshot.active {
                 return Err(ProfileError::new(ProfileErrorKind::RegistryCorruption));
+            }
+            if let Some(action) = absent_store_purge_action(store)? {
+                return Ok(action);
             }
             if forward {
                 Ok(RegistryAction::RemoveForwardRecord)
@@ -968,8 +980,11 @@ fn next_purge_action(
             }
         }
         PurgePhase::ForwardRemoved => {
-            if store != Some(false) || forward || reverse {
+            if forward || reverse {
                 return Err(ProfileError::new(ProfileErrorKind::RegistryCorruption));
+            }
+            if let Some(action) = absent_store_purge_action(store)? {
+                return Ok(action);
             }
             if snapshot.active {
                 Ok(RegistryAction::ClearActiveStatus)
@@ -978,12 +993,23 @@ fn next_purge_action(
             }
         }
         PurgePhase::Inactive => {
-            if store == Some(false) && !forward && !reverse && !snapshot.active {
-                Ok(RegistryAction::ClearIntent)
+            if forward || reverse || snapshot.active {
+                return Err(ProfileError::new(ProfileErrorKind::RegistryCorruption));
+            }
+            if let Some(action) = absent_store_purge_action(store)? {
+                Ok(action)
             } else {
-                Err(ProfileError::new(ProfileErrorKind::RegistryCorruption))
+                Ok(RegistryAction::ClearIntent)
             }
         }
+    }
+}
+
+fn absent_store_purge_action(store: Option<bool>) -> Result<Option<RegistryAction>, ProfileError> {
+    match store {
+        None => Ok(Some(RegistryAction::EnumerateStores)),
+        Some(false) => Ok(None),
+        Some(true) => Err(ProfileError::new(ProfileErrorKind::RegistryCorruption)),
     }
 }
 
@@ -1256,6 +1282,11 @@ impl BootIdentity {
         }
         Ok(Self(bytes))
     }
+
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    pub(crate) const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
 }
 
 impl<'de> Deserialize<'de> for BootIdentity {
@@ -1430,6 +1461,31 @@ impl ProfileLifecycleRecord {
     #[must_use]
     pub const fn phase(&self) -> ProfileLifecyclePhase {
         self.phase
+    }
+
+    /// Completes boot-scoped quarantine only after a different validated boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `KELD-WV-009` unless a quarantined record with an owner names a
+    /// different boot than `current_boot`.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn restore_idle_after_boot(
+        self,
+        current_boot: BootIdentity,
+    ) -> Result<Self, ProfileError> {
+        match self.recovery {
+            LifecycleRecovery::BootScoped(recorded_boot)
+                if self.phase == ProfileLifecyclePhase::Quarantined
+                    && self.owner.is_some()
+                    && recorded_boot != current_boot =>
+            {
+                Ok(Self::idle(current_boot))
+            }
+            LifecycleRecovery::BootScoped(_) | LifecycleRecovery::WindowsExclusiveUdf => {
+                Err(ProfileError::new(ProfileErrorKind::LifecycleUnproven))
+            }
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -2126,6 +2182,21 @@ mod tests {
             bind_action(verified, exact, exact, present_store(binding), true),
             Ok(RegistryAction::ClearIntent)
         );
+        assert_eq!(
+            bind_action(verified, exact, exact, StoreObservation::Unknown, false),
+            Ok(RegistryAction::EnumerateStores)
+        );
+        assert_eq!(
+            bind_action(verified, exact, exact, StoreObservation::Unknown, true),
+            Ok(RegistryAction::EnumerateStores)
+        );
+        assert_registry_corruption(bind_action(
+            verified,
+            exact,
+            exact,
+            StoreObservation::Absent,
+            false,
+        ));
         let active = RegistrySnapshot::new(None, exact, exact, present_store(binding), true);
         assert_eq!(
             next_registry_action(RegistryRequest::Bind(binding), active),
@@ -2268,6 +2339,54 @@ mod tests {
     }
 
     #[test]
+    fn registry_purge_unknown_store_enumerates_before_later_phase_writes() {
+        let binding = test_binding();
+        let exact = RegistryRecord::Present(binding);
+        let missing = RegistryRecord::Missing;
+        let prepared = RegistryIntent::purging(binding);
+        for (phase, forward, reverse, active) in [
+            (PurgePhase::StoreAbsent, exact, exact, true),
+            (PurgePhase::StoreAbsent, exact, missing, true),
+            (PurgePhase::ReverseRemoved, exact, missing, true),
+            (PurgePhase::ReverseRemoved, missing, missing, true),
+            (PurgePhase::ForwardRemoved, missing, missing, true),
+            (PurgePhase::ForwardRemoved, missing, missing, false),
+            (PurgePhase::Inactive, missing, missing, false),
+        ] {
+            assert_eq!(
+                purge_action(
+                    prepared.with_purge_phase(phase),
+                    forward,
+                    reverse,
+                    StoreObservation::Unknown,
+                    active,
+                ),
+                Ok(RegistryAction::EnumerateStores),
+                "phase {phase:?} must read the live store before metadata mutation"
+            );
+        }
+        for (phase, forward, reverse, active) in [
+            (PurgePhase::StoreAbsent, missing, exact, true),
+            (PurgePhase::ReverseRemoved, exact, exact, true),
+            (PurgePhase::ForwardRemoved, exact, missing, true),
+            (PurgePhase::Inactive, missing, missing, true),
+        ] {
+            assert_eq!(
+                purge_action(
+                    prepared.with_purge_phase(phase),
+                    forward,
+                    reverse,
+                    StoreObservation::Unknown,
+                    active,
+                )
+                .map_err(|error| error.kind()),
+                Err(ProfileErrorKind::RegistryCorruption),
+                "phase {phase:?} must reject malformed metadata before enumeration"
+            );
+        }
+    }
+
+    #[test]
     fn lock_order_and_exclusive_lease_reject_aliases() {
         let identity = test_identity(3);
         let key = ProfileLeaseKey::from_host_validated_parts(
@@ -2377,6 +2496,26 @@ mod tests {
         assert_eq!(
             next_lifecycle_action(quarantined, RecordedProcessObservation::Dead, changed_boot,),
             Ok(ProfileLifecycleAction::RestoreIdleAfterBoot)
+        );
+        assert_eq!(
+            quarantined
+                .restore_idle_after_boot(changed_boot)
+                .expect("changed-boot quarantine completes to idle"),
+            ProfileLifecycleRecord::idle(changed_boot)
+        );
+        assert_eq!(
+            quarantined
+                .restore_idle_after_boot(boot)
+                .expect_err("same-boot quarantine remains blocked")
+                .kind(),
+            ProfileErrorKind::LifecycleUnproven
+        );
+        assert_eq!(
+            starting
+                .restore_idle_after_boot(changed_boot)
+                .expect_err("non-quarantined records do not skip quarantine")
+                .kind(),
+            ProfileErrorKind::LifecycleUnproven
         );
 
         let clean_idle = starting

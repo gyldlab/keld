@@ -13,7 +13,7 @@ authors.workspace = true
 media-acceptance = []
 # Internal deterministic fault fixtures for downstream KEL-135 test binaries.
 # Release packages never enable this feature.
-profile-test-hooks = []
+profile-test-hooks = ["dep:objc2-app-kit", "dep:block2", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
 
 [dependencies]
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`
@@ -32,6 +32,17 @@ workspace = true
 
 [target.'cfg(target_os="macos")'.dependencies]
 tao = "0.35.3"
+# KEL-135/T3 reuses Wry's `WKWebView` construction while the host owns one
+# selected WKWebsiteDataStore and reads back its identifier/persistence before
+# the first view. These are the exact objc2 versions already pinned by Wry.
+objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
+objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID"] }
+objc2-app-kit = { workspace = true, optional = true, features = ["NSWindow"] }
+block2 = { workspace = true, optional = true }
+objc2-core-foundation = { workspace = true, features = ["CFRunLoop", "CFDate"] }
+objc2-web-kit = { workspace = true, features = ["std", "objc2-core-foundation", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+nix = { workspace = true, features = ["user"] }
+getrandom = { workspace = true }
 # `devtools` keeps `open_devtools`/`close_devtools` compiled in release builds
 # so `WebEngine::devtools` is not debug-only (wry gates them behind
 # `cfg(any(debug_assertions, feature = "devtools"))`).

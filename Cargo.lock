@@ -1406,6 +1406,8 @@ dependencies = [
 name = "keld-core"
 version = "0.0.1"
 dependencies = [
+ "core-foundation",
+ "getrandom 0.4.3",
  "keld-guard",
  "keld-ipc",
  "keld-runtime",
@@ -1494,8 +1496,15 @@ version = "0.0.1"
 name = "keld-wv"
 version = "0.0.1"
 dependencies = [
+ "block2",
  "getrandom 0.4.3",
  "keld-guard",
+ "nix",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-web-kit",
  "serde",
  "serde_json",
  "sha2",
