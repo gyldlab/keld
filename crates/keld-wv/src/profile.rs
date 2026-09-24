@@ -104,7 +104,7 @@ impl fmt::Display for ProfileError {
                 "profile locks were acquired or released out of order. Use package lifecycle, platform registry, profile lease, then engine/store intent order"
             }
             ProfileErrorKind::LifecycleUnproven => {
-                "the selected persistent profile is unsupported on this platform/version or its recovery state cannot be proven. Use a supported version or complete the required engine-release/boot recovery before lookup"
+                "durable profile lifecycle state cannot prove safe reuse on this platform/version. If persistent profiles are unsupported here, use explicit ephemeral mode; otherwise complete engine-release or boot recovery before lookup"
             }
         };
         write!(f, "KELD-WV-009: profile selection failed: {detail}.")
