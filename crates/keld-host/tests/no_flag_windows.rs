@@ -430,14 +430,40 @@ fn windows_crash_loop_keeps_core033_as_the_outer_host_error() {
         .spawn()
         .expect("launch crash-loop host");
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         let (_reader, mut writer, _pid, _link) =
             accept_ready_generation(&control_listener, &mut child);
         writer.write_all(b"CRASH\n").expect("crash generation");
         writer.flush().expect("flush generation crash");
     }
+    let (mut reader, mut writer, _pid, _link) =
+        accept_ready_generation(&control_listener, &mut child);
+    writer
+        .write_all(b"CRASH_ACKED\n")
+        .expect("request acknowledged threshold crash");
+    writer.flush().expect("flush acknowledged threshold crash");
+    let acknowledgement = try_read_control_line(&mut reader, Instant::now() + PRODUCT_DEADLINE);
+    let acknowledgement = match acknowledgement {
+        Ok(line) => line,
+        Err(error) => {
+            let status = if let Some(status) = child
+                .try_wait()
+                .expect("observe host after missing CRASH_ACK")
+            {
+                status
+            } else {
+                let _ = child.kill();
+                child.wait().expect("reap host after missing CRASH_ACK")
+            };
+            panic!("fixture did not acknowledge CRASH before host exit {status}: {error}");
+        }
+    };
+    assert_eq!(acknowledgement, "CRASH_ACK");
     let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
-    assert!(!status.success(), "crash loop became host success");
+    assert!(
+        !status.success(),
+        "acknowledged crash loop became host success: {status}"
+    );
     let mut stderr = String::new();
     child
         .stderr
