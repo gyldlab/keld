@@ -89,7 +89,7 @@ set +e
     > "$fixture_root/invalid-probe.stdout" 2> "$fixture_root/invalid-probe.stderr"
 invalid_status=$?
 set -e
-if [[ "$invalid_status" -eq 0 ]] || rg -q 'team_identifier|signing_identifier' \
+if [[ "$invalid_status" -eq 0 ]] || /usr/bin/grep -Eq 'team_identifier|signing_identifier' \
     "$fixture_root/invalid-probe.stdout" "$fixture_root/invalid-probe.stderr"; then
     echo "tampered running app was accepted or disclosed signing identity" >&2
     exit 1
