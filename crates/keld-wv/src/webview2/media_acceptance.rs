@@ -1203,7 +1203,12 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             .send(crate::AppWindowCommand::Quit)
             .map_err(|_| failure("queue saved fixture Quit"))?;
         engine.run_app_until_quit(commands_rx, mpsc::channel().0)?;
-        if std::env::var_os("KELD_PROFILE_SAVED_CLEANUP").is_some() {
+        // Signed acceptance phases share the caller's run-owned profile root
+        // across camera and microphone cases. Their owner purges the exact
+        // authenticated identity after both cases complete.
+        if std::env::var_os("KELD_PROFILE_SAVED_CLEANUP").is_some()
+            && std::env::var_os("KELD_PROFILE_SAVED_SIGNED_NAMESPACE").is_none()
+        {
             std::fs::remove_dir_all(case.root).map_err(failure)?;
         }
         Ok(())
@@ -1501,6 +1506,15 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
     #[ignore = "real same-profile media saved-grant phase subprocess"]
     fn windows_saved_grant_phase_subprocess() -> Result<(), WvError> {
         run_with_watchdog(FIXTURE_DEADLINE, run_saved_grant_phase)
+    }
+
+    #[test]
+    #[ignore = "probes only the debug KEL-135 profile test-root feature"]
+    #[cfg(feature = "profile-test-root")]
+    fn windows_profile_test_root_probe_subprocess() -> Result<(), WvError> {
+        let root = super::super::known_local_app_data()?;
+        println!("KELD_PROFILE_TEST_ROOT_FEATURE {}", root.display());
+        Ok(())
     }
 
     #[test]

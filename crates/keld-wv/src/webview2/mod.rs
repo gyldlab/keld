@@ -438,6 +438,12 @@ fn windows_profile_plan(
 }
 
 fn known_local_app_data() -> Result<PathBuf, WvError> {
+    #[cfg(feature = "profile-test-root")]
+    if let Some(root) = profile_test_root_override()? {
+        println!("KELD_PROFILE_TEST_ROOT_SELECTED {}", root.display());
+        return Ok(root);
+    }
+
     // SAFETY: this noninteractive known-folder query writes one COM-allocated
     // NUL-terminated path for the current process token. The allocation is
     // copied and freed exactly once below.
@@ -449,6 +455,38 @@ fn known_local_app_data() -> Result<PathBuf, WvError> {
     unsafe { CoTaskMemFree(Some(raw.as_ptr().cast())) };
     text.map(PathBuf::from)
         .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))
+}
+
+#[cfg(feature = "profile-test-root")]
+fn profile_test_root_override() -> Result<Option<PathBuf>, WvError> {
+    let Some(root) = std::env::var_os("KELD_PROFILE_TEST_ROOT") else {
+        return Ok(None);
+    };
+    let root = PathBuf::from(root);
+    let temp = std::env::temp_dir();
+    validate_profile_test_root(&root, &temp).map(Some)
+}
+
+#[cfg(feature = "profile-test-root")]
+fn validate_profile_test_root(root: &Path, temp: &Path) -> Result<PathBuf, WvError> {
+    if !profile_test_root_is_descendant(root, temp) {
+        return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+    let canonical_temp = temp
+        .canonicalize()
+        .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
+    if canonical_root == canonical_temp || !canonical_root.starts_with(&canonical_temp) {
+        return Err(profile_failure(ProfileErrorKind::MarkerMismatch));
+    }
+    Ok(root.to_path_buf())
+}
+
+#[cfg(feature = "profile-test-root")]
+fn profile_test_root_is_descendant(root: &Path, temp: &Path) -> bool {
+    root.is_absolute() && temp.is_absolute() && root != temp && root.starts_with(temp)
 }
 
 fn open_directory_handle(path: &Path) -> Result<File, WvError> {
@@ -2235,12 +2273,29 @@ impl WebView2Engine {
     /// ever appears.
     pub fn new(selection: WebProfileSelection) -> Result<Self, WvError> {
         runtime_version()?;
-        let (com, profile) =
-            prepare_profile_before_event_loop(&known_local_app_data()?, selection)?;
+        let profile_root = known_local_app_data()?;
+        let selected = prepare_profile_before_event_loop(&profile_root, selection);
+        #[cfg(feature = "profile-test-root")]
+        if let Err(error) = &selected {
+            eprintln!("KELD_PROFILE_TEST_PREPARE_FAILED {error}");
+        }
+        let (com, profile) = selected?;
+        #[cfg(feature = "profile-test-root")]
+        println!(
+            "KELD_PROFILE_TEST_PREPARED {}",
+            profile.plan.user_data_dir.display()
+        );
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_dpi_aware(false);
         let event_loop = builder.build();
-        let environment = create_environment_for_profile(&profile)?;
+        let environment_result = create_environment_for_profile(&profile);
+        #[cfg(feature = "profile-test-root")]
+        if let Err(error) = &environment_result {
+            eprintln!("KELD_PROFILE_TEST_ENVIRONMENT_FAILED {error}");
+        }
+        let environment = environment_result?;
+        #[cfg(feature = "profile-test-root")]
+        println!("KELD_PROFILE_TEST_ENVIRONMENT_READY");
         Self::from_selected_environment(com, event_loop, environment, profile)
     }
 
@@ -2938,6 +2993,41 @@ mod tests {
         EphemeralProfile, ProfileIdentity, ProfileLifecyclePhase, ProfileLifecycleRecord,
         ProfileProcessIdentity, ProfilePurgePhase, ProfilePurgeRecord, WebProfileSelection,
     };
+
+    #[cfg(feature = "profile-test-root")]
+    #[test]
+    fn profile_test_root_override_accepts_only_existing_temp_children() {
+        let temp = std::env::temp_dir();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after Unix epoch")
+            .as_nanos();
+        let root = temp.join(format!("keld-profile-test-root-{nonce}"));
+        std::fs::create_dir(&root).expect("create unique test profile root");
+
+        assert_eq!(
+            super::validate_profile_test_root(&root, &temp)
+                .expect("existing temp child is a valid root"),
+            root
+        );
+        assert!(super::validate_profile_test_root(&temp, &temp).is_err());
+        assert!(super::validate_profile_test_root(&temp.join("missing"), &temp).is_err());
+        assert!(
+            super::validate_profile_test_root(std::path::Path::new("relative"), &temp).is_err()
+        );
+        assert!(
+            super::validate_profile_test_root(
+                &temp
+                    .parent()
+                    .expect("temp parent")
+                    .join("outside-keld-test-root"),
+                &temp
+            )
+            .is_err()
+        );
+
+        std::fs::remove_dir(root).expect("remove unique test profile root");
+    }
 
     /// The CI runners and this developer machine both ship the Evergreen
     /// runtime, so the probe must succeed and return a dotted version. If it

@@ -14,6 +14,9 @@ media-acceptance = []
 # Internal deterministic fault fixtures for downstream KEL-135 test binaries.
 # Release packages never enable this feature.
 profile-test-hooks = ["dep:objc2-app-kit", "dep:block2", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
+# A separate test-only root override for signed KEL-135 acceptance hosts.
+# Release builds that enable it are rejected by the crate root.
+profile-test-root = ["profile-test-hooks"]
 
 [dependencies]
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`

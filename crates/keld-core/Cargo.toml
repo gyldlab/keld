@@ -11,6 +11,8 @@ authors.workspace = true
 [features]
 # Test-owned metadata root and fault controls for signed KEL-135 fixtures.
 profile-test-hooks = ["keld-wv/profile-test-hooks"]
+# Only signed, debug KEL-135 acceptance hosts enable this downstream root hook.
+kel135-profile-test-root = ["keld-wv/profile-test-root"]
 
 [dependencies]
 keld-ipc = { workspace = true }

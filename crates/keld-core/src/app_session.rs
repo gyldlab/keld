@@ -5024,6 +5024,16 @@ mod tests {
         );
     }
 
+    /// Proves the signed acceptance fixture binary includes the isolated-profile-root build.
+    #[test]
+    #[ignore = "probes only the debug KEL-135 profile test-root feature"]
+    #[cfg(all(windows, feature = "kel135-profile-test-root"))]
+    fn kel135_profile_test_root_probe_fixture() {
+        let root = std::env::var_os("KELD_PROFILE_TEST_ROOT")
+            .expect("the profile test-root probe needs the requested path");
+        println!("KELD_PROFILE_TEST_ROOT_FEATURE {}", root.to_string_lossy());
+    }
+
     /// Runs only from a deliberately signed copy of this libtest binary.
     #[test]
     #[ignore = "requires a trusted Authenticode-signed fixture executable"]
