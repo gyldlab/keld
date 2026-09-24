@@ -5242,7 +5242,7 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             seed_log.contains(&format!(
                 "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=prompt"
             )),
-            "seed callback did not defer {kind} to WebKit's user permission prompt: {seed_log}"
+            "seed callback did not defer {kind} to WebKit's user permission prompt"
         );
         let seed_callback_count = seed_log.matches("KELD_KEL135_MEDIA_CALLBACK").count();
         assert_eq!(
@@ -5280,7 +5280,7 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             deny_log.contains(&format!(
                 "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=deny"
             )),
-            "Keld's denying callback did not run for saved {kind}: {deny_log}"
+            "Keld's denying callback did not run for saved {kind}"
         );
         assert_eq!(
             deny_log.matches("KELD_KEL135_MEDIA_CALLBACK").count(),
@@ -5291,7 +5291,7 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             deny_log.contains("principal=Webview {")
                 && deny_log.contains("guard_decision=Some(Deny(")
                 && deny_log.contains("policy=PermissionsManifest { app: {} }"),
-            "restarted {kind} denial lacks requesting principal or guard decision provenance: {deny_log}"
+            "restarted {kind} denial lacks requesting principal or guard decision provenance"
         );
         let allow_phase = format!("media-allow-{kind}");
         let allowed = origin.run_media_profile(
@@ -5336,7 +5336,7 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             allow_log.contains(&format!(
                 "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=allow"
             )) && allow_log.contains("guard_decision=Some(Deny("),
-            "Allow counterfactual did not override a real guarded denial: {allow_log}"
+            "Allow counterfactual did not override a real guarded denial"
         );
 
         let ephemeral = origin.run_ephemeral_media_profile(
@@ -5527,7 +5527,7 @@ fn run_persistent_media_query_modes(
         assert_store_report_matches(&log, store_uuid);
         assert!(
             !log.contains("KELD_KEL135_MEDIA_CALLBACK"),
-            "query-only {policy} unexpectedly invoked a capture permission callback: {log}"
+            "query-only {policy} unexpectedly invoked a capture permission callback"
         );
         let camera = report.get("camera").expect("camera query result");
         let microphone = report.get("microphone").expect("microphone query result");
@@ -7056,7 +7056,7 @@ fn system_boot_uuid_hex() -> String {
         .output()
         .expect("read independent current boot UUID");
     assert!(output.status.success(), "sysctl boot UUID query failed");
-    let value = String::from_utf8(output.stdout)
+    let value = std::str::from_utf8(&output.stdout)
         .expect("sysctl boot UUID is UTF-8")
         .trim()
         .replace('-', "")
@@ -7312,11 +7312,8 @@ fn account_numeric_value(username: &str) -> u32 {
         .args(["-u", username])
         .output()
         .expect("read macOS account UID");
-    assert!(
-        output.status.success(),
-        "account UID lookup failed: {output:?}"
-    );
-    String::from_utf8(output.stdout)
+    assert!(output.status.success(), "account UID lookup command failed");
+    std::str::from_utf8(&output.stdout)
         .expect("account UID is UTF-8")
         .trim()
         .parse()
@@ -7329,11 +7326,8 @@ fn current_account_numeric_id() -> u32 {
         .arg("-u")
         .output()
         .expect("read current macOS account UID");
-    assert!(
-        output.status.success(),
-        "current UID lookup failed: {output:?}"
-    );
-    String::from_utf8(output.stdout)
+    assert!(output.status.success(), "current UID lookup command failed");
+    std::str::from_utf8(&output.stdout)
         .expect("current UID is UTF-8")
         .trim()
         .parse()
@@ -7348,9 +7342,9 @@ fn account_groups(username: &str) -> String {
         .expect("read macOS account groups");
     assert!(
         output.status.success(),
-        "account group lookup failed: {output:?}"
+        "account group lookup command failed"
     );
-    String::from_utf8(output.stdout)
+    std::str::from_utf8(&output.stdout)
         .expect("account groups are UTF-8")
         .trim()
         .to_owned()
