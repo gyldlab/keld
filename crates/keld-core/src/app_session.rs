@@ -48,6 +48,10 @@ use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use nix::sys::stat::{SFlag, fstat};
 
+#[cfg(target_os = "macos")]
+use crate::macos_profile_identity::verified_current_process_signing_info;
+#[cfg(target_os = "macos")]
+use getrandom::fill as fill_os_random;
 use keld_guard::ManifestError;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::VerifiedManifest;
@@ -76,6 +80,8 @@ use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent};
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
 #[cfg(target_os = "linux")]
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
+#[cfg(target_os = "macos")]
+use keld_wv::profile::EphemeralProfile;
 #[cfg(target_os = "linux")]
 use keld_wv::webkitgtk::WebKitGtkEngine;
 #[cfg(windows)]
@@ -86,9 +92,11 @@ use keld_wv::wkwebview::{AppWindowCommand, AppWindowEvent, WkWebViewEngine};
 use keld_wv::{AppWindowCommand, AppWindowEvent};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
-#[cfg(windows)]
+#[cfg(any(target_os = "macos", windows))]
 use keld_wv::{ProfileIdentity, WebProfileSelection};
 #[cfg(windows)]
+use sha2::{Digest as _, Sha256};
+#[cfg(target_os = "macos")]
 use sha2::{Digest as _, Sha256};
 #[cfg(windows)]
 use windows_permissions::constants::{
@@ -1357,6 +1365,9 @@ fn run_app(
             "Regenerate the stage with UTF-8 renderer HTML.",
         )
     })?;
+    // Authenticate the running package, or mint one explicit dev nonce, before
+    // starting the guardian child, listener, app-link, or WebKit engine.
+    let profile_selection = macos_profile_selection(dev_lease.as_ref())?;
 
     let entry_metadata = entry_file
         .metadata()
@@ -1415,7 +1426,20 @@ fn run_app(
         })
         .map_err(|source| app_io("window event coordinator", &source))?;
 
-    let mut engine = WkWebViewEngine::new();
+    let mut engine = match WkWebViewEngine::new(profile_selection) {
+        Ok(engine) => engine,
+        Err(source) => {
+            let primary = app_webview_error("macOS profile store initialization", &source);
+            return cleanup_window_start_failure(
+                &primary,
+                guard_snapshot,
+                window_events_tx,
+                event_coordinator,
+                router,
+                guardian_owner,
+            );
+        }
+    };
     let spec = WebviewSpec {
         title: name,
         initial: NavTarget::Html(html),
@@ -1423,20 +1447,15 @@ fn run_app(
     };
     WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     if let Err(source) = engine.create_app(&spec, window_events_tx.clone()) {
-        let primary = app_detail("initial window", source.to_string());
-        return finish_guarded_session(guard_snapshot, |_| {
-            drop(window_events_tx);
-            let event_result = event_coordinator
-                .join()
-                .map_err(|_| app_detail("window event coordinator", "thread panicked"))
-                .and_then(std::convert::identity);
-            let router_result = router.shutdown();
-            let guardian_result = guardian_owner.shutdown();
-            Err(collapse_app_failures(
-                &primary,
-                [event_result, router_result, guardian_result],
-            ))
-        });
+        let primary = app_webview_error("initial window", &source);
+        return cleanup_window_start_failure(
+            &primary,
+            guard_snapshot,
+            window_events_tx,
+            event_coordinator,
+            router,
+            guardian_owner,
+        );
     }
     let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
     finish_guarded_session(guard_snapshot, |_| {
@@ -1450,20 +1469,365 @@ fn run_app(
 
         match window_result {
             Err(source @ WvError::Navigate(_)) => {
-                let primary = app_detail("initial navigation", source.to_string());
+                let primary = app_webview_error("initial navigation", &source);
                 Err(collapse_app_failures(
                     &primary,
                     [guardian_result, router_result, event_result],
                 ))
             }
             result => collapse_app_results([
-                result.map_err(|source| app_detail("macOS app window", source.to_string())),
+                result.map_err(|source| app_webview_error("macOS app window", &source)),
                 event_result,
                 router_result,
                 guardian_result,
             ]),
         }
     })
+}
+
+#[cfg(target_os = "macos")]
+const MACOS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.macos/v1\0";
+
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct MacValidatedAppIdentity {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    team_identifier: Box<str>,
+    publisher_scope: [u8; 32],
+    signing_identifier: Box<str>,
+    profile_identity: ProfileIdentity,
+}
+
+#[cfg(target_os = "macos")]
+impl MacValidatedAppIdentity {
+    fn from_verified_parts(
+        team_identifier: &str,
+        signing_identifier: &str,
+    ) -> Result<Self, HostAppError> {
+        if team_identifier.len() != 10
+            || !team_identifier
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        {
+            return Err(macos_identity_error(
+                "the validated code signature has no canonical 10-character Team Identifier",
+            ));
+        }
+        let mut publisher_hasher = Sha256::new();
+        publisher_hasher.update(MACOS_PUBLISHER_SCOPE_DOMAIN);
+        publisher_hasher.update(team_identifier.as_bytes());
+        let publisher_digest = publisher_hasher.finalize();
+        let mut publisher_scope = [0_u8; 32];
+        publisher_scope.copy_from_slice(&publisher_digest);
+        let profile_identity = ProfileIdentity::from_host_verified_parts(
+            publisher_scope,
+            signing_identifier,
+        )
+        .map_err(|source| {
+            macos_identity_error(format!(
+                "the validated code-signing identifier is not a canonical Keld app id: {source}"
+            ))
+        })?;
+        Ok(Self {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            team_identifier: team_identifier.into(),
+            publisher_scope,
+            signing_identifier: signing_identifier.into(),
+            profile_identity,
+        })
+    }
+
+    fn into_profile_selection(self) -> Result<WebProfileSelection, HostAppError> {
+        debug_assert_eq!(
+            ProfileIdentity::from_host_verified_parts(
+                self.publisher_scope,
+                &self.signing_identifier,
+            ),
+            Ok(self.profile_identity)
+        );
+        WebProfileSelection::persistent(Some(self.profile_identity))
+            .map_err(|source| macos_identity_error(source.to_string()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn select_macos_profile_mode_with(
+    has_authenticated_dev_lease: bool,
+    release_identity: impl FnOnce() -> Result<MacValidatedAppIdentity, HostAppError>,
+) -> Result<WebProfileSelection, HostAppError> {
+    if has_authenticated_dev_lease {
+        let mut launch_nonce = [0_u8; 32];
+        fill_os_random(&mut launch_nonce)
+            .map_err(|source| macos_identity_error(format!("host randomness failed: {source}")))?;
+        let profile = EphemeralProfile::from_host_random(launch_nonce)
+            .map_err(|source| macos_identity_error(source.to_string()))?;
+        return Ok(WebProfileSelection::ephemeral_dev(profile));
+    }
+    release_identity()?.into_profile_selection()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_profile_selection(
+    dev_lease: Option<&DevHostLease>,
+) -> Result<WebProfileSelection, HostAppError> {
+    select_macos_profile_mode_with(dev_lease.is_some(), verified_macos_app_identity)
+}
+
+#[cfg(target_os = "macos")]
+fn verified_macos_app_identity() -> Result<MacValidatedAppIdentity, HostAppError> {
+    let signing_info = verified_current_process_signing_info().map_err(macos_identity_error)?;
+    MacValidatedAppIdentity::from_verified_parts(
+        &signing_info.team_identifier,
+        &signing_info.signing_identifier,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn macos_identity_error(detail: impl Into<String>) -> HostAppError {
+    HostAppError::new(
+        "KELD-WV-009",
+        "macOS authenticated app identity",
+        detail,
+        "Launch a validly signed macOS app with a canonical signed identifier, or use `keld dev` for a fresh nonpersistent profile.",
+    )
+}
+
+/// Reports only facts read from this process after successful Security.framework validation.
+///
+/// This entry point is compiled only for the debug KEL-135 signed-fixture role.
+///
+/// # Errors
+///
+/// Returns an error if the running signature is invalid or lacks a canonical identity.
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+pub fn macos_profile_identity_fixture_report() -> Result<String, HostAppError> {
+    use core::fmt::Write as _;
+
+    let identity = verified_macos_app_identity()?;
+    let publisher_scope =
+        identity
+            .publisher_scope
+            .iter()
+            .fold(String::with_capacity(64), |mut text, byte| {
+                // Writing into a pre-sized String cannot fail.
+                let _ = write!(&mut text, "{byte:02x}");
+                text
+            });
+    let profile_identity = identity.profile_identity.namespace_segment();
+    let store_uuid = identity.profile_identity.apple_store_uuid();
+    Ok(format!(
+        "KELD_KEL135_SIGNED_IDENTITY team_id={} signing_identifier={} publisher_scope={} profile_identity={} store_uuid={} signature_validated_before_identity_read=true",
+        identity.team_identifier,
+        identity.signing_identifier,
+        publisher_scope,
+        profile_identity,
+        store_uuid
+    ))
+}
+
+/// Reports whether the validated current app's `WebKit` registry contains its deterministic UUID.
+///
+/// This read-only fixture probe uses a memory-only bootstrap store and does not open the
+/// requested persistent store.
+///
+/// # Errors
+///
+/// Returns an error if the running signature is invalid or `WebKit` cannot enumerate its
+/// current-app store identifiers.
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+pub fn macos_profile_store_presence_fixture_report() -> Result<String, HostAppError> {
+    let identity = verified_macos_app_identity()?;
+    let store_uuid = identity.profile_identity.apple_store_uuid();
+    let present =
+        WkWebViewEngine::persistent_store_identifier_present_for_test(*store_uuid.as_bytes())
+            .map_err(|source| app_webview_error("macOS profile store presence fixture", &source))?;
+    Ok(format!(
+        "KELD_KEL135_STORE_PRESENCE profile_identity={} store_uuid={} present={present}",
+        identity.profile_identity.namespace_segment(),
+        store_uuid
+    ))
+}
+
+/// Purges this signed fixture's exact profile from a fresh clean host process.
+///
+/// The test host returns the evidence line only after `WebKit`'s removal callback
+/// and identifier re-enumeration complete.
+///
+/// # Errors
+///
+/// Returns an error if the running identity is invalid or the exact store cannot be purged.
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+pub fn macos_profile_purge_fixture() -> Result<String, HostAppError> {
+    let identity = verified_macos_app_identity()?;
+    let profile_identity = identity.profile_identity;
+    let store_uuid = profile_identity.apple_store_uuid();
+    WkWebViewEngine::purge_persistent_profile(profile_identity)
+        .map_err(|source| app_webview_error("macOS profile purge fixture", &source))?;
+    Ok(format!(
+        "KELD_KEL135_PURGE_COMPLETE profile_identity={} store_uuid={} store_absent=true",
+        profile_identity.namespace_segment(),
+        store_uuid
+    ))
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+fn profile_fixture_loopback_authority(
+    url: &str,
+    expected_origin: Option<std::net::SocketAddrV4>,
+) -> Option<std::net::SocketAddrV4> {
+    let rest = url.strip_prefix("http://")?;
+    let (authority, _) = rest.split_once('/')?;
+    if url
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control() || character == '\\')
+    {
+        return None;
+    }
+    let address = authority.parse::<std::net::SocketAddrV4>().ok()?;
+    (*address.ip() == std::net::Ipv4Addr::LOCALHOST
+        && address.port() != 0
+        && expected_origin.is_none_or(|expected| expected == address))
+    .then_some(address)
+}
+
+#[cfg(all(
+    test,
+    target_os = "macos",
+    feature = "profile-test-hooks",
+    debug_assertions
+))]
+#[test]
+fn profile_fixture_urls_require_exact_loopback_authorities() {
+    for invalid in [
+        "https://127.0.0.1:1234/a",
+        "HTTP://127.0.0.1:1234/a",
+        "http://127.0.0.1:1234",
+        "http://127.0.0.1/a",
+        "http://example.com:1234/a",
+        "http://127.0.0.2:1234/a",
+        "http://[::1]:1234/a",
+        "http://user@127.0.0.1:1234/a",
+        "http://user:password@127.0.0.1:1234/a",
+        "http://127.0.0.1:0/a",
+        "http://127.0.0.1:65536/a",
+        "http://127.0.0.1:1234\\a",
+        "http://127.0.0.1:1234/a\\b",
+        "http://127.0.0.1:1234/a b",
+        "http://127.0.0.1:1234/a\n",
+        "http://127.0.0.1:1234/a\u{00a0}",
+    ] {
+        assert!(profile_fixture_loopback_authority(invalid, None).is_none());
+    }
+    for port in [1, 1234, u16::MAX] {
+        let first = format!("http://127.0.0.1:{port}/a?b=c");
+        let second = format!("http://127.0.0.1:{port}/other");
+        let origin = profile_fixture_loopback_authority(&first, None);
+        assert_eq!(origin.map(|address| address.port()), Some(port));
+        assert_eq!(profile_fixture_loopback_authority(&second, origin), origin);
+    }
+    let origin = profile_fixture_loopback_authority("http://127.0.0.1:1234/a", None);
+    assert!(origin.is_some());
+    assert!(profile_fixture_loopback_authority("http://127.0.0.1:1235/b", origin).is_none());
+}
+
+/// Runs the real `WKWebView` profile backend from a signed debug acceptance fixture.
+///
+/// The fixture URL selects only page content; the persistent profile is still
+/// derived from the validated current-process signature.
+///
+/// # Errors
+///
+/// Returns an error when signature validation, profile setup, `WebView` creation, or
+/// the fixture lifecycle fails.
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+pub fn run_macos_profile_webview_fixture() -> Result<(), HostAppError> {
+    if std::env::var_os("KELD_PROFILE_FIXTURE_SIGNED_ATTEST")
+        .as_deref()
+        .is_some_and(|value| value == "1")
+    {
+        eprintln!("{}", macos_profile_identity_fixture_report()?);
+    }
+    let dev_ephemeral = std::env::var_os("KELD_PROFILE_FIXTURE_EPHEMERAL")
+        .as_deref()
+        .is_some_and(|value| value == "1");
+    let media_seed_allow = std::env::var_os("KELD_PROFILE_TEST_MEDIA_SEED_ALLOW")
+        .as_deref()
+        .is_some_and(|value| value == "1");
+    if media_seed_allow
+        && (std::env::var_os("KELD_PROFILE_TEST_ROOT").is_none()
+            || std::env::var_os("KELD_PROFILE_ACCEPTANCE_REPORT").is_none())
+    {
+        return Err(macos_identity_error(
+            "fixture media Allow requires an isolated acceptance root and evidence report",
+        ));
+    }
+    let profile = select_macos_profile_mode_with(dev_ephemeral, verified_macos_app_identity)?;
+    let url = std::env::var("KELD_PROFILE_FIXTURE_URL").map_err(|source| {
+        macos_identity_error(format!("profile fixture URL is unavailable: {source}"))
+    })?;
+    let origin = profile_fixture_loopback_authority(&url, None)
+        .ok_or_else(|| macos_identity_error("profile fixture URL is not a local test origin"))?;
+    let second_url = std::env::var("KELD_PROFILE_FIXTURE_SECOND_URL").ok();
+    if let Some(second_url) = &second_url
+        && profile_fixture_loopback_authority(second_url, Some(origin)).is_none()
+    {
+        return Err(macos_identity_error(
+            "second profile fixture URL must use the first fixture's exact loopback origin",
+        ));
+    }
+
+    let mut engine = WkWebViewEngine::new_profile_test_fixture(profile, media_seed_allow)
+        .map_err(|source| app_webview_error("macOS profile fixture initialization", &source))?;
+    let (commands_tx, commands_rx) = mpsc::channel();
+    let (events_tx, events_rx) = mpsc::channel();
+    let fatal_on_stdin_close = std::env::var_os("KELD_PROFILE_FIXTURE_FATAL_ON_STDIN")
+        .as_deref()
+        .is_some_and(|value| value == "1");
+    let shutdown = thread::Builder::new()
+        .name("keld-kel135-profile-fixture-control".to_owned())
+        .spawn(move || {
+            let mut byte = [0_u8; 1];
+            loop {
+                match io::stdin().read(&mut byte) {
+                    Ok(0) | Err(_) => {
+                        let command = if fatal_on_stdin_close {
+                            AppWindowCommand::Fatal
+                        } else {
+                            AppWindowCommand::Quit
+                        };
+                        let _ = commands_tx.send(command);
+                        return;
+                    }
+                    Ok(_) => {}
+                }
+            }
+        })
+        .map_err(|source| app_io("profile fixture shutdown reader", &source))?;
+    let spec = WebviewSpec {
+        title: String::from("KEL-135 signed profile fixture"),
+        initial: NavTarget::Url(url),
+        ..WebviewSpec::default()
+    };
+    engine
+        .create_app(&spec, events_tx.clone())
+        .map_err(|source| app_webview_error("macOS profile fixture window", &source))?;
+    if let Some(second_url) = second_url {
+        let second_spec = WebviewSpec {
+            title: String::from("KEL-135 shared-store fixture view"),
+            initial: NavTarget::Url(second_url),
+            ..WebviewSpec::default()
+        };
+        keld_wv::WebEngine::create(&mut engine, &second_spec)
+            .map_err(|source| app_webview_error("macOS second profile fixture view", &source))?;
+    }
+    let run_result = engine
+        .run_app_until_quit(commands_rx, events_tx)
+        .map_err(|source| app_webview_error("macOS profile fixture event loop", &source));
+    drop(events_rx);
+    let shutdown_result = shutdown
+        .join()
+        .map_err(|_| app_detail("profile fixture shutdown reader", "thread panicked"));
+    collapse_app_results([run_result, shutdown_result])
 }
 
 #[cfg(windows)]
@@ -2816,6 +3180,44 @@ fn finish_guarded_session<T>(
 }
 
 #[cfg(target_os = "macos")]
+fn app_webview_error(phase: &'static str, source: &WvError) -> HostAppError {
+    if matches!(source, WvError::ProfileSelection(_)) {
+        HostAppError::new(
+            "KELD-WV-009",
+            phase,
+            source.to_string(),
+            "Restore the validated app identity and supported macOS profile state, then relaunch.",
+        )
+    } else {
+        app_detail(phase, source.to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_window_start_failure(
+    primary: &HostAppError,
+    guard_snapshot: Option<&GuardSnapshot>,
+    window_events: Sender<AppWindowEvent>,
+    event_coordinator: JoinHandle<Result<(), HostAppError>>,
+    router: PrimaryRouter,
+    guardian_owner: GuardianOwner,
+) -> Result<(), HostAppError> {
+    finish_guarded_session(guard_snapshot, |_| {
+        drop(window_events);
+        let event_result = event_coordinator
+            .join()
+            .map_err(|_| app_detail("window event coordinator", "thread panicked"))
+            .and_then(std::convert::identity);
+        let router_result = router.shutdown();
+        let guardian_result = guardian_owner.shutdown();
+        Err(collapse_app_failures(
+            primary,
+            [event_result, router_result, guardian_result],
+        ))
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn await_bound_generation(
     guardian: &mut GuardedPrimary,
     mut dev_lease: Option<&mut DevHostLease>,
@@ -2950,9 +3352,15 @@ impl GuardianOwner {
                             let _ = reply.send(observed);
                         }
                         Ok(GuardianOwnerCommand::PrepareAcceptedShutdown(reply)) => {
-                            let result = guardian.accept_shutdown().map_err(|source| {
-                                app_runtime("guardian accepted-shutdown preparation", &source)
-                            });
+                            let result = match guardian.poll_fatal() {
+                                Err(source) => Err(app_guardian_fatal(
+                                    "guardian unexpected primary exit before accepted shutdown",
+                                    &source,
+                                )),
+                                Ok(()) => guardian.accept_shutdown().map_err(|source| {
+                                    app_runtime("guardian accepted-shutdown preparation", &source)
+                                }),
+                            };
                             let observed = match &result {
                                 Ok(()) => Ok(()),
                                 Err(error) => Err(error.to_string()),
@@ -2982,9 +3390,18 @@ impl GuardianOwner {
                             }
                         }
                         Ok(GuardianOwnerCommand::Shutdown(reply)) => {
-                            let result = guardian
+                            let primary = guardian.poll_fatal().err().map(|source| {
+                                app_guardian_fatal("guardian unexpected primary exit", &source)
+                            });
+                            let shutdown = guardian
                                 .shutdown()
                                 .map_err(|source| app_guardian_fatal("guardian shutdown", &source));
+                            let result = match primary {
+                                Some(primary) => {
+                                    Err(append_app_cleanup(primary, [shutdown.map(|_| ())]))
+                                }
+                                None => shutdown,
+                            };
                             let observed = result
                                 .as_ref()
                                 .map(|_| ())
@@ -4285,7 +4702,7 @@ fn collapse_app_failures<const N: usize>(
     app_detail("startup cleanup", detail)
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn append_app_cleanup<const N: usize>(
     mut primary: HostAppError,
     cleanup: [Result<(), HostAppError>; N],
@@ -4388,6 +4805,61 @@ mod tests {
     use super::*;
 
     const DIGEST: &str = "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_publisher_and_signed_identifier_both_separate_profiles() {
+        let first = MacValidatedAppIdentity::from_verified_parts("ABCDEFGHIJ", "com.example.app")
+            .expect("verified signing facts");
+        let publisher_changed =
+            MacValidatedAppIdentity::from_verified_parts("KLMNOPQRST", "com.example.app")
+                .expect("verified publisher change");
+        let app_changed =
+            MacValidatedAppIdentity::from_verified_parts("ABCDEFGHIJ", "com.example.other")
+                .expect("verified signing identifier change");
+        assert_ne!(first.profile_identity, publisher_changed.profile_identity);
+        assert_ne!(first.profile_identity, app_changed.profile_identity);
+        assert!(
+            MacValidatedAppIdentity::from_verified_parts("ABCDEFGHIJ", "Com.Example.App").is_err()
+        );
+        assert!(MacValidatedAppIdentity::from_verified_parts("", "com.example.app").is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_dev_selection_never_reads_release_identity_and_changes_each_launch() {
+        let first = select_macos_profile_mode_with(true, || {
+            panic!("explicit dev lease must bypass release signing identity")
+        })
+        .expect("first ephemeral selection");
+        let second = select_macos_profile_mode_with(true, || {
+            panic!("explicit dev lease must bypass release signing identity")
+        })
+        .expect("second ephemeral selection");
+        let (WebProfileSelection::EphemeralDev(first), WebProfileSelection::EphemeralDev(second)) =
+            (first, second)
+        else {
+            panic!("dev lease selected a persistent profile")
+        };
+        assert_ne!(first.launch_nonce(), second.launch_nonce());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_release_selection_rejects_signature_failure() {
+        let error = select_macos_profile_mode_with(false, || {
+            Err(macos_identity_error(
+                "synthetic signature validation failure",
+            ))
+        })
+        .expect_err("release mode must fail closed");
+        assert_eq!(error.code(), "KELD-WV-009");
+        assert!(
+            error
+                .to_string()
+                .contains("synthetic signature validation failure")
+        );
+    }
 
     #[cfg(windows)]
     struct ReapedTestChild(std::process::Child);

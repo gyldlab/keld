@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Enables only the run-owned KEL-135 acceptance fixtures in debug builds.
+profile-test-hooks = ["keld-core/profile-test-hooks"]
+
 [[bin]]
 name = "keld-host"
 path = "src/main.rs"
