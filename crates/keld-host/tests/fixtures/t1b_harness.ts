@@ -340,6 +340,10 @@ if (requested === "CLOSE_LINK") {
   appSocket.end();
   await new Promise(() => {});
 }
+if (requested === "CRASH_ACKED") {
+  await sendControl("CRASH_ACK");
+  process.exit(17);
+}
 if (requested === "CRASH") {
   process.exit(17);
 }

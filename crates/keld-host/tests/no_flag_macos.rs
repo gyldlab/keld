@@ -1006,15 +1006,20 @@ fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
     let mut cycle = RecoveryCycle::launch(&fixture, "crash-loop");
     cycle.crash_and_recover();
     cycle.crash_and_recover();
-    cycle
-        .current
-        .as_mut()
-        .expect("third generation")
-        .writer
-        .write_all(b"CRASH\n")
-        .expect("crash threshold generation");
+    {
+        let current = cycle.current.as_mut().expect("third generation");
+        current
+            .writer
+            .write_all(b"CRASH_ACKED\n")
+            .expect("request acknowledged threshold crash");
+        current.expect_line("CRASH_ACK");
+    }
     let output = cycle.wait_host();
-    assert!(!output.status.success(), "crash loop became success");
+    assert!(
+        !output.status.success(),
+        "acknowledged crash loop became success: status={:?}",
+        output.status
+    );
     let stderr = String::from_utf8(output.stderr).expect("crash-loop stderr UTF-8");
     assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
     assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
