@@ -70,6 +70,23 @@ Why this shape (each competitor fails differently — see `docs/research/library
 8. **Small public surface, prose-grade code.** Idiomatic, pedantic-clippy Rust; minimal
    `unsafe` behind reviewed wrappers (see `AGENTS.md`).
 
+### Language choice does not determine authority
+
+The host/Bun division assigns authority and failure ownership; it is not a rule to
+port application TypeScript to Rust. Rust memory safety is not evidence of OS
+containment, and exposing a Node-shaped API does not prove compatible behavior.
+Evaluate language, address space, OS grants and crash isolation separately. A native
+service can be out of process; moving it into the privileged host needs an explicit
+ownership and failure-domain justification. Keep reviewed trust boundaries even when
+removing a process would improve an isolated timing.
+
+For a runtime-boundary migration, the design records before/after owners, callers,
+handles, callbacks, state capture, terminal outcomes and compatibility differences.
+The existing feature-spec and testing owners record that decision and its proof.
+An optional Rust-only or hybrid application mode needs its own admitted authoring,
+packaging and authority contract; this clarification neither forbids such a mode nor
+claims it ships. The Current/Target/Evidence ledger remains the maturity authority.
+
 ## 3. Crate & package topology
 
 Cargo workspace (all crates `keld-*`, lib names `keld_*`). This table owns normative

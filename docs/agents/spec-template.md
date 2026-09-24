@@ -33,6 +33,10 @@ must say so and the same PR updates the architecture doc.
 - Capabilities required; manifest changes (spec 03) — "none" if none
 - Wire/protocol changes (spec 02) — "none" if none (else: version bump + review gate)
 - Platform notes: mac / win / linux behavior differences
+- Runtime seam (or "none"): before/after execution owner, OS grants, crash domain,
+  handle/callback lifetime, value/error/order semantics, and config capture moment.
+- Migration unit: callers, handlers, callbacks, generated contracts and persisted
+  state; temporary adapter owner/removal condition; permanent compat facade retained.
 
 ## 5. Boundaries
 - Implement in: <crate(s)/package(s), files>

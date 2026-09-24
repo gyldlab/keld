@@ -22,6 +22,12 @@ additions trigger the root gate and its independent evidence requirement.
 5. Record the candidate version, release date, primary URLs, breaking changes,
    alternatives, and why `std` or an existing dependency is insufficient.
 
+A replacement is compared by the functions actually called: defaults, value/error
+semantics, cancellation, callback lifetime, platform/native ABI and distribution
+requirements. Package-name similarity, successful import or addon load is not
+operational compatibility. Reuse the pinned conformance corpus; record intentional
+security differences instead of silently copying unsafe upstream behavior.
+
 ## Change discipline
 
 - A version bump MUST be its own scoped task, not drive-by cleanup in another feature.

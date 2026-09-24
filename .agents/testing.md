@@ -46,6 +46,23 @@ evidence only when a plausible defect can make it fail.
   be reported unverified there. A model or mock may prove state logic, not platform
   behavior.
 
+## Cross-runtime migration cases
+
+For a changed runtime/FFI seam, select applicable approved-contract cases and reuse
+existing regressions; source presence is not run evidence.
+
+- Distinguish absent/null/empty/zero/false, numeric bounds/fractions, encoding, errors,
+  callback/event order and sync/async behavior; name config/environment/clock capture.
+- Exercise callers, handlers, callbacks, generated and stored-value consumers, not
+  only imports/declarations. Stateful comparisons use separate disposable resources.
+- Separate cancellation before admission, during work, after commit and after reply.
+  Rejection proves neither stopped work nor released resources. Do not claim rollback
+  or replay an ambiguous effect without the accepted idempotency/no-effect contract.
+- Observe callback quiescence, stale-generation rejection, one release per reservation,
+  aggregate retained work and a healthy follow-up; wrapper tests prove only wrapper state.
+- Complete-app criteria require actual installed callers, permitted/denied operations
+  and relevant recovery/cleanup on each claimed OS, not a HELLO/window/readiness token.
+
 ## Taxonomy
 
 | Surface | Default proof |
