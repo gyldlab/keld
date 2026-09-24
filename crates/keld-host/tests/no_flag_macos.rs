@@ -2882,7 +2882,11 @@ fn wait_child_output_observing(
         stdout: stdout_reader.join().expect("stdout reader joins"),
         stderr: stderr_reader.join().expect("stderr reader joins"),
     };
-    assert!(!timed_out, "child exceeded exit deadline: {output:?}");
+    assert!(
+        !timed_out,
+        "child exceeded exit deadline (status={})",
+        output.status
+    );
     output
 }
 
@@ -6545,18 +6549,24 @@ impl ProfileOrigin {
         .expect("launch signed profile host as second standard user");
         let Some(report) = self.wait_for_report(phase, seed) else {
             if let Some(status) = child.try_wait().expect("inspect second-user profile host") {
-                let output = wait_child_output(child, PROCESS_DEADLINE);
-                panic!("second-user host exited before the browser report ({status}): {output:?}");
+                let _output = wait_child_output(child, PROCESS_DEADLINE);
+                panic!(
+                    "second-user host exited before the browser report (status={status}); private output suppressed"
+                );
             }
             let _ = child.kill();
             let output = wait_child_output(child, PROCESS_DEADLINE);
-            panic!("second-user host did not report {phase} state: {output:?}");
+            panic!(
+                "second-user host did not report {phase} state (status={}); private output suppressed",
+                output.status
+            );
         };
         drop(child.stdin.take());
         let output = wait_child_output(child, PROCESS_DEADLINE);
         assert!(
             output.status.success(),
-            "second-user profile host failed: {output:?}"
+            "second-user profile host failed (status={})",
+            output.status
         );
         (report, output)
     }
@@ -7045,10 +7055,7 @@ fn system_boot_uuid_hex() -> String {
         .args(["-n", "kern.bootsessionuuid"])
         .output()
         .expect("read independent current boot UUID");
-    assert!(
-        output.status.success(),
-        "sysctl boot UUID failed: {output:?}"
-    );
+    assert!(output.status.success(), "sysctl boot UUID query failed");
     let value = String::from_utf8(output.stdout)
         .expect("sysctl boot UUID is UTF-8")
         .trim()
