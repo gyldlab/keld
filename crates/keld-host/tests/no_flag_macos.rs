@@ -4049,9 +4049,9 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
     );
     let second_uid = account_numeric_value(&username);
     let first_uid = current_account_numeric_id();
-    assert_ne!(
-        first_uid, second_uid,
-        "second user resolves to the current UID"
+    assert!(
+        first_uid != second_uid,
+        "second user UID must differ from the current user"
     );
     assert!(second_uid >= 501, "second user is a system/service account");
     let groups = account_groups(&username);
@@ -4070,11 +4070,16 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
     let sudo_probe = run_as_local_user(&username, "/usr/bin/id", &["-u"], &[]);
     assert!(
         sudo_probe.status.success(),
-        "authenticate this Mac's administrator account in Terminal with `sudo -v`, then rerun this acceptance row: {sudo_probe:?}"
+        "authenticate this Mac's administrator account in Terminal with `sudo -v`, then rerun this acceptance row"
     );
-    assert_eq!(
-        String::from_utf8_lossy(&sudo_probe.stdout).trim(),
-        second_uid.to_string()
+    let run_as_uid_matches = String::from_utf8_lossy(&sudo_probe.stdout)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        == Some(second_uid);
+    assert!(
+        run_as_uid_matches,
+        "run-as identity must match the isolated standard user"
     );
 
     let fixture = ProductFixture::new("kel135-second-user-profile");
@@ -6007,9 +6012,9 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
             .expect("read active owner store evidence");
         assert_store_report_matches(&owner_log, &identity["store_uuid"]);
         let prior_boot = boot_uuid_from_log(&owner_log);
-        assert_eq!(
-            prior_boot, os_boot_before,
-            "Keld boot readback equals sysctl oracle"
+        assert!(
+            prior_boot == os_boot_before,
+            "Keld boot readback must equal the independent sysctl oracle"
         );
         let crashed = kill_profile_host(&mut owner);
         assert_eq!(crashed.signal(), Some(9), "owner must terminate by SIGKILL");
@@ -6030,11 +6035,11 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
         let same_boot_text = String::from_utf8_lossy(&same_boot.stderr);
         assert!(
             same_boot_text.contains("recovery state cannot be proven"),
-            "{same_boot_text}"
+            "same-boot quarantine must report unproven recovery"
         );
         assert!(
             same_boot_text.contains("startup-resource-attempts listener=0 child=0 window=0"),
-            "quarantined app reached a host resource: {same_boot_text}"
+            "same-boot quarantine must fail before app resources"
         );
 
         let manifest = std::collections::BTreeMap::from([
@@ -6109,12 +6114,16 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
         .expect("read post-reboot selected store report");
     assert_store_report_matches(&report, &manifest["store_uuid"]);
     let next_boot = boot_uuid_from_log(&report);
-    assert_eq!(
-        next_boot, os_boot_after,
-        "Keld boot readback equals sysctl oracle"
+    assert!(
+        next_boot == os_boot_after,
+        "Keld boot readback must equal the independent sysctl oracle"
     );
-    if let Some(previous_boot) = manifest.get("boot_uuid_hex") {
-        assert_ne!(next_boot, *previous_boot);
+    let previous_boot_evidence = if let Some(previous_boot) = manifest.get("boot_uuid_hex") {
+        assert!(
+            next_boot != *previous_boot,
+            "recovered boot must differ from the retained pre-reboot boot"
+        );
+        "uuid-distinct"
     } else {
         let owner_log_mtime = fs::metadata(support_root.join("reboot-crash-owner.log"))
             .expect("read pre-reboot owner log metadata")
@@ -6127,17 +6136,19 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
             os_boot_time > owner_log_mtime,
             "independent kern.boottime must postdate the SIGKILL owner log"
         );
-    }
+        "legacy-prepare-omitted-uuid-boot-time-proven"
+    };
     let purge = run_signed_purge_report(&app, &support_root);
     assert!(purge.contains("store_absent=true"));
     drop(origin);
     eprintln!(
-        "KELD_KEL135_MACOS_REBOOT_RECOVERY os={} webkit={} team={} identifier={} uuid={} boot_uuid_matches_sysctl=true prior_boot_is_distinct=true kern_boottime_epoch={} boot_transition=real-reboot same_boot_quarantine=passed state=all-five-preserved purge=exact-identity",
+        "KELD_KEL135_MACOS_REBOOT_RECOVERY os={} webkit={} team={} identifier={} uuid={} boot_uuid_matches_sysctl=true previous_boot_evidence={} kern_boottime_epoch={} boot_transition=real-reboot same_boot_quarantine=passed state=all-five-preserved purge=exact-identity",
         sw_vers_value("-productVersion"),
         webkit_version(),
         identity["team_id"],
         identity["signing_identifier"],
         identity["store_uuid"],
+        previous_boot_evidence,
         os_boot_time,
     );
     fs::remove_dir_all(&canonical_root).expect("remove completed isolated reboot fixture root");
