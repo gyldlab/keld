@@ -6702,13 +6702,15 @@ impl ProfileOrigin {
         let Some(mut report) = self.wait_for_report_with_timeout(phase, seed, report_deadline)
         else {
             if let Some(status) = child.try_wait().expect("inspect failed profile host") {
-                let output = fs::read_to_string(&log_path).unwrap_or_default();
-                panic!("signed profile host exited before browser report ({status}): {output}");
+                panic!(
+                    "signed profile host exited before browser report (status={status}); private log retained for inspection"
+                );
             }
             let _ = child.kill();
             let status = child.wait().expect("reap timed-out signed profile host");
-            let output = fs::read_to_string(&log_path).unwrap_or_default();
-            panic!("signed profile host did not report {phase} state ({status}): {output}");
+            panic!(
+                "signed profile host did not report browser state (phase={phase}, status={status}); private log retained for inspection"
+            );
         };
         if matches!(media_mode, Some("prompt-reuse" | "allow-reuse")) {
             let reuse = self
