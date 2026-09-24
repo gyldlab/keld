@@ -4057,7 +4057,7 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
     let groups = account_groups(&username);
     assert!(
         !groups.split_whitespace().any(|group| group == "admin"),
-        "second account must be an ordinary non-admin user: {groups}"
+        "second account must be an ordinary non-admin user"
     );
     let home = account_home(&username);
     let current_home = std::env::var_os("HOME").map(PathBuf::from);
@@ -4265,7 +4265,7 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
         "KELD_KEL135_MACOS_SECOND_USER_SAFE_TO_DELETE_ACCOUNT exact_purge_a=true exact_purge_b=true second_user_test_root_removed=true"
     );
     eprintln!(
-        "KELD_KEL135_MACOS_SECOND_USER os={} webkit={} origin={} team={} identifier={} profile_identity={} store_uuid={} uid_a={} uid_b={} state=localStorage,cookie,IndexedDB,CacheStorage,serviceWorker user_b_same_origin=empty user_a_after_b=preserved lifecycle=clean-stop purge=both-user-exact-identity platform_path_acl_claim=none",
+        "KELD_KEL135_MACOS_SECOND_USER os={} webkit={} origin={} team={} identifier={} profile_identity={} store_uuid={} uid_a_and_b_distinct=true state=localStorage,cookie,IndexedDB,CacheStorage,serviceWorker user_b_same_origin=empty user_a_after_b=preserved lifecycle=clean-stop purge=both-user-exact-identity platform_path_acl_claim=none",
         sw_vers_value("-productVersion"),
         webkit_version(),
         origin.address,
@@ -4273,8 +4273,6 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
         first_identity["signing_identifier"],
         first_identity["profile_identity"],
         first_identity["store_uuid"],
-        first_uid,
-        second_uid,
     );
 }
 
@@ -6064,12 +6062,11 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
         fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o600))
             .expect("protect reboot resume manifest");
         eprintln!(
-            "KELD_KEL135_MACOS_REBOOT_PREPARED os={} team={} identifier={} uuid={} boot_uuid_hex={} same_boot=quarantined owner_exit=SIGKILL root={} next=physically-restart-macOS",
+            "KELD_KEL135_MACOS_REBOOT_PREPARED os={} team={} identifier={} uuid={} boot_identity_recorded=true same_boot=quarantined owner_exit=SIGKILL root={} next=physically-restart-macOS",
             sw_vers_value("-productVersion"),
             identity["team_id"],
             identity["signing_identifier"],
             identity["store_uuid"],
-            prior_boot,
             canonical_root.display(),
         );
         return;
@@ -6135,17 +6132,12 @@ fn kel135_macos_crash_quarantine_recovers_only_after_real_reboot() {
     assert!(purge.contains("store_absent=true"));
     drop(origin);
     eprintln!(
-        "KELD_KEL135_MACOS_REBOOT_RECOVERY os={} webkit={} team={} identifier={} uuid={} old_boot_uuid_hex={} new_boot_uuid_hex={} kern_boottime_epoch={} boot_transition=real-reboot same_boot_quarantine=passed state=all-five-preserved purge=exact-identity",
+        "KELD_KEL135_MACOS_REBOOT_RECOVERY os={} webkit={} team={} identifier={} uuid={} boot_uuid_matches_sysctl=true prior_boot_is_distinct=true kern_boottime_epoch={} boot_transition=real-reboot same_boot_quarantine=passed state=all-five-preserved purge=exact-identity",
         sw_vers_value("-productVersion"),
         webkit_version(),
         identity["team_id"],
         identity["signing_identifier"],
         identity["store_uuid"],
-        manifest
-            .get("boot_uuid_hex")
-            .map(String::as_str)
-            .unwrap_or("not-retained-by-original-prepare"),
-        next_boot,
         os_boot_time,
     );
     fs::remove_dir_all(&canonical_root).expect("remove completed isolated reboot fixture root");
