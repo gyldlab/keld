@@ -195,20 +195,19 @@ after the claim — one record of availability, not two.
 
 ## Parallelism rules
 
-- Concurrency budget: 3–7 agents. Decompose so concurrent issues touch disjoint crates;
-  cross-crate work is sequenced by claims and the issue graph, not raced.
-- Shared/foundational files — workspace `Cargo.toml`, `rust-toolchain.toml`, kipc wire
-  protocol, manifest schema, CI workflows, root `AGENTS.md` — are single-writer:
-  repository-owner designated under a winning claim with independent gate evidence.
-  Everything else: first PR to green wins; later PRs rebase.
-- Assign `real OS/device` work only to an agent that has the required system. Agents on
-  another OS MAY complete disjoint CI-only work, but MUST hand off the named OS acceptance
-  in Linear instead of duplicating or approximating it.
-- Subagents for search/read (fan out freely); exactly one builder runs
-  `cargo test`/`cargo build` per worktree (no concurrent builds in one tree).
-- Long-running autonomy: fresh context per issue; re-read ground-truth files each
-  iteration; if blocked >2 attempts on the same failure, stop and report — do not
-  thrash the tree.
+- Budget: 3–7 agents, disjoint crates; sequence cross-crate work by claims/issue graph.
+  Read access does not authorize integrating uncommitted work.
+- Shared `Cargo.toml`, `rust-toolchain.toml`, kipc wire protocol, manifest schema,
+  CI workflows and root `AGENTS.md`: one repository-owner-designated writer under a
+  winning claim and independent gate evidence. Else, first PR to green wins; later
+  PRs rebase and recheck consumers added by concurrent changes.
+- Give `real OS/device` work only to agents with that system. Others MAY do disjoint
+  CI-only work but MUST hand off the OS criterion in Linear, never approximate it.
+- Fan out read-only research freely. Exactly one `cargo test`/`cargo build` builder per
+  worktree. Separate trees share machine resources: measure contention before adding
+  host-wide build coordination; never omit a required gate to reduce contention.
+- Fresh context per issue; re-read ground truth each iteration. After >2 failed
+  attempts on the same failure, stop and report; do not thrash the tree.
 
 ## Review: CI is the arbiter, independent evidence reviews architecture
 
