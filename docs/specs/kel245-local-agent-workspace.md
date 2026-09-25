@@ -392,8 +392,14 @@ Do not add a new universally loaded instruction file or raise an always budget.
 Instruction deltas record before/after bytes and pinned tokens, route/consumer changes,
 representative eval and rollback. Reallocate routed prose before proposing cap growth.
 
-Must not touch: product crates, Cargo dependencies, public kipc/permission schemas,
+Must not touch: production crate implementation, Cargo dependencies, public kipc/permission schemas,
 global client settings, unrelated project directories, credentials or `.env*` files.
+The Linux strict acceptance fixture may explicitly allocate its RAII-owned hostile
+launcher ancestor in native `/tmp`: a mutable directory behind managed private scratch
+is correctly accepted and cannot prove public-ancestor rejection. This is the native
+containment location exception above, not an unmanaged command-temp fallback. Preserve
+the negative assertion, check the actual public/sticky directory mode, and change no
+production trust logic.
 Scanner changes stay narrowly scoped; reuse `repo_path_contract.rs` for shared Rust
 path decisions rather than creating a second copy. Cross-language consumers receive
 one narrow published path contract and shared sentinel cases, not a new generator.

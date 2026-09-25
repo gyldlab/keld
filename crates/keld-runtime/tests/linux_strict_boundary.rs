@@ -634,7 +634,17 @@ fn strict_launcher() -> &'static Path {
 }
 
 fn assert_mutable_launcher_ancestor_rejected(role: &Path) {
-    let mutable_ancestor = tempfile::tempdir().expect("mutable launcher ancestor");
+    // This negative control needs a publicly reachable ancestor. Inherited TMPDIR
+    // may be behind the managed runner's owner-private barrier, which correctly
+    // makes a mutable descendant safe. TempDir still owns this native fixture.
+    let shared = Path::new("/tmp");
+    let metadata = fs::symlink_metadata(shared).expect("native shared temp metadata");
+    assert!(
+        metadata.is_dir(),
+        "native shared temp must be a real directory"
+    );
+    assert_eq!(metadata.permissions().mode() & 0o1777, 0o1777);
+    let mutable_ancestor = tempfile::tempdir_in(shared).expect("mutable launcher ancestor");
     fs::set_permissions(mutable_ancestor.path(), fs::Permissions::from_mode(0o770))
         .expect("mutable ancestor mode");
     let nested_launcher = mutable_ancestor.path().join("launcher");
