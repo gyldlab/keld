@@ -500,8 +500,11 @@ branches and another session's ownership are never overwritten. Repeating the sa
 start returns that session's valid task. These records do not replace the Linear claim.
 
 The returned task path is `.keld-work/worktrees/kel-245-workspace`. Run evidence lives in
-`.keld-work/sessions/manual-session-1/evidence/run-ID/`, with scratch in the sibling
-`scratch/run-ID/`. Each run streams output and retains at most 4 MiB per stdout/stderr
+`.keld-work/sessions/manual-session-1/evidence/run-ID/`. Scratch uses a private
+`.keld-work/tmp/<short-token>/` directory; the session retains its run and filesystem
+identity in `scratch-owners/`. This keeps long session names out of Unix socket paths.
+Very long primary checkout paths can still exceed native socket limits; use a shorter
+real primary path for those suites. Each run streams output and retains at most 4 MiB per stdout/stderr
 tail by default; `--log-limit-mib` accepts 1–64 per stream before the `--` separator.
 `result.json` records exit status and omitted bytes, never an environment or raw argv
 dump. Truncated output is not complete evidence. Internal capture/spawn failures return
@@ -529,7 +532,7 @@ takeover. Keep evidence and source while completing the remaining cleanup integr
 `work-finish` requires an owned task, a clean checkout with no content missing from
 local `origin/main`, and a complete closeout receipt for the same checkout/session. It
 only releases the local task record. `work-clean` previews the exact released session's
-scratch directory by default; `--apply` requires a prepared current-turn receipt,
+recorded scratch directories and legacy session scratch by default; `--apply` requires a prepared current-turn receipt,
 revalidates it then removes scratch only and validates the receipt after the mutation. It
 retains evidence, the Git worktree and branch, all caches, all legacy folders and any
 unsupported/link/reparse/mount/nested-Git target. Pre-mutation admission failures perform

@@ -1,10 +1,15 @@
 # Spec: repository-contained agent workspace
 Status: approved
-Linear: KEL-245 · Owner: repository maintainer · Updated: 2026-09-21
+Linear: KEL-245 · Owner: repository maintainer · Updated: 2026-09-25
 
 Approved by the repository owner on 2026-09-21 through the instruction to audit and
 merge the design if ready. This specification defines the implementation target;
 commands and hook enforcement become available only as the tasks below land.
+
+On 2026-09-25 the owner authorized the Linux pilot agent to decide and repair its
+prerequisites. The Unix socket failure amends physical scratch placement below:
+session ownership stays explicit while scratch moves to a shallow private directory.
+No product boundary changes; historical scratch and evidence stay readable.
 
 ## 1. Goal & non-goals
 
@@ -93,7 +98,7 @@ No external benchmark or runtime performance conclusion is inferred from this au
 3. Root Git status excludes managed resources. Source scanners exclude the managed
    root but continue checking tracked source and detect an attempted force-add of
    managed content. A linked tree never creates another workspace inside itself.
-4. A managed command receives scratch/temp paths below its session, runs in the
+4. A managed command receives session-owned scratch/temp paths below the primary workspace, runs in the
    assigned checkout, preserves argument boundaries and returns its actual exit code.
    Failure retains its bounded log and marks unfinished work; it cannot silently become
    success. Exceeding the log cap records truncation and total bytes without changing
@@ -171,7 +176,9 @@ keld/
         current.json                 only if needed by the native adapter
         turns/turn-id.json
         evidence/                    retained logs, reports and selected artifacts
-        scratch/                     disposable task files and test fixtures
+        scratch-owners/              retained per-run token and filesystem identity
+        scratch/                     legacy disposable files, still supported
+    tmp/<short-exclusive-token>/     private per-run scratch and fixtures
     cache/                           optional, explicitly rebuildable tool downloads
     repos/                           auxiliary standalone repositories when needed
       keld-benches/
@@ -182,7 +189,7 @@ Directories are lazy: do not create empty category trees to appear complete.
 Task slug: `kel-` plus positive issue number and a lowercase kebab slug, maximum
 64 ASCII characters. Client session/turn IDs reuse the existing validator grammar;
 each is checked as a single component. Files use descriptive kebab names. Repeated
-experiments use separate run IDs under scratch; only necessary result evidence is
+experiments use separate exclusive scratch directories mapped to their run IDs; only necessary result evidence is
 promoted. Do not accumulate `final-final`, `retry2` or full copied checkouts as evidence.
 
 All paths derive from the verified primary worktree, even from deeply nested linked
@@ -230,7 +237,7 @@ These are proposed interfaces; they do not exist until T1/T2 land.
 | `just work-check` / `just work-test` | Validate layout/integration and run negative-control tests |
 
 `work-run` passes arguments as an array without a shell-built command string. It
-sets child-only `TMPDIR`, `TEMP` and `TMP` to session scratch, using the right native
+sets child-only `TMPDIR`, `TEMP` and `TMP` to its session-owned scratch, using the right native
 path representation for the invoking OS. No global environment or `HOME` rewrite.
 Do not redirect Cargo target output across active checkouts: existing recipes depend
 on local target paths and concurrent reuse can serialize or confuse artifact identity.
@@ -322,6 +329,29 @@ Nested worktrees can affect how clients search ancestor AGENTS files. Native tra
 must show one intended root chain without parent duplication, budget overflow or
 truncation for each claimed client. An unsupported client gets an explicit manual
 workflow limitation; it is not silently exempted from containment or budget rules.
+
+### Native socket path allocation
+
+`work-run` and `reference-run` reuse one allocator: exclusive owner-private
+`mkdtemp` below primary `.keld-work/tmp/`, with an eight-character token. Retained
+`sessions/<session>/scratch-owners/<token>.json` records session, run and the created
+directory's device/inode identity. Long session/run names never enter child temp paths.
+Cleanup resolves only that session's records, validates the fixed immediate-child
+namespace and exact identity, then applies the existing release, reference, mount,
+link and per-entry identity checks. It also supports legacy session scratch. Never
+recursively clean the shared `tmp` parent; unrecorded/ambiguous resources stay retained.
+The existing same-user cooperative metadata model remains; this is not an OS sandbox.
+
+Rejected alternatives: relative temp paths change meaning when children change cwd;
+symlink or inherited-descriptor aliases add platform/lifetime coupling; unmanaged
+system-temp fallback violates repository ownership. This physical-layout repair
+preserves arbitrary child argv/cwd/exit behavior and requires no test-specific override.
+A very long primary checkout can still exceed native Unix socket limits; use a shorter
+real primary checkout path for socket suites. No fixed global pathname allowance can
+prove every child fixture, and unrelated non-socket commands remain available.
+Prove actual binds/exchanges through `work-run`, session isolation, replaced/forged
+ownership refusal, referenced evidence retention and legacy cleanup before landing.
+Linux results do not stand in for native macOS/Windows qualification.
 
 ### Migration and compatibility
 
