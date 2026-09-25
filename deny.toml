@@ -65,4 +65,6 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = []
+# KEL-201: the root Cargo.toml pins this reviewed compatibility source by commit.
+# Remove with the supported dependency migration tracked in KEL-253.
+allow-git = ["https://github.com/gyldlab/glib-0.18-backport"]
