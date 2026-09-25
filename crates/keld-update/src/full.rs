@@ -263,3 +263,33 @@ fn processing(stage: &'static str, error: impl std::fmt::Display) -> UpdateError
         detail: error.to_string(),
     }
 }
+
+/// Raw-byte fuzzer hook for the canonical archive parser; never enabled in product builds.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_canonical_archive(bytes: &[u8]) {
+    let Ok(content_size) = u64::try_from(bytes.len()) else {
+        return;
+    };
+    let digest = *blake3::hash(bytes).as_bytes();
+    let receipt = VerifiedFull {
+        identity: crate::ArtifactIdentity {
+            app_id: "fuzz.invalid".to_owned(),
+            channel: crate::Channel::Stable,
+            target: "windows-x64".to_owned(),
+            version: "0.0.0".to_owned(),
+            content_blake3: digest,
+        },
+        content_size,
+        content_blake3: digest,
+    };
+    let mut cursor = std::io::Cursor::new(bytes);
+    let _ = crate::archive::parse_canonical_ustar(&receipt, &mut cursor, |paths| {
+        for path in paths {
+            for component in path.split('/') {
+                keld_guard::validate_windows_package_component(component)?;
+            }
+        }
+        Ok(())
+    });
+}

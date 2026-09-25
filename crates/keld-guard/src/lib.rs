@@ -825,6 +825,136 @@ pub fn validate_windows_package_component(component: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Validates the namespace of a Windows v0 package archive.
+///
+/// Every slash-separated component must pass [`validate_windows_package_component`]
+/// and already be in Windows `NormalizationC` form. Complete relative paths must
+/// also be unique under Windows ordinal case-insensitive comparison.
+///
+/// This function is available only on Windows because these decisions are made
+/// by the Windows NLS APIs, not by a portable approximation.
+///
+/// # Errors
+///
+/// Returns a refusal for an invalid path, non-NFC component, case-insensitive
+/// path collision, or Windows API/allocation failure.
+#[cfg(windows)]
+#[allow(unsafe_code)] // SAFETY: FFI is limited to checked Win32 NLS calls on owned buffers below.
+pub fn validate_windows_package_paths(paths: &[&str]) -> Result<(), String> {
+    use std::cmp::Ordering;
+    use windows_sys::Win32::Globalization::{
+        CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
+    };
+
+    fn utf16(text: &str) -> Result<Vec<u16>, String> {
+        let count = text.encode_utf16().count();
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(count)
+            .map_err(|_| "cannot allocate Windows package path buffer".to_owned())?;
+        encoded.extend(text.encode_utf16());
+        Ok(encoded)
+    }
+
+    fn ensure_nfc(component: &str) -> Result<(), String> {
+        use windows_sys::Win32::Globalization::{NormalizationC, NormalizeString};
+
+        let source = utf16(component)?;
+        let source_len = i32::try_from(source.len())
+            .map_err(|_| "Windows package component is too long".to_owned())?;
+        // SAFETY: source is a live, initialized UTF-16 buffer and source_len is
+        // its checked code-unit length. A null destination with zero capacity is
+        // the documented size query; no pointer is retained by Win32.
+        let required = unsafe {
+            NormalizeString(
+                NormalizationC,
+                source.as_ptr(),
+                source_len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if required <= 0 {
+            return Err("Windows NormalizationC check failed".to_owned());
+        }
+        let required_units = usize::try_from(required)
+            .map_err(|_| "Windows normalization size is out of range".to_owned())?;
+        let mut normalized = Vec::new();
+        normalized
+            .try_reserve_exact(required_units)
+            .map_err(|_| "cannot allocate Windows normalization buffer".to_owned())?;
+        normalized.resize(required_units, 0);
+        // SAFETY: normalized is initialized and has exactly the checked capacity
+        // requested by NormalizeString; both buffers remain live for this call.
+        let written = unsafe {
+            NormalizeString(
+                NormalizationC,
+                source.as_ptr(),
+                source_len,
+                normalized.as_mut_ptr(),
+                required,
+            )
+        };
+        if written <= 0 || written > required {
+            return Err("Windows NormalizationC check failed".to_owned());
+        }
+        let written_units = usize::try_from(written)
+            .map_err(|_| "Windows normalized size is out of range".to_owned())?;
+        if normalized[..written_units] != source {
+            return Err("Windows package component is not in NormalizationC form".to_owned());
+        }
+        Ok(())
+    }
+
+    fn ordinal_order(left: &[u16], right: &[u16]) -> Result<Ordering, ()> {
+        let left_len = i32::try_from(left.len()).map_err(|_| ())?;
+        let right_len = i32::try_from(right.len()).map_err(|_| ())?;
+        // SAFETY: both pointers refer to live UTF-16 buffers for the checked
+        // lengths, and TRUE requests the specified ordinal case-insensitive form.
+        match unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) }
+        {
+            CSTR_LESS_THAN => Ok(Ordering::Less),
+            CSTR_EQUAL => Ok(Ordering::Equal),
+            CSTR_GREATER_THAN => Ok(Ordering::Greater),
+            _ => Err(()),
+        }
+    }
+
+    let mut encoded_paths = Vec::new();
+    encoded_paths
+        .try_reserve_exact(paths.len())
+        .map_err(|_| "cannot allocate Windows package path set".to_owned())?;
+    for path in paths {
+        if path.is_empty() || path.len() > 100 || path.starts_with('/') || path.ends_with('/') {
+            return Err("Windows package path is empty, absolute, or exceeds 100 bytes".to_owned());
+        }
+        for component in path.split('/') {
+            validate_windows_package_component(component)?;
+            ensure_nfc(component)?;
+        }
+        encoded_paths.push(utf16(path)?);
+    }
+
+    let mut comparison_failed = false;
+    encoded_paths.sort_by(|left, right| {
+        if let Ok(order) = ordinal_order(left, right) {
+            order
+        } else {
+            comparison_failed = true;
+            Ordering::Equal
+        }
+    });
+    if comparison_failed {
+        return Err("Windows ordinal package path comparison failed".to_owned());
+    }
+    for pair in encoded_paths.windows(2) {
+        if ordinal_order(&pair[0], &pair[1]) == Ok(Ordering::Equal) {
+            return Err("Windows package paths collide ordinally".to_owned());
+        }
+    }
+    Ok(())
+}
+
 fn validate_portable_component(component: &str) -> Result<(), String> {
     if component.is_empty() || matches!(component, "." | "..") {
         return Err("empty, `.` and `..` components are not normal names".to_owned());
@@ -1199,6 +1329,29 @@ mod tests {
                 "Windows package component {component:?} is outside the forbidden set"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_package_paths_require_nfc_components() {
+        assert!(validate_windows_package_paths(&["assets/caf\u{00e9}.txt"]).is_ok());
+        assert!(validate_windows_package_paths(&["assets/cafe\u{0301}.txt"]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_package_paths_reject_ordinal_case_aliases() {
+        assert!(validate_windows_package_paths(&["Readme.txt", "README.txt"]).is_err());
+        assert!(validate_windows_package_paths(&["Readme.txt", "Readme2.txt"]).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_package_paths_enforce_ustar_name_boundary() {
+        let exact = "a".repeat(100);
+        let over = "a".repeat(101);
+        assert!(validate_windows_package_paths(&[&exact]).is_ok());
+        assert!(validate_windows_package_paths(&[&over]).is_err());
     }
 
     #[cfg(windows)]
