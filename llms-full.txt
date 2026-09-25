@@ -1113,7 +1113,7 @@ view and links each claim to tracked evidence.
 | `keld-native` | Guarded native services: filesystem, menus, tray, dialogs, clipboard, notifications, shortcuts, screen, power, shell and secure storage | ipc, guard |
 | `keld-guard` | Capability manifest, generated scopes, principal/window grants, evaluation and audit | sha2 |
 | `keld-runtime` | Supervised Bun process family, role identities, lifecycle policy, grants and virtual ports | ipc |
-| `keld-update` | Signed full-package activation, rollback and optional later delta transport | — |
+| `keld-update` | Signed full-package activation, rollback and optional later delta transport | guard |
 | `keld-pack` | Installer assembly, signing/notarization and cross-target packaging | — |
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
@@ -2837,7 +2837,11 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   content post-conditions, protected install-channel provenance, a monotonic
   semantic-version trust floor, attempt-bound activation/health, retained
   last-known-good state and typed manual recovery. Store/package-manager-owned installs
-  refuse direct mutation. No updater runtime behavior is implemented today.
+  refuse direct mutation. Current T2 code implements logical protected-provenance
+  admission, signed v0 manifest validation/selection and streamed full-artifact
+  size/BLAKE3 verification. The platform adapter that proves provenance protection,
+  live feed orchestration, archive validation/extraction, activation, health and
+  recovery remain unimplemented.
 - Optional delta: only a measured later transport optimization. It reconstructs the
   same full-package content identity, retains a same-attempt full fallback and cannot
   change activation, health, trust-floor or rollback semantics.
@@ -3551,7 +3555,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — The retained filesystem broker is implemented with verified-snapshot binding, guard-selected retained scopes, bounded no-follow traversal and regular-file I/O. Native Windows and Linux rows on exact landed ancestor `d22e454...` are publicly reported in [PR #262](https://github.com/gyldlab/keld/pull/262), while the final three-OS terminal artifact is authenticated in private Linear only and therefore is not yet a public proof surface. No production host caller is wired, and the other planned native services are absent. | [code](../../crates/keld-native/src/fs.rs), [test](../../crates/keld-native/tests/retained_fs.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-130 | `d22e454aaff103f065ebbc0aabf7e0680232d3e4` |
 | `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-update` | All | **Skeleton** — Only the update channel contract exists; signed manifests, full-package activation, rollback, feeds, and optional delta transport are not implemented. | [code](../../crates/keld-update/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `crate.keld-update` | All | **Partial** — Protected-provenance policy admission, detached-Ed25519 v0 manifest validation/selection, and streamed full-zstd size/BLAKE3 verification are implemented; real installer protection, feeds, archive extraction, activation, rollback, and optional delta transport remain absent. | [code](../../crates/keld-update/src/lib.rs), [test](../../crates/keld-update/src/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53 | `e996816ea8dfa6cc585fb1a852470678f2aab724` |
 | `crate.keld-pack` | All | **Skeleton** — Only the packaging format contract exists; installers, signing, notarization, and cross-target assembly are not implemented. | [code](../../crates/keld-pack/src/lib.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
@@ -4527,7 +4531,7 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -5208,6 +5212,66 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-UPDATE-001
+
+- crate: keld-update
+- message: Direct-update provenance is missing or not OS-protected
+- fix: Reinstall with a supported direct installer and restore its protected commit record before checking for updates.
+
+## KELD-UPDATE-002
+
+- crate: keld-update
+- message: A package manager or store owns this installation
+- fix: Use the mechanism named by protected provenance; Keld must not mutate the installation directly.
+
+## KELD-UPDATE-003
+
+- crate: keld-update
+- message: Protected direct-install provenance does not match the running host or baseline contract
+- fix: Stop before feed access and repair or reinstall the direct package.
+
+## KELD-UPDATE-004
+
+- crate: keld-update
+- message: Detached update-manifest authentication failed
+- fix: Do not parse or activate the feed; publish the literal manifest bytes signed by the compiled-in release key.
+
+## KELD-UPDATE-005
+
+- crate: keld-update
+- message: Authenticated update-manifest JSON is ambiguous or invalid for schema v0
+- fix: Publish one closed, duplicate-free v0 manifest with canonical sizes, digests, and strict semantic versions.
+
+## KELD-UPDATE-006
+
+- crate: keld-update
+- message: The signed manifest names another app, channel, or target
+- fix: Fetch the feed for the protected direct installation's exact app, channel, and compiled target.
+
+## KELD-UPDATE-007
+
+- crate: keld-update
+- message: The protected semantic-version floor is missing or invalid
+- fix: Restore the protected updater state from the installer or known-good record before polling.
+
+## KELD-UPDATE-008
+
+- crate: keld-update
+- message: Compressed or decompressed full-artifact bytes do not equal the signed exact count
+- fix: Discard the candidate and fetch the signed full artifact again.
+
+## KELD-UPDATE-009
+
+- crate: keld-update
+- message: Downloaded or decompressed full-artifact BLAKE3 does not match the signed digest
+- fix: Discard the candidate and fetch the signed full artifact again.
+
+## KELD-UPDATE-010
+
+- crate: keld-update
+- message: Full-artifact stream I/O or zstd decoding failed
+- fix: Preserve the current installation, repair the stream or staging sink, and retry.
 
 ---
 

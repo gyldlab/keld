@@ -49,6 +49,26 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 postcard = { version = "1", features = ["alloc"] }
 
+# --- Dependency review (KEL-53/T2 / AGENTS.md gate) ---
+# Names: base64 0.23.1, blake3 1.8.7, ed25519-dalek 3.0.0,
+#   semver 1.0.28, zstd 0.14.0
+# Purpose: verify the approved v0 detached-signature/full-package contract:
+#   strict standard-base64 signature bytes, strict Ed25519, transport/content
+#   BLAKE3, SemVer precedence floors, and bounded streaming zstd decode.
+# Alternatives rejected: (a) handwritten crypto/hash/base64/semver/zstd would
+#   duplicate security-sensitive primitives; (b) shelling out adds ambient
+#   executable authority and cannot preserve one verified stream; (c) a delta
+#   crate is explicitly outside T2. serde/serde_json already own typed JSON.
+# Features: base64 disables its new unsafe SIMD default; ed25519-dalek omits
+#   signing/random/PKCS#8/batch features; zstd omits legacy/dictionary/build
+#   extras. Licenses are in deny.toml's existing allow-list. All MSRVs are <=
+#   the workspace Rust 1.97 floor. KEL-53 records current-source receipts.
+base64 = { version = "=0.23.1", default-features = false }
+blake3 = "=1.8.7"
+ed25519-dalek = { version = "=3.0.0", default-features = false }
+semver = "=1.0.28"
+zstd = { version = "=0.14.0", default-features = false }
+
 # --- Dependency review (KEL-42 / AGENTS.md gate) ---
 # Name: rmcp =3.1.2 (official modelcontextprotocol/rust-sdk)
 # Purpose: MCP 2026-07-28 wire (server/discover, dual-version negotiation,
