@@ -41,8 +41,8 @@ behavior and changed Mermaid diagrams. A plausible defect must falsify the test.
 
 ## Source organization
 
-- Keep tests with their owning module/fixture. Group by observable contract, not
-  arbitrary length. Split mixed concerns; do not create empty mirrored OS trees.
+- Keep tests with their owning module/fixture; group by observable contract, not length.
+  Split mixed concerns without empty mirrored OS trees.
 - Agents SHOULD read the scenario and its actual fixture/helper/resource dependencies.
   Measure this working set before/after a structural change, not just file lengths.
 - Separate scenarios, setup and independent observations. Keep resource types with
@@ -53,8 +53,7 @@ behavior and changed Mermaid diagrams. A plausible defect must falsify the test.
   exact helper selectors, fixtures, runner groups and scripts together. Prove helper
   execution by its effect: exit zero may mean zero selected tests.
 - Move first, deduplicate later. Preserve assertions, negative controls, resource/drop
-  order and real-OS proof. [KEL-252](../docs/specs/kel252-contract-oriented-test-layout.md)
-  is the draft design, not migration approval or an implemented CI layout gate.
+  order and real-OS proof.
 
 ## Cross-runtime migration cases
 
@@ -91,8 +90,9 @@ existing regressions; source presence is not run evidence.
   framework/showcase meaning in labels and prose; color/layout is not an oracle.
 - Every diagram change MUST run `just mermaid-test` and `just mermaid-check` for
   validator/structural proof; neither replaces rendering.
-- Unfamiliar syntax requires the [current-documentation receipt](research.md#current-documentation-receipt).
-  Official Mermaid docs are authoritative; Context7 is discovery.
+- Before using unfamiliar Mermaid syntax, apply
+  [`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt).
+  The official Mermaid docs are the primary syntax authority; Context7 remains discovery.
 - Every changed/added block MUST pass `just mermaid-render-check`: official
   [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli) 11.16.0 GHCR
   image at immutable OCI digest, read-only checkout, disabled network and resource
@@ -123,5 +123,4 @@ existing regressions; source presence is not run evidence.
 Start fuzzing with `cargo-fuzz` and raw bytes. Do not add `proptest` until a concrete
 invariant has interacting input dimensions that example tables cannot cover. Do not
 add Loom until a real shared-state concurrency bug or queue/credit/cancellation
-invariant requires schedule exploration. Framework presence, test count, and coverage
-percentages are not proof by themselves.
+invariant requires schedule exploration. Frameworks, test counts and coverage percentages alone are not proof.
