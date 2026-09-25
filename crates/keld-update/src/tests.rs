@@ -172,23 +172,50 @@ fn provenance_refuses_missing_unprotected_and_managed_before_admission() {
 #[test]
 fn provenance_requires_exact_identity_distinct_principals_and_floor() {
     let verifier = verifier();
-    let mut mismatched = expected_identity();
-    mismatched.update_root.push("other");
-    let root_error = verifier
-        .admit(&observation(
-            mismatched,
-            InstallOwner::Direct,
-            Some("1.0.0"),
-        ))
-        .unwrap_err();
-    assert_code(&root_error, "KELD-UPDATE-003");
-    assert!(matches!(
-        root_error,
-        UpdateError::ProvenanceMismatch {
-            field: ProvenanceField::UpdateRoot,
-            ..
-        }
-    ));
+    let substitutions: [(ProvenanceField, fn(&mut DirectInstallationIdentity)); 9] = [
+        (ProvenanceField::AppId, |identity| {
+            identity.app_id.push_str(".other");
+        }),
+        (ProvenanceField::Channel, |identity| {
+            identity.channel = Channel::Beta;
+        }),
+        (ProvenanceField::Target, |identity| {
+            identity.target = "linux-x64".to_owned();
+        }),
+        (ProvenanceField::InstallRoot, |identity| {
+            identity.install_root.push("other");
+        }),
+        (ProvenanceField::UpdateRoot, |identity| {
+            identity.update_root.push("other");
+        }),
+        (ProvenanceField::SigningKey, |identity| {
+            identity.signing_key_id = SigningKeyId::from_public_key(&[8_u8; 32]);
+        }),
+        (ProvenanceField::Baseline, |identity| {
+            identity.baseline.content_blake3[0] ^= 1;
+        }),
+        (ProvenanceField::Profile, |identity| {
+            identity.profile_digest = ProfileDigest([3_u8; 32]);
+        }),
+        (ProvenanceField::PrincipalModel, |identity| {
+            identity.principal_model = PrincipalModel::LegacySameUser;
+        }),
+    ];
+    for (expected_field, substitute) in substitutions {
+        let mut identity = expected_identity();
+        substitute(&mut identity);
+        let error = verifier
+            .admit(&observation(identity, InstallOwner::Direct, Some("1.0.0")))
+            .unwrap_err();
+        assert_code(&error, "KELD-UPDATE-003");
+        assert!(
+            matches!(
+                &error,
+                UpdateError::ProvenanceMismatch { field, .. } if *field == expected_field
+            ),
+            "each identity substitution must report {expected_field:?}, got {error:?}"
+        );
+    }
 
     let mut legacy = expected_identity();
     legacy.principal_model = PrincipalModel::LegacySameUser;
@@ -216,7 +243,51 @@ fn provenance_requires_exact_identity_distinct_principals_and_floor() {
         ))
         .unwrap_err();
     assert_code(&below, "KELD-UPDATE-003");
+    let equal_precedence_with_build_metadata = verifier
+        .admit(&observation(
+            expected_identity(),
+            InstallOwner::Direct,
+            Some("1.0.0+repacked"),
+        ))
+        .unwrap_err();
+    assert_code(&equal_precedence_with_build_metadata, "KELD-UPDATE-003");
+    assert!(matches!(
+        equal_precedence_with_build_metadata,
+        UpdateError::ProvenanceMismatch {
+            field: ProvenanceField::VersionFloor,
+            ..
+        }
+    ));
     assert_eq!(admitted_at("1.2.0").version_floor(), "1.2.0");
+}
+
+#[test]
+fn verifier_rejects_weak_or_mismatched_configured_signing_key() {
+    let weak_public_key = [
+        1_u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0,
+    ];
+    let mut weak_identity = expected_identity();
+    weak_identity.signing_key_id = SigningKeyId::from_public_key(&weak_public_key);
+    let weak_error = UpdateVerifier::new(weak_identity, weak_public_key).unwrap_err();
+    assert_code(&weak_error, "KELD-UPDATE-004");
+    assert!(matches!(
+        weak_error,
+        UpdateError::ManifestAuthentication { detail } if detail.contains("weak")
+    ));
+
+    let mut mismatched = expected_identity();
+    mismatched.signing_key_id = SigningKeyId::from_public_key(&[8_u8; 32]);
+    let key_error =
+        UpdateVerifier::new(mismatched, signing_key().verifying_key().to_bytes()).unwrap_err();
+    assert_code(&key_error, "KELD-UPDATE-003");
+    assert!(matches!(
+        key_error,
+        UpdateError::ProvenanceMismatch {
+            field: ProvenanceField::SigningKey,
+            ..
+        }
+    ));
 }
 
 #[cfg(windows)]
@@ -414,20 +485,46 @@ fn every_release_is_shape_validated_before_floor_filtering() {
 }
 
 #[test]
-fn signed_identity_mismatch_is_not_a_schema_or_signature_error() {
+fn signed_identity_mismatches_report_the_exact_manifest_field() {
+    let release = release_json("2.0.0", "1", ZERO_DIGEST, "1", ZERO_DIGEST, "");
+    let substitutions = [
+        (APP_ID, "dev.keld.other", ManifestIdentityField::AppId),
+        (
+            "\"channel\":\"stable\"",
+            "\"channel\":\"beta\"",
+            ManifestIdentityField::Channel,
+        ),
+        (TARGET, "linux-x64", ManifestIdentityField::Target),
+    ];
+    for (expected, replacement, expected_field) in substitutions {
+        let manifest = String::from_utf8(manifest_json(&release))
+            .expect("utf8")
+            .replace(expected, replacement)
+            .into_bytes();
+        let error = verify_manifest(&manifest, "1.0.0").unwrap_err();
+        assert_code(&error, "KELD-UPDATE-006");
+        assert!(
+            matches!(
+                &error,
+                UpdateError::ManifestIdentityMismatch { field, .. } if *field == expected_field
+            ),
+            "signed identity substitution must report {expected_field:?}, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn signed_unknown_schema_is_rejected_after_authentication() {
     let release = release_json("2.0.0", "1", ZERO_DIGEST, "1", ZERO_DIGEST, "");
     let manifest = String::from_utf8(manifest_json(&release))
         .expect("utf8")
-        .replace(TARGET, "linux-x64")
+        .replacen(r#""schema":1"#, r#""schema":2"#, 1)
         .into_bytes();
     let error = verify_manifest(&manifest, "1.0.0").unwrap_err();
-    assert_code(&error, "KELD-UPDATE-006");
+    assert_code(&error, "KELD-UPDATE-005");
     assert!(matches!(
         error,
-        UpdateError::ManifestIdentityMismatch {
-            field: ManifestIdentityField::Target,
-            ..
-        }
+        UpdateError::ManifestInvalid { detail } if detail.contains("schema must be the integer 1")
     ));
 }
 
