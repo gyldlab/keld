@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use base64::Engine as _;
@@ -465,6 +465,123 @@ fn full_verifier_rejects_short_and_long_compressed_streams() {
         .verify_full(&mut Cursor::new(long), &mut Vec::new())
         .unwrap_err();
     assert_code(&long_error, "KELD-UPDATE-008");
+}
+
+struct RewritesOnRewind {
+    signed: Cursor<Vec<u8>>,
+    replacement: Cursor<Vec<u8>>,
+    replacement_pass: bool,
+    pause_at: Option<u64>,
+    paused_once: bool,
+}
+
+impl Read for RewritesOnRewind {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        if self.replacement_pass {
+            if let Some(pause_at) = self.pause_at {
+                let position = self.replacement.position();
+                if position >= pause_at && !self.paused_once {
+                    self.paused_once = true;
+                    return Ok(0);
+                }
+                let remaining = pause_at.saturating_sub(position);
+                if remaining != 0 {
+                    let limit = usize::try_from(remaining.min(bytes.len() as u64))
+                        .expect("bounded by the output buffer length");
+                    return self.replacement.read(&mut bytes[..limit]);
+                }
+            }
+            self.replacement.read(bytes)
+        } else {
+            self.signed.read(bytes)
+        }
+    }
+}
+
+impl Seek for RewritesOnRewind {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        if !self.replacement_pass
+            && matches!(position, SeekFrom::Start(0))
+            && self.signed.position() == self.signed.get_ref().len() as u64
+        {
+            self.replacement_pass = true;
+        }
+        if self.replacement_pass {
+            self.replacement.seek(position)
+        } else {
+            self.signed.seek(position)
+        }
+    }
+}
+
+#[test]
+fn full_verifier_rejects_compressed_source_change_between_hash_and_decode() {
+    let content = b"canonical tar fixture bytes";
+    let frame = zstd::stream::encode_all(Cursor::new(content), 3).expect("compress content");
+    let skippable = |payload: u8| {
+        let mut bytes = frame.clone();
+        bytes.extend_from_slice(&0x184D_2A50_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.push(payload);
+        bytes
+    };
+    let signed = skippable(b'A');
+    let replacement = skippable(b'B');
+    assert_eq!(signed.len(), replacement.len());
+    assert_ne!(signed, replacement);
+    assert_eq!(
+        zstd::stream::decode_all(Cursor::new(&replacement)).expect("decode replacement"),
+        content,
+        "zstd skippable frame must leave canonical content unchanged"
+    );
+
+    let selected = valid_selected(&signed, content);
+    let mut source = RewritesOnRewind {
+        signed: Cursor::new(signed),
+        replacement: Cursor::new(replacement),
+        replacement_pass: false,
+        pause_at: None,
+        paused_once: false,
+    };
+    let error = selected
+        .verify_full(&mut source, &mut Vec::new())
+        .expect_err("the decode pass must be bound to the signed transport bytes");
+    assert_code(&error, "KELD-UPDATE-009");
+    assert!(matches!(
+        error,
+        UpdateError::ArtifactDigestMismatch {
+            domain: ArtifactDomain::Compressed,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn full_verifier_rejects_source_bytes_after_second_pass_eof() {
+    let content = b"canonical tar fixture bytes";
+    let frame = zstd::stream::encode_all(Cursor::new(content), 3).expect("compress content");
+    let mut signed = frame.clone();
+    signed.extend_from_slice(b"signed trailing bytes");
+    let selected = valid_selected(&signed, content);
+    let mut source = RewritesOnRewind {
+        signed: Cursor::new(signed.clone()),
+        replacement: Cursor::new(signed),
+        replacement_pass: false,
+        pause_at: Some(frame.len() as u64),
+        paused_once: false,
+    };
+
+    let error = selected
+        .verify_full(&mut source, &mut Vec::new())
+        .expect_err("data after a second-pass EOF must not be raw-drained into a receipt");
+    assert_code(&error, "KELD-UPDATE-008");
+    assert!(matches!(
+        error,
+        UpdateError::ArtifactSizeMismatch {
+            domain: ArtifactDomain::Compressed,
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -1556,7 +1556,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "windows-permissions",
  "windows-sys 0.61.2",
@@ -1606,7 +1606,7 @@ dependencies = [
  "keld-ipc",
  "rustix",
  "serde",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]

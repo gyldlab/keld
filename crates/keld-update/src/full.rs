@@ -63,8 +63,17 @@ impl SelectedFull {
             .seek(SeekFrom::Start(start))
             .map_err(|error| processing("input rewind", error))?;
 
-        let limited = compressed.take(self.compressed_size);
-        let mut decoder = zstd::stream::read::Decoder::new(limited)
+        // A generic `Read + Seek` source can change between the authenticated
+        // transport pass above and this decode pass. Hash the exact bytes fed to
+        // zstd as well, then compare them with the signed transport identity before
+        // returning a receipt.
+        let second_pass_limit = self
+            .compressed_size
+            .checked_add(1)
+            .ok_or_else(|| processing("compressed byte limit", "u64 overflow"))?;
+        let limited = compressed.take(second_pass_limit);
+        let source_with_hash = CompressedHashReader::new(limited);
+        let mut decoder = zstd::stream::read::Decoder::new(source_with_hash)
             .map_err(|error| processing("zstd decoder initialization", error))?;
         let mut hasher = blake3::Hasher::new();
         let mut produced = 0_u64;
@@ -107,6 +116,38 @@ impl SelectedFull {
                 &actual,
             ));
         }
+
+        // `Decoder::read` can hand out the last content bytes before a frame
+        // epilogue is complete. Finish the frame, then require that the decoder
+        // consumed every buffered and underlying byte. Do not raw-drain after a
+        // decoder EOF: a generic `Read` may return zero and later resume, and those
+        // later bytes were never authenticated by zstd.
+        decoder
+            .finish_frame()
+            .map_err(|error| processing("zstd frame completion", error))?;
+        let compressed_reader = decoder.finish();
+        let buffered = compressed_reader.buffer().len() as u64;
+        let compressed_input = compressed_reader.get_ref();
+        let consumed = compressed_input
+            .bytes_read
+            .checked_sub(buffered)
+            .ok_or_else(|| processing("compressed byte counter", "buffer exceeds bytes read"))?;
+        if buffered != 0 || compressed_input.bytes_read != self.compressed_size {
+            return Err(size_mismatch(
+                ArtifactDomain::Compressed,
+                self.compressed_size,
+                format!("{consumed} consumed; {buffered} buffered"),
+            ));
+        }
+        let actual_compressed = *compressed_input.hasher.finalize().as_bytes();
+        if actual_compressed != self.compressed_blake3 {
+            return Err(digest_mismatch(
+                ArtifactDomain::Compressed,
+                &self.compressed_blake3,
+                &actual_compressed,
+            ));
+        }
+
         Ok(VerifiedFull {
             identity: self.identity.clone(),
             content_size: produced,
@@ -118,6 +159,36 @@ impl SelectedFull {
         // `contentSize` is signed metadata distinct from the artifact identity. It is
         // kept on `SelectedFull` below; this helper gives the streaming loop one owner.
         self.content_size
+    }
+}
+
+struct CompressedHashReader<R> {
+    inner: R,
+    hasher: blake3::Hasher,
+    bytes_read: u64,
+}
+
+impl<R> CompressedHashReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: blake3::Hasher::new(),
+            bytes_read: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for CompressedHashReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        if read != 0 {
+            self.bytes_read = self
+                .bytes_read
+                .checked_add(read as u64)
+                .ok_or_else(|| std::io::Error::other("compressed byte count overflow"))?;
+            self.hasher.update(&buffer[..read]);
+        }
+        Ok(read)
     }
 }
 
