@@ -947,7 +947,7 @@ dependencies = [
 [[package]]
 name = "glib"
 version = "0.18.5"
-source = "git+https://github.com/gyldlab/glib-0.18-backport?rev=3b35081eadc9d83cf5c17fb9592aa4a0c33e4d00#3b35081eadc9d83cf5c17fb9592aa4a0c33e4d00"
+source = "git+https://github.com/gyldlab/glib-0.18-backport?rev=5c7aa68ff3d69aca09fb9d18fef8b9c9b6b7920d#5c7aa68ff3d69aca09fb9d18fef8b9c9b6b7920d"
 dependencies = [
  "bitflags 2.13.0",
  "futures-channel",
