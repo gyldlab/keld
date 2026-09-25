@@ -1,8 +1,7 @@
 # Testing playbook
 
-Load this playbook for tests, bug fixes, compatibility work, fuzzing, process
-boundaries, platform behavior, and any added or changed Mermaid diagram. A test is
-evidence only when a plausible defect can make it fail.
+Load for tests, bug fixes, compatibility, fuzzing, process boundaries, platform
+behavior and changed Mermaid diagrams. A plausible defect must falsify the test.
 
 ## Failure-first proof
 
@@ -19,32 +18,43 @@ evidence only when a plausible defect can make it fail.
   exit status or signal, OS-visible effect, upstream behavior, or a specified state
   invariant. Reimplementing the production algorithm in the test is not independent.
 - For protocol, permission, process-lifetime, and other critical behavior, the author
-  MUST make a temporary negative-control mutation (for example, remove or invert the
-  guarded branch or alter a wire constant) and identify the test that fails.
+  MUST make a temporary negative-control mutation and identify the test that fails.
 - A test MUST fail when the behavior under test is deleted or replaced with a no-op or
   constant result. Strengthen or remove a test that survives that change.
 
 ## Cases and test shape
 
-- Cover zero, maximum, maximum plus one, truncation or split boundaries, shutdown,
-  mismatch, malformed encoding, and invalid input when they apply. Add cancellation,
-  restart, missing-file, or invalid-name cases when those are part of the contract.
-- Assertion-free tests, mock-only proof of OS or process behavior, and tests that only
-  prove a stub, derive, or fixture MUST NOT ship.
-- Tests MUST await observable conditions, bind port `0`, use isolated temporary paths,
-  and clean up resources. They MUST NOT use sleeps for synchronization; a timeout is
-  only a kill switch.
-- Keep tests colocated with the owned module/fixture when the repository layout permits.
-  Document why a non-obvious wait/resource boundary is the real condition, not timing.
-- Crash, lifetime, and hostile-shutdown tests MUST run the risky action in a child
-  process and assert the relevant stdout, stderr, exit code, signal, cleanup, and next
-  successful operation.
-- Every fuzz failure MUST retain its minimized input or seed and exact target. It MUST
-  also become a fast deterministic regression with a semantic assertion; a corpus
-  entry alone is insufficient.
-- Platform code MUST be verified against the real OS API on each claimed platform or
-  be reported unverified there. A model or mock may prove state logic, not platform
-  behavior.
+- Cover applicable zero, maximum, maximum+1, truncation/splits, shutdown, mismatch,
+  malformed encoding and invalid input; cancellation, restart, missing-file and
+  invalid-name cases when contracted.
+- Assertion-free tests, mock-only OS/process proof, and tests proving only a stub,
+  derive or fixture MUST NOT ship.
+- Tests MUST await observable conditions, bind port `0`, isolate temporary paths and
+  clean up. No sleep synchronization; timeouts are kill switches. Explain non-obvious
+  wait/resource boundaries by the real condition, not timing.
+- Crash, lifetime and hostile-shutdown actions MUST run in a child; assert relevant
+  stdout, stderr, exit code, signal, cleanup and the next successful operation.
+- Every fuzz failure MUST retain its minimized input/seed and exact target, and become
+  a fast deterministic semantic regression; a corpus entry alone is insufficient.
+- Verify real OS APIs on every claimed platform or report unverified. Models/mocks
+  prove state logic, not platform behavior.
+
+## Source organization
+
+- Keep tests with their owning module/fixture. Group by observable contract, not
+  arbitrary length. Split mixed concerns; do not create empty mirrored OS trees.
+- Agents SHOULD read the scenario and its actual fixture/helper/resource dependencies.
+  Measure this working set before/after a structural change, not just file lengths.
+- Separate scenarios, setup and independent observations. Keep resource types with
+  cleanup; share only equivalent mechanics with named consumers. No giant `common.rs`,
+  universal harness, cycles or wildcard-export maze.
+- A split MUST preserve executable boundaries unless separately justified. Compare
+  native discovered cases, cfg/features and ignored reasons; map renames and update
+  exact helper selectors, fixtures, runner groups and scripts together. Prove helper
+  execution by its effect: exit zero may mean zero selected tests.
+- Move first, deduplicate later. Preserve assertions, negative controls, resource/drop
+  order and real-OS proof. [KEL-252](../docs/specs/kel252-contract-oriented-test-layout.md)
+  is the draft design, not migration approval or an implemented CI layout gate.
 
 ## Cross-runtime migration cases
 
@@ -77,44 +87,36 @@ existing regressions; source presence is not run evidence.
 ## Documentation and Mermaid render gate
 
 - [`.agents/docs.md`](docs.md) owns diagram selection, accessibility, semantic labels
-  and the shared `classDef` palette. A changed diagram MUST preserve
-  explicit current/target and framework/showcase meaning in its labels and surrounding
-  prose; color or layout alone is not an oracle.
-- Run `just mermaid-test` and `just mermaid-check` for every diagram change. These prove
-  the repository validator and structural policy; they do not replace the actual render
-  required below.
-- Before using unfamiliar Mermaid syntax, apply
-  [`.agents/research.md` § Current-documentation receipt](research.md#current-documentation-receipt).
-  The official Mermaid docs are the primary syntax authority; Context7 remains discovery.
-- Every added or changed Mermaid block MUST pass `just mermaid-render-check`. It uses the
-  official [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli)
-  11.16.0 GHCR image pinned by immutable OCI digest, with the checkout read-only,
-  network disabled and resource limits. `latest`, beta/canary builds, third-party live
-  editors and an unversioned global `mmdc` MUST NOT satisfy the gate. Changing the image
-  tag/digest or render config is a dependency + CI review gate.
-- A passing render means every changed block exits successfully, produces a non-empty
-  output, and preserves an accessible SVG `<title>` and `<desc>` derived from
-  `accTitle`/`accDescr`. Inspect the rendered relationship at least once; parse success
-  cannot detect a reversed edge, misleading grouping or clipped semantic label.
-- The PR or hand-off MUST contain an actual render report: source files and block count,
-  renderer name, version and digest, exact command, output format, and observed pass/fail.
-  Temporary render output SHOULD live in managed scratch and MUST NOT be committed
-  unless it is itself a reviewed documentation artifact. If rendering cannot run, report
-  the blocker and do not call the diagram change verified.
+  and `classDef` palette. Changes MUST retain explicit current/target and
+  framework/showcase meaning in labels and prose; color/layout is not an oracle.
+- Every diagram change MUST run `just mermaid-test` and `just mermaid-check` for
+  validator/structural proof; neither replaces rendering.
+- Unfamiliar syntax requires the [current-documentation receipt](research.md#current-documentation-receipt).
+  Official Mermaid docs are authoritative; Context7 is discovery.
+- Every changed/added block MUST pass `just mermaid-render-check`: official
+  [`@mermaid-js/mermaid-cli`](https://github.com/mermaid-js/mermaid-cli) 11.16.0 GHCR
+  image at immutable OCI digest, read-only checkout, disabled network and resource
+  limits. No `latest`, beta/canary, live third-party editor or unversioned global `mmdc`.
+  Tag/digest/render-config changes trigger dependency and CI review.
+- Each block MUST exit successfully, produce non-empty output and accessible SVG
+  `<title>`/`<desc>` from `accTitle`/`accDescr`. Inspect the rendered relationship;
+  parsing misses reversed edges, misleading grouping and clipped semantic labels.
+- PR/handoff MUST report files/block count, renderer name/version/digest, exact command,
+  output format and observed pass/fail. Temporary output SHOULD use managed scratch;
+  commit only reviewed documentation artifacts. Report blocked rendering as unverified.
 
 ## CI tiers
 
-- [`.agents/ci.md`](ci.md) owns routing, required-workflow, apt, MSRV, and
-  merge-admission invariants. This playbook owns what evidence each selected test lane
-  must produce.
-- **Rust-affecting PRs:** format, clippy, test, and MSRV cover changed packages and Cargo
-  reverse dependents. Replay committed fuzz regressions as normal tests; build changed
-  fuzz harnesses. Docs-affecting PRs run generated-doc and Mermaid gates.
-- **Nightly:** run bounded `cargo-fuzz` campaigns with retained corpora. Add targeted
-  sanitizer or Miri lanes only where unsafe, FFI, allocation, or lifetime risk makes
-  them applicable; print replayable seeds and promote every failure to a regression.
-- **Weekly:** run the broader supported OS/architecture/backend matrix, longer fuzz
-  campaigns and corpus minimization, and real webview/transport process-failure smoke.
+- [`.agents/ci.md`](ci.md) owns routing, required workflows, apt, MSRV and merge
+  admission; this playbook owns lane evidence.
+- **Rust-affecting PRs:** format, clippy, test and MSRV cover changed packages and Cargo
+  reverse dependents. Replay committed fuzz regressions; build changed fuzz harnesses.
+  Docs changes run generated-doc/Mermaid gates.
+- **Nightly:** bounded `cargo-fuzz` with retained corpora; targeted sanitizer/Miri for
+  applicable unsafe, FFI, allocation or lifetime risks. Print replayable seeds; promote
+  every failure to a regression.
+- **Weekly:** broader supported OS/architecture/backend matrix, longer fuzz campaigns,
+  corpus minimization and real webview/transport process-failure smoke.
 
 ## YAGNI
 
