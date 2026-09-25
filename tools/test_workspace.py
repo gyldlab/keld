@@ -449,8 +449,12 @@ print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
         self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
         preview = json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)
         self.assertEqual(preview["targets"], [str(scratch)])
-        self.cli("clean", task["task"], "--session", "test-session", "--apply",
-                 "--receipt", str(self.cleanup_receipt(task, scratch)))
+        cleanup = self.cleanup_receipt(task, scratch)
+        value = json.loads(cleanup.read_text())
+        value["resources"].append({"id": "primary", "path": str(self.root), "status": "retained",
+                                   "reason": "Retain the primary directory, not every disposable descendant"})
+        cleanup.write_text(json.dumps(value), encoding="utf-8")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(cleanup))
         self.assertFalse(scratch.exists())
         self.assertTrue((other_scratch / "keep.txt").is_file())
         self.assertTrue((unknown / "keep.txt").is_file())
@@ -482,11 +486,42 @@ print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
         record.write_text(json.dumps(value), encoding="utf-8")
 
     def test_clean_preserves_evidence_of_every_released_task_in_session(self):
+        self.assert_released_artifact_preserved("hash")
+
+    def test_clean_preserves_receipt_of_another_released_task(self):
+        self.assert_released_artifact_preserved("receipt")
+
+    def test_clean_preserves_retained_file_of_another_released_task(self):
+        self.assert_released_artifact_preserved("file")
+
+    def test_clean_preserves_retained_directory_of_another_released_task(self):
+        self.assert_released_artifact_preserved("directory")
+
+    def retain_artifact_in_scratch(self, receipt, scratch, kind):
+        """Create a receipt-owned input; native deletion and the validator are the oracles."""
+        value = json.loads(receipt.read_text())
+        artifact = scratch / ("retained-" + kind)
+        if kind == "receipt":
+            receipt = artifact
+        elif kind == "hash":
+            artifact.write_text("retain hashed evidence", encoding="utf-8")
+            value["findings_review"].append(self.proof(artifact))
+        else:
+            if kind == "directory":
+                artifact.mkdir()
+            else:
+                artifact.write_text("retain declared resource", encoding="utf-8")
+            value["resources"].append({"id": "artifact", "path": str(artifact), "status": "retained",
+                                       "reason": "Keep this resource after cleanup"})
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        return receipt, artifact
+
+    def assert_released_artifact_preserved(self, kind):
         first = self.start()
         second = json.loads(self.cli("start", "kel-245", "second", "--session", "test-session").stdout)
         scratch = self.run_scratch(second)
-        proof = scratch / "second-task-proof.txt"
-        proof.write_text("retain other task evidence", encoding="utf-8")
+        sentinel = scratch / "disposable.txt"
+        sentinel.write_text("no partial deletion", encoding="utf-8")
         first_receipt = self.closeout(first)
         value = json.loads(first_receipt.read_text())
         baseline = Path(value["baseline"]["path"])
@@ -495,15 +530,46 @@ print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
         value["baseline"] = self.proof(first_baseline)
         saved_first = first_receipt.with_name("first-release.json")
         saved_first.write_text(json.dumps(value), encoding="utf-8")
-        second_receipt = self.closeout(second, proof)
+        second_receipt, artifact = self.retain_artifact_in_scratch(self.closeout(second), scratch, kind)
         self.cli("finish", first["task"], "--session", "test-session", "--receipt", str(saved_first))
         self.cli("finish", second["task"], "--session", "test-session", "--receipt", str(second_receipt))
         self.assertEqual(workspace.session_closeout.check(second_receipt), "complete")
         refused = self.cli("clean", first["task"], "--session", "test-session", "--apply",
                            "--receipt", str(self.cleanup_receipt(first, scratch, saved_first)), ok=False)
         self.assertIn("Scratch is referenced", refused.stderr)
-        self.assertTrue(proof.is_file())
+        self.assertTrue(artifact.exists())
+        self.assertEqual(sentinel.read_text(), "no partial deletion")
+        self.assertEqual(workspace.session_closeout.check(saved_first), "complete")
         self.assertEqual(workspace.session_closeout.check(second_receipt), "complete")
+
+    def test_clean_preserves_prepared_cleanup_receipt(self):
+        self.assert_prepared_artifact_preserved("receipt")
+
+    def test_clean_preserves_prepared_cleanup_evidence(self):
+        self.assert_prepared_artifact_preserved("hash")
+
+    def test_clean_preserves_prepared_cleanup_retained_file(self):
+        self.assert_prepared_artifact_preserved("file")
+
+    def test_clean_preserves_prepared_cleanup_retained_directory(self):
+        self.assert_prepared_artifact_preserved("directory")
+
+    def assert_prepared_artifact_preserved(self, kind):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        sentinel = scratch / "disposable.txt"
+        sentinel.write_text("no partial deletion", encoding="utf-8")
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        cleanup, artifact = self.retain_artifact_in_scratch(self.cleanup_receipt(task, scratch, release), scratch, kind)
+        receipt_bytes = cleanup.read_bytes()
+        refused = self.cli("clean", task["task"], "--session", "test-session", "--apply",
+                           "--receipt", str(cleanup), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertTrue(artifact.exists())
+        self.assertEqual(cleanup.read_bytes(), receipt_bytes)
+        self.assertEqual(sentinel.read_text(), "no partial deletion")
+        self.assertEqual(workspace.session_closeout.check(release), "complete")
 
     def test_short_scratch_referenced_evidence_is_not_deleted(self):
         task = self.start()
@@ -607,7 +673,7 @@ print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
         self.assertEqual(len(value["removed"]), 1)
         self.assertIn(value["removed"][0], {str(scratch / "a.txt"), str(scratch / "b.txt")})
 
-    def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
+    def test_retained_legacy_scratch_is_refused_before_deletion(self):
         task = self.start()
         self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
         scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
@@ -617,7 +683,33 @@ print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
         value = json.loads(receipt.read_text())
         value["resources"][0]["status"] = "retained"
         receipt.write_text(json.dumps(value), encoding="utf-8")
-        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt), ok=False)
+        refused = self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertEqual((scratch / "remove.txt").read_text(), "scratch")
+        self.assertEqual(list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*")), [])
+
+    def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        receipt = self.cleanup_receipt(task, scratch, release)
+        proof = self.root.parent / "current-only-proof.txt"
+        proof.write_text("available before cleanup", encoding="utf-8")
+        value = json.loads(receipt.read_text())
+        value["findings_review"].append(self.proof(proof))
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        original = workspace.remove_disposable_tree
+        def lose_proof_after_removal(nodes, recorded):
+            original(nodes, recorded)
+            # An external loss after admission must still fail final validation and be journaled.
+            proof.unlink()
+        with mock.patch.object(workspace, "remove_disposable_tree", lose_proof_after_removal):
+            with self.assertRaisesRegex(workspace.session_closeout.Invalid, "evidence file missing"):
+                workspace.clean(workspace.context(self.root), task["task"], "test-session", True, receipt)
+        self.assertFalse(scratch.exists())
+        self.assertFalse(proof.exists())
+        self.assertEqual(workspace.session_closeout.check(release), "complete")
         result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
         self.assertEqual(json.loads(result.read_text())["state"], "failed")
 

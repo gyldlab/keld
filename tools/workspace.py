@@ -551,15 +551,16 @@ def remove_disposable_tree(nodes, recorded):
         recorded(path)
 
 
-def receipt_evidence_paths(value):
+def receipt_retained_paths(value):
+    """Collect hashed proof and resources whose continued existence a receipt promises."""
     if isinstance(value, dict):
-        if set(value) == {"path", "sha256"} and isinstance(value["path"], str):
+        if (set(value) == {"path", "sha256"} or value.get("status") == "retained") and isinstance(value.get("path"), str):
             yield Path(value["path"])
         for nested in value.values():
-            yield from receipt_evidence_paths(nested)
+            yield from receipt_retained_paths(nested)
     elif isinstance(value, list):
         for nested in value:
-            yield from receipt_evidence_paths(nested)
+            yield from receipt_retained_paths(nested)
 
 
 def clean(ctx, name, session, apply, receipt=None):
@@ -579,6 +580,7 @@ def clean(ctx, name, session, apply, receipt=None):
                 releases.append((other, other_checkout))
         clean_checkout(checkout)
         targets = session_scratch(ctx, session)
+        receipts = []
         for released, released_checkout in releases:
             receipt_path = Path(released["receipt"])
             release_receipt = session_closeout.read_json(receipt_path)
@@ -586,7 +588,17 @@ def clean(ctx, name, session, apply, receipt=None):
                     release_receipt["session_id"] == session and
                     session_closeout.check(receipt_path) == "complete",
                     "Released task closeout receipt no longer validates for this session. Preserve scratch and repair its evidence first.")
-            for evidence in receipt_evidence_paths(release_receipt):
+            receipts.append((receipt_path, release_receipt))
+        if apply:
+            require(receipt is not None, "Cleanup apply requires a prepared current-turn --receipt; preview is read-only.")
+            cleanup_receipt_path = Path(receipt)
+            receipt_value = session_closeout.read_json(cleanup_receipt_path)
+            require(same(receipt_value.get("repo", ""), checkout) and receipt_value.get("session_id") == session,
+                    "Cleanup receipt belongs to another task or session. Preserve scratch and use the owning receipt.")
+            # A prepared receipt can name future removals, but its own artifacts must survive them.
+            receipts.append((cleanup_receipt_path, receipt_value))
+        for receipt_path, receipt_value in receipts:
+            for evidence in [receipt_path, *receipt_retained_paths(receipt_value)]:
                 require(not any(evidence.resolve().is_relative_to(target.resolve()) for target in targets),
                         f"Scratch is referenced by closeout evidence: {evidence}. Preserve it and archive/rewrite the evidence first.")
         nodes = [node for target in targets for node in safe_disposable_tree(target)]
@@ -594,12 +606,6 @@ def clean(ctx, name, session, apply, receipt=None):
         plan = dict(task=name, session=session, applied=apply, targets=[str(target) for target in targets],
                     scratch_bytes=byte_count, retained_evidence=str(ctx.root / "sessions" / session / "evidence"),
                     retained_worktree=str(checkout), reason="released task scratch only; evidence, source branch and worktree are retained")
-        if apply:
-            require(receipt is not None, "Cleanup apply requires a prepared current-turn --receipt; preview is read-only.")
-            receipt_path = Path(receipt)
-            receipt_value = session_closeout.read_json(receipt_path)
-            require(same(receipt_value.get("repo", ""), checkout) and receipt_value.get("session_id") == session,
-                    "Cleanup receipt belongs to another task or session. Preserve scratch and use the owning receipt.")
         if apply:
             evidence = safe_path(ctx.root / "sessions" / session / "evidence" / ("clean-" + uuid.uuid4().hex))
             mkdir(evidence)
@@ -611,7 +617,7 @@ def clean(ctx, name, session, apply, receipt=None):
                 write_record(result_file, result)
             try:
                 remove_disposable_tree(nodes, recorded)
-                require(session_closeout.check(receipt_path) == "complete",
+                require(session_closeout.check(cleanup_receipt_path) == "complete",
                         "Cleanup receipt is not complete after deletion. Record an explicit handoff; scratch removal is not a successful cleanup.")
             except (WorkspaceError, session_closeout.Invalid, OSError) as error:
                 result.update(state="failed", error_type=type(error).__name__)
