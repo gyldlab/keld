@@ -298,6 +298,22 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_tilde_path_remains_serviceable_before_dispatch() {
+        let manifest = manifest_granting_fs_read();
+        let ran = AtomicBool::new(false);
+        let result = dispatch_privileged(
+            &manifest,
+            Principal::AppProcess,
+            "fs.read",
+            "C:/appdata/notes~1.txt",
+            |_| ran.store(true, Ordering::SeqCst),
+        );
+        assert_eq!(result, Ok(()));
+        assert!(ran.load(Ordering::SeqCst), "valid request must dispatch");
+    }
+
     #[test]
     fn non_app_process_principal_is_denied_even_with_an_in_scope_path() {
         // KEL-69 AC: a webview/plugin must not inherit /app grants on this path.

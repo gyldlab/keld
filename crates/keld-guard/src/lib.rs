@@ -789,6 +789,10 @@ pub fn path_scopes<'manifest>(
 ///
 /// Native traversal uses this for components introduced by link expansion so
 /// the broker cannot diverge from scope/request spelling rules.
+/// On Windows, this includes Win32-forbidden punctuation/control characters,
+/// reserved device names, and trailing dot/space. Tilde remains serviceable for
+/// filesystem paths; the package-only prohibition belongs to
+/// [`validate_windows_package_component`].
 ///
 /// # Errors
 ///
@@ -798,6 +802,26 @@ pub fn validate_fs_component(component: &str) -> Result<(), String> {
     validate_portable_component(component)?;
     #[cfg(windows)]
     validate_windows_component(component)?;
+    Ok(())
+}
+
+/// Validates one path component for the first Windows package cell.
+///
+/// This applies Windows package spelling rules on every host, so archive
+/// validation is deterministic even when run on Linux or macOS. Ordinary
+/// filesystem paths use [`validate_fs_component`] and retain valid tilde names.
+/// This check is lexical and does not resolve short-name aliases.
+///
+/// # Errors
+///
+/// Returns a developer-facing reason when the component is not portable, is
+/// not a serviceable Win32 name, or contains the package-forbidden tilde.
+pub fn validate_windows_package_component(component: &str) -> Result<(), String> {
+    validate_portable_component(component)?;
+    validate_windows_component(component)?;
+    if component.contains('~') {
+        return Err("Windows package components cannot contain tilde".to_owned());
+    }
     Ok(())
 }
 
@@ -856,10 +880,16 @@ fn validate_fs_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn validate_windows_component(component: &str) -> Result<(), String> {
     if component.contains(':') {
         return Err("alternate data streams are not serviceable".to_owned());
+    }
+    if component.contains(['<', '>', '"', '|', '?', '*'])
+        || component
+            .chars()
+            .any(|character| ('\u{1}'..='\u{1f}').contains(&character))
+    {
+        return Err("Windows components contain forbidden characters".to_owned());
     }
     if component.ends_with(['.', ' ']) {
         return Err("Windows components cannot end with dot or space".to_owned());
@@ -871,7 +901,6 @@ fn validate_windows_component(component: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
 fn is_windows_reserved_basename(basename: &str) -> bool {
     ["CON", "PRN", "AUX", "NUL"]
         .iter()
@@ -886,7 +915,6 @@ fn is_windows_reserved_basename(basename: &str) -> bool {
         })
 }
 
-#[cfg(windows)]
 fn strip_ascii_prefix<'text>(text: &'text str, prefix: &str) -> Option<&'text str> {
     let head = text.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix)
@@ -1128,6 +1156,57 @@ mod tests {
 
     fn eval_app(manifest: &PermissionsManifest, operation: &str, path: &str) -> Decision {
         evaluate(manifest, Principal::AppProcess, operation, path)
+    }
+
+    #[test]
+    fn windows_package_component_rejects_forbidden_punctuation() {
+        for forbidden in ['<', '>', '"', '|', '?', '*', ':'] {
+            let component = format!("prefix{forbidden}suffix");
+            assert!(
+                validate_windows_package_component(&component).is_err(),
+                "Windows package component containing {forbidden:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_package_component_rejects_c0_controls() {
+        for code_point in 1..=0x1f {
+            let control = char::from_u32(code_point).expect("valid control code point");
+            let component = format!("prefix{control}suffix");
+            assert!(
+                validate_windows_package_component(&component).is_err(),
+                "Windows package component containing U+{code_point:04X} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_package_component_rejects_tilde() {
+        for component in ["~leading", "middle~name", "trailing~"] {
+            assert!(
+                validate_windows_package_component(component).is_err(),
+                "Windows package component {component:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_package_component_keeps_valid_neighboring_characters() {
+        for component in ["plain-name", "middle space", "valid\u{007f}name"] {
+            assert!(
+                validate_windows_package_component(component).is_ok(),
+                "Windows package component {component:?} is outside the forbidden set"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_filesystem_scope_allows_tilde_component() {
+        let manifest = parse_manifest(r#"{"app":{"fs":{"read":["C:/appdata/notes~1.txt"]}}}"#)
+            .expect("manifest");
+        assert!(path_scopes(&manifest, "fs.read").is_ok());
     }
 
     #[test]
