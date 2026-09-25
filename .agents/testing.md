@@ -1,7 +1,7 @@
 # Testing playbook
 
 Load for tests, bug fixes, compatibility, fuzzing, process boundaries, platform
-behavior and changed Mermaid diagrams. A plausible defect must falsify the test.
+behavior and added or changed Mermaid diagrams. A plausible defect must falsify the test.
 
 ## Failure-first proof
 
