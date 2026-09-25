@@ -397,10 +397,15 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 - Formats: macOS `.app`/`.dmg` (+ notarization via rcodesign — pure Rust, no Xcode
   needed for CI), Windows NSIS + MSI (WiX-free Rust authoring, Deno proved viability),
   Linux `.deb`/`.rpm`/AppImage/flatpak manifest.
-- **Cross-compile everything from one machine**: because the host is prebuilt per
-  platform and JS is portable, `keld build --target win-x64 --target linux-arm64` is
-  data assembly + signing. Matches Deno Desktop's headline capability; beats
-  Tauri/Electrobun (per-OS build farms) structurally.
+- **Cross-host assembly is the target**: because the host is prebuilt per platform and
+  JS is portable, `keld build --target win-x64 --target linux-arm64` should be data
+  assembly + signing. Support cells still qualify independently. For KEL-53's first
+  Windows x64 direct-update v0 package producer, exact namespace admission calls the
+  guard-owned Windows `NormalizationC` and ordinal-comparison contract; that producer
+  currently requires a Windows host. Other hosts MUST return a typed unsupported-host
+  result before writing output. This is a temporary producer-host limit, not a package
+  or feed format change; remove it only after independent evidence proves equivalent
+  Windows namespace behavior.
 - Signing: platform signers driven natively (rcodesign / signtool / osslsigncode
   fallback), config in `keld.build.ts`, CI recipes documented for GitHub Actions.
 
@@ -595,6 +600,10 @@ release missing `full` is part of AC1):
     [file naming](https://learn.microsoft.com/windows/win32/fileio/naming-a-file),
     [normalization](https://learn.microsoft.com/windows/win32/api/winnls/nf-winnls-normalizestring)
     and [ordinal case comparison](https://learn.microsoft.com/windows/win32/api/stringapiset/nf-stringapiset-comparestringordinal).
+  - The first Windows x64 producer runs on a Windows host so it can apply that exact
+    native namespace contract before producing bytes; another host refuses before its
+    output sink receives data. Cross-host assembly remains the target after an
+    equivalent Windows-name admission path is independently proven.
   - Fixed-width string fields contain their bytes followed by zero bytes to the field
     width. `name` is 100 bytes; `linkname` (100), `uname` (32),
     `gname` (32), `prefix` (155) and header padding bytes 500–511 are all
@@ -710,7 +719,10 @@ release missing `full` is part of AC1):
 distribution whose complete runnable tree fits v0's regular-file/directory-only archive.
 The canonical tar contains `.keld/update-policy.v1` with exact UTF-8 bytes
 `{"schema":1,"dataMigration":"none"}\n`; `contentBlake3` covers that
-file. Missing, duplicate or different policy refuses activation. macOS/Linux and any
+file. `keld-pack` is the single owner of its path and portable byte constant, and
+`keld-update` consumes that owner through a one-way internal dependency. Missing,
+duplicate or different policy refuses activation. The package producer includes it;
+the consumer checks its exact bytes before any extraction. macOS/Linux and any
 package requiring executable modes, links or other v0-excluded metadata remain blocked
 on an approved KEL-137 representation.
 

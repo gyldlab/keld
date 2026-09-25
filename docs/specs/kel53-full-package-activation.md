@@ -2,7 +2,7 @@
 
 Status: approved
 Linear: KEL-53 · Owner: GYLDLAB · Updated: 2026-09-19
-Approval: Linear comment `b343d835-1528-461f-bda4-0fa5e238b5af` · approved corrected content head `a340acf0b5cfcbfab9111f938cd3ac2788219ccb` · decision SHA-256 `972b82947189b5d89c7c78d11547f0c0ef890a60bf36af1bdfb68d448fed2ed9`
+Approval: original corrected contract: Linear comment `b343d835-1528-461f-bda4-0fa5e238b5af` · approved corrected content head `a340acf0b5cfcbfab9111f938cd3ac2788219ccb` · decision SHA-256 `972b82947189b5d89c7c78d11547f0c0ef890a60bf36af1bdfb68d448fed2ed9`; KEL-263 producer-host and policy-owner amendment: delegated approval comment `df61a6f6-3215-44a8-8780-7ae242fc74ab` · decision SHA-256 `871a803ba4c04087209ebb7a19751a15382dcae42cd8764d2cd7090d3cc9ba83` · amended content head recorded after the docs-only change lands.
 
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"a340acf0b5cfcbfab9111f938cd3ac2788219ccb","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"b343d835-1528-461f-bda4-0fa5e238b5af","source":"active-maintainer-session-2026-09-20"}
 
@@ -36,6 +36,12 @@ Non-goals:
   model.
 - `docs/architecture/03-security.md` owns update trust, protected state and the
   narrow Windows relaunch-helper boundary.
+- `keld-pack` owns the Windows v0 package producer and exact no-migration policy
+  path/bytes. `keld-update` consumes them through a one-way internal dependency;
+  packaging never depends on the updater. The first Windows x64 producer runs on a
+  Windows host to use the guard-owned Windows namespace contract. Other hosts refuse
+  before output. Cross-host assembly remains the target; this support cell expands only
+  after independent evidence proves Windows-name equivalence.
 - KEL-137 owns a future canonical package representation with executable modes and
   bundle links. It precedes every macOS/Linux package cell and any Windows package that
   cannot fit the current regular-file/directory-only v0 archive.
@@ -105,6 +111,10 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
    forbidden/control characters, reserved devices, trailing dot/space and tilde/8.3
    alias-shaped names; names must already be NFC, and the complete entry set must be
    unique under Windows ordinal case-insensitive comparison with no ancestor collision.
+   The first producer for this cell runs on Windows because this exact admission uses
+   native Windows normalization/comparison. A non-Windows producer host returns a typed
+   unsupported-host result before output; cross-host assembly remains the target and
+   requires independent equivalence evidence before that restriction is removed.
 6. Before changing the trust floor or runnable pointer, the owner durably writes one
    activation journal containing a fresh attempt id, exact candidate
    `(app, channel, target, version, contentBlake3)`, validated rollback target,
@@ -195,6 +205,12 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
 | Helper / Windows package | journal + inherited handles → post-exit publish | arbitrary path, replay or mixed set | independently substitute every helper input |
 | User data / package owner | signed no-migration policy → rollback eligibility | binary rollback after migration | absent/changed policy refuses pre-launch |
 | Evidence / task owner | exact source + OS receipts → task artifact | mock/stale head closes native row | exact-head provenance validator |
+
+The exact portable `.keld/update-policy.v1` path and bytes are owned once by `keld-pack`;
+`keld-update` depends on that producer-side owner and checks the authenticated archive
+entry byte-for-byte without JSON reserialization. An independent literal golden vector
+prevents producer/consumer agreement on an incorrect constant. `keld-pack` has no
+dependency on `keld-update`.
 
 The manifest authenticates candidate bytes but does not own channel provenance, health or
 local recovery. The trust floor decides future eligibility but never says which binary
@@ -367,9 +383,14 @@ Must not touch in Slice A:
   lands.
 - [ ] T2 — v0 manifest/full verifier plus protected provenance admission/refusal; no
   delta dependency.
-- [ ] T3 — after the shared KEL-130 Windows component classifier exists, consume it in
-  Windows v0 package production; add exact ustar golden vectors, two-pass extraction,
-  case/NFC/namespace collision rejection, no-migration policy and hostile archive corpus.
+- [ ] T3a — produce canonical Windows x64 v0 full packages on a Windows host, with the
+  exact no-migration policy owned by `keld-pack` and byte-checked by `keld-update`; add
+  independent ustar/policy golden vectors, producer-to-verifier digest/size agreement,
+  invalid-name zero-write controls and non-Windows typed refusal. This producer-only
+  task does not write extracted files.
+- [ ] T3b — after T3a, add two-pass protected Windows extraction beneath the admitted
+  staging root; retain guard-owned case/NFC/namespace rejection, hostile archive corpus,
+  and real reparse/rename substitution refusal before any write.
 - [ ] T4 — Windows x64 direct vertical: journal, floor/current/LKG order, attempt-bound
   30-second health and crash cut at every persisted boundary.
 - [ ] T5 — Windows helper if required, managed-channel refusal, hostile-role denial,
@@ -386,7 +407,7 @@ Must not touch in Slice A:
 |---|---|
 | 1, 11–12 | protected provenance/channel/profile/ACL table and installer seed crash cuts; legacy mode refuses before feed/write; mutate every identity/root/owner/floor and attempt hostile-role writes |
 | 2–4 | signed v0 fixtures, duplicate-member parser, equal-precedence build-metadata release pair, floor selection including equal-precedence/different-metadata and below-baseline replay, numeric mutations (`0`, `-1`, fraction, exponent, `2^53 - 1`, `2^53`), shorter/exact/longer compressed and decompressed byte counts, digest boundaries and complete ustar golden bytes; selecting a present delta fails Slice A |
-| 5, 13 | canonical Windows tar/policy bytes; add link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases, extraction-order collisions, sibling-metadata names, or omit/change policy |
+| 5, 13 | independent canonical Windows tar/policy goldens; producer-to-verifier size/hash agreement; missing/duplicate/changed policy refusal; link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases and ancestor collisions reject before output; T3b separately tests extraction-order and filesystem reparse/rename substitution |
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
 | 10–11 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; substitute every inherited endpoint/input |
