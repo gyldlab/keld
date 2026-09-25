@@ -231,3 +231,11 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+# KEL-201: keep the Linux GTK3 graph while applying gtk-rs-core PR #1343.
+# This immutable copy preserves the published glib 0.18.5 manifest and licenses.
+# Production code differs only by the upstream correction; its tests also carry
+# upstream 107ad15's slice-access correction. Provenance is in BACKPORT.md.
+# KEL-253 removes this override after the supported GTK/GLib graph is qualified.
+[patch.crates-io]
+glib = { git = "https://github.com/gyldlab/glib-0.18-backport", rev = "3b35081eadc9d83cf5c17fb9592aa4a0c33e4d00" }
