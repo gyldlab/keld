@@ -1,31 +1,39 @@
 //! Real-Linux KEL-96/T4 no-flag host acceptance.
 
 #![cfg(target_os = "linux")]
-#![allow(unsafe_code)] // external controller sends SIGKILL to one identity-checked host PID
 #![allow(clippy::expect_used, clippy::panic)] // process and filesystem observations are assertion oracles
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::net::TcpListener;
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-use std::os::unix::net::UnixListener;
-use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+#[path = "no_flag/linux/staging.rs"]
+mod staging;
+#[path = "no_flag/linux/support/mod.rs"]
+mod support;
 
-/// Dark background for fixture renderers, so a test run does not flash
-/// white windows across the operator's desktop. Cosmetic only: no test
-/// asserts on it, and the beacon/marker contracts are unchanged.
-const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
-const PRODUCT_TITLE: &str = "KEL96 T4 Linux Fixture";
-const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
-
-unsafe extern "C" {
-    fn kill(pid: std::os::raw::c_int, signal: std::os::raw::c_int) -> std::os::raw::c_int;
-}
+use std::{
+    fs,
+    io::{BufReader, Read as _, Write as _},
+    net::TcpListener,
+    os::unix::net::UnixListener,
+    path::Path,
+    process::{Child, Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::Instant,
+};
+use support::{
+    PRODUCT_DEADLINE,
+    control::{
+        accept_control_or_host_failure, assert_nonzero_descendant, expect_ready_and_echoes,
+        read_control_line,
+    },
+    process::{
+        StrictGeneration, descendant_identities, process_stat, sigkill_identity, wait_child,
+        wait_child_output, wait_for_direct_host, wait_for_strict_generation,
+        wait_process_identity_gone,
+    },
+    project::{DARK_BG, PRODUCT_TITLE, ProductFixture, prepare_keld_dev_helper},
+    renderer::serve_renderer_beacon,
+    stage::{dev_stage_count, wait_for_dev_stage_count},
+};
 
 #[test]
 fn keld_dev_linux_helper() {
@@ -33,122 +41,6 @@ fn keld_dev_linux_helper() {
         return;
     };
     keld_cli::dev::run_dev(Path::new(&project)).expect("shipping Linux keld dev helper");
-}
-
-#[test]
-fn linux_stage_is_owner_private_new_inode_and_byte_consistent() {
-    let fixture = StageFixture::new();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("KEL-96/T4 must stage the Linux no-flag host");
-
-    assert_eq!(
-        stage.host().file_name().and_then(|name| name.to_str()),
-        Some("keld-host")
-    );
-    assert_eq!(
-        fs::metadata(stage.root())
-            .expect("stage metadata")
-            .permissions()
-            .mode()
-            & 0o7777,
-        0o700
-    );
-    let source = fs::metadata(env!("CARGO_BIN_EXE_keld-host")).expect("source host metadata");
-    let copied = fs::metadata(stage.host()).expect("staged host metadata");
-    assert_ne!(
-        (source.dev(), source.ino()),
-        (copied.dev(), copied.ino()),
-        "the stage must contain a copy, never a hard link"
-    );
-    assert_eq!(
-        fs::read(stage.host()).expect("read staged host"),
-        fs::read(env!("CARGO_BIN_EXE_keld-host")).expect("read source host")
-    );
-    assert_ne!(copied.permissions().mode() & 0o100, 0);
-    assert_eq!(copied.permissions().mode() & 0o222, 0);
-}
-
-#[test]
-fn linux_stock_create_entry_is_self_contained_after_staging() {
-    let root = tempfile::tempdir().expect("stock create root");
-    let project = keld_cli::create::create_project(root.path(), "stock-app")
-        .expect("create untouched stock app");
-    let stage =
-        keld_cli::boot::stage_dev_boot(&project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
-            .expect("stage untouched stock app");
-    assert_imported_kipc_sidecar_exists(&project);
-    assert_imported_kipc_sidecar_exists(stage.root());
-
-    let output = Command::new("bun")
-        .arg(stage.root().join("src/main.ts"))
-        .current_dir(stage.root())
-        .env_remove("KELD_APP_LINK")
-        .output()
-        .expect("run the staged stock entry with Bun");
-    assert!(
-        !output.status.success(),
-        "missing app link must fail closed"
-    );
-    let stderr = String::from_utf8(output.stderr).expect("stock entry stderr UTF-8");
-    assert!(
-        stderr.contains("KELD-CLI-010: KELD_APP_LINK is unset"),
-        "the staged entry must parse and reach its own missing-link guard: {stderr}"
-    );
-    assert!(
-        !stderr.contains("Cannot find module"),
-        "the stock entry must not depend on an unstaged source module: {stderr}"
-    );
-}
-
-#[test]
-fn linux_invalid_boot_and_lease_fail_before_app_resources() {
-    let fixture = StageFixture::new();
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage invalid-boot host");
-    fs::set_permissions(
-        stage.root().join("keld.boot.json"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .expect("make descriptor mutable for negative fixture");
-    fs::write(
-        stage.root().join("keld.boot.json"),
-        br#"{"schema":1,"name":"invalid","entry":"src/main.ts","renderer":"index.html","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"},"foreign":true}"#,
-    )
-    .expect("write invalid descriptor");
-    let invalid_boot = Command::new(stage.host())
-        .current_dir(stage.root())
-        .output()
-        .expect("launch invalid boot");
-    assert!(!invalid_boot.status.success());
-    let stderr = String::from_utf8(invalid_boot.stderr).expect("invalid boot stderr");
-    assert!(stderr.contains("KELD-CORE-035"), "{stderr}");
-    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
-
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage invalid-lease host");
-    let invalid_lease = Command::new(stage.host())
-        .current_dir(stage.root())
-        .env("KELD_DEV_LEASE", "stdin-v1")
-        .stdin(Stdio::null())
-        .output()
-        .expect("launch invalid lease");
-    assert!(!invalid_lease.status.success());
-    let stderr = String::from_utf8(invalid_lease.stderr).expect("invalid lease stderr");
-    assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
-    assert!(
-        stderr.contains("requires the CLI-owned pipe reader"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("listener=0 child=0 window=0"), "{stderr}");
 }
 
 #[test]
@@ -492,129 +384,11 @@ fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
     );
 }
 
-struct StageFixture {
-    _root: tempfile::TempDir,
-    project: std::path::PathBuf,
-}
-
-impl StageFixture {
-    fn new() -> Self {
-        let root = tempfile::tempdir().expect("stage fixture root");
-        let project = root.path().join("project");
-        fs::create_dir_all(project.join("src")).expect("project src");
-        fs::write(
-            project.join("keld.config.ts"),
-            "export default { name: \"Linux no-flag\", entry: \"src/main.ts\", renderer: \"index.html\" } as const;\n",
-        )
-        .expect("project config");
-        fs::write(project.join("src/main.ts"), "console.log('linux');\n").expect("entry");
-        fs::write(
-            project.join("index.html"),
-            format!("<!doctype html>{DARK_BG}<h1>Linux</h1>\n"),
-        )
-        .expect("renderer");
-        Self {
-            _root: root,
-            project,
-        }
-    }
-}
-
-/// Fails if `src/main.ts` imports `./kipc-transport.ts` but the sidecar is
-/// missing. The Linux death test remaps the entry to `/code/main.ts`; Bun
-/// then resolves that import at `/code/kipc-transport.ts`.
-fn assert_imported_kipc_sidecar_exists(root: &Path) {
-    let main = fs::read_to_string(root.join("src").join("main.ts")).expect("main.ts");
-    assert!(
-        main.contains("from \"./kipc-transport.ts\""),
-        "entry must import ./kipc-transport.ts so Linux /code/main.ts can resolve the sidecar: {main}"
-    );
-    assert!(
-        root.join("src").join("kipc-transport.ts").is_file(),
-        "entry imports ./kipc-transport.ts but src/kipc-transport.ts is missing under {}",
-        root.display()
-    );
-}
-
-struct ProductFixture {
-    root: tempfile::TempDir,
-    project: std::path::PathBuf,
-}
-
-impl ProductFixture {
-    fn new() -> Self {
-        let root = tempfile::tempdir().expect("product fixture root");
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
-            .expect("owner-private product fixture root");
-        let project = keld_cli::create::create_project(root.path(), "product")
-            .expect("create product fixture through the stock scaffold owner");
-        fs::write(
-            project.join("keld.config.ts"),
-            format!(
-                "export default {{\n  name: \"{PRODUCT_TITLE}\",\n  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n}} as const;\n"
-            ),
-        )
-        .expect("product config");
-        // create_project already wrote src/kipc-transport.ts. Keep it: Linux
-        // strict remaps src/main.ts to /code/main.ts and binds the sidecar to
-        // /code/kipc-transport.ts as its own file mount.
-        fs::write(
-            project.join("src/main.ts"),
-            format!(
-                "{}{}",
-                include_str!("../../../packages/@keld/electron/src/link.ts")
-                    .replace("../../kipc/src/transport.ts", "./kipc-transport.ts"),
-                include_str!("fixtures/t1b_harness.ts")
-            ),
-        )
-        .expect("product entry");
-        assert_imported_kipc_sidecar_exists(&project);
-        fs::write(
-            project.join("index.html"),
-            format!("<!doctype html>{DARK_BG}\n"),
-        )
-        .expect("renderer");
-        Self { root, project }
-    }
-}
-
-fn prepare_keld_dev_helper(fixture: &ProductFixture) -> std::path::PathBuf {
-    let helper_dir = fixture.root.path().join("bin");
-    fs::create_dir(&helper_dir).expect("helper directory");
-    let helper = helper_dir.join("keld-dev-helper");
-    fs::copy(std::env::current_exe().expect("test executable"), &helper).expect("copy helper");
-    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper mode");
-    let developer_host = helper_dir.join("keld-host");
-    fs::copy(env!("CARGO_BIN_EXE_keld-host"), &developer_host).expect("copy sibling host");
-    fs::set_permissions(&developer_host, fs::Permissions::from_mode(0o500)).expect("host mode");
-    let developer_launcher = helper_dir.join("keld-role-launcher");
-    fs::copy(
-        env!("CARGO_BIN_EXE_keld-role-launcher"),
-        &developer_launcher,
-    )
-    .expect("copy sibling role launcher");
-    fs::set_permissions(&developer_launcher, fs::Permissions::from_mode(0o500))
-        .expect("role launcher mode");
-    helper
-}
-
 struct ProductEvidence {
     host_pid: u32,
     bun_pid: u32,
     descendant_pid: u32,
     app_link: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ProcessIdentity {
-    pid: u32,
-    start_time: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct StrictGeneration {
-    bun: ProcessIdentity,
-    descendant: ProcessIdentity,
 }
 
 fn run_product_cycle(fixture: &ProductFixture, label: &str) -> ProductEvidence {
@@ -736,233 +510,4 @@ fn accept_generation(
     assert_nonzero_descendant(&read_control_line(&mut reader));
     let generation = wait_for_strict_generation(host_pid, Instant::now() + PRODUCT_DEADLINE);
     (reader, writer, generation, link)
-}
-
-fn expect_ready_and_echoes(reader: &mut BufReader<std::os::unix::net::UnixStream>) {
-    assert_eq!(read_control_line(reader), "READY");
-    assert_eq!(read_control_line(reader), "ECHO1");
-    assert_eq!(read_control_line(reader), "ECHO2");
-}
-
-fn serve_renderer_beacon(listener: &TcpListener, observed: &mpsc::Sender<()>) {
-    let (mut stream, _) = listener.accept().expect("accept renderer beacon");
-    stream
-        .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("beacon deadline");
-    let mut request = [0_u8; 2048];
-    let read = stream.read(&mut request).expect("read renderer beacon");
-    assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /ready.png "));
-    stream
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .expect("reply renderer beacon");
-    observed.send(()).expect("publish renderer beacon");
-}
-
-fn accept_control_or_host_failure(
-    listener: &UnixListener,
-    child: &mut Child,
-    deadline: Instant,
-) -> std::os::unix::net::UnixStream {
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => return stream,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => panic!("control accept failed: {error}"),
-        }
-        if let Some(status) = child.try_wait().expect("observe host") {
-            let mut stderr = String::new();
-            child
-                .stderr
-                .take()
-                .expect("host stderr")
-                .read_to_string(&mut stderr)
-                .expect("read host stderr");
-            panic!("host exited before control bind: {status}: {stderr}");
-        }
-        assert!(Instant::now() < deadline, "control accept timed out");
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn read_control_line(reader: &mut BufReader<std::os::unix::net::UnixStream>) -> String {
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("read control line");
-    assert!(line.ends_with('\n'), "incomplete control line: {line:?}");
-    line.pop();
-    line
-}
-
-fn assert_nonzero_descendant(line: &str) {
-    let mut fields = line.split_whitespace();
-    assert_eq!(fields.next(), Some("DESCENDANT"), "{line}");
-    let inner_pid = fields
-        .next()
-        .expect("descendant pid")
-        .parse::<u32>()
-        .expect("numeric descendant pid");
-    assert_ne!(inner_pid, 0, "{line}");
-    assert!(fields.next().is_none(), "{line}");
-}
-
-fn wait_for_direct_host(root: u32, deadline: Instant) -> ProcessIdentity {
-    loop {
-        if let Some(host) = descendant_identities(root).into_iter().find(|process| {
-            process_stat(process.pid).is_some_and(|(parent, _)| parent == root)
-                && process_executable_name(process.pid).as_deref() == Some("keld-host")
-        }) {
-            return host;
-        }
-        assert!(Instant::now() < deadline, "host child did not appear");
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn wait_for_strict_generation(host: u32, deadline: Instant) -> StrictGeneration {
-    loop {
-        let mut bun = None;
-        let mut descendant = None;
-        for process in descendant_identities(host) {
-            let command = fs::read(format!("/proc/{}/cmdline", process.pid)).unwrap_or_default();
-            if command.split(|byte| *byte == 0).next() != Some(b"/runtime/program".as_slice()) {
-                continue;
-            }
-            if command
-                .windows(b"/code/main.ts".len())
-                .any(|part| part == b"/code/main.ts")
-            {
-                bun = Some(process);
-            } else if command
-                .windows(b"await new Promise".len())
-                .any(|part| part == b"await new Promise")
-            {
-                descendant = Some(process);
-            }
-        }
-        if let (Some(bun), Some(descendant)) = (bun, descendant) {
-            return StrictGeneration { bun, descendant };
-        }
-        assert!(
-            Instant::now() < deadline,
-            "strict Bun generation did not become observable"
-        );
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn descendant_identities(root: u32) -> Vec<ProcessIdentity> {
-    let mut parents = BTreeSet::from([root]);
-    let mut found = BTreeMap::new();
-    loop {
-        let before = found.len();
-        for entry in fs::read_dir("/proc").expect("process census") {
-            let Ok(entry) = entry else { continue };
-            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-                continue;
-            };
-            let Some((parent, start_time)) = process_stat(pid) else {
-                continue;
-            };
-            if parents.contains(&parent) && pid != root {
-                parents.insert(pid);
-                found.insert(pid, ProcessIdentity { pid, start_time });
-            }
-        }
-        if found.len() == before {
-            return found.into_values().collect();
-        }
-    }
-}
-
-fn process_stat(pid: u32) -> Option<(u32, u64)> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, fields) = stat.rsplit_once(") ")?;
-    let fields = fields.split_whitespace().collect::<Vec<_>>();
-    let parent = fields.get(1)?.parse().ok()?;
-    let start_time = fields.get(19)?.parse().ok()?;
-    Some((parent, start_time))
-}
-
-fn process_executable_name(pid: u32) -> Option<String> {
-    fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()?
-        .file_name()?
-        .to_str()
-        .map(str::to_owned)
-}
-
-fn wait_process_identity_gone(process: &ProcessIdentity, deadline: Instant) {
-    loop {
-        if process_stat(process.pid).is_none_or(|(_, start)| start != process.start_time) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "process survived teardown: {process:?}"
-        );
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn sigkill_identity(process: &ProcessIdentity) {
-    assert_eq!(
-        process_stat(process.pid).map(|(_, start)| start),
-        Some(process.start_time),
-        "host identity changed before SIGKILL"
-    );
-    let pid = i32::try_from(process.pid).expect("host PID fits pid_t");
-    // SAFETY: the PID and start time were revalidated immediately above. The
-    // test controller owns this exact staged host and sends only SIGKILL.
-    assert_eq!(unsafe { kill(pid, 9) }, 0, "SIGKILL staged host");
-}
-
-fn wait_child(child: &mut Child, deadline: Instant) -> ExitStatus {
-    loop {
-        if let Some(status) = child.try_wait().expect("observe host exit") {
-            return status;
-        }
-        assert!(Instant::now() < deadline, "host exit timed out");
-        thread::park_timeout(Duration::from_millis(10));
-    }
-}
-
-fn wait_child_output(mut child: Child, deadline: Instant) -> std::process::Output {
-    let status = wait_child(&mut child, deadline);
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    child
-        .stdout
-        .take()
-        .expect("captured stdout")
-        .read_to_end(&mut stdout)
-        .expect("read stdout");
-    child
-        .stderr
-        .take()
-        .expect("captured stderr")
-        .read_to_end(&mut stderr)
-        .expect("read stderr");
-    std::process::Output {
-        status,
-        stdout,
-        stderr,
-    }
-}
-
-fn dev_stage_count(project: &Path) -> usize {
-    fs::read_dir(project.join(".keld/dev"))
-        .map_or(0, |entries| entries.filter_map(Result::ok).count())
-}
-
-fn wait_for_dev_stage_count(project: &Path, expected: usize, deadline: Instant) {
-    loop {
-        let observed = dev_stage_count(project);
-        if observed == expected {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "expected {expected} dev stages, observed {observed}"
-        );
-        thread::park_timeout(Duration::from_millis(10));
-    }
 }
