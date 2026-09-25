@@ -11,7 +11,7 @@ use crate::support::{
         descendant_identities, process_stat, sigkill_identity, wait_child_output,
         wait_for_direct_host, wait_for_strict_generation, wait_process_identity_gone,
     },
-    project::{DARK_BG, PRODUCT_TITLE, ProductFixture, prepare_keld_dev_helper},
+    project::{DARK_BG, DEV_HELPER_TEST, PRODUCT_TITLE, ProductFixture, prepare_keld_dev_helper},
     renderer::serve_renderer_beacon,
     stage::{dev_stage_count, wait_for_dev_stage_count},
 };
@@ -51,7 +51,7 @@ fn shipping_keld_dev_delegates_ownership_and_deletes_its_stage() {
     )
     .expect("dev renderer");
     let mut cli = Command::new(&helper)
-        .args(["--exact", "keld_dev_linux_helper", "--nocapture"])
+        .args(["--exact", DEV_HELPER_TEST, "--nocapture"])
         .current_dir(&fixture.project)
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", &control_path)
@@ -136,7 +136,7 @@ fn shipping_keld_dev_cli_death_reaps_host_bun_and_stage() {
     )
     .expect("death renderer");
     let mut cli = Command::new(&helper)
-        .args(["--exact", "keld_dev_linux_helper", "--nocapture"])
+        .args(["--exact", DEV_HELPER_TEST, "--nocapture"])
         .current_dir(&fixture.project)
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", &control_path)
@@ -206,7 +206,7 @@ fn linux_host_only_death_reaps_strict_tree_deletes_stage_and_relaunches() {
     )
     .expect("host-death renderer");
     let mut cli = Command::new(&helper)
-        .args(["--exact", "keld_dev_linux_helper", "--nocapture"])
+        .args(["--exact", DEV_HELPER_TEST, "--nocapture"])
         .current_dir(&fixture.project)
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
         .env("KELD_T1B_CONTROL", &control_path)

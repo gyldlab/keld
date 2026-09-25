@@ -1,7 +1,9 @@
 //! Linux fixture construction and temporary project ownership.
 
 use super::stage::assert_imported_kipc_sidecar_exists;
-use std::{fs, os::unix::fs::PermissionsExt as _};
+use std::{fs, os::unix::fs::PermissionsExt as _, process::Command};
+
+pub(crate) const DEV_HELPER_TEST: &str = "keld_dev_linux_helper";
 
 /// Dark background for fixture renderers, so a test run does not flash
 /// white windows across the operator's desktop. Cosmetic only: no test
@@ -87,6 +89,21 @@ pub(crate) fn prepare_keld_dev_helper(fixture: &ProductFixture) -> std::path::Pa
     let helper = helper_dir.join("keld-dev-helper");
     fs::copy(std::env::current_exe().expect("test executable"), &helper).expect("copy helper");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper mode");
+    // libtest can exit zero when an exact selector matches nothing. Check the
+    // copied binary's registry here; scenarios still require the live handshake.
+    let selected = Command::new(&helper)
+        .args(["--list", "--format", "terse", "--exact", DEV_HELPER_TEST])
+        .output()
+        .expect("list the copied dev helper selector");
+    assert!(
+        selected.status.success(),
+        "helper listing failed: {selected:?}"
+    );
+    assert_eq!(
+        String::from_utf8(selected.stdout).expect("helper listing UTF-8"),
+        format!("{DEV_HELPER_TEST}: test\n"),
+        "exact dev helper selector must resolve to one registered test"
+    );
     let developer_host = helper_dir.join("keld-host");
     fs::copy(env!("CARGO_BIN_EXE_keld-host"), &developer_host).expect("copy sibling host");
     fs::set_permissions(&developer_host, fs::Permissions::from_mode(0o500)).expect("host mode");

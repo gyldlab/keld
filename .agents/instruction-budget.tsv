@@ -19,6 +19,7 @@ crates/keld-wv/AGENTS.md	always	4096	webview-invariants	path:crates/keld-wv
 .agents/memory.md	routed	7168	external-memory-policy	route:memory
 .agents/research.md	routed	6144	research-publication-policy	route:research
 .agents/review.md	routed	2304	git-pr-review-policy	route:review
+.agents/test-layout.md	routed	4096	test-layout-policy	route:test-layout
 .agents/testing.md	routed	8192	testing-evidence-policy	route:testing
 .agents/skills/autofix/SKILL.md	routed	14336	coderabbit-autofix-skill	skill:autofix
 .agents/skills/autofix/github.md	routed	6656	coderabbit-github-reference	skill:autofix-reference
