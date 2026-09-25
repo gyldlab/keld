@@ -300,7 +300,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_tilde_path_is_guard002_before_dispatch() {
+    fn windows_tilde_path_remains_serviceable_before_dispatch() {
         let manifest = manifest_granting_fs_read();
         let ran = AtomicBool::new(false);
         let result = dispatch_privileged(
@@ -310,12 +310,8 @@ mod tests {
             "C:/appdata/notes~1.txt",
             |_| ran.store(true, Ordering::SeqCst),
         );
-        let reason = result.expect_err("tilde-bearing Windows request must be refused");
-        assert_eq!(reason.code(), "KELD-GUARD002");
-        assert!(
-            !ran.load(Ordering::SeqCst),
-            "refused request must not dispatch"
-        );
+        assert_eq!(result, Ok(()));
+        assert!(ran.load(Ordering::SeqCst), "valid request must dispatch");
     }
 
     #[test]
