@@ -671,7 +671,12 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
 fn kel135_signed_host_persistent_profile_startup() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
         .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let signed_identity = env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1")
+        .expect("signed A/P1 identity fixture is required for exact profile cleanup");
     let fixture = ProductFixture::new();
+    let profile_root = ProfileTestRoot::new();
+    let namespace = signed_fixture_profile_namespace(&signed_identity, Some(&signed_host));
+    assert_signed_host_profile_test_root(&signed_host, profile_root.path());
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind signed control");
     let control_port = control_listener
         .local_addr()
@@ -692,9 +697,12 @@ fn kel135_signed_host_persistent_profile_startup() {
     .expect("write signed renderer");
     let stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
         .expect("stage the signed KEL-135 host");
-    let mut host = Command::new(stage.host())
+    let mut host_command = Command::new(stage.host());
+    host_command
         .current_dir(stage.root())
-        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T1B_CONTROL", control_port.to_string());
+    apply_profile_test_root(&mut host_command, profile_root.path());
+    let mut host = host_command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -705,6 +713,17 @@ fn kel135_signed_host_persistent_profile_startup() {
     expect_renderer_beacon(beacon, "signed host renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
     assert_eq!(window["title"], PRODUCT_TITLE);
+    let expected_udf = profile_user_data_folder(profile_root.path(), &namespace);
+    let actual_profile =
+        actual_host_and_profile_process(host_pid, &expected_udf, Instant::now() + PRODUCT_DEADLINE);
+    assert!(webview_process_folder_matches_udf(
+        Path::new(
+            actual_profile["user_data_folder"]
+                .as_str()
+                .expect("signed startup actual UDF")
+        ),
+        &expected_udf
+    ));
     writer.write_all(b"QUIT\n").expect("signed host Quit");
     writer.flush().expect("flush signed host Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
@@ -715,6 +734,8 @@ fn kel135_signed_host_persistent_profile_startup() {
         !process_exists(bun_pid),
         "signed host Bun survived orderly exit"
     );
+    profile_root.purge_identity(&signed_identity);
+    profile_root.remove();
 }
 
 #[test]
@@ -722,6 +743,11 @@ fn kel135_signed_host_persistent_profile_startup() {
 fn kel135_signed_host_profile_concurrency() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
         .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let signed_identity = env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1")
+        .expect("signed A/P1 identity fixture is required for exact profile cleanup");
+    let namespace = signed_fixture_profile_namespace(&signed_identity, Some(&signed_host));
+    let profile_root = ProfileTestRoot::new();
+    assert_signed_host_profile_test_root(&signed_host, profile_root.path());
     let fixture = ProductFixture::new();
     let first_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind first control");
     let first_port = first_listener
@@ -730,9 +756,12 @@ fn kel135_signed_host_profile_concurrency() {
         .port();
     let first_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
         .expect("stage first signed host");
-    let first_child = Command::new(first_stage.host())
+    let mut first_command = Command::new(first_stage.host());
+    first_command
         .current_dir(first_stage.root())
-        .env("KELD_T1B_CONTROL", first_port.to_string())
+        .env("KELD_T1B_CONTROL", first_port.to_string());
+    apply_profile_test_root(&mut first_command, profile_root.path());
+    let first_child = first_command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -742,6 +771,20 @@ fn kel135_signed_host_profile_concurrency() {
         accept_ready_generation(&first_listener, first.child_mut());
     first.observe_bun(bun_pid);
     let _window = wait_for_host_window(first.host_pid(), Instant::now() + PRODUCT_DEADLINE);
+    let expected_udf = profile_user_data_folder(profile_root.path(), &namespace);
+    let actual_profile = actual_host_and_profile_process(
+        first.host_pid(),
+        &expected_udf,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    assert!(webview_process_folder_matches_udf(
+        Path::new(
+            actual_profile["user_data_folder"]
+                .as_str()
+                .expect("first host actual UDF")
+        ),
+        &expected_udf
+    ));
 
     let second_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind second control");
     let second_port = second_listener
@@ -750,9 +793,12 @@ fn kel135_signed_host_profile_concurrency() {
         .port();
     let second_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
         .expect("stage second signed host");
-    let mut second = Command::new(second_stage.host())
+    let mut second_command = Command::new(second_stage.host());
+    second_command
         .current_dir(second_stage.root())
-        .env("KELD_T1B_CONTROL", second_port.to_string())
+        .env("KELD_T1B_CONTROL", second_port.to_string());
+    apply_profile_test_root(&mut second_command, profile_root.path());
+    let mut second = second_command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -789,6 +835,8 @@ fn kel135_signed_host_profile_concurrency() {
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
     let status = first.wait(Instant::now() + PRODUCT_DEADLINE);
     assert!(status.success(), "first signed host exited with {status}");
+    profile_root.purge_identity(&signed_identity);
+    profile_root.remove();
 }
 
 #[test]
@@ -796,6 +844,11 @@ fn kel135_signed_host_profile_concurrency() {
 fn kel135_signed_host_running_crash_releases_profile() {
     let signed_host = env::var_os("KELD_KEL135_SIGNED_HOST")
         .expect("KELD_KEL135_SIGNED_HOST must point to a signed keld-host.exe");
+    let signed_identity = env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1")
+        .expect("signed A/P1 identity fixture is required for exact profile cleanup");
+    let namespace = signed_fixture_profile_namespace(&signed_identity, Some(&signed_host));
+    let profile_root = ProfileTestRoot::new();
+    assert_signed_host_profile_test_root(&signed_host, profile_root.path());
     let fixture = ProductFixture::new();
     let first_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind crashing control");
     let first_port = first_listener
@@ -804,9 +857,12 @@ fn kel135_signed_host_running_crash_releases_profile() {
         .port();
     let first_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
         .expect("stage crashing signed host");
-    let first_child = Command::new(first_stage.host())
+    let mut first_command = Command::new(first_stage.host());
+    first_command
         .current_dir(first_stage.root())
-        .env("KELD_T1B_CONTROL", first_port.to_string())
+        .env("KELD_T1B_CONTROL", first_port.to_string());
+    apply_profile_test_root(&mut first_command, profile_root.path());
+    let first_child = first_command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -832,9 +888,12 @@ fn kel135_signed_host_running_crash_releases_profile() {
         .port();
     let second_stage = keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(&signed_host))
         .expect("stage recovered signed host");
-    let second_child = Command::new(second_stage.host())
+    let mut second_command = Command::new(second_stage.host());
+    second_command
         .current_dir(second_stage.root())
-        .env("KELD_T1B_CONTROL", second_port.to_string())
+        .env("KELD_T1B_CONTROL", second_port.to_string());
+    apply_profile_test_root(&mut second_command, profile_root.path());
+    let second_child = second_command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -844,6 +903,20 @@ fn kel135_signed_host_running_crash_releases_profile() {
         accept_ready_generation(&second_listener, second.child_mut());
     second.observe_bun(bun_pid);
     let _window = wait_for_host_window(second.host_pid(), Instant::now() + PRODUCT_DEADLINE);
+    let expected_udf = profile_user_data_folder(profile_root.path(), &namespace);
+    let actual_profile = actual_host_and_profile_process(
+        second.host_pid(),
+        &expected_udf,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    assert!(webview_process_folder_matches_udf(
+        Path::new(
+            actual_profile["user_data_folder"]
+                .as_str()
+                .expect("recovered host actual UDF")
+        ),
+        &expected_udf
+    ));
     writer
         .write_all(b"QUIT\n")
         .expect("recovered signed host Quit");
@@ -855,6 +928,8 @@ fn kel135_signed_host_running_crash_releases_profile() {
         status.success(),
         "recovered signed host exited with {status}"
     );
+    profile_root.purge_identity(&signed_identity);
+    profile_root.remove();
 }
 
 #[test]
@@ -865,6 +940,7 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
     let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
         .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
     let fixture = ProductFixture::new();
+    let profile_root = ProfileTestRoot::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind purge control");
     let state_server = ProfileStateServer::new();
     let run_nonce = profile_state_run_nonce(&fixture);
@@ -876,15 +952,20 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
         before: "",
         after: &seeded_state,
     };
-    run_signed_profile_state_case(
+    run_signed_profile_state_case_with_root(
         &fixture,
         &control_listener,
         &state_server,
         &run_nonce,
         &seed,
+        Some(profile_root.path()),
     );
 
-    assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
+    assert_signed_purge_success(run_signed_purge_fixture_at(
+        &signed_purge,
+        false,
+        Some(profile_root.path()),
+    ));
 
     let recovered = SignedProfileStateCase {
         name: "purge-recovered",
@@ -892,13 +973,30 @@ fn kel135_signed_host_purge_removes_same_origin_state() {
         before: "",
         after: &recovered_state,
     };
-    run_signed_profile_state_case(
+    run_signed_profile_state_case_with_root(
         &fixture,
         &control_listener,
         &state_server,
         &run_nonce,
         &recovered,
+        Some(profile_root.path()),
     );
+    let cleanup = SignedProfileStateCase {
+        name: "purge-final-cleanup",
+        host: &signed_host,
+        before: &recovered_state,
+        after: "",
+    };
+    run_signed_profile_state_case_with_root(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &cleanup,
+        Some(profile_root.path()),
+    );
+    profile_root.purge_identity(&signed_purge);
+    profile_root.remove();
 }
 
 #[test]
@@ -909,6 +1007,7 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
     let signed_purge = env::var_os("KELD_KEL135_SIGNED_PURGE_FIXTURE")
         .expect("KELD_KEL135_SIGNED_PURGE_FIXTURE must point to a signed A/P1 core fixture");
     let fixture = ProductFixture::new();
+    let profile_root = ProfileTestRoot::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind recovery control");
     let state_server = ProfileStateServer::new();
     let run_nonce = profile_state_run_nonce(&fixture);
@@ -920,15 +1019,16 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
         before: "",
         after: &seeded_state,
     };
-    run_signed_profile_state_case(
+    run_signed_profile_state_case_with_root(
         &fixture,
         &control_listener,
         &state_server,
         &run_nonce,
         &seed,
+        Some(profile_root.path()),
     );
 
-    let interrupted = run_signed_purge_fixture(&signed_purge, true);
+    let interrupted = run_signed_purge_fixture_at(&signed_purge, true, Some(profile_root.path()));
     assert!(
         !interrupted.status.success(),
         "purge fault fixture unexpectedly survived the post-intent crash"
@@ -939,7 +1039,11 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
         interrupted_stdout.contains("KELD_KEL135_PURGE_FAULT prepared"),
         "purge fault fixture did not reach the durable prepared intent: {interrupted_stdout}"
     );
-    assert_signed_purge_success(run_signed_purge_fixture(&signed_purge, false));
+    assert_signed_purge_success(run_signed_purge_fixture_at(
+        &signed_purge,
+        false,
+        Some(profile_root.path()),
+    ));
 
     let recovered = SignedProfileStateCase {
         name: "purge-crash-recovered",
@@ -947,13 +1051,30 @@ fn kel135_signed_host_recovers_an_interrupted_purge() {
         before: "",
         after: &recovered_state,
     };
-    run_signed_profile_state_case(
+    run_signed_profile_state_case_with_root(
         &fixture,
         &control_listener,
         &state_server,
         &run_nonce,
         &recovered,
+        Some(profile_root.path()),
     );
+    let cleanup = SignedProfileStateCase {
+        name: "purge-crash-final-cleanup",
+        host: &signed_host,
+        before: &recovered_state,
+        after: "",
+    };
+    run_signed_profile_state_case_with_root(
+        &fixture,
+        &control_listener,
+        &state_server,
+        &run_nonce,
+        &cleanup,
+        Some(profile_root.path()),
+    );
+    profile_root.purge_identity(&signed_purge);
+    profile_root.remove();
 }
 
 #[test]
@@ -964,6 +1085,8 @@ fn kel135_signed_profile_saved_media_grants_are_revoked() {
     let media_fixture = env::var_os("KELD_KEL135_MEDIA_FIXTURE")
         .expect("KELD_KEL135_MEDIA_FIXTURE must point to the media-acceptance libtest");
     let namespace = signed_fixture_profile_namespace(&signed_identity, None);
+    let profile_root = ProfileTestRoot::new();
+    assert_media_profile_test_root(&media_fixture, profile_root.path());
     for (kind, run_id) in [
         ("camera", "f1e2d3c4b5a69788796a5b4c3d2e1f00"),
         ("microphone", "001f2e3d4c5b6a798897a6b5c4d3e2f1"),
@@ -974,23 +1097,33 @@ fn kel135_signed_profile_saved_media_grants_are_revoked() {
         let address = address.to_string();
         run_signed_media_phase(
             &media_fixture,
+            profile_root.path(),
             &namespace,
-            kind,
-            run_id,
-            &address,
-            "seed",
-            "resolved",
+            &SignedMediaPhase {
+                kind,
+                run_id,
+                address: &address,
+                phase: "seed",
+                expected: "resolved",
+                cleanup_fixture_root: false,
+            },
         );
         run_signed_media_phase(
             &media_fixture,
+            profile_root.path(),
             &namespace,
-            kind,
-            run_id,
-            &address,
-            "deny",
-            "error:NotAllowedError",
+            &SignedMediaPhase {
+                kind,
+                run_id,
+                address: &address,
+                phase: "deny",
+                expected: "error:NotAllowedError",
+                cleanup_fixture_root: true,
+            },
         );
     }
+    profile_root.purge_identity(&signed_identity);
+    profile_root.remove();
 }
 
 fn signed_fixture_profile_namespace(
@@ -1024,16 +1157,27 @@ fn signed_fixture_profile_namespace(
         .expect("signed identity fixture omitted profile namespace")
 }
 
+#[derive(Clone, Copy)]
+struct SignedMediaPhase<'a> {
+    kind: &'a str,
+    run_id: &'a str,
+    address: &'a str,
+    phase: &'a str,
+    expected: &'a str,
+    cleanup_fixture_root: bool,
+}
+
 fn run_signed_media_phase(
     media_fixture: &std::ffi::OsStr,
+    profile_root: &Path,
     namespace: &str,
-    kind: &str,
-    run_id: &str,
-    address: &str,
-    phase: &str,
-    expected: &str,
+    phase: &SignedMediaPhase<'_>,
 ) {
-    let output = Command::new(media_fixture)
+    let test_temp = profile_root
+        .parent()
+        .expect("run-owned profile root has a test temp parent");
+    let mut command = Command::new(media_fixture);
+    command
         .args([
             "webview2::media_acceptance::tests::windows_saved_grant_phase_subprocess",
             "--ignored",
@@ -1042,27 +1186,68 @@ fn run_signed_media_phase(
             "--test-threads=1",
         ])
         .env("KELD_PROFILE_SAVED_SIGNED_NAMESPACE", namespace)
-        .env("KELD_PROFILE_SAVED_KIND", kind)
-        .env("KELD_PROFILE_SAVED_RUN_ID", run_id)
-        .env("KELD_PROFILE_SAVED_ADDRESS", address)
-        .env("KELD_PROFILE_SAVED_PHASE", phase)
-        .output()
-        .expect("run signed media phase");
+        .env("KELD_PROFILE_SAVED_KIND", phase.kind)
+        .env("KELD_PROFILE_SAVED_RUN_ID", phase.run_id)
+        .env("KELD_PROFILE_SAVED_ADDRESS", phase.address)
+        .env("KELD_PROFILE_SAVED_PHASE", phase.phase)
+        .env("KELD_PROFILE_TEST_ROOT", profile_root)
+        .env("TEMP", test_temp)
+        .env("TMP", test_temp);
+    if phase.cleanup_fixture_root {
+        command.env("KELD_PROFILE_SAVED_CLEANUP", "1");
+    } else {
+        command.env_remove("KELD_PROFILE_SAVED_CLEANUP");
+    }
+    let output = command.output().expect("run signed media phase");
     let stdout = String::from_utf8(output.stdout).expect("signed media stdout UTF-8");
     let stderr = String::from_utf8(output.stderr).expect("signed media stderr UTF-8");
     assert!(
         output.status.success(),
-        "signed {kind} {phase} failed: {stdout}\n{stderr}"
+        "signed {} {} failed: {stdout}\n{stderr}",
+        phase.kind,
+        phase.phase
     );
     assert!(
-        stdout.contains("KELD_PROFILE_SAVED_RESULT") && stdout.contains(expected),
-        "signed {kind} {phase} receipt missing expected {expected}: {stdout}"
+        stdout.contains("KELD_PROFILE_SAVED_RESULT") && stdout.contains(phase.expected),
+        "signed {} {} receipt missing expected {}: {stdout}",
+        phase.kind,
+        phase.phase,
+        phase.expected
     );
+    assert_profile_test_root_marker(&stdout, profile_root, "signed media fixture");
 }
 
-fn run_signed_purge_fixture(
+fn assert_media_profile_test_root(media_fixture: &std::ffi::OsStr, root: &Path) {
+    let test_temp = root
+        .parent()
+        .expect("run-owned profile root has a test temp parent");
+    let output = Command::new(media_fixture)
+        .args([
+            "webview2::media_acceptance::tests::windows_profile_test_root_probe_subprocess",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("KELD_PROFILE_TEST_ROOT", root)
+        .env("TEMP", test_temp)
+        .env("TMP", test_temp)
+        .output()
+        .expect("probe signed media fixture test-root feature");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "media fixture does not have the debug profile-root feature: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert_profile_test_root_marker(&stdout, root, "media fixture");
+}
+
+fn run_signed_purge_fixture_at(
     signed_purge: &std::ffi::OsStr,
     crash_after_prepared: bool,
+    profile_root: Option<&Path>,
 ) -> std::process::Output {
     let mut command = Command::new(signed_purge);
     command.args([
@@ -1076,6 +1261,12 @@ fn run_signed_purge_fixture(
         command.env("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED", "1");
     } else {
         command.env_remove("KELD_KEL135_PURGE_CRASH_AFTER_PREPARED");
+    }
+    if let Some(profile_root) = profile_root {
+        assert_signed_identity_profile_test_root(signed_purge, profile_root);
+        apply_profile_test_root(&mut command, profile_root);
+    } else {
+        command.env_remove("KELD_PROFILE_TEST_ROOT");
     }
     command
         .output()
@@ -1096,11 +1287,204 @@ fn assert_signed_purge_success(output: std::process::Output) {
     );
 }
 
+fn assert_profile_test_root_marker(stdout: &str, root: &Path, label: &str) {
+    let selected = stdout
+        .lines()
+        .find_map(|line| {
+            [
+                "KELD_PROFILE_TEST_ROOT_FEATURE ",
+                "KELD_PROFILE_TEST_ROOT_SELECTED ",
+            ]
+            .iter()
+            .find_map(|marker| line.split_once(marker).map(|(_, root)| root))
+        })
+        .unwrap_or_else(|| panic!("{label} omitted the test-root selection marker: {stdout}"));
+    assert!(
+        windows_paths_equal(Path::new(selected), root),
+        "{label} selected a different profile root: expected {}, got {selected}",
+        root.display()
+    );
+}
+
+fn apply_profile_test_root(command: &mut Command, root: &Path) {
+    let test_temp = root
+        .parent()
+        .expect("run-owned profile root has a test temp parent");
+    command
+        .env("KELD_PROFILE_TEST_ROOT", root)
+        .env("TEMP", test_temp)
+        .env("TMP", test_temp);
+}
+
+fn assert_signed_host_profile_test_root(host: &std::ffi::OsStr, root: &Path) {
+    let temp = root
+        .parent()
+        .expect("run-owned profile root has a test temp parent");
+    let output = Command::new(host)
+        .arg("--keld-profile-test-root-probe-v1")
+        .env("KELD_PROFILE_TEST_ROOT", root)
+        .env("TEMP", temp)
+        .env("TMP", temp)
+        .output()
+        .expect("probe signed host test-root feature before launch");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "signed host does not have the debug profile-root feature: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert_profile_test_root_marker(&stdout, root, "signed host");
+}
+
+fn assert_signed_identity_profile_test_root(identity: &std::ffi::OsStr, root: &Path) {
+    let temp = root
+        .parent()
+        .expect("run-owned profile root has a test temp parent");
+    let output = Command::new(identity)
+        .args([
+            "app_session::tests::kel135_profile_test_root_probe_fixture",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("KELD_PROFILE_TEST_ROOT", root)
+        .env("TEMP", temp)
+        .env("TMP", temp)
+        .output()
+        .expect("probe signed identity fixture test-root feature before purge");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "signed identity fixture does not have the debug profile-root feature: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert_profile_test_root_marker(&stdout, root, "signed identity fixture");
+}
+
+struct ProfileTestRoot {
+    temp: tempfile::TempDir,
+    root: std::path::PathBuf,
+}
+
+impl ProfileTestRoot {
+    fn new() -> Self {
+        let local_temp = std::path::PathBuf::from(
+            env::var_os("LOCALAPPDATA").expect("LocalAppData known folder"),
+        )
+        .join("Temp");
+        let temp = tempfile::Builder::new()
+            .prefix("keld135-profile-")
+            .tempdir_in(local_temp)
+            .expect("create test-owned root in the OS temp directory");
+        let root = temp.path().join("profile-test-root");
+        fs::create_dir(&root).expect("create this run's isolated profile root");
+        println!(
+            "KELD_KEL135_TEST_PROFILE_ROOT {}",
+            serde_json::json!({"root": root, "os_temp": temp.path()})
+        );
+        Self { temp, root }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+
+    fn purge_identity(&self, identity: &std::ffi::OsStr) {
+        let namespace = signed_fixture_profile_namespace(identity, None);
+        let output = run_signed_purge_fixture_at(identity, false, Some(&self.root));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_profile_test_root_marker(&stdout, &self.root, "signed purge");
+        assert!(
+            output.status.success()
+                && stdout.contains(&format!(
+                    "KELD_KEL135_SIGNED_PURGE profile_namespace={namespace}"
+                )),
+            "test identity purge failed for {namespace}: {}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status
+        );
+        assert!(
+            !profile_user_data_folder(&self.root, &namespace).exists(),
+            "test identity purge left its WebView2 UDF: {namespace}"
+        );
+    }
+
+    fn remove(self) {
+        fs::remove_dir_all(&self.root).expect("remove the purged test-only profile root");
+        self.temp
+            .close()
+            .expect("remove run-owned profile temp directory");
+    }
+}
+
 struct SignedProfileStateCase<'a> {
     name: &'a str,
     host: &'a std::ffi::OsStr,
     before: &'a str,
     after: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct ConcurrentProfileCaseStart<'a> {
+    fixture: &'a ProductFixture,
+    control_listener: &'a TcpListener,
+    state_server: &'a ProfileStateServer,
+    nonce: &'a str,
+    case: &'a SignedProfileStateCase<'a>,
+    profile_root: &'a Path,
+    expected_udf: &'a Path,
+    expect_empty: bool,
+}
+
+struct StartedConcurrentProfileCase {
+    run: SignedProfileStateRun,
+    image: serde_json::Value,
+}
+
+fn start_concurrent_profile_case(
+    start: &ConcurrentProfileCaseStart<'_>,
+) -> StartedConcurrentProfileCase {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    start.state_server.expect_case(start.case.name, deadline);
+    let run = SignedProfileStateRun::start_with_profile_root(
+        start.fixture,
+        start.control_listener,
+        start.state_server.address(),
+        start.nonce,
+        start.case,
+        deadline,
+        Some(start.profile_root),
+    );
+    let observed = start.state_server.wait_for_case(start.case.name, deadline);
+    if start.expect_empty {
+        assert!(observed.before.is_uniform(""), "App B observed App A state");
+    }
+    record_profile_state_case(
+        &observed,
+        start.case,
+        start.nonce,
+        start.state_server.address(),
+        run.process.host_pid(),
+        run.bun_pid,
+    );
+    let image =
+        actual_host_and_profile_process(run.process.host_pid(), start.expected_udf, deadline);
+    assert!(
+        webview_process_folder_matches_udf(
+            Path::new(
+                image["user_data_folder"]
+                    .as_str()
+                    .expect("concurrent WebView2 UDF")
+            ),
+            start.expected_udf
+        ),
+        "WebView2 did not use its selected profile root: {image}"
+    );
+    assert!(start.expected_udf.starts_with(start.profile_root));
+    StartedConcurrentProfileCase { run, image }
 }
 
 #[test]
@@ -1113,6 +1497,7 @@ fn kel135_signed_host_profile_state_isolation() {
     let alternate_publisher_carrier = env::var_os("KELD_KEL135_SIGNED_HOST_A_P2")
         .expect("KELD_KEL135_SIGNED_HOST_A_P2 must point to a signed host");
     let fixture = ProductFixture::new();
+    let profile_root = ProfileTestRoot::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind state control");
     let state_server = ProfileStateServer::new();
     let run_nonce = profile_state_run_nonce(&fixture);
@@ -1128,13 +1513,17 @@ fn kel135_signed_host_profile_state_isolation() {
             &alternate_publisher_carrier,
         ),
     ];
-    let identities = identity_paths.map(|(label, variable, carrier)| {
+    let identity_fixtures = identity_paths.map(|(label, variable, carrier)| {
         let path = env::var_os(variable).expect("matching signed identity fixture is required");
         let namespace = signed_fixture_profile_namespace(&path, Some(carrier));
         assert_eq!(namespace.len(), 64, "{label} profile namespace width");
         assert!(namespace.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        (label, namespace)
+        (label, namespace, path)
     });
+    let identities = identity_fixtures
+        .iter()
+        .map(|(label, namespace, _)| (*label, namespace.as_str()))
+        .collect::<Vec<_>>();
     assert_ne!(
         identities[0].1, identities[1].1,
         "A and B must have distinct authenticated identities"
@@ -1189,32 +1578,276 @@ fn kel135_signed_host_profile_state_isolation() {
             before,
             after,
         };
-        run_signed_profile_state_case(
+        run_signed_profile_state_case_with_root(
             &fixture,
             &control_listener,
             &state_server,
             &run_nonce,
             &case,
+            Some(profile_root.path()),
         );
+    }
+    purge_signed_profile_test_identities(&profile_root, &identity_fixtures);
+    profile_root.remove();
+}
+
+fn purge_signed_profile_test_identities(
+    profile_root: &ProfileTestRoot,
+    identities: &[(&str, String, std::ffi::OsString)],
+) {
+    for (_, _, identity) in identities {
+        profile_root.purge_identity(identity);
     }
 }
 
-fn run_signed_profile_state_case(
+#[test]
+#[ignore = "requires signed KEL-135 App A/B host and identity fixtures"]
+fn kel135_signed_profiles_run_concurrently_and_survive_other_app_close() {
+    let context = ConcurrentProfileContext::from_environment();
+    let runs = start_and_report_concurrent_profiles(&context);
+    finish_concurrent_profiles(context, runs);
+}
+
+struct ConcurrentProfileContext {
+    host_a: std::ffi::OsString,
+    host_b: std::ffi::OsString,
+    identity_a: std::ffi::OsString,
+    identity_b: std::ffi::OsString,
+    namespace_a: String,
+    namespace_b: String,
+    fixture_a: ProductFixture,
+    fixture_b: ProductFixture,
+    profile_root: ProfileTestRoot,
+    state_server: ProfileStateServer,
+    control_listener: TcpListener,
+    nonce: String,
+    value_a: String,
+    value_b: String,
+}
+
+impl ConcurrentProfileContext {
+    fn from_environment() -> Self {
+        let host_a = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1")
+            .expect("signed A/P1 host fixture is required");
+        let host_b = env::var_os("KELD_KEL135_SIGNED_HOST_B_P1")
+            .expect("signed B/P1 host fixture is required");
+        let identity_a = env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1")
+            .expect("signed A/P1 identity fixture is required");
+        let identity_b = env::var_os("KELD_KEL135_SIGNED_IDENTITY_B_P1")
+            .expect("signed B/P1 identity fixture is required");
+        let namespace_a = signed_fixture_profile_namespace(&identity_a, Some(&host_a));
+        let namespace_b = signed_fixture_profile_namespace(&identity_b, Some(&host_b));
+        assert_ne!(
+            namespace_a, namespace_b,
+            "signed apps must select distinct profiles"
+        );
+        let fixture_a = ProductFixture::new();
+        let fixture_b = ProductFixture::new();
+        // Both identities must read the same origin/store keys so a shared
+        // WebView2 profile makes App B observe App A's value.
+        let nonce = profile_state_run_nonce(&fixture_a);
+        Self {
+            host_a,
+            host_b,
+            identity_a,
+            identity_b,
+            namespace_a,
+            namespace_b,
+            fixture_a,
+            fixture_b,
+            profile_root: ProfileTestRoot::new(),
+            state_server: ProfileStateServer::new(),
+            control_listener: TcpListener::bind(("127.0.0.1", 0)).expect("bind concurrent control"),
+            value_a: format!("{nonce}-concurrent-a"),
+            value_b: format!("{nonce}-concurrent-b"),
+            nonce,
+        }
+    }
+}
+
+struct ConcurrentProfileRuns {
+    run_a: SignedProfileStateRun,
+    run_b: SignedProfileStateRun,
+    host_b_pid: u32,
+    browser_b_pid: u32,
+    expected_udf_a: std::path::PathBuf,
+    expected_udf_b: std::path::PathBuf,
+}
+
+fn start_and_report_concurrent_profiles(
+    context: &ConcurrentProfileContext,
+) -> ConcurrentProfileRuns {
+    let profile_root = context.profile_root.path();
+    let case_a = SignedProfileStateCase {
+        name: "concurrent-a-seed",
+        host: &context.host_a,
+        before: "",
+        after: &context.value_a,
+    };
+    let case_b = SignedProfileStateCase {
+        name: "concurrent-b-isolated",
+        host: &context.host_b,
+        before: "",
+        after: &context.value_b,
+    };
+    let expected_udf_a = profile_user_data_folder(profile_root, &context.namespace_a);
+    let expected_udf_b = profile_user_data_folder(profile_root, &context.namespace_b);
+    let started_a = start_concurrent_profile_case(&ConcurrentProfileCaseStart {
+        fixture: &context.fixture_a,
+        control_listener: &context.control_listener,
+        state_server: &context.state_server,
+        nonce: &context.nonce,
+        case: &case_a,
+        profile_root,
+        expected_udf: &expected_udf_a,
+        expect_empty: false,
+    });
+    let started_b = start_concurrent_profile_case(&ConcurrentProfileCaseStart {
+        fixture: &context.fixture_b,
+        control_listener: &context.control_listener,
+        state_server: &context.state_server,
+        nonce: &context.nonce,
+        case: &case_b,
+        profile_root,
+        expected_udf: &expected_udf_b,
+        expect_empty: true,
+    });
+    let first_host_pid = started_a.run.process.host_pid();
+    let second_host_pid = started_b.run.process.host_pid();
+    let browser_b_pid = u32::try_from(
+        started_b.image["browser_pid"]
+            .as_u64()
+            .expect("B browser PID"),
+    )
+    .expect("B browser PID fits Windows PID");
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let window_a = wait_for_host_window(first_host_pid, deadline);
+    let window_b = wait_for_host_window(second_host_pid, deadline);
+    assert_ne!(
+        window_a["handle"], window_b["handle"],
+        "two live apps need distinct windows"
+    );
+    assert!(process_exists(first_host_pid) && process_exists(second_host_pid));
+    assert!(
+        process_exists(browser_b_pid),
+        "App B WebView2 process was absent while both apps were live"
+    );
+    println!(
+        "KELD_KEL135_CONCURRENT_PROFILE {}",
+        serde_json::json!({
+            "origin": format!("http://{}", context.state_server.address()),
+            "namespace_a": context.namespace_a,
+            "namespace_b": context.namespace_b,
+            "test_profile_root": profile_root,
+            "app_a": started_a.image,
+            "app_b": started_b.image,
+            "host_pids": [first_host_pid, second_host_pid],
+            "window_handles": [window_a["handle"], window_b["handle"]],
+            "read_only_install": false,
+            "same_origin": true,
+        })
+    );
+    ConcurrentProfileRuns {
+        run_a: started_a.run,
+        run_b: started_b.run,
+        host_b_pid: second_host_pid,
+        browser_b_pid,
+        expected_udf_a,
+        expected_udf_b,
+    }
+}
+
+fn finish_concurrent_profiles(context: ConcurrentProfileContext, runs: ConcurrentProfileRuns) {
+    runs.run_a.finish();
+    assert!(
+        process_exists(runs.host_b_pid),
+        "App B host exited when App A closed"
+    );
+    assert!(
+        process_exists(runs.browser_b_pid),
+        "App B WebView2 exited when App A closed"
+    );
+    let survivor = actual_host_and_profile_process(
+        runs.host_b_pid,
+        &runs.expected_udf_b,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    println!(
+        "KELD_KEL135_PROFILE_SURVIVOR {}",
+        serde_json::json!({"closed_host": "A", "survivor": survivor, "host_alive": true, "webview2_alive": true})
+    );
+    runs.run_b.finish();
+
+    let restart_b = SignedProfileStateCase {
+        name: "concurrent-b-restart",
+        host: &context.host_b,
+        before: &context.value_b,
+        after: &context.value_b,
+    };
+    run_signed_profile_state_case_with_root(
+        &context.fixture_b,
+        &context.control_listener,
+        &context.state_server,
+        &context.nonce,
+        &restart_b,
+        Some(context.profile_root.path()),
+    );
+    for (case, host, before, after, fixture, nonce) in [
+        (
+            "concurrent-b-cleanup",
+            &context.host_b,
+            context.value_b.as_str(),
+            "",
+            &context.fixture_b,
+            context.nonce.as_str(),
+        ),
+        (
+            "concurrent-a-cleanup",
+            &context.host_a,
+            context.value_a.as_str(),
+            "",
+            &context.fixture_a,
+            context.nonce.as_str(),
+        ),
+    ] {
+        run_signed_profile_state_case_with_root(
+            fixture,
+            &context.control_listener,
+            &context.state_server,
+            nonce,
+            &SignedProfileStateCase {
+                name: case,
+                host,
+                before,
+                after,
+            },
+            Some(context.profile_root.path()),
+        );
+    }
+    assert!(runs.expected_udf_a.is_dir() && runs.expected_udf_b.is_dir());
+    context.profile_root.purge_identity(&context.identity_a);
+    context.profile_root.purge_identity(&context.identity_b);
+    context.profile_root.remove();
+}
+
+fn run_signed_profile_state_case_with_root(
     fixture: &ProductFixture,
     control_listener: &TcpListener,
     state_server: &ProfileStateServer,
     run_nonce: &str,
     case: &SignedProfileStateCase<'_>,
+    profile_root: Option<&Path>,
 ) {
     let deadline = Instant::now() + PRODUCT_DEADLINE;
     state_server.expect_case(case.name, deadline);
-    let run = SignedProfileStateRun::start(
+    let run = SignedProfileStateRun::start_with_profile_root(
         fixture,
         control_listener,
         state_server.address(),
         run_nonce,
         case,
         deadline,
+        profile_root,
     );
     let observed = state_server.wait_for_case(case.name, deadline);
     record_profile_state_case(
@@ -1262,14 +1895,18 @@ struct SignedProfileStateRun {
 }
 
 impl SignedProfileStateRun {
-    fn start(
+    fn start_with_profile_root(
         fixture: &ProductFixture,
         control_listener: &TcpListener,
         address: SocketAddr,
         run_nonce: &str,
         case: &SignedProfileStateCase<'_>,
         deadline: Instant,
+        profile_root: Option<&Path>,
     ) -> Self {
+        if let Some(profile_root) = profile_root {
+            assert_signed_host_profile_test_root(case.host, profile_root);
+        }
         fs::write(
             fixture.project.join("index.html"),
             state_redirect_html(address, case.name, run_nonce, case.after),
@@ -1281,9 +1918,16 @@ impl SignedProfileStateRun {
             .local_addr()
             .expect("state control address")
             .port();
-        let child = Command::new(stage.host())
+        let mut command = Command::new(stage.host());
+        command
             .current_dir(stage.root())
-            .env("KELD_T1B_CONTROL", control_port.to_string())
+            .env("KELD_T1B_CONTROL", control_port.to_string());
+        if let Some(profile_root) = profile_root {
+            apply_profile_test_root(&mut command, profile_root);
+        } else {
+            command.env_remove("KELD_PROFILE_TEST_ROOT");
+        }
+        let child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1357,6 +2001,96 @@ impl SignedProfileStateRun {
     }
 }
 
+fn actual_host_and_profile_process(host_pid: u32, expected_udf: &Path, deadline: Instant) -> Value {
+    const PROCESS_QUERY: &str = r#"
+$ErrorActionPreference = 'Stop'
+$hostPid = [int]$env:KELD_PROFILE_HOST_PID
+$expected = [IO.Path]::GetFullPath($env:KELD_EXPECTED_UDF).TrimEnd('\')
+$all = @(Get-CimInstance Win32_Process)
+$hostProcess = $all | Where-Object { [int]$_.ProcessId -eq $hostPid } | Select-Object -First 1
+if ($null -eq $hostProcess) { [Console]::WriteLine('{}'); exit 0 }
+$candidates = @()
+foreach ($process in $all) {
+  if ($process.Name -ne 'msedgewebview2.exe' -or [string]::IsNullOrEmpty($process.CommandLine)) { continue }
+  if ([int]$process.ParentProcessId -ne $hostPid) { continue }
+  $match = [regex]::Match($process.CommandLine, '--user-data-dir(?:=|\s+)(?:"([^"]+)"|(\S+))')
+  $actual = if ($match.Groups[1].Success) { $match.Groups[1].Value } elseif ($match.Groups[2].Success) { $match.Groups[2].Value } else { '' }
+  $candidates += @{ browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; user_data_folder = $actual }
+  $actualFolder = if ([string]::IsNullOrEmpty($actual)) { '' } else { [IO.Path]::GetFullPath($actual).TrimEnd('\') }
+  $expectedEngineFolder = [IO.Path]::GetFullPath((Join-Path $expected 'EBWebView')).TrimEnd('\')
+  if ([string]::IsNullOrEmpty($actualFolder) -or ($actualFolder -ine $expected -and $actualFolder -ine $expectedEngineFolder)) { continue }
+  [Console]::WriteLine((@{ host_image = $hostProcess.ExecutablePath; browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; user_data_folder = $actual; candidates = $candidates } | ConvertTo-Json -Compress))
+  exit 0
+}
+[Console]::WriteLine((@{ host_image = $hostProcess.ExecutablePath; candidates = $candidates } | ConvertTo-Json -Compress))
+"#;
+    loop {
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", PROCESS_QUERY])
+            .env("KELD_PROFILE_HOST_PID", host_pid.to_string())
+            .env("KELD_EXPECTED_UDF", expected_udf)
+            .output()
+            .expect("query actual WebView2 profile process");
+        assert!(
+            output.status.success(),
+            "actual WebView2 process query failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("process query output UTF-8");
+        let evidence: Value = serde_json::from_str(stdout.trim()).expect("process query JSON");
+        if let (Some(_image), Some(_browser_pid), Some(_folder), Some(parent_pid)) = (
+            evidence["host_image"].as_str(),
+            evidence["browser_pid"].as_u64(),
+            evidence["user_data_folder"].as_str(),
+            evidence["parent_pid"].as_u64(),
+        ) {
+            assert_eq!(
+                parent_pid,
+                u64::from(host_pid),
+                "observed WebView2 process was not a child of its launched host: {evidence}"
+            );
+            return evidence;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "WebView2 process with the selected user-data folder did not appear: {evidence}"
+        );
+        thread::park_timeout(RENDERER_ACCEPT_POLL);
+    }
+}
+
+fn profile_user_data_folder(root: &Path, namespace: &str) -> std::path::PathBuf {
+    root.to_path_buf()
+        .join("Keld")
+        .join("profiles")
+        .join("v1")
+        .join(namespace)
+        .join("webview2")
+}
+
+fn windows_paths_equal(left: &Path, right: &Path) -> bool {
+    let left = left
+        .canonicalize()
+        .unwrap_or_else(|_| left.to_path_buf())
+        .to_string_lossy()
+        .trim_start_matches(r"\?")
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase();
+    let right = right
+        .canonicalize()
+        .unwrap_or_else(|_| right.to_path_buf())
+        .to_string_lossy()
+        .trim_start_matches(r"\?")
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase();
+    left == right
+}
+
+fn webview_process_folder_matches_udf(process_folder: &Path, selected_udf: &Path) -> bool {
+    windows_paths_equal(process_folder, selected_udf)
+        || windows_paths_equal(process_folder, &selected_udf.join("EBWebView"))
+}
+
 fn profile_state_run_nonce(fixture: &ProductFixture) -> String {
     let leaf = fixture
         .root
@@ -1390,30 +2124,14 @@ fn profile_test_token_sids(kind: &str) -> Vec<String> {
         .collect()
 }
 
-#[test]
-#[ignore = "requires an operator-authenticated second ordinary user and shared signed fixtures"]
-fn kel135_signed_host_cross_user_storage_isolation() {
-    let host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1").expect("signed A/P1 host");
-    let identity =
-        env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1").expect("signed A/P1 identity fixture");
-    let shared = env::var_os("KELD_KEL135_SHARED_DIRECTORY")
-        .expect("owned directory readable by the second user");
-    let namespace = signed_fixture_profile_namespace(&identity, Some(&host));
-    let first_sid = profile_test_user_sid();
-    let fixture = ProductFixture::new();
-    let control = TcpListener::bind(("127.0.0.1", 0)).expect("first-user control");
-    let server = ProfileStateServer::new();
-    let nonce = profile_state_run_nonce(&fixture);
-    let first_value = format!("{nonce}-u1");
-    let second_value = format!("{nonce}-u2");
-    let seed = SignedProfileStateCase {
-        name: "u1-seed",
-        host: &host,
-        before: "",
-        after: &first_value,
-    };
-    run_signed_profile_state_case(&fixture, &control, &server, &nonce, &seed);
-    let coordinator = TcpListener::bind(("127.0.0.1", 0)).expect("cross-user coordinator");
+fn publish_second_user_profile_request(
+    shared: &std::ffi::OsStr,
+    coordinator: &TcpListener,
+    server: &ProfileStateServer,
+    nonce: &str,
+    host: &std::ffi::OsStr,
+    identity: &std::ffi::OsStr,
+) -> tempfile::NamedTempFile {
     let mut request = tempfile::Builder::new()
         .prefix("kel135-user2-")
         .suffix(".json")
@@ -1423,8 +2141,10 @@ fn kel135_signed_host_cross_user_storage_isolation() {
         request.as_file_mut(),
         &serde_json::json!({
             "coordinator": coordinator.local_addr().expect("coordinator address").to_string(),
-            "server": server.address().to_string(), "nonce": nonce,
-            "host": Path::new(&host), "identity": Path::new(&identity),
+            "server": server.address().to_string(),
+            "nonce": nonce,
+            "host": Path::new(host),
+            "identity": Path::new(identity),
             "controller": env::current_exe().expect("current acceptance controller"),
         }),
     )
@@ -1440,6 +2160,49 @@ fn kel135_signed_host_cross_user_storage_isolation() {
     std::io::stdout()
         .flush()
         .expect("publish operator action before waiting");
+    request
+}
+
+#[test]
+#[ignore = "requires an operator-authenticated second ordinary user and shared signed fixtures"]
+fn kel135_signed_host_cross_user_storage_isolation() {
+    let host = env::var_os("KELD_KEL135_SIGNED_HOST_A_P1").expect("signed A/P1 host");
+    let identity =
+        env::var_os("KELD_KEL135_SIGNED_IDENTITY_A_P1").expect("signed A/P1 identity fixture");
+    let shared = env::var_os("KELD_KEL135_SHARED_DIRECTORY")
+        .expect("owned directory readable by the second user");
+    let namespace = signed_fixture_profile_namespace(&identity, Some(&host));
+    let first_sid = profile_test_user_sid();
+    let fixture = ProductFixture::new();
+    let profile_root = ProfileTestRoot::new();
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("first-user control");
+    let server = ProfileStateServer::new();
+    let nonce = profile_state_run_nonce(&fixture);
+    let first_value = format!("{nonce}-u1");
+    let second_value = format!("{nonce}-u2");
+    let seed = SignedProfileStateCase {
+        name: "u1-seed",
+        host: &host,
+        before: "",
+        after: &first_value,
+    };
+    run_signed_profile_state_case_with_root(
+        &fixture,
+        &control,
+        &server,
+        &nonce,
+        &seed,
+        Some(profile_root.path()),
+    );
+    let coordinator = TcpListener::bind(("127.0.0.1", 0)).expect("cross-user coordinator");
+    let _request = publish_second_user_profile_request(
+        &shared,
+        &coordinator,
+        &server,
+        &nonce,
+        &host,
+        &identity,
+    );
     let stream = accept_control_until(&coordinator, None, Instant::now() + Duration::from_mins(10));
     let mut peer = BufReader::new(stream);
     let greeting = read_profile_coordinator(&mut peer);
@@ -1478,8 +2241,17 @@ fn kel135_signed_host_cross_user_storage_isolation() {
             before,
             after,
         };
-        run_signed_profile_state_case(&fixture, &control, &server, &nonce, &case);
+        run_signed_profile_state_case_with_root(
+            &fixture,
+            &control,
+            &server,
+            &nonce,
+            &case,
+            Some(profile_root.path()),
+        );
     }
+    profile_root.purge_identity(&identity);
+    profile_root.remove();
 }
 
 #[test]
@@ -1506,6 +2278,9 @@ fn kel135_second_user_storage_helper() {
     let identity =
         std::ffi::OsStr::new(request["identity"].as_str().expect("signed identity path"));
     let namespace = signed_fixture_profile_namespace(identity, Some(host));
+    let profile_root = ProfileTestRoot::new();
+    assert_signed_host_profile_test_root(host, profile_root.path());
+    assert_signed_identity_profile_test_root(identity, profile_root.path());
     let user_sid = profile_test_user_sid();
     let administrator = profile_test_token_sids("/groups")
         .iter()
@@ -1526,9 +2301,12 @@ fn kel135_second_user_storage_helper() {
     );
     let fixture = ProductFixture::new();
     let control = TcpListener::bind(("127.0.0.1", 0)).expect("second-user host control");
+    let expected_udf = profile_user_data_folder(profile_root.path(), &namespace);
     loop {
         let message = read_profile_coordinator(&mut peer);
         if message["kind"] == "stop" {
+            profile_root.purge_identity(identity);
+            profile_root.remove();
             write_profile_coordinator(peer.get_mut(), &serde_json::json!({"kind": "stopped"}));
             break;
         }
@@ -1539,13 +2317,31 @@ fn kel135_second_user_storage_helper() {
             before: message["before"].as_str().expect("remote before value"),
             after: message["after"].as_str().expect("remote after value"),
         };
-        let run = SignedProfileStateRun::start(
+        let run = SignedProfileStateRun::start_with_profile_root(
             &fixture,
             &control,
             address,
             nonce,
             &case,
             Instant::now() + PRODUCT_DEADLINE,
+            Some(profile_root.path()),
+        );
+        let actual_profile = actual_host_and_profile_process(
+            run.process.host_pid(),
+            &expected_udf,
+            Instant::now() + PRODUCT_DEADLINE,
+        );
+        assert!(webview_process_folder_matches_udf(
+            Path::new(
+                actual_profile["user_data_folder"]
+                    .as_str()
+                    .expect("second-user actual UDF")
+            ),
+            &expected_udf
+        ));
+        println!(
+            "KELD_KEL135_SECOND_USER_TEST_PROFILE {}",
+            serde_json::json!({"namespace": namespace, "user_sid": user_sid, "profile_root": profile_root.path(), "actual_webview2": actual_profile})
         );
         write_profile_coordinator(
             peer.get_mut(),
@@ -3873,6 +4669,34 @@ fn read_control_line_or_host_failure(
     label: &str,
 ) -> String {
     match try_read_control_line(reader, Instant::now() + PRODUCT_DEADLINE) {
+        Ok(line) if line == "LINK_EOF" => {
+            let status = child
+                .try_wait()
+                .expect("observe host after unexpected app-link EOF")
+                .unwrap_or_else(|| {
+                    let _ = child.kill();
+                    child
+                        .wait()
+                        .expect("reap host after unexpected app-link EOF")
+                });
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            child
+                .stdout
+                .take()
+                .expect("captured host stdout")
+                .read_to_string(&mut stdout)
+                .expect("read host stdout after app-link EOF");
+            child
+                .stderr
+                .take()
+                .expect("captured host stderr")
+                .read_to_string(&mut stderr)
+                .expect("read host stderr after app-link EOF");
+            panic!(
+                "host closed its app-link while awaiting {label}: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            );
+        }
         Ok(line) => line,
         result => {
             let deadline = Instant::now() + Duration::from_secs(2);

@@ -11,6 +11,8 @@ authors.workspace = true
 [features]
 # Enables only the run-owned KEL-135 acceptance fixtures in debug builds.
 profile-test-hooks = ["keld-core/profile-test-hooks"]
+# A debug-only signed fixture probe; release use fails in the forwarded KEL-135 feature.
+kel135-profile-test-root = ["keld-core/kel135-profile-test-root"]
 
 [[bin]]
 name = "keld-host"
