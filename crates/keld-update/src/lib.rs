@@ -13,6 +13,8 @@
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and
 //! `docs/specs/kel53-full-package-activation.md`.
 
+#[cfg(any(windows, test, feature = "fuzzing"))]
+mod archive;
 mod error;
 mod full;
 mod manifest;
@@ -21,10 +23,15 @@ mod provenance;
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(windows, test, feature = "fuzzing"))]
+pub use archive::{ArchiveEntry, ArchiveEntryKind, ValidatedArchive};
 pub use error::{
     ArtifactDomain, ManifestIdentityField, ProvenanceField, ProvenanceUnavailable, UpdateError,
 };
 pub use full::VerifiedFull;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub use full::fuzz_canonical_archive;
 pub use manifest::{ManifestDecision, SelectedFull};
 pub use provenance::{
     AdmittedInstallation, ArtifactIdentity, DirectInstallationIdentity, InstallOwner,

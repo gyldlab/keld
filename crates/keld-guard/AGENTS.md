@@ -26,3 +26,7 @@ crate-local threat model doc exists until one is checked in.
   `AppProcess` are `DenyReason::MediaPrincipalRequired` (`KELD-GUARD007`).
   Missing file is `ManifestError`, not Allow.
 - Tests MUST follow repository `.agents/testing.md`.
+
+## KEL-53 T3 namespace FFI
+Owner/load: guard/always. Trigger: `validate_windows_package_paths`.
+MUST allow only `NormalizeString` (C) and `CompareStringOrdinal` (ignore-case); use owned UTF-16 buffers, checked i32 lengths/results, and inline SAFETY proofs for pointer bounds/lifetime/output. MUST test on Windows. Remove rule/API when guard ownership ends.

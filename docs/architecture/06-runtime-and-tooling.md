@@ -579,9 +579,10 @@ release missing `full` is part of AC1):
     GNU/PAX long-name extensions are explicitly out of scope, not silently assumed).
     Directory names have no trailing `/`; `typeflag` carries their type. No two
     entries may share a byte-identical `name`.
-  - Windows admission applies before any write. Before T3, the KEL-130
-    `keld-guard`-owned lexical-component classifier must be amended as the one
-    shared owner; package code cannot copy a second list. The complete rule rejects
+  - Windows admission applies before any write. T3 calls the guard-owned
+    `keld-guard::validate_windows_package_paths`, which reuses the component
+    classifier and applies Windows NormalizationC plus ordinal whole-path
+    comparison; package code cannot copy a second list. The complete rule rejects
     `\`, colon/ADS, NUL and controls U+0001–U+001F, `< > " | ? *`,
     drive/UNC/NT/device prefixes, components ending in dot or space, every reserved
     device basename including superscript-digit forms, and `~`. Tilde is forbidden

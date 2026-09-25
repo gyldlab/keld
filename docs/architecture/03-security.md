@@ -164,7 +164,9 @@ manifest decoder.
   tilde-bearing filesystem paths. That generic grammar applies to filesystem grants
   and requests, IPC suffix validation, and native component traversal. The first
   package cell uses the stricter guard-owned package grammar in architecture 06 §4a,
-  which rejects tilde; neither lexical rule resolves filesystem aliases.
+  which rejects tilde; `validate_windows_package_paths` additionally requires
+  Windows NormalizationC components and ordinal case-insensitive whole-path
+  uniqueness. Neither lexical rule resolves filesystem aliases.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of

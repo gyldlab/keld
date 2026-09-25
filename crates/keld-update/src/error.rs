@@ -170,6 +170,11 @@ pub enum UpdateError {
         /// Underlying failure detail.
         detail: String,
     },
+    /// Decompressed package bytes do not match the canonical Windows v0 archive profile.
+    ArchiveInvalid {
+        /// Stable parser reason that does not include untrusted path bytes.
+        detail: &'static str,
+    },
 }
 
 impl UpdateError {
@@ -187,6 +192,7 @@ impl UpdateError {
             Self::ArtifactSizeMismatch { .. } => "KELD-UPDATE-008",
             Self::ArtifactDigestMismatch { .. } => "KELD-UPDATE-009",
             Self::ArtifactProcessing { .. } => "KELD-UPDATE-010",
+            Self::ArchiveInvalid { .. } => "KELD-UPDATE-011",
         }
     }
 }
@@ -254,6 +260,10 @@ impl fmt::Display for UpdateError {
             Self::ArtifactProcessing { stage, detail } => write!(
                 f,
                 "KELD-UPDATE-010: full-artifact {stage} failed ({detail}). Preserve the current installation, repair the stream or staging sink, and retry."
+            ),
+            Self::ArchiveInvalid { detail } => write!(
+                f,
+                "KELD-UPDATE-011: verified full-package bytes are not a canonical Windows v0 archive ({detail}). Discard the candidate and publish a canonical package signed by the release key."
             ),
         }
     }

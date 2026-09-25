@@ -134,6 +134,69 @@ fn valid_selected(compressed: &[u8], content: &[u8]) -> SelectedFull {
     )
 }
 
+fn archive_receipt(content: &[u8]) -> VerifiedFull {
+    let compressed = zstd::stream::encode_all(Cursor::new(content), 0).expect("fixture zstd");
+    valid_selected(&compressed, content)
+        .verify_full(&mut Cursor::new(compressed), &mut Vec::new())
+        .expect("verified fixture archive")
+}
+
+fn append_ustar_entry(archive: &mut Vec<u8>, name: &str, kind: u8, data: &[u8]) {
+    let mut header = [0_u8; 512];
+    header[..name.len()].copy_from_slice(name.as_bytes());
+    header[100..108].copy_from_slice(if kind == b'5' {
+        b"0000755\0"
+    } else {
+        b"0000644\0"
+    });
+    header[108..116].copy_from_slice(b"0000000\0");
+    header[116..124].copy_from_slice(b"0000000\0");
+    let size = if kind == b'5' { 0 } else { data.len() as u64 };
+    let size_field = format!("{size:011o}\0");
+    header[124..136].copy_from_slice(size_field.as_bytes());
+    header[136..148].copy_from_slice(b"00000000000\0");
+    header[148..156].fill(b' ');
+    header[156] = kind;
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    header[329..337].copy_from_slice(b"0000000\0");
+    header[337..345].copy_from_slice(b"0000000\0");
+    refresh_ustar_checksum(&mut header);
+    archive.extend_from_slice(&header);
+    archive.extend_from_slice(data);
+    let padding = (512 - (data.len() % 512)) % 512;
+    archive.resize(archive.len() + padding, 0);
+}
+
+fn finish_ustar(archive: &mut Vec<u8>) {
+    archive.resize(archive.len() + 1024, 0);
+}
+
+fn refresh_ustar_checksum(header: &mut [u8; 512]) {
+    header[148..156].fill(b' ');
+    let sum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
+    let checksum = format!("{sum:06o}\0 ");
+    header[148..156].copy_from_slice(checksum.as_bytes());
+}
+
+fn lexical_windows_package_names(paths: &[&str]) -> Result<(), String> {
+    for path in paths {
+        for component in path.split('/') {
+            keld_guard::validate_windows_package_component(component)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_test_archive(bytes: &[u8]) -> Result<ValidatedArchive, UpdateError> {
+    let receipt = archive_receipt(bytes);
+    crate::archive::parse_canonical_ustar(
+        &receipt,
+        &mut Cursor::new(bytes),
+        lexical_windows_package_names,
+    )
+}
+
 fn assert_code(error: &UpdateError, code: &str) {
     assert_eq!(error.code(), code);
     let rendered = error.to_string();
@@ -758,4 +821,160 @@ fn corrupt_zstd_with_matching_transport_digest_is_processing_failure() {
         .verify_full(&mut Cursor::new(compressed), &mut Vec::new())
         .unwrap_err();
     assert_code(&error, "KELD-UPDATE-010");
+}
+
+#[test]
+fn archive_invalid_error_has_stable_code_and_repair_guidance() {
+    let error = UpdateError::ArchiveInvalid {
+        detail: "header checksum mismatch",
+    };
+    assert_code(&error, "KELD-UPDATE-011");
+    assert!(error.to_string().contains("publish a canonical package"));
+}
+
+#[test]
+fn canonical_archive_preflight_accepts_empty_and_nested_file_trees() {
+    let empty = vec![0_u8; 1024];
+    let validated = parse_test_archive(&empty).expect("two terminal blocks form an empty tree");
+    assert!(validated.entries().is_empty());
+    assert_eq!(validated.content_size(), 1024);
+    assert_eq!(validated.content_blake3(), blake3::hash(&empty).as_bytes());
+
+    let mut archive = Vec::new();
+    append_ustar_entry(&mut archive, "assets", b'5', &[]);
+    append_ustar_entry(&mut archive, "assets/a.txt", b'0', b"x");
+    append_ustar_entry(&mut archive, "assets/b.bin", b'0', &vec![0x5a; 513]);
+    append_ustar_entry(&mut archive, "empty", b'5', &[]);
+    finish_ustar(&mut archive);
+    let validated = parse_test_archive(&archive).expect("canonical nested package tree");
+    assert_eq!(
+        validated
+            .entries()
+            .iter()
+            .map(ArchiveEntry::name)
+            .collect::<Vec<_>>(),
+        ["assets", "assets/a.txt", "assets/b.bin", "empty"]
+    );
+    assert_eq!(validated.entries()[0].kind(), ArchiveEntryKind::Directory);
+    assert_eq!(validated.entries()[1].size(), 1);
+    assert_eq!(validated.entries()[2].size(), 513);
+    assert_eq!(
+        validated.content_blake3(),
+        blake3::hash(&archive).as_bytes()
+    );
+}
+
+#[test]
+fn canonical_archive_preflight_rejects_noncanonical_and_conflicting_trees() {
+    let mut bad_checksum = Vec::new();
+    append_ustar_entry(&mut bad_checksum, "file", b'0', b"x");
+    finish_ustar(&mut bad_checksum);
+    bad_checksum[148] = if bad_checksum[148] == b'7' {
+        b'6'
+    } else {
+        b'7'
+    };
+
+    let mut bad_padding = Vec::new();
+    append_ustar_entry(&mut bad_padding, "file", b'0', b"x");
+    finish_ustar(&mut bad_padding);
+    bad_padding[512 + 1] = 1;
+
+    let mut unsupported_link = Vec::new();
+    append_ustar_entry(&mut unsupported_link, "link", b'2', &[]);
+    finish_ustar(&mut unsupported_link);
+
+    let mut missing_parent = Vec::new();
+    append_ustar_entry(&mut missing_parent, "a/b", b'0', b"x");
+    finish_ustar(&mut missing_parent);
+
+    let mut file_ancestor = Vec::new();
+    append_ustar_entry(&mut file_ancestor, "a", b'0', b"x");
+    append_ustar_entry(&mut file_ancestor, "a/b", b'0', b"y");
+    finish_ustar(&mut file_ancestor);
+
+    let mut trailing_bytes = vec![0_u8; 1024];
+    trailing_bytes.push(0);
+
+    for (case, bytes, expected_detail) in [
+        ("checksum", bad_checksum, "header checksum is not canonical"),
+        ("padding", bad_padding, "entry data padding is nonzero"),
+        (
+            "unsupported link",
+            unsupported_link,
+            "entry type is not a regular file or directory",
+        ),
+        (
+            "missing parent",
+            missing_parent,
+            "entry is missing an explicit parent directory",
+        ),
+        (
+            "file ancestor",
+            file_ancestor,
+            "a file is an ancestor of another entry",
+        ),
+        (
+            "trailing data",
+            trailing_bytes,
+            "archive has trailing bytes",
+        ),
+    ] {
+        let error = parse_test_archive(&bytes).expect_err(case);
+        assert_code(&error, "KELD-UPDATE-011");
+        assert!(
+            matches!(error, UpdateError::ArchiveInvalid { detail } if detail == expected_detail),
+            "{case} must fail at its own parser predicate, got {error}"
+        );
+    }
+}
+
+#[test]
+fn canonical_archive_preflight_rejects_changed_content_and_size() {
+    let mut signed_bytes = Vec::new();
+    append_ustar_entry(&mut signed_bytes, "file", b'0', b"x");
+    finish_ustar(&mut signed_bytes);
+    let receipt = archive_receipt(&signed_bytes);
+
+    let mut changed_bytes = Vec::new();
+    append_ustar_entry(&mut changed_bytes, "file", b'0', b"y");
+    finish_ustar(&mut changed_bytes);
+    let error = crate::archive::parse_canonical_ustar(
+        &receipt,
+        &mut Cursor::new(&changed_bytes),
+        lexical_windows_package_names,
+    )
+    .unwrap_err();
+    assert_code(&error, "KELD-UPDATE-009");
+
+    let error = crate::archive::parse_canonical_ustar(
+        &receipt,
+        &mut Cursor::new(&signed_bytes[..signed_bytes.len() - 1]),
+        lexical_windows_package_names,
+    )
+    .unwrap_err();
+    assert_code(&error, "KELD-UPDATE-008");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_archive_preflight_rejects_case_aliases_and_non_nfc_names() {
+    let mut aliases = Vec::new();
+    append_ustar_entry(&mut aliases, "README", b'0', b"a");
+    append_ustar_entry(&mut aliases, "Readme", b'0', b"b");
+    finish_ustar(&mut aliases);
+    let receipt = archive_receipt(&aliases);
+    let error = receipt
+        .validate_windows_archive(&mut Cursor::new(&aliases))
+        .unwrap_err();
+    assert_code(&error, "KELD-UPDATE-011");
+
+    let mut decomposed = Vec::new();
+    append_ustar_entry(&mut decomposed, "cafe\u{0301}.txt", b'0', b"a");
+    finish_ustar(&mut decomposed);
+    let receipt = archive_receipt(&decomposed);
+    let error = receipt
+        .validate_windows_archive(&mut Cursor::new(&decomposed))
+        .unwrap_err();
+    assert_code(&error, "KELD-UPDATE-011");
 }

@@ -750,3 +750,9 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-update
 - message: Full-artifact stream I/O or zstd decoding failed
 - fix: Preserve the current installation, repair the stream or staging sink, and retry.
+
+## KELD-UPDATE-011
+
+- crate: keld-update
+- message: Verified package bytes do not match the canonical Windows v0 archive profile
+- fix: Discard the candidate and publish a canonical package signed by the release key.
