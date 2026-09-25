@@ -1014,6 +1014,7 @@ fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
             .expect("request acknowledged threshold crash");
         current.expect_line("CRASH_ACK");
     }
+    let third = cycle.current_evidence();
     let output = cycle.wait_host();
     assert!(
         !output.status.success(),
@@ -1021,6 +1022,10 @@ fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
         output.status
     );
     let stderr = String::from_utf8(output.stderr).expect("crash-loop stderr UTF-8");
+    eprintln!(
+        "KEL260_BREAKER host={} guardian={} bun={} descendant={} status={} stderr={stderr}",
+        cycle.host_pid, third.guardian_pid, third.bun_pid, third.descendant_pid, output.status
+    );
     assert!(stderr.contains("KELD-CORE-033"), "{stderr}");
     assert!(stderr.contains("KELD-RUNTIME-002"), "{stderr}");
     assert!(
@@ -1028,6 +1033,13 @@ fn third_generation_crash_trips_breaker_without_a_fourth_generation() {
         "crash-loop threshold provisioned a fourth generation"
     );
     cycle.assert_current_group_gone();
+    assert!(
+        !third.endpoint.exists(),
+        "crash loop left the app-link endpoint"
+    );
+
+    let mut relaunched = RecoveryCycle::launch(&fixture, "after-crash-loop");
+    relaunched.quit_and_expect_success();
 }
 
 struct RecoveryCycle {
@@ -1219,8 +1231,19 @@ impl RecoveryCycle {
     }
 
     fn wait_host(&mut self) -> Output {
+        self.wait_host_observing(|| {})
+    }
+
+    fn wait_host_observing(&mut self, observe: impl FnMut()) -> Output {
+        // Observing exit must not inject CLI death: lease EOF starts accepted
+        // shutdown and can overtake even an acknowledged Bun crash.
+        let output = wait_child_output_observing(
+            self.host.take().expect("live T3 host"),
+            EVENT_DEADLINE,
+            observe,
+        );
         drop(self.dev_lease_writer.take());
-        wait_child_output(self.host.take().expect("live T3 host"), EVENT_DEADLINE)
+        output
     }
 
     fn assert_current_group_gone(&mut self) {
@@ -1243,6 +1266,85 @@ impl Drop for RecoveryCycle {
         for group in &self.process_groups {
             let _ = signal_process_group("-KILL", *group);
         }
+    }
+}
+
+#[test]
+fn recovery_wait_preserves_the_cli_lease_until_child_exit() {
+    // The control byte orders the independent pipe observation after entry
+    // into the wait. No child exit or elapsed delay can stand in for that edge.
+    const PROBE: &str = r#"
+import os
+import socket
+import sys
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
+    control.connect(sys.argv[1])
+    assert control.recv(1) == b"P"
+    os.set_blocking(0, False)
+    try:
+        observed = os.read(0, 1)
+    except BlockingIOError:
+        print("LEASE_LIVE")
+        sys.exit(0)
+    assert observed == b"", repr(observed)
+    print("LEASE_EOF")
+    sys.exit(17)
+"#;
+    let root = tempfile::tempdir().expect("lease probe root");
+    // Include deliberate EOF and a healthy follow-up to check both the probe
+    // and resource reuse independently of the recovery helper's implementation.
+    for (index, release_lease) in [false, true, false].into_iter().enumerate() {
+        let path = root.path().join(format!("lease-{index}.sock"));
+        let listener = UnixListener::bind(&path).expect("lease probe control");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking lease probe control");
+        let mut child = Command::new("/usr/bin/python3")
+            .args(["-c", PROBE])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start independent lease probe");
+        let host_pid = child.id();
+        let mut cycle = RecoveryCycle {
+            dev_lease_writer: child.stdin.take(),
+            host: Some(child),
+            host_pid,
+            listener,
+            window: Vec::new(),
+            current: None,
+            process_groups: Vec::new(),
+        };
+        let mut control = Some(accept_before(
+            &cycle.listener,
+            Instant::now() + EVENT_DEADLINE,
+        ));
+        if release_lease {
+            drop(cycle.dev_lease_writer.take());
+        }
+        let output = cycle.wait_host_observing(|| {
+            if let Some(mut control) = control.take() {
+                control.write_all(b"P").expect("request lease observation");
+            }
+        });
+        assert_eq!(
+            output.status.code(),
+            Some(if release_lease { 17 } else { 0 }),
+            "wait changed the requested lease state: {output:?}"
+        );
+        assert_eq!(
+            output.stdout,
+            if release_lease {
+                b"LEASE_EOF\n".as_slice()
+            } else {
+                b"LEASE_LIVE\n".as_slice()
+            }
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+        await_process_gone(host_pid);
     }
 }
 
