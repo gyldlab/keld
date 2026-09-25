@@ -103,7 +103,7 @@ view and links each claim to tracked evidence.
 | `keld-guard` | Capability manifest, generated scopes, principal/window grants, evaluation and audit | sha2 |
 | `keld-runtime` | Supervised Bun process family, role identities, lifecycle policy, grants and virtual ports | ipc |
 | `keld-update` | Signed full-package activation, rollback and optional later delta transport | guard, pack |
-| `keld-pack` | Installer assembly, signing/notarization and cross-target packaging | — |
+| `keld-pack` | Installer assembly, signing/notarization and cross-target packaging | guard |
 | `keld-compat` | Electron conformance evidence and host-side compatibility emulation | core |
 | `keld-cli` | Developer entrypoint for create/dev/doctor/MCP/migrate/build/gen/ext orchestration | core, ipc, guard, runtime |
 | `keld-host` | Shipping host executable that assembles the core and platform backends | core |

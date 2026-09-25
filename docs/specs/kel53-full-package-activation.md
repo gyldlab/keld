@@ -38,11 +38,12 @@ Non-goals:
 - `docs/architecture/03-security.md` owns update trust, protected state and the
   narrow Windows relaunch-helper boundary.
 - `keld-pack` owns the Windows v0 package producer and exact no-migration policy
-  path/bytes. `keld-update` consumes them through a one-way internal dependency;
-  packaging never depends on the updater. The first Windows x64 producer runs on a
-  Windows host to use the guard-owned Windows namespace contract. Other hosts refuse
-  before output. Cross-host assembly remains the target; this support cell expands only
-  after independent evidence proves Windows-name equivalence.
+  path/bytes, and depends on `keld-guard` for the single Windows package-path
+  validator. `keld-update` depends on both `keld-guard` and `keld-pack` so it can consume
+  that policy owner; packaging never depends on the updater. The first Windows x64
+  producer runs on a Windows host to use the guard-owned Windows namespace contract.
+  Other hosts refuse before output. Cross-host assembly remains the target; this
+  support cell expands only after independent evidence proves Windows-name equivalence.
 - KEL-137 owns a future canonical package representation with executable modes and
   bundle links. It precedes every macOS/Linux package cell and any Windows package that
   cannot fit the current regular-file/directory-only v0 archive.
