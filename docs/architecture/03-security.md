@@ -159,6 +159,11 @@ manifest decoder.
   canonicalization is not performed by the string matcher: KEL-130's retained
   component walker owns link resolution after Allow. The authority rule above
   **is** live in `keld-guard` (KEL-208); no URL-valued capability is wired to it yet.
+  On Windows, the shared guard-owned component grammar also rejects Win32-forbidden
+  punctuation/control characters, reserved device names, trailing dot/space, and
+  tilde. The same lexical decision applies to filesystem grants and requests, IPC
+  suffix validation, and native component traversal; architecture 06 §4a owns the
+  first package cell's use of this rule. This does not resolve filesystem aliases.
 - **Channel grants** connect to the schema layer: a channel's declared capability set
   (from `.k.ts` contracts) must be ⊆ the caller's grants.
 - **Role grants (destination):** a generated role capability record must be a subset of

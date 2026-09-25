@@ -298,6 +298,26 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_tilde_path_is_guard002_before_dispatch() {
+        let manifest = manifest_granting_fs_read();
+        let ran = AtomicBool::new(false);
+        let result = dispatch_privileged(
+            &manifest,
+            Principal::AppProcess,
+            "fs.read",
+            "C:/appdata/notes~1.txt",
+            |_| ran.store(true, Ordering::SeqCst),
+        );
+        let reason = result.expect_err("tilde-bearing Windows request must be refused");
+        assert_eq!(reason.code(), "KELD-GUARD002");
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "refused request must not dispatch"
+        );
+    }
+
     #[test]
     fn non_app_process_principal_is_denied_even_with_an_in_scope_path() {
         // KEL-69 AC: a webview/plugin must not inherit /app grants on this path.

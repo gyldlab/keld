@@ -789,6 +789,8 @@ pub fn path_scopes<'manifest>(
 ///
 /// Native traversal uses this for components introduced by link expansion so
 /// the broker cannot diverge from scope/request spelling rules.
+/// On Windows, this includes Win32-forbidden punctuation/control characters,
+/// reserved device names, trailing dot/space, and Keld's tilde prohibition.
 ///
 /// # Errors
 ///
@@ -860,6 +862,16 @@ fn validate_fs_path(path: &str) -> Result<(), String> {
 fn validate_windows_component(component: &str) -> Result<(), String> {
     if component.contains(':') {
         return Err("alternate data streams are not serviceable".to_owned());
+    }
+    if component.contains(['<', '>', '"', '|', '?', '*'])
+        || component
+            .chars()
+            .any(|character| ('\u{1}'..='\u{1f}').contains(&character))
+    {
+        return Err("Windows components contain forbidden characters".to_owned());
+    }
+    if component.contains('~') {
+        return Err("Windows components cannot contain tilde".to_owned());
     }
     if component.ends_with(['.', ' ']) {
         return Err("Windows components cannot end with dot or space".to_owned());
@@ -1128,6 +1140,64 @@ mod tests {
 
     fn eval_app(manifest: &PermissionsManifest, operation: &str, path: &str) -> Decision {
         evaluate(manifest, Principal::AppProcess, operation, path)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_rejects_forbidden_punctuation() {
+        for forbidden in ['<', '>', '"', '|', '?', '*'] {
+            let component = format!("prefix{forbidden}suffix");
+            assert!(
+                validate_fs_component(&component).is_err(),
+                "Windows component containing {forbidden:?} must be refused"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_rejects_c0_controls() {
+        for code_point in 1..=0x1f {
+            let control = char::from_u32(code_point).expect("valid control code point");
+            let component = format!("prefix{control}suffix");
+            assert!(
+                validate_fs_component(&component).is_err(),
+                "Windows component containing U+{code_point:04X} must be refused"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_rejects_tilde() {
+        for component in ["~leading", "middle~name", "trailing~"] {
+            assert!(
+                validate_fs_component(component).is_err(),
+                "Windows component {component:?} must be refused"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_keeps_valid_neighboring_characters() {
+        for component in ["plain-name", "middle space", "valid\u{007f}name"] {
+            assert!(
+                validate_fs_component(component).is_ok(),
+                "Windows component {component:?} is outside the forbidden set"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_filesystem_scope_rejects_tilde_component() {
+        let manifest = parse_manifest(r#"{"app":{"fs":{"read":["C:/appdata/notes~1.txt"]}}}"#)
+            .expect("manifest");
+        assert!(matches!(
+            path_scopes(&manifest, "fs.read"),
+            Err(ScopeSetError::InvalidPath { grant_index: 0, .. })
+        ));
     }
 
     #[test]
