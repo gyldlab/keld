@@ -11,6 +11,7 @@ use super::*;
 const APP_ID: &str = "dev.keld.fixture";
 const TARGET: &str = "windows-x64";
 const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+type IdentitySubstitution = (ProvenanceField, fn(&mut DirectInstallationIdentity));
 
 fn signing_key() -> SigningKey {
     SigningKey::from_bytes(&[7_u8; 32])
@@ -172,7 +173,7 @@ fn provenance_refuses_missing_unprotected_and_managed_before_admission() {
 #[test]
 fn provenance_requires_exact_identity_distinct_principals_and_floor() {
     let verifier = verifier();
-    let substitutions: [(ProvenanceField, fn(&mut DirectInstallationIdentity)); 9] = [
+    let substitutions: [IdentitySubstitution; 9] = [
         (ProvenanceField::AppId, |identity| {
             identity.app_id.push_str(".other");
         }),
