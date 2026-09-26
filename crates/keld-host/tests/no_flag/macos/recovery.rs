@@ -170,7 +170,7 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
         listener
             .set_nonblocking(true)
             .expect("nonblocking lease probe control");
-        let child = Command::new("/usr/bin/python3")
+        let mut child = Command::new("/usr/bin/python3")
             .args(["-c", PROBE])
             .arg(&path)
             .stdin(Stdio::piped())
