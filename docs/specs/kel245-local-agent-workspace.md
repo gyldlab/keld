@@ -353,7 +353,16 @@ Prove actual binds/exchanges through `work-run`, session isolation, replaced/for
 ownership refusal, referenced evidence retention and legacy cleanup before landing.
 Linux results do not stand in for native macOS/Windows qualification.
 
-### Windows managed path admission
+### Windows runtime and managed path admission
+
+Windows workspace mutation requires a final CPython 3 release with the
+`os.mkdir(0o700)` private-directory fix: 3.9.20, 3.10.15, 3.11.10, 3.12.4 or a later
+patch in those branches, or 3.13 onward. The shared admission refuses earlier versions,
+prereleases, other implementations and unqualified major versions before writes. It
+reuses patched `tempfile.mkdtemp`, with no custom ACL implementation or automatic
+runtime/configuration changes. Unix support is unchanged. See the Python
+[CVE-2024-4030 advisory](https://mail.python.org/archives/list/security-announce@python.org/thread/PRGS5OR3N3PNPT4BMV2VAGN5GMUI5636/)
+and the versioned `os.mkdir` documentation for its security backports.
 
 Before allocating a task, lock or scratch directory, the shared workspace owner
 checks the derived task/session metadata paths against a conservative Windows support

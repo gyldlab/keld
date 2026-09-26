@@ -20,7 +20,7 @@ For the complete verification gate, also install:
 
 | Tool | Purpose |
 |---|---|
-| Python 3.9+ | Standard-library session verification; `python` on Windows, `python3` elsewhere |
+| Python 3.9+ | Standard-library session verification; Windows workspace mutation requires final CPython 3.9.20+, 3.10.15+, 3.11.10+, 3.12.4+ or 3.13+ within Python 3; `python` on Windows, `python3` elsewhere |
 | `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
 | `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
@@ -508,6 +508,9 @@ absolute directory/file paths fit the conservative 247/259 UTF-16-unit support c
 including atomic replacement names. A refusal identifies the path: use a shorter real
 primary checkout, preserving the session identity and evidence. This applies even on
 hosts configured for longer paths; arbitrary child paths have their own limits.
+Workspace mutation also requires the patched final CPython versions listed above so
+`mkdtemp` creates private scratch even below a shared parent. Unsupported runtimes
+refuse before writes; use a supported final CPython and retain existing session data.
 Very long primary checkout paths can still exceed native socket limits; use a shorter
 real primary path for those suites. Each run streams output and retains at most 4 MiB per stdout/stderr
 tail by default; `--log-limit-mib` accepts 1–64 per stream before the `--` separator.

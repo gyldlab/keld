@@ -207,9 +207,9 @@ class WorkspaceTests(unittest.TestCase):
     def test_windows_admission_reserves_directory_creation_allowance(self):
         task = "kel-245-" + "a" * 56
         suffix = Path(".keld-work") / "worktrees" / task
-        prefix = self.root / ("p" * (247 - len(str(self.root / suffix)) - 1))
+        prefix = self.root / ("p" * (247 - len(str(self.root / suffix).encode("utf-16-le")) // 2 - 1))
         ctx = workspace.Context(prefix, prefix, prefix / ".git")
-        self.assertEqual(len(str(ctx.root / "worktrees" / task)), 247)
+        self.assertEqual(len(str(ctx.root / "worktrees" / task).encode("utf-16-le")) // 2, 247)
         workspace.admit_workspace_paths(ctx, task=task)
         longer = prefix.with_name(prefix.name + "p")
         ctx = workspace.Context(longer, longer, longer / ".git")
@@ -217,6 +217,81 @@ class WorkspaceTests(unittest.TestCase):
             workspace.admit_workspace_paths(ctx, task=task)
         self.assertFalse(prefix.exists())
         self.assertFalse(longer.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows CPython security-release admission")
+    def test_windows_runtime_admission_matches_published_security_floors(self):
+        # Published os.mkdir(0o700) backports are the oracle, independent of
+        # the production branch selection. Native ACL proof is a separate test.
+        cases = [((3, 8, 99), False), ((3, 9, 19), False), ((3, 9, 20), True),
+                 ((3, 10, 14), False), ((3, 10, 15), True),
+                 ((3, 11, 9), False), ((3, 11, 10), True),
+                 ((3, 12, 3), False), ((3, 12, 4), True),
+                 ((3, 13, 0), True), ((3, 14, 1), True), ((4, 0, 0), False)]
+        ctx = workspace.Context(self.root, self.root, self.root / ".git")
+        for release, allowed in cases:
+            with self.subTest(release=release), mock.patch.object(workspace.sys, "version_info", (*release, "final", 0)):
+                if allowed:
+                    workspace.admit_workspace_paths(ctx, "test-session")
+                else:
+                    with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                        workspace.admit_workspace_paths(ctx, "test-session")
+        for implementation, level in [("PyPy", "final"), ("unknown", "final"),
+                                      ("CPython", "alpha"), ("CPython", "candidate")]:
+            with self.subTest(implementation=implementation, level=level), \
+                    mock.patch.object(workspace.platform, "python_implementation", return_value=implementation), \
+                    mock.patch.object(workspace.sys, "version_info", (3, 14, 1, level, 0)):
+                with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                    workspace.admit_workspace_paths(ctx, "test-session")
+        self.assertFalse(ctx.root.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows runtime refusal before writes")
+    def test_windows_unsupported_runtime_refuses_before_writes_or_child(self):
+        task = self.start()
+        ctx = workspace.context(self.root)
+        marker = self.root / "unqualified-child"
+        before = {str(path): path.read_bytes() if path.is_file() else None for path in ctx.root.rglob("*")}
+        child = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
+        operations = [lambda: workspace.start(ctx, "kel-245", "old", "test-session", "origin/main"),
+                      lambda: workspace.allocate_scratch(ctx, "test-session", "run-" + "0" * 32),
+                      lambda: workspace.run(ctx, task["task"], "test-session", child, 1),
+                      lambda: workspace.finish(ctx, task["task"], "test-session", self.root / "absent.json"),
+                      lambda: workspace.clean(ctx, task["task"], "test-session", False)]
+        with mock.patch.object(workspace.sys, "version_info", (3, 12, 3, "final", 0)):
+            for operation in operations:
+                with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                    operation()
+        self.assertFalse(marker.exists())
+        self.assertEqual(before, {str(path): path.read_bytes() if path.is_file() else None for path in ctx.root.rglob("*")})
+
+    @unittest.skipUnless(os.name == "nt", "native Windows creation-time scratch ACL")
+    def test_windows_scratch_acl_is_private_before_child_starts(self):
+        def principals(path):
+            script = "$acl = Get-Acl -LiteralPath $env:KELD_ACL_FIXTURE; @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value }) | ConvertTo-Json -Compress"
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                                    env=dict(os.environ, KELD_ACL_FIXTURE=str(path)), capture_output=True,
+                                    text=True, encoding="utf-8", check=True)
+            return set(json.loads(result.stdout))
+        # Change only this test-owned primary. The private fixture ancestor stays
+        # intact; the test proves DACL inheritance, not another user's reachability.
+        subprocess.run(["icacls", str(self.root), "/grant", "*S-1-1-0:(OI)(CI)(M)"],
+                       capture_output=True, check=True)
+        self.assertIn("S-1-1-0", principals(self.root))
+        task = self.start()
+        marker = self.root / "private-child"
+        allocate = workspace.allocate_scratch
+        inspected = []
+        def inspect_before_return(*args):
+            scratch = allocate(*args)
+            self.assertEqual(principals(scratch), {"S-1-5-18", "S-1-5-32-544", "S-1-3-4"})
+            self.assertFalse(marker.exists())
+            inspected.append(scratch)
+            return scratch
+        with mock.patch.object(workspace, "allocate_scratch", side_effect=inspect_before_return):
+            code = workspace.run(workspace.context(self.root), task["task"], "test-session",
+                                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('private child'); print('private child')", str(marker)], 1)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(inspected), 1)
+        self.assertEqual(marker.read_text(), "private child")
 
     def test_existing_unmanaged_target_is_never_adopted_or_overwritten(self):
         target = self.root / ".keld-work" / "worktrees" / "kel-245-probe"

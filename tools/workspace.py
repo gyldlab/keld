@@ -111,9 +111,18 @@ class Context:
 
 
 def admit_workspace_paths(ctx, session=None, task=None):
-    """Refuse unsupported Windows metadata paths before operation-side writes."""
+    """Refuse unqualified Windows runtimes/paths before operation-side writes."""
     if os.name != "nt":
         return
+    # CVE-2024-4030: these os.mkdir(0o700) backports give mkdtemp a private
+    # creation-time DACL. Other implementations/prereleases are not qualified.
+    release = sys.version_info
+    minimum = {(3, 9): 20, (3, 10): 15, (3, 11): 10, (3, 12): 4}.get(release[:2])
+    patched = release[0] == 3 and (release[1] >= 13 or (minimum is not None and release[2] >= minimum))
+    require(platform.python_implementation() == "CPython" and release[3] == "final" and patched,
+            "Windows managed workspace requires final CPython with private directory creation: "
+            "3.9.20+, 3.10.15+, 3.11.10+, 3.12.4+, or 3.13+ within Python 3. "
+            "Run this command with a supported final CPython; preserve existing sessions and evidence.")
     # Deliberately use one conservative cell even on long-path-enabled hosts.
     # MAX_PATH includes NUL; directory creation also reserves an 8.3 filename.
     # https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation
