@@ -9,7 +9,8 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 
 - Duplicate `## KELD-…` headings fail the test.
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
-  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` `src`, `keld-cli` templates, or workspace
+  `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
+  `keld-pack` `src`, `keld-cli` templates, or workspace
   `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
