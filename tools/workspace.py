@@ -110,6 +110,50 @@ class Context:
         return self.primary / DIRECTORY
 
 
+def admit_workspace_paths(ctx, session=None, task=None):
+    """Refuse unqualified Windows runtimes/paths before operation-side writes."""
+    if os.name != "nt":
+        return
+    # CVE-2024-4030: these os.mkdir(0o700) backports give mkdtemp a private
+    # creation-time DACL. Other implementations/prereleases are not qualified.
+    release = sys.version_info
+    minimum = {(3, 9): 20, (3, 10): 15, (3, 11): 10, (3, 12): 4}.get(release[:2])
+    patched = release[0] == 3 and (release[1] >= 13 or (minimum is not None and release[2] >= minimum))
+    require(platform.python_implementation() == "CPython" and release[3] == "final" and patched,
+            "Windows managed workspace requires final CPython with private directory creation: "
+            "3.9.20+, 3.10.15+, 3.11.10+, 3.12.4+, or 3.13+ within Python 3. "
+            "Run this command with a supported final CPython; preserve existing sessions and evidence.")
+    # Deliberately use one conservative cell even on long-path-enabled hosts.
+    # MAX_PATH includes NUL; directory creation also reserves an 8.3 filename.
+    # https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation
+    directories = [ctx.root / "tmp" / "00000000"]
+    records = []
+    files = [ctx.root / "reference.lock"]
+    if task is not None:
+        target = ctx.root / "worktrees" / task_name(task)
+        directories.append(target)
+        records.append(target.with_suffix(".json"))
+        files.append(target.with_suffix(".lock"))
+    if session is not None:
+        root = ctx.root / "sessions" / component(session, "session")
+        records.append(root / "scratch-owners" / "00000000.json")
+        # clean- plus UUID is longer than run- plus UUID. Reserve its result,
+        # both captured streams, and write_record's same-directory replacement.
+        evidence = root / "evidence" / ("clean-" + "0" * 32)
+        records.append(evidence / "result.json")
+        files.extend(evidence / (stream + ".log") for stream in ("stdout", "stderr"))
+    files.extend(records)
+    files.extend(path.parent / "record-00000000.tmp" for path in records)
+    directories.extend(path.parent for path in files)
+    for paths, maximum, kind in [(directories, 247, "directory"), (files, 259, "file")]:
+        for path in paths:
+            absolute = os.path.abspath(path)
+            units = len(absolute.encode("utf-16-le")) // 2
+            require(units <= maximum,
+                    f"Windows managed path exceeds the supported {kind} limit ({units} > {maximum} UTF-16 units): "
+                    f"{absolute}. Use a shorter real primary checkout path; preserve the existing session identity and evidence.")
+
+
 def context(cwd=None):
     require(not any(os.environ.get(key) for key in GIT_ENV),
             "Git directory overrides are set. Unset GIT_DIR/WORK_TREE/COMMON_DIR/INDEX_FILE/OBJECT_DIRECTORY for workspace commands.")
@@ -189,6 +233,56 @@ def write_record(path, value, *, exclusive=False):
             os.unlink(temp)
 
 
+def allocate_scratch(ctx, session, run_id):
+    """Allocate private, short physical scratch; retain its session ownership."""
+    session = component(session, "session")
+    admit_workspace_paths(ctx, session)
+    parent = safe_path(ctx.root / "tmp")
+    mkdir(parent)
+    # mkdtemp supplies exclusive creation and owner-only mode. Full session and
+    # run names belong in metadata, not every inherited Unix socket pathname.
+    scratch = safe_path(tempfile.mkdtemp(prefix="", dir=parent))
+    info = scratch.stat()
+    record = dict(schema="keld.workspace-scratch/v1", session=session,
+                  token=scratch.name, run=run_id, device=info.st_dev, inode=info.st_ino)
+    write_record(ctx.root / "sessions" / session / "scratch-owners" / (scratch.name + ".json"),
+                 record, exclusive=True)
+    return scratch
+
+
+def session_scratch(ctx, session):
+    """Resolve only this session's recorded identities plus its legacy scratch."""
+    session = component(session, "session")
+    root = safe_path(ctx.root / "sessions" / session)
+    targets = []
+    legacy = safe_path(root / "scratch")
+    if legacy.exists():
+        targets.append(legacy)
+    owners = safe_path(root / "scratch-owners")
+    if owners.exists():
+        for file in sorted(owners.iterdir()):
+            value = read_record(file)
+            require(set(value) == {"schema", "session", "token", "run", "device", "inode"} and
+                    value["schema"] == "keld.workspace-scratch/v1" and value["session"] == session and
+                    isinstance(value["token"], str) and re.fullmatch(r"[a-z0-9_]{8}", value["token"]) and
+                    file.name == value["token"] + ".json" and
+                    isinstance(value["run"], str) and
+                    re.fullmatch(r"(?:run|reference)-[0-9a-f]{32}", value["run"]) and
+                    type(value["device"]) is int and type(value["inode"]) is int,
+                    f"Invalid scratch ownership record: {file}. Preserve it for inspection.")
+            target = safe_path(ctx.root / "tmp" / value["token"])
+            if not target.exists():
+                # Previously removed targets remain recorded; never adopt an
+                # unregistered directory or infer a replacement's ownership.
+                continue
+            info = target.stat()
+            require(stat.S_ISDIR(info.st_mode) and
+                    (info.st_dev, info.st_ino) == (value["device"], value["inode"]),
+                    f"Scratch identity changed: {target}. Preserve the replacement for inspection.")
+            targets.append(target)
+    return targets
+
+
 def owner():
     return getpass.getuser() + "@" + platform.node()
 
@@ -263,6 +357,7 @@ def start(ctx, issue, slug, session, base):
     name = task_name(issue + "-" + slug)
     session = component(session, "session")
     require(base and not base.startswith("-"), "Invalid base. Fetch origin main or pass a commit/ref with --base.")
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     target = ctx.root / "worktrees" / name
     metadata = target.with_suffix(".json")
@@ -325,6 +420,9 @@ def status(ctx, sizes=False):
     if sizes:
         result["retained_evidence_bytes"] = 0
         result["scratch_bytes"] = 0
+        shallow = safe_path(ctx.root / "tmp")
+        if shallow.exists():
+            result["scratch_bytes"] += logical_bytes(shallow)
         session_root = safe_path(ctx.root / "sessions")
         if session_root.exists():
             for directory in session_root.iterdir():
@@ -378,14 +476,14 @@ class Capture:
 def run(ctx, name, session, argv, limit_mib):
     require(argv, "No command supplied. Use work-run <task> --session <id> -- <command> [args].")
     require(type(limit_mib) is int and 1 <= limit_mib <= 64, "Log limit must be an integer from 1 to 64 MiB per stream.")
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session)
         session_root = safe_path(ctx.root / "sessions" / component(session, "session"))
         identifier = "run-" + uuid.uuid4().hex
-        scratch = session_root / "scratch" / identifier
+        scratch = allocate_scratch(ctx, session, identifier)
         evidence = session_root / "evidence" / identifier
-        mkdir(scratch)
         mkdir(evidence)
         result_file = evidence / "result.json"
         value = dict(schema="keld.workspace-run/v1", task=name, session=session, state="running",
@@ -441,6 +539,7 @@ def clean_checkout(checkout):
 
 
 def finish(ctx, name, session, receipt):
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session)
@@ -500,47 +599,62 @@ def remove_disposable_tree(nodes, recorded):
         recorded(path)
 
 
-def receipt_evidence_paths(value):
+def receipt_retained_paths(value):
+    """Collect hashed proof and resources whose continued existence a receipt promises."""
     if isinstance(value, dict):
-        if set(value) == {"path", "sha256"} and isinstance(value["path"], str):
+        if (set(value) == {"path", "sha256"} or value.get("status") == "retained") and isinstance(value.get("path"), str):
             yield Path(value["path"])
         for nested in value.values():
-            yield from receipt_evidence_paths(nested)
+            yield from receipt_retained_paths(nested)
     elif isinstance(value, list):
         for nested in value:
-            yield from receipt_evidence_paths(nested)
+            yield from receipt_retained_paths(nested)
 
 
 def clean(ctx, name, session, apply, receipt=None):
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session, active=False)
         require(record["state"] == "released", "Task is active. Finish it with a complete closeout receipt before cleanup.")
         directory = safe_path(ctx.root / "worktrees")
+        releases = []
         if directory.exists():
             for file in directory.glob("*.json"):
-                other, _ = load_task(ctx, file.stem)
-                require(other["task"] == record["task"] or session not in other["sessions"] or other["state"] != "active",
+                other, other_checkout = load_task(ctx, file.stem)
+                if session not in other["sessions"]:
+                    continue
+                require(other["state"] != "active",
                         "Another active task owns this session scratch. Finish or use a distinct session before cleanup.")
+                releases.append((other, other_checkout))
         clean_checkout(checkout)
-        target = safe_path(ctx.root / "sessions" / component(session, "session") / "scratch")
-        release_receipt = session_closeout.read_json(Path(record["receipt"]))
-        require(session_closeout.check(Path(record["receipt"])) == "complete",
-                "Released task closeout receipt no longer validates. Preserve scratch and repair its evidence first.")
-        for evidence in receipt_evidence_paths(release_receipt):
-            require(not evidence.resolve().is_relative_to(target.resolve()),
-                    f"Scratch is referenced by closeout evidence: {evidence}. Preserve it and archive/rewrite the evidence first.")
-        nodes = safe_disposable_tree(target)
-        byte_count = sum(path.stat().st_size for path, _, _, directory in nodes if not directory)
-        plan = dict(task=name, session=session, applied=apply, targets=[str(target)] if nodes else [],
-                    scratch_bytes=byte_count, retained_evidence=str(ctx.root / "sessions" / session / "evidence"),
-                    retained_worktree=str(checkout), reason="released task scratch only; evidence, source branch and worktree are retained")
+        targets = session_scratch(ctx, session)
+        receipts = []
+        for released, released_checkout in releases:
+            receipt_path = Path(released["receipt"])
+            release_receipt = session_closeout.read_json(receipt_path)
+            require(same(release_receipt["repo"], released_checkout) and
+                    release_receipt["session_id"] == session and
+                    session_closeout.check(receipt_path) == "complete",
+                    "Released task closeout receipt no longer validates for this session. Preserve scratch and repair its evidence first.")
+            receipts.append((receipt_path, release_receipt))
         if apply:
             require(receipt is not None, "Cleanup apply requires a prepared current-turn --receipt; preview is read-only.")
-            receipt_path = Path(receipt)
-            receipt_value = session_closeout.read_json(receipt_path)
+            cleanup_receipt_path = Path(receipt)
+            receipt_value = session_closeout.read_json(cleanup_receipt_path)
             require(same(receipt_value.get("repo", ""), checkout) and receipt_value.get("session_id") == session,
                     "Cleanup receipt belongs to another task or session. Preserve scratch and use the owning receipt.")
+            # A prepared receipt can name future removals, but its own artifacts must survive them.
+            receipts.append((cleanup_receipt_path, receipt_value))
+        for receipt_path, receipt_value in receipts:
+            for evidence in [receipt_path, *receipt_retained_paths(receipt_value)]:
+                require(not any(evidence.resolve().is_relative_to(target.resolve()) for target in targets),
+                        f"Scratch is referenced by closeout evidence: {evidence}. Preserve it and archive/rewrite the evidence first.")
+        nodes = [node for target in targets for node in safe_disposable_tree(target)]
+        byte_count = sum(path.stat().st_size for path, _, _, directory in nodes if not directory)
+        plan = dict(task=name, session=session, applied=apply, targets=[str(target) for target in targets],
+                    scratch_bytes=byte_count, retained_evidence=str(ctx.root / "sessions" / session / "evidence"),
+                    retained_worktree=str(checkout), reason="released task scratch only; evidence, source branch and worktree are retained")
         if apply:
             evidence = safe_path(ctx.root / "sessions" / session / "evidence" / ("clean-" + uuid.uuid4().hex))
             mkdir(evidence)
@@ -552,7 +666,7 @@ def clean(ctx, name, session, apply, receipt=None):
                 write_record(result_file, result)
             try:
                 remove_disposable_tree(nodes, recorded)
-                require(session_closeout.check(receipt_path) == "complete",
+                require(session_closeout.check(cleanup_receipt_path) == "complete",
                         "Cleanup receipt is not complete after deletion. Record an explicit handoff; scratch removal is not a successful cleanup.")
             except (WorkspaceError, session_closeout.Invalid, OSError) as error:
                 result.update(state="failed", error_type=type(error).__name__)
@@ -615,11 +729,11 @@ def main(argv=None):
             require(child, "No reference command supplied. Use the public research/competitors recipes.")
             reference_admission(ctx)
             check_index(ctx)
+            session = component(os.environ.get("KELD_WORK_SESSION") or "manual-" + uuid.uuid4().hex, "session")
+            admit_workspace_paths(ctx, session)
             with operation_lock(ctx.root / "reference.lock"):
                 reference_admission(ctx)
-                session = component(os.environ.get("KELD_WORK_SESSION") or "manual-" + uuid.uuid4().hex, "session")
-                scratch = ctx.root / "sessions" / session / "scratch" / ("reference-" + uuid.uuid4().hex)
-                mkdir(scratch)
+                scratch = allocate_scratch(ctx, session, "reference-" + uuid.uuid4().hex)
                 env = dict(os.environ, TMPDIR=scratch.as_posix(), TEMP=str(scratch), TMP=str(scratch), KELD_WORK_SESSION=session)
                 print("WORKSPACE reference inputs: " + git_text(ctx.checkout, "rev-parse", "HEAD"), file=sys.stderr)
                 return subprocess.call(child, cwd=ctx.primary, env=env)

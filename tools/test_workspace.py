@@ -123,6 +123,176 @@ class WorkspaceTests(unittest.TestCase):
                 self.cli("start", issue, slug, "--session", session, ok=False)
         self.assertFalse((self.root / ".keld-work").exists())
 
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_session_start_refuses_before_allocation(self):
+        result = self.cli("start", "kel-245", "long", "--session", "s" * 128, ok=False)
+        self.assertIn("Windows managed path", result.stderr)
+        self.assertIn("shorter real primary checkout", result.stderr)
+        self.assertFalse((self.root / ".keld-work").exists())
+        self.assertEqual(self.git("show-ref", "--verify", "--quiet", "refs/heads/agent/kel-245-long",
+                                  check=False).returncode, 1)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_existing_session_refuses_before_lock_scratch_or_child(self):
+        task = self.start()
+        session = "s" * 128
+        managed = self.root / ".keld-work"
+        metadata = managed / "worktrees" / (task["task"] + ".json")
+        record = json.loads(metadata.read_text(encoding="utf-8"))
+        record["sessions"] = [session]
+        metadata.write_text(json.dumps(record), encoding="utf-8")
+        # A valid historical record must not let the command allocate an orphan.
+        before = {str(path): path.read_bytes() if path.is_file() else None for path in managed.rglob("*")}
+        marker = self.root / "child-started"
+        child = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
+        for args in [("run", task["task"], "--session", session, "--", *child),
+                     ("finish", task["task"], "--session", session, "--receipt", str(self.root / "absent.json")),
+                     ("clean", task["task"], "--session", session),
+                     ("reference-run", "--", *child)]:
+            with self.subTest(operation=args[0]):
+                result = self.cli(*args, ok=False, env=dict(os.environ, KELD_WORK_SESSION=session))
+                self.assertEqual(before, {str(path): path.read_bytes() if path.is_file() else None
+                                          for path in managed.rglob("*")})
+                self.assertFalse(marker.exists())
+                self.assertIn("Windows managed path", result.stderr)
+                self.assertIn("shorter real primary checkout", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_allocator_refuses_before_ownership_orphan(self):
+        ctx = workspace.context(self.root)
+        with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed path"):
+            workspace.allocate_scratch(ctx, "s" * 128, "run-" + "0" * 32)
+        self.assertFalse(ctx.root.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path boundary")
+    def test_windows_admitted_boundary_roundtrips_child_and_metadata(self):
+        # The public support cell reserves the longest generated cleanup record
+        # replacement, including its separator and terminating-NUL allowance.
+        maximum = self.root / ".keld-work" / "sessions" / "s" / "evidence" / ("clean-" + "0" * 32) / "record-00000000.tmp"
+        session = "s" * (260 - len(str(maximum).encode("utf-16-le")) // 2)
+        self.assertTrue(1 <= len(session) <= 128)
+        task = json.loads(self.cli("start", "kel-245", "boundary", "--session", session).stdout)
+        result = self.cli("run", task["task"], "--session", session, "--", sys.executable, "-c",
+                          "import os,sys; print(os.environ['TMPDIR']); print('boundary stderr', file=sys.stderr)")
+        scratch = Path(result.stdout.strip())
+        owner = self.root / ".keld-work" / "sessions" / session / "scratch-owners" / (scratch.name + ".json")
+        value = json.loads(owner.read_text(encoding="utf-8"))
+        self.assertEqual((value["device"], value["inode"]), (scratch.stat().st_dev, scratch.stat().st_ino))
+        self.assertEqual(value["session"], session)
+        evidence = next((owner.parent.parent / "evidence").iterdir())
+        value = json.loads((evidence / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((value["state"], value["exit_code"], value["runner_exit_code"]), ("complete", 0, 0))
+        self.assertEqual((evidence / "stdout.log").read_text(encoding="utf-8").strip(), str(scratch).replace("\\", "/"))
+        self.assertEqual((evidence / "stderr.log").read_text(encoding="utf-8").strip(), "boundary stderr")
+        rejected = self.cli("start", "kel-245", "over", "--session", session + "s", ok=False)
+        self.assertIn("Windows managed path", rejected.stderr)
+        self.assertFalse((self.root / ".keld-work" / "worktrees" / "kel-245-over.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows UTF-16 path accounting")
+    def test_windows_admission_counts_supplementary_unicode_as_two_units(self):
+        primary = self.root / ("unicode-" + "\U0001f4bb" * 8)
+        primary.mkdir()
+        ctx = workspace.Context(primary, primary, primary / ".git")
+        maximum = ctx.root / "sessions" / "s" / "evidence" / ("clean-" + "0" * 32) / "record-00000000.tmp"
+        session = "s" * (260 - len(str(maximum).encode("utf-16-le")) // 2)
+        self.assertTrue(1 <= len(session) < 128)
+        scratch = workspace.allocate_scratch(ctx, session, "run-" + "0" * 32)
+        self.assertEqual(workspace.session_scratch(ctx, session), [scratch])
+        before = {str(path) for path in ctx.root.rglob("*")}
+        with self.assertRaisesRegex(workspace.WorkspaceError, "260 > 259 UTF-16 units"):
+            workspace.allocate_scratch(ctx, session + "s", "run-" + "1" * 32)
+        self.assertEqual(before, {str(path) for path in ctx.root.rglob("*")})
+
+    @unittest.skipUnless(os.name == "nt", "Windows managed directory allowance")
+    def test_windows_admission_reserves_directory_creation_allowance(self):
+        task = "kel-245-" + "a" * 56
+        suffix = Path(".keld-work") / "worktrees" / task
+        prefix = self.root / ("p" * (247 - len(str(self.root / suffix).encode("utf-16-le")) // 2 - 1))
+        ctx = workspace.Context(prefix, prefix, prefix / ".git")
+        self.assertEqual(len(str(ctx.root / "worktrees" / task).encode("utf-16-le")) // 2, 247)
+        workspace.admit_workspace_paths(ctx, task=task)
+        longer = prefix.with_name(prefix.name + "p")
+        ctx = workspace.Context(longer, longer, longer / ".git")
+        with self.assertRaisesRegex(workspace.WorkspaceError, "directory limit \\(248 > 247 UTF-16 units\\)"):
+            workspace.admit_workspace_paths(ctx, task=task)
+        self.assertFalse(prefix.exists())
+        self.assertFalse(longer.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows CPython security-release admission")
+    def test_windows_runtime_admission_matches_published_security_floors(self):
+        # Published os.mkdir(0o700) backports are the oracle, independent of
+        # the production branch selection. Native ACL proof is a separate test.
+        cases = [((3, 8, 99), False), ((3, 9, 19), False), ((3, 9, 20), True),
+                 ((3, 10, 14), False), ((3, 10, 15), True),
+                 ((3, 11, 9), False), ((3, 11, 10), True),
+                 ((3, 12, 3), False), ((3, 12, 4), True),
+                 ((3, 13, 0), True), ((3, 14, 1), True), ((4, 0, 0), False)]
+        ctx = workspace.Context(self.root, self.root, self.root / ".git")
+        for release, allowed in cases:
+            with self.subTest(release=release), mock.patch.object(workspace.sys, "version_info", (*release, "final", 0)):
+                if allowed:
+                    workspace.admit_workspace_paths(ctx, "test-session")
+                else:
+                    with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                        workspace.admit_workspace_paths(ctx, "test-session")
+        for implementation, level in [("PyPy", "final"), ("unknown", "final"),
+                                      ("CPython", "alpha"), ("CPython", "candidate")]:
+            with self.subTest(implementation=implementation, level=level), \
+                    mock.patch.object(workspace.platform, "python_implementation", return_value=implementation), \
+                    mock.patch.object(workspace.sys, "version_info", (3, 14, 1, level, 0)):
+                with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                    workspace.admit_workspace_paths(ctx, "test-session")
+        self.assertFalse(ctx.root.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows runtime refusal before writes")
+    def test_windows_unsupported_runtime_refuses_before_writes_or_child(self):
+        task = self.start()
+        ctx = workspace.context(self.root)
+        marker = self.root / "unqualified-child"
+        before = {str(path): path.read_bytes() if path.is_file() else None for path in ctx.root.rglob("*")}
+        child = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
+        operations = [lambda: workspace.start(ctx, "kel-245", "old", "test-session", "origin/main"),
+                      lambda: workspace.allocate_scratch(ctx, "test-session", "run-" + "0" * 32),
+                      lambda: workspace.run(ctx, task["task"], "test-session", child, 1),
+                      lambda: workspace.finish(ctx, task["task"], "test-session", self.root / "absent.json"),
+                      lambda: workspace.clean(ctx, task["task"], "test-session", False)]
+        with mock.patch.object(workspace.sys, "version_info", (3, 12, 3, "final", 0)):
+            for operation in operations:
+                with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed workspace requires.*CPython"):
+                    operation()
+        self.assertFalse(marker.exists())
+        self.assertEqual(before, {str(path): path.read_bytes() if path.is_file() else None for path in ctx.root.rglob("*")})
+
+    @unittest.skipUnless(os.name == "nt", "native Windows creation-time scratch ACL")
+    def test_windows_scratch_acl_is_private_before_child_starts(self):
+        def principals(path):
+            script = "$acl = Get-Acl -LiteralPath $env:KELD_ACL_FIXTURE; @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value }) | ConvertTo-Json -Compress"
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                                    env=dict(os.environ, KELD_ACL_FIXTURE=str(path)), capture_output=True,
+                                    text=True, encoding="utf-8", check=True)
+            return set(json.loads(result.stdout))
+        # Change only this test-owned primary. The private fixture ancestor stays
+        # intact; the test proves DACL inheritance, not another user's reachability.
+        subprocess.run(["icacls", str(self.root), "/grant", "*S-1-1-0:(OI)(CI)(M)"],
+                       capture_output=True, check=True)
+        self.assertIn("S-1-1-0", principals(self.root))
+        task = self.start()
+        marker = self.root / "private-child"
+        allocate = workspace.allocate_scratch
+        inspected = []
+        def inspect_before_return(*args):
+            scratch = allocate(*args)
+            self.assertEqual(principals(scratch), {"S-1-5-18", "S-1-5-32-544", "S-1-3-4"})
+            self.assertFalse(marker.exists())
+            inspected.append(scratch)
+            return scratch
+        with mock.patch.object(workspace, "allocate_scratch", side_effect=inspect_before_return):
+            code = workspace.run(workspace.context(self.root), task["task"], "test-session",
+                                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('private child'); print('private child')", str(marker)], 1)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(inspected), 1)
+        self.assertEqual(marker.read_text(), "private child")
+
     def test_existing_unmanaged_target_is_never_adopted_or_overwritten(self):
         target = self.root / ".keld-work" / "worktrees" / "kel-245-probe"
         target.mkdir(parents=True)
@@ -192,7 +362,7 @@ class WorkspaceTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["args"], [sentinel])
         self.assertEqual(Path(payload["cwd"]), Path(task["path"]))
-        self.assertTrue(Path(payload["temp"]).is_relative_to(self.root / ".keld-work" / "sessions" / "test-session" / "scratch"))
+        self.assertTrue(Path(payload["temp"]).is_relative_to(self.root / ".keld-work" / "tmp"))
         records = list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("*/result.json"))
         self.assertEqual(len(records), 1)
         evidence = json.loads(records[0].read_text())
@@ -201,6 +371,37 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn("args", evidence)
         self.assertNotIn("environment", evidence)
         self.assertFalse(any((self.root / ".keld-work" / "worktrees").glob("*.lock")))
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX") and os.name != "nt", "native Unix pathname socket")
+    def test_long_session_does_not_consume_native_socket_namespace(self):
+        session = "native-socket-" + "s" * 100
+        task = json.loads(self.cli("start", "kel-245", "socket", "--session", session).stdout)
+        # Strip only the deliberately deep test-checkout prefix. The actual managed
+        # namespace, session and fixture suffix still go through a real OS bind.
+        # Full absolute-path acceptance is additionally run on each native machine.
+        script = """
+import json, os, pathlib, socket, stat, sys
+root = pathlib.Path(sys.argv[1])
+tmp = pathlib.Path(os.environ['TMPDIR'])
+assert os.environ['TEMP'] == os.environ['TMP'] == str(tmp)
+os.chdir(root)
+fixture = tmp / 'k7-12345-1234567890123456789-0'
+fixture.mkdir()
+endpoint = str((fixture / 'e.sock').relative_to(root))
+with socket.socket(socket.AF_UNIX) as listener:
+    listener.bind(endpoint)
+    listener.listen()
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect(endpoint)
+        with listener.accept()[0] as peer:
+            client.sendall(b'KEL245')
+            assert peer.recv(6) == b'KEL245'
+assert stat.S_IMODE(tmp.stat().st_mode) == 0o700
+print(json.dumps({'socket': endpoint, 'temp': str(tmp)}))
+"""
+        result = self.cli("run", task["task"], "--session", session, "--",
+                          sys.executable, "-c", script, str(self.root))
+        self.assertIn("e.sock", json.loads(result.stdout)["socket"])
 
     def test_run_log_cap_is_real_and_records_omitted_bytes(self):
         task = self.start()
@@ -396,6 +597,172 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue((evidence / "proof.txt").exists())
         self.assertTrue(Path(task["path"]).exists())
 
+    def run_scratch(self, task, session="test-session"):
+        result = self.cli("run", task["task"], "--session", session, "--",
+                          sys.executable, "-c", "import os; print(os.environ['TMPDIR'])")
+        return Path(result.stdout.strip())
+
+    def test_short_scratch_cleanup_preserves_other_sessions_unknown_dirs_and_evidence(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        other = json.loads(self.cli("start", "kel-245", "other", "--session", "other-session").stdout)
+        other_scratch = self.run_scratch(other, "other-session")
+        unknown = self.root / ".keld-work" / "tmp" / "unknown"
+        unknown.mkdir()
+        for path in [scratch, other_scratch, unknown]:
+            (path / "keep.txt").write_text("owned", encoding="utf-8")
+        owners = self.root / ".keld-work" / "sessions" / "test-session" / "scratch-owners"
+        owner_record = owners / (scratch.name + ".json")
+        owner_bytes = owner_record.read_bytes()
+        self.assertNotEqual(scratch, other_scratch)
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        preview = json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)
+        self.assertEqual(preview["targets"], [str(scratch)])
+        cleanup = self.cleanup_receipt(task, scratch)
+        value = json.loads(cleanup.read_text())
+        value["resources"].append({"id": "primary", "path": str(self.root), "status": "retained",
+                                   "reason": "Retain the primary directory, not every disposable descendant"})
+        cleanup.write_text(json.dumps(value), encoding="utf-8")
+        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(cleanup))
+        self.assertFalse(scratch.exists())
+        self.assertTrue((other_scratch / "keep.txt").is_file())
+        self.assertTrue((unknown / "keep.txt").is_file())
+        self.assertEqual(owner_record.read_bytes(), owner_bytes)
+        self.assertEqual(json.loads(self.cli("clean", task["task"], "--session", "test-session").stdout)["targets"], [])
+
+    def test_short_scratch_replacement_and_forged_owner_are_refused(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        moved = scratch.with_name("preserved")
+        scratch.rename(moved)
+        scratch.mkdir()
+        sentinel = scratch / "keep.txt"
+        sentinel.write_text("replacement", encoding="utf-8")
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
+        refused = self.cli("clean", task["task"], "--session", "test-session", ok=False)
+        self.assertIn("Scratch identity changed", refused.stderr)
+        self.assertEqual(sentinel.read_text(), "replacement")
+        sentinel.unlink()
+        scratch.rmdir()
+        moved.rename(scratch)
+        record = self.root / ".keld-work" / "sessions" / "test-session" / "scratch-owners" / (scratch.name + ".json")
+        value = json.loads(record.read_text())
+        for key, bad in [("session", "other-session"), ("token", "../outside")]:
+            record.write_text(json.dumps(dict(value, **{key: bad})), encoding="utf-8")
+            refused = self.cli("clean", task["task"], "--session", "test-session", ok=False)
+            self.assertIn("Invalid scratch ownership", refused.stderr)
+            self.assertTrue(scratch.exists())
+        record.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_clean_preserves_evidence_of_every_released_task_in_session(self):
+        self.assert_released_artifact_preserved("hash")
+
+    def test_clean_preserves_receipt_of_another_released_task(self):
+        self.assert_released_artifact_preserved("receipt")
+
+    def test_clean_preserves_retained_file_of_another_released_task(self):
+        self.assert_released_artifact_preserved("file")
+
+    def test_clean_preserves_retained_directory_of_another_released_task(self):
+        self.assert_released_artifact_preserved("directory")
+
+    def retain_artifact_in_scratch(self, receipt, scratch, kind):
+        """Create a receipt-owned input; native deletion and the validator are the oracles."""
+        value = json.loads(receipt.read_text())
+        artifact = scratch / ("retained-" + kind)
+        if kind == "receipt":
+            receipt = artifact
+        elif kind == "hash":
+            artifact.write_text("retain hashed evidence", encoding="utf-8")
+            value["findings_review"].append(self.proof(artifact))
+        else:
+            if kind == "directory":
+                artifact.mkdir()
+            else:
+                artifact.write_text("retain declared resource", encoding="utf-8")
+            value["resources"].append({"id": "artifact", "path": str(artifact), "status": "retained",
+                                       "reason": "Keep this resource after cleanup"})
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        return receipt, artifact
+
+    def assert_released_artifact_preserved(self, kind):
+        first = self.start()
+        second = json.loads(self.cli("start", "kel-245", "second", "--session", "test-session").stdout)
+        scratch = self.run_scratch(second)
+        sentinel = scratch / "disposable.txt"
+        sentinel.write_text("no partial deletion", encoding="utf-8")
+        first_receipt = self.closeout(first)
+        value = json.loads(first_receipt.read_text())
+        baseline = Path(value["baseline"]["path"])
+        first_baseline = baseline.with_name("first-baseline.json")
+        first_baseline.write_bytes(baseline.read_bytes())
+        value["baseline"] = self.proof(first_baseline)
+        saved_first = first_receipt.with_name("first-release.json")
+        saved_first.write_text(json.dumps(value), encoding="utf-8")
+        second_receipt, artifact = self.retain_artifact_in_scratch(self.closeout(second), scratch, kind)
+        self.cli("finish", first["task"], "--session", "test-session", "--receipt", str(saved_first))
+        self.cli("finish", second["task"], "--session", "test-session", "--receipt", str(second_receipt))
+        self.assertEqual(workspace.session_closeout.check(second_receipt), "complete")
+        refused = self.cli("clean", first["task"], "--session", "test-session", "--apply",
+                           "--receipt", str(self.cleanup_receipt(first, scratch, saved_first)), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertTrue(artifact.exists())
+        self.assertEqual(sentinel.read_text(), "no partial deletion")
+        self.assertEqual(workspace.session_closeout.check(saved_first), "complete")
+        self.assertEqual(workspace.session_closeout.check(second_receipt), "complete")
+
+    def test_clean_preserves_prepared_cleanup_receipt(self):
+        self.assert_prepared_artifact_preserved("receipt")
+
+    def test_clean_preserves_prepared_cleanup_evidence(self):
+        self.assert_prepared_artifact_preserved("hash")
+
+    def test_clean_preserves_prepared_cleanup_retained_file(self):
+        self.assert_prepared_artifact_preserved("file")
+
+    def test_clean_preserves_prepared_cleanup_retained_directory(self):
+        self.assert_prepared_artifact_preserved("directory")
+
+    def assert_prepared_artifact_preserved(self, kind):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        sentinel = scratch / "disposable.txt"
+        sentinel.write_text("no partial deletion", encoding="utf-8")
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        cleanup, artifact = self.retain_artifact_in_scratch(self.cleanup_receipt(task, scratch, release), scratch, kind)
+        receipt_bytes = cleanup.read_bytes()
+        refused = self.cli("clean", task["task"], "--session", "test-session", "--apply",
+                           "--receipt", str(cleanup), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertTrue(artifact.exists())
+        self.assertEqual(cleanup.read_bytes(), receipt_bytes)
+        self.assertEqual(sentinel.read_text(), "no partial deletion")
+        self.assertEqual(workspace.session_closeout.check(release), "complete")
+
+    def test_short_scratch_referenced_evidence_is_not_deleted(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        proof = scratch / "proof.txt"
+        proof.write_text("retained", encoding="utf-8")
+        receipt = self.closeout(task, proof)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(receipt))
+        refused = self.cli("clean", task["task"], "--session", "test-session", ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertEqual(proof.read_text(), "retained")
+
+    def test_reference_run_reuses_short_scratch_and_records_session(self):
+        task = self.start()
+        result = self.cli("reference-run", "--", sys.executable, "-c",
+                          "import os; print(os.environ['TMPDIR'])",
+                          env=dict(os.environ, KELD_WORK_SESSION="test-session"))
+        scratch = Path(result.stdout.strip())
+        self.assertEqual(scratch.parent, self.root / ".keld-work" / "tmp")
+        self.assertEqual(workspace.session_scratch(workspace.context(self.root), "test-session"), [scratch])
+        second = self.run_scratch(task)
+        self.assertNotEqual(scratch, second)
+
     def test_finish_and_clean_refuse_dirty_or_hostile_targets(self):
         task = self.start()
         (Path(task["path"]) / "untracked.txt").write_text("preserve", encoding="utf-8")
@@ -407,6 +774,7 @@ class WorkspaceTests(unittest.TestCase):
         outside = self.root.parent / "outside-sentinel"
         outside.mkdir()
         (outside / "keep.txt").write_text("keep", encoding="utf-8")
+        scratch.parent.mkdir(parents=True, exist_ok=True)
         try:
             scratch.symlink_to(outside, target_is_directory=True)
         except OSError as error:
@@ -475,7 +843,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(len(value["removed"]), 1)
         self.assertIn(value["removed"][0], {str(scratch / "a.txt"), str(scratch / "b.txt")})
 
-    def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
+    def test_retained_legacy_scratch_is_refused_before_deletion(self):
         task = self.start()
         self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(self.closeout(task)))
         scratch = self.root / ".keld-work" / "sessions" / "test-session" / "scratch"
@@ -485,7 +853,33 @@ class WorkspaceTests(unittest.TestCase):
         value = json.loads(receipt.read_text())
         value["resources"][0]["status"] = "retained"
         receipt.write_text(json.dumps(value), encoding="utf-8")
-        self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt), ok=False)
+        refused = self.cli("clean", task["task"], "--session", "test-session", "--apply", "--receipt", str(receipt), ok=False)
+        self.assertIn("Scratch is referenced", refused.stderr)
+        self.assertEqual((scratch / "remove.txt").read_text(), "scratch")
+        self.assertEqual(list((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*")), [])
+
+    def test_invalid_post_cleanup_receipt_is_recorded_as_failure(self):
+        task = self.start()
+        scratch = self.run_scratch(task)
+        release = self.closeout(task)
+        self.cli("finish", task["task"], "--session", "test-session", "--receipt", str(release))
+        receipt = self.cleanup_receipt(task, scratch, release)
+        proof = self.root.parent / "current-only-proof.txt"
+        proof.write_text("available before cleanup", encoding="utf-8")
+        value = json.loads(receipt.read_text())
+        value["findings_review"].append(self.proof(proof))
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        original = workspace.remove_disposable_tree
+        def lose_proof_after_removal(nodes, recorded):
+            original(nodes, recorded)
+            # An external loss after admission must still fail final validation and be journaled.
+            proof.unlink()
+        with mock.patch.object(workspace, "remove_disposable_tree", lose_proof_after_removal):
+            with self.assertRaisesRegex(workspace.session_closeout.Invalid, "evidence file missing"):
+                workspace.clean(workspace.context(self.root), task["task"], "test-session", True, receipt)
+        self.assertFalse(scratch.exists())
+        self.assertFalse(proof.exists())
+        self.assertEqual(workspace.session_closeout.check(release), "complete")
         result = next((self.root / ".keld-work" / "sessions" / "test-session" / "evidence").glob("clean-*/result.json"))
         self.assertEqual(json.loads(result.read_text())["state"], "failed")
 

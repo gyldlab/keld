@@ -20,7 +20,7 @@ For the complete verification gate, also install:
 
 | Tool | Purpose |
 |---|---|
-| Python 3.9+ | Standard-library session verification; `python` on Windows, `python3` elsewhere |
+| Python 3.9+ | Standard-library session verification; Windows workspace mutation requires final CPython 3.9.20+, 3.10.15+, 3.11.10+, 3.12.4+ or 3.13+ within Python 3; `python` on Windows, `python3` elsewhere |
 | `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
 | `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
@@ -500,8 +500,19 @@ branches and another session's ownership are never overwritten. Repeating the sa
 start returns that session's valid task. These records do not replace the Linear claim.
 
 The returned task path is `.keld-work/worktrees/kel-245-workspace`. Run evidence lives in
-`.keld-work/sessions/manual-session-1/evidence/run-ID/`, with scratch in the sibling
-`scratch/run-ID/`. Each run streams output and retains at most 4 MiB per stdout/stderr
+`.keld-work/sessions/manual-session-1/evidence/run-ID/`. Scratch uses a private
+`.keld-work/tmp/<short-token>/` directory; the session retains its run and filesystem
+identity in `scratch-owners/`. This keeps long session names out of Unix socket paths.
+On Windows, task/session metadata is admitted before allocation only when its generated
+absolute directory/file paths fit the conservative 247/259 UTF-16-unit support cell,
+including atomic replacement names. A refusal identifies the path: use a shorter real
+primary checkout, preserving the session identity and evidence. This applies even on
+hosts configured for longer paths; arbitrary child paths have their own limits.
+Workspace mutation also requires the patched final CPython versions listed above so
+`mkdtemp` creates private scratch even below a shared parent. Unsupported runtimes
+refuse before writes; use a supported final CPython and retain existing session data.
+Very long primary checkout paths can still exceed native socket limits; use a shorter
+real primary path for those suites. Each run streams output and retains at most 4 MiB per stdout/stderr
 tail by default; `--log-limit-mib` accepts 1–64 per stream before the `--` separator.
 `result.json` records exit status and omitted bytes, never an environment or raw argv
 dump. Truncated output is not complete evidence. Internal capture/spawn failures return
@@ -529,7 +540,7 @@ takeover. Keep evidence and source while completing the remaining cleanup integr
 `work-finish` requires an owned task, a clean checkout with no content missing from
 local `origin/main`, and a complete closeout receipt for the same checkout/session. It
 only releases the local task record. `work-clean` previews the exact released session's
-scratch directory by default; `--apply` requires a prepared current-turn receipt,
+recorded scratch directories and legacy session scratch by default; `--apply` requires a prepared current-turn receipt,
 revalidates it then removes scratch only and validates the receipt after the mutation. It
 retains evidence, the Git worktree and branch, all caches, all legacy folders and any
 unsupported/link/reparse/mount/nested-Git target. Pre-mutation admission failures perform
