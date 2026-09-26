@@ -690,9 +690,8 @@ const report = (outcome, trackKind = "none", trackCount = 0, liveBeforeStop = fa
                     .expect("write malformed followup");
             }
             drop(preconnect);
-            let error = match server.join().expect("join HTTP server") {
-                Ok(_) => panic!("malformed request must fail"),
-                Err(error) => error,
+            let Err(error) = server.join().expect("join HTTP server") else {
+                panic!("malformed request must fail");
             };
             assert!(matches!(
                 events.try_recv(),
@@ -804,7 +803,7 @@ const report = (outcome, trackKind = "none", trackCount = 0, liveBeforeStop = fa
                         break;
                     }
                     Ok(super::RequestRead::Pending) => {
-                        assert!(std::time::Instant::now() < deadline)
+                        assert!(std::time::Instant::now() < deadline);
                     }
                     Ok(_) => panic!("truncated request was accepted"),
                 }
@@ -828,7 +827,7 @@ const report = (outcome, trackKind = "none", trackCount = 0, liveBeforeStop = fa
                 loop {
                     match request.read_path() {
                         Ok(super::RequestRead::Pending) => {
-                            assert!(std::time::Instant::now() < deadline)
+                            assert!(std::time::Instant::now() < deadline);
                         }
                         Ok(super::RequestRead::Complete(path)) => {
                             assert_eq!(size, super::MAX_REQUEST_BYTES - 1);
@@ -861,7 +860,7 @@ const report = (outcome, trackKind = "none", trackCount = 0, liveBeforeStop = fa
                         break;
                     }
                     Ok(super::RequestRead::Pending) => {
-                        assert!(std::time::Instant::now() < deadline)
+                        assert!(std::time::Instant::now() < deadline);
                     }
                     Ok(_) => panic!("stalled request was accepted"),
                 }
