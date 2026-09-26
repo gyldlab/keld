@@ -369,6 +369,11 @@ mod tests {
             std::fs::read(outside.join("sentinel")).expect("outside after create"),
             b"unchanged"
         );
+        // Positive control for the unsafe alternative: an ambient writer using
+        // the replaced spelling really escapes to the outside fixture directory.
+        std::fs::create_dir(original.join("ambient-control")).expect("ambient write control");
+        assert!(outside.join("ambient-control").is_dir());
+        assert!(!moved.join("ambient-control").exists());
         drop(child);
         drop(parent);
         std::fs::remove_dir(&original).expect("remove junction itself before fixture cleanup");
