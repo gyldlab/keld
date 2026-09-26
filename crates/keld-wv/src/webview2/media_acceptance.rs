@@ -927,14 +927,16 @@ mod tests {
     #[test]
     fn media_http_failure_publishes_result_and_wakes_ui_thread() {
         use std::net::{Shutdown, TcpStream};
-        use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW};
+        use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_APP};
 
         let mut message = MSG::default();
-        // SAFETY: initializes this test thread's queue and removes only its
-        // own stale WM_NULL messages before observing the worker's wake.
-        unsafe {
-            while PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE).as_bool() {}
-        }
+        // SAFETY: initializes this test thread's queue and drains its stale
+        // messages. A zero/zero filter means all messages, not only WM_NULL.
+        unsafe { while PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE).as_bool() {} }
+        // SAFETY: an unrelated pointer-free message to this test's own queue
+        // must neither satisfy the wake oracle nor hide a following WM_NULL.
+        unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_APP, WPARAM(0), LPARAM(0)) }
+            .expect("queue unrelated message");
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed HTTP fixture");
         let address = listener.local_addr().expect("failed HTTP address");
         let (_release, release_rx) = mpsc::channel();
@@ -964,9 +966,16 @@ mod tests {
                 .to_string()
                 .contains("header terminator")
         );
-        // SAFETY: reads/removes the wake from this test's own thread queue.
+        let mut observed_wake = false;
+        // SAFETY: the worker has joined. Inspect only this test's own queued
+        // messages and require the actual wake identity, not any queued item.
+        unsafe {
+            while PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                observed_wake |= message.message == WM_NULL;
+            }
+        }
         assert!(
-            unsafe { PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE).as_bool() },
+            observed_wake,
             "worker result did not wake the Windows message pump"
         );
     }
