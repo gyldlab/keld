@@ -1,6 +1,6 @@
 [package]
 name = "keld-pack"
-description = "Installer format types for Keld packaging"
+description = "Canonical Windows v0 update package production for Keld"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,14 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+
+[target.'cfg(windows)'.dependencies]
+# KEL-263: reuse the guard-owned native namespace validator and the existing
+# workspace-pinned BLAKE3/zstd primitives. No new third-party version or feature;
+# producer-only compression stays absent from non-Windows pack builds.
+keld-guard = { workspace = true }
+blake3 = { workspace = true }
+zstd = { workspace = true }
 
 [lints]
 workspace = true

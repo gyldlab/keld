@@ -12,7 +12,7 @@ use crate::error::{ManifestIdentityField, UpdateError};
 use crate::provenance::{AdmittedInstallation, ArtifactIdentity};
 
 const V0_SCHEMA: u64 = 1;
-const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
+use keld_pack::MAX_ARTIFACT_BYTES as JSON_SAFE_INTEGER_MAX;
 
 /// Result of authenticating, validating, and floor-filtering one v0 manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]

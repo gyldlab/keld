@@ -754,5 +754,29 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-UPDATE-011
 
 - crate: keld-update
-- message: Verified package bytes do not match the canonical Windows v0 archive profile
-- fix: Discard the candidate and publish a canonical package signed by the release key.
+- message: Verified package bytes do not match the canonical Windows v0 archive profile or exact no-migration policy
+- fix: Discard the candidate and publish a canonical package containing the exact required update policy, signed by the release key.
+
+## KELD-PACK-001
+
+- crate: keld-pack
+- message: Windows v0 package production requires a Windows host
+- fix: Build this package on Windows for native namespace admission. No output was written.
+
+## KELD-PACK-002
+
+- crate: keld-pack
+- message: Package metadata or its Windows namespace is invalid
+- fix: Supply a complete regular-file/directory tree with canonical Windows names and leave the update policy file to the producer. No output was written.
+
+## KELD-PACK-003
+
+- crate: keld-pack
+- message: A package source does not match its declared byte count
+- fix: Discard partial output and rebuild from sources with correct lengths.
+
+## KELD-PACK-004
+
+- crate: keld-pack
+- message: Package source, sink, or compression processing failed
+- fix: Discard partial output, repair the source or sink, and rebuild the package.

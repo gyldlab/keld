@@ -1613,6 +1613,11 @@ dependencies = [
 [[package]]
 name = "keld-pack"
 version = "0.0.1"
+dependencies = [
+ "blake3",
+ "keld-guard",
+ "zstd",
+]
 
 [[package]]
 name = "keld-runtime"
@@ -1638,6 +1643,7 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "keld-guard",
+ "keld-pack",
  "semver",
  "serde",
  "serde_json",
