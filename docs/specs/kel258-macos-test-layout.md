@@ -1,6 +1,6 @@
 # Spec: macOS no-flag test ownership migration
-Status: implementing
-Linear: KEL-258 (KEL-252 macOS slice) · Owner: Keld maintainers · Updated: 2026-09-26
+Status: native implementation validated
+Linear: KEL-258 (KEL-252 macOS slice) · Owner: Keld maintainers · Updated: 2026-09-27
 
 Human approval: KEL-258 comment `09995d8d-d4b0-4796-8122-041ce68f1f3c` approved the original draft SHA256 `18dd9ea7cf36643664d39b0d6ff2ff1135ce4678531a15dbcfa88835b1c9a668`. That immutable approval artifact is retained; this tracked copy records implementation status without changing the accepted design. Baseline: `699e27097454cbe52e4a0810d6d4daa8713326aa`. Native implementation claim: `c0f5cb9f-5991-4b7e-8d2c-f315216760f7`, refreshed for T1 by `586fb9fc-d388-4fbb-b5a0-6b34c2ec4325`. KEL-252 at `cf60141f938d24df093e7b55488ed5f77ed9d33e` remains draft. KEL-255 supplies the landed Linux migration method; the separate approval above owns this Mac scope.
 
@@ -68,16 +68,18 @@ Do not change production crates, existing fixture program bytes, Linux/Windows t
 
 ## 6. Tasks
 
-- [x] T0: Mac scope approved; main/open work and winning claim refreshed; native Mac Mini, macOS 26.5.1 (25F80), arm64 and desktop execution qualified. Cargo/libtest and nextest baseline inventories contain 31 default cases and 44 profile-hook cases, including 11 ignored cases. Baseline and evidence are bound below. Availability/authority for all 11 operator cells remains UNKNOWN and their execution remains NOT RUN; setup admission does not satisfy those later acceptance cells.
+- [x] T0: Mac scope approved; main/open work and winning claim refreshed; native Mac Mini, macOS 26.5.1 (25F80), arm64 and desktop execution qualified. Cargo/libtest and nextest baseline inventories contain 31 default cases and 44 profile-hook cases, including 11 ignored cases. Baseline and evidence are bound below. At that initial checkpoint all 11 operator cells were unqualified and unrun; the final acceptance section records their later authorized native results.
 - [x] T1: Extracted 50 mapped native process/descriptor/window items, including 13 controls, with both helper root names preserved. All 16 affected native cases pass in default and profile-hook modes. Cargo/libtest and nextest inventories preserve the complete 31/44-case bijection, 11 ignore states and runner groups. Both copied missing-selector controls prove zero selected tests can exit 0 while the parent caller rejects the missing live effect. T6 independent unsafe/layout review and final gates remain open; this family acceptance does not complete the migration.
 - [x] T2: Extracted 22 mapped boot/invalid-stage/admission items, including seven native tests. Default and profile-hook runs each passed 7/7; all 27 invalid-boot and five invalid-policy cases, embedded C/Swift literals, suspended-shell/read-fault setup and no-transient-resource checks were preserved. Root accepted the exact family in KEL-258 comment `6ded20a2-a659-4529-865b-3c3677e81176`; T6 final gates remain open.
 - [x] T3: Extracted 39 mapped product/lifecycle/recovery/CLI items and nine scenarios with unchanged scopes and complete resource owners. All 31 non-profile consumers pass in default and profile-hook modes. Current post-move dev-helper copied caller passes; the absent selector selects zero tests/exit 0 while the mutated caller exits 101 for the missing Bun control connection. Root independently accepted T3 in KEL-258 comment `32e076b3-7ada-417b-b865-e2924510f419`; T6 final gates remain open.
-- [ ] T4: Extract profile fixtures and identity/storage/purge/lifecycle/cross-user/reboot families one qualified family at a time. Keep manual rows/cleanup and exact-name consumers paired with their move. Stop at any unqualified applicable native family, recording its owner/action.
-- [ ] T5: Extract media scenarios/evidence/rendering owners, preserving adopted predicates and real device/prompt controls; native pass. Record read closures and final conservation/discovery mapping.
+- [x] T4: Extract profile fixtures and identity/storage/purge/lifecycle/cross-user/reboot families one qualified family at a time. Keep manual rows/cleanup and exact-name consumers paired with their move. Stop at any unqualified applicable native family, recording its owner/action.
+- [x] T5: Extract media scenarios/evidence/rendering owners, preserving adopted predicates and real device/prompt controls; native pass. Record read closures and final conservation/discovery mapping.
 - [ ] T6: Final full gate, independent unsafe/layout/current-head reviews, actual native/manual results and Windows handoff. No merge while required acceptance is unrun.
 
 
-### Recorded implementation evidence and remaining acceptance
+### Historical staged implementation evidence
+
+The following family records describe their original checkpoints. Their then-unrun manual cells and pending reviews are superseded by the final native acceptance below; original evidence provenance is retained.
 
 The native discovery archive SHA256 is `09d842db723901728868ee8811797e0dd690bd72a14d6a2759be8862b7629620`. The T1 archive SHA256 is `ab1cd8a88da43382661990b4171c8ec68c243a4015d4e23ba6bafa7aee3609e4`; KEL-258 handoff comment `71d2e2f9-a88f-4316-ba8b-82e1e8f66ca3` binds its retained command/output, source and fixture hashes. All 210 source items, including the 50 moved items, and four fixture inputs reconcile. An injected assertion change is rejected by the conservation check. The unchanged copied descriptor and dev-helper callers pass; each deliberately missing selector returns zero tests/exit 0 alone, while its caller exits 101 for the absent listener or Bun control connection. Canonical source was not mutated for those controls.
 
@@ -107,25 +109,29 @@ Only `media::restart_evidence::kel135_macos_media_restart_oracle_rejects_missing
 
 T5 cohesion exception: `media/restart.rs` is 389 formatted lines / 16,416 bytes. Owner: `KEL-258/macOS test maintainer`; tracking issue: KEL-258. Retain the single complete signed-restart scenario so seed/restart/deny/allow/counterexample ordering stays visible. Re-review at the next media scenario or evidence-predicate change. No counter-driven split. The existing dev-cycle/ProfileOrigin exception sizes above include their direct common-constant import paths; owners/reasons/review conditions are unchanged.
 
-T5 independent structural review, T4–T5 native/manual acceptance and final gates remain pending. Overall T4 stays unchecked; all operator cells remain UNKNOWN / NOT RUN. T6 independent exact-diff unsafe/layout/current-head review, full workspace clippy/tests, exact `just ci`, applicable generated-doc checks, final native/manual results and the actual-result Windows handoff remain open. No full migration or merge readiness is claimed.
+### Final native acceptance, 2026-09-27
 
-All 11 operator cells retain their existing prerequisites and assertions. Their current qualification and execution status is:
+The owner authorized all manual actions in this session. All 11 operator rows passed on the real Mac Mini, macOS 26.5.1 (25F80), arm64, at source `b10bf1b10412211cb8d893c6ce363dc7ab898513`. The table records actual execution, including two phases separated by a real macOS reboot. The temporary standard account and its home were independently confirmed absent after cleanup; reboot resume purged the exact store and removed its retained root.
 
-| Operator acceptance cell | Availability/authority | Execution |
+Receipts are under `.keld-work/sessions/01a0d9b7-b974-7ec3-8cbc-fdaf2572b730/evidence/` in the short physical Mac checkout. Linear KEL-258 retains the full command/log locations and external handoff state.
+
+| Operator acceptance cell | Availability/authority | Passing work-run receipt |
 |---|---|---|
-| Signed package identity | UNKNOWN | NOT RUN |
-| Signed cross-launch storage | UNKNOWN | NOT RUN |
-| Fsynced purge recovery | UNKNOWN | NOT RUN |
-| Second-user isolation | UNKNOWN | NOT RUN |
-| Fatal-command cleanup | UNKNOWN | NOT RUN |
-| Concurrent-owner refusal | UNKNOWN | NOT RUN |
-| Persistent-media restart | UNKNOWN | NOT RUN |
-| Query-only media | UNKNOWN | NOT RUN |
-| Dev-media fresh launch | UNKNOWN | NOT RUN |
-| Binding crash recovery | UNKNOWN | NOT RUN |
-| Real two-phase reboot | UNKNOWN | NOT RUN |
+| Signed package identity | Local Apple Development identities; authorized | `run-7e1de2ae24d3446f802569b325c63c04` |
+| Signed cross-launch storage | Signed native WKWebView; authorized | `run-54c3e4a2cfeb45bd8fe9b0c5aa3fd25c` |
+| Fsynced purge recovery | Real store callbacks; authorized | `run-6066786646444ce1a1d862272f6f9940` |
+| Second-user isolation | Temporary standard account; local sudo authentication | `run-197bd9019fc94c65866c4f3341dbee11` |
+| Fatal-command cleanup | Real WKWebView event loop; authorized | `run-c08e05232da840988554d516fd0d68a4` |
+| Concurrent-owner refusal | Signed native host; authorized | `run-bc31816f418d4ca5a066b2bcb8f09ea5` |
+| Persistent-media restart | Camo Camera/External Microphone; real Allow prompts | `run-7a210f6ad3cf4dfd871c388ab559971e` |
+| Query-only media | Signed native host; no capture requested | `run-7f596ae7c7ab41fc94568650e4bb7338` |
+| Dev-media fresh launch | Live Camo Camera/External Microphone; authorized | `run-6cd72abed6d6450e889fb78242bb178a` |
+| Binding crash recovery | Signed native host; authorized | `run-b975f96cb8ea48dcb3778a0cfd32c84c` |
+| Real two-phase reboot | Physical restart authorized; independent boot UUID changed | Prepare `run-193f724e200c4ee7be702f81e2516b76`; resume `run-e942e86a414b424fab40ad2ef861edd4` |
 
-The native owner must establish the applicable signing/device/user/reboot prerequisites and existing operator authority before those actions. Design approval itself does not authorize account creation, permission prompts or a physical reboot. An unavailable applicable cell remains open under the accepted family gates.
+The final code is based on main `951337fcf5d6a950cd85ac556c7151c31ad6a2ad`, including the separately reviewed KEL-267 fixture fix (PR #324). Its LiveCycle lease regression and shared probe were carried into the mapped recovery/product owners during rebase. Registrations are now 32 default and 45 profile-hook total (34 nonignored, 11 ignored); the one additional test is the landed KEL-267 regression. The original 210-item conservation map remains historical evidence for the extraction baseline, with the merged dependency explicitly accounted for rather than silently dropping its added items.
+
+Full local `just ci` at `b10bf1b` passed 813 workspace tests with seven existing skips, format, warning-denied clippy, documentation/instruction gates, Bun/typechecks, pinned Docker renders, rustdoc and cargo-deny (`run-e742fd2dc33b48c592bad5dc5ff27fdd`). Current-base CodeRabbit CLI 0.8.1 reviewed the complete diff: one wording finding was corrected and the follow-up review returned zero findings. Final publication, merge verification, successor handoff and closeout are recorded on KEL-258; final-tip gates are refreshed after this documentation-only evidence update.
 
 ## 7. Test plan
 
