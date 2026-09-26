@@ -23,6 +23,7 @@ mod linux {
     const SERVER_DEADLINE: Duration = Duration::from_secs(20);
     const STREAM_DEADLINE: Duration = Duration::from_secs(2);
     const MAX_REQUEST_BYTES: usize = 16 * 1024;
+    const MAX_PENDING_REQUESTS: usize = 16;
 
     #[derive(Clone, Copy)]
     enum MediaKind {
@@ -346,7 +347,10 @@ mod linux {
         commands: &mpsc::Sender<AppWindowCommand>,
     ) -> Result<ProbeResult, String> {
         let result = serve_until_result(listener, kind, nonce, commands);
-        if result.is_err() {
+        if let Err(error) = &result {
+            // The event loop reports a generic Fatal before the worker is joined.
+            // Keep the originating HTTP error attributable in the probe output.
+            eprintln!("KELD_MEDIA_HTTP_ERROR nonce={nonce} {error}");
             let _ = commands.send(AppWindowCommand::Fatal);
         }
         result
@@ -359,26 +363,56 @@ mod linux {
         commands: &mpsc::Sender<AppWindowCommand>,
     ) -> Result<ProbeResult, String> {
         let deadline = Instant::now() + SERVER_DEADLINE;
+        let mut pending = Vec::<PendingRequest>::new();
         while Instant::now() < deadline {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let path = request_path(&mut stream)?;
-                    if path == format!("/{nonce}/") {
-                        respond_html(&mut stream, kind, nonce)?;
-                    } else if path == format!("/{nonce}/ready") {
-                        await_request_start()?;
-                        respond(&mut stream, "204 No Content", "text/plain", b"")?;
-                    } else if let Some(query) = path.strip_prefix(&format!("/{nonce}/result?")) {
-                        let result = parse_result(query)?;
-                        respond(&mut stream, "204 No Content", "text/plain", b"")?;
-                        await_census()?;
-                        commands
-                            .send(AppWindowCommand::Quit)
-                            .map_err(|_| String::from("window command receiver closed"))?;
-                        return Ok(result);
-                    } else {
-                        respond(&mut stream, "404 Not Found", "text/plain", b"not found")?;
+            let mut index = 0;
+            while index < pending.len() {
+                match pending[index].read_path()? {
+                    RequestRead::Pending => index += 1,
+                    RequestRead::Empty => {
+                        pending.swap_remove(index);
                     }
+                    RequestRead::Complete(path) => {
+                        let mut stream = pending.swap_remove(index).stream;
+                        stream
+                            .set_nonblocking(false)
+                            .map_err(|error| error.to_string())?;
+                        stream
+                            .set_write_timeout(Some(STREAM_DEADLINE))
+                            .map_err(|error| error.to_string())?;
+                        if path == format!("/{nonce}/") {
+                            respond_html(&mut stream, kind, nonce)?;
+                        } else if path == format!("/{nonce}/ready") {
+                            await_request_start()?;
+                            respond(&mut stream, "204 No Content", "text/plain", b"")?;
+                        } else if let Some(query) = path.strip_prefix(&format!("/{nonce}/result?"))
+                        {
+                            let result = parse_result(query)?;
+                            respond(&mut stream, "204 No Content", "text/plain", b"")?;
+                            await_census()?;
+                            commands
+                                .send(AppWindowCommand::Quit)
+                                .map_err(|_| String::from("window command receiver closed"))?;
+                            return Ok(result);
+                        } else {
+                            respond(&mut stream, "404 Not Found", "text/plain", b"not found")?;
+                        }
+                    }
+                }
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if pending.len() == MAX_PENDING_REQUESTS {
+                        return Err(String::from("media HTTP exceeded 16 pending connections"));
+                    }
+                    stream
+                        .set_nonblocking(true)
+                        .map_err(|error| error.to_string())?;
+                    pending.push(PendingRequest {
+                        stream,
+                        bytes: Vec::new(),
+                        last_progress: Instant::now(),
+                    });
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => thread::yield_now(),
                 Err(error) => return Err(error.to_string()),
@@ -433,28 +467,65 @@ mod linux {
         ))
     }
 
-    fn request_path(stream: &mut TcpStream) -> Result<String, String> {
-        stream
-            .set_read_timeout(Some(STREAM_DEADLINE))
-            .map_err(|error| error.to_string())?;
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 1024];
-        while bytes.len() < MAX_REQUEST_BYTES {
-            let read = stream
-                .read(&mut buffer)
-                .map_err(|error| error.to_string())?;
-            if read == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&buffer[..read]);
-            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
+    struct PendingRequest {
+        stream: TcpStream,
+        bytes: Vec<u8>,
+        last_progress: Instant,
+    }
+
+    enum RequestRead {
+        Pending,
+        Empty,
+        Complete(String),
+    }
+
+    impl PendingRequest {
+        fn read_path(&mut self) -> Result<RequestRead, String> {
+            loop {
+                if self.bytes.len() >= MAX_REQUEST_BYTES {
+                    return Err(String::from("HTTP request exceeded 16 KiB"));
+                }
+                let mut buffer = [0_u8; 1024];
+                let available = (MAX_REQUEST_BYTES - self.bytes.len()).min(buffer.len());
+                let read = match self.stream.read(&mut buffer[..available]) {
+                    Ok(read) => read,
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        // A browser may hold an unused preconnection. Once bytes
+                        // arrive, retain the original two-second progress bound.
+                        if !self.bytes.is_empty() && self.last_progress.elapsed() >= STREAM_DEADLINE
+                        {
+                            return Err(String::from(
+                                "HTTP request stalled before the header terminator",
+                            ));
+                        }
+                        return Ok(RequestRead::Pending);
+                    }
+                    Err(error) => return Err(error.to_string()),
+                };
+                if read == 0 {
+                    return if self.bytes.is_empty() {
+                        Ok(RequestRead::Empty)
+                    } else {
+                        Err(String::from(
+                            "HTTP request ended before the header terminator",
+                        ))
+                    };
+                }
+                self.bytes.extend_from_slice(&buffer[..read]);
+                self.last_progress = Instant::now();
+                if self.bytes.len() >= MAX_REQUEST_BYTES {
+                    return Err(String::from("HTTP request exceeded 16 KiB"));
+                }
+                if self.bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    return request_path(&self.bytes).map(RequestRead::Complete);
+                }
             }
         }
-        if bytes.len() >= MAX_REQUEST_BYTES {
-            return Err(String::from("HTTP request exceeded 16 KiB"));
-        }
-        let request = std::str::from_utf8(&bytes).map_err(|error| error.to_string())?;
+    }
+
+    fn request_path(bytes: &[u8]) -> Result<String, String> {
+        let request = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
         let line = request
             .lines()
             .next()
@@ -569,6 +640,234 @@ const report = (outcome, trackKind = "none", trackCount = 0, liveBeforeStop = fa
     #[cfg(test)]
     mod tests {
         use super::{ExpectedOutcome, MediaKind, ProbeResult, parse_bool, parse_primer_count};
+
+        fn preconnect_then_page(empty_eof: bool, peers: usize) {
+            use std::io::{Read, Write};
+            use std::net::{Shutdown, TcpListener, TcpStream};
+            use std::sync::mpsc;
+            use std::thread;
+            use std::time::Duration;
+
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind HTTP fixture");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking listener");
+            let address = listener.local_addr().expect("fixture address");
+            // Queue this peer before starting the server; keep the idle case
+            // open until the independent page response has been observed.
+            let preconnect = (0..peers)
+                .map(|_| {
+                    let peer = TcpStream::connect(address).expect("queue preconnect");
+                    if empty_eof {
+                        peer.shutdown(Shutdown::Write).expect("empty EOF");
+                    }
+                    peer
+                })
+                .collect::<Vec<_>>();
+            let (commands, events) = mpsc::channel();
+            let server = thread::spawn(move || {
+                super::serve(
+                    &listener,
+                    MediaKind::Microphone,
+                    "socket-control",
+                    &commands,
+                )
+            });
+            let page = (|| -> std::io::Result<String> {
+                let mut client = TcpStream::connect(address)?;
+                client.set_read_timeout(Some(Duration::from_secs(5)))?;
+                client.write_all(b"GET /socket-control/ HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+                let mut response = String::new();
+                client.read_to_string(&mut response)?;
+                Ok(response)
+            })();
+            // A malformed followup terminates the server through its real error
+            // path. It must remain fatal after an empty/idle peer was tolerated.
+            if page.is_ok() {
+                let mut invalid = TcpStream::connect(address).expect("connect malformed followup");
+                invalid
+                    .write_all(b"POST / HTTP/1.1\r\n\r\n")
+                    .expect("write malformed followup");
+            }
+            drop(preconnect);
+            let error = match server.join().expect("join HTTP server") {
+                Ok(_) => panic!("malformed request must fail"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                events.try_recv(),
+                Ok(super::AppWindowCommand::Fatal)
+            ));
+            let response = page.expect("preconnect must not prevent a healthy page response");
+            assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+            assert!(
+                response.contains("{ audio: true, video: false }"),
+                "{response}"
+            );
+            assert!(response.contains("/socket-control/ready"), "{response}");
+            assert_eq!(error, "media probe accepts only GET");
+        }
+
+        #[test]
+        fn empty_preconnect_does_not_abort_healthy_page() {
+            preconnect_then_page(true, 1);
+        }
+
+        #[test]
+        fn idle_preconnect_does_not_block_healthy_page() {
+            preconnect_then_page(false, 1);
+        }
+
+        #[test]
+        fn pending_connection_limit_accepts_sixteenth_and_rejects_seventeenth() {
+            preconnect_then_page(false, 15);
+            let listener =
+                std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind limited server");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking limited server");
+            let address = listener.local_addr().expect("limited address");
+            let peers = (0..17)
+                .map(|_| std::net::TcpStream::connect(address).expect("queue limited peer"))
+                .collect::<Vec<_>>();
+            let (commands, events) = std::sync::mpsc::channel();
+            let result = super::serve(&listener, MediaKind::Camera, "connection-limit", &commands);
+            assert!(
+                matches!(result, Err(error) if error == "media HTTP exceeded 16 pending connections")
+            );
+            assert!(matches!(
+                events.try_recv(),
+                Ok(super::AppWindowCommand::Fatal)
+            ));
+            drop(peers);
+        }
+
+        fn request_pair() -> (std::net::TcpStream, super::PendingRequest) {
+            let listener =
+                std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind request pair");
+            let client = std::net::TcpStream::connect(listener.local_addr().expect("pair address"))
+                .expect("connect request pair");
+            let (stream, _) = listener.accept().expect("accept request pair");
+            stream
+                .set_nonblocking(true)
+                .expect("nonblocking request peer");
+            (
+                client,
+                super::PendingRequest {
+                    stream,
+                    bytes: Vec::new(),
+                    last_progress: std::time::Instant::now(),
+                },
+            )
+        }
+
+        #[test]
+        fn split_headers_wait_for_terminator_and_preserve_path() {
+            use std::io::Write;
+            let (mut client, mut request) = request_pair();
+            client
+                .write_all(b"GET /split HTTP/1.1\r\nHost: localhost\r\n")
+                .expect("partial headers");
+            assert!(matches!(
+                request.read_path().expect("pending headers"),
+                super::RequestRead::Pending
+            ));
+            client.write_all(b"\r\n").expect("header terminator");
+            let deadline = std::time::Instant::now() + super::STREAM_DEADLINE;
+            loop {
+                match request.read_path().expect("complete headers") {
+                    super::RequestRead::Complete(path) => {
+                        assert_eq!(path, "/split");
+                        break;
+                    }
+                    super::RequestRead::Pending => assert!(std::time::Instant::now() < deadline),
+                    super::RequestRead::Empty => panic!("live request became empty"),
+                }
+            }
+        }
+
+        #[test]
+        fn truncated_headers_remain_fatal() {
+            use std::io::Write;
+            let (mut client, mut request) = request_pair();
+            client
+                .write_all(b"GET /truncated HTTP/1.1\r\n")
+                .expect("truncated headers");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("end incomplete request");
+            let deadline = std::time::Instant::now() + super::STREAM_DEADLINE;
+            loop {
+                match request.read_path() {
+                    Err(error) => {
+                        assert_eq!(error, "HTTP request ended before the header terminator");
+                        break;
+                    }
+                    Ok(super::RequestRead::Pending) => {
+                        assert!(std::time::Instant::now() < deadline)
+                    }
+                    Ok(_) => panic!("truncated request was accepted"),
+                }
+            }
+        }
+
+        #[test]
+        fn header_size_boundary_remains_bounded() {
+            use std::io::Write;
+            for size in [
+                super::MAX_REQUEST_BYTES - 1,
+                super::MAX_REQUEST_BYTES,
+                super::MAX_REQUEST_BYTES + 1,
+            ] {
+                let (mut client, mut request) = request_pair();
+                let mut bytes = b"GET /limit HTTP/1.1\r\nX: ".to_vec();
+                bytes.resize(size - 4, b'x');
+                bytes.extend_from_slice(b"\r\n\r\n");
+                client.write_all(&bytes).expect("write bounded headers");
+                let deadline = std::time::Instant::now() + super::STREAM_DEADLINE;
+                loop {
+                    match request.read_path() {
+                        Ok(super::RequestRead::Pending) => {
+                            assert!(std::time::Instant::now() < deadline)
+                        }
+                        Ok(super::RequestRead::Complete(path)) => {
+                            assert_eq!(size, super::MAX_REQUEST_BYTES - 1);
+                            assert_eq!(path, "/limit");
+                            break;
+                        }
+                        Err(error) => {
+                            assert!(size >= super::MAX_REQUEST_BYTES);
+                            assert_eq!(error, "HTTP request exceeded 16 KiB");
+                            break;
+                        }
+                        Ok(super::RequestRead::Empty) => panic!("live request became empty"),
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn partial_header_stall_keeps_two_second_bound() {
+            use std::io::Write;
+            let (mut client, mut request) = request_pair();
+            client
+                .write_all(b"GET /stalled")
+                .expect("start incomplete request");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match request.read_path() {
+                    Err(error) => {
+                        assert_eq!(error, "HTTP request stalled before the header terminator");
+                        break;
+                    }
+                    Ok(super::RequestRead::Pending) => {
+                        assert!(std::time::Instant::now() < deadline)
+                    }
+                    Ok(_) => panic!("stalled request was accepted"),
+                }
+                std::thread::yield_now();
+            }
+        }
 
         fn allowed_result(kind: &str, count: usize, live: bool, ended: bool) -> ProbeResult {
             ProbeResult {
