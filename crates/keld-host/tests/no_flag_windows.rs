@@ -17,6 +17,14 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "../../keld-wv/tests/fixtures/windows_renderer_http.rs"]
+mod windows_renderer_http;
+use windows_renderer_http::{
+    PendingRendererRequest, RENDERER_CONNECTION_LIMIT, RENDERER_REQUEST_HEADER_LIMIT,
+    RENDERER_REQUEST_LINE_LIMIT, RendererRequestRead, accept_renderer_connection,
+    read_renderer_request_line,
+};
+
 use serde_json::Value;
 use windows_sys::Win32::Foundation::{
     CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0,
@@ -35,9 +43,6 @@ const DARK_BG: &str = "<style>html,body{background:#111;color:#eee}</style>";
 const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
-const RENDERER_CONNECTION_LIMIT: usize = 16;
-const RENDERER_REQUEST_LINE_LIMIT: usize = 2048;
-const RENDERER_REQUEST_HEADER_LIMIT: usize = 8192;
 const CONTROL_LINE_LIMIT: usize = 4096;
 const SYSTEM_EXTENDED_HANDLE_INFORMATION: u32 = 64;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820;
@@ -1998,25 +2003,10 @@ fn serve_profile_state_loop(
             }
         }
 
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if pending.len() == RENDERER_CONNECTION_LIMIT {
-                    return Err(format!(
-                        "profile state server exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
-                    ));
-                }
-                stream
-                    .set_nonblocking(true)
-                    .map_err(|error| format!("set profile state stream nonblocking: {error}"))?;
-                pending.push(PendingRendererRequest {
-                    stream,
-                    request: Vec::new(),
-                });
-                continue;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(format!("accept profile state request: {error}")),
+        if accept_renderer_connection(listener, &mut pending, "profile state server")? {
+            continue;
         }
+
         thread::park_timeout(remaining.min(RENDERER_ACCEPT_POLL));
     }
 }
@@ -3116,18 +3106,6 @@ fn finish_renderer_beacon(
     result.map_err(|error| format!("{context}: {error}"))
 }
 
-struct PendingRendererRequest {
-    stream: TcpStream,
-    request: Vec<u8>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RendererRequestRead {
-    Pending,
-    Empty,
-    Complete(Vec<u8>),
-}
-
 fn serve_renderer_beacon_until(listener: &TcpListener, deadline: Instant) -> Result<(), String> {
     let (deadline_tx, deadline_rx) = mpsc::channel();
     deadline_tx
@@ -3209,24 +3187,8 @@ fn serve_renderer_beacon_loop_with_clock(
             }
         }
 
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if pending.len() == RENDERER_CONNECTION_LIMIT {
-                    return Err(format!(
-                        "renderer beacon exceeded {RENDERER_CONNECTION_LIMIT} pending connections"
-                    ));
-                }
-                stream
-                    .set_nonblocking(true)
-                    .map_err(|error| format!("set renderer beacon stream nonblocking: {error}"))?;
-                pending.push(PendingRendererRequest {
-                    stream,
-                    request: Vec::new(),
-                });
-                continue;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(format!("accept renderer beacon: {error}")),
+        if accept_renderer_connection(listener, &mut pending, "renderer beacon")? {
+            continue;
         }
 
         // This only backs off the nonblocking kernel poll; socket readiness
@@ -3242,81 +3204,6 @@ fn renderer_beacon_remaining(deadline: Instant, now: Instant) -> Result<Duration
         .checked_duration_since(now)
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| "renderer beacon deadline elapsed before the exact request".to_owned())
-}
-
-fn read_renderer_request_line(
-    request: &mut Vec<u8>,
-    mut read_chunk: impl FnMut(&mut [u8]) -> std::io::Result<usize>,
-) -> Result<RendererRequestRead, String> {
-    loop {
-        if request.len() == RENDERER_REQUEST_HEADER_LIMIT {
-            return Err(format!(
-                "renderer beacon request headers exceeded {RENDERER_REQUEST_HEADER_LIMIT} bytes"
-            ));
-        }
-        let mut chunk = [0_u8; 256];
-        let available = (RENDERER_REQUEST_HEADER_LIMIT - request.len()).min(chunk.len());
-        let read = match read_chunk(&mut chunk[..available]) {
-            Ok(read) => read,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                return Ok(RendererRequestRead::Pending);
-            }
-            Err(error) if request.is_empty() && error.kind() == std::io::ErrorKind::TimedOut => {
-                return Ok(RendererRequestRead::Pending);
-            }
-            Err(error)
-                if request.is_empty()
-                    && matches!(
-                        error.kind(),
-                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
-                    ) =>
-            {
-                return Ok(RendererRequestRead::Empty);
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
-                ) =>
-            {
-                return Err(format!(
-                    "renderer beacon request reset after {} bytes: {error}",
-                    request.len()
-                ));
-            }
-            Err(error) => return Err(format!("read renderer beacon request: {error}")),
-        };
-        if read == 0 {
-            return if request.is_empty() {
-                Ok(RendererRequestRead::Empty)
-            } else {
-                Err(format!(
-                    "renderer beacon request ended before the header terminator: {}",
-                    String::from_utf8_lossy(request)
-                ))
-            };
-        }
-        request.extend_from_slice(&chunk[..read]);
-        if let Some(line_end) = request.windows(2).position(|bytes| bytes == b"\r\n") {
-            if line_end + 2 > RENDERER_REQUEST_LINE_LIMIT {
-                return Err(format!(
-                    "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
-                ));
-            }
-            // Consume the complete request headers before a Connection: close
-            // response. Closing with unread incoming bytes can reset the socket
-            // and discard a larger HTML/worker response in the browser.
-            if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let mut complete = std::mem::take(request);
-                complete.truncate(line_end);
-                return Ok(RendererRequestRead::Complete(complete));
-            }
-        } else if request.len() >= RENDERER_REQUEST_LINE_LIMIT {
-            return Err(format!(
-                "renderer beacon request line exceeded {RENDERER_REQUEST_LINE_LIMIT} bytes"
-            ));
-        }
-    }
 }
 
 #[test]

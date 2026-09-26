@@ -9,7 +9,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[path = "../../tests/fixtures/windows_renderer_http.rs"]
+mod windows_renderer_http;
+use windows_renderer_http::{
+    PendingRendererRequest, RendererRequestRead, accept_renderer_connection,
+    read_renderer_request_line,
+};
 
 use keld_guard::{Decision, PermissionsManifest, Principal};
 use tao::platform::windows::EventLoopBuilderExtWindows;
@@ -139,15 +146,20 @@ fn failure(detail: impl std::fmt::Display) -> WvError {
     WvError::Webview(format!("media acceptance: {detail}"))
 }
 
-fn send_and_wake<T>(sender: &mpsc::Sender<T>, value: T) -> windows::core::Result<()> {
+fn send_and_wake<T>(
+    sender: &mpsc::Sender<T>,
+    value: T,
+    thread_id: u32,
+) -> windows::core::Result<()> {
     sender
         .send(value)
         .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
-    // SAFETY: callbacks run on the owning UI STA after tao created its queue.
+    // SAFETY: thread_id identifies the owning UI STA. Only a wake message is
+    // posted; no COM object or window is accessed from the HTTP worker.
     // GetMessage can dispatch a sent COM message without returning. A posted
     // WM_NULL makes wait_with_pump return to its receiver check even in that case.
     // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmessagew
-    unsafe { PostThreadMessageW(GetCurrentThreadId(), WM_NULL, WPARAM(0), LPARAM(0)) }
+    unsafe { PostThreadMessageW(thread_id, WM_NULL, WPARAM(0), LPARAM(0)) }
 }
 
 fn owned_string(pointer: PWSTR) -> Result<String, WvError> {
@@ -367,7 +379,14 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
 </script>"
     );
     let (release_tx, release_rx) = mpsc::channel();
-    let server = serve_page(listener, html, nonce, release_rx);
+    let (message_tx, message_rx) = mpsc::channel();
+    let server = serve_page(
+        listener,
+        html,
+        nonce,
+        release_rx,
+        http_error_reporter(message_tx.clone()),
+    );
     let expected_manifest = manifest_fingerprint(&manifest);
     EVIDENCE.with_borrow_mut(|e| {
         *e = Evidence {
@@ -403,7 +422,7 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
         // SAFETY: token was recorded from this live view's actual registration.
         unsafe { view.webview.remove_PermissionRequested(token) }.map_err(failure)?;
     }
-    let message_rx = observe_request(&view.webview, mode, &url)?;
+    observe_request(&view.webview, mode, &url, message_tx)?;
     println!("KELD_MEDIA_PHASE observers-ready");
     release_tx
         .send(())
@@ -630,7 +649,8 @@ fn observe_request(
     view: &ICoreWebView2,
     mode: &str,
     expected_url: &str,
-) -> Result<mpsc::Receiver<Result<String, WvError>>, WvError> {
+    message_tx: mpsc::Sender<Result<String, WvError>>,
+) -> Result<(), WvError> {
     let mut control_token = 0;
     if mode != "guarded" {
         let registered_identity = super::canonical_webview_identity(view).map_err(failure)?;
@@ -694,7 +714,8 @@ fn observe_request(
         .map_err(failure)?;
     }
     let expected_url = expected_url.to_owned();
-    let (message_tx, message_rx) = mpsc::channel();
+    // SAFETY: unconditional query on the registering UI thread.
+    let thread_id = unsafe { GetCurrentThreadId() };
     let mut message_token = 0;
     // SAFETY: view remains live until message completion and controller shutdown.
     unsafe {
@@ -716,14 +737,14 @@ fn observe_request(
                         Err(failure("message came from the wrong source"))
                     }
                 });
-                send_and_wake(&message_tx, result)?;
+                send_and_wake(&message_tx, result, thread_id)?;
                 Ok(())
             })),
             &raw mut message_token,
         )
     }
     .map_err(failure)?;
-    Ok(message_rx)
+    Ok(())
 }
 
 fn fixture_environment(directory: &Path) -> Result<super::ICoreWebView2Environment, WvError> {
@@ -748,60 +769,209 @@ fn fixture_environment_options() -> CoreWebView2EnvironmentOptions {
     options
 }
 
+fn http_error_reporter(
+    sender: mpsc::Sender<Result<String, WvError>>,
+) -> impl FnOnce(&std::io::Error) + Send {
+    // SAFETY: capture the owning thread, never query it from the worker.
+    let thread_id = unsafe { GetCurrentThreadId() };
+    move |error| {
+        eprintln!("KELD_MEDIA_HTTP_ERROR {error}");
+        if let Err(error) = send_and_wake(&sender, Err(failure(error)), thread_id) {
+            eprintln!("KELD_MEDIA_HTTP_WAKE_ERROR {error}");
+        }
+    }
+}
+
 fn serve_page(
     listener: TcpListener,
     html: String,
     nonce: u128,
     release: mpsc::Receiver<()>,
+    on_error: impl FnOnce(&std::io::Error) + Send + 'static,
 ) -> thread::JoinHandle<std::io::Result<()>> {
-    thread::spawn(move || -> std::io::Result<()> {
-        let page = format!("/{nonce}/");
-        let gate = format!("/{nonce}/release");
-        let mut served_page = false;
-        loop {
-            let (mut stream, _) = listener.accept()?;
-            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-            stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-            let mut request = [0_u8; 4096];
-            let count = stream.read(&mut request)?;
-            let first = std::str::from_utf8(&request[..count])
-                .ok()
-                .and_then(|request| request.lines().next())
-                .unwrap_or_default();
-            let path = first
-                .strip_prefix("GET ")
-                .and_then(|rest| rest.split_once(' '))
-                .map(|(path, _)| path)
-                .unwrap_or_default();
-            if path == page {
-                served_page = true;
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
-                    html.len()
-                )?;
-            } else if path == gate && served_page {
-                release
-                    .recv_timeout(Duration::from_secs(10))
-                    .map_err(std::io::Error::other)?;
-                write!(
-                    stream,
-                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                )?;
-                return Ok(());
-            } else {
-                write!(
-                    stream,
-                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                )?;
+    thread::spawn(move || {
+        let result = serve_page_requests(listener, &html, nonce, &release);
+        if let Err(error) = &result {
+            on_error(error);
+        }
+        result
+    })
+}
+
+fn serve_page_requests(
+    listener: TcpListener,
+    html: &str,
+    nonce: u128,
+    release: &mpsc::Receiver<()>,
+) -> std::io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + FIXTURE_DEADLINE;
+    let page = format!("/{nonce}/");
+    let gate = format!("/{nonce}/release");
+    let mut served_page = false;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "media HTTP deadline elapsed")
+            })
+    };
+    let mut pending = Vec::<PendingRendererRequest>::new();
+    loop {
+        remaining()?;
+        let mut index = 0;
+        while index < pending.len() {
+            let PendingRendererRequest { stream, request } = &mut pending[index];
+            match read_renderer_request_line(request, |buffer| stream.read(buffer))
+                .map_err(std::io::Error::other)?
+            {
+                RendererRequestRead::Pending => index += 1,
+                RendererRequestRead::Empty => {
+                    pending.swap_remove(index);
+                }
+                RendererRequestRead::Complete(request) => {
+                    let mut stream = pending.swap_remove(index).stream;
+                    stream.set_nonblocking(false)?;
+                    stream.set_write_timeout(Some(remaining()?.min(Duration::from_secs(3))))?;
+                    let path = std::str::from_utf8(&request)
+                        .ok()
+                        .and_then(|line| line.strip_prefix("GET "))
+                        .and_then(|rest| rest.split_once(' '))
+                        .map(|(path, _)| path)
+                        .unwrap_or_default();
+                    if path == page {
+                        served_page = true;
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                            html.len()
+                        )?;
+                        println!("KELD_MEDIA_HTTP page-sent nonce={nonce}");
+                    } else if path == gate && served_page {
+                        release
+                            .recv_timeout(remaining()?.min(Duration::from_secs(10)))
+                            .map_err(std::io::Error::other)?;
+                        stream.set_write_timeout(Some(remaining()?.min(Duration::from_secs(3))))?;
+                        write!(
+                            stream,
+                            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )?;
+                        println!("KELD_MEDIA_HTTP release-sent nonce={nonce}");
+                        return Ok(());
+                    } else {
+                        write!(
+                            stream,
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )?;
+                    }
+                }
             }
         }
-    })
+        if accept_renderer_connection(&listener, &mut pending, "media HTTP server")
+            .map_err(std::io::Error::other)?
+        {
+            continue;
+        }
+        // Kernel readiness, complete request headers and the release channel
+        // decide progress. This is only a nonblocking-poll backoff.
+        thread::park_timeout(remaining()?.min(Duration::from_millis(10)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_http_idle_preconnect_cannot_block_page_and_release() {
+        use std::net::TcpStream;
+
+        for idle_before_page in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind media HTTP regression");
+            let address = listener.local_addr().expect("media HTTP address");
+            // Connect before the server starts so this idle stream is accepted first.
+            // It stays open until both real requests have completed.
+            let mut idle = idle_before_page
+                .then(|| TcpStream::connect(address).expect("queue idle preconnect"));
+            let (release_tx, release_rx) = mpsc::channel();
+            release_tx.send(()).expect("release regression page");
+            let server = serve_page(listener, "media fixture".to_owned(), 73, release_rx, |_| {});
+            let request = |path: &str| -> std::io::Result<String> {
+                let mut client = TcpStream::connect(address)?;
+                client.set_read_timeout(Some(Duration::from_secs(5)))?;
+                write!(client, "GET {path} HTTP/1.1\r\nHost: {address}\r\n\r\n")?;
+                let mut response = String::new();
+                client.read_to_string(&mut response)?;
+                Ok(response)
+            };
+            let page = request("/73/");
+            if !idle_before_page {
+                idle = Some(TcpStream::connect(address).expect("queue idle release preconnect"));
+            }
+            let release = page.as_ref().ok().map(|_| request("/73/release"));
+            drop(idle);
+            let served = server.join().expect("join media HTTP worker");
+            assert!(served.is_ok(), "media HTTP server failed: {served:?}");
+            let page = page.expect("idle preconnect must not block the page");
+            assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+            assert!(page.ends_with("media fixture"), "{page}");
+            let release = release
+                .expect("page was received")
+                .expect("release response");
+            assert!(
+                release.starts_with("HTTP/1.1 204 No Content\r\n"),
+                "{release}"
+            );
+        }
+    }
+
+    #[test]
+    fn media_http_failure_publishes_result_and_wakes_ui_thread() {
+        use std::net::{Shutdown, TcpStream};
+        use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW};
+
+        let mut message = MSG::default();
+        // SAFETY: initializes this test thread's queue and removes only its
+        // own stale WM_NULL messages before observing the worker's wake.
+        unsafe {
+            while PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE).as_bool() {}
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed HTTP fixture");
+        let address = listener.local_addr().expect("failed HTTP address");
+        let (_release, release_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let server = serve_page(
+            listener,
+            "unused".to_owned(),
+            91,
+            release_rx,
+            http_error_reporter(result_tx),
+        );
+        let mut client = TcpStream::connect(address).expect("connect truncated request");
+        client
+            .write_all(b"GET /91/")
+            .expect("write partial request");
+        client
+            .shutdown(Shutdown::Write)
+            .expect("end incomplete headers");
+        let served = server.join().expect("join failed HTTP worker");
+        assert!(served.is_err(), "truncated HTTP must remain a failure");
+        let result = result_rx
+            .try_recv()
+            .expect("HTTP error must reach the UI receiver");
+        assert!(
+            result
+                .expect_err("not a media result")
+                .to_string()
+                .contains("header terminator")
+        );
+        // SAFETY: reads/removes the wake from this test's own thread queue.
+        assert!(
+            unsafe { PeekMessageW(&raw mut message, None, WM_NULL, WM_NULL, PM_REMOVE).as_bool() },
+            "worker result did not wake the Windows message pump"
+        );
+    }
 
     fn profile_fixture_root(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -1028,6 +1198,8 @@ mod tests {
         origin: String,
         release: mpsc::Sender<()>,
         server: thread::JoinHandle<std::io::Result<()>>,
+        message_tx: mpsc::Sender<Result<String, WvError>>,
+        message_rx: mpsc::Receiver<Result<String, WvError>>,
     }
 
     fn start_saved_grant_page(case: &SavedGrantCase) -> Result<SavedGrantPage, WvError> {
@@ -1051,11 +1223,21 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             track = case.track,
         );
         let (release, release_rx) = mpsc::channel();
+        let (message_tx, message_rx) = mpsc::channel();
+        let server = serve_page(
+            listener,
+            html,
+            case.nonce,
+            release_rx,
+            http_error_reporter(message_tx.clone()),
+        );
         Ok(SavedGrantPage {
             url,
             origin: format!("http://{address}/"),
             release,
-            server: serve_page(listener, html, case.nonce, release_rx),
+            server,
+            message_tx,
+            message_rx,
         })
     }
 
@@ -1164,16 +1346,18 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         let origin = page.origin.clone();
         let prepared = prepare_saved_grant_permission(&engine, view_id, &case, &origin)?;
         let view = engine.view(view_id)?;
-        let result_rx = observe_request(&view.webview, "guarded", &page.url)?;
+        observe_request(&view.webview, "guarded", &page.url, page.message_tx)?;
         page.release
             .send(())
             .map_err(|_| failure("release saved-grant page"))?;
         engine.navigate(view_id, NavTarget::Url(page.url))?;
-        let result = wait_with_pump(result_rx).map_err(failure)??;
-        page.server
+        let result = wait_with_pump(page.message_rx).map_err(failure)?;
+        let server_result = page
+            .server
             .join()
-            .map_err(|_| failure("saved server panicked"))?
-            .map_err(failure)?;
+            .map_err(|_| failure("saved server panicked"))?;
+        let result = result?;
+        server_result.map_err(failure)?;
         if !saved_grant_result_matches(&result, case.nonce, &case.phase, case.track) {
             return Err(failure(format!(
                 "saved-grant {} oracle rejected result {result}",
