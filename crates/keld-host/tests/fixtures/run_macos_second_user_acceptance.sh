@@ -16,7 +16,7 @@ command -v /usr/bin/openssl >/dev/null 2>&1 || {
 /bin/mkdir -p "$repo_root/target"
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_second_user_cannot_read_same_signed_profile_state \
+  profiles::cross_user::kel135_macos_second_user_cannot_read_same_signed_profile_state \
   --no-run
 
 account="keld135t3_$(/usr/bin/openssl rand -hex 4)"
@@ -157,7 +157,7 @@ profile_test_started=1
 if KELD_KEL135_SECOND_USER="$account" \
   cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
     --target aarch64-apple-darwin \
-    kel135_macos_second_user_cannot_read_same_signed_profile_state \
+    profiles::cross_user::kel135_macos_second_user_cannot_read_same_signed_profile_state \
     -- --exact --ignored --nocapture > "$test_log" 2>&1; then
   :
 else
