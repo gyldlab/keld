@@ -5328,6 +5328,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Protected Windows root admission or unpublished package extraction failed
 - fix: Preserve any named incomplete stage for diagnosis, keep the current installation, and repair the protected staging root or artifact before retrying. Directory presence does not prove a runnable version.
 
+## KELD-UPDATE-013
+
+- crate: keld-update
+- message: Exact baseline authentication or native bootstrap refused
+- fix: Preserve incomplete state and repair the trusted installer configuration or protected scaffold. Do not reseed an existing installation.
+
+## KELD-UPDATE-014
+
+- crate: keld-update
+- message: Local installer record is malformed, noncanonical or unsupported
+- fix: Preserve the record for diagnosis and repair or reinstall through the trusted installer. Record presence never proves protected state.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

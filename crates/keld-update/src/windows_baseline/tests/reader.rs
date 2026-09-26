@@ -14,6 +14,7 @@ use crate::windows_baseline::load_windows_baseline;
 #[test]
 #[ignore = "requires actual SYSTEM-created fixture and a separate ordinary-user process"]
 fn ordinary_user_reads_but_cannot_mutate_committed_baseline() {
+    support::assert_ordinary_token();
     assert!(
         keld_guard::require_windows_system_token().is_err(),
         "ordinary-user proof cannot run as SYSTEM"
@@ -27,6 +28,7 @@ fn ordinary_user_reads_but_cannot_mutate_committed_baseline() {
     let loaded = load_windows_baseline(&trust).expect("ordinary user can load protected identity");
     assert_eq!(loaded.version_floor(), "1.0.0");
     drop(loaded); // All loader pins are gone before any denial assertion.
+    super::alias::run(&root);
     let install = &trust.installation.install_root;
     let update = &trust.installation.update_root;
     let version = update.join("versions").join("1.0.0");

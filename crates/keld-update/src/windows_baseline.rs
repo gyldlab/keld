@@ -43,7 +43,7 @@ pub struct LoadedWindowsBaseline {
     observation: ProvenanceObservation,
     floor: String,
     publisher_scope: [u8; 32],
-    _roots: Roots,
+    roots: Roots,
     _records: Vec<File>,
 }
 
@@ -57,7 +57,7 @@ impl LoadedWindowsBaseline {
     /// Trusted expected installation, checked against the protected record.
     #[must_use]
     pub fn identity(&self) -> &DirectInstallationIdentity {
-        &self._roots.trust.installation
+        &self.roots.trust.installation
     }
 
     /// Installer-asserted publisher digest; boot must independently verify its signer.
@@ -107,7 +107,7 @@ impl Roots {
 #[derive(Debug)]
 struct VersionPins {
     _directories: Vec<Dir>,
-    _files: Vec<File>,
+    files: Vec<File>,
 }
 
 fn error(step: &'static str, detail: impl std::fmt::Display) -> UpdateError {

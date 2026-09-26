@@ -133,6 +133,114 @@ fn authenticated_receipt(
         .expect("signed full receipt")
 }
 
+#[test]
+fn machine_copy_refuses_an_ordinary_process_before_readback() {
+    assert!(
+        keld_guard::require_windows_system_token().is_err(),
+        "ordinary gate requires a non-SYSTEM process"
+    );
+    let fixture = Fixture::new();
+    let source_path = fixture.source(b"payload");
+    let mut source = open_source(&source_path).expect("locked source");
+    let parent = cap_std::fs::Dir::open_ambient_dir(fixture.versions(), ambient_authority())
+        .expect("private fixture parent");
+    let mut readback = false;
+    let result = copy_read_back(
+        &parent,
+        "payload",
+        "payload",
+        &mut source,
+        CopyRange { offset: 0, size: 7 },
+        StageProtection::Machine,
+        &mut |event, _| {
+            readback |= event == ExtractionEvent::BeforeReadback;
+            Ok(())
+        },
+    );
+    assert!(
+        result.is_err(),
+        "ordinary process cannot seal a machine payload"
+    );
+    assert!(!readback, "authority refusal cannot produce final readback");
+    assert!(
+        !fixture.versions().join("payload").exists(),
+        "machine-copy authority must precede object creation"
+    );
+    assert!(!fixture.versions().join(".complete").exists());
+}
+
+#[test]
+#[ignore = "requires the reviewed operator helper to run this exact selector as LocalSystem"]
+fn system_copy_seals_before_final_writer_flush() {
+    keld_guard::require_windows_system_token().expect("actual SYSTEM copy qualification");
+    let fixture = Fixture::new();
+    let source_path = fixture.source(b"payload");
+    let mut source = open_source(&source_path).expect("locked source");
+    let parent = cap_std::fs::Dir::open_ambient_dir(fixture.versions(), ambient_authority())
+        .expect("private fixture parent");
+    let mut observed = Vec::new();
+    let stopped = copy_read_back(
+        &parent,
+        "stopped",
+        "stopped",
+        &mut source,
+        CopyRange { offset: 0, size: 7 },
+        StageProtection::Machine,
+        &mut |event, name| {
+            observed.push(event);
+            if event == ExtractionEvent::BeforeFileFlush {
+                let object = File::open(fixture.versions().join(name))
+                    .expect("inspect original-writer object");
+                keld_guard::validate_windows_machine_file(&object)
+                    .expect("actual final DACL already applied before final flush");
+                return Err(io::Error::other("stop before final writable-handle flush"));
+            }
+            Ok(())
+        },
+    );
+    assert!(
+        stopped.is_err(),
+        "pre-flush failure cannot return a receipt"
+    );
+    assert_eq!(observed, [ExtractionEvent::BeforeFileFlush]);
+    assert!(!fixture.versions().join(".complete").exists());
+
+    observed.clear();
+    let (retained, _) = copy_read_back(
+        &parent,
+        "complete-copy",
+        "complete-copy",
+        &mut source,
+        CopyRange { offset: 0, size: 7 },
+        StageProtection::Machine,
+        &mut |event, name| {
+            observed.push(event);
+            if event == ExtractionEvent::BeforeFileFlush {
+                let object = File::open(fixture.versions().join(name))
+                    .expect("inspect original-writer object");
+                keld_guard::validate_windows_machine_file(&object)
+                    .expect("final DACL precedes flush");
+            }
+            Ok(())
+        },
+    )
+    .expect("sealed, flushed and read-back machine copy");
+    assert_eq!(
+        observed,
+        [
+            ExtractionEvent::BeforeFileFlush,
+            ExtractionEvent::BeforeReadback
+        ]
+    );
+    keld_guard::validate_windows_machine_file(&retained.into_std())
+        .expect("final readback retains machine protection");
+    assert_eq!(
+        fs::read(fixture.versions().join("complete-copy")).expect("read-back copy bytes"),
+        b"payload"
+    );
+    println!("KELD_KEL266_COPY_SEAL_FLUSH_PASSED");
+}
+
 fn assert_empty_versions(versions: &Path) {
     assert_eq!(
         fs::read_dir(versions).expect("read versions").count(),

@@ -1,5 +1,6 @@
 //! Publication is a one-shot installer transaction, never ordinary host mutation.
 
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -10,11 +11,11 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use super::{
-    LoadedWindowsBaseline, WindowsBaselineReceipt, WindowsBaselineTrust, error, exact_entries,
-    open_roots, read_record, seal_child,
+    LoadedWindowsBaseline, Roots, WindowsBaselineReceipt, WindowsBaselineTrust, error,
+    exact_entries, open_roots, read_record, seal_child,
 };
 use crate::records::{self, PointerKind};
-use crate::windows_extraction::{open_source, populate_stage};
+use crate::windows_extraction::{StageProtection, open_source, populate_stage};
 use crate::windows_fs::{create_directory_relative, publish_new};
 use crate::{InstallOwner, InstallProvenance, UpdateError, VerifiedBaseline};
 
@@ -60,34 +61,13 @@ pub(super) fn initialize_with_observer(
     crate::provenance::match_identity(&trust.installation, verified.installation())?;
     let roots =
         open_roots(trust, true).map_err(|cause| error("private scaffold admission", cause))?;
-    let install = roots
-        .install()
-        .map_err(|cause| error("install root", cause))?;
     let update_name = trust
         .installation
         .update_root
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| error("topology", "update name absent"))?;
-    exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
-    exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
-    exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
-    let mut options = OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC)
-        .share_mode(0)
-        .follow(FollowSymlinks::No);
-    let mut lock = roots
-        .update
-        .open_with("bootstrap.lock", &options)
-        .map_err(|cause| error("exclusive bootstrap lock", cause))?
-        .into_std();
-    keld_guard::validate_windows_owner_private_file(&lock)
-        .map_err(|cause| error("bootstrap lock protection", cause))?;
-    lock.sync_all()
-        .map_err(|cause| error("bootstrap lock flush", cause))?;
+    let mut lock = acquire_bootstrap_lock(&roots, update_name)?;
     observe(BaselineBoundary::LockCreated).map_err(|cause| error("lock boundary", cause))?;
 
     let mut source =
@@ -102,22 +82,25 @@ pub(super) fn initialize_with_observer(
     let stage = create_directory_relative(&parent, &name)
         .map_err(|cause| error("stage creation", cause))?;
     observe(BaselineBoundary::StageCreated).map_err(|cause| error("stage boundary", cause))?;
-    let (directories, files) =
-        populate_stage(stage, &name, &validated, &mut source, &mut |_, _| Ok(()))?;
+    let (directories, files) = populate_stage(
+        stage,
+        &name,
+        &validated,
+        &mut source,
+        StageProtection::Machine,
+        &mut |_, _| Ok(()),
+    )?;
     observe(BaselineBoundary::StagePopulated).map_err(|cause| error("content boundary", cause))?;
     let stage = &directories[0];
     let tree = &directories[1];
-    // Explicitly seal every leaf before its parent. Protected child ACLs cannot be
-    // mistaken for inherited policy or silently modified by later parent sealing.
+    // Files already have final protected ACLs, applied before their original
+    // writable handles were flushed. Seal only the remaining directories here.
     for entry in validated.entries().iter().rev() {
-        seal_child(
-            tree,
-            entry.name(),
-            matches!(entry.kind(), crate::ArchiveEntryKind::Directory),
-        )
-        .map_err(|cause| error("stage object seal", cause))?;
+        if entry.kind() == crate::ArchiveEntryKind::Directory {
+            seal_child(tree, entry.name(), true)
+                .map_err(|cause| error("stage directory seal", cause))?;
+        }
     }
-    seal_child(stage, "content.tar", false).map_err(|cause| error("archive seal", cause))?;
     seal_child(stage, "tree", true).map_err(|cause| error("tree seal", cause))?;
     let complete = records::encode_complete(verified.identity(), verified.content_size())?;
     publish_record(stage, ".complete", &complete)?;
@@ -152,6 +135,54 @@ pub(super) fn initialize_with_observer(
     )?;
     observe(BaselineBoundary::LastKnownGoodPublished)
         .map_err(|cause| error("LKG boundary", cause))?;
+    seal_roots_and_commit(&roots, update_name, &mut lock, &mut observe)?;
+    drop(lock);
+    drop(version);
+    drop(roots);
+    let loaded: LoadedWindowsBaseline = super::load_windows_baseline(trust)?;
+    let version = super::load::validate_initial_seed(&loaded.roots)?;
+    Ok(WindowsBaselineReceipt {
+        loaded,
+        _version: version,
+    })
+}
+
+fn acquire_bootstrap_lock(roots: &Roots, update_name: &str) -> Result<File, UpdateError> {
+    let install = roots
+        .install()
+        .map_err(|cause| error("install root", cause))?;
+    exact_entries(install, &[update_name]).map_err(|cause| error("fresh install", cause))?;
+    exact_entries(&roots.update, &["versions"]).map_err(|cause| error("fresh update", cause))?;
+    exact_entries(&roots.versions, &[]).map_err(|cause| error("fresh versions", cause))?;
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | WRITE_DAC)
+        .share_mode(0)
+        .follow(FollowSymlinks::No);
+    let lock = roots
+        .update
+        .open_with("bootstrap.lock", &options)
+        .map_err(|cause| error("exclusive bootstrap lock", cause))?
+        .into_std();
+    keld_guard::validate_windows_owner_private_file(&lock)
+        .map_err(|cause| error("bootstrap lock protection", cause))?;
+    lock.sync_all()
+        .map_err(|cause| error("bootstrap lock flush", cause))?;
+    Ok(lock)
+}
+
+fn seal_roots_and_commit(
+    roots: &Roots,
+    update_name: &str,
+    lock: &mut File,
+    observe: &mut impl FnMut(BaselineBoundary) -> io::Result<()>,
+) -> Result<(), UpdateError> {
+    let trust = &roots.trust;
+    let install = roots
+        .install()
+        .map_err(|cause| error("install root", cause))?;
     let provenance = records::encode_provenance(
         &InstallProvenance {
             identity: trust.installation.clone(),
@@ -163,7 +194,7 @@ pub(super) fn initialize_with_observer(
     // Prepare this private file before sealing the roots. The only later namespace
     // mutation is its absent-target publication, which is the final commit record.
     let provenance_temp = prepare_record(install, &provenance)?;
-    keld_guard::seal_windows_machine_file(&mut lock).map_err(|cause| error("lock seal", cause))?;
+    keld_guard::seal_windows_machine_file(lock).map_err(|cause| error("lock seal", cause))?;
     lock.sync_all()
         .map_err(|cause| error("sealed lock flush", cause))?;
     seal_child(&roots.update, "versions", true).map_err(|cause| error("versions seal", cause))?;
@@ -185,15 +216,7 @@ pub(super) fn initialize_with_observer(
     publish_prepared(install, &provenance_temp, "install-provenance", &provenance)?;
     observe(BaselineBoundary::ProvenancePublished)
         .map_err(|cause| error("provenance boundary", cause))?;
-    drop(lock);
-    drop(version);
-    drop(roots);
-    let loaded: LoadedWindowsBaseline = super::load_windows_baseline(trust)?;
-    let version = super::load::validate_initial_seed(&loaded._roots)?;
-    Ok(WindowsBaselineReceipt {
-        loaded,
-        _version: version,
-    })
+    Ok(())
 }
 
 fn random_name(prefix: &str) -> Result<String, UpdateError> {

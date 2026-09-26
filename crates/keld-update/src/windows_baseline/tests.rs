@@ -1,5 +1,6 @@
 //! Native baseline contracts; privileged scenarios require explicit operator execution.
 
+mod alias;
 mod qualification;
 mod reader;
 mod substitutions;

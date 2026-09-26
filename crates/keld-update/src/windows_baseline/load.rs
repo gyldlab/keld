@@ -54,7 +54,7 @@ pub fn load_windows_baseline(
         },
         floor,
         publisher_scope: record.publisher_scope,
-        _roots: roots,
+        roots,
         _records: vec![provenance_file, floor_file],
     })
 }
@@ -111,7 +111,7 @@ pub(super) fn validate_initial_seed(roots: &Roots) -> Result<VersionPins, Update
         records.push(file);
     }
     let mut version = validate_initial_version(roots)?;
-    version._files.extend(records);
+    version.files.extend(records);
     Ok(version)
 }
 
@@ -212,7 +212,7 @@ pub(super) fn validate_initial_version(roots: &Roots) -> Result<VersionPins, Upd
     files.push(content);
     Ok(VersionPins {
         _directories: directories,
-        _files: files,
+        files,
     })
 }
 

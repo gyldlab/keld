@@ -6,16 +6,21 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Cursor;
 use std::os::windows::fs::OpenOptionsExt as _;
-use std::os::windows::io::AsRawHandle as _;
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+use windows_sys::Win32::Security::{
+    GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
     FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, WRITE_DAC,
 };
-use windows_sys::Win32::System::Threading::WaitForSingleObject;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
+};
 
 use crate::tests::{digest_hex, expected_identity, manifest_json, release_json, sign, signing_key};
 use crate::windows_baseline::WindowsBaselineTrust;
@@ -26,6 +31,49 @@ pub(super) const CASE_ENV: &str = "KELD_KEL266_NATIVE_CASE";
 pub(super) const CUT_ENV: &str = "KELD_KEL266_NATIVE_CUT";
 pub(super) const GOLDEN: &[u8] =
     include_bytes!("../../../../keld-pack/tests/fixtures/windows-v0-content.tar");
+
+pub(super) fn assert_ordinary_token() {
+    let sid = windows_permissions::utilities::current_process_sid().expect("actual TokenUser");
+    let text = windows_permissions::wrappers::ConvertSidToStringSid(&sid).expect("TokenUser text");
+    let text = text.to_string_lossy();
+    assert!(
+        text.starts_with("S-1-5-21-") || text.starts_with("S-1-12-1-"),
+        "ordinary-user proof cannot use a service or SYSTEM identity: {text}"
+    );
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: the pseudo process handle is used synchronously; the output is a
+    // writable HANDLE slot. On success ownership immediately enters RAII.
+    assert_ne!(
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw) },
+        0
+    );
+    // SAFETY: successful OpenProcessToken returned one owned, non-null token handle.
+    let token = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 1 };
+    let elevation_bytes = u32::try_from(std::mem::size_of::<TOKEN_ELEVATION>())
+        .expect("native token layout fits a Win32 byte count");
+    let mut returned = 0_u32;
+    // SAFETY: token remains live; the initialized output is exactly its advertised
+    // size, and the return-length pointer remains valid for the synchronous call.
+    assert_ne!(
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle().cast(),
+                TokenElevation,
+                std::ptr::from_mut(&mut elevation).cast(),
+                elevation_bytes,
+                &raw mut returned,
+            )
+        },
+        0
+    );
+    assert_eq!(returned, elevation_bytes);
+    assert_eq!(
+        elevation.TokenIsElevated, 0,
+        "ordinary-user denial proof must be unelevated"
+    );
+    println!("KELD_KEL266_ORDINARY_TOKEN sid={text} elevated=0");
+}
 
 pub(super) fn directory(path: &Path) -> File {
     OpenOptions::new()

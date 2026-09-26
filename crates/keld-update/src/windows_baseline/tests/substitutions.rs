@@ -67,6 +67,7 @@ pub(super) fn run(root: &Path) {
         ("bad-tree", "updates/versions/1.0.0/tree/nest/one"),
         ("bad-current", "updates/current"),
         ("bad-lkg", "updates/last-known-good"),
+        ("advanced-seed-floor", "updates/version-floor"),
     ] {
         let trust = provision(root, label);
         drop(
@@ -75,20 +76,44 @@ pub(super) fn run(root: &Path) {
         );
         let target = trust.installation.install_root.join(relative);
         let original = fs::read(&target).expect("initial seed bytes");
-        fs::write(&target, b"changed").expect("SYSTEM changes one seed component after pins close");
+        let changed = if label == "bad-tree" {
+            let mut bytes = original.clone();
+            bytes[0] ^= 1;
+            bytes
+        } else {
+            let text = std::str::from_utf8(&original).expect("canonical UTF-8 record");
+            assert_eq!(
+                text.matches("1.0.0").count(),
+                1,
+                "one artifact version field"
+            );
+            text.replace("1.0.0", "2.0.0").into_bytes()
+        };
+        assert_eq!(
+            changed.len(),
+            original.len(),
+            "length cannot be the negative oracle"
+        );
+        assert_ne!(changed, original);
+        fs::write(&target, changed).expect("one canonical wrong identity or same-length payload");
         let loaded = load_windows_baseline(&trust)
             .expect("metadata loader does not claim active package selection");
         assert!(
-            super::super::load::validate_initial_seed(&loaded._roots).is_err(),
+            super::super::load::validate_initial_seed(&loaded.roots).is_err(),
             "initial seed predicate: {label}"
         );
         drop(loaded);
         fs::write(&target, original).expect("restore initial seed");
         let loaded = load_windows_baseline(&trust).expect("protected metadata");
-        super::super::load::validate_initial_seed(&loaded._roots)
+        super::super::load::validate_initial_seed(&loaded.roots)
             .expect("restored seed positive control");
     }
 
+    reject_parent_delete_child(root);
+    println!("KELD_KEL266_SUBSTITUTIONS_PASSED");
+}
+
+fn reject_parent_delete_child(root: &Path) {
     // The leaf and its records remain correct. Only an intermediate parent's
     // effective DELETE_CHILD changes. This must fail on every fresh load.
     let parent = support::directory(root);
@@ -123,5 +148,4 @@ pub(super) fn run(root: &Path) {
     );
     // Leave this intentionally vulnerable isolated parent for the separate ordinary
     // process's matched deletion control. It is never admitted as an installation.
-    println!("KELD_KEL266_SUBSTITUTIONS_PASSED");
 }

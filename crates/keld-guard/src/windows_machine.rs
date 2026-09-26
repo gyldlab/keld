@@ -18,7 +18,7 @@ const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-185329
 const DIRECTORY: &str = "O:SYD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)";
 const FILE: &str = "O:SYD:P(A;;FA;;;SY)(A;;0x1200a9;;;BU)";
 
-/// Requires the actual current process TokenUser to be LocalSystem.
+/// Requires the actual current process `TokenUser` to be `LocalSystem`.
 ///
 /// # Errors
 /// Refuses all other users, including elevated administrators, or token-query failure.
@@ -49,7 +49,7 @@ pub fn validate_windows_machine_file(object: &File) -> io::Result<()> {
 
 /// Seals an existing SYSTEM-private directory to the committed machine policy.
 ///
-/// The caller must own a retained handle with WRITE_DAC. This never repairs an
+/// The caller must own a retained handle with `WRITE_DAC`. This never repairs an
 /// unprotected or foreign object and never changes ownership.
 ///
 /// # Errors
@@ -62,7 +62,7 @@ pub fn seal_windows_machine_directory(object: &mut File) -> io::Result<()> {
 
 /// Seals an existing inherited SYSTEM-private file to the committed machine policy.
 ///
-/// The caller must own a retained handle with WRITE_DAC. This never repairs an
+/// The caller must own a retained handle with `WRITE_DAC`. This never repairs an
 /// unprotected or foreign object and never changes ownership.
 ///
 /// # Errors
@@ -75,7 +75,7 @@ pub fn seal_windows_machine_file(object: &mut File) -> io::Result<()> {
 
 /// Checks the persistent namespace protection of a volume-root directory.
 ///
-/// Only SYSTEM, Administrators and TrustedInstaller may own or mutate the anchor.
+/// Only SYSTEM, Administrators and `TrustedInstaller` may own or mutate the anchor.
 /// Other trustees may read/execute or create new directories, but cannot delete,
 /// replace, change attributes, write data or change its security descriptor.
 /// Inherit-only rules are ignored here; every descendant needs independent admission.

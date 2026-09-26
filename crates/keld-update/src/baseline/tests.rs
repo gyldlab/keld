@@ -42,13 +42,13 @@ fn exact_baseline_is_selected_without_changing_update_floor_selection() {
         .expect("exact baseline");
     assert_eq!(selected.identity().version, "1.0.0+installer");
     let mut output = Vec::new();
-    let verified = selected
+    let receipt = selected
         .verify_full(&mut Cursor::new(compressed), &mut output)
         .expect("verified baseline");
     assert_eq!(output, content);
-    assert_eq!(verified.identity().version, "1.0.0+installer");
-    assert_eq!(verified.content_size(), content.len() as u64);
-    assert_eq!(verified.content_blake3(), blake3::hash(content).as_bytes());
+    assert_eq!(receipt.identity().version, "1.0.0+installer");
+    assert_eq!(receipt.content_size(), content.len() as u64);
+    assert_eq!(receipt.content_blake3(), blake3::hash(content).as_bytes());
     let identity = verifier.configuration.expected.clone();
     let updater = UpdateVerifier::new(identity.clone(), signing_key().verifying_key().to_bytes())
         .expect("updater configuration");
@@ -204,18 +204,18 @@ fn baseline_uses_shared_canonical_archive_and_policy_validation() {
         let selected = verifier
             .verify_manifest(&manifest, &sign(&manifest))
             .expect("selection");
-        let verified = selected
+        let receipt = selected
             .verify_full(&mut Cursor::new(compressed), &mut Vec::new())
             .expect("signed bytes");
         let result = crate::archive::parse_content_archive(
-            &verified.content,
+            &receipt.content,
             &mut Cursor::new(content),
             |_| Ok(()),
         );
         if content == canonical {
             assert_eq!(
                 result.expect("canonical policy").identity(),
-                verified.identity()
+                receipt.identity()
             );
         } else {
             assert!(matches!(

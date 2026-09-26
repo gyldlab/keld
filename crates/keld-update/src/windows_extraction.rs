@@ -12,7 +12,7 @@ use cap_fs_ext::{
 use cap_std::fs::{Dir, File, Metadata, OpenOptions, OpenOptionsExt as _};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, WRITE_DAC,
 };
 
 use crate::provenance::match_identity;
@@ -146,7 +146,20 @@ pub(crate) enum ExtractionEvent {
     PreCreate,
     AfterStageCreate,
     BeforeMember,
+    BeforeFileFlush,
     BeforeReadback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageProtection {
+    OwnerPrivate,
+    Machine,
+}
+
+#[derive(Clone, Copy)]
+struct CopyRange {
+    offset: u64,
+    size: u64,
 }
 
 impl WindowsExtractionRoot {
@@ -204,7 +217,14 @@ impl WindowsExtractionRoot {
         let stage = create_directory_relative(&parent, &name).map_err(|error| {
             extraction_error(Some(&name), "stage creation (outcome unconfirmed)", error)
         })?;
-        let result = populate_stage(stage, &name, &validated, &mut source, &mut observe);
+        let result = populate_stage(
+            stage,
+            &name,
+            &validated,
+            &mut source,
+            StageProtection::OwnerPrivate,
+            &mut observe,
+        );
         let (directories, files) =
             result.map_err(|error| extraction_error(Some(&name), "stage contents", error))?;
         Ok(ExtractedWindowsStage {
@@ -233,6 +253,7 @@ pub(crate) fn populate_stage(
     name: &str,
     validated: &ValidatedArchive,
     source: &mut File,
+    protection: StageProtection,
     observe: &mut impl FnMut(ExtractionEvent, &str) -> io::Result<()>,
 ) -> Result<(Vec<Dir>, Vec<File>), UpdateError> {
     let stage = Dir::from_std_file(stage);
@@ -245,8 +266,11 @@ pub(crate) fn populate_stage(
         "content.tar",
         "content.tar",
         source,
-        0,
-        validated.content_size(),
+        CopyRange {
+            offset: 0,
+            size: validated.content_size(),
+        },
+        protection,
         observe,
     )
     .map_err(operation)?;
@@ -284,8 +308,11 @@ pub(crate) fn populate_stage(
                     leaf,
                     entry.name(),
                     &mut retained_content,
-                    entry.data_offset(),
-                    entry.size(),
+                    CopyRange {
+                        offset: entry.data_offset(),
+                        size: entry.size(),
+                    },
+                    protection,
                     observe,
                 )
                 .map_err(operation)?;
@@ -302,16 +329,23 @@ fn copy_read_back(
     leaf: &str,
     diagnostic: &str,
     source: &mut File,
-    offset: u64,
-    size: u64,
+    range: CopyRange,
+    protection: StageProtection,
     observe: &mut impl FnMut(ExtractionEvent, &str) -> io::Result<()>,
 ) -> io::Result<(File, [u8; 32])> {
+    let CopyRange { offset, size } = range;
+    if protection == StageProtection::Machine {
+        keld_guard::require_windows_system_token()?;
+    }
     let mut options = OpenOptions::new();
     options
         .write(true)
         .create_new(true)
         .share_mode(FILE_SHARE_READ)
         .follow(FollowSymlinks::No);
+    if protection == StageProtection::Machine {
+        options.access_mode(FILE_GENERIC_WRITE | WRITE_DAC);
+    }
     let mut output = parent.open_with(leaf, &options)?;
     let original = output.metadata()?;
     ensure_regular(&original)?;
@@ -330,6 +364,13 @@ fn copy_read_back(
         digest.update(&buffer[..amount]);
         left -= amount as u64;
     }
+    let mut output = output.into_std();
+    if protection == StageProtection::Machine {
+        // Seal on the original writer, before its final flush. Reopening a data
+        // writer after readback would conflict with the retained read-only pins.
+        keld_guard::seal_windows_machine_file(&mut output)?;
+    }
+    observe(ExtractionEvent::BeforeFileFlush, diagnostic)?;
     output.sync_all()?;
     drop(output);
     observe(ExtractionEvent::BeforeReadback, diagnostic)?;
@@ -347,7 +388,13 @@ fn copy_read_back(
     {
         return Err(refusal("readback object identity or length changed"));
     }
-    keld_guard::validate_windows_owner_private_file(&retained.try_clone()?.into_std())?;
+    let retained_object = retained.try_clone()?.into_std();
+    match protection {
+        StageProtection::OwnerPrivate => {
+            keld_guard::validate_windows_owner_private_file(&retained_object)?;
+        }
+        StageProtection::Machine => keld_guard::validate_windows_machine_file(&retained_object)?,
+    }
     let mut readback = blake3::Hasher::new();
     loop {
         let read = retained.read(&mut buffer)?;

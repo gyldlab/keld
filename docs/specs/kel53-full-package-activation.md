@@ -545,7 +545,9 @@ The only successful initialization order is:
    its handle. Existing lock/state refuses; no PID guessing, takeover or stale cleanup.
 2. Fully validate the authenticated exact baseline before extraction; create one fresh
    incomplete sibling and populate it with shared T3b mechanics.
-3. Seal/read back every stage object. Write `.complete` last within the stage, flush its
+3. Seal/read back every stage object. For payload files and `content.tar`, establish
+   final protection on the original writable handle before its final file flush and
+   protected readback; directory sealing remains bottom-up. Write `.complete` last within the stage, flush its
    writable handle, seal it and verify its final bytes and descriptor.
 4. Close rename-blocking stage handles while retaining protected ancestors. Publish to
    the absent final version name using same-volume `MoveFileExW` with only

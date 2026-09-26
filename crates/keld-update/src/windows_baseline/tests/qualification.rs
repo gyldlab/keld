@@ -86,7 +86,7 @@ fn system_baseline_qualification() {
             let loaded = load_windows_baseline(&cut_trust)
                 .expect("provenance-last cut has committed records");
             assert_eq!(loaded.version_floor(), "1.0.0");
-            super::super::load::validate_initial_seed(&loaded._roots)
+            super::super::load::validate_initial_seed(&loaded.roots)
                 .expect("complete initial seed after final cut");
         } else {
             assert!(
