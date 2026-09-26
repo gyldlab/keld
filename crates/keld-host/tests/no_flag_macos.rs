@@ -1271,6 +1271,45 @@ impl Drop for RecoveryCycle {
 
 #[test]
 fn recovery_wait_preserves_the_cli_lease_until_child_exit() {
+    assert_wait_preserves_the_cli_lease(|child, lease, listener, observe| {
+        let mut cycle = RecoveryCycle {
+            host_pid: child.id(),
+            dev_lease_writer: lease,
+            host: Some(child),
+            listener,
+            window: Vec::new(),
+            current: None,
+            process_groups: Vec::new(),
+        };
+        cycle.wait_host_observing(observe)
+    });
+}
+
+#[test]
+fn live_wait_preserves_the_cli_lease_until_child_exit() {
+    assert_wait_preserves_the_cli_lease(|child, lease, _listener, observe| {
+        let (reader, writer) = UnixStream::pair().expect("unused live-cycle control pair");
+        let mut cycle = LiveCycle {
+            host_pid: child.id(),
+            dev_lease_writer: lease,
+            host: Some(child),
+            guardian_pid: 0,
+            bun_pid: 0,
+            descendant_pid: 0,
+            session_dir: PathBuf::new(),
+            control_reader: BufReader::new(reader),
+            control_writer: writer,
+            beacon: None,
+            presentation: None,
+            group_gone: true,
+        };
+        cycle.wait_host_observing(observe)
+    });
+}
+
+fn assert_wait_preserves_the_cli_lease(
+    mut wait: impl FnMut(Child, Option<ChildStdin>, UnixListener, &mut dyn FnMut()) -> Output,
+) {
     // The control byte orders the independent pipe observation after entry
     // into the wait. No child exit or elapsed delay can stand in for that edge.
     const PROBE: &str = r#"
@@ -1309,23 +1348,12 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
             .spawn()
             .expect("start independent lease probe");
         let host_pid = child.id();
-        let mut cycle = RecoveryCycle {
-            dev_lease_writer: child.stdin.take(),
-            host: Some(child),
-            host_pid,
-            listener,
-            window: Vec::new(),
-            current: None,
-            process_groups: Vec::new(),
-        };
-        let mut control = Some(accept_before(
-            &cycle.listener,
-            Instant::now() + EVENT_DEADLINE,
-        ));
+        let mut lease = child.stdin.take();
+        let mut control = Some(accept_before(&listener, Instant::now() + EVENT_DEADLINE));
         if release_lease {
-            drop(cycle.dev_lease_writer.take());
+            drop(lease.take());
         }
-        let output = cycle.wait_host_observing(|| {
+        let output = wait(child, lease, listener, &mut || {
             if let Some(mut control) = control.take() {
                 control.write_all(b"P").expect("request lease observation");
             }
@@ -2759,15 +2787,22 @@ impl LiveCycle {
     }
 
     fn wait_host(&mut self) -> Output {
-        drop(self.dev_lease_writer.take());
+        self.wait_host_observing(|| {})
+    }
+
+    fn wait_host_observing(&mut self, mut observe: impl FnMut()) -> Output {
         let mut child = self.host.take().expect("live host");
         let deadline = Instant::now() + EVENT_DEADLINE;
         loop {
             if child.try_wait().expect("inspect no-flag host").is_some() {
+                // Waiting must not inject CLI death before the observed host exit.
+                // Explicit lease-loss scenarios release their separate writer first.
+                drop(self.dev_lease_writer.take());
                 return child
                     .wait_with_output()
                     .expect("collect no-flag host output");
             }
+            observe();
             assert!(
                 Instant::now() < deadline,
                 "no-flag host did not exit after Quit"
