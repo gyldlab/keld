@@ -479,8 +479,9 @@ arbitrary configuration; a matching record does not prove OS protection; complet
 does not alone prove power-loss durability. These atoms stay independently testable.
 
 The first cell is Windows x64 on one qualified fixed local NTFS volume. Trusted
-`WindowsBaselineTrust` holds the existing `DirectInstallationIdentity`, a nonempty
-bounded publisher scope and canonical volume-GUID root. Publisher scope is an installer
+`WindowsBaselineTrust` holds the existing `DirectInstallationIdentity`, the existing
+32-byte KEL-135 publisher scope and canonical volume-GUID root. Records encode that scope
+as exactly 64 lowercase hexadecimal characters. Publisher scope is an installer
 assertion, not an Authenticode result. It must originate in trusted deployment/host
 configuration, not lower-trust environment, feed or arguments. The loader compares all
 fields, including observed volume identity; the protected record cannot supply its own
