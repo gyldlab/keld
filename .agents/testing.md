@@ -34,8 +34,8 @@ evidence only when a plausible defect can make it fail.
 - Tests MUST await observable conditions, bind port `0`, use isolated temporary paths,
   and clean up resources. They MUST NOT use sleeps for synchronization; a timeout is
   only a kill switch.
-- Keep tests colocated with the owned module/fixture when the repository layout permits.
-  Document why a non-obvious wait/resource boundary is the real condition, not timing.
+- [test-layout.md](test-layout.md) owns placement, extraction and discovery safeguards.
+  Explain non-obvious waits by the observed condition, not timing.
 - Crash, lifetime, and hostile-shutdown tests MUST run the risky action in a child
   process and assert the relevant stdout, stderr, exit code, signal, cleanup, and next
   successful operation.

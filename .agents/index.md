@@ -25,6 +25,7 @@ do not silently choose the less restrictive rule.
 | Editing generated docs, Mermaid, public documentation, or publishing/correcting a public technical audit | [`docs.md`](docs.md) and [`testing.md`](testing.md) |
 | Writing or changing a feature/architecture specification | [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
 | Starting work on an issue when another agent or device may also hold it | `docs/agents/workflow.md` § Agent claim |
+| Test-layout, placement, oversized tests, discovery or acceptance refactors | [`test-layout.md`](test-layout.md) |
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |
 | Add/change Mermaid under private research or synthesize external evidence | [`docs.md`](docs.md), [`testing.md`](testing.md), and [`research.md`](research.md) |
 | Needs a paste prompt or external-research pack; or would otherwise invent a new prompt taxonomy | [`research.md`](research.md) and Prompt Tracker (`0monish/prompt-tracker` / local `keld-agent-prompts`) |
