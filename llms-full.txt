@@ -1896,11 +1896,15 @@ manifest decoder.
    v0 update contract selects one compiled-in ed25519 key; a TUF-style rotating root
    remains later target behavior and requires a wire/trust review.
 
-## 5. Update security (specified, not implemented)
+## 5. Update security (verification and staging implemented; activation specified)
 
-The repository currently has only the `keld-update::Channel` skeleton; it has no
-manifest verifier, activation journal, health owner, rollback engine or feed client.
-The following is the reviewed destination contract. V0 update manifests are signed with
+Current code verifies signed manifests/full artifacts and the Windows canonical
+archive, and extracts to an observed owner-private fixed-NTFS incomplete stage.
+Logical provenance admission is not a protected installer-record loader. That loader,
+the activation journal, health owner, rollback engine and feed client remain absent;
+staging does not publish a runnable version. Architecture 06 and KEL-53 T3b own the
+exact current support cell. The following is the reviewed full-lifecycle contract.
+V0 update manifests are signed with
 ed25519 and verified by the host's compiled-in public key. Every release has a bounded
 full package whose transport and canonical
 content have separate BLAKE3 checks; optional later deltas must reconstruct that same
@@ -2854,9 +2858,12 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   admission, signed v0 manifest validation/selection, streamed full-artifact
   size/BLAKE3 verification and read-only Windows canonical archive/namespace preflight
   with exact no-migration policy admission. `keld-pack::produce_windows_v0` supplies
-  the matching Windows-host streaming producer as a library API. The platform adapter
-  that proves provenance protection, live feed orchestration, archive extraction,
-  activation, health and recovery remain unimplemented.
+  the matching Windows-host streaming producer as a library API. Windows extraction
+  binds the receipt's installation/key/profile to an actual owner-private, fixed-NTFS
+  staging root and retains flushed/read-back files in an unpublished incomplete stage.
+  The platform loader that proves installer provenance protection, live feed
+  orchestration, completed-version publication, activation, health and recovery remain
+  unimplemented.
 - Optional delta: only a measured later transport optimization. It reconstructs the
   same full-package content identity, retains a same-attempt full fallback and cannot
   change activation, health, trust-floor or rollback semantics.
@@ -3097,6 +3104,18 @@ release missing `full` is part of AC1):
   adapters synchronize directories bottom-up; Windows uses the staging-directory
   publish sequence below. A completion marker visible without its tree is not a
   meaningful "this write finished" signal.
+
+  The first Windows extraction adapter opens existing owner-private `update_root`
+  and `versions` directories and creates only a fresh incomplete child. It binds the
+  verified receipt to the complete installation context and admission-floor snapshot,
+  locks the source against data writers, and retains authenticated `content.tar`.
+  Directory creation is native and relative to retained handles; safe capability
+  opens create regular files without following links. Shared guard owns the exact
+  descriptor policy, while the updater qualifies fixed writable NTFS through handles.
+  File flush/readback returns exclusive stage ownership without `.complete` or final
+  publication. T4 must reread protected state under its lock and qualify the publication
+  crash cuts. The detailed support cell, refusal/lifetime and native proof requirements
+  are in `docs/specs/kel53-full-package-activation.md` § T3b.
 
 **Client verification order — no step may be skipped or reordered:**
 
@@ -3578,7 +3597,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 | `crate.keld-guard` | All | **Partial** — Manifest parsing, evaluation, verified startup loading, and guard-before-handler dispatch exist; generated grants and audit logging remain target behavior. | [code](../../crates/keld-guard/src/lib.rs), [test](../../crates/keld-guard/tests/verified_manifest.rs) | [Specified](../../docs/architecture/03-security.md) | KEL-69, KEL-102 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-native` | All | **Partial** — The retained filesystem broker is implemented with verified-snapshot binding, guard-selected retained scopes, bounded no-follow traversal and regular-file I/O. Native Windows and Linux rows on exact landed ancestor `d22e454...` are publicly reported in [PR #262](https://github.com/gyldlab/keld/pull/262), while the final three-OS terminal artifact is authenticated in private Linear only and therefore is not yet a public proof surface. No production host caller is wired, and the other planned native services are absent. | [code](../../crates/keld-native/src/fs.rs), [test](../../crates/keld-native/tests/retained_fs.rs) | [Specified](../../docs/architecture/05-webview-and-native.md) | KEL-130 | `d22e454aaff103f065ebbc0aabf7e0680232d3e4` |
 | `crate.keld-runtime` | All | **Partial** — Single-child supervision, crash accounting, macOS guardians, Windows primary generations, and Linux strict preparation for the no-flag primary exist; full named-role and remaining product strict admission remain absent. | [test](../../crates/keld-runtime/src/lib.rs), [code](../../crates/keld-runtime/src/macos_guardian.rs), [test](../../crates/keld-runtime/tests/macos_host_death_guardian.rs), [code](../../crates/keld-runtime/src/role.rs), [test](../../crates/keld-runtime/tests/windows_primary_generation.rs), [code](../../crates/keld-runtime/src/linux_strict.rs), [test](../../crates/keld-runtime/tests/linux_strict_boundary.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-70, KEL-75, KEL-78, KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
-| `crate.keld-update` | All | **Partial** — Protected-provenance policy admission, detached-Ed25519 v0 manifest validation/selection, streamed full-zstd size/BLAKE3 verification, and read-only Windows canonical archive/namespace/exact-policy preflight are implemented; real installer protection, feeds, extraction, activation, rollback and optional delta transport remain absent. | [code](../../crates/keld-update/src/lib.rs), [code](../../crates/keld-update/src/archive.rs), [test](../../crates/keld-update/src/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-263 | `3e59c2c00d07544ea835afc97ce75530db792217` |
+| `crate.keld-update` | All | **Partial** — Signed full artifacts can be extracted on Windows into owner-private fixed-NTFS incomplete stages using retained handles, protected roots and file flush/readback; installer provenance loading, feed orchestration, publication, activation, rollback and delta remain absent. | [code](../../crates/keld-update/src/lib.rs), [code](../../crates/keld-update/src/archive.rs), [code](../../crates/keld-update/src/windows_extraction.rs), [code](../../crates/keld-update/src/windows_fs.rs), [test](../../crates/keld-update/src/tests.rs), [test](../../crates/keld-update/src/windows_extraction/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-263, KEL-265 | `8b05f0614787da4746c88952e3ef89cc3ffeff2a` |
 | `crate.keld-pack` | All | **Partial** — Windows hosts can stream canonical Windows v0 tar/zstd update packages with the fixed no-migration policy and byte-domain size/BLAKE3 receipts; other hosts refuse production before I/O. Installers, signing, notarization, CLI build integration and cross-host assembly remain absent. | [code](../../crates/keld-pack/src/lib.rs), [code](../../crates/keld-pack/src/producer.rs), [test](../../crates/keld-pack/src/tests.rs) | [Specified](../../docs/architecture/06-runtime-and-tooling.md) | KEL-53, KEL-263 | `3e59c2c00d07544ea835afc97ce75530db792217` |
 | `crate.keld-compat` | All | **Partial** — Compatibility evidence types, scoring, and lifecycle conformance exist; broad Electron host emulation is absent. | [code](../../crates/keld-compat/src/lib.rs), [test](../../crates/keld-compat/tests/electron_lifecycle.rs) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72, KEL-74 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
 | `crate.keld-host` | All | **Partial** — The shipping host owns hello and macOS/Windows/Linux no-flag sessions; the destination registry and release packaging remain absent. | [code](../../crates/keld-host/src/main.rs), [test](../../crates/keld-host/tests/no_flag_windows.rs), [test](../../crates/keld-host/tests/no_flag_linux.rs) | [Specified](../../docs/architecture/01-overview.md) | KEL-96 | `c41ec5e117db284d191ee508f42a4d8812869a00` |
@@ -5302,6 +5321,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-update
 - message: Verified package bytes do not match the canonical Windows v0 archive profile or exact no-migration policy
 - fix: Discard the candidate and publish a canonical package containing the exact required update policy, signed by the release key.
+
+## KELD-UPDATE-012
+
+- crate: keld-update
+- message: Protected Windows root admission or unpublished package extraction failed
+- fix: Preserve any named incomplete stage for diagnosis, keep the current installation, and repair the protected staging root or artifact before retrying. Directory presence does not prove a runnable version.
 
 ## KELD-PACK-001
 
