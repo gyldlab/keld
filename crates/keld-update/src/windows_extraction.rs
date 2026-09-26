@@ -80,6 +80,31 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
         return Err(refusal("only the Windows x64 v0 package cell is supported"));
     }
     let path = &admitted.identity.update_root;
+    let ancestors = open_ancestors(path)?;
+    let root = ancestors
+        .last()
+        .ok_or_else(|| refusal("missing staging root"))?;
+    let root_file = root.try_clone()?.into_std_file();
+    keld_guard::validate_windows_owner_private_directory(&root_file)?;
+    qualify_volume(&root_file)?;
+    let versions = root.open_dir_nofollow("versions")?;
+    let versions_metadata = versions.dir_metadata()?;
+    ensure_directory(&versions_metadata)?;
+    if versions_metadata.dev() != root.dir_metadata()?.dev() {
+        return Err(refusal("versions crosses the admitted volume"));
+    }
+    let versions_file = versions.try_clone()?.into_std_file();
+    keld_guard::validate_windows_owner_private_directory(&versions_file)?;
+    qualify_volume(&versions_file)?;
+    Ok(WindowsExtractionRoot {
+        installation: admitted.identity.clone(),
+        floor: admitted.floor.clone(),
+        _ancestors: ancestors,
+        versions,
+    })
+}
+
+pub(crate) fn open_ancestors(path: &Path) -> io::Result<Vec<Dir>> {
     let mut components = path.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
         return Err(refusal("staging root must be an absolute local drive path"));
@@ -113,31 +138,11 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
         ensure_directory(&child.dir_metadata()?)?;
         ancestors.push(child);
     }
-    let root = ancestors
-        .last()
-        .ok_or_else(|| refusal("missing staging root"))?;
-    let root_file = root.try_clone()?.into_std_file();
-    keld_guard::validate_windows_owner_private_directory(&root_file)?;
-    qualify_volume(&root_file)?;
-    let versions = root.open_dir_nofollow("versions")?;
-    let versions_metadata = versions.dir_metadata()?;
-    ensure_directory(&versions_metadata)?;
-    if versions_metadata.dev() != root.dir_metadata()?.dev() {
-        return Err(refusal("versions crosses the admitted volume"));
-    }
-    let versions_file = versions.try_clone()?.into_std_file();
-    keld_guard::validate_windows_owner_private_directory(&versions_file)?;
-    qualify_volume(&versions_file)?;
-    Ok(WindowsExtractionRoot {
-        installation: admitted.identity.clone(),
-        floor: admitted.floor.clone(),
-        _ancestors: ancestors,
-        versions,
-    })
+    Ok(ancestors)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExtractionEvent {
+pub(crate) enum ExtractionEvent {
     PreCreate,
     AfterStageCreate,
     BeforeMember,
@@ -212,7 +217,7 @@ impl WindowsExtractionRoot {
     }
 }
 
-fn open_source(path: &Path) -> io::Result<File> {
+pub(crate) fn open_source(path: &Path) -> io::Result<File> {
     let file = StdOpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
@@ -223,7 +228,7 @@ fn open_source(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn populate_stage(
+pub(crate) fn populate_stage(
     stage: StdFile,
     name: &str,
     validated: &ValidatedArchive,
@@ -358,14 +363,14 @@ fn copy_read_back(
     Ok((retained, expected))
 }
 
-fn ensure_directory(metadata: &Metadata) -> io::Result<()> {
+pub(crate) fn ensure_directory(metadata: &Metadata) -> io::Result<()> {
     if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(refusal("expected a non-reparse directory"));
     }
     Ok(())
 }
 
-fn ensure_regular(metadata: &Metadata) -> io::Result<()> {
+pub(crate) fn ensure_regular(metadata: &Metadata) -> io::Result<()> {
     if !metadata.is_file()
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || metadata.nlink() != 1

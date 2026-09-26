@@ -31,6 +31,15 @@ mod unique_json;
 pub mod verified_manifest;
 #[cfg(windows)]
 mod windows_owner_private;
+#[cfg(windows)]
+mod windows_machine;
+
+#[cfg(windows)]
+pub use windows_machine::{
+    require_windows_system_token, seal_windows_machine_directory, seal_windows_machine_file,
+    validate_windows_machine_directory, validate_windows_machine_file,
+    validate_windows_machine_volume_anchor,
+};
 
 #[cfg(windows)]
 pub use windows_owner_private::{

@@ -102,6 +102,18 @@ impl ArtifactDomain {
 /// Typed updater refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateError {
+    /// Exact baseline authentication or native bootstrap failed.
+    Baseline {
+        /// Boundary that refused the operation.
+        step: &'static str,
+        /// Non-secret failure detail.
+        detail: String,
+    },
+    /// A local installer record is malformed, noncanonical or unsupported.
+    LocalRecordInvalid {
+        /// Codec refusal detail.
+        detail: String,
+    },
     /// Protected provenance is absent or its protection could not be established.
     ProvenanceUnavailable {
         /// The unavailable state observed by the trusted platform loader.
@@ -191,6 +203,8 @@ impl UpdateError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::Baseline { .. } => "KELD-UPDATE-013",
+            Self::LocalRecordInvalid { .. } => "KELD-UPDATE-014",
             Self::ProvenanceUnavailable { .. } => "KELD-UPDATE-001",
             Self::ManagedInstall { .. } => "KELD-UPDATE-002",
             Self::ProvenanceMismatch { .. } => "KELD-UPDATE-003",
@@ -210,6 +224,14 @@ impl UpdateError {
 impl fmt::Display for UpdateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Baseline { step, detail } => write!(
+                f,
+                "KELD-UPDATE-013: baseline {step} refused ({detail}). Preserve incomplete state and repair the trusted installer configuration or protected scaffold; do not reseed an existing installation."
+            ),
+            Self::LocalRecordInvalid { detail } => write!(
+                f,
+                "KELD-UPDATE-014: invalid local installer record ({detail}). Preserve the record for diagnosis and repair or reinstall through the trusted installer; never infer protected state from its presence."
+            ),
             Self::ProvenanceUnavailable { reason } => write!(
                 f,
                 "KELD-UPDATE-001: direct-update provenance is {}. Reinstall with a supported direct installer and restore its OS-protected commit record before checking for updates.",

@@ -15,6 +15,13 @@ KEL-265 T3b amendment: delegated approval comment
 The maintainer delegated this bounded decision in the active session; native
 acceptance and independent implementation review remain required.
 
+KEL-266 T4a amendment: delegated approval comment
+`a059df2c-e9fe-4eec-9582-92b6aa5cedb0`, approved content head
+`a5fc30808e61f8c1c0707759c40190c4efbec7f8`, file SHA-256
+`649b2f97d72a06ebd61a2fca23721a1ba75e28f9477a7252c6961ce5071e0ba5`.
+The independent design approval does not replace native qualification or final-diff
+security, unsafe and public-contract review.
+
 ## 1. Goal & non-goals
 
 Keld's direct updater must first prove one safe signed full-package
@@ -673,6 +680,8 @@ fallback rate and end-to-end success before adding complexity.
 
 ## 10. Open questions
 
-None in the technical contract. Human approval is bound to the corrected exact content
-head and Linear receipt recorded above. The updater remains unimplemented; this approved
-corrected specification authorizes its ordered tasks only after the specification lands.
+None in the technical contract. Approval is bound to the content heads and Linear
+receipts recorded above. Manifest/full verification, logical provenance admission,
+Windows packaging and protected incomplete extraction have landed. T4a implementation
+requires its own native acceptance; activation, health, recovery and the later tasks
+remain separate work. This task list does not claim those unfinished paths are shipped.

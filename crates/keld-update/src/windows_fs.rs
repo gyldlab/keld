@@ -1,11 +1,13 @@
 //! Narrow Windows filesystem operations for protected extraction.
 
 #![deny(unsafe_op_in_unsafe_fn)]
-#![allow(unsafe_code)] // Exact read-only volume and relative-directory operations in AGENTS.md.
+#![allow(unsafe_code)] // Exact volume, relative-directory and sibling-publication operations in AGENTS.md.
 
 use std::fs::File;
 use std::io;
+use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::path::PathBuf;
 use std::ptr;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
@@ -19,8 +21,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_LIST_DIRECTORY,
     FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
-    GetDriveTypeW, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, READ_CONTROL,
-    SYNCHRONIZE, VOLUME_NAME_GUID,
+    GetDriveTypeW, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
+    MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_GUID,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
@@ -31,6 +33,11 @@ const VOLUME_GUID_ROOT_UNITS: usize = 49;
 
 /// Observes the retained object's fixed, writable NTFS volume with persistent ACLs.
 pub(crate) fn qualify_volume(directory: &File) -> io::Result<()> {
+    qualified_volume_root(directory).map(|_| ())
+}
+
+/// Qualifies the actual retained volume and returns its canonical GUID root.
+pub(crate) fn qualified_volume_root(directory: &File) -> io::Result<String> {
     let mut filesystem = [0_u16; 261];
     let mut flags = 0;
     let filesystem_units = u32::try_from(filesystem.len()).map_err(io::Error::other)?;
@@ -68,6 +75,18 @@ pub(crate) fn qualify_volume(directory: &File) -> io::Result<()> {
         ));
     }
 
+    let path = normalized_guid_path(directory)?;
+    let volume_root = volume_guid_root(&path)?;
+    // SAFETY: `volume_root` is a checked volume-GUID root with a trailing slash
+    // and exactly one terminating NUL, and it remains live for this read-only call.
+    let drive_type = unsafe { GetDriveTypeW(volume_root.as_ptr()) };
+    if drive_type != DRIVE_FIXED {
+        return Err(unsupported("extraction requires a fixed local NTFS volume"));
+    }
+    String::from_utf16(&volume_root[..VOLUME_GUID_ROOT_UNITS]).map_err(io::Error::other)
+}
+
+fn normalized_guid_path(directory: &File) -> io::Result<Vec<u16>> {
     let mut path = Vec::new();
     path.try_reserve_exact(MAX_WINDOWS_PATH_UNITS)
         .map_err(io::Error::other)?;
@@ -93,12 +112,67 @@ pub(crate) fn qualify_volume(directory: &File) -> io::Result<()> {
             "volume-GUID path exceeds the supported Windows path bound",
         ));
     }
-    let volume_root = volume_guid_root(&path[..length])?;
-    // SAFETY: `volume_root` is a checked volume-GUID root with a trailing slash
-    // and exactly one terminating NUL, and it remains live for this read-only call.
-    let drive_type = unsafe { GetDriveTypeW(volume_root.as_ptr()) };
-    if drive_type != DRIVE_FIXED {
-        return Err(unsupported("extraction requires a fixed local NTFS volume"));
+    path.truncate(length);
+    volume_guid_root(&path)?;
+    Ok(path)
+}
+
+pub(crate) fn validate_volume_locator(value: &str) -> io::Result<()> {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    if units.len() != VOLUME_GUID_ROOT_UNITS {
+        return Err(unsupported("expected one canonical volume-GUID root"));
+    }
+    volume_guid_root(&units).map(|_| ())
+}
+
+/// Rejects drive aliases whose anchor is a subdirectory of the expected volume.
+pub(crate) fn require_volume_root_handle(directory: &File) -> io::Result<()> {
+    if normalized_guid_path(directory)?.len() != VOLUME_GUID_ROOT_UNITS {
+        return Err(unsupported("drive anchor is not the actual volume root"));
+    }
+    Ok(())
+}
+
+/// Publishes to an absent sibling using the retained parent's actual volume path.
+pub(crate) fn publish_new(parent: &File, source: &str, destination: &str) -> io::Result<()> {
+    if source.eq_ignore_ascii_case(destination) {
+        return Err(unsupported(
+            "publication source and destination must differ",
+        ));
+    }
+    for component in [source, destination] {
+        if component.contains('/') {
+            return Err(unsupported("publication requires one component"));
+        }
+        keld_guard::validate_windows_package_paths(&[component]).map_err(io::Error::other)?;
+    }
+    let parent = String::from_utf16(&normalized_guid_path(parent)?).map_err(io::Error::other)?;
+    let path = |component: &str| -> io::Result<Vec<u16>> {
+        let mut path = PathBuf::from(&parent);
+        path.push(component);
+        let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if units.contains(&0) || units.len() >= MAX_WINDOWS_PATH_UNITS {
+            return Err(unsupported("publication path is invalid or too long"));
+        }
+        units.push(0);
+        Ok(units)
+    };
+    let source = path(source)?;
+    let destination = path(destination)?;
+    // SAFETY: both checked UTF-16, NUL-terminated paths remain alive throughout
+    // this synchronous call and are distinct single-component siblings under the
+    // retained parent's observed volume-GUID path. The caller retains protected
+    // ancestry and exclusive bootstrap ownership. The sole fixed flag requests
+    // write-through; replacement, cross-volume copy and delayed work are absent.
+    let success = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if success == 0 {
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -230,7 +304,10 @@ fn unsupported(detail: &'static str) -> io::Error {
 #[cfg(test)]
 #[allow(clippy::expect_used)] // Test setup and independent literal/OS assertions.
 mod tests {
-    use super::{create_directory_relative, volume_guid_root};
+    use super::{
+        create_directory_relative, publish_new, require_volume_root_handle,
+        validate_volume_locator, volume_guid_root,
+    };
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::os::windows::ffi::OsStrExt;
@@ -320,6 +397,69 @@ mod tests {
         std::fs::rename(fixture.path().join("private"), fixture.path().join("moved"))
             .expect("released handles permit rename");
         drop(parent);
+    }
+
+    #[test]
+    fn sibling_publication_never_replaces_or_copies() {
+        let fixture = tempfile::tempdir().expect("publication fixture");
+        let parent = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(fixture.path())
+            .expect("retain publication parent");
+        std::fs::write(fixture.path().join("pending"), b"verified bytes").expect("source");
+        std::fs::write(fixture.path().join("existing"), b"existing sentinel").expect("target");
+        assert!(publish_new(&parent, "pending", "existing").is_err());
+        assert_eq!(
+            std::fs::read(fixture.path().join("existing")).expect("sentinel"),
+            b"existing sentinel"
+        );
+        assert_eq!(
+            std::fs::read(fixture.path().join("pending")).expect("source preserved"),
+            b"verified bytes"
+        );
+        for destination in ["../outside", "a/b", "a\\b", "pending", "PENDING"] {
+            assert!(
+                publish_new(&parent, "pending", destination).is_err(),
+                "{destination}"
+            );
+        }
+        publish_new(&parent, "pending", "published").expect("absent sibling publication");
+        assert!(!fixture.path().join("pending").exists());
+        assert_eq!(
+            std::fs::read(fixture.path().join("published")).expect("published bytes"),
+            b"verified bytes"
+        );
+        drop(parent);
+    }
+
+    #[test]
+    fn trusted_volume_locator_is_one_root_not_a_path() {
+        let root = r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\";
+        validate_volume_locator(root).expect("literal root");
+        assert!(validate_volume_locator(&format!("{root}child")).is_err());
+        assert!(validate_volume_locator(r"C:\").is_err());
+    }
+
+    #[test]
+    fn a_same_volume_subdirectory_is_not_a_drive_anchor() {
+        let fixture = tempfile::tempdir().expect("anchor fixture");
+        let directory = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(fixture.path())
+            .expect("directory handle");
+        assert!(require_volume_root_handle(&directory).is_err());
+        let root_path: std::path::PathBuf = fixture.path().components().take(2).collect();
+        let root = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(root_path)
+            .expect("actual drive root");
+        require_volume_root_handle(&root).expect("actual volume root positive control");
     }
 
     #[test]
