@@ -172,6 +172,17 @@ fn finish_ustar(archive: &mut Vec<u8>) {
     archive.resize(archive.len() + 1024, 0);
 }
 
+fn append_required_policy(archive: &mut Vec<u8>) {
+    // Literal wire oracle, deliberately independent of the producer's constants.
+    append_ustar_entry(archive, ".keld", b'5', &[]);
+    append_ustar_entry(
+        archive,
+        ".keld/update-policy.v1",
+        b'0',
+        b"{\"schema\":1,\"dataMigration\":\"none\"}\n",
+    );
+}
+
 fn refresh_ustar_checksum(header: &mut [u8; 512]) {
     header[148..156].fill(b' ');
     let sum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
@@ -833,14 +844,17 @@ fn archive_invalid_error_has_stable_code_and_repair_guidance() {
 }
 
 #[test]
-fn canonical_archive_preflight_accepts_empty_and_nested_file_trees() {
-    let empty = vec![0_u8; 1024];
-    let validated = parse_test_archive(&empty).expect("two terminal blocks form an empty tree");
-    assert!(validated.entries().is_empty());
-    assert_eq!(validated.content_size(), 1024);
+fn canonical_archive_preflight_accepts_policy_only_and_nested_file_trees() {
+    let mut empty = Vec::new();
+    append_required_policy(&mut empty);
+    finish_ustar(&mut empty);
+    let validated = parse_test_archive(&empty).expect("policy-only package");
+    assert_eq!(validated.entries().len(), 2);
+    assert_eq!(validated.content_size(), 2560);
     assert_eq!(validated.content_blake3(), blake3::hash(&empty).as_bytes());
 
     let mut archive = Vec::new();
+    append_required_policy(&mut archive);
     append_ustar_entry(&mut archive, "assets", b'5', &[]);
     append_ustar_entry(&mut archive, "assets/a.txt", b'0', b"x");
     append_ustar_entry(&mut archive, "assets/b.bin", b'0', &vec![0x5a; 513]);
@@ -853,14 +867,123 @@ fn canonical_archive_preflight_accepts_empty_and_nested_file_trees() {
             .iter()
             .map(ArchiveEntry::name)
             .collect::<Vec<_>>(),
-        ["assets", "assets/a.txt", "assets/b.bin", "empty"]
+        [
+            ".keld",
+            ".keld/update-policy.v1",
+            "assets",
+            "assets/a.txt",
+            "assets/b.bin",
+            "empty"
+        ]
     );
-    assert_eq!(validated.entries()[0].kind(), ArchiveEntryKind::Directory);
-    assert_eq!(validated.entries()[1].size(), 1);
-    assert_eq!(validated.entries()[2].size(), 513);
+    assert_eq!(validated.entries()[2].kind(), ArchiveEntryKind::Directory);
+    assert_eq!(validated.entries()[3].size(), 1);
+    assert_eq!(validated.entries()[4].size(), 513);
     assert_eq!(
         validated.content_blake3(),
         blake3::hash(&archive).as_bytes()
+    );
+}
+
+#[test]
+fn canonical_archive_preflight_rejects_a_signed_package_missing_update_policy() {
+    // `parse_test_archive` signs and verifies this otherwise canonical byte stream before
+    // archive admission. This isolates the policy predicate from manifest/auth failures.
+    let error = parse_test_archive(&[0_u8; 1024])
+        .expect_err("a signed v0 package without update-policy.v1 must be refused");
+    assert_code(&error, "KELD-UPDATE-011");
+    assert!(matches!(
+        error,
+        UpdateError::ArchiveInvalid {
+            detail: "required no-migration policy is missing"
+        }
+    ));
+}
+
+#[test]
+fn canonical_archive_preflight_requires_exact_policy_bytes_and_file_kind() {
+    let correct = b"{\"schema\":1,\"dataMigration\":\"none\"}\n";
+    for policy in [
+        b"{\"schema\":1,\"dataMigration\":\"required\"}\n".as_slice(),
+        b"{\"dataMigration\":\"none\",\"schema\":1}\n".as_slice(),
+        b"{\"schema\":1,\"dataMigration\":\"none\"}\r\n".as_slice(),
+        &correct[..correct.len() - 1],
+        b"".as_slice(),
+    ] {
+        let mut archive = Vec::new();
+        append_ustar_entry(&mut archive, ".keld", b'5', &[]);
+        append_ustar_entry(&mut archive, ".keld/update-policy.v1", b'0', policy);
+        finish_ustar(&mut archive);
+        let error = parse_test_archive(&archive).expect_err("signed different policy");
+        assert!(matches!(
+            error,
+            UpdateError::ArchiveInvalid {
+                detail: "no-migration policy is not the exact required regular file"
+            }
+        ));
+    }
+    let mut directory = Vec::new();
+    append_ustar_entry(&mut directory, ".keld", b'5', &[]);
+    append_ustar_entry(&mut directory, ".keld/update-policy.v1", b'5', &[]);
+    finish_ustar(&mut directory);
+    assert!(matches!(
+        parse_test_archive(&directory),
+        Err(UpdateError::ArchiveInvalid {
+            detail: "no-migration policy is not the exact required regular file"
+        })
+    ));
+
+    let mut duplicate = Vec::new();
+    append_required_policy(&mut duplicate);
+    append_ustar_entry(&mut duplicate, ".keld/update-policy.v1", b'0', correct);
+    finish_ustar(&mut duplicate);
+    assert!(matches!(
+        parse_test_archive(&duplicate),
+        Err(UpdateError::ArchiveInvalid {
+            detail: "entry names are not strictly byte-sorted"
+        })
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn produced_package_metadata_drives_signed_full_verification_and_policy_admission() {
+    let mut source = Cursor::new(b"application fixture");
+    let mut entries = [keld_pack::PackageEntry::File {
+        name: "app.bin",
+        size: 19,
+        input: &mut source,
+    }];
+    let mut compressed = Vec::new();
+    let produced =
+        keld_pack::produce_windows_v0(&mut entries, &mut compressed).expect("native producer");
+    let selected = selected_for(
+        produced.compressed_size(),
+        produced.content_size(),
+        &crate::error::hex_digest(produced.compressed_blake3()),
+        &crate::error::hex_digest(produced.content_blake3()),
+    );
+    let mut content = Vec::new();
+    let verified = selected
+        .verify_full(&mut Cursor::new(compressed), &mut content)
+        .expect("signed producer metadata");
+    let admitted = verified
+        .validate_windows_archive(&mut Cursor::new(&content))
+        .expect("native package admission");
+    assert_eq!(
+        admitted
+            .entries()
+            .iter()
+            .map(ArchiveEntry::name)
+            .collect::<Vec<_>>(),
+        [".keld", ".keld/update-policy.v1", "app.bin"]
+    );
+    let policy = &admitted.entries()[1];
+    let offset = usize::try_from(policy.data_offset()).expect("small fixture");
+    let length = usize::try_from(policy.size()).expect("small policy");
+    assert_eq!(
+        &content[offset..offset + length],
+        b"{\"schema\":1,\"dataMigration\":\"none\"}\n"
     );
 }
 
@@ -960,6 +1083,7 @@ fn canonical_archive_preflight_rejects_changed_content_and_size() {
 #[test]
 fn windows_archive_preflight_rejects_case_aliases_and_non_nfc_names() {
     let mut aliases = Vec::new();
+    append_required_policy(&mut aliases);
     append_ustar_entry(&mut aliases, "README", b'0', b"a");
     append_ustar_entry(&mut aliases, "Readme", b'0', b"b");
     finish_ustar(&mut aliases);
@@ -970,6 +1094,7 @@ fn windows_archive_preflight_rejects_case_aliases_and_non_nfc_names() {
     assert_code(&error, "KELD-UPDATE-011");
 
     let mut decomposed = Vec::new();
+    append_required_policy(&mut decomposed);
     append_ustar_entry(&mut decomposed, "cafe\u{0301}.txt", b'0', b"a");
     finish_ustar(&mut decomposed);
     let receipt = archive_receipt(&decomposed);

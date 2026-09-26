@@ -1,19 +1,14 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
+pub use keld_pack::ArchiveEntryKind;
+use keld_pack::{
+    ARCHIVE_BLOCK_BYTES as TAR_BLOCK_BYTES, ArchiveMember, NO_MIGRATION_POLICY, UPDATE_POLICY_PATH,
+};
+
 use crate::error::{ArtifactDomain, UpdateError, hex_digest};
 use crate::{ArtifactIdentity, VerifiedFull};
 
-const TAR_BLOCK_BYTES: usize = 512;
 const STREAM_BUFFER_BYTES: usize = 16 * 1024;
-
-/// Kind of an entry in the canonical Windows v0 package archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveEntryKind {
-    /// A regular file with bytes in the archive.
-    File,
-    /// A directory; canonical v0 directory entries have no data bytes.
-    Directory,
-}
 
 /// One validated archive member, with its data offset relative to archive start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +127,8 @@ where
         .map_err(|error| processing("canonical archive rewind", error))?;
     let mut input = HashingReader::new(archive, receipt.content_size())?;
     let mut entries = Vec::<ArchiveEntry>::new();
+    let mut policy_seen = false;
+    let mut policy_valid = false;
     loop {
         let mut header = [0_u8; TAR_BLOCK_BYTES];
         read_exact_canonical(&mut input, &mut header, receipt.content_size())?;
@@ -159,30 +156,23 @@ where
         verify_header_checksum(&header)?;
         verify_fixed_fields(&header)?;
         let (name, kind, size) = parse_header(&header)?;
-        validate_relative_name(&name)?;
-        if entries
-            .last()
-            .is_some_and(|previous: &ArchiveEntry| previous.name.as_bytes() >= name.as_bytes())
-        {
-            return Err(invalid_archive("entry names are not strictly byte-sorted"));
-        }
         if entries.try_reserve(1).is_err() {
             return Err(invalid_archive(
                 "archive entry table exceeds available memory",
             ));
         }
         let data_offset = input.bytes_read;
-        skip_data(&mut input, size, receipt.content_size())?;
+        if name == UPDATE_POLICY_PATH {
+            policy_seen = true;
+            policy_valid = read_policy(&mut input, kind, size, receipt.content_size())?;
+        } else {
+            skip_data(&mut input, size, receipt.content_size())?;
+        }
         let padding =
             (TAR_BLOCK_BYTES as u64 - (size % TAR_BLOCK_BYTES as u64)) % TAR_BLOCK_BYTES as u64;
         skip_zero_padding(&mut input, padding, receipt.content_size())?;
-        let mut name_copy = String::new();
-        name_copy
-            .try_reserve_exact(name.len())
-            .map_err(|_| invalid_archive("archive entry name allocation failed"))?;
-        name_copy.push_str(&name);
         entries.push(ArchiveEntry {
-            name: name_copy,
+            name,
             kind,
             size,
             data_offset,
@@ -195,14 +185,7 @@ where
             input.bytes_read.to_string(),
         ));
     }
-    validate_complete_tree(&entries)?;
-    let mut path_refs = Vec::new();
-    path_refs
-        .try_reserve_exact(entries.len())
-        .map_err(|_| invalid_archive("archive path table allocation failed"))?;
-    path_refs.extend(entries.iter().map(|entry| entry.name.as_str()));
-    validate_windows_paths(&path_refs)
-        .map_err(|_| invalid_archive("Windows package namespace is invalid"))?;
+    validate_archive_members(&entries, validate_windows_paths)?;
 
     let actual_digest = *input.hasher.finalize().as_bytes();
     if actual_digest != *receipt.content_blake3() {
@@ -212,12 +195,66 @@ where
             actual: hex_digest(&actual_digest),
         });
     }
+    // Decide policy only after authenticating the entire byte stream. A changed
+    // input must remain a digest failure rather than masquerading as signed policy.
+    if !policy_seen {
+        return Err(invalid_archive("required no-migration policy is missing"));
+    }
+    if !policy_valid {
+        return Err(invalid_archive(
+            "no-migration policy is not the exact required regular file",
+        ));
+    }
     Ok(ValidatedArchive {
         identity: receipt.identity().clone(),
         content_size: receipt.content_size(),
         content_blake3: actual_digest,
         entries,
     })
+}
+
+fn read_policy<R: Read>(
+    input: &mut HashingReader<'_, R>,
+    kind: ArchiveEntryKind,
+    size: u64,
+    expected: u64,
+) -> Result<bool, UpdateError> {
+    if kind != ArchiveEntryKind::File || size != NO_MIGRATION_POLICY.len() as u64 {
+        skip_data(input, size, expected)?;
+        return Ok(false);
+    }
+    let mut bytes = [0_u8; NO_MIGRATION_POLICY.len()];
+    read_exact_canonical(input, &mut bytes, expected)?;
+    Ok(bytes == NO_MIGRATION_POLICY)
+}
+
+fn validate_archive_members<V>(
+    entries: &[ArchiveEntry],
+    validate_windows_paths: V,
+) -> Result<(), UpdateError>
+where
+    V: FnOnce(&[&str]) -> Result<(), String>,
+{
+    let mut members = Vec::new();
+    members
+        .try_reserve_exact(entries.len())
+        .map_err(|_| invalid_archive("archive metadata allocation failed"))?;
+    members.extend(entries.iter().map(|entry| ArchiveMember {
+        name: &entry.name,
+        kind: entry.kind,
+        size: entry.size,
+    }));
+    keld_pack::validate_v0_members(&members).map_err(|error| match error {
+        keld_pack::PackError::InvalidMetadata { detail } => invalid_archive(detail),
+        _ => invalid_archive("canonical archive metadata is invalid"),
+    })?;
+    let mut path_refs = Vec::new();
+    path_refs
+        .try_reserve_exact(entries.len())
+        .map_err(|_| invalid_archive("archive path table allocation failed"))?;
+    path_refs.extend(entries.iter().map(|entry| entry.name.as_str()));
+    validate_windows_paths(&path_refs)
+        .map_err(|_| invalid_archive("Windows package namespace is invalid"))
 }
 
 struct HashingReader<'a, R> {
@@ -376,44 +413,6 @@ fn parse_octal_field(field: &[u8]) -> Option<u64> {
         }
         value.checked_mul(8)?.checked_add(u64::from(*byte - b'0'))
     })
-}
-
-fn validate_relative_name(name: &str) -> Result<(), UpdateError> {
-    if name.len() > 100 || name.starts_with('/') || name.ends_with('/') {
-        return Err(invalid_archive(
-            "entry name is absolute, trailing-slash, or too long",
-        ));
-    }
-    for component in name.split('/') {
-        if component.is_empty() || matches!(component, "." | "..") || component.contains('\\') {
-            return Err(invalid_archive("entry name has an invalid path component"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_complete_tree(entries: &[ArchiveEntry]) -> Result<(), UpdateError> {
-    for entry in entries {
-        let mut child = entry.name.as_str();
-        while let Some((parent, _)) = child.rsplit_once('/') {
-            let parent_entry = entries
-                .binary_search_by(|candidate| candidate.name.as_bytes().cmp(parent.as_bytes()))
-                .ok()
-                .map(|index| &entries[index]);
-            match parent_entry.map(|parent| parent.kind) {
-                Some(ArchiveEntryKind::Directory) => child = parent,
-                Some(ArchiveEntryKind::File) => {
-                    return Err(invalid_archive("a file is an ancestor of another entry"));
-                }
-                None => {
-                    return Err(invalid_archive(
-                        "entry is missing an explicit parent directory",
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn skip_data<R: Read>(

@@ -7,8 +7,9 @@
 //! [`SelectedFull::verify_full`] then enforces both signed byte counts and BLAKE3 domains
 //! while streaming zstd content.
 //!
-//! Archive validation/extraction, activation, health, and OS protection production are
-//! deliberately outside this T2 slice. A [`ProvenanceObservation::Protected`] test value
+//! Native Windows archive preflight also checks canonical metadata, namespace and exact
+//! no-migration policy. Extraction, activation, health, and OS protection production
+//! remain outside this slice. A [`ProvenanceObservation::Protected`] test value
 //! proves policy logic only; it is not real package-signature or ACL evidence. The full
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and
 //! `docs/specs/kel53-full-package-activation.md`.
