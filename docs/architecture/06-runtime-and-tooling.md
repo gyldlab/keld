@@ -420,11 +420,13 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   content post-conditions, protected install-channel provenance, a monotonic
   semantic-version trust floor, attempt-bound activation/health, retained
   last-known-good state and typed manual recovery. Store/package-manager-owned installs
-  refuse direct mutation. Current T2 code implements logical protected-provenance
-  admission, signed v0 manifest validation/selection and streamed full-artifact
-  size/BLAKE3 verification. The platform adapter that proves provenance protection,
-  live feed orchestration, archive validation/extraction, activation, health and
-  recovery remain unimplemented.
+  refuse direct mutation. Current code implements logical protected-provenance
+  admission, signed v0 manifest validation/selection, streamed full-artifact
+  size/BLAKE3 verification and read-only Windows canonical archive/namespace preflight
+  with exact no-migration policy admission. `keld-pack::produce_windows_v0` supplies
+  the matching Windows-host streaming producer as a library API. The platform adapter
+  that proves provenance protection, live feed orchestration, archive extraction,
+  activation, health and recovery remain unimplemented.
 - Optional delta: only a measured later transport optimization. It reconstructs the
   same full-package content identity, retains a same-attempt full fallback and cannot
   change activation, health, trust-floor or rollback semantics.
