@@ -1569,6 +1569,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "windows-permissions",
  "windows-sys 0.61.2",
 ]
 
@@ -1641,12 +1642,19 @@ version = "0.0.1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
+ "cap-fs-ext",
+ "cap-std",
  "ed25519-dalek",
+ "getrandom 0.4.3",
  "keld-guard",
  "keld-pack",
+ "keld-runtime",
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
+ "windows-permissions",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 

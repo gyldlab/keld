@@ -8,6 +8,7 @@ const STREAM_BUFFER_BYTES: usize = 16 * 1024;
 /// Receipt proving the selected full artifact passed both signed byte domains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedFull {
+    pub(crate) installation: crate::DirectInstallationIdentity,
     identity: ArtifactIdentity,
     content_size: u64,
     content_blake3: [u8; 32],
@@ -149,6 +150,7 @@ impl SelectedFull {
         }
 
         Ok(VerifiedFull {
+            installation: self.installation.clone(),
             identity: self.identity.clone(),
             content_size: produced,
             content_blake3: actual,
@@ -273,6 +275,24 @@ pub fn fuzz_canonical_archive(bytes: &[u8]) {
     };
     let digest = *blake3::hash(bytes).as_bytes();
     let receipt = VerifiedFull {
+        // The fuzz-only parser never exposes this synthetic receipt or extracts it.
+        installation: crate::DirectInstallationIdentity {
+            app_id: "fuzz.invalid".to_owned(),
+            channel: crate::Channel::Stable,
+            target: "windows-x64".to_owned(),
+            install_root: std::path::PathBuf::new(),
+            update_root: std::path::PathBuf::new(),
+            signing_key_id: crate::SigningKeyId::from_public_key(&[0; 32]),
+            baseline: crate::ArtifactIdentity {
+                app_id: "fuzz.invalid".to_owned(),
+                channel: crate::Channel::Stable,
+                target: "windows-x64".to_owned(),
+                version: "0.0.0".to_owned(),
+                content_blake3: digest,
+            },
+            profile_digest: keld_guard::ProfileDigest([0; 32]),
+            principal_model: crate::PrincipalModel::StrictDistinctOsPrincipals,
+        },
         identity: crate::ArtifactIdentity {
             app_id: "fuzz.invalid".to_owned(),
             channel: crate::Channel::Stable,

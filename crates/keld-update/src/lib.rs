@@ -8,8 +8,10 @@
 //! while streaming zstd content.
 //!
 //! Native Windows archive preflight also checks canonical metadata, namespace and exact
-//! no-migration policy. Extraction, activation, health, and OS protection production
-//! remain outside this slice. A [`ProvenanceObservation::Protected`] test value
+//! no-migration policy. Windows extraction binds verified bytes to real protected,
+//! fixed-NTFS staging handles and returns only an unpublished incomplete stage.
+//! Installer provenance loading, activation and health remain outside this slice.
+//! A [`ProvenanceObservation::Protected`] test value
 //! proves policy logic only; it is not real package-signature or ACL evidence. The full
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and
 //! `docs/specs/kel53-full-package-activation.md`.
@@ -20,6 +22,10 @@ mod error;
 mod full;
 mod manifest;
 mod provenance;
+#[cfg(windows)]
+mod windows_extraction;
+#[cfg(windows)]
+mod windows_fs;
 
 #[cfg(test)]
 mod tests;
@@ -38,6 +44,8 @@ pub use provenance::{
     AdmittedInstallation, ArtifactIdentity, DirectInstallationIdentity, InstallOwner,
     InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId, UpdateVerifier,
 };
+#[cfg(windows)]
+pub use windows_extraction::{ExtractedWindowsStage, WindowsExtractionRoot};
 
 /// Release channels supported by update feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

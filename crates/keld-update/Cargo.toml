@@ -22,5 +22,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 zstd = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+cap-std = { workspace = true }
+cap-fs-ext = { workspace = true }
+getrandom = { workspace = true }
+windows-sys = { workspace = true, features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_System_SystemServices"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+keld-runtime = { workspace = true }
+tempfile = { workspace = true }
+windows-permissions = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_Ioctl"] }
+
 [lints]
 workspace = true

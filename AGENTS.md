@@ -132,8 +132,8 @@ Repository Current/Target/Evidence status is owned by the tracked
 Workspace membership is owned by `Cargo.toml`; package roles and public contracts remain
 path-local.
 
-Crate `AGENTS.md` exists only for real extra invariants (`wv`, `ipc`, `guard`,
-`compat`, `runtime`, `core`, `host`, `cli`). MUST NOT add hollow agent files.
+Crate `AGENTS.md` exists for extra invariants (`wv`, `ipc`, `guard`,
+`compat`, `runtime`, `core`, `host`, `cli`, `update`). MUST NOT add hollow agent files.
 
 ## Verification floor
 

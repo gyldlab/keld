@@ -8,6 +8,13 @@ Approval: original corrected contract: Linear comment `b343d835-1528-461f-bda4-0
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"3d5d51e31237c365847a1e9b866880ba06429e2e","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"df61a6f6-3215-44a8-8780-7ae242fc74ab","source":"delegated-maintainer-session-2026-09-26"}
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"3d5d51e31237c365847a1e9b866880ba06429e2e","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"212a2039-f729-4708-a983-9a348d299bd5","source":"delegated-maintainer-session-2026-09-26"}
 
+KEL-265 T3b amendment: delegated approval comment
+`559df4c6-b8b1-4a47-ae81-2311e2743eb6`, approved content head
+`bb3d863e20d495349aa64807bafa598ffa4f31b0`, file SHA-256
+`f9ab8891c061150b8f3fe90884b181fbd6ebd11ff49b605b8c6570a5904f800c`.
+The maintainer delegated this bounded decision in the active session; native
+acceptance and independent implementation review remain required.
+
 ## 1. Goal & non-goals
 
 Keld's direct updater must first prove one safe signed full-package

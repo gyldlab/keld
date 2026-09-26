@@ -424,9 +424,12 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
   admission, signed v0 manifest validation/selection, streamed full-artifact
   size/BLAKE3 verification and read-only Windows canonical archive/namespace preflight
   with exact no-migration policy admission. `keld-pack::produce_windows_v0` supplies
-  the matching Windows-host streaming producer as a library API. The platform adapter
-  that proves provenance protection, live feed orchestration, archive extraction,
-  activation, health and recovery remain unimplemented.
+  the matching Windows-host streaming producer as a library API. Windows extraction
+  binds the receipt's installation/key/profile to an actual owner-private, fixed-NTFS
+  staging root and retains flushed/read-back files in an unpublished incomplete stage.
+  The platform loader that proves installer provenance protection, live feed
+  orchestration, completed-version publication, activation, health and recovery remain
+  unimplemented.
 - Optional delta: only a measured later transport optimization. It reconstructs the
   same full-package content identity, retains a same-attempt full fallback and cannot
   change activation, health, trust-floor or rollback semantics.
@@ -667,6 +670,18 @@ release missing `full` is part of AC1):
   adapters synchronize directories bottom-up; Windows uses the staging-directory
   publish sequence below. A completion marker visible without its tree is not a
   meaningful "this write finished" signal.
+
+  The first Windows extraction adapter opens existing owner-private `update_root`
+  and `versions` directories and creates only a fresh incomplete child. It binds the
+  verified receipt to the complete installation context and admission-floor snapshot,
+  locks the source against data writers, and retains authenticated `content.tar`.
+  Directory creation is native and relative to retained handles; safe capability
+  opens create regular files without following links. Shared guard owns the exact
+  descriptor policy, while the updater qualifies fixed writable NTFS through handles.
+  File flush/readback returns exclusive stage ownership without `.complete` or final
+  publication. T4 must reread protected state under its lock and qualify the publication
+  crash cuts. The detailed support cell, refusal/lifetime and native proof requirements
+  are in `docs/specs/kel53-full-package-activation.md` § T3b.
 
 **Client verification order — no step may be skipped or reordered:**
 

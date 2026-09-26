@@ -328,7 +328,7 @@ fn validate_expected(expected: &DirectInstallationIdentity) -> Result<(), Update
     Ok(())
 }
 
-fn match_identity(
+pub(crate) fn match_identity(
     expected: &DirectInstallationIdentity,
     observed: &DirectInstallationIdentity,
 ) -> Result<(), UpdateError> {

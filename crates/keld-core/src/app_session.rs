@@ -98,14 +98,6 @@ use keld_wv::{ProfileIdentity, WebProfileSelection};
 use sha2::{Digest as _, Sha256};
 #[cfg(target_os = "macos")]
 use sha2::{Digest as _, Sha256};
-#[cfg(windows)]
-use windows_permissions::constants::{
-    AccessRights, AceFlags, AceType, SeObjectType, SecurityInformation,
-};
-#[cfg(windows)]
-use windows_permissions::utilities::current_process_sid;
-#[cfg(windows)]
-use windows_permissions::wrappers::GetNamedSecurityInfo;
 #[cfg(all(test, windows))]
 use windows_sys::Win32::Foundation::GetHandleInformation;
 #[cfg(windows)]
@@ -687,45 +679,17 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
 /// full-control allow ACE.
 #[cfg(windows)]
 pub fn validate_windows_dev_stage_acl(root: &Path) -> io::Result<()> {
-    let current = current_process_sid().map_err(io::Error::other)?;
-    let descriptor = GetNamedSecurityInfo(
-        root.as_os_str(),
-        SeObjectType::SE_FILE_OBJECT,
-        SecurityInformation::Owner | SecurityInformation::Dacl,
-    )
-    .map_err(io::Error::other)?;
-    if descriptor.owner() != Some(&current) {
-        return Err(io::Error::other(
-            "owner does not equal the current process TokenUser SID",
-        ));
-    }
-    let sddl = descriptor.as_sddl().map_err(io::Error::other)?;
-    if !sddl.to_string_lossy().contains("D:P") {
-        return Err(io::Error::other("DACL inheritance is not protected"));
-    }
-    let dacl = descriptor
-        .dacl()
-        .ok_or_else(|| io::Error::other("security descriptor contains no DACL"))?;
-    if dacl.len() != 1 {
-        return Err(io::Error::other(format!(
-            "expected one access rule, found {}",
-            dacl.len()
-        )));
-    }
-    let ace = dacl
-        .get_ace(0)
-        .ok_or_else(|| io::Error::other("the one access rule is unreadable"))?;
-    let required_flags = AceFlags::ContainerInherit | AceFlags::ObjectInherit;
-    if ace.ace_type() != AceType::ACCESS_ALLOWED_ACE_TYPE
-        || ace.mask() != AccessRights::FileAllAccess
-        || ace.sid() != Some(&current)
-        || ace.flags() != required_flags
-    {
-        return Err(io::Error::other(
-            "expected one non-inherited current-user full-control rule for files and directories",
-        ));
-    }
-    Ok(())
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    let directory = options.open(root)?;
+    keld_guard::validate_windows_owner_private_directory(&directory)
 }
 
 /// Prepared Windows dev-stage cleanup owner that survives the terminal CLI.
