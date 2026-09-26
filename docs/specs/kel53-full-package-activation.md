@@ -386,6 +386,9 @@ TokenUser owner and exactly one protected, non-inherited OI/CI full-control allo
 ACE for that user. Missing scaffolding or a different descriptor refuses; extraction
 does not repair ACLs or initialize installation state. Logical
 `ProvenanceObservation::Protected` is not evidence for these OS facts.
+Existing installer path components use the guard's ordinary filesystem grammar,
+including serviceable tilde names. The stricter package namespace grammar applies
+to archive members and newly created package directories, not ancestor root names.
 
 `SelectedFull` and `VerifiedFull` privately retain the admitting
 `DirectInstallationIdentity`. Before opening the source or creating a stage,

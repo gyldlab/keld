@@ -33,7 +33,8 @@ use windows_sys::Win32::System::Memory::{CreateFileMappingW, PAGE_READONLY, PAGE
 
 use super::*;
 use crate::tests::{
-    digest_hex, expected_identity, manifest_json, observation, release_json, signing_key,
+    append_required_policy, append_ustar_entry, digest_hex, expected_identity, finish_ustar,
+    manifest_json, observation, release_json, signing_key,
 };
 use crate::{
     DirectInstallationIdentity, InstallOwner, ManifestDecision, ProvenanceField, SigningKeyId,
@@ -174,6 +175,55 @@ fn signed_golden_extracts_only_incomplete_stage_with_exact_bytes() {
     assert!(stage_path.join("tree/empty").is_dir());
     assert!(!stage_path.join(".complete").exists());
     assert!(!fixture.versions().join("2.0.0").exists());
+}
+
+#[test]
+fn tilde_in_existing_update_root_preserves_authenticated_extraction() {
+    let mut fixture = Fixture::new();
+    let renamed = fixture.temp.path().join("updates~stable");
+    fs::rename(&fixture.identity.update_root, &renamed)
+        .expect("rename preserves protected directory descriptors");
+    fixture.identity.update_root = renamed;
+    let source = fixture.source(GOLDEN_TAR);
+    let receipt = fixture.receipt(GOLDEN_TAR);
+    let mut root = fixture
+        .admitted("1.0.0")
+        .open_windows_extraction_root()
+        .expect("existing filesystem roots permit a literal tilde");
+    let stage = root
+        .extract(&receipt, &source)
+        .expect("authenticated extraction beneath existing tilde root");
+    let stage_path = fixture.versions().join(stage.name());
+    assert_eq!(
+        fs::read(stage_path.join("content.tar")).expect("exact retained content"),
+        GOLDEN_TAR
+    );
+    assert_eq!(
+        fs::read(stage_path.join("tree/nest/one")).expect("extracted payload"),
+        b"!"
+    );
+    assert!(!stage_path.join(".complete").exists());
+}
+
+#[test]
+fn tilde_archive_member_still_refuses_before_stage_creation() {
+    let fixture = Fixture::new();
+    let mut content = Vec::new();
+    append_required_policy(&mut content);
+    append_ustar_entry(&mut content, "payload~1.bin", b'0', b"forbidden alias");
+    finish_ustar(&mut content);
+    let source = fixture.source(&content);
+    let receipt = fixture.receipt(&content);
+    let mut root = fixture
+        .admitted("1.0.0")
+        .open_windows_extraction_root()
+        .expect("protected root");
+    let error = root
+        .extract(&receipt, &source)
+        .expect_err("package tilde prohibition remains in force");
+    assert_eq!(error.code(), "KELD-UPDATE-011");
+    assert!(matches!(error, UpdateError::ArchiveInvalid { .. }));
+    assert_empty_versions(&fixture.versions());
 }
 
 #[test]

@@ -105,7 +105,7 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
         let name = name
             .to_str()
             .ok_or_else(|| refusal("staging root is not UTF-8"))?;
-        keld_guard::validate_windows_package_component(name).map_err(refusal)?;
+        keld_guard::validate_fs_component(name).map_err(refusal)?;
         let parent = ancestors
             .last()
             .ok_or_else(|| refusal("missing root ancestor"))?;
