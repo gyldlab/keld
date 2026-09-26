@@ -29,6 +29,14 @@ mod jsonc;
 mod probe;
 mod unique_json;
 pub mod verified_manifest;
+#[cfg(windows)]
+mod windows_owner_private;
+
+#[cfg(windows)]
+pub use windows_owner_private::{
+    validate_windows_owner_private_directory, validate_windows_owner_private_file,
+    windows_owner_private_directory_security,
+};
 
 use std::fmt;
 use std::fs::File;

@@ -3754,13 +3754,63 @@ fn try_read_control_line(
     }
 }
 
+#[test]
+fn startup_terminal_record_preserves_host_failure_output() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("diagnostic control listener");
+    let mut writer = TcpStream::connect(listener.local_addr().expect("control address"))
+        .expect("diagnostic control peer");
+    let (stream, _) = listener.accept().expect("accept diagnostic peer");
+    let mut reader = BufReader::new(stream);
+    writer
+        .write_all(b"READY\nLINK_EOF\n")
+        .expect("control records");
+    let mut child = Command::new("cmd.exe")
+        .args([
+            "/d",
+            "/c",
+            "echo KEL265_DIAGNOSTIC_STDOUT & echo KEL265_DIAGNOSTIC_STDERR 1>&2 & exit /b 23",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("diagnostic child");
+    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
+    assert_eq!(status.code(), Some(23));
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, &mut child, "fixture READY"),
+        "READY"
+    );
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        read_control_line_or_host_failure(&mut reader, &mut child, "fixture READY")
+    }))
+    .expect_err("terminal startup record must preserve the failed child diagnostics");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .expect("panic message");
+    for expected in [
+        "LINK_EOF",
+        "fixture READY",
+        "KEL265_DIAGNOSTIC_STDOUT",
+        "KEL265_DIAGNOSTIC_STDERR",
+        "exit code: 23",
+    ] {
+        assert!(message.contains(expected), "missing {expected}: {message}");
+    }
+    assert!(
+        child.stdout.is_none() && child.stderr.is_none(),
+        "both captures were consumed"
+    );
+}
+
 fn read_control_line_or_host_failure(
     reader: &mut BufReader<TcpStream>,
     child: &mut Child,
     label: &str,
 ) -> String {
     match try_read_control_line(reader, Instant::now() + PRODUCT_DEADLINE) {
-        Ok(line) => line,
+        Ok(line) if line != "LINK_EOF" => line,
         result => {
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {

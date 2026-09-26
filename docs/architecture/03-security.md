@@ -264,11 +264,15 @@ manifest decoder.
    v0 update contract selects one compiled-in ed25519 key; a TUF-style rotating root
    remains later target behavior and requires a wire/trust review.
 
-## 5. Update security (specified, not implemented)
+## 5. Update security (verification and staging implemented; activation specified)
 
-The repository currently has only the `keld-update::Channel` skeleton; it has no
-manifest verifier, activation journal, health owner, rollback engine or feed client.
-The following is the reviewed destination contract. V0 update manifests are signed with
+Current code verifies signed manifests/full artifacts and the Windows canonical
+archive, and extracts to an observed owner-private fixed-NTFS incomplete stage.
+Logical provenance admission is not a protected installer-record loader. That loader,
+the activation journal, health owner, rollback engine and feed client remain absent;
+staging does not publish a runnable version. Architecture 06 and KEL-53 T3b own the
+exact current support cell. The following is the reviewed full-lifecycle contract.
+V0 update manifests are signed with
 ed25519 and verified by the host's compiled-in public key. Every release has a bounded
 full package whose transport and canonical
 content have separate BLAKE3 checks; optional later deltas must reconstruct that same

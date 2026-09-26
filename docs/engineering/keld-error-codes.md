@@ -758,6 +758,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Verified package bytes do not match the canonical Windows v0 archive profile or exact no-migration policy
 - fix: Discard the candidate and publish a canonical package containing the exact required update policy, signed by the release key.
 
+## KELD-UPDATE-012
+
+- crate: keld-update
+- message: Protected Windows root admission or unpublished package extraction failed
+- fix: Preserve any named incomplete stage for diagnosis, keep the current installation, and repair the protected staging root or artifact before retrying. Directory presence does not prove a runnable version.
+
 ## KELD-PACK-001
 
 - crate: keld-pack

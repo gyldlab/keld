@@ -26,6 +26,7 @@ pub enum ManifestDecision {
 /// Signed full-artifact metadata selected from a completely validated manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedFull {
+    pub(crate) installation: crate::DirectInstallationIdentity,
     pub(crate) identity: ArtifactIdentity,
     pub(crate) published_at: String,
     pub(crate) url: String,
@@ -315,6 +316,7 @@ fn select_release(
         return ManifestDecision::NoUpdate;
     };
     ManifestDecision::Update(Box::new(SelectedFull {
+        installation: admitted.identity.clone(),
         identity: ArtifactIdentity {
             app_id: admitted.identity.app_id.clone(),
             channel: admitted.identity.channel,

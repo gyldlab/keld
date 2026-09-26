@@ -16,9 +16,7 @@ use windows_permissions::constants::{SeObjectType, SecurityInformation};
 #[cfg(windows)]
 use windows_permissions::utilities::current_process_sid;
 #[cfg(windows)]
-use windows_permissions::wrappers::{ConvertSidToStringSid, GetNamedSecurityInfo};
-#[cfg(windows)]
-use windows_permissions::{LocalBox, SecurityDescriptor};
+use windows_permissions::wrappers::GetNamedSecurityInfo;
 #[cfg(windows)]
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 #[cfg(windows)]
@@ -792,14 +790,7 @@ fn write_new_file(
 fn create_windows_stage_root(path: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt as _;
 
-    let current = current_process_sid()?;
-    let sid = ConvertSidToStringSid(&current)?;
-    let descriptor: LocalBox<SecurityDescriptor> = format!(
-        "O:{}D:P(A;OICI;FA;;;{})",
-        sid.to_string_lossy(),
-        sid.to_string_lossy()
-    )
-    .parse()?;
+    let descriptor = keld_guard::windows_owner_private_directory_security()?;
     let mut path_wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
     path_wide.push(0);
     let length =

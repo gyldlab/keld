@@ -175,6 +175,15 @@ pub enum UpdateError {
         /// Stable parser reason that does not include untrusted path bytes.
         detail: &'static str,
     },
+    /// Windows root admission or unpublished extraction failed.
+    Extraction {
+        /// Diagnostic stage name after creation was attempted; not proof of ownership or existence.
+        incomplete_stage: Option<String>,
+        /// Failed boundary or I/O operation.
+        step: &'static str,
+        /// Underlying refusal, without archive member contents.
+        detail: String,
+    },
 }
 
 impl UpdateError {
@@ -193,6 +202,7 @@ impl UpdateError {
             Self::ArtifactDigestMismatch { .. } => "KELD-UPDATE-009",
             Self::ArtifactProcessing { .. } => "KELD-UPDATE-010",
             Self::ArchiveInvalid { .. } => "KELD-UPDATE-011",
+            Self::Extraction { .. } => "KELD-UPDATE-012",
         }
     }
 }
@@ -265,6 +275,23 @@ impl fmt::Display for UpdateError {
                 f,
                 "KELD-UPDATE-011: verified full-package bytes are not a canonical Windows v0 archive ({detail}). Discard the candidate and publish a canonical package signed by the release key."
             ),
+            Self::Extraction {
+                incomplete_stage,
+                step,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "KELD-UPDATE-012: Windows extraction {step} failed ({detail}). "
+                )?;
+                if let Some(name) = incomplete_stage {
+                    write!(
+                        f,
+                        "Preserve any incomplete stage at `{name}` for diagnosis; it is not a runnable version. "
+                    )?;
+                }
+                f.write_str("Keep the current installation and repair the protected staging root or artifact before retrying.")
+            }
         }
     }
 }

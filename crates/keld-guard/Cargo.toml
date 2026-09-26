@@ -19,6 +19,7 @@ sha2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Globalization"] }
+windows-permissions = { workspace = true }
 
 [lints]
 workspace = true

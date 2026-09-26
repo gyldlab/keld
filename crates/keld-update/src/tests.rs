@@ -13,11 +13,11 @@ const TARGET: &str = "windows-x64";
 const ZERO_DIGEST: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 type IdentitySubstitution = (ProvenanceField, fn(&mut DirectInstallationIdentity));
 
-fn signing_key() -> SigningKey {
+pub(crate) fn signing_key() -> SigningKey {
     SigningKey::from_bytes(&[7_u8; 32])
 }
 
-fn expected_identity() -> DirectInstallationIdentity {
+pub(crate) fn expected_identity() -> DirectInstallationIdentity {
     let public_key = signing_key().verifying_key().to_bytes();
     DirectInstallationIdentity {
         app_id: APP_ID.to_owned(),
@@ -46,7 +46,7 @@ fn verifier() -> UpdateVerifier {
     .expect("fixture verifier")
 }
 
-fn observation(
+pub(crate) fn observation(
     identity: DirectInstallationIdentity,
     owner: InstallOwner,
     floor: Option<&str>,
@@ -76,7 +76,7 @@ fn sign(bytes: &[u8]) -> Vec<u8> {
     encoded[..written].to_vec()
 }
 
-fn release_json(
+pub(crate) fn release_json(
     version: &str,
     compressed_size: &str,
     compressed_digest: &str,
@@ -89,7 +89,7 @@ fn release_json(
     )
 }
 
-fn manifest_json(releases: &str) -> Vec<u8> {
+pub(crate) fn manifest_json(releases: &str) -> Vec<u8> {
     format!(
         r#"{{"schema":1,"channel":"stable","target":"{TARGET}","app":{{"id":"{APP_ID}"}},"releases":[{releases}]}}"#
     )
@@ -100,7 +100,7 @@ fn verify_manifest(bytes: &[u8], floor: &str) -> Result<ManifestDecision, Update
     admitted_at(floor).verify_manifest(bytes, &sign(bytes))
 }
 
-fn digest_hex(bytes: &[u8]) -> String {
+pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
@@ -141,7 +141,7 @@ fn archive_receipt(content: &[u8]) -> VerifiedFull {
         .expect("verified fixture archive")
 }
 
-fn append_ustar_entry(archive: &mut Vec<u8>, name: &str, kind: u8, data: &[u8]) {
+pub(crate) fn append_ustar_entry(archive: &mut Vec<u8>, name: &str, kind: u8, data: &[u8]) {
     let mut header = [0_u8; 512];
     header[..name.len()].copy_from_slice(name.as_bytes());
     header[100..108].copy_from_slice(if kind == b'5' {
@@ -168,11 +168,11 @@ fn append_ustar_entry(archive: &mut Vec<u8>, name: &str, kind: u8, data: &[u8]) 
     archive.resize(archive.len() + padding, 0);
 }
 
-fn finish_ustar(archive: &mut Vec<u8>) {
+pub(crate) fn finish_ustar(archive: &mut Vec<u8>) {
     archive.resize(archive.len() + 1024, 0);
 }
 
-fn append_required_policy(archive: &mut Vec<u8>) {
+pub(crate) fn append_required_policy(archive: &mut Vec<u8>) {
     // Literal wire oracle, deliberately independent of the producer's constants.
     append_ustar_entry(archive, ".keld", b'5', &[]);
     append_ustar_entry(
