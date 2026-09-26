@@ -346,6 +346,105 @@ unsupported. Location, registry heuristics and writable config never manufacture
 Windows x64 direct distribution is first because its tree fits v0. KEL-137 is an
 explicit predecessor for macOS/Linux or any package requiring metadata absent from v0.
 
+### T3b: protected Windows extraction (KEL-265)
+
+This task produces an unpublished, incomplete stage, not an activated version. It
+does not supply the installer provenance loader, live strict-profile admission,
+persisted-floor loader or T4 publication/recovery. The first filesystem cell is
+Windows x64, fixed local NTFS with persistent ACLs and no read-only volume flag.
+Failed/unknown qualification refuses; there is no pathname or filesystem fallback.
+`GetVolumeInformationByHandleW` observes the retained root, and
+`GetFinalPathNameByHandleW(VOLUME_NAME_GUID)` supplies the exact volume root for
+`GetDriveTypeW`. These observations do not prove physical non-removability or
+power-loss durability.
+
+The host-facing API has opaque, non-cloneable owners:
+
+```rust
+impl AdmittedInstallation {
+    pub fn open_windows_extraction_root(&self)
+        -> Result<WindowsExtractionRoot, UpdateError>;
+}
+impl WindowsExtractionRoot {
+    pub fn extract<'a>(&'a mut self, verified: &VerifiedFull, archive: &Path)
+        -> Result<ExtractedWindowsStage<'a>, UpdateError>;
+}
+```
+
+The root opener derives `update_root` from the admitted installation and creates
+nothing. It retains no-follow directory handles through every accepted absolute
+path component, with delete sharing disabled. Both `update_root` and its existing
+`versions` directory must be actual non-reparse directories with the current
+TokenUser owner and exactly one protected, non-inherited OI/CI full-control allow
+ACE for that user. Missing scaffolding or a different descriptor refuses; extraction
+does not repair ACLs or initialize installation state. Logical
+`ProvenanceObservation::Protected` is not evidence for these OS facts.
+
+`SelectedFull` and `VerifiedFull` privately retain the admitting
+`DirectInstallationIdentity`. Before opening the source or creating a stage,
+extraction reuses the provenance owner's complete identity comparison, including
+key, roots, baseline and profile, and requires candidate SemVer precedence above
+the receiving root's admitted floor. Equivalent verifier instances may interoperate;
+different admission contexts may not. This floor is a snapshot: T4 must reread the
+protected floor under its single-writer lock before publication.
+
+The source is an internally opened, unexposed read-only file with only read sharing.
+It must be regular, non-reparse and single-link. Retain it across complete canonical,
+namespace, policy and digest preflight and every source read; do not combine a
+detached preflight receipt with a caller-controlled reader. Complete preflight
+precedes creation. A fresh unpredictable stage name is created exclusively beneath
+retained `versions`; collisions refuse rather than reusing or repairing an object.
+
+Directory creation uses one private, directory-only `NtCreateFile` adapter with a
+retained `RootDirectory`, one validated component, `FILE_CREATE`,
+`FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT`,
+`OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE`, no handle inheritance and no delete
+sharing. A shared owner-private descriptor is supplied atomically. The successful
+handle passes metadata and ACL checks before any descendant creation. Safe pinned
+capability file operations provide create-new/no-follow regular files beneath those
+retained parents; every file is checked for type, reparse state, single link and the
+exact inherited current-user full-control ACL before its first write.
+
+`keld-guard` becomes the single owner of the existing CLI/core owner-private
+descriptor construction and validation. Core retains its public path wrapper and
+CLI retains atomic dev-stage creation; neither retains a second ACL policy.
+The updater reuses this owner and the guard package namespace validator.
+`cap-std`/`cap-fs-ext` file primitives are reused. Their Windows mkdir resolves a
+pathname, so it cannot establish confinement when an ancestor's reparse attributes
+are mutable. Delete-sharing pins alone do not restrict attribute or ACL changes.
+The narrow native directory adapter replaces only that missing primitive, using
+pinned `windows-sys` bindings rather than a copied ABI or generic filesystem layer.
+
+Retained `content.tar` is a sibling of `tree`; archive paths address only `tree`.
+Stream bounded chunks, flush every written file, close its writer, reopen it relative
+to its retained parent and read it back against authenticated source bytes. Verify
+object identity, length and protection on readback and retain read handles with no
+write/delete sharing, together with every created directory, for the stage lifetime.
+The returned stage borrows the exclusive root owner and exposes identity/diagnostic
+name only, not raw handles or a trusted pathname capability. It creates no `.complete`,
+final version name, floor, journal or pointer. T4 must consume the stage and perform
+the separately qualified publication sequence. Any failure after stage creation
+returns a typed error naming the incomplete stage; preserve that bounded diagnostic
+state without recursive cleanup or a success receipt.
+
+The independent atoms are: admission identity (context substitution refuses before
+source/stage I/O), byte authentication (locked-source mutation refuses), authorization
+(permissive root/versions and hostile LPAC writes refuse), containment (single-component
+relative create cannot affect an outside sentinel), lifecycle (flush/readback failure
+never returns a stage), and evidence (real Windows handles/token plus exact source).
+ACL protection and retained-object lifetime are an explicit composition edge, not
+interchangeable proofs. Tests include matched successful mutation controls, source
+writer/mapping conflicts, hardlink/reparse/collision refusal, released-pin rename,
+and temporary mutations of context, ACL, relative-create and readback checks. No
+sleep synchronization and no shipping installer/activation claim arise from fixtures.
+
+The implementation may add existing workspace-pinned `cap-std`, `cap-fs-ext`,
+`windows-sys`, `windows-permissions` and `getrandom` consumer edges, plus Windows-only
+test dependencies for existing LPAC launch primitives. It introduces no crate/version,
+manifest field, application grant or KIPC change. The updater's exact new unsafe path
+requires its own scoped instruction owner and independent review; no crate-wide
+unsafe permission is granted.
+
 ### Capabilities, wire and errors
 
 Application permissions cannot grant update authority. No KIPC, renderer bridge or
