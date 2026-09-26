@@ -455,6 +455,125 @@ manifest field, application grant or KIPC change. The updater's exact new unsafe
 requires its own scoped instruction owner and independent review; no crate-wide
 unsafe permission is granted.
 
+### T4a: protected Windows baseline bootstrap (KEL-266)
+
+This bounded amendment implements acceptance criterion 1 before activation. The
+installer is a one-shot, externally provisioned LocalSystem process; the ordinary
+host receives read authority only. It adds no service, elevation path, recovery,
+health, activation selection or role grant. KEL-254 still owns installed boot and
+must compare these protected publisher facts with KEL-135's independently verified
+current-image identity. Its fresh-role read provisioning remains separate.
+
+| Atom / owner | Boundary and observable contract | Independent falsifier |
+|---|---|---|
+| Identity / updater | Trusted installer/host configuration binds installation, publisher scope and volume GUID | Change one expected field; no receipt |
+| Authentication / manifest and full verifier | Literal signed manifest selects the exact configured baseline and fully verifies its package | Wrong signature, full version string or digest; zero publication |
+| Authorization / guard | Actual initializer TokenUser is SYSTEM; caller configuration is trusted deployment input, never an elevated feed/argv assertion | Ordinary or elevated non-SYSTEM token refuses |
+| Persistent containment / guard | Every ancestor excludes ordinary-user replacement between invocations | Protected leaf under user-owned parent or parent DELETE_CHILD refuses |
+| Lifetime containment / updater | Retained no-delete-share ancestors and relative creation bind live objects | Reparse, hardlink, rename, source-write and readback controls |
+| Lifecycle / initializer | Exclusive fresh lock; exact initial seed state; provenance is last commit record | Existing state, competing initializer or pre-provenance crash produces no admitted installation |
+| Evidence / native tests | Real token, descriptor, filesystem and subprocess observations | Logical fixtures never satisfy SYSTEM/user or crash-cut acceptance |
+
+Signature verification does not prove writer authority; authority does not authenticate
+arbitrary configuration; a matching record does not prove OS protection; completed I/O
+does not alone prove power-loss durability. These atoms stay independently testable.
+
+The first cell is Windows x64 on one qualified fixed local NTFS volume. Trusted
+`WindowsBaselineTrust` holds the existing `DirectInstallationIdentity`, a nonempty
+bounded publisher scope and canonical volume-GUID root. Publisher scope is an installer
+assertion, not an Authenticode result. It must originate in trusted deployment/host
+configuration, not lower-trust environment, feed or arguments. The loader compares all
+fields, including observed volume identity; the protected record cannot supply its own
+expected trust anchor. SYSTEM/admin volume restoration is outside the ordinary-user
+replay threat; no global monotonic counter is introduced.
+
+Supported paths are lossless UTF-8 absolute drive paths, optionally verbatim-drive,
+with normal guard-validated components; UNC, device aliases, reparses, relative/dot
+components, empty components and alternate separators refuse. `update_root` is one
+direct child of `install_root`; `versions` is a direct child of `update_root`.
+The externally provisioned initial install root contains only that update directory,
+which contains only empty `versions`. Install/update/versions initially have the exact
+existing SYSTEM-private descriptor. No initializer creates or repairs the scaffold.
+Every earlier named ancestor below the volume root already has the committed machine
+descriptor. No user-owned intermediate path (for example a development workspace) is
+an admitted installation location.
+
+The shared guard owns the committed profile `windows-system-users-rx-v1`: owner SYSTEM,
+protected DACL, exactly SYSTEM full control plus BUILTIN Users file read/execute
+(`0x1200a9`); directory ACEs have object/container inheritance, file ACEs have none.
+Every object is explicitly sealed and read back; inheritance alone is not proof.
+The volume anchor has a separate conservative predicate: trusted SYSTEM,
+Administrators or TrustedInstaller owner; present DACL with only understood ordinary
+ACE forms; effective allow ACEs for other trustees grant at most read/execute plus
+creation of new directories. No untrusted DELETE, DELETE_CHILD, WRITE_DAC, WRITE_OWNER,
+WRITE_DATA, WRITE_ATTRIBUTES, WRITE_EA or generic-write/all right is admitted.
+Inherit-only entries do not grant access to the anchor; all descendants are independently
+checked. The helper reports an unsupported anchor rather than changing a drive ACL.
+Both initializer and loader validate persistent ancestry before trusting state and
+retain opened components for the result lifetime. T3b owner-private policy is unchanged.
+
+`BaselineVerifier` reuses the existing literal-signature/strict-manifest parser and
+full/archive verification. Its separate opaque `SelectedBaseline`/`VerifiedBaseline`
+receipts select the exact configured baseline version string and content digest without
+inventing an admitted installation, protected observation or lowered floor. Ordinary
+update selection still chooses only the highest release strictly above its floor.
+Reuse T3b's source locks, canonical/policy parser, relative directory adapter, extraction,
+flush and readback; do not add a second archive, signing or policy implementation.
+
+One crate-private bounded (64 KiB) canonical UTF-8 JSON codec owns local records. Each
+record has a distinct explicit v1 schema; unknown/duplicate/missing fields, unsupported
+schemas and bytes differing from typed reserialization refuse. `install-provenance`
+under the install root records direct ownership, protection profile, complete existing
+installation identity, publisher scope and volume GUID. `.complete` records exact
+artifact identity and content size. Under the update root, `version-floor` records
+the exact baseline version, while `current` and `last-known-good` record the complete
+baseline artifact. No previous-known-good or activation journal exists initially.
+The version directory name is the complete validated baseline version string.
+
+The only successful initialization order is:
+
+1. Prove actual SYSTEM authority, topology, volume, descriptors and fresh state; create
+   `bootstrap.lock` exclusively with create-new under the private update root and retain
+   its handle. Existing lock/state refuses; no PID guessing, takeover or stale cleanup.
+2. Fully validate the authenticated exact baseline before extraction; create one fresh
+   incomplete sibling and populate it with shared T3b mechanics.
+3. Seal/read back every stage object. Write `.complete` last within the stage, flush its
+   writable handle, seal it and verify its final bytes and descriptor.
+4. Close rename-blocking stage handles while retaining protected ancestors. Publish to
+   the absent final version name using same-volume `MoveFileExW` with only
+   `MOVEFILE_WRITE_THROUGH`; no replacement or cross-volume-copy flags. Reopen and
+   validate all content, policy, marker, descriptors and exact extracted-tree bytes.
+5. Seed floor, current and LKG in order: each uses a fresh same-parent temporary file,
+   final protection, writable-handle flush, close, absent-target write-through rename
+   and protected readback. Any conflicting target or incomplete prior state refuses.
+6. Seal/read back install/update/versions and the retained lock. Publish protected
+   provenance by that same file procedure LAST. Re-read through the production loader
+   and separately validate the exact complete initial seed state before returning success.
+
+Failures retain diagnostic incomplete state and never silently reseed. The bootstrap
+lock may remain after a commit; it is not activation/recovery authority. The read-only
+loader returns protected identity/floor and retained read handles. It neither chooses
+an active package nor grants mutation, recovery, live strict-profile or role authority.
+The initializer's exact-baseline postcommit tree check is separate from future active
+package selection and garbage collection.
+
+Native tests cover actual non-SYSTEM refusal, SYSTEM success, standard-user reads and
+write/WRITE_DAC/rename denial after all initializer handles close, parent substitution,
+wrong publisher/volume, extra write ACE, changed marker/tree/seed records, concurrent
+initialization and subprocess termination at every persisted boundary. The current
+unelevated agent cannot claim SYSTEM acceptance: a concrete reviewed operator helper
+must run it. API completion plus process crash cuts is not a power-loss claim; the
+governing native filesystem qualification remains required before shipping this cell.
+
+This adds no dependency version, manifest/KIPC field or app permission. Existing pinned
+Windows APIs are reused. Only the fixed write-through absent-target publication adapter
+extends updater production unsafe ownership, with independent unsafe/permission/public
+API and local-record protocol review. No new guard unsafe is authorized. Rejected
+alternatives are a same-user/elevated-owner writer (implicit owner WRITE_DAC), a general
+broker/service (unneeded authority), copied signer/parser code (duplicate owner), and
+logical protected fixtures as native proof. No existing public compatibility fallback
+changes; unsupported native cells return typed actionable refusal.
+
 ### Capabilities, wire and errors
 
 Application permissions cannot grant update authority. No KIPC, renderer bridge or
@@ -503,7 +622,9 @@ Must not touch in Slice A:
 - [ ] T3b — after T3a, add two-pass protected Windows extraction beneath the admitted
   staging root; retain guard-owned case/NFC/namespace rejection, hostile archive corpus,
   and real reparse/rename substitution refusal before any write.
-- [ ] T4 — Windows x64 direct vertical: journal, floor/current/LKG order, attempt-bound
+- [ ] T4a — KEL-266: actual SYSTEM initializer, protected exact-baseline seeds and
+  provenance-last publication, read-only loader and persistent ancestry proof; no activation.
+- [ ] T4b — Windows x64 direct vertical: journal, floor/current/LKG order, attempt-bound
   30-second health and crash cut at every persisted boundary.
 - [ ] T5 — Windows helper if required, managed-channel refusal, hostile-role denial,
   locked file/disk/interference/concurrency and next-attempt recovery.
