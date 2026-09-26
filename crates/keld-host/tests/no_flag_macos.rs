@@ -6542,6 +6542,71 @@ fn refresh_signed_profile_app(stage_root: &Path, app: &Path, signer: &str) {
 }
 
 #[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[test]
+fn profile_origin_reads_split_reports_on_blocking_accepted_streams() {
+    let mut origin = ProfileOrigin::new();
+    for phase in ["fragmented", "healthy-follow-up"] {
+        let mut client = TcpStream::connect(&origin.address).expect("connect profile report peer");
+        client
+            .set_read_timeout(Some(PROCESS_DEADLINE))
+            .expect("bound profile response read");
+        let prefix = format!("GET /report?phase={phase}&value=comp");
+        client
+            .write_all(prefix.as_bytes())
+            .expect("send report prefix");
+        let mut observed_mode = false;
+        let mut sent_suffix = false;
+        let report = origin
+            .wait_for_report_observing(phase, None, EVENT_DEADLINE, |stream, consumed| {
+                if consumed == 0 {
+                    // This child asks the OS about the actual accepted descriptor;
+                    // neither the clone nor the probe changes its status flags.
+                    let descriptor =
+                        OwnedFd::from(stream.try_clone().expect("clone accepted socket"));
+                    let probe = Command::new("/usr/bin/python3")
+                        .args(["-c", "import os; print(os.get_blocking(0))"])
+                        .stdin(Stdio::from(descriptor))
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .expect("observe accepted socket mode independently");
+                    let output = wait_child_output(probe, PROCESS_DEADLINE);
+                    assert!(output.status.success(), "socket mode probe: {output:?}");
+                    assert_eq!(
+                        output.stdout, b"True\n",
+                        "read timeout needs a blocking socket"
+                    );
+                    assert!(output.stderr.is_empty(), "socket mode probe: {output:?}");
+                    observed_mode = true;
+                } else if consumed == prefix.len() {
+                    // Release the second network write only after the actual owner
+                    // consumed the prefix. No sleep or timing assumption orders it.
+                    client
+                        .write_all(b"lete HTTP/1.1\r\n")
+                        .expect("send report suffix");
+                    sent_suffix = true;
+                }
+            })
+            .expect("complete profile report");
+        assert!(
+            observed_mode && sent_suffix,
+            "both independent observations must run"
+        );
+        assert_eq!(report.get("phase").map(String::as_str), Some(phase));
+        assert_eq!(report.get("value").map(String::as_str), Some("complete"));
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("read profile response through EOF");
+        assert!(
+            response.starts_with("HTTP/1.1 204 No Content\r\n"),
+            "{response}"
+        );
+        assert!(response.ends_with("\r\n\r\n"), "complete response headers");
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
 struct ProfileOrigin {
     listener: TcpListener,
     address: String,
@@ -6907,6 +6972,16 @@ impl ProfileOrigin {
         seed: Option<&str>,
         timeout: Duration,
     ) -> Option<std::collections::BTreeMap<String, String>> {
+        self.wait_for_report_observing(phase, seed, timeout, |_, _| {})
+    }
+
+    fn wait_for_report_observing(
+        &mut self,
+        phase: &str,
+        seed: Option<&str>,
+        timeout: Duration,
+        mut observe: impl FnMut(&TcpStream, usize),
+    ) -> Option<std::collections::BTreeMap<String, String>> {
         if let Some(report) = self.pending_reports.remove(phase) {
             return Some(report);
         }
@@ -6915,8 +6990,12 @@ impl ProfileOrigin {
             match self.listener.accept() {
                 Ok((mut stream, _)) => {
                     stream
+                        .set_nonblocking(false)
+                        .expect("make accepted origin stream blocking");
+                    stream
                         .set_read_timeout(Some(Duration::from_secs(1)))
                         .expect("bound origin request read");
+                    observe(&stream, 0);
                     let mut request = Vec::new();
                     let mut byte = [0_u8; 1];
                     while request.len() < 8192 {
@@ -6924,6 +7003,7 @@ impl ProfileOrigin {
                             Ok(0) => break,
                             Ok(_) => {
                                 request.push(byte[0]);
+                                observe(&stream, request.len());
                                 if byte[0] == b'\n' {
                                     break;
                                 }
