@@ -380,13 +380,8 @@ chrome.webview.postMessage('{nonce}:resolved:{track_kind}:'+matching.length+':'+
     );
     let (release_tx, release_rx) = mpsc::channel();
     let (message_tx, message_rx) = mpsc::channel();
-    let server = serve_page(
-        listener,
-        html,
-        nonce,
-        release_rx,
-        http_error_reporter(message_tx.clone()),
-    );
+    let on_http_error = http_error_reporter(message_tx.clone());
+    let server = serve_page(listener, html, nonce, release_rx, on_http_error);
     let expected_manifest = manifest_fingerprint(&manifest);
     EVIDENCE.with_borrow_mut(|e| {
         *e = Evidence {
@@ -790,7 +785,7 @@ fn serve_page(
     on_error: impl FnOnce(&std::io::Error) + Send + 'static,
 ) -> thread::JoinHandle<std::io::Result<()>> {
     thread::spawn(move || {
-        let result = serve_page_requests(listener, &html, nonce, &release);
+        let result = serve_page_requests(&listener, &html, nonce, &release);
         if let Err(error) = &result {
             on_error(error);
         }
@@ -799,7 +794,7 @@ fn serve_page(
 }
 
 fn serve_page_requests(
-    listener: TcpListener,
+    listener: &TcpListener,
     html: &str,
     nonce: u128,
     release: &mpsc::Receiver<()>,
@@ -868,7 +863,7 @@ fn serve_page_requests(
                 }
             }
         }
-        if accept_renderer_connection(&listener, &mut pending, "media HTTP server")
+        if accept_renderer_connection(listener, &mut pending, "media HTTP server")
             .map_err(std::io::Error::other)?
         {
             continue;
@@ -911,8 +906,11 @@ mod tests {
             }
             let release = page.as_ref().ok().map(|_| request("/73/release"));
             drop(idle);
-            let served = server.join().expect("join media HTTP worker");
-            assert!(served.is_ok(), "media HTTP server failed: {served:?}");
+            let http_result = server.join().expect("join media HTTP worker");
+            assert!(
+                http_result.is_ok(),
+                "media HTTP server failed: {http_result:?}"
+            );
             let page = page.expect("idle preconnect must not block the page");
             assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
             assert!(page.ends_with("media fixture"), "{page}");
@@ -955,8 +953,8 @@ mod tests {
         client
             .shutdown(Shutdown::Write)
             .expect("end incomplete headers");
-        let served = server.join().expect("join failed HTTP worker");
-        assert!(served.is_err(), "truncated HTTP must remain a failure");
+        let http_result = server.join().expect("join failed HTTP worker");
+        assert!(http_result.is_err(), "truncated HTTP must remain a failure");
         let result = result_rx
             .try_recv()
             .expect("HTTP error must reach the UI receiver");
