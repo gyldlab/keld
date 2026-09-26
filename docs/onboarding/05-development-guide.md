@@ -503,6 +503,11 @@ The returned task path is `.keld-work/worktrees/kel-245-workspace`. Run evidence
 `.keld-work/sessions/manual-session-1/evidence/run-ID/`. Scratch uses a private
 `.keld-work/tmp/<short-token>/` directory; the session retains its run and filesystem
 identity in `scratch-owners/`. This keeps long session names out of Unix socket paths.
+On Windows, task/session metadata is admitted before allocation only when its generated
+absolute directory/file paths fit the conservative 247/259 UTF-16-unit support cell,
+including atomic replacement names. A refusal identifies the path: use a shorter real
+primary checkout, preserving the session identity and evidence. This applies even on
+hosts configured for longer paths; arbitrary child paths have their own limits.
 Very long primary checkout paths can still exceed native socket limits; use a shorter
 real primary path for those suites. Each run streams output and retains at most 4 MiB per stdout/stderr
 tail by default; `--log-limit-mib` accepts 1–64 per stream before the `--` separator.

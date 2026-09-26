@@ -110,6 +110,41 @@ class Context:
         return self.primary / DIRECTORY
 
 
+def admit_workspace_paths(ctx, session=None, task=None):
+    """Refuse unsupported Windows metadata paths before operation-side writes."""
+    if os.name != "nt":
+        return
+    # Deliberately use one conservative cell even on long-path-enabled hosts.
+    # MAX_PATH includes NUL; directory creation also reserves an 8.3 filename.
+    # https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation
+    directories = [ctx.root / "tmp" / "00000000"]
+    records = []
+    files = [ctx.root / "reference.lock"]
+    if task is not None:
+        target = ctx.root / "worktrees" / task_name(task)
+        directories.append(target)
+        records.append(target.with_suffix(".json"))
+        files.append(target.with_suffix(".lock"))
+    if session is not None:
+        root = ctx.root / "sessions" / component(session, "session")
+        records.append(root / "scratch-owners" / "00000000.json")
+        # clean- plus UUID is longer than run- plus UUID. Reserve its result,
+        # both captured streams, and write_record's same-directory replacement.
+        evidence = root / "evidence" / ("clean-" + "0" * 32)
+        records.append(evidence / "result.json")
+        files.extend(evidence / (stream + ".log") for stream in ("stdout", "stderr"))
+    files.extend(records)
+    files.extend(path.parent / "record-00000000.tmp" for path in records)
+    directories.extend(path.parent for path in files)
+    for paths, maximum, kind in [(directories, 247, "directory"), (files, 259, "file")]:
+        for path in paths:
+            absolute = os.path.abspath(path)
+            units = len(absolute.encode("utf-16-le")) // 2
+            require(units <= maximum,
+                    f"Windows managed path exceeds the supported {kind} limit ({units} > {maximum} UTF-16 units): "
+                    f"{absolute}. Use a shorter real primary checkout path; preserve the existing session identity and evidence.")
+
+
 def context(cwd=None):
     require(not any(os.environ.get(key) for key in GIT_ENV),
             "Git directory overrides are set. Unset GIT_DIR/WORK_TREE/COMMON_DIR/INDEX_FILE/OBJECT_DIRECTORY for workspace commands.")
@@ -192,6 +227,7 @@ def write_record(path, value, *, exclusive=False):
 def allocate_scratch(ctx, session, run_id):
     """Allocate private, short physical scratch; retain its session ownership."""
     session = component(session, "session")
+    admit_workspace_paths(ctx, session)
     parent = safe_path(ctx.root / "tmp")
     mkdir(parent)
     # mkdtemp supplies exclusive creation and owner-only mode. Full session and
@@ -312,6 +348,7 @@ def start(ctx, issue, slug, session, base):
     name = task_name(issue + "-" + slug)
     session = component(session, "session")
     require(base and not base.startswith("-"), "Invalid base. Fetch origin main or pass a commit/ref with --base.")
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     target = ctx.root / "worktrees" / name
     metadata = target.with_suffix(".json")
@@ -430,6 +467,7 @@ class Capture:
 def run(ctx, name, session, argv, limit_mib):
     require(argv, "No command supplied. Use work-run <task> --session <id> -- <command> [args].")
     require(type(limit_mib) is int and 1 <= limit_mib <= 64, "Log limit must be an integer from 1 to 64 MiB per stream.")
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session)
@@ -492,6 +530,7 @@ def clean_checkout(checkout):
 
 
 def finish(ctx, name, session, receipt):
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session)
@@ -564,6 +603,7 @@ def receipt_retained_paths(value):
 
 
 def clean(ctx, name, session, apply, receipt=None):
+    admit_workspace_paths(ctx, session, name)
     check_index(ctx)
     with task_lock(ctx, name):
         record, checkout = load_task(ctx, name, session, active=False)
@@ -680,9 +720,10 @@ def main(argv=None):
             require(child, "No reference command supplied. Use the public research/competitors recipes.")
             reference_admission(ctx)
             check_index(ctx)
+            session = component(os.environ.get("KELD_WORK_SESSION") or "manual-" + uuid.uuid4().hex, "session")
+            admit_workspace_paths(ctx, session)
             with operation_lock(ctx.root / "reference.lock"):
                 reference_admission(ctx)
-                session = component(os.environ.get("KELD_WORK_SESSION") or "manual-" + uuid.uuid4().hex, "session")
                 scratch = allocate_scratch(ctx, session, "reference-" + uuid.uuid4().hex)
                 env = dict(os.environ, TMPDIR=scratch.as_posix(), TEMP=str(scratch), TMP=str(scratch), KELD_WORK_SESSION=session)
                 print("WORKSPACE reference inputs: " + git_text(ctx.checkout, "rev-parse", "HEAD"), file=sys.stderr)

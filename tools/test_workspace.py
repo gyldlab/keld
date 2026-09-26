@@ -123,6 +123,101 @@ class WorkspaceTests(unittest.TestCase):
                 self.cli("start", issue, slug, "--session", session, ok=False)
         self.assertFalse((self.root / ".keld-work").exists())
 
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_session_start_refuses_before_allocation(self):
+        result = self.cli("start", "kel-245", "long", "--session", "s" * 128, ok=False)
+        self.assertIn("Windows managed path", result.stderr)
+        self.assertIn("shorter real primary checkout", result.stderr)
+        self.assertFalse((self.root / ".keld-work").exists())
+        self.assertEqual(self.git("show-ref", "--verify", "--quiet", "refs/heads/agent/kel-245-long",
+                                  check=False).returncode, 1)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_existing_session_refuses_before_lock_scratch_or_child(self):
+        task = self.start()
+        session = "s" * 128
+        managed = self.root / ".keld-work"
+        metadata = managed / "worktrees" / (task["task"] + ".json")
+        record = json.loads(metadata.read_text(encoding="utf-8"))
+        record["sessions"] = [session]
+        metadata.write_text(json.dumps(record), encoding="utf-8")
+        # A valid historical record must not let the command allocate an orphan.
+        before = {str(path): path.read_bytes() if path.is_file() else None for path in managed.rglob("*")}
+        marker = self.root / "child-started"
+        child = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
+        for args in [("run", task["task"], "--session", session, "--", *child),
+                     ("finish", task["task"], "--session", session, "--receipt", str(self.root / "absent.json")),
+                     ("clean", task["task"], "--session", session),
+                     ("reference-run", "--", *child)]:
+            with self.subTest(operation=args[0]):
+                result = self.cli(*args, ok=False, env=dict(os.environ, KELD_WORK_SESSION=session))
+                self.assertEqual(before, {str(path): path.read_bytes() if path.is_file() else None
+                                          for path in managed.rglob("*")})
+                self.assertFalse(marker.exists())
+                self.assertIn("Windows managed path", result.stderr)
+                self.assertIn("shorter real primary checkout", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path admission")
+    def test_windows_long_allocator_refuses_before_ownership_orphan(self):
+        ctx = workspace.context(self.root)
+        with self.assertRaisesRegex(workspace.WorkspaceError, "Windows managed path"):
+            workspace.allocate_scratch(ctx, "s" * 128, "run-" + "0" * 32)
+        self.assertFalse(ctx.root.exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows managed path boundary")
+    def test_windows_admitted_boundary_roundtrips_child_and_metadata(self):
+        # The public support cell reserves the longest generated cleanup record
+        # replacement, including its separator and terminating-NUL allowance.
+        maximum = self.root / ".keld-work" / "sessions" / "s" / "evidence" / ("clean-" + "0" * 32) / "record-00000000.tmp"
+        session = "s" * (260 - len(str(maximum).encode("utf-16-le")) // 2)
+        self.assertTrue(1 <= len(session) <= 128)
+        task = json.loads(self.cli("start", "kel-245", "boundary", "--session", session).stdout)
+        result = self.cli("run", task["task"], "--session", session, "--", sys.executable, "-c",
+                          "import os,sys; print(os.environ['TMPDIR']); print('boundary stderr', file=sys.stderr)")
+        scratch = Path(result.stdout.strip())
+        owner = self.root / ".keld-work" / "sessions" / session / "scratch-owners" / (scratch.name + ".json")
+        value = json.loads(owner.read_text(encoding="utf-8"))
+        self.assertEqual((value["device"], value["inode"]), (scratch.stat().st_dev, scratch.stat().st_ino))
+        self.assertEqual(value["session"], session)
+        evidence = next((owner.parent.parent / "evidence").iterdir())
+        value = json.loads((evidence / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((value["state"], value["exit_code"], value["runner_exit_code"]), ("complete", 0, 0))
+        self.assertEqual((evidence / "stdout.log").read_text(encoding="utf-8").strip(), str(scratch).replace("\\", "/"))
+        self.assertEqual((evidence / "stderr.log").read_text(encoding="utf-8").strip(), "boundary stderr")
+        rejected = self.cli("start", "kel-245", "over", "--session", session + "s", ok=False)
+        self.assertIn("Windows managed path", rejected.stderr)
+        self.assertFalse((self.root / ".keld-work" / "worktrees" / "kel-245-over.json").exists())
+
+    @unittest.skipUnless(os.name == "nt", "native Windows UTF-16 path accounting")
+    def test_windows_admission_counts_supplementary_unicode_as_two_units(self):
+        primary = self.root / ("unicode-" + "\U0001f4bb" * 8)
+        primary.mkdir()
+        ctx = workspace.Context(primary, primary, primary / ".git")
+        maximum = ctx.root / "sessions" / "s" / "evidence" / ("clean-" + "0" * 32) / "record-00000000.tmp"
+        session = "s" * (260 - len(str(maximum).encode("utf-16-le")) // 2)
+        self.assertTrue(1 <= len(session) < 128)
+        scratch = workspace.allocate_scratch(ctx, session, "run-" + "0" * 32)
+        self.assertEqual(workspace.session_scratch(ctx, session), [scratch])
+        before = {str(path) for path in ctx.root.rglob("*")}
+        with self.assertRaisesRegex(workspace.WorkspaceError, "260 > 259 UTF-16 units"):
+            workspace.allocate_scratch(ctx, session + "s", "run-" + "1" * 32)
+        self.assertEqual(before, {str(path) for path in ctx.root.rglob("*")})
+
+    @unittest.skipUnless(os.name == "nt", "Windows managed directory allowance")
+    def test_windows_admission_reserves_directory_creation_allowance(self):
+        task = "kel-245-" + "a" * 56
+        suffix = Path(".keld-work") / "worktrees" / task
+        prefix = self.root / ("p" * (247 - len(str(self.root / suffix)) - 1))
+        ctx = workspace.Context(prefix, prefix, prefix / ".git")
+        self.assertEqual(len(str(ctx.root / "worktrees" / task)), 247)
+        workspace.admit_workspace_paths(ctx, task=task)
+        longer = prefix.with_name(prefix.name + "p")
+        ctx = workspace.Context(longer, longer, longer / ".git")
+        with self.assertRaisesRegex(workspace.WorkspaceError, "directory limit \\(248 > 247 UTF-16 units\\)"):
+            workspace.admit_workspace_paths(ctx, task=task)
+        self.assertFalse(prefix.exists())
+        self.assertFalse(longer.exists())
+
     def test_existing_unmanaged_target_is_never_adopted_or_overwritten(self):
         target = self.root / ".keld-work" / "worktrees" / "kel-245-probe"
         target.mkdir(parents=True)

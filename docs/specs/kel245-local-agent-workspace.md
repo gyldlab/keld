@@ -353,6 +353,20 @@ Prove actual binds/exchanges through `work-run`, session isolation, replaced/for
 ownership refusal, referenced evidence retention and legacy cleanup before landing.
 Linux results do not stand in for native macOS/Windows qualification.
 
+### Windows managed path admission
+
+Before allocating a task, lock or scratch directory, the shared workspace owner
+checks the derived task/session metadata paths against a conservative Windows support
+cell: at most 247 UTF-16 code units per absolute directory path and 259 per file path.
+This reserves directory-creation and terminating-NUL space, including generated
+scratch-owner names, cleanup/run evidence, stream logs and atomic record replacement
+names. The cell applies even when a host enables longer ordinary paths; it makes no
+claim about arbitrary child paths or Git-tracked source filenames. The existing
+128-character session grammar remains unchanged. Unsupported combinations fail before
+operation-side writes with the exact path and shorter real primary checkout guidance;
+preserve the session identity and historical evidence. No extended-path rewrite,
+system-temp fallback or machine/global configuration change is performed.
+
 ### Migration and compatibility
 
 Start with a new-session cutover, then migrate legacy data separately. Existing
