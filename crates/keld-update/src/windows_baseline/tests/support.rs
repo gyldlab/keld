@@ -4,7 +4,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Cursor;
+use std::io::{Cursor, Read as _, Seek as _, SeekFrom};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
@@ -185,33 +185,69 @@ pub(super) fn baseline(trust: &WindowsBaselineTrust) -> VerifiedBaseline {
 }
 
 pub(super) fn child(selector: &str, root: &Path, case: &str, cut: &str, code: i32) -> String {
+    child_with_timeout(selector, root, case, cut, code, 60_000).0
+}
+
+pub(super) fn child_with_timeout(
+    selector: &str,
+    root: &Path,
+    case: &str,
+    cut: &str,
+    code: i32,
+    timeout_ms: u32,
+) -> (String, String) {
+    let mut stdout_capture = tempfile::tempfile_in(root).expect("retained child stdout capture");
+    let mut stderr_capture = tempfile::tempfile_in(root).expect("retained child stderr capture");
     let mut child = Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", selector, "--ignored", "--nocapture"])
         .env(ROOT_ENV, root)
         .env(CASE_ENV, case)
         .env(CUT_ENV, cut)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(
+            stdout_capture.try_clone().expect("child stdout handle"),
+        ))
+        .stderr(Stdio::from(
+            stderr_capture.try_clone().expect("child stderr handle"),
+        ))
         .spawn()
         .expect("isolated native test subprocess");
     // SAFETY: the Child retains its process handle for this bounded wait. No
     // borrowed pointer or ownership transfer occurs; timeout is only a kill switch.
-    let waited = unsafe { WaitForSingleObject(child.as_raw_handle().cast(), 60_000) };
-    if waited != WAIT_OBJECT_0 {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("native child did not exit within kill-switch bound: {waited}");
+    let waited = unsafe { WaitForSingleObject(child.as_raw_handle().cast(), timeout_ms) };
+    let termination = if waited == WAIT_OBJECT_0 {
+        None
+    } else {
+        Some(child.kill())
+    };
+    let status = child.wait();
+    // The process has been waited/reaped before either retained file is rewound.
+    // File-backed capture cannot fill an unread pipe while the parent awaits exit.
+    let stdout = read_capture(&mut stdout_capture);
+    let stderr = read_capture(&mut stderr_capture);
+    if let Some(Err(error)) = termination {
+        panic!("failed to terminate native child: {error}; stdout={stdout}; stderr={stderr}");
     }
-    let output = child
-        .wait_with_output()
-        .expect("collect completed native child");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let status = status.unwrap_or_else(|error| {
+        panic!("failed to reap native child: {error}; stdout={stdout}; stderr={stderr}")
+    });
     assert_eq!(
-        output.status.code(),
+        waited, WAIT_OBJECT_0,
+        "native child did not exit within kill-switch bound: {waited}; status={status}; child stdout={stdout}; stderr={stderr}"
+    );
+    assert_eq!(
+        status.code(),
         Some(code),
         "child stdout={stdout}; stderr={stderr}"
     );
-    stdout.into_owned()
+    (stdout, stderr)
+}
+
+fn read_capture(file: &mut File) -> String {
+    file.seek(SeekFrom::Start(0))
+        .expect("rewind completed child capture");
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .expect("read completed child capture");
+    String::from_utf8_lossy(&bytes).into_owned()
 }
