@@ -1,6 +1,7 @@
 //! Windows no-flag fixture and observation owners.
 
 pub(crate) mod control;
+pub(crate) mod cross_user;
 pub(crate) mod handles;
 pub(crate) mod process;
 pub(crate) mod product;
