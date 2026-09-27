@@ -4,6 +4,7 @@ use crate::support::MARKER;
 use crate::support::TITLE;
 use crate::support::control::accept_before;
 use crate::support::control::parse_pid;
+use crate::support::control::wait_child_output_observing;
 use crate::support::native_window::NativeWindowObserver;
 use crate::support::native_window::compile_native_window_census;
 use crate::support::process::parent_process;
@@ -24,7 +25,6 @@ use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::sync::OnceLock;
-use std::thread;
 use std::time::Instant;
 
 pub(crate) fn dev_stage_count(project: &Path) -> usize {
@@ -272,25 +272,16 @@ impl LiveCycle {
         self.wait_host_observing(|| {})
     }
 
-    pub(crate) fn wait_host_observing(&mut self, mut observe: impl FnMut()) -> Output {
-        let mut child = self.host.take().expect("live host");
-        let deadline = Instant::now() + EVENT_DEADLINE;
-        loop {
-            if child.try_wait().expect("inspect no-flag host").is_some() {
-                // Waiting must not inject CLI death before the observed host exit.
-                // Explicit lease-loss scenarios release their separate writer first.
-                drop(self.dev_lease_writer.take());
-                return child
-                    .wait_with_output()
-                    .expect("collect no-flag host output");
-            }
-            observe();
-            assert!(
-                Instant::now() < deadline,
-                "no-flag host did not exit after Quit"
-            );
-            thread::yield_now();
-        }
+    pub(crate) fn wait_host_observing(&mut self, observe: impl FnMut()) -> Output {
+        let output = wait_child_output_observing(
+            self.host.take().expect("live host"),
+            EVENT_DEADLINE,
+            observe,
+        );
+        // Waiting must not inject CLI death before the observed host exit.
+        // Explicit lease-loss scenarios release their separate writer first.
+        drop(self.dev_lease_writer.take());
+        output
     }
 }
 

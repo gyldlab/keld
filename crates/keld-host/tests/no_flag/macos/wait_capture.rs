@@ -176,10 +176,14 @@ fn failed_wait(mode: &str) {
         !process_exists(pid),
         "wait failure escaped with live or unreaped subject {pid}"
     );
+    let failure = failure.expect_err("wait failure");
+    let message = panic_message(&failure);
     if mode == "panic" {
-        assert_eq!(
-            failure.expect_err("observer panic").downcast_ref::<&str>(),
-            Some(&"KEL272_OBSERVER_PANIC")
+        assert_eq!(message, "KEL272_OBSERVER_PANIC");
+    } else {
+        assert!(
+            message.contains("child exceeded exit/output deadline"),
+            "{message}"
         );
     }
 }
@@ -219,7 +223,8 @@ os._exit(0)
     control.read_line(&mut line).expect("writer PID witness");
     let writer_pid = line.trim().parse().expect("writer PID");
     let failure = std::panic::catch_unwind(|| wait_child_output(child, Duration::from_millis(100)));
-    assert!(failure.is_err(), "direct exit is not inherited-writer EOF");
+    let failure = failure.expect_err("direct exit is not inherited-writer EOF");
+    assert!(panic_message(&failure).contains("child exceeded exit/output deadline"));
     assert!(
         !process_exists(pid),
         "direct subject must already be reaped"
@@ -233,4 +238,12 @@ os._exit(0)
         .write_all(b"R")
         .expect("release inherited writer");
     await_process_gone(writer_pid);
+}
+
+fn panic_message(value: &Box<dyn std::any::Any + Send>) -> &str {
+    value
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| value.downcast_ref::<&str>().copied())
+        .expect("text wait failure")
 }
