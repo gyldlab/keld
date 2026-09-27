@@ -28,6 +28,7 @@ use windows_renderer_http::{
 use serde_json::Value;
 use windows_sys::Win32::Foundation::{
     CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::System::Threading::{
@@ -2356,9 +2357,18 @@ fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
     if std::env::var_os("KELD_T4_CONSOLE_CASE").is_none() {
         let stdout = run_isolated_console_case(
             "shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup",
+            None,
         )
         .unwrap_or_else(|error| panic!("{error}"));
         print!("{stdout}");
+        return;
+    }
+    // Emergency process ownership only: normal cleanup is asserted before this
+    // observer exits. Forced death can still retain its temporary stage files.
+    keld_runtime::windows_job::install_host_death_job()
+        .expect("install isolated observer death Job before descendants");
+    if let Ok(port) = env::var("KELD_T4_CONSOLE_TIMEOUT_PORT") {
+        run_console_timeout_fixture("observer", port.parse().expect("timeout fixture port"));
         return;
     }
     run_console_ctrl_c_case();
@@ -2366,7 +2376,7 @@ fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
 
 #[test]
 fn isolated_console_rejects_a_missing_exact_selector() {
-    let error = run_isolated_console_case("kel271_known_absent_console_selector")
+    let error = run_isolated_console_case("kel271_known_absent_console_selector", None)
         .expect_err("a successful zero-test child must not satisfy console acceptance");
     assert!(
         error.contains("isolated console missing completed Ctrl+C/relaunch observations"),
@@ -2375,23 +2385,238 @@ fn isolated_console_rejects_a_missing_exact_selector() {
     assert!(error.contains("running 0 tests"), "{error}");
 }
 
-fn run_isolated_console_case(selector: &str) -> Result<String, String> {
+#[test]
+fn isolated_console_timeout_reaps_ready_descendants() {
+    if let Ok(role) = env::var("KELD_T4_CONSOLE_TIMEOUT_ROLE") {
+        let port = env::var("KELD_T4_CONSOLE_TIMEOUT_PORT")
+            .expect("timeout fixture port")
+            .parse()
+            .expect("numeric timeout fixture port");
+        run_console_timeout_fixture(&role, port);
+        return;
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("timeout fixture controller");
+    let port = listener
+        .local_addr()
+        .expect("timeout controller address")
+        .port();
+    let mut worker = Some(thread::spawn(move || {
+        run_isolated_console_case(
+            "shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup",
+            Some(port),
+        )
+    }));
+    let mut controls = Vec::<(String, BufReader<TcpStream>)>::new();
+    let mut processes = Vec::<(String, u32, OwnedHandle)>::new();
+    let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let launcher_pid =
+            accept_console_timeout_readiness(&listener, &mut controls, &mut processes);
+        let (_, observer_pid, observer) = processes
+            .iter()
+            .find(|(role, _, _)| role == "observer")
+            .expect("ready observer");
+        assert_eq!(launcher_pid, *observer_pid);
+        let (_, launcher) = controls
+            .iter_mut()
+            .find(|(role, _)| role == "launcher")
+            .expect("launcher timeout control");
+        launcher
+            .get_mut()
+            .write_all(b"TIMEOUT\n")
+            .expect("force the ready timeout branch");
+        launcher.get_mut().flush().expect("flush timeout command");
+        // Observe death before joining capture: an unfixed descendant may keep
+        // an inherited capture pipe open after the observer and launcher exit.
+        assert_process_signaled(observer, "timeout observer");
+        for role in ["direct", "descendant"] {
+            let (_, _, process) = processes
+                .iter()
+                .find(|(found, _, _)| found == role)
+                .expect("ready descendant handle");
+            assert_process_signaled(process, role);
+        }
+        let error = worker
+            .take()
+            .expect("timeout launcher worker")
+            .join()
+            .expect("timeout launcher did not panic")
+            .expect_err("the live observer must reach the timeout error");
+        assert!(
+            error.contains("isolated console regression timed out"),
+            "{error}"
+        );
+        assert!(error.contains("KELD_CONSOLE_WAIT_EXPIRED"), "{error}");
+        assert!(
+            !error.contains("timeout fixture control failed:"),
+            "a control failure cannot substitute for an expired native wait: {error}"
+        );
+        assert_eq!(
+            wait_for_process_signal(observer, 0),
+            WAIT_OBJECT_0,
+            "observer not reaped: {error}"
+        );
+        assert!(error.contains("KELD_CONSOLE_TIMEOUT_REAPED"), "{error}");
+        println!(
+            "KELD_CONSOLE_TIMEOUT_TREE observer={observer_pid} direct_and_descendant_signaled=true\n{error}"
+        );
+    }));
+    // Keep failure cleanup after the saved observation. EOF releases only these
+    // benign fixture processes when the no-Job negative control leaves them live.
+    drop(controls);
+    drop(listener);
+    if let Some(worker) = worker {
+        let result = worker
+            .join()
+            .expect("reap timeout launcher after fixture failure");
+        eprintln!("timeout fixture failure cleanup: {result:?}");
+    }
+    for (role, _, process) in &processes {
+        assert_process_signaled(process, &format!("timeout fixture cleanup {role}"));
+    }
+    if let Err(failure) = observation {
+        std::panic::resume_unwind(failure);
+    }
+}
+
+fn accept_console_timeout_readiness(
+    listener: &TcpListener,
+    controls: &mut Vec<(String, BufReader<TcpStream>)>,
+    processes: &mut Vec<(String, u32, OwnedHandle)>,
+) -> u32 {
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let mut launcher_pid = None;
+    for _ in 0..4 {
+        let stream = accept_control_until(listener, None, deadline);
+        let mut reader = BufReader::new(stream);
+        let record = try_read_control_line(&mut reader, deadline).expect("timeout readiness");
+        let (role, pid) = record.split_once(' ').expect("role and exact native PID");
+        assert!(matches!(
+            role,
+            "launcher" | "observer" | "direct" | "descendant"
+        ));
+        assert!(!controls.iter().any(|(seen, _)| seen == role), "{record}");
+        let pid = pid.parse::<u32>().expect("numeric timeout fixture PID");
+        println!("KELD_CONSOLE_TIMEOUT_READY role={role} pid={pid}");
+        if role == "launcher" {
+            launcher_pid = Some(pid);
+        } else {
+            let process = open_process_for_wait(pid, false);
+            assert_eq!(
+                wait_for_process_signal(&process, 0),
+                WAIT_TIMEOUT,
+                "{record}"
+            );
+            processes.push((role.to_owned(), pid, process));
+        }
+        controls.push((role.to_owned(), reader));
+    }
+    launcher_pid.expect("ready timeout launcher")
+}
+
+fn run_console_timeout_fixture(role: &str, port: u16) {
+    let next = match role {
+        "observer" => Some("direct"),
+        "direct" => Some("descendant"),
+        "descendant" => None,
+        _ => panic!("unknown console timeout fixture role: {role}"),
+    };
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, PRODUCT_DEADLINE)
+        .expect("connect timeout fixture readiness");
+    stream
+        .set_write_timeout(Some(PRODUCT_DEADLINE))
+        .expect("readiness write deadline");
+    writeln!(stream, "{role} {}", std::process::id()).expect("publish exact fixture PID");
+    stream.flush().expect("flush timeout fixture readiness");
+    let mut child = next.map(|next| {
+        Command::new(env::current_exe().expect("timeout fixture executable"))
+            .args([
+                "isolated_console_timeout_reaps_ready_descendants",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("KELD_T4_CONSOLE_TIMEOUT_ROLE", next)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn timeout fixture descendant")
+    });
+    // The surviving controller owns this socket lease. It stays open through all
+    // death assertions; EOF is solely emergency cleanup after a failed observation.
+    let mut released = String::new();
+    BufReader::new(stream)
+        .read_line(&mut released)
+        .expect("controller release or EOF");
+    if let Some(child) = child.as_mut() {
+        let status = wait_child(child, Instant::now() + PRODUCT_DEADLINE);
+        assert!(status.success(), "timeout fixture cleanup child: {status}");
+    }
+}
+
+fn run_isolated_console_case(selector: &str, timeout_probe: Option<u16>) -> Result<String, String> {
     let capture = tempfile::tempdir().expect("console test captures");
     let stdout = capture.path().join("stdout");
     let stderr = capture.path().join("stderr");
-    let output = Command::new("powershell.exe")
-            .args([
-                "-NoProfile", "-NonInteractive", "-Command",
-                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath $env:KELD_T4_CONSOLE_EXE -ArgumentList @($env:KELD_T4_CONSOLE_SELECTOR,'--exact','--nocapture') -WindowStyle Hidden -RedirectStandardOutput $env:KELD_T4_CONSOLE_STDOUT -RedirectStandardError $env:KELD_T4_CONSOLE_STDERR -PassThru; $null=$p.Handle; if (!$p.WaitForExit(90000)) { $p.Kill(); throw 'isolated console regression timed out' }; if ($null -eq $p.ExitCode) { throw 'missing isolated console exit status' }; exit $p.ExitCode",
-            ])
-            .env("KELD_T4_CONSOLE_CASE", "1")
-            .env("KELD_T4_CONSOLE_SELECTOR", selector)
-            .env("KELD_T4_CONSOLE_PARENT", std::process::id().to_string())
-            .env("KELD_T4_CONSOLE_EXE", std::env::current_exe().expect("test executable"))
-            .env("KELD_T4_CONSOLE_STDOUT", &stdout)
-            .env("KELD_T4_CONSOLE_STDERR", &stderr)
-            .output()
-            .expect("start isolated console regression");
+    let script = r"
+$ErrorActionPreference='Stop'
+$p=Start-Process -FilePath $env:KELD_T4_CONSOLE_EXE -ArgumentList @($env:KELD_T4_CONSOLE_SELECTOR,'--exact','--nocapture') -WindowStyle Hidden -RedirectStandardOutput $env:KELD_T4_CONSOLE_STDOUT -RedirectStandardError $env:KELD_T4_CONSOLE_STDERR -PassThru
+$null=$p.Handle
+if ($env:KELD_T4_CONSOLE_TIMEOUT_PORT) {
+  $control=New-Object System.Net.Sockets.TcpClient
+  try {
+    $control.Connect('127.0.0.1',[int]$env:KELD_T4_CONSOLE_TIMEOUT_PORT)
+    $stream=$control.GetStream()
+    $stream.ReadTimeout=[int]$env:KELD_T4_CONSOLE_CONTROL_MS
+    $stream.WriteTimeout=[int]$env:KELD_T4_CONSOLE_CONTROL_MS
+    $writer=New-Object System.IO.StreamWriter($stream)
+    $writer.NewLine=[string][char]10
+    $writer.AutoFlush=$true
+    $writer.WriteLine('launcher '+$p.Id)
+    $reader=New-Object System.IO.StreamReader($stream)
+    if ($reader.ReadLine() -ne 'TIMEOUT') { throw 'missing timeout fixture command' }
+    $finished=$p.WaitForExit(0)
+  } catch {
+    [Console]::Error.WriteLine('timeout fixture control failed: '+$_)
+    $finished=$false
+  } finally {
+    $control.Dispose()
+  }
+} else {
+  $finished=$p.WaitForExit(90000)
+}
+if (!$finished) {
+  [Console]::Error.WriteLine('KELD_CONSOLE_WAIT_EXPIRED pid='+$p.Id)
+  $p.Kill()
+  if (!$p.WaitForExit(10000)) { throw 'isolated console did not exit after termination' }
+  [Console]::Error.WriteLine('KELD_CONSOLE_TIMEOUT_REAPED pid='+$p.Id+' exit_code='+$p.ExitCode)
+  throw 'isolated console regression timed out'
+}
+if ($null -eq $p.ExitCode) { throw 'missing isolated console exit status' }
+exit $p.ExitCode
+";
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("KELD_T4_CONSOLE_CASE", "1")
+        .env("KELD_T4_CONSOLE_SELECTOR", selector)
+        .env("KELD_T4_CONSOLE_PARENT", std::process::id().to_string())
+        .env(
+            "KELD_T4_CONSOLE_EXE",
+            std::env::current_exe().expect("test executable"),
+        )
+        .env("KELD_T4_CONSOLE_STDOUT", &stdout)
+        .env("KELD_T4_CONSOLE_STDERR", &stderr)
+        .env(
+            "KELD_T4_CONSOLE_CONTROL_MS",
+            PRODUCT_DEADLINE.as_millis().to_string(),
+        )
+        .env_remove("KELD_T4_CONSOLE_TIMEOUT_PORT")
+        .env_remove("KELD_T4_CONSOLE_TIMEOUT_ROLE");
+    if let Some(port) = timeout_probe {
+        command.env("KELD_T4_CONSOLE_TIMEOUT_PORT", port.to_string());
+    }
+    let output = command.output().expect("start isolated console regression");
     let stdout = fs::read_to_string(stdout).expect("console stdout");
     let stderr = fs::read_to_string(stderr).expect("console stderr");
     if !output.status.success() {
@@ -2759,10 +2984,15 @@ fn terminate_test_process(process: &OwnedHandle) {
 }
 
 fn assert_process_signaled(process: &OwnedHandle, label: &str) {
-    // SAFETY: process is a live retained handle; signaling is the kernel's
-    // exact process-termination oracle and the timeout only bounds failure.
-    let result = unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 10_000) };
+    let result = wait_for_process_signal(process, 10_000);
     assert_eq!(result, WAIT_OBJECT_0, "{label} survived host death");
+}
+
+fn wait_for_process_signal(process: &OwnedHandle, timeout_ms: u32) -> u32 {
+    // SAFETY: process is a live retained handle; signaling is the kernel's
+    // exact process-termination oracle. Zero observes current state; a positive
+    // timeout only bounds failure. This neither closes nor transfers the handle.
+    unsafe { WaitForSingleObject(process.as_raw_handle().cast(), timeout_ms) }
 }
 
 fn raw_process_handle_census(pid: u32) -> Vec<SystemHandleEntry> {
