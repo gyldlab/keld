@@ -6,5 +6,7 @@ pub(crate) mod process;
 pub(crate) mod product;
 pub(crate) mod product_cycle;
 pub(crate) mod renderer;
+pub(crate) mod signed_identity;
+pub(crate) mod signed_process;
 pub(crate) mod stage;
 pub(crate) mod window;
