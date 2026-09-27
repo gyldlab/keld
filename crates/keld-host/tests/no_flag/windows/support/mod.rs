@@ -12,5 +12,6 @@ pub(crate) mod profile_server;
 pub(crate) mod renderer;
 pub(crate) mod signed_identity;
 pub(crate) mod signed_process;
+pub(crate) mod signed_purge;
 pub(crate) mod stage;
 pub(crate) mod window;
