@@ -1522,6 +1522,34 @@ mod tests {
         (sender, watcher)
     }
 
+    #[cfg(windows)]
+    struct BlockedWatchdogArm {
+        sender: Option<std::sync::mpsc::SyncSender<()>>,
+    }
+
+    #[cfg(windows)]
+    impl BlockedWatchdogArm {
+        fn disarm(&mut self) -> Result<(), std::sync::mpsc::SendError<()>> {
+            match self.sender.take() {
+                Some(sender) => sender.send(()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for BlockedWatchdogArm {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                // Preserve libtest's original panic outcome. A failed disarm is
+                // additional diagnostic context, never a second panic on unwind.
+                if let Err(error) = self.disarm() {
+                    eprintln!("KELD_KEL256 panic_cleanup_disarm_failed: {error}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn error_codes_and_messages_stay_bound() {
         let reason = match keld_guard::evaluate(
@@ -2002,6 +2030,9 @@ mod tests {
         let started = Instant::now();
         eprintln!("KELD_KEL256 child_pid={}", std::process::id());
         let (watchdog_tx, watchdog) = blocked_watchdog(started);
+        let mut watchdog_arm = BlockedWatchdogArm {
+            sender: Some(watchdog_tx),
+        };
 
         blocked_phase(started, "fixture_create_begin");
         let fixture = race_owned_root("windows-blocked-call");
@@ -2090,7 +2121,7 @@ mod tests {
         blocked_phase(started, "cleanup_begin");
         std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
         blocked_phase(started, "cleanup_complete");
-        watchdog_tx.send(()).expect("disarm watchdog");
+        watchdog_arm.disarm().expect("disarm watchdog");
         watchdog.join().expect("join watchdog");
     }
 
@@ -2163,6 +2194,35 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_blocked_call_panic_preserves_libtest_failure() {
+        let output = windows_observer_child("fixture_panic");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(101),
+            "original panic status; stdout={stdout}; stderr={stderr}"
+        );
+        assert!(
+            stdout.contains("test result: FAILED"),
+            "libtest summary: {stdout}"
+        );
+        assert!(
+            stderr.contains("create fixture root"),
+            "original failure diagnostic: {stderr}"
+        );
+        assert!(
+            !stderr.contains("watchdog_sender_disconnected"),
+            "panic cannot become a watchdog disconnection: {stderr}"
+        );
+        assert!(
+            !stderr.contains("watchdog_timeout"),
+            "panic cannot become a watchdog timeout: {stderr}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     #[ignore = "private Windows process endpoint for census and watchdog controls"]
     fn windows_observer_control_child() {
         let mode =
@@ -2221,14 +2281,31 @@ mod tests {
         };
         let mut stdout = capture("stdout");
         let mut stderr = capture("stderr");
-        let mut child = Command::new(std::env::current_exe().expect("test executable"))
-            .args([
-                "--exact",
-                "fs::tests::windows_observer_control_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("KELD_KEL256_OBSERVER_CONTROL", mode)
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        if mode == "fixture_panic" {
+            let invalid = root.join("not-a-directory");
+            std::fs::write(&invalid, b"owned regular-file fault")
+                .expect("invalid child-only temp root");
+            command
+                .args([
+                    "--exact",
+                    "fs::tests::windows_blocked_call_holds_handle_until_release_child",
+                    "--nocapture",
+                ])
+                .env("KELD_KEL130_BLOCKED_CALL_CHILD", "1")
+                .env("TMP", &invalid)
+                .env("TEMP", &invalid);
+        } else {
+            command
+                .args([
+                    "--exact",
+                    "fs::tests::windows_observer_control_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("KELD_KEL256_OBSERVER_CONTROL", mode);
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::from(
                 stdout.try_clone().expect("stdout capture handle"),
