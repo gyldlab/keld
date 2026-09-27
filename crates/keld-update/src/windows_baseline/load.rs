@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use cap_fs_ext::{DirExt as _, MetadataExt as _};
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, File};
 
 use super::{
     LoadedWindowsBaseline, Roots, VersionPins, WindowsBaselineTrust, ensure_directory, error,
@@ -13,7 +13,7 @@ use super::{
 use crate::records::{self, PointerKind};
 use crate::{ArchiveEntryKind, InstallOwner, ProvenanceObservation, UpdateError};
 
-/// Loads protected machine provenance and floor without opening a writable handle.
+/// Loads coherent protected initial-baseline metadata without a writable handle.
 ///
 /// Expected identity, publisher and volume must be trusted host configuration. The
 /// returned owner retains namespace and record pins; it provides no repair, mutation,
@@ -21,7 +21,8 @@ use crate::{ArchiveEntryKind, InstallOwner, ProvenanceObservation, UpdateError};
 ///
 /// # Errors
 /// Refuses unknown/missing/unprotected records, unsupported ancestry, identity or
-/// publisher/volume mismatches, managed ownership and a corrupt or missing floor.
+/// publisher/volume mismatches, non-baseline pointers/floor/completion, or state
+/// requiring later activation/recovery. Private incomplete stages are diagnostic only.
 pub fn load_windows_baseline(
     trust: &WindowsBaselineTrust,
 ) -> Result<LoadedWindowsBaseline, UpdateError> {
@@ -44,9 +45,12 @@ pub fn load_windows_baseline(
             mechanism: mechanism.clone(),
         });
     }
-    let (floor_file, floor_bytes) = read_record(&roots.update, "version-floor")?;
-    let floor = records::decode_floor(&floor_bytes)?;
-    crate::provenance::validate_version_floor(&trust.installation, &floor)?;
+    let metadata = read_initial_metadata(&roots)?;
+    let floor = metadata.floor;
+    let mut retained = metadata.records;
+    retained.push(provenance_file);
+    retained.push(metadata.completion.marker);
+    retained.push(metadata.completion.content);
     Ok(LoadedWindowsBaseline {
         observation: ProvenanceObservation::Protected {
             record: record.provenance,
@@ -55,11 +59,28 @@ pub fn load_windows_baseline(
         floor,
         publisher_scope: record.publisher_scope,
         roots,
-        _records: vec![provenance_file, floor_file],
+        _records: retained,
+        _baseline_version: metadata.completion.version,
+        _baseline_tree: metadata.completion.tree,
     })
 }
 
-pub(super) fn validate_initial_seed(roots: &Roots) -> Result<VersionPins, UpdateError> {
+struct BaselineCompletion {
+    version: Dir,
+    tree: Dir,
+    content: File,
+    marker: File,
+    record: records::CompleteRecord,
+}
+
+struct InitialMetadata {
+    floor: String,
+    records: Vec<File>,
+    completion: BaselineCompletion,
+    lock_present: bool,
+}
+
+fn read_initial_metadata(roots: &Roots) -> Result<InitialMetadata, UpdateError> {
     let baseline = &roots.trust.installation.baseline;
     let update_name = roots
         .trust
@@ -75,28 +96,41 @@ pub(super) fn validate_initial_seed(roots: &Roots) -> Result<VersionPins, Update
         &[update_name, "install-provenance"],
     )
     .map_err(|cause| error("initial install contents", cause))?;
-    exact_entries(
-        &roots.update,
-        &[
-            "versions",
-            "bootstrap.lock",
-            "version-floor",
-            "current",
-            "last-known-good",
-        ],
-    )
-    .map_err(|cause| error("initial update contents", cause))?;
-    exact_entries(&roots.versions, &[&baseline.version])
-        .map_err(|cause| error("initial versions", cause))?;
-    let (lock, bytes) = read_record(&roots.update, "bootstrap.lock")?;
-    if !bytes.is_empty() {
-        return Err(error("initial lock", "bootstrap marker is not empty"));
+    let mut lock_present = false;
+    for entry in roots
+        .update
+        .entries()
+        .map_err(|cause| error("initial update contents", cause))?
+    {
+        let name = entry
+            .map_err(|cause| error("initial update contents", cause))?
+            .file_name();
+        match name.to_str() {
+            Some("versions" | "version-floor" | "current" | "last-known-good") => {}
+            Some("bootstrap.lock") => lock_present = true,
+            _ => {
+                return Err(error(
+                    "initial update contents",
+                    "unknown state requires activation/recovery admission",
+                ));
+            }
+        }
     }
-    let (floor, bytes) = read_record(&roots.update, "version-floor")?;
-    if records::decode_floor(&bytes)? != baseline.version {
+    validate_version_census(roots)?;
+    let mut retained = Vec::new();
+    if lock_present {
+        let (lock, bytes) = read_record(&roots.update, "bootstrap.lock")?;
+        if !bytes.is_empty() {
+            return Err(error("initial lock", "bootstrap marker is not empty"));
+        }
+        retained.push(lock);
+    }
+    let (floor_file, bytes) = read_record(&roots.update, "version-floor")?;
+    let floor = records::decode_floor(&bytes)?;
+    if floor != baseline.version {
         return Err(error("initial floor", "floor differs from exact baseline"));
     }
-    let mut records = vec![lock, floor];
+    retained.push(floor_file);
     for (name, kind) in [
         ("current", PointerKind::Current),
         ("last-known-good", PointerKind::LastKnownGood),
@@ -108,14 +142,77 @@ pub(super) fn validate_initial_seed(roots: &Roots) -> Result<VersionPins, Update
                 "pointer differs from exact baseline",
             ));
         }
-        records.push(file);
+        retained.push(file);
     }
-    let mut version = validate_initial_version(roots)?;
-    version.files.extend(records);
+    Ok(InitialMetadata {
+        floor,
+        records: retained,
+        completion: read_baseline_completion(roots)?,
+        lock_present,
+    })
+}
+
+fn validate_version_census(roots: &Roots) -> Result<(), UpdateError> {
+    for entry in roots
+        .versions
+        .entries()
+        .map_err(|cause| error("initial versions", cause))?
+    {
+        let entry = entry.map_err(|cause| error("initial versions", cause))?;
+        let name = entry.file_name();
+        if name.to_str() == Some(roots.trust.installation.baseline.version.as_str()) {
+            continue;
+        }
+        let diagnostic = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("incomplete-"))
+            .is_some_and(|suffix| {
+                suffix.len() == 64
+                    && suffix
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            });
+        if !diagnostic {
+            return Err(error(
+                "initial versions",
+                "only the exact baseline and named incomplete diagnostics are admitted",
+            ));
+        }
+        // Windows DirEntry metadata comes from parent enumeration; do not open a
+        // SYSTEM-private stage or inspect its contents merely to admit its name.
+        let metadata = entry
+            .metadata()
+            .map_err(|cause| error("diagnostic directory metadata", cause))?;
+        ensure_directory(&metadata).map_err(|cause| error("diagnostic directory kind", cause))?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_initial_seed(roots: &Roots) -> Result<VersionPins, UpdateError> {
+    let metadata = read_initial_metadata(roots)?;
+    if !metadata.lock_present {
+        return Err(error(
+            "initial lock",
+            "initializer bootstrap marker is missing",
+        ));
+    }
+    // The initializer's postcommit proof is stricter than later read-only metadata
+    // admission: its fresh transaction has not produced diagnostic sibling stages.
+    exact_entries(
+        &roots.versions,
+        &[&roots.trust.installation.baseline.version],
+    )
+    .map_err(|cause| error("initial versions", cause))?;
+    let mut version = validate_version_contents(roots, metadata.completion)?;
+    version.files.extend(metadata.records);
     Ok(version)
 }
 
 pub(super) fn validate_initial_version(roots: &Roots) -> Result<VersionPins, UpdateError> {
+    validate_version_contents(roots, read_baseline_completion(roots)?)
+}
+
+fn read_baseline_completion(roots: &Roots) -> Result<BaselineCompletion, UpdateError> {
     let baseline = &roots.trust.installation.baseline;
     let version = open_directory(&roots.versions, &baseline.version)?;
     exact_entries(&version, &["content.tar", "tree", ".complete"])
@@ -128,8 +225,41 @@ pub(super) fn validate_initial_version(roots: &Roots) -> Result<VersionPins, Upd
             "artifact differs from exact baseline",
         ));
     }
-    let mut content = open_machine_file(&version, "content.tar")
+    let content = open_machine_file(&version, "content.tar")
         .map_err(|cause| error("retained archive", cause))?;
+    if content
+        .metadata()
+        .map_err(|cause| error("archive metadata", cause))?
+        .len()
+        != complete_record.content_size
+    {
+        return Err(error(
+            "completion size",
+            "marker size differs from retained archive length",
+        ));
+    }
+    let tree = open_directory(&version, "tree")?;
+    Ok(BaselineCompletion {
+        version,
+        tree,
+        content,
+        marker: complete,
+        record: complete_record,
+    })
+}
+
+fn validate_version_contents(
+    roots: &Roots,
+    completion: BaselineCompletion,
+) -> Result<VersionPins, UpdateError> {
+    let baseline = &roots.trust.installation.baseline;
+    let BaselineCompletion {
+        version,
+        tree,
+        mut content,
+        marker: complete,
+        record: complete_record,
+    } = completion;
     let expected = crate::full::ContentIdentity {
         identity: baseline.clone(),
         content_size: complete_record.content_size,
@@ -140,7 +270,6 @@ pub(super) fn validate_initial_version(roots: &Roots) -> Result<VersionPins, Upd
         &mut content,
         keld_guard::validate_windows_package_paths,
     )?;
-    let tree = open_directory(&version, "tree")?;
     let mut directories = vec![version, tree];
     let mut files = vec![complete];
     let mut parents = BTreeMap::from([(String::new(), 1_usize)]);

@@ -41,21 +41,9 @@ fn system_baseline_qualification() {
     );
 
     super::substitutions::run(&root);
+    super::machine_staging::run(&root);
 
-    let concurrent = provision(&root, "concurrent");
-    initialize_with_observer(
-        &baseline(&concurrent),
-        &root.join("source.tar"),
-        &concurrent,
-        |boundary| {
-            if boundary == BaselineBoundary::LockCreated {
-                let output = child(COMPETING_CHILD, &root, "concurrent", "", 0);
-                assert!(output.contains("KELD_KEL266_COMPETITOR_REFUSED"));
-            }
-            Ok(())
-        },
-    )
-    .expect("first initializer succeeds while second actual process is refused");
+    competing_initializer_is_refused(&root);
 
     let cuts = [
         BaselineBoundary::LockCreated,
@@ -117,6 +105,23 @@ fn system_baseline_qualification() {
     )
     .expect("qualification marker");
     println!("KELD_KEL266_SYSTEM_FINISHED={}", root.display());
+}
+
+fn competing_initializer_is_refused(root: &std::path::Path) {
+    let concurrent = provision(root, "concurrent");
+    initialize_with_observer(
+        &baseline(&concurrent),
+        &root.join("source.tar"),
+        &concurrent,
+        |boundary| {
+            if boundary == BaselineBoundary::LockCreated {
+                let output = child(COMPETING_CHILD, root, "concurrent", "", 0);
+                assert!(output.contains("KELD_KEL266_COMPETITOR_REFUSED"));
+            }
+            Ok(())
+        },
+    )
+    .expect("first initializer succeeds while second actual process is refused");
 }
 
 #[test]

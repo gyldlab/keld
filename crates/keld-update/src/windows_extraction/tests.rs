@@ -1,17 +1,13 @@
 //! Real Windows filesystem acceptance for the T3b extraction boundary.
 
-#![allow(unsafe_code)] // test-only hostile Win32 DACL mutation attempt with local proof
+#![allow(unsafe_code)] // test-only Win32 mapping fixtures with local proofs
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::env;
-use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Cursor, Read as _, Seek as _, SeekFrom};
-use std::os::windows::ffi::OsStrExt as _;
+use std::io::Cursor;
 use std::os::windows::fs::{OpenOptionsExt as _, symlink_dir, symlink_file};
-use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -20,12 +16,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use keld_guard::{
     ProfileDigest, validate_windows_owner_private_directory, validate_windows_owner_private_file,
 };
-use keld_runtime::windows_lpac::{WindowsLpacPathAccess, WindowsLpacProfile, WindowsLpacStdio};
 use tempfile::TempDir;
 use windows_sys::Win32::Foundation::CloseHandle;
-use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
-use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
-use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_READONLY, SetFileAttributesW};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
@@ -943,154 +935,10 @@ fn retained_directory_handles_pin_stage_until_receipt_is_dropped() {
     assert!(renamed.is_dir());
 }
 
-const LPAC_HELPER_ENV: &str = "KELD_265_EXTRACTION_LPAC_HELPER";
-const LPAC_HELPER_TEST: &str = "windows_extraction::tests::lpac_stage_mutation_child";
-
 #[test]
 #[ignore = "private real-LPAC subprocess entry point"]
 fn lpac_stage_mutation_child() {
-    if env::var(LPAC_HELPER_ENV).as_deref() != Ok("probe") {
-        return;
-    }
-    let stage = PathBuf::from(env::var_os("KELD_265_STAGE").expect("host-provided stage path"));
-    let private = PathBuf::from(env::var_os("KELD_265_PRIVATE").expect("role-private path"));
-    let private_file = private.join("allowed.txt");
-    fs::write(&private_file, b"role-owned").expect("granted role-private write");
-    let mut private_permissions = fs::metadata(&private_file)
-        .expect("role-private metadata")
-        .permissions();
-    private_permissions.set_readonly(true);
-    fs::set_permissions(&private_file, private_permissions)
-        .expect("granted role-private attribute write");
-
-    let create_denied = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(stage.join("tree/new.txt"))
-        .is_err();
-    let rename_denied = fs::rename(&private_file, stage.join("tree/renamed.txt")).is_err();
-    let reparse_denied = symlink_file(&private_file, stage.join("tree/reparse.txt")).is_err();
-    let victim = stage.join("tree/nest/one");
-    let wide: Vec<u16> = victim
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: `wide` is a live NUL-terminated UTF-16 path and the attribute
-    // constant is a Win32 value. The host checks the original attribute afterward.
-    let attribute_denied = unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_READONLY) }
-        == 0
-        && std::io::Error::last_os_error().raw_os_error() == Some(5);
-    // SAFETY: `wide` is a live NUL-terminated UTF-16 path; this hostile call passes
-    // no pointers to caller-owned security objects. Success would be caught below
-    // and the entire fixture is inside a disposable private temporary tree.
-    // This denial proves the protected stage DACL did not change. RolePrivate
-    // does not grant WRITE_DAC either, so it is not an operation-matched proof
-    // that LPAC could edit some other ACL. The host rechecks the exact stage ACL.
-    let acl_status = unsafe {
-        SetNamedSecurityInfoW(
-            wide.as_ptr().cast_mut(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
-        )
-    };
-    let acl_denied = acl_status == 5;
-    println!(
-        "KELD_265_LPAC private_create=true private_attribute=true create_denied={create_denied} \
-         rename_denied={rename_denied} reparse_denied={reparse_denied} \
-         attribute_denied={attribute_denied} acl_denied={acl_denied}"
-    );
-    assert!(create_denied && rename_denied && reparse_denied);
-    assert!(attribute_denied && acl_denied);
-}
-
-fn run_lpac_stage_probe(fixture: &Fixture, stage_path: &Path) {
-    let runtime = fixture.temp.path().join("lpac-runtime");
-    let private = fixture.temp.path().join("lpac-private");
-    fs::create_dir(&runtime).expect("runtime ACL fixture");
-    fs::create_dir(&private).expect("role-private ACL fixture");
-    let program = runtime.join("lpac-extraction-probe.exe");
-    fs::copy(env::current_exe().expect("test executable"), &program)
-        .expect("copy real subprocess fixture");
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_nanos();
-    let profile_name = format!("keld-265-{}-{nonce}", std::process::id());
-    let profile = WindowsLpacProfile::create(OsStr::new(&profile_name))
-        .expect("fresh zero-capability LPAC profile");
-    profile
-        .grant_path(fixture.temp.path(), WindowsLpacPathAccess::Traverse)
-        .expect("fixture ancestor traversal only");
-    profile
-        .grant_path(&runtime, WindowsLpacPathAccess::ReadExecute)
-        .expect("runtime executable ACL");
-    profile
-        .grant_path(&private, WindowsLpacPathAccess::RolePrivate)
-        .expect("role-private control ACL");
-
-    let mut output = tempfile::tempfile_in(&private).expect("captured LPAC output");
-    let input = File::open("NUL").expect("null LPAC stdin");
-    let mut environment = vec![
-        (OsString::from(LPAC_HELPER_ENV), OsString::from("probe")),
-        (
-            OsString::from("KELD_265_STAGE"),
-            stage_path.as_os_str().to_owned(),
-        ),
-        (
-            OsString::from("KELD_265_PRIVATE"),
-            private.clone().into_os_string(),
-        ),
-        (OsString::from("TEMP"), private.clone().into_os_string()),
-        (OsString::from("TMP"), private.clone().into_os_string()),
-    ];
-    for key in ["SystemRoot", "WINDIR", "USERPROFILE", "LOCALAPPDATA"] {
-        if let Some(value) = env::var_os(key) {
-            environment.push((OsString::from(key), value));
-        }
-    }
-    let args: Vec<OsString> = ["--exact", LPAC_HELPER_TEST, "--ignored", "--nocapture"]
-        .into_iter()
-        .map(OsString::from)
-        .collect();
-    let mut child = profile
-        .spawn_suspended(
-            &program,
-            &args,
-            &environment,
-            Some(&private),
-            Some(WindowsLpacStdio {
-                stdin: input.as_handle(),
-                stdout: output.as_handle(),
-                stderr: output.as_handle(),
-            }),
-            &[],
-        )
-        .expect("suspended LPAC fixture");
-    let token = child.observe_token().expect("real LPAC token");
-    assert!(token.is_app_container);
-    assert!(token.all_application_packages_opt_out_configured);
-    assert_eq!(token.capability_count, 0);
-    child.resume().expect("resume inspected LPAC fixture");
-    let exit = child.wait(10_000).expect("bounded LPAC fixture exit");
-    output.seek(SeekFrom::Start(0)).expect("rewind LPAC output");
-    let mut observed = String::new();
-    output
-        .read_to_string(&mut observed)
-        .expect("read LPAC output");
-    assert_eq!(exit, 0, "LPAC child failed: {observed}");
-    assert!(
-        observed.contains(
-            "KELD_265_LPAC private_create=true private_attribute=true \
-                           create_denied=true rename_denied=true reparse_denied=true \
-                           attribute_denied=true acl_denied=true"
-        ),
-        "unexpected LPAC observation: {observed}"
-    );
+    super::lpac_probe::mutation_child();
 }
 
 #[test]
@@ -1109,7 +957,7 @@ fn real_lpac_role_cannot_mutate_released_protected_stage() {
     drop(stage);
     drop(root); // Avoid confusing LPAC ACL denial with delete-sharing pins.
 
-    run_lpac_stage_probe(&fixture, &stage_path);
+    super::lpac_probe::run_lpac_probe(fixture.temp.path(), &stage_path, None);
     assert_eq!(
         fs::read(stage_path.join("tree/nest/one")).expect("protected file"),
         b"!"

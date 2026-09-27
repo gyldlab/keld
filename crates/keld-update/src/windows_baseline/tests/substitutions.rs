@@ -10,7 +10,7 @@ use windows_permissions::{LocalBox, SecurityDescriptor};
 use super::support::{self, baseline, dacl_handle, provision};
 use crate::windows_baseline::{initialize_windows_baseline, load_windows_baseline};
 
-fn set_dacl(path: &Path, text: &str) {
+pub(super) fn set_dacl(path: &Path, text: &str) {
     let descriptor: LocalBox<SecurityDescriptor> = text.parse().expect("independent SDDL mutation");
     let mut object = dacl_handle(path);
     SetSecurityInfo(
@@ -96,21 +96,235 @@ pub(super) fn run(root: &Path) {
         );
         assert_ne!(changed, original);
         fs::write(&target, changed).expect("one canonical wrong identity or same-length payload");
-        let loaded = load_windows_baseline(&trust)
-            .expect("metadata loader does not claim active package selection");
-        assert!(
-            super::super::load::validate_initial_seed(&loaded.roots).is_err(),
-            "initial seed predicate: {label}"
-        );
-        drop(loaded);
+        if label == "bad-tree" {
+            let loaded = load_windows_baseline(&trust)
+                .expect("metadata admission does not rehash runnable payload");
+            assert!(
+                super::super::load::validate_initial_seed(&loaded.roots).is_err(),
+                "full initializer proof must reject same-length payload corruption"
+            );
+        } else {
+            assert!(
+                load_windows_baseline(&trust).is_err(),
+                "public loader must refuse mixed initial metadata before observation: {label}"
+            );
+        }
         fs::write(&target, original).expect("restore initial seed");
         let loaded = load_windows_baseline(&trust).expect("protected metadata");
         super::super::load::validate_initial_seed(&loaded.roots)
             .expect("restored seed positive control");
     }
 
+    reject_completion_object_mismatches(root);
+    reject_missing_metadata(root);
+    reject_unknown_state(root);
+    admit_only_named_diagnostic_directories(root);
     reject_parent_delete_child(root);
     println!("KELD_KEL266_SUBSTITUTIONS_PASSED");
+}
+
+fn reject_completion_object_mismatches(root: &Path) {
+    let trust = provision(root, "completion-objects");
+    drop(
+        initialize_windows_baseline(&baseline(&trust), &root.join("source.tar"), &trust)
+            .expect("committed completion-object control"),
+    );
+    let version = trust.installation.update_root.join("versions/1.0.0");
+    let marker = version.join(".complete");
+    let original = fs::read(&marker).expect("original completion marker");
+    let complete = crate::records::decode_complete(&original).expect("canonical marker");
+    let actual_length = fs::metadata(version.join("content.tar"))
+        .expect("actual archive metadata")
+        .len();
+    assert_eq!(complete.content_size, actual_length);
+    assert!(actual_length > 1);
+    for wrong_size in [actual_length - 1, actual_length + 1] {
+        let changed = crate::records::encode_complete(&complete.artifact, wrong_size)
+            .expect("canonical marker with independently wrong archive length");
+        fs::write(&marker, changed).expect("change only canonical completion size");
+        let refused =
+            load_windows_baseline(&trust).expect_err("marker length must match retained archive");
+        assert!(matches!(
+            refused,
+            crate::UpdateError::Baseline {
+                step: "completion size",
+                ..
+            }
+        ));
+        fs::write(&marker, &original).expect("restore exact completion marker");
+        drop(load_windows_baseline(&trust).expect("restored completion size"));
+    }
+    for name in ["content.tar", "tree"] {
+        let target = version.join(name);
+        let saved = root.join(format!("saved-completion-{name}"));
+        assert!(!saved.exists());
+        fs::rename(&target, &saved).expect("retain exact original object outside admitted version");
+        if name == "content.tar" {
+            drop(
+                crate::windows_fs::create_directory_relative(&support::directory(&version), name)
+                    .expect("directory substituted for regular archive"),
+            );
+        } else {
+            fs::write(&target, b"not a directory").expect("regular file substituted for tree");
+        }
+        assert!(
+            load_windows_baseline(&trust).is_err(),
+            "wrong actual type for {name}"
+        );
+        if name == "content.tar" {
+            fs::remove_dir(&target).expect("remove exact empty substitution");
+        } else {
+            fs::remove_file(&target).expect("remove exact regular substitution");
+        }
+        fs::rename(&saved, &target).expect("restore exact protected object");
+        drop(load_windows_baseline(&trust).expect("restored object-type positive control"));
+
+        fs::rename(&target, &saved).expect("retain original before reparse substitution");
+        if name == "content.tar" {
+            std::os::windows::fs::symlink_file(&saved, &target).expect("archive reparse fixture");
+        } else {
+            std::os::windows::fs::symlink_dir(&saved, &target).expect("tree reparse fixture");
+        }
+        assert!(
+            load_windows_baseline(&trust).is_err(),
+            "actual reparse for {name} must refuse"
+        );
+        if name == "content.tar" {
+            fs::remove_file(&target).expect("remove exact archive symlink");
+        } else {
+            fs::remove_dir(&target).expect("remove exact tree symlink");
+        }
+        fs::rename(&saved, &target).expect("restore exact original after reparse");
+        drop(load_windows_baseline(&trust).expect("restored reparse positive control"));
+    }
+}
+
+fn reject_missing_metadata(root: &Path) {
+    let trust = provision(root, "missing-metadata");
+    drop(
+        initialize_windows_baseline(&baseline(&trust), &root.join("source.tar"), &trust)
+            .expect("committed missing-record control"),
+    );
+    for (index, relative) in [
+        "updates/current",
+        "updates/last-known-good",
+        "updates/version-floor",
+        "updates/versions/1.0.0/.complete",
+        "updates/versions/1.0.0",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let target = trust.installation.install_root.join(relative);
+        let saved = root.join(format!("saved-metadata-{index}"));
+        assert!(
+            !saved.exists(),
+            "fresh recovery location outside admitted roots"
+        );
+        fs::rename(&target, &saved).expect("remove exactly one admitted object");
+        assert!(
+            load_windows_baseline(&trust).is_err(),
+            "missing {relative} must refuse"
+        );
+        fs::rename(&saved, &target).expect("restore exact protected object");
+        drop(load_windows_baseline(&trust).expect("restored metadata positive control"));
+    }
+    let lock = trust.installation.update_root.join("bootstrap.lock");
+    let saved = root.join("saved-bootstrap-lock");
+    assert!(!saved.exists());
+    fs::rename(&lock, &saved).expect("committed bootstrap lock is optional");
+    drop(load_windows_baseline(&trust).expect("valid committed metadata without bootstrap lock"));
+    fs::rename(&saved, &lock).expect("restore optional lock");
+    fs::write(&lock, b"corrupt").expect("corrupt existing optional lock");
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "present corrupt lock is not ignored"
+    );
+    fs::write(&lock, b"").expect("restore exact empty bootstrap marker");
+    drop(load_windows_baseline(&trust).expect("restored lock positive control"));
+}
+
+fn reject_unknown_state(root: &Path) {
+    let trust = provision(root, "unknown-state");
+    drop(
+        initialize_windows_baseline(&baseline(&trust), &root.join("source.tar"), &trust)
+            .expect("committed unknown-state control"),
+    );
+    for name in ["journal", "previous-known-good", "unknown-state"] {
+        let extra = trust.installation.update_root.join(name);
+        assert!(!extra.exists());
+        fs::write(&extra, b"future state").expect("one unsupported update state object");
+        assert!(
+            load_windows_baseline(&trust).is_err(),
+            "unknown update state {name}"
+        );
+        fs::remove_file(&extra).expect("remove exact test-created unknown state");
+        drop(load_windows_baseline(&trust).expect("restored update census"));
+    }
+    let versions = trust.installation.update_root.join("versions");
+    let final_version =
+        crate::windows_fs::create_directory_relative(&support::directory(&versions), "2.0.0")
+            .expect("unsupported final-version fixture");
+    drop(final_version);
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "another final version needs future activation admission"
+    );
+    fs::remove_dir(versions.join("2.0.0")).expect("remove exact empty final-version fixture");
+    drop(load_windows_baseline(&trust).expect("restored final-version census"));
+}
+
+fn admit_only_named_diagnostic_directories(root: &Path) {
+    let trust = provision(root, "diagnostic-state");
+    drop(
+        initialize_windows_baseline(&baseline(&trust), &root.join("source.tar"), &trust)
+            .expect("committed diagnostic control"),
+    );
+    let versions = trust.installation.update_root.join("versions");
+    for name in [
+        "incomplete-".to_owned(),
+        format!("incomplete-{}", "a".repeat(63)),
+        format!("incomplete-{}", "A".repeat(64)),
+        format!("incomplete-{}", "a".repeat(65)),
+    ] {
+        let directory =
+            crate::windows_fs::create_directory_relative(&support::directory(&versions), &name)
+                .expect("malformed diagnostic name fixture");
+        drop(directory);
+        assert!(
+            load_windows_baseline(&trust).is_err(),
+            "malformed diagnostic name {name}"
+        );
+        fs::remove_dir(versions.join(&name)).expect("remove exact malformed-name fixture");
+        drop(load_windows_baseline(&trust).expect("restored diagnostic census"));
+    }
+    let name = format!("incomplete-{}", "a".repeat(64));
+    let directory =
+        crate::windows_fs::create_directory_relative(&support::directory(&versions), &name)
+            .expect("private diagnostic directory");
+    drop(directory);
+    let stage = versions.join(&name);
+    fs::write(stage.join("current"), b"untrusted diagnostic contents").expect("diagnostic bytes");
+    drop(
+        load_windows_baseline(&trust).expect("named diagnostic directory never supplies metadata"),
+    );
+    fs::remove_file(stage.join("current")).expect("remove exact diagnostic payload");
+    fs::remove_dir(&stage).expect("remove empty private diagnostic");
+    fs::write(&stage, b"not a directory").expect("valid diagnostic spelling with wrong type");
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "diagnostic file must refuse"
+    );
+    fs::remove_file(&stage).expect("remove exact wrong-type fixture");
+    std::os::windows::fs::symlink_dir(root, &stage)
+        .expect("native diagnostic reparse fixture requires symlink privilege");
+    assert!(
+        load_windows_baseline(&trust).is_err(),
+        "diagnostic reparse must refuse without following"
+    );
+    fs::remove_dir(&stage).expect("remove only diagnostic symlink");
+    assert!(root.is_dir(), "reparse target is preserved");
+    drop(load_windows_baseline(&trust).expect("restored diagnostic positive control"));
 }
 
 fn reject_parent_delete_child(root: &Path) {

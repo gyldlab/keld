@@ -22,6 +22,13 @@ KEL-266 T4a amendment: delegated approval comment
 The independent design approval does not replace native qualification or final-diff
 security, unsafe and public-contract review.
 
+KEL-266 AC4–6 completion: delegated approval comment
+`bfeb14d0-e906-476f-970a-7fd837bc7f2f`, approved content head
+`a7d54066704f08cb170435ad72877afdea93f6d1`, file SHA-256
+`d43431e186fa20f1ca3d2281dfab06ef9fb8227be5044face730c3390b6896fb`.
+This supplement closes coherent admission, higher-release staging and committed-state
+LPAC evidence within the same issue; it does not claim activation or installed boot.
+
 ## 1. Goal & non-goals
 
 Keld's direct updater must first prove one safe signed full-package

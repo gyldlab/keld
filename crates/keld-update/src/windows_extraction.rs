@@ -19,21 +19,43 @@ use crate::provenance::match_identity;
 use crate::windows_fs::{create_directory_relative, qualify_volume};
 use crate::{
     AdmittedInstallation, ArchiveEntryKind, ArtifactDomain, ArtifactIdentity,
-    DirectInstallationIdentity, ProvenanceField, UpdateError, ValidatedArchive, VerifiedFull,
+    DirectInstallationIdentity, LoadedWindowsBaseline, ProvenanceField, UpdateError,
+    ValidatedArchive, VerifiedFull,
 };
 
 const COPY_BYTES: usize = 16 * 1024;
 
-/// Actual owner-private, fixed-NTFS staging directories retained by the host.
+/// Protected fixed-NTFS staging directories retained by the host.
 ///
-/// This proves observed filesystem protection, not installer provenance or live
-/// strict-profile admission. It creates no installation scaffolding.
+/// Owner-private roots prove filesystem protection only. Machine roots retain their
+/// real loader lease and require SYSTEM for staging. Neither creates installation
+/// scaffolding nor proves live strict-profile admission.
 #[derive(Debug)]
 pub struct WindowsExtractionRoot {
     installation: DirectInstallationIdentity,
     floor: semver::Version,
-    _ancestors: Vec<Dir>,
+    authority: RootAuthority,
     versions: Dir,
+}
+
+#[derive(Debug)]
+enum RootAuthority {
+    OwnerPrivate { _ancestors: Vec<Dir> },
+    Machine { _loaded: Box<LoadedWindowsBaseline> },
+}
+
+impl RootAuthority {
+    fn validate_parent(&self, directory: &StdFile) -> io::Result<()> {
+        match self {
+            Self::OwnerPrivate { .. } => {
+                keld_guard::validate_windows_owner_private_directory(directory)
+            }
+            Self::Machine { .. } => {
+                keld_guard::require_windows_system_token()?;
+                keld_guard::validate_windows_machine_directory(directory)
+            }
+        }
+    }
 }
 
 /// Flushed and read-back bytes in an unpublished, incomplete Windows stage.
@@ -99,7 +121,9 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
     Ok(WindowsExtractionRoot {
         installation: admitted.identity.clone(),
         floor: admitted.floor.clone(),
-        _ancestors: ancestors,
+        authority: RootAuthority::OwnerPrivate {
+            _ancestors: ancestors,
+        },
         versions,
     })
 }
@@ -163,6 +187,33 @@ struct CopyRange {
 }
 
 impl WindowsExtractionRoot {
+    pub(crate) fn from_loaded(loaded: LoadedWindowsBaseline) -> Result<Self, UpdateError> {
+        keld_guard::require_windows_system_token()
+            .map_err(|error| extraction_error(None, "machine staging authority", error))?;
+        let versions = loaded
+            .retained_versions()
+            .map_err(|error| extraction_error(None, "machine versions handle", error))?;
+        let parent = versions
+            .try_clone()
+            .map_err(|error| extraction_error(None, "machine versions handle", error))?
+            .into_std_file();
+        keld_guard::validate_windows_machine_directory(&parent)
+            .map_err(|error| extraction_error(None, "machine versions protection", error))?;
+        let installation = loaded.identity().clone();
+        let floor =
+            crate::provenance::validate_version_floor(&installation, loaded.version_floor())?;
+        Ok(Self {
+            installation,
+            floor,
+            // One cold ownership allocation retains the whole loaded lease without
+            // inflating the existing owner-private variant or losing metadata pins.
+            authority: RootAuthority::Machine {
+                _loaded: Box::new(loaded),
+            },
+            versions,
+        })
+    }
+
     /// Stages one context-matching, authenticated canonical package.
     ///
     /// The source is opened and locked internally. Full preflight precedes creation;
@@ -212,7 +263,8 @@ impl WindowsExtractionRoot {
             .try_clone()
             .map_err(|error| extraction_error(None, "versions handle", error))?
             .into_std_file();
-        keld_guard::validate_windows_owner_private_directory(&parent)
+        self.authority
+            .validate_parent(&parent)
             .map_err(|error| extraction_error(None, "versions protection", error))?;
         let stage = create_directory_relative(&parent, &name).map_err(|error| {
             extraction_error(Some(&name), "stage creation (outcome unconfirmed)", error)
@@ -443,5 +495,7 @@ fn extraction_error(
     }
 }
 
+#[cfg(test)]
+pub(crate) mod lpac_probe;
 #[cfg(test)]
 mod tests;

@@ -45,6 +45,8 @@ pub struct LoadedWindowsBaseline {
     publisher_scope: [u8; 32],
     roots: Roots,
     _records: Vec<File>,
+    _baseline_version: Dir,
+    _baseline_tree: Dir,
 }
 
 impl LoadedWindowsBaseline {
@@ -70,6 +72,23 @@ impl LoadedWindowsBaseline {
     #[must_use]
     pub fn version_floor(&self) -> &str {
         &self.floor
+    }
+
+    /// Consumes this real loader owner to retain a SYSTEM-only staging authority.
+    ///
+    /// The returned root derives its identity, floor and versions handle from these
+    /// protected observations. It can produce only owner-private incomplete stages,
+    /// and retains this owner's metadata and ancestry handles for its lifetime.
+    ///
+    /// # Errors
+    /// Refuses a non-SYSTEM caller or changed machine versions protection. It never
+    /// creates scaffolding, changes the floor or publishes an artifact.
+    pub fn into_windows_extraction_root(self) -> Result<crate::WindowsExtractionRoot, UpdateError> {
+        crate::windows_extraction::WindowsExtractionRoot::from_loaded(self)
+    }
+
+    pub(crate) fn retained_versions(&self) -> io::Result<Dir> {
+        self.roots.versions.try_clone()
     }
 }
 
