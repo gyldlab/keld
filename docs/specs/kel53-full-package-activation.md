@@ -562,10 +562,56 @@ The only successful initialization order is:
 
 Failures retain diagnostic incomplete state and never silently reseed. The bootstrap
 lock may remain after a commit; it is not activation/recovery authority. The read-only
-loader returns protected identity/floor and retained read handles. It neither chooses
-an active package nor grants mutation, recovery, live strict-profile or role authority.
+loader returns coherent initial-baseline identity/floor and retained read handles. It
+neither chooses an active package nor grants mutation, recovery, live strict-profile
+or role authority by itself.
 The initializer's exact-baseline postcommit tree check is separate from future active
 package selection and garbage collection.
+
+**Admission-to-staging completion (KEL-266 AC4–6).** Before exposing its observation
+to the existing updater verifier, the public baseline loader also validates the exact
+baseline `version-floor`, `current`, `last-known-good`, protected baseline version
+directory and matching `.complete`. Missing/corrupt/mixed metadata refuses there,
+not only in the initializer's final check. Previous-known-good, journal or unknown
+update-root state belongs to future activation/recovery and refuses this initial cell.
+The persistent bootstrap lock may remain, but is never repair authority. Reuse/factor
+the existing seed and completion-record owners; retain the pointer, marker and version
+directory handles. This metadata admission does not rehash the entire runnable tree
+or authenticate the current executable. The latter remain their existing owners.
+
+The only additional names admitted under `versions` are diagnostic
+`incomplete-<64 lowercase hexadecimal characters>` siblings. Validate each named
+object as a non-reparse directory without following or selecting its contents; it is
+never a runnable artifact or a source of identity/floor/completion. Other final
+versions require the future activation predicate rather than directory inference.
+
+`LoadedWindowsBaseline::into_windows_extraction_root(self)` consumes the real retained
+loader owner and requires the actual SYSTEM token. It derives installation/floor and
+the versions handle internally, accepting no caller identity, floor, root or logical
+protected observation. One private closed extraction-authority variant retains this
+machine owner; the existing T3b owner-private variant is unchanged. Conversion and the
+extraction mutation boundary require actual SYSTEM and the exact committed machine
+descriptor. The consumed loader's metadata/ancestor pins live through extraction.
+Both variants call the same verifier, source locking, namespace and copy/readback
+implementation with owner-private stage protection. No `.complete`, final version,
+floor, pointer, journal, repair or activation is produced by this conversion/staging.
+
+Native acceptance starts from real initialized state: existing `UpdateVerifier`
+admission consumes the qualified observation, authenticates a signed higher full
+release, and SYSTEM stages its exact bytes while every baseline record remains
+byte-identical. Ordinary-user conversion refuses before source/stage I/O. Another
+installation/key/profile receipt, a non-higher candidate or changed machine descriptor
+refuses. Release every owner and prove that the only new output is a private incomplete
+stage. Canonical wrong pointer/marker/floor values and missing records must make the
+public loader refuse; valid metadata restored byte-for-byte is the positive control.
+
+The real LPAC probe runs under an ordinary host after releasing installation handles.
+Reuse runtime launch/token observation and the existing filesystem-probe owner; grant
+read/execute only to its disposable helper and role-private control directory, never
+to the committed machine installation. Verify known provenance, floor/current/LKG and
+payload targets exist, exercise actual denied mutations, require granted role-private
+controls to succeed, then re-read protected bytes/descriptors. This proves the exercised
+LPAC write denial, not installed-role read provisioning or WebView2 acceptance.
 
 Native tests cover actual non-SYSTEM refusal, SYSTEM success, standard-user reads and
 write/WRITE_DAC/rename denial after all initializer handles close, parent substitution,
