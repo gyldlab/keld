@@ -137,10 +137,11 @@ Crate invariants in `AGENTS.md`: `wv`, `ipc`, `guard`, `compat`, `runtime`,
 
 ## Verification floor
 
-- `just ci` is the sole exact local gate inventory. New behavior MUST have tests.
-- Before done, agents MUST run and report actual output for format, workspace clippy
-  with warnings denied, and the full workspace test gate. Conditional gates come from
-  `.agents/index.md`; MUST NOT report an unrun OS/path as passed.
+- Routine `just ci` routes Mermaid when relevant; `just ci-full` forces all diagrams.
+  New behavior MUST have tests.
+- Before done, agents MUST run and report actual format, warning-denied workspace clippy,
+  and workspace test output. Conditional gates use `.agents/index.md`; MUST NOT claim
+  unrun OS/path passed.
 - Tests, failures, CI, docs/rendering, and dependency changes MUST load their routed
   playbook before selecting a fix or proof.
 

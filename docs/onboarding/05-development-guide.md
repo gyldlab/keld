@@ -24,7 +24,7 @@ For the complete verification gate, also install:
 | `just` | Runs the checked-in gate recipes (`cargo install just --locked`) |
 | `cargo-nextest` | Workspace test runner (`cargo install cargo-nextest --locked`) |
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
-| Docker-compatible engine | Runs the digest-pinned Mermaid renderer for `just ci` |
+| Docker-compatible engine | Runs the digest-pinned Mermaid renderer when changed Mermaid inputs select it in `just ci`, or for `just ci-full` |
 
 Use the pinned Rust toolchain and **Bun 1.4.2 for the full workspace gate**, matching
 CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
@@ -64,38 +64,21 @@ This source-built demo is not an installer or a migrated Electron application.
 
 ## 3. The verification gate
 
-### 3.1 Mandatory core Rust subset
+### 3.1 The exact local gate
 
-These three are mandatory, but they are only the core Rust subset of the exact full
-local gate, `just ci`:
-
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace --profile ci
-```
-
-Run `cargo fmt --all` (no `--check`) to fix formatting, then run `just ci` before every
-push and report **real output** in the PR — never "should work". If a path
-only exists on another OS, say so plainly rather than claiming coverage you do not have.
+[`justfile`](../../justfile) owns the sole gate inventory for `just ci`; consult its
+recipes rather than copying a second list here. Run `just ci` before every push and
+report its real output in the PR. If a path only exists on another OS, say so plainly
+rather than claiming coverage you do not have.
 
 ### 3.2 Report fresh results, not an onboarding snapshot
 
 Run `just ci` against the exact checkout being handed off and quote its real exit status
-and summary, including the core Rust subset. Test totals, durations, commit ids and dirty-tree shape change
-too often to embed here. A platform-gated module compiling on this machine is not proof
-that its window, sandbox, installer or updater behavior ran on the target OS.
-
-The additional gates that `just ci` adds beyond the three include:
-
-```console
-$ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-    Generated target/doc/keld_cli/index.html and 11 other files
-                                            # exit 0
-
-$ cargo deny check
-advisories ... (yanked crates may still fail independently), bans ok, licenses ok, sources ok
-```
+and summary. Mermaid rendering is selected from diagram/renderer inputs; use
+`just ci-full` when deliberately validating the entire Mermaid corpus. Test totals,
+durations, commit ids and dirty-tree shape change too often to embed here. A
+platform-gated module compiling on this machine is not proof that its window, sandbox,
+installer or updater behavior ran on the target OS.
 
 **`cargo deny check` licenses pass on this branch** with a *per-crate* MPL exception
 for `option-ext@0.2.0` (KEL-54). Do not add MPL-2.0 to the global `allow` list.
@@ -133,9 +116,10 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 | `just mermaid-test` / `just mermaid-check` / `just mermaid-render-check` | validator tests / tracked structural policy / isolated digest-pinned SVG render |
 | `just llms-test` / `just llms-check` | generated-corpus contract tests / freshness check |
 | `just ci` | Full local gate; the `justfile` `ci` recipe is the sole source of its inventory and order. |
+| `just ci-full` | `just ci` with full-corpus Mermaid validation and pinned rendering forced. |
 
-`just ci` is the local mirror of CI, minus the three-OS matrix and the manual Mermaid
-visual-inspection/report step. If it is green and you only touched
+`just ci` is the local mirror of routed CI, minus the three-OS matrix and the manual Mermaid
+visual-inspection/report step. Use `just ci-full` for an explicit whole-corpus Mermaid check. If it is green and you only touched
 cross-platform code, CI usually agrees.
 
 ---
@@ -201,7 +185,7 @@ job count and trigger details. Its stable responsibilities are:
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
 | `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |
 | `gitleaks` | ubuntu | checksum-pinned OSS CLI 8.30.1 (`gitleaks detect`), not the org-licensed GitHub Action |
-| `CODEOWNERS + docs contracts` | ubuntu | compile+run `tools/ci_hygiene.rs`, validate generated llms docs, run Mermaid validator tests/check, then render tracked diagrams in the digest-pinned isolated container |
+| `CODEOWNERS + docs contracts` / `Mermaid` | ubuntu | hygiene validates workflow and renderer contracts; generated llms/audit checks use the docs route; the separate Mermaid job tests/renders all diagrams only when the Mermaid router selects it |
 
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
 other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions

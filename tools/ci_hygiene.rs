@@ -310,6 +310,77 @@ fn check_root_test_display_contract(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_mermaid_local_gate(root: &Path) -> Result<(), String> {
+    let justfile = read(root, JUSTFILE)?;
+    let ci_line = justfile
+        .lines()
+        .find(|line| line.starts_with("ci:"))
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing the root `ci:` recipe."))?;
+    if !ci_line
+        .split_whitespace()
+        .any(|token| token == "mermaid-ci")
+        || ["mermaid-test", "mermaid-check", "mermaid-render-check"]
+            .iter()
+            .any(|gate| ci_line.split_whitespace().any(|token| token == *gate))
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci:` must use only the routed `mermaid-ci` target, not unconditional Mermaid targets."
+        ));
+    }
+    let routine_deps = justfile
+        .lines()
+        .find(|line| line.starts_with("ci:"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .skip(1)
+        .map(|token| if token == "mermaid-ci" { "mermaid-full" } else { token })
+        .collect::<Vec<_>>();
+    let full_deps = justfile
+        .lines()
+        .find(|line| line.starts_with("ci-full:"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .skip(1)
+        .collect::<Vec<_>>();
+    if !full_deps.contains(&"mermaid-full") || routine_deps != full_deps {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `ci-full:` must force the full Mermaid path while running the same remaining local gates."
+        ));
+    }
+    let full_line = justfile
+        .lines()
+        .find(|line| line.starts_with("mermaid-full:"))
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-full:`."))?;
+    if !["mermaid-test", "mermaid-check", "mermaid-render-check"]
+        .iter()
+        .all(|gate| full_line.split_whitespace().any(|token| token == *gate))
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `mermaid-full:` must retain parser tests, structural checks, and pinned rendering."
+        ));
+    }
+    let routed = just_recipe_commands(&justfile, "mermaid-ci")
+        .ok_or_else(|| format!("CI-HYGIENE: `{JUSTFILE}` is missing `mermaid-ci:`."))?;
+    let routed = routed.join("\n");
+    for input in [
+        "tools/ci_changes.sh local",
+        "just mermaid-full",
+        "no diagram or renderer input changed",
+    ] {
+        if !routed.contains(input) {
+            return Err(format!(
+                "CI-HYGIENE: `{JUSTFILE}` `mermaid-ci:` must route `{input}` and fail closed on unknown applicability."
+            ));
+        }
+    }
+    if !routed.contains("*)") || !routed.contains("exit 1 ;;") {
+        return Err(format!(
+            "CI-HYGIENE: `{JUSTFILE}` `mermaid-ci:` must reject unknown applicability instead of returning a skipped-green success."
+        ));
+    }
+    Ok(())
+}
+
 fn github_dir_is_ignored(gitignore: &str) -> bool {
     gitignore.lines().any(|line| {
         let line = line.trim();
@@ -1010,6 +1081,84 @@ fn check_change_router_job(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_mermaid_job(text: &str) -> Result<(), String> {
+    let Some(changes) = workflow_job_block(text, "changes") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no `changes` job to own Mermaid applicability."
+        ));
+    };
+    if !uncommented_line_contains(&changes, "mermaid: ${{ steps.classify.outputs.mermaid }}") {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` must publish the shared `mermaid` applicability result."
+        ));
+    }
+    let Some(mermaid) = workflow_job_block(text, "mermaid") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` has no separately routed `mermaid` job. Keep renderer work out of broad docs routing."
+        ));
+    };
+    let expected_if = "needs.changes.outputs.mermaid == 'true'";
+    if workflow_job_level_if(&mermaid).as_deref() != Some(expected_if) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `mermaid` job must use exact input condition `{expected_if}`."
+        ));
+    }
+    if workflow_job_sequence_values(&mermaid, "needs").as_deref()
+        != Some(["changes".to_owned()].as_slice())
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `mermaid` job must depend only on the always-created `changes` router."
+        ));
+    }
+    if workflow_job_level_property(&mermaid, "continue-on-error").is_some() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `mermaid` job must preserve its failing status for required admission."
+        ));
+    }
+    let source_step = "Mermaid source contracts";
+    let source_block = workflow_direct_named_step_block(&mermaid, source_step).ok_or_else(|| {
+        format!("CI-HYGIENE: `{WORKFLOW}` `mermaid` must validate the source contracts before rendering.")
+    })?;
+    let source_commands =
+        workflow_named_step_shell_commands(&source_block, source_step).unwrap_or_default();
+    let expected_source_commands = [
+        "mkdir -p target/mermaid-docs",
+        "rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test",
+        "target/mermaid-docs/mermaid-docs-test",
+        "rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs",
+        "target/mermaid-docs/mermaid-docs check .",
+    ];
+    if source_commands
+        .iter()
+        .map(String::as_str)
+        .ne(expected_source_commands)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{source_step}` must run the parser tests and source check exactly before rendering."
+        ));
+    }
+    let render_step = "Render Mermaid docs in pinned isolated container";
+    let render_block =
+        workflow_direct_named_step_block(&mermaid, render_step).ok_or_else(|| {
+            format!("CI-HYGIENE: `{WORKFLOW}` `mermaid` job has no direct pinned render step.")
+        })?;
+    if workflow_named_step_direct_value(&render_block, render_step, "run").as_deref()
+        != Some("tools/mermaid_render_check.sh")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{render_step}` must run the renderer directly without wrappers."
+        ));
+    }
+    if let Some(hygiene) = workflow_job_block(text, "hygiene")
+        && workflow_direct_named_step_count(&hygiene, render_step) != 0
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must not couple Mermaid rendering to the broad documentation/hygiene job."
+        ));
+    }
+    Ok(())
+}
+
 fn check_package_loop_shell(text: &str) -> Result<(), String> {
     let Some(block) = workflow_job_block(text, "check") else {
         return Err(format!(
@@ -1378,6 +1527,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "deny",
         "secrets",
         "hygiene",
+        "mermaid",
         "codeql",
         "dependency-review",
     ];
@@ -1401,6 +1551,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_RESULT_DENY", "${{ needs.deny.result }}"),
         ("KELD_RESULT_SECRETS", "${{ needs.secrets.result }}"),
         ("KELD_RESULT_HYGIENE", "${{ needs.hygiene.result }}"),
+        ("KELD_RESULT_MERMAID", "${{ needs.mermaid.result }}"),
         ("KELD_ROUTE_RUST", "${{ needs.changes.outputs.rust }}"),
         ("KELD_ROUTE_TS", "${{ needs.changes.outputs.ts }}"),
         ("KELD_ROUTE_GUI", "${{ needs.changes.outputs.gui }}"),
@@ -1408,6 +1559,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ("KELD_ROUTE_DENY", "${{ needs.changes.outputs.deny }}"),
         ("KELD_ROUTE_HYGIENE", "${{ needs.changes.outputs.hygiene }}"),
         ("KELD_ROUTE_DOCS", "${{ needs.changes.outputs.docs }}"),
+        ("KELD_ROUTE_MERMAID", "${{ needs.changes.outputs.mermaid }}"),
         ("KELD_RESULT_CODEQL", "${{ needs.codeql.result }}"),
         (
             "KELD_RESULT_DEPENDENCY_REVIEW",
@@ -1431,9 +1583,11 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_RESULT_CHANGES\" \"$KELD_RESULT_FMT\" \"$KELD_RESULT_CHECK\" ",
         "\"$KELD_RESULT_BUN\" \"$KELD_RESULT_GUI\" \"$KELD_RESULT_MSRV\" ",
         "\"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" ",
+        "\"$KELD_RESULT_MERMAID\" ",
         "\"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" ",
         "\"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \"$KELD_ROUTE_HYGIENE\" ",
-        "\"$KELD_ROUTE_DOCS\" \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
+        "\"$KELD_ROUTE_DOCS\" \"$KELD_ROUTE_MERMAID\" ",
+        "\"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1443,7 +1597,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 18-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 20-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -2129,6 +2283,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     }
 
     check_change_router_job(&text)?;
+    check_mermaid_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;
     check_fuzz_workspace_step(&text)?;
@@ -2164,6 +2319,8 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "--security-opt no-new-privileges",
         "--memory 2g",
         "--pids-limit 256",
+        "run_with_timeout 8 docker info",
+        "run_with_timeout 8 docker image inspect",
         "run_with_timeout 120 docker run",
         "run_with_timeout 300 docker pull",
         "--pull never",
@@ -2173,6 +2330,7 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
         "MSYS2_ARG_CONV_EXCL='*'",
         "trap cleanup EXIT",
         r#"workspace=$(cd "$workspace" && pwd -P)"#,
+        r#"if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" ]]; then"#,
         r#"if [[ -L "$workspace/target" ]]; then"#,
         r#"render_parent=$(cd "$workspace/target" && pwd -P)"#,
         r#"[[ "$render_parent" == "$workspace/target" ]] || {"#,
@@ -2184,6 +2342,16 @@ fn check_mermaid_gate_files(root: &Path) -> Result<(), String> {
                 "CI-HYGIENE: `{MERMAID_RENDERER}` is missing `{needle}`. Restore the pinned, network-disabled, read-only, resource-bounded renderer contract."
             ));
         }
+    }
+    let manifest = renderer.find("\"$mermaid_docs\" manifest");
+    let empty_guard = renderer.find("if [[ ${#files[@]} -eq 0 ]]");
+    let docker_probe = renderer.find("run_with_timeout 8 docker info");
+    if !matches!((manifest, empty_guard, docker_probe), (Some(m), Some(g), Some(d)) if m < g && g < d)
+        || renderer.contains("git -C \"$workspace\" grep -Ilzi 'mermaid'")
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{MERMAID_RENDERER}` must obtain actual block candidates from the Mermaid parser and return on zero candidates before a bounded Docker probe."
+        ));
     }
     check_mermaid_msys_structure(&renderer)?;
     let config = read(root, MERMAID_CONFIG)?;
@@ -2207,6 +2375,7 @@ fn check(root: &Path) -> Result<(), String> {
     check_ci_profile_does_not_retry(root)?;
     check_root_audit_contract(root)?;
     check_root_test_display_contract(root)?;
+    check_mermaid_local_gate(root)?;
     check_codeowners(root)?;
     check_pr_template(root)?;
     check_issue_templates(root)?;
@@ -2319,6 +2488,8 @@ mod tests {
             "jobs:",
             "  changes:",
             "    name: change router",
+            "    outputs:",
+            "      mermaid: ${{ steps.classify.outputs.mermaid }}",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -2430,9 +2601,20 @@ mod tests {
             "      - run: rustc --edition=2024 --test tools/llms_docs.rs",
             "      - run: rustc --edition=2024 tools/llms_docs.rs",
             "      - run: llms-docs check .",
-            "      - run: rustc --edition=2024 --test tools/mermaid_docs.rs",
-            "      - run: mermaid-docs check .",
-            "      - run: tools/mermaid_render_check.sh # sha256:29077c6bd02f14bdfdd5fee552d9c00fe68d4fab3cd84952d21e2d1faf2fadaf",
+            "  mermaid:",
+            "    needs:",
+            "      - changes",
+            "    if: needs.changes.outputs.mermaid == 'true'",
+            "    steps:",
+            "      - name: Mermaid source contracts",
+            "        run: |",
+            "          mkdir -p target/mermaid-docs",
+            "          rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test",
+            "          target/mermaid-docs/mermaid-docs-test",
+            "          rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs",
+            "          target/mermaid-docs/mermaid-docs check .",
+            "      - name: Render Mermaid docs in pinned isolated container",
+            "        run: tools/mermaid_render_check.sh",
             "  required:",
             "    name: CI required",
             "    if: ${{ always() }}",
@@ -2446,6 +2628,7 @@ mod tests {
             "      - deny",
             "      - secrets",
             "      - hygiene",
+            "      - mermaid",
             "      - codeql",
             "      - dependency-review",
             "    steps:",
@@ -2463,6 +2646,7 @@ mod tests {
             "          KELD_RESULT_DENY: ${{ needs.deny.result }}",
             "          KELD_RESULT_SECRETS: ${{ needs.secrets.result }}",
             "          KELD_RESULT_HYGIENE: ${{ needs.hygiene.result }}",
+            "          KELD_RESULT_MERMAID: ${{ needs.mermaid.result }}",
             "          KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}",
             "          KELD_ROUTE_TS: ${{ needs.changes.outputs.ts }}",
             "          KELD_ROUTE_GUI: ${{ needs.changes.outputs.gui }}",
@@ -2470,6 +2654,7 @@ mod tests {
             "          KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}",
             "          KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}",
             "          KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}",
+            "          KELD_ROUTE_MERMAID: ${{ needs.changes.outputs.mermaid }}",
             "          KELD_RESULT_CODEQL: ${{ needs.codeql.result }}",
             "          KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}",
             "        run: |",
@@ -2478,9 +2663,11 @@ mod tests {
             "            \"$KELD_RESULT_CHANGES\" \"$KELD_RESULT_FMT\" \"$KELD_RESULT_CHECK\" \\",
             "            \"$KELD_RESULT_BUN\" \"$KELD_RESULT_GUI\" \"$KELD_RESULT_MSRV\" \\",
             "            \"$KELD_RESULT_DENY\" \"$KELD_RESULT_SECRETS\" \"$KELD_RESULT_HYGIENE\" \\",
+            "            \"$KELD_RESULT_MERMAID\" \\",
             "            \"$KELD_ROUTE_RUST\" \"$KELD_ROUTE_TS\" \"$KELD_ROUTE_GUI\" \\",
             "            \"$KELD_ROUTE_MSRV\" \"$KELD_ROUTE_DENY\" \\",
             "            \"$KELD_ROUTE_HYGIENE\" \"$KELD_ROUTE_DOCS\" \\",
+            "            \"$KELD_ROUTE_MERMAID\" \\",
             "            \"$KELD_RESULT_CODEQL\" \"$KELD_RESULT_DEPENDENCY_REVIEW\"",
             "",
         ]
@@ -2551,10 +2738,21 @@ mod tests {
         temp.write(
             JUSTFILE,
             concat!(
-                "ci: audit-docs test\n",
+                "ci: audit-docs mermaid-ci test\n",
                 "audit-docs:\n",
                 "    {{python_command}} -B docs/audits/verify.py\n",
                 "    {{python_command}} -B docs/audits/test_verify.py\n",
+                "ci-full: audit-docs mermaid-full test\n",
+                "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
+                "mermaid-ci:\n",
+                "    #!/usr/bin/env bash\n",
+                "    set -euo pipefail\n",
+                "    selected=$(tools/ci_changes.sh local | sed -n 's/^mermaid=//p')\n",
+                "    case \"$selected\" in\n",
+                "        true) just mermaid-full ;;\n",
+                "        false) echo \"Mermaid route: skipped; no diagram or renderer input changed.\" ;;\n",
+                "        *) exit 1 ;;\n",
+                "    esac\n",
                 "test:\n",
                 "    #!/usr/bin/env bash\n",
                 "    set -euo pipefail\n",
@@ -2587,8 +2785,8 @@ mod tests {
         temp.write(
             JUSTFILE,
             &read(temp.path(), JUSTFILE).expect("just fixture").replacen(
-                "ci: audit-docs test",
-                "ci: test",
+                "ci: audit-docs mermaid-ci test",
+                "ci: mermaid-ci test",
                 1,
             ),
         );
@@ -2925,7 +3123,7 @@ mod tests {
             &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
         );
         let error = check(temp.path()).expect_err("unused router output must fail");
-        assert!(error.contains("18-argument"), "{error}");
+        assert!(error.contains("20-argument"), "{error}");
     }
 
     #[test]
@@ -2953,7 +3151,7 @@ mod tests {
             let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
             let error =
                 check_required_job(&workflow).expect_err("unused security result must fail");
-            assert!(error.contains("18-argument"), "{error}");
+            assert!(error.contains("20-argument"), "{error}");
         }
     }
 
@@ -3658,25 +3856,24 @@ mod tests {
     fn echoed_mermaid_gate_does_not_satisfy_workflow_contract() {
         let temp = complete_fixture();
         let workflow = valid_workflow().replace(
-            "- run: tools/mermaid_render_check.sh",
-            "- run: echo tools/mermaid_render_check.sh",
+            "        run: tools/mermaid_render_check.sh",
+            "        run: echo tools/mermaid_render_check.sh",
         );
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("echoed gate must not satisfy hygiene");
-        assert!(error.contains("executable Mermaid gate"), "{error}");
-        assert!(error.contains("mermaid_render_check.sh"), "{error}");
+        assert!(error.contains("renderer directly"), "{error}");
     }
 
     #[test]
     fn inline_comment_mermaid_gate_does_not_satisfy_workflow_contract() {
         let temp = complete_fixture();
         let workflow = valid_workflow().replace(
-            "- run: tools/mermaid_render_check.sh",
-            "- run: true # tools/mermaid_render_check.sh",
+            "        run: tools/mermaid_render_check.sh",
+            "        run: true # tools/mermaid_render_check.sh",
         );
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("commented gate must not satisfy hygiene");
-        assert!(error.contains("executable Mermaid gate"), "{error}");
+        assert!(error.contains("renderer directly"), "{error}");
     }
 
     #[test]
@@ -4046,21 +4243,35 @@ mod tests {
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("workflow without pinned render must fail");
         assert!(
-            error.contains("mermaid_render_check.sh") || error.contains(MERMAID_IMAGE_DIGEST),
+            error.contains("renderer directly")
+                || error.contains("pinned render step")
+                || error.contains(MERMAID_IMAGE_DIGEST),
             "{error}"
         );
+    }
+
+    #[test]
+    fn unknown_mermaid_applicability_must_fail_closed_locally() {
+        let temp = complete_fixture();
+        let justfile = read(temp.path(), JUSTFILE).expect("just fixture");
+        temp.write(
+            JUSTFILE,
+            &justfile.replace("        *) exit 1 ;;", "        *) echo skipped ;;"),
+        );
+        let error = check(temp.path()).expect_err("unknown Mermaid route cannot become green");
+        assert!(error.contains("unknown applicability"), "{error}");
     }
 
     #[test]
     fn commented_mermaid_render_workflow_does_not_pass() {
         let temp = complete_fixture();
         let workflow = valid_workflow().replace(
-            "- run: tools/mermaid_render_check.sh",
-            "# - run: tools/mermaid_render_check.sh",
+            "        run: tools/mermaid_render_check.sh",
+            "        run: echo tools/mermaid_render_check.sh",
         );
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("commented render step must fail");
-        assert!(error.contains("mermaid_render_check.sh"), "{error}");
+        assert!(error.contains("renderer directly"), "{error}");
     }
 
     #[test]
@@ -4074,6 +4285,79 @@ mod tests {
         );
         let error = check(temp.path()).expect_err("network-enabled renderer must fail");
         assert!(error.contains("--network none"), "{error}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn empty_mermaid_manifest_skips_docker_and_render_output() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+
+        let temp = TempDir::new();
+        let checkout = temp.path().join("checkout with spaces");
+        fs::create_dir_all(checkout.join("tools")).expect("fixture checkout");
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&checkout)
+                .status()
+                .expect("initialize fixture")
+                .success()
+        );
+        fs::write(
+            checkout.join("README.md"),
+            "The word Mermaid is not a diagram.\n",
+        )
+        .expect("write prose-only Markdown");
+        fs::write(
+            checkout.join("tools/mermaid_docs.rs"),
+            include_str!("mermaid_docs.rs"),
+        )
+        .expect("copy the canonical block parser");
+        assert!(
+            Command::new("git")
+                .args(["add", "README.md", "tools/mermaid_docs.rs"])
+                .current_dir(&checkout)
+                .status()
+                .expect("track fixture inputs")
+                .success()
+        );
+        temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
+        let docker_marker = temp.path().join("docker-was-called");
+        let docker = temp.path().join("bin/docker");
+        fs::create_dir_all(docker.parent().expect("docker fake parent"))
+            .expect("create fake docker directory");
+        fs::write(
+            &docker,
+            "#!/usr/bin/env bash\nprintf called >\"$KELD_TEST_DOCKER_MARKER\"\nexit 91\n",
+        )
+        .expect("write fail-fast Docker oracle");
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700))
+            .expect("make Docker oracle executable");
+        let mut paths = vec![temp.path().join("bin")];
+        paths.extend(env::split_paths(&env::var_os("PATH").expect("tool PATH")));
+        let output = Command::new("bash")
+            .arg(temp.path().join("renderer.sh"))
+            .current_dir(&checkout)
+            .env("PATH", env::join_paths(paths).expect("fixture PATH"))
+            .env("KELD_TEST_DOCKER_MARKER", &docker_marker)
+            .output()
+            .expect("execute renderer with empty manifest");
+        assert!(
+            output.status.success(),
+            "empty manifest should be a successful no-op: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("no Mermaid blocks"),
+            "missing explicit no-op evidence: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!docker_marker.exists(), "zero candidates queried Docker");
+        assert!(
+            !checkout.join("target/keld-mermaid-render").exists(),
+            "zero candidates created render output"
+        );
     }
 
     #[test]
@@ -4098,7 +4382,7 @@ mod tests {
         );
         fs::write(
             checkout.join("diagram.md"),
-            "```mermaid\nflowchart LR\n A-->B\n```\n",
+            "```mermaid\nflowchart LR\naccTitle: Renderer test\naccDescr: A fixture diagram for renderer cleanup tests.\nA --> B\n```\n",
         )
         .expect("tracked diagram");
         assert!(
@@ -4154,7 +4438,7 @@ mod tests {
         let renderer = include_str!("mermaid_render_check.sh");
         let start = renderer.find("running_under_msys() {").expect("MSYS owner");
         let end = renderer
-            .find("\ndocker info >/dev/null")
+            .find("\nrun_with_timeout 8 docker info")
             .expect("helper boundary");
         let script = format!(
             "set -euo pipefail\n{}\nrender_parent=$(cd \"$1\" && pwd -P)\nwhoami.exe() {{ echo 'GNU whoami rejects Windows arguments' >&2; return 64; }}\nrestore_docker_output_dir \"$render_parent/keld-mermaid-render.fixture\"\n",
@@ -4226,7 +4510,7 @@ foreach ($item in $items) {
         );
         fs::write(
             checkout.join("diagram.md"),
-            "```mermaid\nflowchart LR\n A-->B\n```\n",
+            "```mermaid\nflowchart LR\naccTitle: Renderer test\naccDescr: A fixture diagram for renderer cleanup tests.\nA --> B\n```\n",
         )
         .expect("tracked diagram");
         assert!(
@@ -4238,6 +4522,11 @@ foreach ($item in $items) {
                 .success()
         );
         fs::create_dir(checkout.join("tools")).expect("fixture tools");
+        fs::write(
+            checkout.join("tools/mermaid_docs.rs"),
+            include_str!("mermaid_docs.rs"),
+        )
+        .expect("copy canonical Mermaid parser");
         fs::write(checkout.join(MERMAID_CONFIG), "{}\n").expect("renderer config");
         temp.write("renderer.sh", include_str!("mermaid_render_check.sh"));
         temp.write("bin/docker", docker);
@@ -4307,6 +4596,11 @@ foreach ($item in $items) {
         fs::read_dir(checkout.join("target"))
             .expect("checkout-local output directory")
             .map(|entry| entry.expect("retained output entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("keld-mermaid-render."))
+            })
             .collect()
     }
 

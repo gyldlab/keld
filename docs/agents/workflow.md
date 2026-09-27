@@ -107,13 +107,12 @@ claim no enforcement; report unsupported/untrusted clients.
    does not authorize competing architecture decisions. Apply the attempt, evidence,
    status, handoff, and current-documentation receipt rules owned by `.agents/coordination.md`
    to every applicable OS or external-semantic criterion.
-5. **Verify**. `just ci` is the exact full local gate; format, warning-denied clippy, and
-   the full workspace test suite are its mandatory core Rust subset. Also run the spec's
-   test plan. Diagram changes additionally run
-   `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` plus the
-   visual/report gate from `.agents/testing.md`; included-source changes run both
-   `just llms-test` and `just llms-check` after regeneration. Paste both real outputs,
-   and every other gate result, in the PR; never "should work".
+5. **Verify**. `just ci` is the exact routine local gate; format, warning-denied clippy,
+   and the full workspace test suite remain mandatory. Its shared router selects Mermaid
+   only for diagram/renderer inputs; `just ci-full` forces full-corpus Mermaid rendering.
+   Also run the spec's test plan. Diagram changes include the visual/render report from
+   `.agents/testing.md`; included-source changes run `just llms-test` and `just llms-check`
+   after regeneration. Paste actual outputs in the PR; never "should work".
    Apply `.agents/coordination.md` for real OS/device versus CI-only evidence; `just ci`
    does not replace a named product-acceptance observable.
 6. **Self-review.** Re-read the full diff with fresh eyes (or an adversarial review

@@ -9,15 +9,6 @@ command -v git >/dev/null 2>&1 || {
   echo 'KELD-DOCS006: `git` is required. Install Git, then rerun `just mermaid-render-check`.' >&2
   exit 1
 }
-command -v docker >/dev/null 2>&1 || {
-  echo 'KELD-DOCS006: `docker` is required for the pinned Mermaid renderer. Install/start Docker, then rerun `just mermaid-render-check`.' >&2
-  exit 1
-}
-command -v perl >/dev/null 2>&1 || {
-  echo 'KELD-DOCS006: `perl` is required for SVG accessibility checks. Install Perl, then rerun `just mermaid-render-check`.' >&2
-  exit 1
-}
-
 run_with_timeout() {
   local seconds=$1
   shift
@@ -174,16 +165,6 @@ restore_docker_output_dir() {
   restore_windows_owner_only_dacl "$path"
 }
 
-docker info >/dev/null 2>&1 || {
-  echo 'KELD-DOCS006: Docker daemon is unavailable. Start Docker, then rerun `just mermaid-render-check`.' >&2
-  exit 1
-}
-docker_host=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null) || {
-  echo 'KELD-DOCS006: cannot resolve the active Docker endpoint. Fix the Docker context, then rerun.' >&2
-  exit 1
-}
-readonly docker_host
-
 workspace=$(git rev-parse --show-toplevel 2>/dev/null) || {
   echo 'KELD-DOCS006: not inside the Keld Git checkout. Change to the repository root, then rerun `just mermaid-render-check`.' >&2
   exit 1
@@ -191,26 +172,79 @@ workspace=$(git rev-parse --show-toplevel 2>/dev/null) || {
 workspace=$(cd "$workspace" && pwd -P)
 readonly workspace
 readonly render_config="$workspace/tools/mermaid-render-config.json"
-[[ -f "$render_config" ]] || {
-  echo 'KELD-DOCS006: `tools/mermaid-render-config.json` is missing. Restore it, then rerun `just mermaid-render-check`.' >&2
+if [[ -L "$workspace/target" ]]; then
+  echo 'KELD-DOCS006: renderer target must be a non-symlink directory inside the checkout. Use a regular target directory, then rerun.' >&2
   exit 1
-}
+fi
+mkdir -p "$workspace/target/mermaid-docs"
+if [[ -L "$workspace/target/mermaid-docs" ]]; then
+  echo 'KELD-DOCS006: Mermaid tool output directory must not be a symlink. Restore its checkout-local path, then rerun.' >&2
+  exit 1
+fi
+mermaid_docs="$workspace/target/mermaid-docs/mermaid-docs"
+if [[ -L "$mermaid_docs" ]]; then
+  echo 'KELD-DOCS006: Mermaid parser executable must not be a symlink. Restore the generated local tool, then rerun.' >&2
+  exit 1
+fi
+if [[ ! -x "$mermaid_docs" || "$workspace/tools/mermaid_docs.rs" -nt "$mermaid_docs" ]]; then
+  command -v rustc >/dev/null 2>&1 || {
+    echo 'KELD-DOCS006: `rustc` is required to build the Mermaid source manifest. Install the pinned Rust toolchain, then rerun.' >&2
+    exit 1
+  }
+  rustc --edition=2024 -D warnings "$workspace/tools/mermaid_docs.rs" -o "$mermaid_docs"
+fi
 
 files=()
-while IFS= read -r -d '' file; do
-  files+=("$file")
-done < <(git -C "$workspace" grep -Ilzi 'mermaid' -- '*.md' || true)
-
-if git -C "$workspace/docs/research" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  while IFS= read -r -d '' file; do
-    files+=("docs/research/$file")
-  done < <(git -C "$workspace/docs/research" grep -Ilzi 'mermaid' -- '*.md' || true)
+block_counts=()
+expected=0
+load_manifest() {
+  local manifest_root="$1"
+  local prefix="$2"
+  local manifest_path="$workspace/target/mermaid-docs/render-manifest.nul"
+  "$mermaid_docs" manifest "$manifest_root" >"$manifest_path" || return 1
+  while IFS= read -r -d '' block_count && IFS= read -r -d '' file; do
+    files+=("$prefix$file")
+    block_counts+=("$block_count")
+    expected=$((expected + block_count))
+  done <"$manifest_path"
+}
+load_manifest "$workspace" '' || exit 1
+research_root="$workspace/docs/research"
+if [[ -d "$research_root" && ! -L "$research_root" ]] && \
+  git -C "$research_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+  research_top=$(git -C "$research_root" rev-parse --show-toplevel)
+  research_root=$(cd "$research_root" && pwd -P)
+  if [[ "$research_top" == "$research_root" ]]; then
+    load_manifest "$research_root" 'docs/research/' || exit 1
+  fi
 fi
 
 if [[ ${#files[@]} -eq 0 ]]; then
-  echo 'KELD-DOCS006: no tracked Mermaid Markdown blocks were found. Restore the expected documentation or remove this gate in a reviewed policy change.' >&2
-  exit 1
+  echo 'mermaid-render skipped: no Mermaid blocks in validated Markdown; Docker was not queried.'
+  exit 0
 fi
+
+[[ -f "$render_config" && ! -L "$render_config" ]] || {
+  echo 'KELD-DOCS006: `tools/mermaid-render-config.json` is missing or a symlink. Restore a regular reviewed config, then rerun `just mermaid-render-check`.' >&2
+  exit 1
+}
+command -v docker >/dev/null 2>&1 || {
+  echo 'KELD-DOCS006: `docker` is required for the pinned Mermaid renderer. Install/start Docker, then rerun `just mermaid-render-check`.' >&2
+  exit 1
+}
+command -v perl >/dev/null 2>&1 || {
+  echo 'KELD-DOCS006: `perl` is required for bounded Docker commands and SVG accessibility checks. Install Perl, then rerun `just mermaid-render-check`.' >&2
+  exit 1
+}
+run_with_timeout 8 docker info >/dev/null 2>&1 || {
+  echo 'KELD-DOCS006: Docker daemon is unavailable or timed out after 8 seconds. Start Docker, then rerun `just mermaid-render-check`.' >&2
+  exit 1
+}
+docker_host=$(run_with_timeout 8 docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null) || {
+  echo 'KELD-DOCS006: cannot resolve the active Docker endpoint within 8 seconds. Fix the Docker context, then rerun.' >&2
+  exit 1
+}
+readonly docker_host
 
 render_dir=''
 active_container=''
@@ -294,27 +328,26 @@ docker_render_dir=$(docker_host_path "$render_dir")
 readonly docker_render_dir
 docker_render_config=$(docker_host_path "$render_config")
 readonly docker_render_config
-expected=0
 render_index=0
 
-if ! docker image inspect "$MERMAID_IMAGE" >/dev/null 2>&1; then
+if ! run_with_timeout 8 docker image inspect "$MERMAID_IMAGE" >/dev/null 2>&1; then
   if ! run_with_timeout 300 docker pull "$MERMAID_IMAGE"; then
     echo 'KELD-DOCS006: failed to pull the digest-pinned Mermaid image within 300 seconds. Check registry access and disk space, then rerun.' >&2
     exit 1
   fi
 fi
-docker image inspect "$MERMAID_IMAGE" >/dev/null 2>&1 || {
+run_with_timeout 8 docker image inspect "$MERMAID_IMAGE" >/dev/null 2>&1 || {
   echo 'KELD-DOCS006: the digest-pinned Mermaid image is unavailable after pull. Inspect Docker storage, then rerun.' >&2
   exit 1
 }
 
-for file in "${files[@]}"; do
+for file_index in "${!files[@]}"; do
+  file="${files[$file_index]}"
   [[ -f "$workspace/$file" && ! -L "$workspace/$file" ]] || {
     echo "KELD-DOCS006: Mermaid source '$file' is missing, not regular, or a symlink. Use a tracked regular Markdown file, then rerun." >&2
     exit 1
   }
-  block_count=$(grep -c '^```mermaid$' "$workspace/$file" || true)
-  expected=$((expected + block_count))
+  block_count="${block_counts[$file_index]}"
   render_index=$((render_index + 1))
   safe_name=$(printf '%03d_%s' "$render_index" "${file//\//_}")
   container_name="keld-mermaid-$$-${render_index}"

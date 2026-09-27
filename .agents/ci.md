@@ -13,6 +13,12 @@ are source of truth; this file owns the design invariants.
 - Every lane names its observable contract and changed inputs. `gitleaks` is unconditional
   because every byte is input. `CI required` always runs, consumes every routed lane plus
   gitleaks, and rejects missing, cancelled, failed, or selected-as-skipped evidence.
+- Mermaid is separate from broad documentation routing: changed/added/deleted/malformed
+  diagram blocks and parser/renderer/config/pin/router/workflow inputs select it; prose-only
+  changes do not. Local and hosted routing share the same applicability owner. Unknown
+  comparisons fail safe to full rendering. `just ci-full` retains explicit full-corpus
+  assurance. Zero-candidate rendering performs no Docker probe; `CI required` rejects a
+  selected Mermaid job that is skipped, missing, cancelled, or failed.
 - Build closures come from current metadata where available. Unknown/shared/workspace
   graph/comparison-base inputs fail safe by enabling every possibly affected lane,
   including Ubuntu WebKitGTK apt.

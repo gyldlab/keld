@@ -39,6 +39,7 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       docs: ${{ steps.classify.outputs.docs }}
+      mermaid: ${{ steps.classify.outputs.mermaid }}
       hygiene: ${{ steps.classify.outputs.hygiene }}
       gui: ${{ steps.classify.outputs.gui }}
       msrv: ${{ steps.classify.outputs.msrv }}
@@ -531,8 +532,23 @@ jobs:
           target/llms-docs/llms-docs-test
           rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
           target/llms-docs/llms-docs check .
-      - name: Mermaid docs contract tests and check
-        if: needs.changes.outputs.docs == 'true'
+
+  mermaid:
+    name: Mermaid validation + pinned render
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - changes
+    if: needs.changes.outputs.mermaid == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-08-05
+        with:
+          toolchain: 1.97.1
+      - name: Mermaid source contracts
         run: |
           mkdir -p target/mermaid-docs
           rustc --edition=2024 -D warnings --test tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs-test
@@ -540,7 +556,6 @@ jobs:
           rustc --edition=2024 -D warnings tools/mermaid_docs.rs -o target/mermaid-docs/mermaid-docs
           target/mermaid-docs/mermaid-docs check .
       - name: Render Mermaid docs in pinned isolated container
-        if: needs.changes.outputs.docs == 'true'
         run: tools/mermaid_render_check.sh
 
   codeql:
@@ -630,6 +645,7 @@ jobs:
       - deny
       - secrets
       - hygiene
+      - mermaid
       - codeql
       - dependency-review
     runs-on: ubuntu-latest
@@ -649,6 +665,7 @@ jobs:
           KELD_RESULT_DENY: ${{ needs.deny.result }}
           KELD_RESULT_SECRETS: ${{ needs.secrets.result }}
           KELD_RESULT_HYGIENE: ${{ needs.hygiene.result }}
+          KELD_RESULT_MERMAID: ${{ needs.mermaid.result }}
           KELD_ROUTE_RUST: ${{ needs.changes.outputs.rust }}
           KELD_ROUTE_TS: ${{ needs.changes.outputs.ts }}
           KELD_ROUTE_GUI: ${{ needs.changes.outputs.gui }}
@@ -656,6 +673,7 @@ jobs:
           KELD_ROUTE_DENY: ${{ needs.changes.outputs.deny }}
           KELD_ROUTE_HYGIENE: ${{ needs.changes.outputs.hygiene }}
           KELD_ROUTE_DOCS: ${{ needs.changes.outputs.docs }}
+          KELD_ROUTE_MERMAID: ${{ needs.changes.outputs.mermaid }}
           KELD_RESULT_CODEQL: ${{ needs.codeql.result }}
           KELD_RESULT_DEPENDENCY_REVIEW: ${{ needs['dependency-review'].result }}
         run: |
@@ -670,6 +688,7 @@ jobs:
             "$KELD_RESULT_DENY" \
             "$KELD_RESULT_SECRETS" \
             "$KELD_RESULT_HYGIENE" \
+            "$KELD_RESULT_MERMAID" \
             "$KELD_ROUTE_RUST" \
             "$KELD_ROUTE_TS" \
             "$KELD_ROUTE_GUI" \
@@ -677,5 +696,6 @@ jobs:
             "$KELD_ROUTE_DENY" \
             "$KELD_ROUTE_HYGIENE" \
             "$KELD_ROUTE_DOCS" \
+            "$KELD_ROUTE_MERMAID" \
             "$KELD_RESULT_CODEQL" \
             "$KELD_RESULT_DEPENDENCY_REVIEW"

@@ -1,6 +1,5 @@
-# Keld task runner — full local verification superset of the dynamically routed CI gates.
-# `just ci` before pushing runs every local gate, while CI routes costly OS lanes by
-# changed-path ownership through tools/ci_changes.sh.
+# Keld task runner — exact local verification of applicable gates.
+# Mermaid follows the shared changed-input router; `just ci-full` forces its whole corpus.
 
 # Shebang recipes can use "$@" for *args without collapsing spaces.
 set positional-arguments
@@ -12,9 +11,24 @@ python_command := if os() == "windows" { "python" } else { "python3" }
 hello:
     cargo run -p keld-host -- --hello
 
-# Run every CI gate locally (deny requires `cargo install cargo-deny --locked`).
+# Run every applicable CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
-ci: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-test mermaid-check mermaid-render-check product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+ci: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+
+# Full assurance mode explicitly validates every tracked Mermaid block.
+ci-full: agents-md atomic-protocol agent-context ci-router-test hooks-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-full product-status-test product-status-check llms-test llms-check hygiene typescript fmt-check clippy test doc deny
+
+mermaid-ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    selected=$(tools/ci_changes.sh local | sed -n 's/^mermaid=//p')
+    case "$selected" in
+        true) just mermaid-full ;;
+        false) echo "Mermaid route: skipped; no diagram or renderer input changed." ;;
+        *) echo "Mermaid route: invalid applicability '$selected'; refusing skipped-green result." >&2; exit 1 ;;
+    esac
+
+mermaid-full: mermaid-test mermaid-check mermaid-render-check
 
 # Verify the package compiler and runtime contracts from one frozen dependency graph.
 typescript:
