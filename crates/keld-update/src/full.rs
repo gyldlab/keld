@@ -9,28 +9,34 @@ const STREAM_BUFFER_BYTES: usize = 16 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedFull {
     pub(crate) installation: crate::DirectInstallationIdentity,
-    identity: ArtifactIdentity,
-    content_size: u64,
-    content_blake3: [u8; 32],
+    pub(crate) content: ContentIdentity,
+}
+
+/// Expected content facts; this private value does not prove authentication or OS protection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContentIdentity {
+    pub(crate) identity: ArtifactIdentity,
+    pub(crate) content_size: u64,
+    pub(crate) content_blake3: [u8; 32],
 }
 
 impl VerifiedFull {
     /// Exact selected release identity whose bytes passed verification.
     #[must_use]
     pub const fn identity(&self) -> &ArtifactIdentity {
-        &self.identity
+        &self.content.identity
     }
 
     /// Exact decompressed canonical-content byte count.
     #[must_use]
     pub const fn content_size(&self) -> u64 {
-        self.content_size
+        self.content.content_size
     }
 
     /// Computed BLAKE3 of the decompressed canonical-content bytes.
     #[must_use]
     pub const fn content_blake3(&self) -> &[u8; 32] {
-        &self.content_blake3
+        &self.content.content_blake3
     }
 }
 
@@ -56,6 +62,20 @@ impl SelectedFull {
         R: Read + Seek,
         W: Write,
     {
+        let content = self.artifact.verify_content(compressed, output)?;
+        Ok(VerifiedFull {
+            installation: self.installation.clone(),
+            content,
+        })
+    }
+}
+
+impl crate::manifest::SignedFullArtifact {
+    pub(crate) fn verify_content<R: Read + Seek, W: Write>(
+        &self,
+        compressed: &mut R,
+        output: &mut W,
+    ) -> Result<ContentIdentity, UpdateError> {
         let start = compressed
             .stream_position()
             .map_err(|error| processing("input seek", error))?;
@@ -89,10 +109,10 @@ impl SelectedFull {
             let next = produced
                 .checked_add(read as u64)
                 .ok_or_else(|| processing("content byte counter", "u64 overflow"))?;
-            if next > self.identity_content_size() {
+            if next > self.content_size {
                 return Err(size_mismatch(
                     ArtifactDomain::Content,
-                    self.identity_content_size(),
+                    self.content_size,
                     format!("at least {next}"),
                 ));
             }
@@ -102,10 +122,10 @@ impl SelectedFull {
             hasher.update(&buffer[..read]);
             produced = next;
         }
-        if produced != self.identity_content_size() {
+        if produced != self.content_size {
             return Err(size_mismatch(
                 ArtifactDomain::Content,
-                self.identity_content_size(),
+                self.content_size,
                 produced.to_string(),
             ));
         }
@@ -149,18 +169,11 @@ impl SelectedFull {
             ));
         }
 
-        Ok(VerifiedFull {
-            installation: self.installation.clone(),
+        Ok(ContentIdentity {
             identity: self.identity.clone(),
             content_size: produced,
             content_blake3: actual,
         })
-    }
-
-    const fn identity_content_size(&self) -> u64 {
-        // `contentSize` is signed metadata distinct from the artifact identity. It is
-        // kept on `SelectedFull` below; this helper gives the streaming loop one owner.
-        self.content_size
     }
 }
 
@@ -293,15 +306,17 @@ pub fn fuzz_canonical_archive(bytes: &[u8]) {
             profile_digest: keld_guard::ProfileDigest([0; 32]),
             principal_model: crate::PrincipalModel::StrictDistinctOsPrincipals,
         },
-        identity: crate::ArtifactIdentity {
-            app_id: "fuzz.invalid".to_owned(),
-            channel: crate::Channel::Stable,
-            target: "windows-x64".to_owned(),
-            version: "0.0.0".to_owned(),
+        content: ContentIdentity {
+            identity: crate::ArtifactIdentity {
+                app_id: "fuzz.invalid".to_owned(),
+                channel: crate::Channel::Stable,
+                target: "windows-x64".to_owned(),
+                version: "0.0.0".to_owned(),
+                content_blake3: digest,
+            },
+            content_size,
             content_blake3: digest,
         },
-        content_size,
-        content_blake3: digest,
     };
     let mut cursor = std::io::Cursor::new(bytes);
     let _ = crate::archive::parse_canonical_ustar(&receipt, &mut cursor, |paths| {

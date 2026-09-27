@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use ed25519_dalek::Signature;
+use ed25519_dalek::{Signature, VerifyingKey};
 use semver::Version;
 use serde::Deserialize;
 use serde_json::Number;
@@ -27,6 +27,11 @@ pub enum ManifestDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedFull {
     pub(crate) installation: crate::DirectInstallationIdentity,
+    pub(crate) artifact: SignedFullArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SignedFullArtifact {
     pub(crate) identity: ArtifactIdentity,
     pub(crate) published_at: String,
     pub(crate) url: String,
@@ -39,37 +44,37 @@ impl SelectedFull {
     /// Exact selected artifact identity, including the complete version string.
     #[must_use]
     pub const fn identity(&self) -> &ArtifactIdentity {
-        &self.identity
+        &self.artifact.identity
     }
 
     /// Signed publication timestamp text.
     #[must_use]
     pub fn published_at(&self) -> &str {
-        &self.published_at
+        &self.artifact.published_at
     }
 
     /// Signed full-artifact URL relative to the selected feed.
     #[must_use]
     pub fn url(&self) -> &str {
-        &self.url
+        &self.artifact.url
     }
 
     /// Exact signed compressed byte count.
     #[must_use]
     pub const fn compressed_size(&self) -> u64 {
-        self.compressed_size
+        self.artifact.compressed_size
     }
 
     /// Signed BLAKE3 of the downloaded compressed bytes.
     #[must_use]
     pub const fn compressed_blake3(&self) -> &[u8; 32] {
-        &self.compressed_blake3
+        &self.artifact.compressed_blake3
     }
 
     /// Exact signed decompressed canonical-content byte count.
     #[must_use]
     pub const fn content_size(&self) -> u64 {
-        self.content_size
+        self.artifact.content_size
     }
 }
 
@@ -90,38 +95,48 @@ impl AdmittedInstallation {
         manifest_bytes: &[u8],
         signature_bytes: &[u8],
     ) -> Result<ManifestDecision, UpdateError> {
-        let signature = parse_signature(signature_bytes)?;
-        self.verifying_key
-            .verify_strict(manifest_bytes, &signature)
-            .map_err(|error| UpdateError::ManifestAuthentication {
-                detail: format!("signature does not match literal manifest bytes: {error}"),
-            })?;
-
-        let manifest: WireManifest = serde_json::from_slice(manifest_bytes).map_err(|error| {
-            UpdateError::ManifestInvalid {
-                detail: error.to_string(),
-            }
-        })?;
-        validate_schema(&manifest.schema)?;
-        compare_identity(
-            ManifestIdentityField::AppId,
-            &self.identity.app_id,
-            &manifest.app.id,
+        let releases = authenticate_manifest(
+            &self.identity,
+            &self.verifying_key,
+            manifest_bytes,
+            signature_bytes,
         )?;
-        compare_identity(
-            ManifestIdentityField::Channel,
-            self.identity.channel.as_str(),
-            &manifest.channel,
-        )?;
-        compare_identity(
-            ManifestIdentityField::Target,
-            &self.identity.target,
-            &manifest.target,
-        )?;
-
-        let releases = validate_releases(manifest.releases)?;
         Ok(select_release(self, releases))
     }
+}
+
+pub(crate) fn authenticate_manifest(
+    identity: &crate::DirectInstallationIdentity,
+    key: &VerifyingKey,
+    manifest_bytes: &[u8],
+    signature_bytes: &[u8],
+) -> Result<Vec<ValidRelease>, UpdateError> {
+    let signature = parse_signature(signature_bytes)?;
+    key.verify_strict(manifest_bytes, &signature)
+        .map_err(|error| UpdateError::ManifestAuthentication {
+            detail: format!("signature does not match literal manifest bytes: {error}"),
+        })?;
+    let manifest: WireManifest =
+        serde_json::from_slice(manifest_bytes).map_err(|error| UpdateError::ManifestInvalid {
+            detail: error.to_string(),
+        })?;
+    validate_schema(&manifest.schema)?;
+    compare_identity(
+        ManifestIdentityField::AppId,
+        &identity.app_id,
+        &manifest.app.id,
+    )?;
+    compare_identity(
+        ManifestIdentityField::Channel,
+        identity.channel.as_str(),
+        &manifest.channel,
+    )?;
+    compare_identity(
+        ManifestIdentityField::Target,
+        &identity.target,
+        &manifest.target,
+    )?;
+    validate_releases(manifest.releases)
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,7 +189,7 @@ struct WireDelta {
 }
 
 #[derive(Debug)]
-struct ValidRelease {
+pub(crate) struct ValidRelease {
     version_text: String,
     version: Version,
     published_at: String,
@@ -317,19 +332,49 @@ fn select_release(
     };
     ManifestDecision::Update(Box::new(SelectedFull {
         installation: admitted.identity.clone(),
-        identity: ArtifactIdentity {
-            app_id: admitted.identity.app_id.clone(),
-            channel: admitted.identity.channel,
-            target: admitted.identity.target.clone(),
-            version: release.version_text,
-            content_blake3: release.full.content_blake3,
-        },
-        published_at: release.published_at,
-        url: release.full.url,
-        compressed_size: release.full.size,
-        compressed_blake3: release.full.blake3,
-        content_size: release.full.content_size,
+        artifact: release.into_artifact(&admitted.identity),
     }))
+}
+
+pub(crate) fn select_baseline(
+    identity: &crate::DirectInstallationIdentity,
+    releases: Vec<ValidRelease>,
+) -> Result<SignedFullArtifact, UpdateError> {
+    let release = releases
+        .into_iter()
+        .find(|release| release.version_text == identity.baseline.version)
+        .ok_or_else(|| UpdateError::Baseline {
+            step: "baseline selection",
+            detail: "authenticated manifest does not contain the exact configured baseline version"
+                .to_owned(),
+        })?;
+    let artifact = release.into_artifact(identity);
+    if artifact.identity != identity.baseline {
+        return Err(UpdateError::Baseline {
+            step: "baseline identity",
+            detail: "authenticated full artifact differs from the configured baseline".to_owned(),
+        });
+    }
+    Ok(artifact)
+}
+
+impl ValidRelease {
+    fn into_artifact(self, installation: &crate::DirectInstallationIdentity) -> SignedFullArtifact {
+        SignedFullArtifact {
+            identity: ArtifactIdentity {
+                app_id: installation.app_id.clone(),
+                channel: installation.channel,
+                target: installation.target.clone(),
+                version: self.version_text,
+                content_blake3: self.full.content_blake3,
+            },
+            published_at: self.published_at,
+            url: self.full.url,
+            compressed_size: self.full.size,
+            compressed_blake3: self.full.blake3,
+            content_size: self.full.content_size,
+        }
+    }
 }
 
 fn parse_version(field: &str, text: &str) -> Result<Version, UpdateError> {
@@ -351,7 +396,7 @@ fn parse_size(field: &str, number: &Number) -> Result<u64, UpdateError> {
     Ok(value)
 }
 
-fn parse_digest(field: &str, text: &str) -> Result<[u8; 32], UpdateError> {
+pub(crate) fn parse_digest(field: &str, text: &str) -> Result<[u8; 32], UpdateError> {
     if text.len() != 64 || !text.is_ascii() {
         return Err(invalid(format!(
             "{field} must contain exactly 64 hexadecimal characters"

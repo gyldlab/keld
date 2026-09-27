@@ -12,28 +12,50 @@ use cap_fs_ext::{
 use cap_std::fs::{Dir, File, Metadata, OpenOptions, OpenOptionsExt as _};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, WRITE_DAC,
 };
 
 use crate::provenance::match_identity;
 use crate::windows_fs::{create_directory_relative, qualify_volume};
 use crate::{
     AdmittedInstallation, ArchiveEntryKind, ArtifactDomain, ArtifactIdentity,
-    DirectInstallationIdentity, ProvenanceField, UpdateError, ValidatedArchive, VerifiedFull,
+    DirectInstallationIdentity, LoadedWindowsBaseline, ProvenanceField, UpdateError,
+    ValidatedArchive, VerifiedFull,
 };
 
 const COPY_BYTES: usize = 16 * 1024;
 
-/// Actual owner-private, fixed-NTFS staging directories retained by the host.
+/// Protected fixed-NTFS staging directories retained by the host.
 ///
-/// This proves observed filesystem protection, not installer provenance or live
-/// strict-profile admission. It creates no installation scaffolding.
+/// Owner-private roots prove filesystem protection only. Machine roots retain their
+/// real loader lease and require SYSTEM for staging. Neither creates installation
+/// scaffolding nor proves live strict-profile admission.
 #[derive(Debug)]
 pub struct WindowsExtractionRoot {
     installation: DirectInstallationIdentity,
     floor: semver::Version,
-    _ancestors: Vec<Dir>,
+    authority: RootAuthority,
     versions: Dir,
+}
+
+#[derive(Debug)]
+enum RootAuthority {
+    OwnerPrivate { _ancestors: Vec<Dir> },
+    Machine { _loaded: Box<LoadedWindowsBaseline> },
+}
+
+impl RootAuthority {
+    fn validate_parent(&self, directory: &StdFile) -> io::Result<()> {
+        match self {
+            Self::OwnerPrivate { .. } => {
+                keld_guard::validate_windows_owner_private_directory(directory)
+            }
+            Self::Machine { .. } => {
+                keld_guard::require_windows_system_token()?;
+                keld_guard::validate_windows_machine_directory(directory)
+            }
+        }
+    }
 }
 
 /// Flushed and read-back bytes in an unpublished, incomplete Windows stage.
@@ -80,6 +102,33 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
         return Err(refusal("only the Windows x64 v0 package cell is supported"));
     }
     let path = &admitted.identity.update_root;
+    let ancestors = open_ancestors(path)?;
+    let root = ancestors
+        .last()
+        .ok_or_else(|| refusal("missing staging root"))?;
+    let root_file = root.try_clone()?.into_std_file();
+    keld_guard::validate_windows_owner_private_directory(&root_file)?;
+    qualify_volume(&root_file)?;
+    let versions = root.open_dir_nofollow("versions")?;
+    let versions_metadata = versions.dir_metadata()?;
+    ensure_directory(&versions_metadata)?;
+    if versions_metadata.dev() != root.dir_metadata()?.dev() {
+        return Err(refusal("versions crosses the admitted volume"));
+    }
+    let versions_file = versions.try_clone()?.into_std_file();
+    keld_guard::validate_windows_owner_private_directory(&versions_file)?;
+    qualify_volume(&versions_file)?;
+    Ok(WindowsExtractionRoot {
+        installation: admitted.identity.clone(),
+        floor: admitted.floor.clone(),
+        authority: RootAuthority::OwnerPrivate {
+            _ancestors: ancestors,
+        },
+        versions,
+    })
+}
+
+pub(crate) fn open_ancestors(path: &Path) -> io::Result<Vec<Dir>> {
     let mut components = path.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
         return Err(refusal("staging root must be an absolute local drive path"));
@@ -113,38 +162,58 @@ fn open_root(admitted: &AdmittedInstallation) -> io::Result<WindowsExtractionRoo
         ensure_directory(&child.dir_metadata()?)?;
         ancestors.push(child);
     }
-    let root = ancestors
-        .last()
-        .ok_or_else(|| refusal("missing staging root"))?;
-    let root_file = root.try_clone()?.into_std_file();
-    keld_guard::validate_windows_owner_private_directory(&root_file)?;
-    qualify_volume(&root_file)?;
-    let versions = root.open_dir_nofollow("versions")?;
-    let versions_metadata = versions.dir_metadata()?;
-    ensure_directory(&versions_metadata)?;
-    if versions_metadata.dev() != root.dir_metadata()?.dev() {
-        return Err(refusal("versions crosses the admitted volume"));
-    }
-    let versions_file = versions.try_clone()?.into_std_file();
-    keld_guard::validate_windows_owner_private_directory(&versions_file)?;
-    qualify_volume(&versions_file)?;
-    Ok(WindowsExtractionRoot {
-        installation: admitted.identity.clone(),
-        floor: admitted.floor.clone(),
-        _ancestors: ancestors,
-        versions,
-    })
+    Ok(ancestors)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExtractionEvent {
+pub(crate) enum ExtractionEvent {
     PreCreate,
     AfterStageCreate,
     BeforeMember,
+    BeforeFileFlush,
     BeforeReadback,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageProtection {
+    OwnerPrivate,
+    Machine,
+}
+
+#[derive(Clone, Copy)]
+struct CopyRange {
+    offset: u64,
+    size: u64,
+}
+
 impl WindowsExtractionRoot {
+    pub(crate) fn from_loaded(loaded: LoadedWindowsBaseline) -> Result<Self, UpdateError> {
+        keld_guard::require_windows_system_token()
+            .map_err(|error| extraction_error(None, "machine staging authority", error))?;
+        let versions = loaded
+            .retained_versions()
+            .map_err(|error| extraction_error(None, "machine versions handle", error))?;
+        let parent = versions
+            .try_clone()
+            .map_err(|error| extraction_error(None, "machine versions handle", error))?
+            .into_std_file();
+        keld_guard::validate_windows_machine_directory(&parent)
+            .map_err(|error| extraction_error(None, "machine versions protection", error))?;
+        let installation = loaded.identity().clone();
+        let floor =
+            crate::provenance::validate_version_floor(&installation, loaded.version_floor())?;
+        Ok(Self {
+            installation,
+            floor,
+            // One cold ownership allocation retains the whole loaded lease without
+            // inflating the existing owner-private variant or losing metadata pins.
+            authority: RootAuthority::Machine {
+                _loaded: Box::new(loaded),
+            },
+            versions,
+        })
+    }
+
     /// Stages one context-matching, authenticated canonical package.
     ///
     /// The source is opened and locked internally. Full preflight precedes creation;
@@ -194,12 +263,20 @@ impl WindowsExtractionRoot {
             .try_clone()
             .map_err(|error| extraction_error(None, "versions handle", error))?
             .into_std_file();
-        keld_guard::validate_windows_owner_private_directory(&parent)
+        self.authority
+            .validate_parent(&parent)
             .map_err(|error| extraction_error(None, "versions protection", error))?;
         let stage = create_directory_relative(&parent, &name).map_err(|error| {
             extraction_error(Some(&name), "stage creation (outcome unconfirmed)", error)
         })?;
-        let result = populate_stage(stage, &name, &validated, &mut source, &mut observe);
+        let result = populate_stage(
+            stage,
+            &name,
+            &validated,
+            &mut source,
+            StageProtection::OwnerPrivate,
+            &mut observe,
+        );
         let (directories, files) =
             result.map_err(|error| extraction_error(Some(&name), "stage contents", error))?;
         Ok(ExtractedWindowsStage {
@@ -212,7 +289,7 @@ impl WindowsExtractionRoot {
     }
 }
 
-fn open_source(path: &Path) -> io::Result<File> {
+pub(crate) fn open_source(path: &Path) -> io::Result<File> {
     let file = StdOpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
@@ -223,11 +300,12 @@ fn open_source(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn populate_stage(
+pub(crate) fn populate_stage(
     stage: StdFile,
     name: &str,
     validated: &ValidatedArchive,
     source: &mut File,
+    protection: StageProtection,
     observe: &mut impl FnMut(ExtractionEvent, &str) -> io::Result<()>,
 ) -> Result<(Vec<Dir>, Vec<File>), UpdateError> {
     let stage = Dir::from_std_file(stage);
@@ -240,8 +318,11 @@ fn populate_stage(
         "content.tar",
         "content.tar",
         source,
-        0,
-        validated.content_size(),
+        CopyRange {
+            offset: 0,
+            size: validated.content_size(),
+        },
+        protection,
         observe,
     )
     .map_err(operation)?;
@@ -279,8 +360,11 @@ fn populate_stage(
                     leaf,
                     entry.name(),
                     &mut retained_content,
-                    entry.data_offset(),
-                    entry.size(),
+                    CopyRange {
+                        offset: entry.data_offset(),
+                        size: entry.size(),
+                    },
+                    protection,
                     observe,
                 )
                 .map_err(operation)?;
@@ -297,16 +381,23 @@ fn copy_read_back(
     leaf: &str,
     diagnostic: &str,
     source: &mut File,
-    offset: u64,
-    size: u64,
+    range: CopyRange,
+    protection: StageProtection,
     observe: &mut impl FnMut(ExtractionEvent, &str) -> io::Result<()>,
 ) -> io::Result<(File, [u8; 32])> {
+    let CopyRange { offset, size } = range;
+    if protection == StageProtection::Machine {
+        keld_guard::require_windows_system_token()?;
+    }
     let mut options = OpenOptions::new();
     options
         .write(true)
         .create_new(true)
         .share_mode(FILE_SHARE_READ)
         .follow(FollowSymlinks::No);
+    if protection == StageProtection::Machine {
+        options.access_mode(FILE_GENERIC_WRITE | WRITE_DAC);
+    }
     let mut output = parent.open_with(leaf, &options)?;
     let original = output.metadata()?;
     ensure_regular(&original)?;
@@ -325,6 +416,13 @@ fn copy_read_back(
         digest.update(&buffer[..amount]);
         left -= amount as u64;
     }
+    let mut output = output.into_std();
+    if protection == StageProtection::Machine {
+        // Seal on the original writer, before its final flush. Reopening a data
+        // writer after readback would conflict with the retained read-only pins.
+        keld_guard::seal_windows_machine_file(&mut output)?;
+    }
+    observe(ExtractionEvent::BeforeFileFlush, diagnostic)?;
     output.sync_all()?;
     drop(output);
     observe(ExtractionEvent::BeforeReadback, diagnostic)?;
@@ -342,7 +440,13 @@ fn copy_read_back(
     {
         return Err(refusal("readback object identity or length changed"));
     }
-    keld_guard::validate_windows_owner_private_file(&retained.try_clone()?.into_std())?;
+    let retained_object = retained.try_clone()?.into_std();
+    match protection {
+        StageProtection::OwnerPrivate => {
+            keld_guard::validate_windows_owner_private_file(&retained_object)?;
+        }
+        StageProtection::Machine => keld_guard::validate_windows_machine_file(&retained_object)?,
+    }
     let mut readback = blake3::Hasher::new();
     loop {
         let read = retained.read(&mut buffer)?;
@@ -358,14 +462,14 @@ fn copy_read_back(
     Ok((retained, expected))
 }
 
-fn ensure_directory(metadata: &Metadata) -> io::Result<()> {
+pub(crate) fn ensure_directory(metadata: &Metadata) -> io::Result<()> {
     if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(refusal("expected a non-reparse directory"));
     }
     Ok(())
 }
 
-fn ensure_regular(metadata: &Metadata) -> io::Result<()> {
+pub(crate) fn ensure_regular(metadata: &Metadata) -> io::Result<()> {
     if !metadata.is_file()
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || metadata.nlink() != 1
@@ -391,5 +495,7 @@ fn extraction_error(
     }
 }
 
+#[cfg(test)]
+pub(crate) mod lpac_probe;
 #[cfg(test)]
 mod tests;

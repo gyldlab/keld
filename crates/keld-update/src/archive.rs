@@ -110,6 +110,18 @@ where
     R: Read + Seek,
     V: FnOnce(&[&str]) -> Result<(), String>,
 {
+    parse_content_archive(&receipt.content, archive, validate_windows_paths)
+}
+
+pub(crate) fn parse_content_archive<R, V>(
+    receipt: &crate::full::ContentIdentity,
+    archive: &mut R,
+    validate_windows_paths: V,
+) -> Result<ValidatedArchive, UpdateError>
+where
+    R: Read + Seek,
+    V: FnOnce(&[&str]) -> Result<(), String>,
+{
     let start = archive
         .stream_position()
         .map_err(|error| processing("canonical archive position", error))?;
@@ -119,31 +131,31 @@ where
     let remaining = end
         .checked_sub(start)
         .ok_or_else(|| processing("canonical archive length", "end precedes input position"))?;
-    if remaining != receipt.content_size() {
-        return Err(size_mismatch(receipt.content_size(), remaining.to_string()));
+    if remaining != receipt.content_size {
+        return Err(size_mismatch(receipt.content_size, remaining.to_string()));
     }
     archive
         .seek(SeekFrom::Start(start))
         .map_err(|error| processing("canonical archive rewind", error))?;
-    let mut input = HashingReader::new(archive, receipt.content_size())?;
+    let mut input = HashingReader::new(archive, receipt.content_size)?;
     let mut entries = Vec::<ArchiveEntry>::new();
     let mut policy_seen = false;
     let mut policy_valid = false;
     loop {
         let mut header = [0_u8; TAR_BLOCK_BYTES];
-        read_exact_canonical(&mut input, &mut header, receipt.content_size())?;
+        read_exact_canonical(&mut input, &mut header, receipt.content_size)?;
         if header.iter().all(|byte| *byte == 0) {
             let mut second = [0_u8; TAR_BLOCK_BYTES];
-            read_exact_canonical(&mut input, &mut second, receipt.content_size())?;
+            read_exact_canonical(&mut input, &mut second, receipt.content_size)?;
             if second.iter().any(|byte| *byte != 0) {
                 return Err(invalid_archive("archive must end with two zero blocks"));
             }
             let mut trailing = [0_u8; 1];
             match input.read(&mut trailing) {
                 Ok(0) => {}
-                Ok(_) if input.bytes_read > receipt.content_size() => {
+                Ok(_) if input.bytes_read > receipt.content_size => {
                     return Err(size_mismatch(
-                        receipt.content_size(),
+                        receipt.content_size,
                         format!("at least {}", input.bytes_read),
                     ));
                 }
@@ -164,13 +176,13 @@ where
         let data_offset = input.bytes_read;
         if name == UPDATE_POLICY_PATH {
             policy_seen = true;
-            policy_valid = read_policy(&mut input, kind, size, receipt.content_size())?;
+            policy_valid = read_policy(&mut input, kind, size, receipt.content_size)?;
         } else {
-            skip_data(&mut input, size, receipt.content_size())?;
+            skip_data(&mut input, size, receipt.content_size)?;
         }
         let padding =
             (TAR_BLOCK_BYTES as u64 - (size % TAR_BLOCK_BYTES as u64)) % TAR_BLOCK_BYTES as u64;
-        skip_zero_padding(&mut input, padding, receipt.content_size())?;
+        skip_zero_padding(&mut input, padding, receipt.content_size)?;
         entries.push(ArchiveEntry {
             name,
             kind,
@@ -179,19 +191,19 @@ where
         });
     }
 
-    if input.bytes_read != receipt.content_size() {
+    if input.bytes_read != receipt.content_size {
         return Err(size_mismatch(
-            receipt.content_size(),
+            receipt.content_size,
             input.bytes_read.to_string(),
         ));
     }
     validate_archive_members(&entries, validate_windows_paths)?;
 
     let actual_digest = *input.hasher.finalize().as_bytes();
-    if actual_digest != *receipt.content_blake3() {
+    if actual_digest != receipt.content_blake3 {
         return Err(UpdateError::ArtifactDigestMismatch {
             domain: ArtifactDomain::Content,
-            expected: hex_digest(receipt.content_blake3()),
+            expected: hex_digest(&receipt.content_blake3),
             actual: hex_digest(&actual_digest),
         });
     }
@@ -206,8 +218,8 @@ where
         ));
     }
     Ok(ValidatedArchive {
-        identity: receipt.identity().clone(),
-        content_size: receipt.content_size(),
+        identity: receipt.identity.clone(),
+        content_size: receipt.content_size,
         content_blake3: actual_digest,
         entries,
     })

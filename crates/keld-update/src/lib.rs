@@ -10,7 +10,10 @@
 //! Native Windows archive preflight also checks canonical metadata, namespace and exact
 //! no-migration policy. Windows extraction binds verified bytes to real protected,
 //! fixed-NTFS staging handles and returns only an unpublished incomplete stage.
-//! Installer provenance loading, activation and health remain outside this slice.
+//! On Windows, a separate one-shot SYSTEM baseline initializer publishes protected
+//! installer provenance last. Its read-only loader retains protected identity/floor
+//! handles; activation, current-image signer verification and health remain outside
+//! this slice.
 //! A [`ProvenanceObservation::Protected`] test value
 //! proves policy logic only; it is not real package-signature or ACL evidence. The full
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and
@@ -18,10 +21,15 @@
 
 #[cfg(any(windows, test, feature = "fuzzing"))]
 mod archive;
+mod baseline;
 mod error;
 mod full;
 mod manifest;
 mod provenance;
+#[cfg(any(windows, test))]
+mod records;
+#[cfg(windows)]
+mod windows_baseline;
 #[cfg(windows)]
 mod windows_extraction;
 #[cfg(windows)]
@@ -32,6 +40,7 @@ mod tests;
 
 #[cfg(any(windows, test, feature = "fuzzing"))]
 pub use archive::{ArchiveEntry, ArchiveEntryKind, ValidatedArchive};
+pub use baseline::{BaselineVerifier, SelectedBaseline, VerifiedBaseline};
 pub use error::{
     ArtifactDomain, ManifestIdentityField, ProvenanceField, ProvenanceUnavailable, UpdateError,
 };
@@ -43,6 +52,11 @@ pub use manifest::{ManifestDecision, SelectedFull};
 pub use provenance::{
     AdmittedInstallation, ArtifactIdentity, DirectInstallationIdentity, InstallOwner,
     InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId, UpdateVerifier,
+};
+#[cfg(windows)]
+pub use windows_baseline::{
+    LoadedWindowsBaseline, WindowsBaselineReceipt, WindowsBaselineTrust,
+    initialize_windows_baseline, load_windows_baseline,
 };
 #[cfg(windows)]
 pub use windows_extraction::{ExtractedWindowsStage, WindowsExtractionRoot};

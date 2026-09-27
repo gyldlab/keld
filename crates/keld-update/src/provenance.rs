@@ -13,6 +13,11 @@ use crate::error::{ProvenanceField, ProvenanceUnavailable, UpdateError, hex_dige
 pub struct SigningKeyId([u8; 32]);
 
 impl SigningKeyId {
+    #[cfg(any(windows, test))]
+    pub(crate) const fn from_digest(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+
     /// Derives the v0 key identity from the exact 32-byte Ed25519 public key.
     #[must_use]
     pub fn from_public_key(public_key: &[u8; 32]) -> Self {
@@ -132,8 +137,8 @@ pub enum ProvenanceObservation {
 /// Host-owned verifier configuration before installation provenance is admitted.
 #[derive(Debug, Clone)]
 pub struct UpdateVerifier {
-    expected: DirectInstallationIdentity,
-    verifying_key: VerifyingKey,
+    pub(crate) expected: DirectInstallationIdentity,
+    pub(crate) verifying_key: VerifyingKey,
 }
 
 impl UpdateVerifier {
@@ -211,37 +216,7 @@ impl UpdateVerifier {
         let floor_text = floor_text.ok_or_else(|| UpdateError::VersionFloorInvalid {
             detail: "record is present but version-floor is missing".to_owned(),
         })?;
-        let floor =
-            Version::parse(floor_text).map_err(|error| UpdateError::VersionFloorInvalid {
-                detail: format!("`{floor_text}` is not strict SemVer: {error}"),
-            })?;
-        let baseline = Version::parse(&record.identity.baseline.version).map_err(|error| {
-            UpdateError::ProvenanceMismatch {
-                field: ProvenanceField::Baseline,
-                expected: "a strict-SemVer baseline".to_owned(),
-                found: format!("{} ({error})", record.identity.baseline.version),
-            }
-        })?;
-        match floor.cmp_precedence(&baseline) {
-            Ordering::Less => {
-                return Err(mismatch(
-                    ProvenanceField::VersionFloor,
-                    &format!(
-                        "{} or a higher precedence",
-                        record.identity.baseline.version
-                    ),
-                    floor_text,
-                ));
-            }
-            Ordering::Equal if floor_text != record.identity.baseline.version => {
-                return Err(mismatch(
-                    ProvenanceField::VersionFloor,
-                    &record.identity.baseline.version,
-                    floor_text,
-                ));
-            }
-            Ordering::Equal | Ordering::Greater => {}
-        }
+        let floor = validate_version_floor(&record.identity, floor_text)?;
 
         Ok(AdmittedInstallation {
             identity: self.expected.clone(),
@@ -275,7 +250,41 @@ impl AdmittedInstallation {
     }
 }
 
-fn validate_expected(expected: &DirectInstallationIdentity) -> Result<(), UpdateError> {
+pub(crate) fn validate_version_floor(
+    identity: &DirectInstallationIdentity,
+    floor_text: &str,
+) -> Result<Version, UpdateError> {
+    let floor = Version::parse(floor_text).map_err(|error| UpdateError::VersionFloorInvalid {
+        detail: format!("`{floor_text}` is not strict SemVer: {error}"),
+    })?;
+    let baseline = Version::parse(&identity.baseline.version).map_err(|error| {
+        UpdateError::ProvenanceMismatch {
+            field: ProvenanceField::Baseline,
+            expected: "a strict-SemVer baseline".to_owned(),
+            found: format!("{} ({error})", identity.baseline.version),
+        }
+    })?;
+    match floor.cmp_precedence(&baseline) {
+        Ordering::Less => {
+            return Err(mismatch(
+                ProvenanceField::VersionFloor,
+                &format!("{} or a higher precedence", identity.baseline.version),
+                floor_text,
+            ));
+        }
+        Ordering::Equal if floor_text != identity.baseline.version => {
+            return Err(mismatch(
+                ProvenanceField::VersionFloor,
+                &identity.baseline.version,
+                floor_text,
+            ));
+        }
+        Ordering::Equal | Ordering::Greater => {}
+    }
+    Ok(floor)
+}
+
+pub(crate) fn validate_expected(expected: &DirectInstallationIdentity) -> Result<(), UpdateError> {
     if expected.app_id.is_empty() || expected.app_id != expected.baseline.app_id {
         return Err(mismatch(
             ProvenanceField::AppId,

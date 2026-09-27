@@ -67,7 +67,7 @@ fn admitted_at(floor: &str) -> AdmittedInstallation {
         .expect("fixture provenance")
 }
 
-fn sign(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn sign(bytes: &[u8]) -> Vec<u8> {
     let signature = signing_key().sign(bytes).to_bytes();
     let mut encoded = [0_u8; 88];
     let written = BASE64_STANDARD
