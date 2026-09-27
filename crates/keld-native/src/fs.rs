@@ -1476,27 +1476,50 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn test_owner_handle_count() -> usize {
-        let output = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "(Get-Process -Id $env:KEL130_PARENT_PID).HandleCount",
-            ])
-            .env("KEL130_PARENT_PID", std::process::id().to_string())
-            .output()
-            .expect("query owner process handle count");
-        assert!(
-            output.status.success(),
-            "handle census failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+    fn test_owner_handle_count(phase: &str, started: Instant) -> usize {
+        let census_started = Instant::now();
+        eprintln!(
+            "KELD_KEL256 census={phase} event=begin elapsed_us={}",
+            started.elapsed().as_micros()
         );
-        String::from_utf8(output.stdout)
-            .expect("handle count is UTF-8")
-            .trim()
-            .parse()
-            .expect("handle count is an integer")
+        let count = crate::windows_handle_census::owner_handle_count();
+        eprintln!(
+            "KELD_KEL256 census={phase} event=returned duration_us={} elapsed_us={} count={count}",
+            census_started.elapsed().as_micros(),
+            started.elapsed().as_micros(),
+        );
+        count
+    }
+
+    #[cfg(windows)]
+    fn blocked_phase(started: Instant, phase: &str) {
+        eprintln!(
+            "KELD_KEL256 phase={phase} elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+    }
+
+    #[cfg(windows)]
+    fn blocked_watchdog(
+        started: Instant,
+    ) -> (std::sync::mpsc::SyncSender<()>, std::thread::JoinHandle<()>) {
+        use std::sync::mpsc;
+        let (sender, receiver) = mpsc::sync_channel(0);
+        let watcher = std::thread::spawn(move || {
+            blocked_phase(started, "watchdog_armed");
+            match receiver.recv_timeout(Duration::from_secs(10)) {
+                Ok(()) => blocked_phase(started, "watchdog_disarmed"),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    blocked_phase(started, "watchdog_timeout");
+                    std::process::exit(2);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    blocked_phase(started, "watchdog_sender_disconnected");
+                    std::process::exit(2);
+                }
+            }
+        });
+        (sender, watcher)
     }
 
     #[test]
@@ -1976,22 +1999,22 @@ mod tests {
             return;
         }
 
-        let (watchdog_tx, watchdog_rx) = mpsc::sync_channel(0);
-        let watchdog = std::thread::spawn(move || {
-            if watchdog_rx.recv_timeout(Duration::from_secs(10)).is_err() {
-                std::process::exit(2);
-            }
-        });
+        let started = Instant::now();
+        eprintln!("KELD_KEL256 child_pid={}", std::process::id());
+        let (watchdog_tx, watchdog) = blocked_watchdog(started);
 
+        blocked_phase(started, "fixture_create_begin");
         let fixture = race_owned_root("windows-blocked-call");
+        eprintln!("KELD_KEL256 fixture={}", fixture.display());
         let root = fixture.join("granted");
         std::fs::create_dir(&root).expect("granted root");
         let path = root.join("sentinel");
         std::fs::write(&path, b"unchanged").expect("seed sentinel");
         let verified = Arc::new(test_verified_manifest(&fixture, &root));
-        let baseline = test_owner_handle_count();
+        let baseline = test_owner_handle_count("baseline", started);
+        blocked_phase(started, "broker_prepare_begin");
         let broker = Arc::new(FsBroker::prepare(&verified).expect("prepare broker"));
-        let prepared = test_owner_handle_count();
+        let prepared = test_owner_handle_count("prepared", started);
         let cancelled = Arc::new(AtomicBool::new(false));
 
         let (thread_ready_tx, thread_ready_rx) = mpsc::sync_channel(0);
@@ -2025,39 +2048,48 @@ mod tests {
         thread_ready_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("writer thread ready");
-        let idle_thread = test_owner_handle_count();
+        let idle_thread = test_owner_handle_count("idle_thread", started);
+        blocked_phase(started, "start_call");
         start_tx.send(()).expect("start call");
         call_ready_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("real call handle reached block");
-        let live_call = test_owner_handle_count();
+        let live_call = test_owner_handle_count("live_call", started);
         assert!(
             live_call > idle_thread,
             "the blocked operation must retain a real per-call handle"
         );
         cancelled.store(true, Ordering::Release);
+        blocked_phase(started, "cancelled");
         assert!(matches!(
             result_rx.try_recv(),
             Err(mpsc::TryRecvError::Empty)
         ));
         release_tx.send(()).expect("release call");
+        blocked_phase(started, "call_released");
         let result = result_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("terminal result after release");
         writer.join().expect("join writer");
+        blocked_phase(started, "terminal_result_joined");
         let error = result.expect_err("released call observes cancellation before commit");
         assert_eq!(error.code(), "KELD-NATIVE-006");
         assert_eq!(std::fs::read(&path).expect("sentinel bytes"), b"unchanged");
         assert_eq!(
-            test_owner_handle_count(),
+            test_owner_handle_count("after_call", started),
             prepared,
             "per-call handle closes before the terminal result is observed"
         );
 
         drop(broker);
         drop(verified);
-        assert_eq!(test_owner_handle_count(), baseline);
+        assert_eq!(
+            test_owner_handle_count("after_broker_drop", started),
+            baseline
+        );
+        blocked_phase(started, "cleanup_begin");
         std::fs::remove_dir_all(&fixture).expect("cleanup fixture");
+        blocked_phase(started, "cleanup_complete");
         watchdog_tx.send(()).expect("disarm watchdog");
         watchdog.join().expect("join watchdog");
     }
@@ -2074,12 +2106,173 @@ mod tests {
             .env("KELD_KEL130_BLOCKED_CALL_CHILD", "1")
             .output()
             .expect("run isolated blocked-call fixture");
-        assert!(
-            output.status.success(),
-            "blocked-call fixture failed\nstdout:\n{}\nstderr:\n{}",
+        eprintln!(
+            "KELD_KEL256 parent_observed status={:?} code={:?}\nchild stdout:\n{}\nchild stderr:\n{}",
+            output.status,
+            output.status.code(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(
+            output.status.success(),
+            "blocked-call fixture failed: status={:?}, code={:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_census_tracks_real_handle_acquisition_and_drop() {
+        let output = windows_observer_child("census");
+        assert!(
+            output.status.success(),
+            "census control status={:?}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("KELD_KEL256_CENSUS_CONTROL_PASSED")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_watchdog_reports_timeout_and_sender_disconnect() {
+        for reason in ["watchdog_timeout", "watchdog_sender_disconnected"] {
+            let output = windows_observer_child(reason);
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "actual watchdog exit; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                diagnostic.contains(&format!("phase={reason} ")),
+                "wrong watchdog reason: {diagnostic}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("KELD_KEL256_WATCHDOG_CONTROL_READY")
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "private Windows process endpoint for census and watchdog controls"]
+    fn windows_observer_control_child() {
+        let mode =
+            std::env::var("KELD_KEL256_OBSERVER_CONTROL").expect("explicit observer control");
+        if mode == "census" {
+            use crate::windows_handle_census::owner_handle_count;
+            let baseline = owner_handle_count();
+            let original = std::fs::File::open("NUL").expect("known real Windows file handle");
+            assert_eq!(owner_handle_count(), baseline + 1);
+            let duplicate = original
+                .try_clone()
+                .expect("one independently owned duplicate");
+            assert_eq!(owner_handle_count(), baseline + 2);
+            drop(original);
+            assert_eq!(owner_handle_count(), baseline + 1);
+            drop(duplicate);
+            assert_eq!(owner_handle_count(), baseline);
+            println!("KELD_KEL256_CENSUS_CONTROL_PASSED");
+            return;
+        }
+        let (sender, watcher) = blocked_watchdog(Instant::now());
+        println!("KELD_KEL256_WATCHDOG_CONTROL_READY");
+        match mode.as_str() {
+            "watchdog_timeout" => {
+                let _retained_sender = sender;
+                loop {
+                    std::thread::park();
+                }
+            }
+            "watchdog_sender_disconnected" => {
+                drop(sender);
+                watcher.join().expect("watchdog thread");
+                panic!("disconnected watchdog must terminate the child");
+            }
+            _ => panic!("unknown observer control {mode}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[allow(unsafe_code)] // Test-only WaitForSingleObject on a live owned Child, bounded outer kill switch.
+    fn windows_observer_child(mode: &str) -> std::process::Output {
+        use std::io::Seek as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use std::process::{Command, Stdio};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        let root = race_owned_root("windows-observer-control");
+        let capture = |name| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(root.join(name))
+                .expect("owned capture file")
+        };
+        let mut stdout = capture("stdout");
+        let mut stderr = capture("stderr");
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "fs::tests::windows_observer_control_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KELD_KEL256_OBSERVER_CONTROL", mode)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(
+                stdout.try_clone().expect("stdout capture handle"),
+            ))
+            .stderr(Stdio::from(
+                stderr.try_clone().expect("stderr capture handle"),
+            ))
+            .spawn()
+            .expect("isolated observer control");
+        // SAFETY: Child owns a live process handle throughout this synchronous,
+        // bounded wait. No pointer or ownership transfer occurs. This outer bound
+        // catches a deleted/broken watchdog; the tested watchdog remains 10 seconds.
+        let waited = unsafe { WaitForSingleObject(child.as_raw_handle().cast(), 15_000) };
+        let terminated = if waited == WAIT_OBJECT_0 {
+            None
+        } else {
+            Some(child.kill())
+        };
+        let status = child.wait();
+        stdout.rewind().expect("rewind stdout capture");
+        stderr.rewind().expect("rewind stderr capture");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        stdout.read_to_end(&mut out).expect("read stdout capture");
+        stderr.read_to_end(&mut err).expect("read stderr capture");
+        drop(stdout);
+        drop(stderr);
+        std::fs::remove_dir_all(&root).expect("cleanup exact observer fixture");
+        assert!(
+            terminated.is_none_or(|result| result.is_ok()),
+            "failed to terminate observer control; stderr={}",
+            String::from_utf8_lossy(&err)
+        );
+        assert_eq!(
+            waited,
+            WAIT_OBJECT_0,
+            "observer outer deadline; stderr={}",
+            String::from_utf8_lossy(&err)
+        );
+        std::process::Output {
+            status: status.expect("reap observer control"),
+            stdout: out,
+            stderr: err,
+        }
     }
 
     #[cfg(target_os = "macos")]
