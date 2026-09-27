@@ -607,8 +607,9 @@ public loader refuse; valid metadata restored byte-for-byte is the positive cont
 
 The real LPAC probe runs under an ordinary host after releasing installation handles.
 Reuse runtime launch/token observation and the existing filesystem-probe owner; grant
-read/execute only to its disposable helper and role-private control directory, never
-to the committed machine installation. Verify known provenance, floor/current/LKG and
+read/execute to its disposable helper and write authority only within its disposable
+role-private control directory, granting neither to the committed machine installation.
+Verify known provenance, floor/current/LKG and
 payload targets exist, exercise actual denied mutations, require granted role-private
 controls to succeed, then re-read protected bytes/descriptors. This proves the exercised
 LPAC write denial, not installed-role read provisioning or WebView2 acceptance.
