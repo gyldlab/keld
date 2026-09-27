@@ -211,8 +211,9 @@ and claims. The status-table check compares ledger crate records with Cargo work
 metadata without making documentation consistency a product or real-OS completion claim.
 
 Run `just product-status-check` for semantic consistency and `just llms-check` for
-generated-corpus byte freshness. `just ci` remains the exact local gate inventory;
-gitleaks remains GitHub-only.
+generated-corpus byte freshness. `just ci` is the exact routine local gate inventory;
+its shared router selects Mermaid only when diagram/renderer inputs change. `just ci-full`
+forces full-corpus Mermaid assurance; gitleaks remains GitHub-only.
 
 ## How work is tracked
 
@@ -236,7 +237,7 @@ gitleaks remains GitHub-only.
 
 1. Read [`AGENTS.md`](../../AGENTS.md) end to end. It is the compact binding invariant
    floor; `.agents/index.md` routes task-specific playbooks. `just ci` is the exact local
-   gate inventory.
+   gate inventory, with changed-input Mermaid selection; `just ci-full` forces every diagram.
 2. Read the crate-level `AGENTS.md` for whatever you're touching —
    [`keld-ipc`](../../crates/keld-ipc/AGENTS.md), [`keld-wv`](../../crates/keld-wv/AGENTS.md),
    [`keld-guard`](../../crates/keld-guard/AGENTS.md),

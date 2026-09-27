@@ -17,12 +17,26 @@ expect_flags() {
     local label="$1"
     local expected="$2"
     local actual="$3"
-    actual="$(grep -Ev '^(packages|nongtk_packages|ubuntu_packages|ts_packages)=' <<<"$actual")"
+    actual="$(grep -Ev '^(mermaid|packages|nongtk_packages|ubuntu_packages|ts_packages)=' <<<"$actual")"
     if [[ "$actual" != "$expected" ]]; then
         echo "FAIL: $label" >&2
         echo "expected:" >&2
         printf '%s\n' "$expected" >&2
         echo "actual:" >&2
+        printf '%s\n' "$actual" >&2
+        exit 1
+    fi
+    echo "ok: $label"
+}
+
+expect_mermaid_flag() {
+    local label="$1"
+    local expected="$2"
+    local actual="$3"
+    local line
+    line="$(grep '^mermaid=' <<<"$actual")"
+    if [[ "$line" != "mermaid=$expected" ]]; then
+        echo "FAIL: $label: expected mermaid=$expected, got '${line#mermaid=}'" >&2
         printf '%s\n' "$actual" >&2
         exit 1
     fi
@@ -109,6 +123,7 @@ all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nt
 
 empty_classification="$(printf '' | "$router" classify)"
 expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classification"
+expect_mermaid_flag "empty diff does not select Mermaid" false "$empty_classification"
 expect_empty_packages "empty diff selects no package" "$empty_classification"
 expect_empty_output "empty diff selects no Bun suite" ts_packages "$empty_classification"
 
@@ -122,6 +137,7 @@ expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli wit
 
 docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
 expect_flags "docs-only change avoids Rust and GUI lanes" "$docs_only" "$docs_classification"
+expect_mermaid_flag "path-only Markdown classification fails safe without old/new content" true "$docs_classification"
 expect_empty_packages "docs-only change selects no package" "$docs_classification"
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
@@ -219,6 +235,7 @@ expect_flags "router test edit still exercises all jobs" "$workflow_all" "$route
 
 required_script_classification="$(result_for_paths tools/ci_required.sh)"
 expect_flags "required-result evaluator edit still exercises all jobs" "$workflow_all" "$required_script_classification"
+expect_mermaid_flag "router and required-result changes run the full Mermaid lane" true "$router_script_classification"
 
 actual_host_dirs="$(cd "$repo_root" && "$router" host-dirs | sort)"
 for required_dir in crates/keld-host crates/keld-core crates/keld-guard crates/keld-ipc crates/keld-runtime crates/keld-wv; do
@@ -244,8 +261,9 @@ git -C "$temp_dir" init -q
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
 mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin"
+printf 'fake-bin/\ntarget/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-git -C "$temp_dir" add README.md
+git -C "$temp_dir" add README.md .gitignore
 git -C "$temp_dir" commit -qm base
 base_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 real_jq="$(command -v jq)"
@@ -325,6 +343,55 @@ git -C "$temp_dir" commit -qm docs
 docs_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 push_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$runtime_sha" GITHUB_SHA="$docs_sha" "$router" github)"
 expect_flags "push before/head classifies the actual diff" "$docs_only" "$push_result"
+expect_mermaid_flag "prose-only docs outside diagrams skip Mermaid" false "$push_result"
+
+cat >"$temp_dir/diagram.md" <<'MERMAID'
+# Diagram
+
+```mermaid
+flowchart LR
+    accTitle: Sample
+    accDescr: Sample diagram for CI routing.
+    A["external"] --> B["target"]
+```
+MERMAID
+git -C "$temp_dir" add diagram.md
+git -C "$temp_dir" commit -qm diagram
+diagram_sha="$(git -C "$temp_dir" rev-parse HEAD)"
+diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$docs_sha" GITHUB_SHA="$diagram_sha" "$router" github)"
+expect_mermaid_flag "diagram addition selects Mermaid" true "$diagram_result"
+
+python3 - "$temp_dir/diagram.md" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace("# Diagram", "# Prose-only edit"))
+PY
+prose_diagram_sha="$(git -C "$temp_dir" add diagram.md && git -C "$temp_dir" commit -qm prose-in-diagram-file && git -C "$temp_dir" rev-parse HEAD)"
+prose_diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$diagram_sha" GITHUB_SHA="$prose_diagram_sha" "$router" github)"
+expect_mermaid_flag "prose-only edit in a diagram file skips Mermaid" false "$prose_diagram_result"
+
+python3 - "$temp_dir/diagram.md" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace('A["external"]', 'A["changed external"]'))
+PY
+changed_diagram_sha="$(git -C "$temp_dir" add diagram.md && git -C "$temp_dir" commit -qm diagram-content && git -C "$temp_dir" rev-parse HEAD)"
+changed_diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$prose_diagram_sha" GITHUB_SHA="$changed_diagram_sha" "$router" github)"
+expect_mermaid_flag "diagram body change selects Mermaid" true "$changed_diagram_result"
+
+git -C "$temp_dir" mv diagram.md renamed.md
+renamed_diagram_sha="$(git -C "$temp_dir" commit -qm diagram-rename && git -C "$temp_dir" rev-parse HEAD)"
+renamed_diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$changed_diagram_sha" GITHUB_SHA="$renamed_diagram_sha" "$router" github)"
+expect_mermaid_flag "diagram file rename selects Mermaid" true "$renamed_diagram_result"
+
+python3 - "$temp_dir/renamed.md" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace("```mermaid", "```mermaidx"))
+PY
+malformed_diagram_sha="$(git -C "$temp_dir" add renamed.md && git -C "$temp_dir" commit -qm malformed-diagram && git -C "$temp_dir" rev-parse HEAD)"
+malformed_diagram_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$renamed_diagram_sha" GITHUB_SHA="$malformed_diagram_sha" "$router" github)"
+expect_mermaid_flag "malformed Mermaid fence change selects validation" true "$malformed_diagram_result"
 
 # A packages/ diff with no Bun suite anywhere must fail the router, not emit a
 # selected-but-empty TypeScript lane. This runs before the suite fixture below
@@ -453,10 +520,33 @@ expect_output_package_token "push TypeScript-only diff selects the changed Bun s
 
 empty_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$ts_sha" GITHUB_SHA="$ts_sha" "$router" github)"
 expect_flags "same push base/head is an empty diff" "$all_false" "$empty_result"
+expect_mermaid_flag "same push base/head skips Mermaid" false "$empty_result"
+
+git -C "$temp_dir" update-ref refs/remotes/origin/main "$ts_sha"
+local_plain_markdown="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF="$ts_sha" "$router" local)"
+expect_mermaid_flag "local clean/source-only state skips unchanged Mermaid blocks" false "$local_plain_markdown"
+printf '# Untracked prose only\n' >"$temp_dir/local.md"
+local_untracked_prose="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF="$ts_sha" "$router" local)"
+expect_mermaid_flag "local untracked prose without a diagram skips Mermaid" false "$local_untracked_prose"
+cat >"$temp_dir/local.md" <<'MERMAID'
+# Local diagram
+
+```mermaid
+flowchart LR
+    accTitle: Local sample
+    accDescr: Local untracked diagram for route selection.
+    A["external"] --> B["target"]
+```
+MERMAID
+local_untracked_diagram="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF="$ts_sha" "$router" local)"
+expect_mermaid_flag "local untracked diagram selects Mermaid" true "$local_untracked_diagram"
+local_unknown_base="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_BASE_REF=missing-base "$router" local)"
+expect_mermaid_flag "local unknown base fails safe to full Mermaid" true "$local_unknown_base"
 
 unknown_base_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA=0000000000000000000000000000000000000000 GITHUB_SHA="$docs_sha" "$router" github)"
 fake_all_true=$'rust=true\ndocs=true\nhygiene=true\ngui=true\nmsrv=true\ndeny=true\nts=true\nwebkitgtk=true'
 expect_flags "missing comparison base fails safe" "$fake_all_true" "$unknown_base_result"
+expect_mermaid_flag "missing comparison base runs the full Mermaid lane" true "$unknown_base_result"
 expect_output_package_token "missing comparison base still exercises the Bun lane" ts_packages 'packages/@fake/pkg' "$unknown_base_result"
 
 mkdir -p "$temp_dir/empty-bin"

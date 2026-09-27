@@ -34,7 +34,9 @@ records the current foundation priorities.
 2. Follow the [quick-start](docs/onboarding/README.md) to build and run the current demo.
 3. Read the root [engineering rules](AGENTS.md) and the nearest crate's `AGENTS.md`
    before editing code. Preserve permission checks and add a regression test for a bug.
-4. Run the relevant tests while developing, then the full local gate:
+4. Run the relevant tests while developing, then the routine local gate. Mermaid is
+   selected only when its diagram/renderer inputs change; use `just ci-full` to force a
+   full-corpus Mermaid render:
 
    ```bash
    just ci

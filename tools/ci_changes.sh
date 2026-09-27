@@ -11,6 +11,8 @@ readonly FALSE=false
 
 rust="$FALSE"
 docs="$FALSE"
+mermaid="$FALSE"
+markdown_changed="$FALSE"
 hygiene="$FALSE"
 gui="$FALSE"
 msrv="$FALSE"
@@ -28,9 +30,10 @@ declare -a changed_package_roots=()
 declare -a changed_ts_package_dirs=()
 
 usage() {
-    echo "usage: $0 {classify|github|host-dirs}" >&2
+    echo "usage: $0 {classify|github|local|host-dirs}" >&2
     echo "  classify   read NUL-delimited changed paths from stdin" >&2
     echo "  github     derive the comparison from GitHub Actions environment" >&2
+    echo "  local      derive the comparison from origin/main to the working tree" >&2
     echo "  host-dirs  print the current keld-host local dependency closure" >&2
     exit 2
 }
@@ -38,6 +41,7 @@ usage() {
 mark_all() {
     rust="$TRUE"
     docs="$TRUE"
+    mermaid="$TRUE"
     hygiene="$TRUE"
     gui="$TRUE"
     msrv="$TRUE"
@@ -58,6 +62,7 @@ mark_unknown() {
 emit() {
     printf 'rust=%s\n' "$rust"
     printf 'docs=%s\n' "$docs"
+    printf 'mermaid=%s\n' "$mermaid"
     printf 'hygiene=%s\n' "$hygiene"
     printf 'gui=%s\n' "$gui"
     printf 'msrv=%s\n' "$msrv"
@@ -478,6 +483,10 @@ host_path_is_affected() {
 classify_path() {
     local changed_file="$1"
 
+    if [[ "$changed_file" == *.md ]]; then
+        markdown_changed="$TRUE"
+    fi
+
     case "$changed_file" in
         # Agent instruction and assembly changes must run both generated-doc
         # freshness and the merge-blocking instruction-context/hygiene gates.
@@ -560,9 +569,14 @@ classify_path() {
             ;;
 
         # These tools own the generated-doc and Mermaid contracts.
-        docs/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
+        docs/research | docs/* | llms.txt | llms-full.txt | README.md | CONTRIBUTING.md | \
         tools/llms_docs.rs | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
             docs="$TRUE"
+            case "$changed_file" in
+                docs/research | tools/mermaid_docs.rs | tools/mermaid_render_check.sh | tools/mermaid-render-config.json)
+                    mermaid="$TRUE"
+                    ;;
+            esac
             ;;
 
         # These inputs own the repository-hygiene contract, but do not affect a
@@ -571,6 +585,9 @@ classify_path() {
         .gitignore | justfile | .codex/* | .agents/instruction-budget.tsv | \
         tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs)
             hygiene="$TRUE"
+            if [[ "$changed_file" == justfile || "$changed_file" == tools/ci_hygiene.rs ]]; then
+                mermaid="$TRUE"
+            fi
             ;;
 
         # A known non-executable top-level document stays in its docs lane.
@@ -587,13 +604,69 @@ classify_path() {
     esac
 }
 
+route_mermaid_diff() {
+    local mode="$1"
+    local root
+    local source_root
+    local binary
+    local selection
+    root="$(git rev-parse --show-toplevel)"
+    source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+    binary="$root/target/ci-router/mermaid-docs"
+    mkdir -p "$(dirname "$binary")"
+    if ! rustc --edition=2024 -D warnings "$source_root/tools/mermaid_docs.rs" -o "$binary"; then
+        echo "ci router: Mermaid diff classifier did not compile; selecting full Mermaid validation/rendering" >&2
+        mermaid="$TRUE"
+        return
+    fi
+    case "$mode" in
+        range)
+            selection="$("$binary" changes "$root" "$2" "$3")" || selection="unknown"
+            ;;
+        worktree)
+            selection="$("$binary" worktree "$root" "$2")" || selection="unknown"
+            ;;
+        *)
+            selection="unknown"
+            ;;
+    esac
+    case "$selection" in
+        true) mermaid="$TRUE" ;;
+        false) mermaid="$FALSE" ;;
+        *)
+            echo "ci router: Mermaid applicability is unknown; selecting full Mermaid validation/rendering" >&2
+            mermaid="$TRUE"
+            ;;
+    esac
+}
+
 classify_stream() {
+    local mode="${1:-paths}"
+    local base="${2:-}"
+    local head="${3:-}"
     host_dependency_dirs_cache="$(host_dependency_dirs)"
     local changed_file
     while IFS= read -r -d '' changed_file; do
         classify_path "$changed_file"
     done
     finalize_selection
+    if [[ "$mode" == worktree && "$markdown_changed" != "$TRUE" ]]; then
+        local root research_root research_top
+        root="$(git rev-parse --show-toplevel)"
+        research_root="$root/docs/research"
+        if [[ -d "$research_root" && ! -L "$research_root" ]] && \
+            research_top="$(git -C "$research_root" rev-parse --show-toplevel 2>/dev/null || true)" && \
+            [[ -n "$research_top" && "$research_top" == "$(cd "$research_root" && pwd -P)" ]]; then
+            markdown_changed="$TRUE"
+        fi
+    fi
+    if [[ "$mermaid" != "$TRUE" && "$markdown_changed" == "$TRUE" ]]; then
+        case "$mode" in
+            range) route_mermaid_diff range "$base" "$head" ;;
+            worktree) route_mermaid_diff worktree "$base" "$head" ;;
+            *) mermaid="$TRUE" ;; # Path-only classification has no content oracle.
+        esac
+    fi
     emit
 }
 
@@ -639,7 +712,23 @@ classify_github_event() {
     fi
 
     local result
-    result="$(git diff --no-renames --name-only -z "$base_sha" "$head_sha" | classify_stream)"
+    result="$(git diff --no-renames --name-only -z "$base_sha" "$head_sha" | classify_stream range "$base_sha" "$head_sha")"
+    publish "$result"
+}
+
+classify_local_worktree() {
+    local base="${KELD_CI_BASE_REF:-origin/main}"
+    local head
+    head="$(git rev-parse HEAD 2>/dev/null || true)"
+    if [[ -z "$head" ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null || \
+        ! git merge-base --is-ancestor "$base" "$head" >/dev/null 2>&1; then
+        mark_unknown
+        finalize_selection
+        publish "$(emit)"
+        return
+    fi
+    local result
+    result="$( { git diff --no-renames --name-only -z "$base" --; git ls-files --others --exclude-standard -z; } | classify_stream worktree "$base" "$head")"
     publish "$result"
 }
 
@@ -649,6 +738,9 @@ case "${1:-}" in
         ;;
     github)
         classify_github_event
+        ;;
+    local)
+        classify_local_worktree
         ;;
     host-dirs)
         host_dependency_dirs

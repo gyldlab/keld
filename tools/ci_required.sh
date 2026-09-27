@@ -35,20 +35,20 @@ require_routed_result() {
 }
 
 check_results() {
-    if [[ "$#" -ne 18 ]]; then
-        fail "expected 9 routed/core job results, 7 router outputs, and 2 security job results, got $#; restore the required job's complete needs and applicability handoff."
+    if [[ "$#" -ne 20 ]]; then
+        fail "expected 10 routed/core job results, 8 router outputs, and 2 security job results, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
 
     require_success "change router" "$1" || return 1
-    require_routed_result "rustfmt" "$2" "${10}" || return 1
-    require_routed_result "cross-platform clippy + test" "$3" "${10}" || return 1
-    require_routed_result "Bun TypeScript tests" "$4" "${11}" || return 1
-    require_routed_result "Linux GUI smoke" "$5" "${12}" || return 1
-    require_routed_result "MSRV" "$6" "${13}" || return 1
-    require_routed_result "cargo-deny" "$7" "${14}" || return 1
+    require_routed_result "rustfmt" "$2" "${11}" || return 1
+    require_routed_result "cross-platform clippy + test" "$3" "${11}" || return 1
+    require_routed_result "Bun TypeScript tests" "$4" "${12}" || return 1
+    require_routed_result "Linux GUI smoke" "$5" "${13}" || return 1
+    require_routed_result "MSRV" "$6" "${14}" || return 1
+    require_routed_result "cargo-deny" "$7" "${15}" || return 1
     require_success "gitleaks" "$8" || return 1
-    case "${15}:${16}" in
+    case "${16}:${17}" in
         true:true | true:false | false:true)
             require_routed_result "documentation and repository hygiene" "$9" true || return 1
             ;;
@@ -56,17 +56,22 @@ check_results() {
             require_routed_result "documentation and repository hygiene" "$9" false || return 1
             ;;
         *)
-            fail "documentation and repository hygiene received invalid router applicability '${15}:${16}'. Both router outputs must be exactly 'true' or 'false'."
+            fail "documentation and repository hygiene received invalid router applicability '${16}:${17}'. Both router outputs must be exactly 'true' or 'false'."
             return 1
             ;;
     esac
-    require_success "CodeQL analysis and upload" "${17}" || return 1
-    require_success "dependency review" "${18}" || return 1
+    require_routed_result "Mermaid diagram validation/render" "${10}" "${18}" || return 1
+    require_success "CodeQL analysis and upload" "${19}" || return 1
+    require_success "dependency review" "${20}" || return 1
 }
 
 expect_pass() {
     local label="$1"
     shift
+    if [[ "$#" -eq 18 ]]; then
+        local -a legacy=("$@")
+        set -- "${legacy[@]:0:9}" skipped "${legacy[@]:9:7}" false "${legacy[@]:16:2}"
+    fi
     if ! check_results "$@" >/dev/null 2>&1; then
         fail "self-test '$label' unexpectedly failed"
     fi
@@ -75,6 +80,10 @@ expect_pass() {
 expect_fail() {
     local label="$1"
     shift
+    if [[ "$#" -eq 18 ]]; then
+        local -a legacy=("$@")
+        set -- "${legacy[@]:0:9}" skipped "${legacy[@]:9:7}" false "${legacy[@]:16:2}"
+    fi
     if check_results "$@" >/dev/null 2>&1; then
         fail "self-test '$label' unexpectedly passed"
     fi
@@ -87,6 +96,19 @@ self_test() {
     expect_pass "router-proven inapplicable jobs skip" \
         success skipped skipped skipped skipped skipped skipped success skipped \
         false false false false false false false success success
+
+    expect_pass "selected Mermaid validation and rendering succeeds" \
+        success success success success success success success success success success \
+        true true true true true true true true success success
+    expect_fail "selected Mermaid rendering cannot be skipped" \
+        success skipped skipped skipped skipped skipped skipped success skipped skipped \
+        false false false false false false false true success success
+    expect_fail "unselected Mermaid job must be skipped" \
+        success skipped skipped skipped skipped skipped skipped success skipped success \
+        false false false false false false false false success success
+    expect_fail "invalid Mermaid applicability is not evidence" \
+        success skipped skipped skipped skipped skipped skipped success skipped skipped \
+        false false false false false false false missing success success
 
     expect_fail "missing gitleaks is not green" \
         success skipped skipped skipped skipped skipped skipped skipped skipped \
@@ -112,6 +134,11 @@ self_test() {
     expect_fail "missing result handoff is rejected" \
         success skipped skipped skipped skipped skipped skipped success skipped \
         false false false false false false success success
+    if check_results success skipped skipped skipped skipped skipped skipped success skipped \
+        false false false false false false false false success >/dev/null 2>&1; then
+        fail "missing Mermaid result handoff was accepted"
+    fi
+    echo "ok: missing Mermaid result handoff is rejected"
 
     local result
     for result in skipped cancelled failure missing ''; do
@@ -143,7 +170,7 @@ case "${1:-}" in
         self_test
         ;;
     *)
-        fail "unknown or missing command '${1:-}'. Use 'check' with 9 core job results, 7 router outputs, and 2 security job results, or 'test'."
+        fail "unknown or missing command '${1:-}'. Use 'check' with 10 core job results, 8 router outputs, and 2 security job results, or 'test'."
         exit 1
         ;;
 esac
