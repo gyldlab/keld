@@ -26,6 +26,8 @@ mod recovery;
 mod startup_rollback;
 #[path = "no_flag/macos/support/mod.rs"]
 mod support;
+#[path = "no_flag/macos/wait_capture.rs"]
+mod wait_capture;
 
 use std::io::Read;
 use std::os::unix::net::{UnixDatagram, UnixListener};
