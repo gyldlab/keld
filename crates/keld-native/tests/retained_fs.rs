@@ -8,6 +8,12 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+#[cfg(windows)]
+#[path = "support/windows_handle_census.rs"]
+mod windows_handle_census;
+#[cfg(windows)]
+use windows_handle_census::owner_handle_count;
+
 fn owned_root_under(base: &Path, case: &str) -> PathBuf {
     let root = base.join(format!(
         "keld-kel130-{case}-{}-{}",
@@ -251,30 +257,6 @@ fn owner_handle_count() -> usize {
     std::fs::read_dir("/dev/fd")
         .expect("open owner handle census")
         .count()
-}
-
-#[cfg(windows)]
-fn owner_handle_count() -> usize {
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "(Get-Process -Id $env:KEL130_PARENT_PID).HandleCount",
-        ])
-        .env("KEL130_PARENT_PID", std::process::id().to_string())
-        .output()
-        .expect("query owner process handle count");
-    assert!(
-        output.status.success(),
-        "handle census failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("handle count is UTF-8")
-        .trim()
-        .parse()
-        .expect("handle count is an integer")
 }
 
 #[cfg(unix)]

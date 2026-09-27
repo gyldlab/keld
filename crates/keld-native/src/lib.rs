@@ -8,6 +8,10 @@
 
 pub mod fs;
 
+#[cfg(all(test, windows))]
+#[path = "../tests/support/windows_handle_census.rs"]
+mod windows_handle_census;
+
 /// Native modules planned for the v0.x surface, used by doctor/manifest tooling.
 pub const MODULES: &[&str] = &[
     "window",
