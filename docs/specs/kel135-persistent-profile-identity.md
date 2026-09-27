@@ -769,7 +769,7 @@ permission or prove permission persistence. Repeat with:
 ```sh
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_media_permission_query_is_observed_without_capture \
+  media::query::kel135_macos_media_permission_query_is_observed_without_capture \
   -- --exact --ignored --nocapture
 ```
 
@@ -821,23 +821,23 @@ then run:
 ```sh
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_package_identity_uses_only_validated_running_signature_facts \
+  profiles::identity::kel135_macos_package_identity_uses_only_validated_running_signature_facts \
   -- --exact --ignored --nocapture
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_signed_profiles_isolate_same_origin_state_across_launches \
+  profiles::storage::kel135_macos_signed_profiles_isolate_same_origin_state_across_launches \
   -- --exact --ignored --nocapture
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_same_signed_profile_rejects_concurrent_owner \
+  profiles::lifecycle::kel135_macos_same_signed_profile_rejects_concurrent_owner \
   -- --exact --ignored --nocapture
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_binding_recovers_after_process_crash \
+  profiles::lifecycle::kel135_macos_binding_recovers_after_process_crash \
   -- --exact --ignored --nocapture
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_dev_profiles_are_ephemeral_across_launches \
+  profiles::storage::kel135_macos_dev_profiles_are_ephemeral_across_launches \
   -- --exact --nocapture
 ```
 
@@ -893,7 +893,7 @@ authenticated sudo session, run:
 KELD_KEL135_SECOND_USER=<temporary-login-name> \
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_second_user_cannot_read_same_signed_profile_state \
+  profiles::cross_user::kel135_macos_second_user_cannot_read_same_signed_profile_state \
   -- --exact --ignored --nocapture
 ```
 
@@ -908,7 +908,7 @@ KELD_KEL135_REBOOT_ROOT="$KELD_TEST_TMP/reboot-run" \
 KELD_KEL135_REBOOT_PHASE=prepare \
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_crash_quarantine_recovers_only_after_real_reboot \
+  profiles::reboot::kel135_macos_crash_quarantine_recovers_only_after_real_reboot \
   -- --exact --ignored --nocapture
 ```
 
@@ -921,7 +921,7 @@ KELD_KEL135_REBOOT_ROOT="$KELD_TEST_TMP/reboot-run" \
 KELD_KEL135_REBOOT_PHASE=resume \
 cargo test -p keld-host --test no_flag_macos --features profile-test-hooks \
   --target aarch64-apple-darwin \
-  kel135_macos_crash_quarantine_recovers_only_after_real_reboot \
+  profiles::reboot::kel135_macos_crash_quarantine_recovers_only_after_real_reboot \
   -- --exact --ignored --nocapture
 ```
 
