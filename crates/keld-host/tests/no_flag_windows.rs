@@ -2354,33 +2354,69 @@ fn shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup() {
     // A separate hidden console keeps the real broadcast away from nextest and
     // unrelated tests. Only the inner observer ignores Ctrl+C, after CLI spawn.
     if std::env::var_os("KELD_T4_CONSOLE_CASE").is_none() {
-        let capture = tempfile::tempdir().expect("console test captures");
-        let stdout = capture.path().join("stdout");
-        let stderr = capture.path().join("stderr");
-        let output = Command::new("powershell.exe")
+        let stdout = run_isolated_console_case(
+            "shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        print!("{stdout}");
+        return;
+    }
+    run_console_ctrl_c_case();
+}
+
+#[test]
+fn isolated_console_rejects_a_missing_exact_selector() {
+    let error = run_isolated_console_case("kel271_known_absent_console_selector")
+        .expect_err("a successful zero-test child must not satisfy console acceptance");
+    assert!(
+        error.contains("isolated console missing completed Ctrl+C/relaunch observations"),
+        "an unrelated subprocess failure is not the selector regression: {error}"
+    );
+    assert!(error.contains("running 0 tests"), "{error}");
+}
+
+fn run_isolated_console_case(selector: &str) -> Result<String, String> {
+    let capture = tempfile::tempdir().expect("console test captures");
+    let stdout = capture.path().join("stdout");
+    let stderr = capture.path().join("stderr");
+    let output = Command::new("powershell.exe")
             .args([
                 "-NoProfile", "-NonInteractive", "-Command",
-                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath $env:KELD_T4_CONSOLE_EXE -ArgumentList @('shipping_windows_ctrl_c_preserves_host_output_and_ordered_cleanup','--exact','--nocapture') -WindowStyle Hidden -RedirectStandardOutput $env:KELD_T4_CONSOLE_STDOUT -RedirectStandardError $env:KELD_T4_CONSOLE_STDERR -PassThru; $null=$p.Handle; if (!$p.WaitForExit(90000)) { $p.Kill(); throw 'isolated console regression timed out' }; if ($null -eq $p.ExitCode) { throw 'missing isolated console exit status' }; exit $p.ExitCode",
+                "$ErrorActionPreference='Stop'; $p=Start-Process -FilePath $env:KELD_T4_CONSOLE_EXE -ArgumentList @($env:KELD_T4_CONSOLE_SELECTOR,'--exact','--nocapture') -WindowStyle Hidden -RedirectStandardOutput $env:KELD_T4_CONSOLE_STDOUT -RedirectStandardError $env:KELD_T4_CONSOLE_STDERR -PassThru; $null=$p.Handle; if (!$p.WaitForExit(90000)) { $p.Kill(); throw 'isolated console regression timed out' }; if ($null -eq $p.ExitCode) { throw 'missing isolated console exit status' }; exit $p.ExitCode",
             ])
             .env("KELD_T4_CONSOLE_CASE", "1")
+            .env("KELD_T4_CONSOLE_SELECTOR", selector)
             .env("KELD_T4_CONSOLE_PARENT", std::process::id().to_string())
             .env("KELD_T4_CONSOLE_EXE", std::env::current_exe().expect("test executable"))
             .env("KELD_T4_CONSOLE_STDOUT", &stdout)
             .env("KELD_T4_CONSOLE_STDERR", &stderr)
             .output()
             .expect("start isolated console regression");
-        let stdout = fs::read_to_string(stdout).expect("console stdout");
-        let stderr = fs::read_to_string(stderr).expect("console stderr");
-        assert!(
-            output.status.success(),
+    let stdout = fs::read_to_string(stdout).expect("console stdout");
+    let stderr = fs::read_to_string(stderr).expect("console stderr");
+    if !output.status.success() {
+        return Err(format!(
             "isolated console failed: {}\n{stdout}\n{stderr}\n{}",
             output.status,
             String::from_utf8_lossy(&output.stderr)
-        );
-        print!("{stdout}");
-        return;
+        ));
     }
-    run_console_ctrl_c_case();
+    // Libtest also exits successfully when --exact selects zero tests. Require
+    // the existing native observation and healthy-relaunch effects as well.
+    if !stdout
+        .lines()
+        .any(|line| line.starts_with("KELD_WINDOWS_CTRL_C cli="))
+        || !stdout
+            .lines()
+            .any(|line| line.starts_with("KELD_WINDOWS_CTRL_C_RELAUNCH host="))
+    {
+        return Err(format!(
+            "isolated console missing completed Ctrl+C/relaunch observations: {}\n{stdout}\n{stderr}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(stdout)
 }
 
 fn run_console_ctrl_c_case() {
