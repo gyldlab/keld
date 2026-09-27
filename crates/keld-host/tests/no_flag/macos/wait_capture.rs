@@ -165,9 +165,7 @@ fn failed_wait(mode: &str) {
     assert!(process_exists(pid), "subject starts live");
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         cycle.wait_host_observing(|| {
-            if mode == "panic" {
-                panic!("KEL272_OBSERVER_PANIC");
-            }
+            assert!(mode != "panic", "KEL272_OBSERVER_PANIC");
         })
     }));
     assert!(failure.is_err(), "wait must reject {mode}");
@@ -189,7 +187,7 @@ fn failed_wait(mode: &str) {
 }
 
 fn inherited_writer() {
-    const PROGRAM: &str = r#"
+    const PROGRAM: &str = r"
 import os, socket, sys
 control = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 control.connect(sys.argv[1])
@@ -199,7 +197,7 @@ if pid:
 control.sendall((str(os.getpid()) + '\n').encode())
 assert control.recv(1) == b'R'
 os._exit(0)
-"#;
+";
     let root = tempfile::tempdir().expect("inherited writer control root");
     let path = root.path().join("writer.sock");
     let listener = UnixListener::bind(&path).expect("writer control listener");
