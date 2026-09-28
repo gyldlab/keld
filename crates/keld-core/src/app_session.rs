@@ -186,6 +186,7 @@ struct SessionShutdownState {
     cause: Arc<AtomicU8>,
     transition: Arc<Mutex<()>>,
     reader_stop: Arc<AtomicBool>,
+    generation_reader_stops: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     tail_started: Arc<AtomicBool>,
 }
 /// Opaque host-owned selection minted only from the staged executable layout.
@@ -1251,6 +1252,7 @@ impl SessionShutdownState {
             cause: Arc::new(AtomicU8::new(SESSION_RUNNING)),
             transition: Arc::new(Mutex::new(())),
             reader_stop: Arc::new(AtomicBool::new(false)),
+            generation_reader_stops: Arc::new(Mutex::new(Vec::new())),
             tail_started: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -1298,7 +1300,24 @@ impl SessionShutdownState {
     }
 
     fn stop_reader(&self) {
+        let readers = self
+            .generation_reader_stops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.reader_stop.store(true, Ordering::Release);
+        for reader in readers.iter() {
+            reader.store(true, Ordering::Release);
+        }
+    }
+
+    fn register_generation_reader(&self) -> Arc<AtomicBool> {
+        let mut readers = self
+            .generation_reader_stops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reader = Arc::new(AtomicBool::new(self.reader_stop.load(Ordering::Acquire)));
+        readers.push(Arc::clone(&reader));
+        reader
     }
 
     fn begin_tail(&self) -> bool {
@@ -4041,6 +4060,7 @@ type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
 struct ActivePrimaryGeneration {
     attempt: u32,
     writer: BootstrapStream,
+    reader_stop: Arc<AtomicBool>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -4233,6 +4253,7 @@ impl PrimaryRouterHandle {
         writer_stream
             .set_app_link_write_deadline(Some(APP_LINK_IO_DEADLINE))
             .map_err(|source| app_io("primary session writer deadline", &source))?;
+        let reader_stop;
         {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() {
@@ -4248,9 +4269,11 @@ impl PrimaryRouterHandle {
                     "successor bound before the retired generation was revoked",
                 ));
             }
+            reader_stop = self.shutdown.register_generation_reader();
             *current = Some(ActivePrimaryGeneration {
                 attempt,
                 writer: writer_stream,
+                reader_stop: Arc::clone(&reader_stop),
             });
             drop(current);
             // Publication and retained replay are one transition with live
@@ -4267,7 +4290,7 @@ impl PrimaryRouterHandle {
         let reader = thread::Builder::new()
             .name(format!("keld-core-primary-router-{attempt}"))
             .spawn(move || {
-                let mut result = read_primary_frames(&mut stream, &handle, attempt);
+                let mut result = read_primary_frames(&mut stream, &handle, attempt, &reader_stop);
                 if result.is_err() && !handle.is_current(attempt) {
                     result = Ok(());
                 }
@@ -4298,6 +4321,7 @@ impl PrimaryRouterHandle {
                 .is_some_and(|active| active.attempt == attempt)
                 && let Some(active) = current.take()
             {
+                active.reader_stop.store(true, Ordering::Release);
                 finish_link_shutdown(
                     active.writer.shutdown_app_link(),
                     "retired primary generation link close",
@@ -4432,6 +4456,7 @@ fn read_primary_frames(
     reader: &mut BootstrapStream,
     handle: &PrimaryRouterHandle,
     attempt: u32,
+    reader_stop: &AtomicBool,
 ) -> Result<(), HostAppError> {
     loop {
         if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -4443,8 +4468,7 @@ fn read_primary_frames(
         // unknown-channel and unexpected-kind arms below it are deleted.
         let policy = ReceivePolicy::primary_app_receiver();
         let (header, payload) =
-            match read_validated_frame_interruptible(reader, &policy, &handle.shutdown.reader_stop)
-            {
+            match read_validated_frame_interruptible(reader, &policy, reader_stop) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
                     if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -4769,6 +4793,92 @@ mod tests {
     use super::*;
 
     const DIGEST: &str = "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    struct ReapedRouterProbe(std::process::Child);
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    impl Drop for ReapedRouterProbe {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    const RECOVERED_CHILD_ENV: &str = "KELD_CORE_TEST_RECOVERED_EVENT_ORDER_CHILD";
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    const RECOVERED_CHILD_OBSERVED: &str = "KELD_CORE_RECOVERED_EVENT_ORDER_OBSERVED";
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn assert_bounded_recovered_event_order_child() {
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        use std::process::{Command, Stdio};
+
+        const SELECTOR: &str = "app_session::tests::recovered_generation_orders_window_events_once_across_installation";
+        let mut stdout = tempfile::tempfile().expect("private child stdout");
+        let mut stderr = tempfile::tempfile().expect("private child stderr");
+        let mut child = ReapedRouterProbe(
+            Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", SELECTOR, "--nocapture"])
+                .env(RECOVERED_CHILD_ENV, "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(stdout.try_clone().expect("child stdout clone")))
+                .stderr(Stdio::from(stderr.try_clone().expect("child stderr clone")))
+                .spawn()
+                .expect("spawn isolated event-order test"),
+        );
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.0.try_wait().expect("inspect event-order child") {
+                break status;
+            }
+            if started.elapsed() >= Duration::from_secs(10) {
+                child.0.kill().expect("kill blocked event-order child");
+                let status = child.0.wait().expect("reap blocked event-order child");
+                stdout
+                    .seek(SeekFrom::Start(0))
+                    .expect("rewind child stdout");
+                stderr
+                    .seek(SeekFrom::Start(0))
+                    .expect("rewind child stderr");
+                let mut output = String::new();
+                let mut detail = String::new();
+                stdout
+                    .read_to_string(&mut output)
+                    .expect("read child stdout");
+                stderr
+                    .read_to_string(&mut detail)
+                    .expect("read child stderr");
+                panic!(
+                    "event-order child exceeded 10-second cleanup bound: status={status}, stdout={output}, stderr={detail}"
+                );
+            }
+            std::thread::park_timeout(Duration::from_millis(10));
+        };
+        stdout
+            .seek(SeekFrom::Start(0))
+            .expect("rewind child stdout");
+        stderr
+            .seek(SeekFrom::Start(0))
+            .expect("rewind child stderr");
+        let mut output = String::new();
+        let mut detail = String::new();
+        stdout
+            .read_to_string(&mut output)
+            .expect("read child stdout");
+        stderr
+            .read_to_string(&mut detail)
+            .expect("read child stderr");
+        assert!(
+            status.success()
+                && output.contains(RECOVERED_CHILD_OBSERVED)
+                && output.contains("test result: ok. 1 passed; 0 failed;"),
+            "isolated event-order proof failed: status={status}, stdout={output}, stderr={detail}"
+        );
+    }
 
     #[test]
     #[cfg(target_os = "macos")]
@@ -5680,6 +5790,10 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn recovered_generation_orders_window_events_once_across_installation() {
         use std::os::unix::net::UnixStream;
+        if std::env::var_os(RECOVERED_CHILD_ENV).is_none() {
+            assert_bounded_recovered_event_order_child();
+            return;
+        }
 
         // Gap, live delivery overlapping reader registration, and delivery after
         // installation are distinct schedules of the same real framed router.
@@ -5738,8 +5852,27 @@ mod tests {
                 [LifecycleEvent::Ready, LifecycleEvent::LastWindowClosed],
                 "close during {close_at}"
             );
+            let retire_deadline = Instant::now() + Duration::from_secs(3);
+            let retired_reader_finished = loop {
+                let finished = handle
+                    .readers
+                    .lock()
+                    .expect("reader registry")
+                    .get(&1)
+                    .expect("retired reader remains registered")
+                    .is_finished();
+                if finished || Instant::now() >= retire_deadline {
+                    break finished;
+                }
+                std::thread::yield_now();
+            };
+            assert!(
+                retired_reader_finished,
+                "retired G1 reader remained live with its peer open after {close_at}"
+            );
             router.shutdown().expect("router shutdown");
         }
+        println!("{RECOVERED_CHILD_OBSERVED}");
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -5875,6 +6008,7 @@ mod tests {
             current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
                 attempt: 1,
                 writer: server,
+                reader_stop: Arc::new(AtomicBool::new(false)),
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             window_ready: Arc::new(AtomicBool::new(false)),
@@ -5998,6 +6132,7 @@ mod tests {
             current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
                 attempt: 1,
                 writer: server,
+                reader_stop: Arc::new(AtomicBool::new(false)),
             }))),
             readers: Arc::new(Mutex::new(HashMap::new())),
             window_ready: Arc::new(AtomicBool::new(false)),
@@ -6330,6 +6465,27 @@ mod tests {
             .expect_err("terminal attribution failure must remain visible");
         assert!(error.to_string().contains("forced attribution failure"));
         guardian_thread.join().expect("guardian thread joins");
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn generation_reader_stop_preserves_successor_and_terminal_scope() {
+        let shutdown = SessionShutdownState::new();
+        let retired = shutdown.register_generation_reader();
+        let successor = shutdown.register_generation_reader();
+        retired.store(true, Ordering::Release);
+        assert!(retired.load(Ordering::Acquire));
+        assert!(!successor.load(Ordering::Acquire));
+        assert!(!shutdown.reader_stop.load(Ordering::Acquire));
+
+        shutdown.stop_reader();
+        assert!(successor.load(Ordering::Acquire));
+        assert!(
+            shutdown
+                .register_generation_reader()
+                .load(Ordering::Acquire),
+            "a reader registered after terminal shutdown must start stopped"
+        );
     }
 
     #[test]
