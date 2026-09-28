@@ -72,8 +72,10 @@ fn mermaid_ranges(contents: &str) -> Vec<(usize, usize, MermaidFence, bool)> {
     while index < lines.len() {
         if let Some(fence) = mermaid_fence(lines[index]) {
             let start = index;
+            // A malformed colon fence must not consume the next backtick block.
+            let marker = &lines[start].trim()[..3];
             index += 1;
-            while index < lines.len() && lines[index].trim() != "```" {
+            while index < lines.len() && lines[index].trim() != marker {
                 index += 1;
             }
             let closed = index < lines.len();
@@ -828,6 +830,10 @@ flowchart LR
         let colon_fence = ":::mermaid\nflowchart LR\nA --> B\n:::\n";
         assert!(changed_diagram_blocks("# plain prose\n", colon_fence));
         assert!(!validate_markdown(Path::new("doc.md"), colon_fence).is_empty());
+
+        let followed_by_valid = format!("{colon_fence}{VALID}");
+        assert_eq!(diagram_blocks(&followed_by_valid).len(), 2);
+        assert_eq!(validate_markdown(Path::new("doc.md"), &followed_by_valid).len(), 1);
     }
 
     #[test]
