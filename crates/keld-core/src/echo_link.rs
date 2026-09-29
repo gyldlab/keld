@@ -182,6 +182,9 @@ fn parse_decimal_diagnostic_port(endpoint: &str) -> Result<u16, keld_ipc::IpcErr
         })
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod ac9_macos_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
