@@ -1,9 +1,12 @@
 # Spec: macOS minimum renderer bridge and `@keld/api` lifecycle/channel
 
-**Status:** draft  
-**Linear:** KEL-142  
-**Parent contract:** KEL-139  
+**Status:** approved
+**Linear:** KEL-142
+**Parent contract:** KEL-139
 **Updated:** 2026-09-30
+**Approval:** active user session · approved content head `2e8da1b7ba19783eceb671093620419664537415` · Linear comment `53510bc6-66e0-441c-8992-010b6a8719e6` · decision SHA-256 `8e97d6daf9fe516b3844827bf0138af66a8343e37892ea278387f4f7c503a4a7`
+
+{"schema":"keld.kel142-approval/v1","decision":"approved","approved_content_head":"2e8da1b7ba19783eceb671093620419664537415","linear_comment_id":"53510bc6-66e0-441c-8992-010b6a8719e6","source":"active-user-voice-session-2026-09-30"}
 
 ## 1. Goal
 
