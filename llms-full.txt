@@ -2870,6 +2870,47 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 - UI hooks, `autoUpdater` compatibility and the bridge-release recipe remain target
   behavior. All platform/format/channel support cells qualify independently.
 
+### Windows install modes and update authority
+
+The default Windows direct install is per-user under the installing user's
+`FOLDERID_LocalAppData` application tree. `PerUserDirect` updates run as that ordinary
+user without UAC; strict Keld role restrictions deny Bun/webview writes to the install
+and updater state. This does not claim protection from the owning user or arbitrary
+native malware already running as that user.
+
+An explicitly selected Program Files installation records one of two machine-wide
+modes. `MachineUacDirect` is the simple fallback: its trusted installer provisions an
+ACL that grants mutation to elevated Administrators and SYSTEM while ordinary users and
+Keld roles receive read/execute only. Each protected activation invokes a fixed signed
+updater helper through UAC. Cancellation performs no protected write. The helper owns
+that live attempt through commit/rollback and starts the exact candidate as the
+initiating ordinary user, including when a different administrator approves UAC. If
+the elevated owner exits or Windows restarts before resolution, recovery requires new
+consent or remains halted with the attempt unresolved. The application and Bun roles
+never run elevated or as SYSTEM. This ACL profile differs from KEL-266's SYSTEM-only
+machine-baseline profile; updates never take ownership or repair ACLs ad hoc.
+
+`MachineSeamlessDirect` is an explicit opt-in for machine-wide installs. The product
+requires no repeated UAC and the same common updater guarantees, but its privileged
+authority mechanism remains unselected. A fixed Scheduled Task is only a candidate; a
+service or other Windows-native mechanism must meet the same authentication, fresh
+attempt, replay, exclusive-writer, process-family, ordinary-user launch, exact-health
+and crash/reboot-recovery contract before selection. A privileged trigger is a wake-up,
+never update authorization. Do not add a broad broker. Package/deployment-managed
+installations record `Managed(owner)` and defer mutation to MSIX/App Installer, Store,
+enterprise deployment or the owning package manager.
+
+Every direct mode uses the single `keld-update` transaction below. Mode selection changes
+only how the updater obtains its one exclusive write lease; signed-candidate
+verification, floor, journal, staging, current/LKG, candidate health, commit/rollback
+and crash recovery have one owner and identical semantics. KEL-135 owns publisher/app/
+profile identity. KEL-53 alone mints `ActivePackageSelection` from journal/current/LKG and
+owns mode provenance and the sole updater writer. KEL-254 verifies installed-image and
+protection profiles but never selects current/LKG or mints an active selection. KEL-96/
+`keld-core` consumes `ActivePackageSelection`, performs host boot admission and returns
+`ValidatedBootSelection` to the ordinary-user host. No boot/profile owner grants updater
+write authority or infers mode from a path.
+
 ### 4a. v0 manifest & feed wire contract (KEL-53 trigger)
 
 This subsection is the byte-level contract for signed-manifest and full-package
@@ -3177,21 +3218,40 @@ the consumer checks its exact bytes before any extraction. macOS/Linux and any
 package requiring executable modes, links or other v0-excluded metadata remain blocked
 on an approved KEL-137 representation.
 
-The installer creates an OS-protected provenance record naming app id, channel, target,
-install root, update root, installed baseline artifact, compiled-in signing-key identity
-channel owner and the admitted strict/distinct-OS-principal security profile.
-`Direct` admits the updater only when every value matches the running host.
-`Managed(mechanism)` refuses mutation and names the store/package manager.
-Missing/mutable/mismatched provenance also refuses before feed access or filesystem
-mutation. Paths, executable names, registry-location guesses and writable config never
-infer direct ownership. Legacy same-user role mode refuses direct update because its
-role token cannot be ACL-distinguished from the per-user host. The installer first
-writes and synchronizes the immutable
+The trusted installer creates provenance naming app id, channel, target, install root,
+update root, installed baseline artifact, compiled-in signing-key identity, install
+mode, installation owner and the admitted mode-specific OS protection profile.
+`PerUserDirect` is the default and records its LocalAppData user owner. `MachineUacDirect`
+records the Program Files profile writable by elevated Administrators/SYSTEM and
+read/execute for ordinary users/Keld roles. `MachineSeamlessDirect` is explicit opt-in
+and retains the SYSTEM-protected machine profile; its runtime authority remains a
+separate unselected gate. `Managed(mechanism)` records the package/deployment owner and
+refuses direct mutation before feed access. `Direct` admits the updater only when every
+recorded value matches the running host. Provenance changed by a principal outside its
+mode's admitted writer authority refuses before feed access or filesystem mutation;
+owning-user modification is excluded from the PerUserDirect threat claim. Missing or
+mismatched provenance refuses. Paths, executable names,
+registry-location guesses and writable config never infer mode or direct ownership.
+Legacy same-user role mode refuses direct update because its role token cannot be
+restricted away from updater state. The installer first writes and synchronizes the immutable
 baseline version directory, then durably seeds `version-floor`, `current` and
 `last-known-good` to that exact baseline artifact/version, and publishes provenance
 last as the install transaction's commit record. Once direct provenance exists, a
 missing/corrupt floor fails closed; it never means “accept any signed version.” The
 first update therefore has both a replay floor and authenticated rollback destination.
+
+KEL-266's actual SYSTEM initializer implements only the protected machine baseline
+profile. It is not the default per-user installer or the Machine-UAC writer. The latter
+uses a separately provisioned Administrators/SYSTEM DACL and a signed UAC helper; no
+update may repair descriptors or take ownership. The Machine-UAC helper is the authority
+adapter for the common transaction: it authenticates its bootstrap from the admitted
+host, reuses the shared verifier on the exact staged candidate, and obtains the write
+lease before creating the protected journal. UAC consent alone and caller-supplied
+paths/argv/environment are not attempt authorization. The optional post-exit helper
+described below remains a separate inherited-handle-only component for an already
+journaled attempt; it has no manifest/package parser. Per-user bootstrap uses the same
+signature, baseline and local-record validators while installing under the owning
+user's LocalAppData tree.
 
 **Independent trust and runnable-state owners.**
 
@@ -3233,10 +3293,16 @@ Unknown journal versions, duplicate/missing fields, noncanonical values, replaye
 ids, artifact/pointer mismatch and mixed component sets fail closed. Directory presence,
 the trust floor or a generic health marker cannot reconstruct or replace journal facts.
 
-**Single-writer transition.** One protected lock serializes selection through recovery:
+**Single-writer transition.** One mode-specific authority adapter obtains the same
+installation-wide exclusive write lease and serializes selection through recovery. It
+does not change journal semantics. `PerUserDirect` uses the ordinary user-owned updater;
+`MachineUacDirect` uses the live explicitly elevated helper; `MachineSeamlessDirect`
+remains unavailable until its coordinator passes the named proof gate; `Managed(owner)`
+does not enter this transaction:
 
-1. Validate direct-channel provenance; verify and stage `full`; validate the
-   policy; retain valid current as the rollback target plus both known-good slots.
+1. Validate direct-channel provenance and mode; obtain the mode's exclusive write lease;
+   verify and stage `full`; validate the policy; retain valid current as the rollback
+   target plus both known-good slots.
 2. Durably write `publish-pending` with exact attempt/artifact identities.
 3. Durably advance `version-floor`. A crash cannot expose a candidate while
    still allowing its version or an older one to be re-offered as new.
@@ -3276,7 +3342,11 @@ before ordinary updater startup. Candidate mode verifies the exact
 attempt/current/artifact, does not acquire the writer lock or invoke orphan recovery,
 starts the application and reports boot/Ready/health over that channel. It cannot write
 the journal or commit itself. A missing/replayed/mismatched endpoint fails before app
-code. A normal startup has no endpoint and follows the recovery path below.
+code. The candidate runs under the initiating ordinary user's token/session in every
+direct mode; an elevated helper or SYSTEM coordinator must not run the application or a
+Bun role with its own token. UAC approval authority and the initiating-user candidate
+identity are separate facts, including over-the-shoulder consent. A normal startup has
+no endpoint and follows the recovery path below.
 
 **Startup recovery.** With no journal, validate the protected provenance, floor,
 `current`, both known-good slots, policy and complete markers. If current is
@@ -3355,11 +3425,14 @@ health-channel identities. Replayed attempt, endpoint substitution/reuse, helper
 substitution, mixed
 host/runtime/app/native-role set or path substitution rejects.
 
-In an admitted strict/distinct-OS-principal package, application roles and webviews
-cannot write provenance, trust root, floor, journal, packages, pointers, helper inputs
-or install state. Legacy same-user role mode refuses direct update. This boundary does
-not claim protection from administrators or arbitrary same-user native malware on an
-already compromised host account.
+In every admitted direct mode, application roles and webviews cannot write provenance,
+trust root, floor, journal, packages, pointers, helper inputs or install state. The
+per-user updater and host may share the ordinary user's OS identity, but strict role
+restrictions must still deny Keld roles write access to that user's updater state.
+Legacy same-user role mode refuses direct update. Per-user mode does not protect against
+its owning user or arbitrary same-user native malware; machine modes do not protect
+against administrators or arbitrary native malware on an already compromised host
+account.
 
 The first slice exposes no migration hook and accepts only the content-hashed
 `dataMigration:"none"` policy. A release requiring data migration waits for a

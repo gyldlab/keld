@@ -8,6 +8,12 @@ Approval: original corrected contract: Linear comment `b343d835-1528-461f-bda4-0
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"3d5d51e31237c365847a1e9b866880ba06429e2e","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"df61a6f6-3215-44a8-8780-7ae242fc74ab","source":"delegated-maintainer-session-2026-09-26"}
 {"schema":"keld.kel53-approval/v1","decision":"approved","approved_content_head":"3d5d51e31237c365847a1e9b866880ba06429e2e","approver_id":"49ccfebb-c3fb-40a3-abb2-a3bf92e83cb1","linear_comment_id":"212a2039-f729-4708-a983-9a348d299bd5","source":"delegated-maintainer-session-2026-09-26"}
 
+Windows multi-mode product decision and T1 synchronization authorization: owner decision
+recorded in Linear comment `e5572b4a-9643-4847-8ed2-c419e2198fc6`, bound to the
+pre-receipt activation-spec SHA-256 `4213CE3E9BED2EA380622A162763702EC321DC50297E2DB275844A983B73EAFF`
+and Architecture 06 SHA-256 `F14586C97AA475561A15DDFDB988E839E3FB6594DE3407C65669AA5EF3F8D40E`.
+The no-repeat-UAC product mode is approved; its specific privileged mechanism is not.
+
 KEL-265 T3b amendment: delegated approval comment
 `559df4c6-b8b1-4a47-ae81-2311e2743eb6`, approved content head
 `bb3d863e20d495349aa64807bafa598ffa4f31b0`, file SHA-256
@@ -31,13 +37,17 @@ LPAC evidence within the same issue; it does not claim activation or installed b
 
 ## 1. Goal & non-goals
 
-Keld's direct updater must first prove one safe signed full-package
-install/activation/recovery path. The first admitted cell is a Windows x64
-direct-distribution package whose complete file tree fits the existing v0 canonical
-archive. The updater verifies one signed release, stages exact bytes, publishes one
-attempt-bound candidate, and either commits its exact health receipt or restores the
-retained last-known-good package. Delta patches remain a later optional transport
-optimization.
+Keld's direct updater must prove one safe signed full-package
+install/activation/recovery path. The first admitted package cell is Windows x64
+direct distribution whose complete file tree fits the existing v0 canonical archive.
+Its default installation mode is per-user with seamless no-UAC updates. An explicitly
+selected Program Files installation supports both per-update explicit-UAC activation
+and opt-in seamless machine-wide activation, with the latter's privileged mechanism
+gated on separate proof. Package/deployment-managed installs defer mutation to their
+owner. One updater verifies a signed release, stages exact bytes, journals and publishes
+one attempt-bound candidate, confirms its exact health receipt, then commits or recovers
+to the retained last-known-good package. Delta patches remain a later optional
+transport optimization.
 
 Non-goals:
 
@@ -49,6 +59,10 @@ Non-goals:
   back in the first slice;
 - no arbitrary relaunch helper, shell command, self-update plugin, or role-writable
   update state;
+- no inference of install mode from Program Files, LocalAppData, executable path,
+  registry location, environment or writable configuration;
+- no selected no-UAC machine coordinator until its named authentication, replay,
+  writer, lifecycle, health and recovery proofs pass;
 - no TUF-style rotating-root design beyond the existing v0 single-key limitation;
 - no implementation before this approved corrected specification lands.
 
@@ -92,13 +106,24 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
-1. Given a direct-distribution installation, startup consumes an installer-created,
-   OS-protected provenance record naming the exact app id, channel, target, install
-   root, update root, installed baseline artifact and compiled-in signing-key identity.
-   It also binds the admitted strict/distinct-OS-principal security profile. A missing,
-   mutable, mismatched, legacy-profile or package-manager/store-owned record refuses
-   direct update before feed access or filesystem mutation. Paths or executable names
-   never infer channel owner.
+1. Given a direct-distribution installation, startup consumes installer-created
+   provenance binding the exact app id, channel, target, install root, update root,
+   installed baseline artifact, compiled-in signing-key identity, explicit install mode
+   and mode-specific OS protection profile. Mutation checks are evaluated against the
+   selected mode's admitted writer authority: provenance changed by a principal outside
+   that authority fails, while owning-user control of a `PerUserDirect` installation is
+   an explicit threat exclusion. Direct modes are `PerUserDirect` (default,
+   user-owned LocalAppData tree), `MachineUacDirect` (explicit Program Files mode with
+   Administrators/SYSTEM write and ordinary-user/Keld-role read/execute), and
+   `MachineSeamlessDirect` (opt-in machine mode with SYSTEM-protected state and a
+   separately approved narrow coordinator). Package/deployment-managed ownership is
+   recorded as `Managed(owner)` and refuses Keld direct mutation. Missing, mismatched,
+   unsupported or legacy-profile provenance refuses before feed access or filesystem
+   mutation. A mode change requires an explicit trusted transition. Paths or executable
+   names never infer mode or channel owner.
+   A per-user install is protected from restricted Keld roles, but not from its owning
+   user or arbitrary native code already running as that same user. Machine-wide ACLs
+   do not claim protection from administrators.
    Before publishing provenance, the installer durably seeds `version-floor`,
    `current` and `last-known-good` to that same baseline artifact/version;
    provenance is the transaction's final commit record. Once direct provenance exists,
@@ -192,11 +217,13 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
     `fsync`; macOS later adds `F_FULLFSYNC` before rename plus
     directory synchronization. An unsupported barrier, remote filesystem or failed
     read-back makes that cell unsupported.
-12. In an admitted strict/distinct-OS-principal package, hostile app roles and webviews
-    cannot write provenance, trust root, version floor, journal, staged package,
-    pointers, helper input or install tree. Legacy same-user role mode refuses direct
-    update because its token cannot be ACL-distinguished from the per-user host.
-    Administrators and arbitrary same-user native malware remain outside this boundary.
+12. In every admitted direct mode, hostile app roles and webviews cannot write
+    provenance, trust root, version floor, journal, staged package, pointers, helper
+    input or install tree. The per-user updater and application host may share the
+    ordinary user's OS identity; strict role restrictions must still deny Keld roles
+    access to the user-owned updater state. Legacy same-user role mode refuses direct
+    update because its token cannot be distinguished from the host. Administrators and
+    arbitrary same-user native malware remain outside this boundary.
 13. Every Slice-A package contains `.keld/update-policy.v1` with exact UTF-8
     bytes `{"schema":1,"dataMigration":"none"}\n`, covered by
     `contentBlake3`. Missing, duplicate or different policy refuses
@@ -212,6 +239,42 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
     `full.contentBlake3`, fall back once to `full` in the same
     attempt where safe, and retain the same journal, health, trust-floor and rollback
     contracts.
+16. `PerUserDirect` is the default Windows installer choice. Installation and update
+    state live under that user's LocalAppData-owned tree; the normal updater obtains its
+    exclusive write lease as that ordinary user without UAC. Keld roles remain unable to
+    write the state. Setup records the owner and mode before direct admission and seeds
+    the same baseline/floor/current/LKG invariants as machine installation.
+17. `MachineUacDirect` uses an installer-provisioned Program Files protection profile
+    writable by elevated Administrators and SYSTEM, with ordinary users and Keld roles
+   read/execute only. Each activation that needs protected mutation requests UAC for a
+    fixed signed updater helper; denial/cancellation causes zero protected writes. This
+    UAC helper is the Machine-UAC authority adapter for the common verifier and
+     transaction: it authenticates its bootstrap from the admitted host, validates the
+     exact candidate, and obtains the lease before creating the protected journal.
+     Fake host, stale attempt, changed user-stage bytes or an unauthenticated endpoint
+     fails before a protected write. Caller paths/argv/environment do not authorize
+     mutation. The optional post-exit
+    helper in criterion 10 is a different, narrower component; it only completes an
+    already journaled attempt through inherited sealed handles and does not parse feeds
+    or packages. The UAC helper owns the attempt while alive and launches the exact
+    candidate under the initiating ordinary user's token/session (including
+    over-the-shoulder approval), retaining exact-health/commit/rollback rules. If it exits
+    or Windows restarts before resolution, recovery requires renewed UAC consent or
+    halts with the journal unresolved; it must not claim an unproved rollback. The app
+    and Bun roles never run elevated or as SYSTEM.
+18. `MachineSeamlessDirect` is an explicit install-time opt-in. It preserves the same
+    updater transaction and requires its coordinator to authenticate exact host,
+    installation and fresh attempt; prevent replay; acquire installation-wide exclusive
+    writer ownership; bind candidate health and process-family lifecycle; launch the
+    application as the ordinary user; and recover safely across crash/reboot. The
+    product mode is approved, but the Windows authority mechanism is not. Task Scheduler,
+    a service or another Windows-native mechanism may be selected only after each named
+    negative and positive control passes. A task start/trigger is never update
+    authorization. No implementation of a privileged coordinator is authorized by this
+    criterion alone.
+19. `Managed(owner)` provenance makes `keld-update` return a typed owner-delegation
+    result before fetching, staging or mutating. MSIX/App Installer, Store and enterprise
+    deployment remain the only update authorities for their managed installation.
 
 ## 4. Design
 
@@ -229,6 +292,8 @@ implementation still needs real-OS crash-cut evidence for each admitted filesyst
 | Helper / Windows package | journal + inherited handles → post-exit publish | arbitrary path, replay or mixed set | independently substitute every helper input |
 | User data / package owner | signed no-migration policy → rollback eligibility | binary rollback after migration | absent/changed policy refuses pre-launch |
 | Evidence / task owner | exact source + OS receipts → task artifact | mock/stale head closes native row | exact-head provenance validator |
+| Install mode / trusted installer + KEL-53 | explicit mode choice → immutable owner/protection provenance | path/environment selects authority | substitute path/env/registry; refuse before feed/write |
+| Writer authority / mode adapter + `keld-update` | one exact attempt → one temporary exclusive write lease | UAC/start trigger mistaken for attempt authentication or concurrent writer admitted | wrong authority and competing writer leave journal/pointers unchanged |
 
 The exact portable `.keld/update-policy.v1` path and bytes are owned once by `keld-pack`;
 `keld-update` depends on that producer-side owner and checks the authenticated archive
@@ -253,14 +318,27 @@ the floor reopens replay; an un-hashed policy permits substitution.
 Compatibility fallback: unsupported packaging/channel/filesystem cells keep the current
 version and report the missing predecessor or owning update mechanism.
 
-**Target boundary change:** `keld-update` remains the crash/recovery owner and the
-host remains the only principal minter. The host creates the attempt health channel;
-the candidate receives only its attempt-bound endpoint. If needed, the Windows helper
-inherits the observer endpoint, a sealed forward-once candidate endpoint, borrowed
-update-root/lock handles and one host-process wait handle after trusted spawn. It
-temporarily owns the journaled activation through health/rollback, then exits; it
-cannot mint identity or survive as a general updater. No live boundary changes in this
-spec-only PR.
+**Target boundary:** `keld-update` remains the common transaction and recovery owner;
+the admitted host remains the only attempt/health identity minter. The host creates the
+attempt health channel and the candidate receives only its attempt-bound endpoint. The
+mode-specific adapter obtains the one temporary write lease for that attempt: the
+ordinary user-owned updater for `PerUserDirect`, an explicitly elevated signed helper
+for `MachineUacDirect`, or a still-unselected narrow coordinator for
+`MachineSeamlessDirect`. `Managed(owner)` obtains no Keld write lease. Every adapter
+executes the same journal, floor, pointer, health, commit, rollback and crash-recovery
+transitions. UAC/task/service wake-up is not attempt authentication. A helper may own a
+live attempt only for the bounded health/commit/rollback lifecycle; it cannot mint
+identity or survive as a general updater.
+
+**Cross-owner contract:** KEL-135 owns verified publisher/app/profile identity. KEL-53
+alone mints `ActivePackageSelection` from journal/current/LKG state and owns install-mode
+provenance, update journal and the sole writer. KEL-254 owns OS verification of
+installed-image and protection profiles but never selects current/LKG or mints an active
+selection. KEL-96/core consumes that exact `ActivePackageSelection`, performs host boot
+admission and returns its opaque `ValidatedBootSelection` to the ordinary-user host.
+None of the consumer/identity owners infers install mode or mutates updater state.
+KEL-254's current Program Files draft must include per-user and Machine-UAC protection
+profiles before any direct mode ships.
 
 ### Internal state and transition contract
 
@@ -357,12 +435,31 @@ publication and never rolls back. `current` may point below it after health
 failure; that is intentional local rollback, not permission to reinstall an old release.
 
 The installer synchronizes the immutable baseline package, seeds floor/current/LKG to
-that exact artifact, then creates the protected provenance record as its final commit.
-`Direct` records exact identity/channel/target/roots/key/baseline and admitted
-strict/distinct-OS-principal profile identity.
-`Managed(mechanism)` always refuses direct mutation. Missing provenance is
-unsupported. Location, registry heuristics and writable config never manufacture
-`Direct`.
+that exact artifact, then creates immutable provenance as its final commit. `Direct`
+records exact identity/channel/target/roots/key/baseline, install mode, owner and its
+mode-specific OS protection profile. `Managed(mechanism)` always refuses direct
+mutation. Missing provenance is unsupported. Location, registry heuristics and
+writable config never manufacture a mode or `Direct` ownership.
+
+`PerUserDirect` is the default and stores the application and updater state beneath
+the owning user's LocalAppData tree. Its updater uses the ordinary user identity and
+does not display UAC; strict Keld role restrictions deny role access to update state,
+while the security claim excludes the owning user and arbitrary native malware running
+as that user. `MachineUacDirect` stores machine-wide state in a Program Files-style root
+whose installer-provisioned DACL allows elevated Administrators and SYSTEM to mutate,
+and ordinary users/Keld roles only to read/execute. It is not KEL-266's SYSTEM-only
+profile and never repairs ownership/DACL during an update. `MachineSeamlessDirect` is an
+opt-in SYSTEM-protected profile whose narrow writer mechanism remains a separate proof
+gate. `Managed(mechanism)` performs no direct feed, stage or protected write.
+
+The product and ownership boundary is explicit: KEL-135 owns verified publisher/app/
+profile identity; KEL-53 owns install-mode provenance, update journal, active-package
+selection and the sole writer; KEL-254 owns OS verification of installed-image and
+protection profiles plus the read-only selection boundary, never write authority;
+KEL-96 owns host boot admission and consumes the exact opaque selection as the ordinary
+user, without inferring install mode or mutating updater state. KEL-254's current
+Program Files draft must include per-user and Machine-UAC protection profiles before
+any direct mode ships.
 
 Windows x64 direct distribution is first because its tree fits v0. KEL-137 is an
 explicit predecessor for macOS/Linux or any package requiring metadata absent from v0.
@@ -471,12 +568,14 @@ unsafe permission is granted.
 
 ### T4a: protected Windows baseline bootstrap (KEL-266)
 
-This bounded amendment implements acceptance criterion 1 before activation. The
+This bounded amendment implements the machine-baseline portion of acceptance criterion 1 before activation. The
 installer is a one-shot, externally provisioned LocalSystem process; the ordinary
 host receives read authority only. It adds no service, elevation path, recovery,
 health, activation selection or role grant. KEL-254 still owns installed boot and
 must compare these protected publisher facts with KEL-135's independently verified
-current-image identity. Its fresh-role read provisioning remains separate.
+current-image identity. Its fresh-role read provisioning remains separate. This is the
+KEL-266 `MachineSeamlessDirect` baseline predecessor only; it does not define the
+default per-user bootstrap or the distinct Machine-UAC ACL/helper contract.
 
 | Atom / owner | Boundary and observable contract | Independent falsifier |
 |---|---|---|
@@ -659,7 +758,10 @@ Implement in:
   recovery;
 - `keld-pack`: Windows v0 package and exact no-migration policy;
 - existing host/runtime owners: private health channel and candidate lifecycle;
-- a minimal signed Windows helper only if locked-file acceptance requires it;
+- trusted installer: immutable per-user/machine-UAC/machine-seamless/managed mode
+  provenance and owner-specific protection profile;
+- a minimal signed helper for explicit-UAC activation and, if separately approved, for
+  locked-file publication;
 - existing doctor/build diagnostics and native fixtures.
 
 Must not touch in Slice A:
@@ -673,9 +775,10 @@ Must not touch in Slice A:
 
 ## 6. Tasks
 
-- [ ] T1 — promote this spec with architecture 06 synchronization, generated docs and
-  exact-head review. No implementation starts until this approved corrected specification
-  lands.
+- [x] T1 — synchronized this approved multi-mode contract with Architecture 06, regenerated
+  included docs, and independently reviewed the exact cross-document head. Direct-mode
+  implementation follows this contract; the product decision does not authorize a
+  seamless privileged mechanism.
 - [ ] T2 — v0 manifest/full verifier plus protected provenance admission/refusal; no
   delta dependency.
 - [ ] T3a — produce canonical Windows x64 v0 full packages on a Windows host, with the
@@ -688,10 +791,20 @@ Must not touch in Slice A:
   and real reparse/rename substitution refusal before any write.
 - [ ] T4a — KEL-266: actual SYSTEM initializer, protected exact-baseline seeds and
   provenance-last publication, read-only loader and persistent ancestry proof; no activation.
-- [ ] T4b — Windows x64 direct vertical: journal, floor/current/LKG order, attempt-bound
-  30-second health and crash cut at every persisted boundary.
-- [ ] T5 — Windows helper if required, managed-channel refusal, hostile-role denial,
-  locked file/disk/interference/concurrency and next-attempt recovery.
+- [ ] T4b — common Windows x64 direct transaction: journal, floor/current/LKG order,
+  attempt-bound 30-second health, one mode-supplied write lease, and crash cut at every
+  persisted boundary; no per-mode state machine fork.
+- [ ] T4c — default per-user install/bootstrap and no-UAC authority; prove immutable
+  owner/mode provenance and hostile-role write denial under the user's LocalAppData tree.
+- [ ] T4d — explicit-UAC Program Files authority; installer ACL profile, denial-zero-write,
+  authenticated helper bootstrap, exact candidate revalidation, initiating-user candidate
+  launch and live-owner health/rollback;
+  after owner death/reboot recovery obtains fresh consent or safely halts.
+- [ ] T4e — machine-seamless product row remains gated: prove exact host/install/attempt
+  auth, replay resistance, writer/read-pin handoff, family lifecycle, ordinary candidate,
+  exact health and crash recovery before selecting or implementing any native mechanism.
+- [ ] T5 — managed-owner refusal, hostile-role denial, locked file/disk/interference/
+  concurrency and next-attempt recovery.
 - [ ] T6 — after KEL-137, repeat independently for each macOS/Linux format/channel.
 - [ ] T7 — separately approve signed data compatibility/migration before a migrating
   release can use automatic binary rollback.
@@ -702,12 +815,14 @@ Must not touch in Slice A:
 
 | Criteria | Proof and falsifier |
 |---|---|
-| 1, 11–12 | protected provenance/channel/profile/ACL table and installer seed crash cuts; legacy mode refuses before feed/write; mutate every identity/root/owner/floor and attempt hostile-role writes |
+| 1, 11–12, 16 | provenance/mode/channel/profile/ACL table and installer seed crash cuts; mode/path/owner substitution refuses before feed/write; per-user installer uses LocalAppData with no UAC and actual hostile-role write denials |
 | 2–4 | signed v0 fixtures, duplicate-member parser, equal-precedence build-metadata release pair, floor selection including equal-precedence/different-metadata and below-baseline replay, numeric mutations (`0`, `-1`, fraction, exponent, `2^53 - 1`, `2^53`), shorter/exact/longer compressed and decompressed byte counts, digest boundaries and complete ustar golden bytes; selecting a present delta fails Slice A |
 | 5, 13 | independent canonical Windows tar/policy goldens; producer-to-verifier size/hash agreement; missing/duplicate/changed policy refusal; link/special/mode mismatch, omitted/duplicate parent directory, separator/ADS/device/forbidden/control/trailing-dot/NFC/case/8.3 aliases and ancestor collisions reject before output; T3b separately tests extraction-order and filesystem reparse/rename substitution |
 | 6–7, 9 | state trace and subprocess crash after every durable step, including current published before phase advance; floor above candidate, non-prior intermediate floor, orphan no-journal current and mixed rollback context halt; live/unknown coordinator blocks recovery; corrupt/replay/mix every journal field |
 | 8 | live-coordinator candidate boot skips writer-lock recovery; stale attempt/artifact, coordinator death, early exit, crash, timeout and generic marker fail; exact Ready plus 30 monotonic seconds passes |
-| 10–11 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; substitute every inherited endpoint/input |
+| 10–11, 17 | real Windows locked-file/helper, staged-directory publish and same-volume barrier/read-back crash cuts; UAC denial, fake host, stale attempt, changed staged bytes or fake endpoint cause zero protected writes; candidate remains in initiating ordinary token; live helper owns health/rollback; substitute every helper endpoint/input |
+| 18 | mechanism-neutral seamless row: wrong host/role/install, fake endpoint, stale/replayed attempt, competing writer/read-pin race, live/unknown process family and crash/reboot controls; no task/service chosen without every row passing |
+| 19 | trusted MSIX/App Installer/Store/enterprise provenance returns typed defer before network/feed/stage/write; direct updater creates no competing writer |
 | 14 | deterministic fault injection followed by one successful attempt; delta code absent |
 | 15 | future base/patch/reconstructed-content mutations and same-attempt full fallback |
 
@@ -717,14 +832,15 @@ source SHA, package/signature identity and raw crash cuts. Other OS results are 
 
 ## 8. Review gates triggered
 
-- unsafe: none in this spec; conditional for platform/helper implementation;
+- unsafe: none in this contract; conditional on each exact native/helper implementation;
 - public API: yes — canonical package contents, update admission and unsupported-cell
   diagnostics are author-facing contracts;
-- permission model: yes — protected provenance/update authority and hostile-role denial
-  decide who can mutate executable state, though no app grant is added;
+- permission model: yes — the install-mode protection profiles, UAC elevation and
+  hostile-role denial decide who can mutate executable state, though no app grant is added;
 - dependency addition: none;
 - wire protocol: yes — v0 bytes stay unchanged, but Slice-A delta-selection semantics
-  and canonical package content are narrowed and require exact independent review.
+  and canonical package content are narrowed and require exact independent review; any
+  new host/coordinator authentication channel remains separately owned and gated.
 
 ## 9. Perf impact
 
@@ -736,8 +852,23 @@ fallback rate and end-to-end success before adding complexity.
 
 ## 10. Open questions
 
-None in the technical contract. Approval is bound to the content heads and Linear
-receipts recorded above. Manifest/full verification, logical provenance admission,
-Windows packaging and protected incomplete extraction have landed. T4a implementation
-requires its own native acceptance; activation, health, recovery and the later tasks
-remain separate work. This task list does not claim those unfinished paths are shipped.
+The product mode selection is approved; the following are implementation/evidence gates,
+not requests to revisit that decision:
+
+- T4b's common journal, health and persisted recovery need implementation and real
+  Windows crash-cut evidence.
+- T4c must prove the default per-user install root, mode/provenance seeding and actual
+  role write denial; the owning user's authority remains outside the threat claim.
+- T4d must prove the Administrators/SYSTEM ACL, UAC cancellation with zero writes,
+  over-the-shoulder user-token launch, and exact health/rollback under the live elevated
+  owner. Reboot/owner death requires new consent or safe halt.
+- T4e must close every host/attempt/authentication/replay/writer/lifecycle/health/recovery
+  falsifier before any privileged seamless mechanism is selected. The task probe is only
+  wake-up feasibility.
+- KEL-254's installed-image consumer and KEL-96's host admission must consume the exact
+  updater selection under each admitted direct-mode profile without acquiring updater
+  write authority. KEL-135 remains sole publisher/app/profile identity owner.
+
+Manifest/full verification, logical provenance admission, Windows packaging and protected
+incomplete extraction have landed. T4a initialization and every activation/mode cell
+retain their separate native acceptance; this specification does not claim them shipped.
