@@ -1,5 +1,7 @@
 //! Physical macOS AC9 admission rows; framing and retry decisions stay in kipc.
 
+#![allow(clippy::expect_used, clippy::panic)] // Test assertion oracles.
+
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -72,6 +74,15 @@ fn peer_close(stream: &mut UnixStream) -> String {
     }
 }
 
+// Cohesion exception: keld-ipc owns this physical macOS AC9 scenario (KEL-133).
+// Its two canonical rows share one ordered admission/rejection/recovery flow.
+// Keep the fault, same-peer challenge, independent observations, complete read
+// drain, next allowed operation, and explicit cleanup together for review.
+// Revisit if another row or phase is added, or observer/resource ownership changes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "KEL-133: ordered real-socket acceptance scenario; see cohesion exception above"
+)]
 fn prove_row(case: &str, capture_root: &Path) {
     let row = corpus::row(case);
     let expected_class = match case {
@@ -312,7 +323,7 @@ fn prove_row(case: &str, capture_root: &Path) {
     assert!(
         matches!(
             observed_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected)
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected)
         ),
         "legitimate peer must not add a rejection"
     );

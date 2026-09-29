@@ -1,6 +1,8 @@
 //! Physical macOS AC9 observations at the production accepted-stream owner.
 //! The IPC fixture owns bytes and outcomes; the existing worker owns closure.
 
+#![allow(clippy::expect_used, clippy::panic)] // Test assertion oracles.
+
 use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
@@ -116,36 +118,8 @@ fn prove_row(id: &str) {
     };
     println!("AC9 row={id} atom=peer result={peer_close}");
 
-    let deadline = Instant::now() + STEP_LIMIT;
-    let worker = server.handle.as_ref().expect("production worker handle");
-    while !worker.is_finished() {
-        assert!(
-            Instant::now() < deadline,
-            "production worker did not terminate"
-        );
-        thread::yield_now();
-    }
-    assert!(
-        !server.stop.load(Ordering::Acquire),
-        "test shutdown cannot close the session"
-    );
-    println!(
-        "AC9 row={id} atom=session worker_finished=true stop_requested=false before_server_drop=true"
-    );
-
-    let error = server
-        .handle
-        .take()
-        .expect("production worker handle")
-        .join()
-        .expect("production worker did not panic")
-        .expect_err("canonical rejected frame must retain the typed host failure");
-    println!("AC9 row={id} atom=host typed={error:?} code={error}");
-    assert!(
-        error.to_string().starts_with(case.expected_code),
-        "expected {}, got {error:?}",
-        case.expected_code
-    );
+    observe_session_completion(id, &server);
+    observe_host_rejection(id, &mut server, case.expected_code);
 
     let observed = probe.snapshot();
     assert!(observed.boundary_seen);
@@ -169,6 +143,40 @@ fn prove_row(id: &str) {
     );
     drop(server);
     println!("AC9 row={id} complete=true");
+}
+
+fn observe_session_completion(id: &str, server: &EchoServer) {
+    let deadline = Instant::now() + STEP_LIMIT;
+    let worker = server.handle.as_ref().expect("production worker handle");
+    while !worker.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "production worker did not terminate"
+        );
+        thread::yield_now();
+    }
+    assert!(
+        !server.stop.load(Ordering::Acquire),
+        "test shutdown cannot close the session"
+    );
+    println!(
+        "AC9 row={id} atom=session worker_finished=true stop_requested=false before_server_drop=true"
+    );
+}
+
+fn observe_host_rejection(id: &str, server: &mut EchoServer, expected_code: &str) {
+    let error = server
+        .handle
+        .take()
+        .expect("production worker handle")
+        .join()
+        .expect("production worker did not panic")
+        .expect_err("canonical rejected frame must retain the typed host failure");
+    println!("AC9 row={id} atom=host typed={error:?} code={error}");
+    assert!(
+        error.to_string().starts_with(expected_code),
+        "expected {expected_code}, got {error:?}"
+    );
 }
 
 fn prove_cases(selector: &str, cases: &[&str]) {
