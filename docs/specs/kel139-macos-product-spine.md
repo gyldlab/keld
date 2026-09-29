@@ -83,8 +83,11 @@ not choose KEL-103's certificate/team/secret owner.
 
 Given the real WKWebView installs the trusted preload/user-script before page code
 in the engine's isolated world, with only the reviewed `window.keld` facade exposed
-to the page and no page access to the preload realm, an OS-visible pointer activates
-the sample button. Exactly one nonzero-correlation
+to the main-frame document and no page access to the preload realm, an OS-visible
+pointer activates the sample button. Subframes and popup/new-document contexts do
+not receive this bridge in the KEL-139 slice; any future exposure requires KEL-142's
+public-API/permission review with host-bound frame/document identity. Exactly one
+nonzero-correlation
 typed `CALL` crosses:
 
 `renderer -> native bridge -> host router -> admitted Bun`
@@ -101,6 +104,7 @@ principal, role, navigation generation or other authority.
 Negative controls must fail before app dispatch for:
 
 - raw endpoint/token access or direct renderer -> Bun connection;
+- bridge use from a subframe or unapproved popup/new-document context;
 - caller-selected principal/role/navigation generation;
 - stale navigation, malformed/forged identity and over-budget requests;
 - slow-consumer growth beyond KEL-80's declared call/byte bound.
@@ -153,8 +157,10 @@ Entry requires passed KEL-96/T3 + KEL-75/T4a and working AC2/AC4 routes.
 
 After Ready and a successful app/guarded operation, kill only the admitted Bun
 generation. Before successor provisioning, old endpoint/token/link/routes,
-grants and affected pending calls are unusable according to their owners. Then a
-fresh generation authenticates and reaches `Ready(g2)`.
+grants and affected pending calls are unusable according to their owners. A fresh
+generation may authenticate and reach `Ready(g2)` only after KEL-102/T3 has actually
+completed quiescence for the old generation, including all admitted KEL-130 calls and
+the old `FsBroker` owner.
 
 Continuity passes only when both remain:
 
@@ -166,8 +172,22 @@ and completes another guarded filesystem roundtrip. KEL-96/T3's existing
 same-window evidence is a predecessor, not this stronger T4a product oracle.
 
 Every affected pending call gets exactly one terminal caller outcome; none may hang
-indefinitely or be silently replayed into the successor generation. The harmless
-fixture makes an ambiguous commit and any duplicate effect independently observable.
+indefinitely or be silently replayed into the successor generation. KEL-142 must map
+canonical outer call/link expiry (`KELD-IPC-006`) or generation retirement to exactly
+one local `window.keld.invoke` rejection even when the corresponding KEL-130 native
+operation has not returned. That local rejection is not a correlated native
+`REPLY`/`ERR`, must not invent `KELD-NATIVE-005/006`, and makes no claim about whether
+an effect committed. The harmless fixture makes an ambiguous commit and any duplicate
+effect independently observable.
+
+If a KEL-130 call is still blocked inside a synchronous OS syscall after the outer
+caller is retired, KEL-102/T3 keeps the old session snapshot and sole `FsBroker`
+owned in quiescing state. KEL-143 must not publish `Ready(g2)`, admit successor
+privileged work, or recreate/drop that broker until the native call returns and old
+quiescence plus the zero-owner handle census completes. A truly wedged syscall may
+therefore stall recovery, per KEL-130's approved limitation, but it cannot leave the
+renderer promise pending, overlap old/new filesystem authority, or trigger automatic
+replay.
 
 ### AC6 — Quit has one ordered owner and leaves no descendants
 
@@ -325,9 +345,11 @@ supervisor/generation ownership or KEL-78 containment claims.
 
 - [ ] **T1b / KEL-142 — renderer/API spine.**
   Entry: approved KEL-139 + landed KEL-133/KEL-136 + exact passed KEL-80
-  product-spine bridge slice. Freeze `@keld/api` exports in a child spec, then
-  implement one `window.keld.invoke` call and real host lifecycle without a
-  second transport owner. T1a/T1b may run in parallel.
+  product-spine bridge slice. Freeze `@keld/api` exports and the exact local
+  pending-call retirement mapping for `KELD-IPC-006`/generation loss in a child spec,
+  then implement one `window.keld.invoke` call and real host lifecycle without a
+  second transport owner. The mapping cannot fabricate a native completion/effect
+  result. T1a/T1b may run in parallel.
 
 - [ ] **T2 / KEL-140 — guarded filesystem vertical.**
   Entry: exact KEL-142 + KEL-102/T3 + KEL-130/T1 artifacts. Prove real-Mac
@@ -337,7 +359,9 @@ supervisor/generation ownership or KEL-78 containment claims.
   Entry: passed KEL-140/KEL-142 + exact KEL-96/T3, KEL-75/T4a, KEL-134,
   KEL-133. Reconcile KEL-117/KEL-118 first. Prove same document, full stale
   authority retirement, fresh Ready, second guarded call, no silent replay and
-  ordered Quit/reap.
+  ordered Quit/reap. Separately hold one KEL-130 call past the outer caller deadline:
+  the renderer must receive exactly one local terminal rejection while successor Ready
+  remains blocked until the old broker can actually quiesce and drop.
 
 - [ ] **T4 / KEL-144 — clean-machine acceptance.**
   Entry: exact landed T1a/T1b/T2/T3. Refresh preflight, quarantine Rust, run
@@ -354,7 +378,7 @@ A parent issue status never substitutes for a named task artifact.
 | AC2 | real WKWebView + OS pointer + host trace | stale navigation/forged identity/slow consumer |
 | AC3 | TS contract + real app-link | hold host Ready; import-time ready must not pass |
 | AC4 | real fs allow/deny + OS sentinel | caller-selected authority or outside-byte mutation |
-| AC5 | hostile child crash + window/document identities | reload/change nonce or accept stale token |
+| AC5 | hostile child crash + window/document identities + pending-call retirement | reload/change nonce, accept stale token, or publish successor Ready while old broker remains live |
 | AC6 | process handles/tree + next launch | omit revoke/reap attribution/order |
 | AC7 | before/quarantine/restore receipts | forced product failure or altered restored state |
 | AC8 | landed evidence inventory | remove one AC's evidence and require incomplete |
