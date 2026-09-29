@@ -81,8 +81,10 @@ not choose KEL-103's certificate/team/secret owner.
 
 ### AC2 — one real renderer call uses only the host bridge
 
-Given the real WKWebView has the trusted preload/user-script before page code,
-an OS-visible pointer activates the sample button. Exactly one nonzero-correlation
+Given the real WKWebView installs the trusted preload/user-script before page code
+in the engine's isolated world, with only the reviewed `window.keld` facade exposed
+to the page and no page access to the preload realm, an OS-visible pointer activates
+the sample button. Exactly one nonzero-correlation
 typed `CALL` crosses:
 
 `renderer -> native bridge -> host router -> admitted Bun`
@@ -91,7 +93,10 @@ and its matching typed `REPLY` updates the same document.
 
 The required public surface is the already-specified
 `window.keld.invoke(channel, payload, opts?)`; this slice does not claim the rest
-of architecture 05's destination bridge.
+of architecture 05's destination bridge. The AC2 fixture calls `invoke` without
+`opts`. This parent does not define or approve option keys; KEL-142 must freeze any
+supported option semantics in its own public-API review, and options cannot carry
+principal, role, navigation generation or other authority.
 
 Negative controls must fail before app dispatch for:
 
@@ -160,8 +165,9 @@ After `Ready(g2)`, that same document emits a successor-correlated bridge call
 and completes another guarded filesystem roundtrip. KEL-96/T3's existing
 same-window evidence is a predecessor, not this stronger T4a product oracle.
 
-Lost-reply effects are not silently replayed. The harmless fixture makes an
-ambiguous commit and any duplicate effect independently observable.
+Every affected pending call gets exactly one terminal caller outcome; none may hang
+indefinitely or be silently replayed into the successor generation. The harmless
+fixture makes an ambiguous commit and any duplicate effect independently observable.
 
 ### AC6 — Quit has one ordered owner and leaves no descendants
 
@@ -352,6 +358,13 @@ A parent issue status never substitutes for a named task artifact.
 | AC6 | process handles/tree + next launch | omit revoke/reap attribution/order |
 | AC7 | before/quarantine/restore receipts | forced product failure or altered restored state |
 | AC8 | landed evidence inventory | remove one AC's evidence and require incomplete |
+
+Fuzzing is not a KEL-139 documentary acceptance gate. Children reuse the existing
+`cargo-fuzz` raw-byte targets for hostile transport inputs. If a child adds a new
+untrusted parser/decoder or accepted byte grammar, that child adds or extends the
+owned `cargo-fuzz` target and promotes every finding to a deterministic regression.
+Structured bridge, lifecycle and product-state behavior stays under deterministic
+hostile-transcript, subprocess and real-OS tests rather than blind fuzzing.
 
 Tests wait on observable conditions; sleeps are not synchronization. Timeouts are
 kill switches. Crash/lifetime hazards run in child processes. One OS never
