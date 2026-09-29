@@ -1,6 +1,9 @@
 # Spec: minimum macOS product spine and clean-machine contract
-Status: draft
+Status: approved
 Linear: KEL-139 · Owner: GYLDLAB · Updated: 2026-09-29
+Approval: active user session · approved content head `58c204f66a5e7c10af6e45497e5ea14ac27c5715` · Linear comment `c5f6015b-8094-42bb-9841-b848021f42ca` · decision SHA-256 `6a665995a6d02682d119f57e4994fa1c29e6aeb8528c094fffcb4427459f3f66`
+
+{"schema":"keld.kel139-approval/v1","decision":"approved","approved_content_head":"58c204f66a5e7c10af6e45497e5ea14ac27c5715","linear_comment_id":"c5f6015b-8094-42bb-9841-b848021f42ca","source":"active-user-voice-session-2026-09-29"}
 
 ## 1. Goal & non-goals
 
@@ -334,7 +337,7 @@ supervisor/generation ownership or KEL-78 containment claims.
 
 ## 6. Tasks
 
-- [ ] **T0 / KEL-139 — approve this contract.**
+- [x] **T0 / KEL-139 — approve this contract.**
   Generated-doc freshness, routine gates, exact-tip architecture/public-API/
   permission review, then explicit human approval of the exact spec content.
 
