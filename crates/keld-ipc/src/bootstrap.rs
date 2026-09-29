@@ -2973,3 +2973,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod ac9_macos_tests;

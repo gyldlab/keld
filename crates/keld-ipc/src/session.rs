@@ -67,9 +67,14 @@ pub fn serve_echo_session_until_stopped<S: Read + Write + AppLinkDeadlines>(
 pub fn serve_echo_requests<S: Read + Write>(stream: &mut S) -> Result<(), IpcError> {
     let policy = ReceivePolicy::echo_receiver();
     loop {
-        let (header, payload) = match read_validated_frame(stream, &policy) {
+        let (received, frame_started) = {
+            let mut frame = (&mut *stream).take(u64::MAX);
+            let received = read_validated_frame(&mut frame, &policy);
+            (received, frame.limit() != u64::MAX)
+        };
+        let (header, payload) = match received {
             Ok(frame) => frame,
-            Err(IpcError::Io(error)) if is_peer_eof(&error) => break,
+            Err(IpcError::Io(error)) if is_orderly_peer_eof(&error, frame_started) => break,
             Err(e) => return Err(e),
         };
         serve_echo_frame(stream, header, &payload)?;
@@ -93,10 +98,15 @@ pub fn serve_echo_requests_until_stopped<S: Read + Write + AppLinkDeadlines>(
     stream.set_app_link_read_deadline(Some(APP_LINK_READER_POLL))?;
     let policy = ReceivePolicy::echo_receiver();
     loop {
-        let (header, payload) = match read_validated_frame_interruptible(stream, &policy, stop) {
+        let (received, frame_started) = {
+            let mut frame = (&mut *stream).take(u64::MAX);
+            let received = read_validated_frame_interruptible(&mut frame, &policy, stop);
+            (received, frame.limit() != u64::MAX)
+        };
+        let (header, payload) = match received {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
-            Err(IpcError::Io(error)) if is_peer_eof(&error) => break,
+            Err(IpcError::Io(error)) if is_orderly_peer_eof(&error, frame_started) => break,
             Err(error) => return Err(error),
         };
         serve_echo_frame(stream, header, &payload)?;
@@ -104,7 +114,11 @@ pub fn serve_echo_requests_until_stopped<S: Read + Write + AppLinkDeadlines>(
     Ok(())
 }
 
-fn is_peer_eof(error: &std::io::Error) -> bool {
+fn is_orderly_peer_eof(error: &std::io::Error, frame_started: bool) -> bool {
+    // Only EOF before the next frame begins is successful session completion.
+    if frame_started {
+        return false;
+    }
     if error.kind() == ErrorKind::UnexpectedEof {
         return true;
     }
