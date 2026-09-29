@@ -17,6 +17,23 @@ struct Owner {
     finished: bool,
 }
 
+impl Owner {
+    fn new() -> Self {
+        let mut nonce = [0_u8; 8];
+        getrandom::fill(&mut nonce).expect("private AC9 root nonce");
+        let root = PathBuf::from(format!("/tmp/ka9-{:016x}", u64::from_le_bytes(nonce)));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .expect("exclusive AC9 root");
+        Self {
+            root,
+            child: None,
+            finished: false,
+        }
+    }
+}
+
 fn record(root: &Path) -> io::Result<Capture> {
     let stdout = fs::read(root.join("stdout.log"));
     let stderr = fs::read(root.join("stderr.log"));
@@ -89,18 +106,7 @@ pub(super) fn run_case_child(selector: &str, case: &str, limit: Duration) -> Out
     let deadline = Instant::now()
         .checked_add(limit)
         .expect("finite AC9 child limit");
-    let mut nonce = [0_u8; 8];
-    getrandom::fill(&mut nonce).expect("private AC9 root nonce");
-    let root = PathBuf::from(format!("/tmp/ka9-{:016x}", u64::from_le_bytes(nonce)));
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&root)
-        .expect("exclusive AC9 root");
-    let mut owner = Owner {
-        root,
-        child: None,
-        finished: false,
-    };
+    let mut owner = Owner::new();
     owner.child = Some(
         Command::new(std::env::current_exe().expect("current test binary"))
             .args(["--exact", selector, "--ignored", "--nocapture"])
