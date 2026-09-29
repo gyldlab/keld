@@ -12,7 +12,6 @@
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles against corpus rows
 
 use std::io::Cursor;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use keld_ipc::link::{read_frame, read_validated_frame};
@@ -22,74 +21,12 @@ use keld_ipc::{
     IpcError, LifecycleEvent, LifecycleRequest, LifecycleResponse, SessionToken,
 };
 
-const CORPUS: &str = include_str!("fixtures/receiver-semantics-v0.tsv");
-const CORPUS_PATH: &str = "tests/fixtures/receiver-semantics-v0.tsv";
-/// One owner, one digest: the Bun suite asserts this same constant, so a
-/// corpus edit is an explicit, reviewed change to both consumers.
-const CORPUS_SHA256: &str = "375f50c4bea1b690dbf7f385aee0464eae0946218058445306240b997d7e9746";
+#[path = "support/receiver_corpus.rs"]
+mod corpus;
+use corpus::{CORPUS, CORPUS_PATH, CORPUS_SHA256, fixture_token_bytes, rows, unhex};
 
-/// Fixture token declared in the corpus version row (`0x01..0x20`). Not a
-/// secret: the corpus must never contain one (spec §4).
 fn fixture_token() -> SessionToken {
-    let mut bytes = [0u8; 32];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = u8::try_from(i + 1).expect("fixture token byte");
-    }
-    SessionToken::from_bytes(bytes)
-}
-
-struct Row<'a> {
-    id: &'a str,
-    policy: &'a str,
-    header_or_trace: &'a str,
-    payload_hex: &'a str,
-    expected_code: &'a str,
-    link_action: &'a str,
-    handler_effects: u32,
-}
-
-fn rows() -> &'static Vec<Row<'static>> {
-    static ROWS: OnceLock<Vec<Row<'static>>> = OnceLock::new();
-    ROWS.get_or_init(|| {
-        let mut lines = CORPUS.lines();
-        let version = lines.next().expect("corpus has a version row");
-        assert!(
-            version.starts_with("receiver-semantics-v0\tv1\t"),
-            "corpus format is closed and versioned in the first row: {version}"
-        );
-        assert!(
-            version.contains("app_link_io_deadline_ms=5000"),
-            "trace rows depend on the declared stall limit"
-        );
-        lines
-            .map(|line| {
-                let mut cols = line.split('\t');
-                let mut next = || cols.next().expect("seven tab-separated columns");
-                let row = Row {
-                    id: next(),
-                    policy: next(),
-                    header_or_trace: next(),
-                    payload_hex: next(),
-                    expected_code: next(),
-                    link_action: next(),
-                    handler_effects: next().parse().expect("handler_effects is a count"),
-                };
-                assert!(cols.next().is_none(), "exactly seven columns: {line}");
-                row
-            })
-            .collect()
-    })
-}
-
-fn unhex(hex: &str) -> Vec<u8> {
-    if hex == "-" {
-        return Vec::new();
-    }
-    assert!(hex.len().is_multiple_of(2), "even hex length: {hex}");
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("lowercase hex"))
-        .collect()
+    SessionToken::from_bytes(fixture_token_bytes())
 }
 
 fn policy_by_name(name: &str) -> ReceivePolicy {

@@ -59,13 +59,19 @@ impl EchoServer {
         ready.send(()).ok();
         let acceptor = Arc::clone(&bootstrap);
         let stop_for_worker = Arc::clone(&stop);
+        #[cfg(all(test, target_os = "macos"))]
+        let probe = ac9_macos_tests::take_probe();
         let handle = thread::spawn(move || {
-            let Some(mut stream) = acceptor.accept_authenticated()? else {
+            let Some(stream) = acceptor.accept_authenticated()? else {
                 return Err(keld_ipc::IpcError::Io(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "echo bootstrap listener stopped before authentication",
                 )));
             };
+            #[cfg(all(test, target_os = "macos"))]
+            let mut stream = ac9_macos_tests::observe_stream(stream, probe);
+            #[cfg(not(all(test, target_os = "macos")))]
+            let mut stream = stream;
             serve_echo_requests_until_stopped(&mut stream, stop_for_worker.as_ref())
         });
         Ok(Self {
