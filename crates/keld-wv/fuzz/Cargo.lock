@@ -1077,6 +1077,7 @@ dependencies = [
 name = "keld-wv"
 version = "0.0.1"
 dependencies = [
+ "block2",
  "getrandom",
  "keld-guard",
  "nix",
