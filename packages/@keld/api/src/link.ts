@@ -8,6 +8,7 @@
 export {
   APP_LINK_IO_DEADLINE_MS,
   DrainSignal,
+  ECHO_CHANNEL,
   FLAG_RAW,
   FrameKind,
   FrameReader,
@@ -31,6 +32,8 @@ export {
   type ReceivePolicy,
 } from "../../kipc/src/transport.ts";
 
+import { handleEchoCall } from "./echo-call.ts";
+
 // Same-module bindings for this adapter and for concatenated KEL-96 host
 // fixtures that append `t1b_harness.ts` to this file as `src/main.ts`.
 import {
@@ -50,6 +53,7 @@ import {
   timingSafeEqual,
   validateReceivedHeader,
   withIoDeadline,
+  type DecodedFrame,
   type KipcSocket,
 } from "../../kipc/src/transport.ts";
 
@@ -72,6 +76,7 @@ function decodeEvent(bytes: Uint8Array): LifecycleEventName {
 export type LifecycleHandler = {
   onReady: () => void;
   onLastWindowClosed: () => void;
+  onApplicationCall?: (channel: number, payload: Uint8Array) => Promise<Uint8Array>;
   /**
    * Read loop died after HELLO. `app.whenReady()` waiters must reject here;
    * a throw must not skip `#quitWaiter` drain.
@@ -120,6 +125,10 @@ export class LifecycleLink {
     }
   }
 
+  async #replyToApplicationCall(frame: DecodedFrame, handlers: LifecycleHandler): Promise<void> {
+    await handleEchoCall(frame, handlers.onApplicationCall, this.#writes);
+  }
+
   #startLoop(handlers: LifecycleHandler): void {
     if (this.#loopStarted) return;
     this.#loopStarted = true;
@@ -137,6 +146,10 @@ export class LifecycleLink {
               new Uint8Array(),
             ),
           );
+          continue;
+        }
+        if (frame.header.kind === FrameKind.Call) {
+          await this.#replyToApplicationCall(frame, handlers);
           continue;
         }
         if (frame.header.kind === FrameKind.Event) {
