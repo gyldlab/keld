@@ -9,7 +9,7 @@ python_command := if os() == "windows" { "python" } else { "python3" }
 
 # Open the current platform hello backend (Phase 1 slice).
 hello:
-    cargo run -p keld-host -- --hello
+    cargo run -p keld-host --bin keld-host -- --hello
 
 # Run every applicable CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
@@ -227,6 +227,7 @@ mermaid-render-check:
 # KEL-39: CODEOWNERS, templates, Action SHA pin, .github not gitignored.
 hygiene:
     bun --no-install test tools/ci_workflow_security.test.ts
+    {{python_command}} -B tools/test_hello_command.py
     mkdir -p target/ci-hygiene
     rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
     target/ci-hygiene/ci-hygiene-test
