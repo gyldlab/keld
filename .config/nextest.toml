@@ -27,6 +27,19 @@
 
 [profile.ci]
 
+# Real macOS no-flag rows own native AppKit/WKWebView sessions. KEL-142 adds
+# an OS-injected pointer acceptance row whose target must not be obscured or
+# moved by another no-flag fixture while the click is in flight. The product
+# does not require independent test processes to contend for one desktop.
+# Preserve every assertion/deadline and serialize this native-GUI binary
+# without retries, matching the existing Windows/Linux ownership rule.
+[test-groups.macos-no-flag-gui]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = "binary(no_flag_macos)"
+test-group = "macos-no-flag-gui"
+
 # Real Windows no-flag rows each own a native WebView2 session. Running those
 # sessions concurrently on the two-core GitHub runner can starve a renderer
 # beacon while every process and port remains test-private. Serialize only this
