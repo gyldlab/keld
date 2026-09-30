@@ -68,6 +68,26 @@ describe("app.quit vs Electron void", () => {
   });
 });
 
+describe("Electron ready event over the shared lifecycle owner", () => {
+  test("quit opening the shared link still delivers the host Ready event", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./ready_via_quit.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        KELD_APP_LINK: `1#${"ab".repeat(32)}`,
+      },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("KEL142_READY_VIA_QUIT");
+    expect(stdout).toContain("KEL142_CONNECT_CALLS=1");
+  });
+});
+
 describe("app.whenReady on link death", () => {
   test(
     "rejects whenReady and retries when onLinkDead runs before connect() returns",

@@ -5,6 +5,7 @@ import {
   ECHO_CHANNEL,
   FrameKind,
   HEADER_LEN,
+  MAX_FRAME_LEN,
   WriteQueue,
   decodeCallError,
   decodeHeader,
@@ -80,6 +81,18 @@ describe("Echo CALL routing", () => {
       expect(error.message).toBe("KELD-API-001: application channel call failed");
       expect(error.message).not.toContain("secret stack detail");
     }
+  });
+
+  test("oversized handler reply becomes one correlated KELD-API-001 Err", async () => {
+    const { writes, bytes } = captureWriter();
+    const handler: EchoCallHandler = async () => new Uint8Array(MAX_FRAME_LEN + 1);
+    await handleEchoCall(callFrame(), handler, writes);
+    const out = decodedOutput(bytes);
+    expect(out.kind).toBe(FrameKind.Err);
+    expect(out.channel).toBe(ECHO_CHANNEL);
+    expect(out.corr).toBe(19);
+    const error = decodeCallError(out.payload);
+    expect(error.code).toBe("KELD-API-001");
   });
 
   test("header/session-shape failure stays link-terminal and writes nothing", async () => {

@@ -1,5 +1,6 @@
 import {
   FrameKind,
+  MAX_FRAME_LEN,
   RECEIVE_POLICIES,
   WriteQueue,
   encodeCallError,
@@ -23,9 +24,13 @@ async function resolveEchoCall(
   validateReceivedHeader(RECEIVE_POLICIES.echoReceiver, frame.header);
   try {
     if (!handler) throw new Error("Echo handler is not registered");
+    const payload = await handler(frame.header.channel, frame.payload);
+    if (payload.byteLength > MAX_FRAME_LEN) {
+      throw new Error("Echo reply exceeds MAX_FRAME_LEN");
+    }
     return {
       kind: FrameKind.Reply,
-      payload: await handler(frame.header.channel, frame.payload),
+      payload,
     };
   } catch {
     return {

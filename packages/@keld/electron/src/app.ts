@@ -11,6 +11,7 @@ type AppListener = () => void;
 
 const listeners = new Map<string, AppListener[]>();
 let readyEventEmitted = false;
+let readyObservation: Promise<void> | undefined;
 
 function emit(event: string): void {
   const snapshot = listeners.get(event);
@@ -27,6 +28,26 @@ function emit(event: string): void {
 function ignoreIfUnawaited(promise: Promise<unknown>): void {
   void promise.catch(() => {});
 }
+
+function observeReady(): Promise<void> {
+  if (readyEventEmitted) return Promise.resolve();
+  if (readyObservation) return readyObservation;
+  const ready = apiApp.whenReady();
+  readyObservation = ready;
+  ignoreIfUnawaited(ready);
+  void ready.then(
+    () => {
+      if (readyEventEmitted) return;
+      readyEventEmitted = true;
+      emit("ready");
+    },
+    () => {
+      if (readyObservation === ready) readyObservation = undefined;
+    },
+  );
+  return ready;
+}
+
 function hasListeners(event: string): boolean {
   const list = listeners.get(event);
   return list !== undefined && list.length > 0;
@@ -56,17 +77,7 @@ function onLastWindowClosed(): void {
 apiApp.onLastWindowClosed(onLastWindowClosed);
 export const app = {
   whenReady(): Promise<void> {
-    const ready = apiApp.whenReady();
-    ignoreIfUnawaited(ready);
-    void ready.then(
-      () => {
-        if (readyEventEmitted) return;
-        readyEventEmitted = true;
-        emit("ready");
-      },
-      () => {},
-    );
-    return ready;
+    return observeReady();
   },
 
   isReady(): boolean {
@@ -74,6 +85,7 @@ export const app = {
   },
 
   quit(): Promise<void> {
+    ignoreIfUnawaited(observeReady());
     return apiApp.quit();
   },
 

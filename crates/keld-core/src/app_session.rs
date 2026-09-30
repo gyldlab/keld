@@ -3302,21 +3302,33 @@ fn start_renderer_dispatch(
                     );
                 }
 
-                let outcome = match call.reply.recv() {
-                    Ok(Ok(PrimaryEchoReply::Reply(payload))) => RendererBridgeOutcome::Reply {
+                let reply = loop {
+                    match call.reply.recv_timeout(APP_LINK_READER_POLL) {
+                        Ok(reply) => break Some(reply),
+                        Err(RecvTimeoutError::Timeout)
+                            if stop_for_thread.load(Ordering::Acquire) =>
+                        {
+                            return Ok(());
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break None,
+                    }
+                };
+                let outcome = match reply {
+                    Some(Ok(PrimaryEchoReply::Reply(payload))) => RendererBridgeOutcome::Reply {
                         webview,
                         navigation,
                         request: local_request,
                         payload,
                     },
-                    Ok(Ok(PrimaryEchoReply::Err(error))) => RendererBridgeOutcome::Error {
+                    Some(Ok(PrimaryEchoReply::Err(error))) => RendererBridgeOutcome::Error {
                         webview,
                         navigation,
                         request: local_request,
                         code: error.code,
                         detail: error.message,
                     },
-                    Ok(Err(_)) | Err(_) => RendererBridgeOutcome::Error {
+                    Some(Err(_)) | None => RendererBridgeOutcome::Error {
                         webview,
                         navigation,
                         request: local_request,
@@ -4319,7 +4331,7 @@ impl PrimaryRouterHandle {
     }
 
     fn begin_echo_call(&self, payload: &[u8]) -> Result<PrimaryEchoCall, HostAppError> {
-        let _transition = self.shutdown.transition_guard();
+        let transition = self.shutdown.transition_guard();
         if !self.shutdown.is_running() {
             return Err(app_detail(
                 "renderer Echo call",
@@ -4336,6 +4348,7 @@ impl PrimaryRouterHandle {
                 "no admitted primary generation is available",
             )
         })?;
+        let attempt = active.attempt;
         let mut pending = self
             .pending_echo
             .lock()
@@ -4350,12 +4363,11 @@ impl PrimaryRouterHandle {
         let correlation = self.mint_host_correlation();
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         *pending = Some(PendingPrimaryEcho {
-            attempt: active.attempt,
+            attempt,
             correlation,
             reply: reply_tx,
         });
-        self.pending_echo_attempt
-            .store(active.attempt, Ordering::Release);
+        self.pending_echo_attempt.store(attempt, Ordering::Release);
         self.pending_echo_corr
             .store(correlation.0, Ordering::Release);
 
@@ -4370,7 +4382,18 @@ impl PrimaryRouterHandle {
             self.pending_echo_corr.store(0, Ordering::Release);
             self.pending_echo_attempt.store(0, Ordering::Release);
             pending.take();
-            return Err(app_ipc("renderer Echo call write", &source));
+            drop(pending);
+            let primary = app_ipc("renderer Echo call write", &source);
+            let retirement = self.retire_current_generation_locked(
+                &mut current,
+                attempt,
+                "application call retired after a failed primary write",
+                "failed renderer Echo write link close",
+            );
+            drop(current);
+            drop(transition);
+            let owner = self.link_failed(attempt);
+            return Err(append_app_cleanup(primary, [retirement, owner]));
         }
 
         Ok(PrimaryEchoCall {
@@ -4414,9 +4437,9 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
-    fn fail_pending_echo_for_attempt(
+    fn fail_pending_echo(
         &self,
-        attempt: u32,
+        attempt: Option<u32>,
         detail: &'static str,
     ) -> Result<(), HostAppError> {
         let mut pending = self
@@ -4425,7 +4448,7 @@ impl PrimaryRouterHandle {
             .map_err(|_| app_detail("renderer Echo retirement", "pending-call lock poisoned"))?;
         if pending
             .as_ref()
-            .is_none_or(|waiter| waiter.attempt != attempt)
+            .is_none_or(|waiter| attempt.is_some_and(|expected| waiter.attempt != expected))
         {
             return Ok(());
         }
@@ -4444,6 +4467,44 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
+    fn fail_pending_echo_for_attempt(
+        &self,
+        attempt: u32,
+        detail: &'static str,
+    ) -> Result<(), HostAppError> {
+        self.fail_pending_echo(Some(attempt), detail)
+    }
+
+    fn fail_any_pending_echo(&self, detail: &'static str) -> Result<(), HostAppError> {
+        self.fail_pending_echo(None, detail)
+    }
+
+    fn retire_current_generation_locked(
+        &self,
+        current: &mut Option<ActivePrimaryGeneration>,
+        attempt: u32,
+        pending_detail: &'static str,
+        link_phase: &'static str,
+    ) -> Result<(), HostAppError> {
+        if current
+            .as_ref()
+            .is_none_or(|active| active.attempt != attempt)
+        {
+            return Ok(());
+        }
+        let Some(active) = current.take() else {
+            return Err(app_detail(
+                "primary generation retirement",
+                "current generation disappeared while its lock was held",
+            ));
+        };
+        active.reader_stop.store(true, Ordering::Release);
+        collapse_app_results([
+            self.fail_pending_echo_for_attempt(attempt, pending_detail),
+            finish_link_shutdown(active.writer.shutdown_app_link(), link_phase),
+        ])
+    }
+
     // Caller retains shutdown.transition through the write and any admission
     // command that must precede a terminal claim.
     fn write_event_guarded(&self, event: LifecycleEvent) -> Result<(), HostAppError> {
@@ -4458,15 +4519,25 @@ impl PrimaryRouterHandle {
         let Some(active) = current.as_mut() else {
             return Ok(());
         };
-        write_frame(
+        let attempt = active.attempt;
+        if let Err(source) = write_frame(
             &mut active.writer,
             FrameKind::Event,
             0,
             LIFECYCLE_CHANNEL,
             CorrelationId(0),
             &payload,
-        )
-        .map_err(|source| app_ipc("lifecycle event", &source))
+        ) {
+            let primary = app_ipc("lifecycle event", &source);
+            let retirement = self.retire_current_generation_locked(
+                &mut current,
+                attempt,
+                "application call retired after a failed lifecycle write",
+                "failed lifecycle event link close",
+            );
+            return Err(append_app_cleanup(primary, [retirement]));
+        }
+        Ok(())
     }
 
     fn lifecycle_quit(
@@ -4547,15 +4618,16 @@ impl PrimaryRouterHandle {
             .current
             .lock()
             .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
-        if let Some(active) = current_guard.as_mut() {
+        let pending = self.fail_any_pending_echo("application call retired by CLI lease loss");
+        let link = current_guard.as_mut().map_or(Ok(()), |active| {
             finish_link_shutdown(
                 active.writer.shutdown_app_link(),
                 "CLI lease-loss link close",
-            )?;
-        }
+            )
+        });
         current_guard.take();
         drop(current_guard);
-        self.finish_tail("CLI lease loss")
+        collapse_app_results([pending, link, self.finish_tail("CLI lease loss")])
     }
 
     fn apply_generation_update(&self, update: PrimaryOwnerUpdate) -> Result<(), HostAppError> {
@@ -4670,22 +4742,12 @@ impl PrimaryRouterHandle {
             let mut current = self.current.lock().map_err(|_| {
                 app_detail("primary session generation", "generation lock poisoned")
             })?;
-            if current
-                .as_ref()
-                .is_some_and(|active| active.attempt == attempt)
-                && let Some(active) = current.take()
-            {
-                active.reader_stop.store(true, Ordering::Release);
-                let pending = self.fail_pending_echo_for_attempt(
-                    attempt,
-                    "application call retired with the primary generation",
-                );
-                let link = finish_link_shutdown(
-                    active.writer.shutdown_app_link(),
-                    "retired primary generation link close",
-                );
-                collapse_app_results([pending, link])?;
-            }
+            self.retire_current_generation_locked(
+                &mut current,
+                attempt,
+                "application call retired with the primary generation",
+                "retired primary generation link close",
+            )?;
         }
         // The reader may be waiting for GuardianOwner to acknowledge the
         // link-failure request that caused this revocation. Removing and
@@ -4785,24 +4847,24 @@ impl PrimaryRouter {
 
     fn stop_and_join(&mut self) -> Result<(), HostAppError> {
         self.handle.shutdown.stop_reader();
-        {
+        let pending = {
             let mut current = match self.handle.current.lock() {
                 Ok(current) => current,
                 Err(poisoned) => poisoned.into_inner(),
             };
+            let pending = self
+                .handle
+                .fail_any_pending_echo("application call retired by router shutdown");
             if let Some(active) = current.take() {
-                let _ = self.handle.fail_pending_echo_for_attempt(
-                    active.attempt,
-                    "application call retired by router shutdown",
-                );
                 let _ = active.writer.shutdown_app_link();
             }
-        }
+            pending
+        };
         let readers = match self.handle.readers.lock() {
             Ok(mut readers) => std::mem::take(&mut *readers),
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
         };
-        let mut results = Vec::new();
+        let mut results = vec![pending];
         for (_, reader) in readers {
             results.push(
                 reader
@@ -6524,6 +6586,71 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn failed_primary_writes_retire_the_generation() {
+        let (echo_handle, _echo_client, echo_commands) = initial_ready_router();
+        let owner = std::thread::spawn(move || {
+            let command = echo_commands
+                .recv_timeout(Duration::from_secs(2))
+                .expect("failed-write owner notification");
+            match command {
+                GuardianOwnerCommand::FailGeneration(1, reply) => {
+                    reply.send(Ok(())).expect("failed-write owner reply");
+                }
+                _ => panic!("failed primary write sent the wrong owner command"),
+            }
+        });
+        {
+            let mut current = echo_handle.current.lock().expect("generation lock");
+            current
+                .as_mut()
+                .expect("active renderer generation")
+                .writer
+                .shutdown_app_link()
+                .expect("close renderer writer before probe");
+        }
+        let error = echo_handle
+            .begin_echo_call(&[0x14, 0x02])
+            .expect_err("renderer Call write must fail");
+        assert!(
+            error.to_string().contains("renderer Echo call write"),
+            "{error}"
+        );
+        assert!(
+            echo_handle
+                .current
+                .lock()
+                .expect("generation lock")
+                .is_none(),
+            "failed renderer write left a reusable primary generation"
+        );
+        owner.join().expect("failed-write owner joins");
+
+        let (event_handle, _event_client, _event_commands) = initial_ready_router();
+        {
+            let mut current = event_handle.current.lock().expect("generation lock");
+            current
+                .as_mut()
+                .expect("active lifecycle generation")
+                .writer
+                .shutdown_app_link()
+                .expect("close lifecycle writer before probe");
+        }
+        let error = event_handle
+            .signal_last_window_closed()
+            .expect_err("lifecycle Event write must fail");
+        assert!(error.to_string().contains("lifecycle event"), "{error}");
+        assert!(
+            event_handle
+                .current
+                .lock()
+                .expect("generation lock")
+                .is_none(),
+            "failed lifecycle write left a reusable primary generation"
+        );
+    }
+
+    #[test]
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn second_host_echo_call_is_busy_until_the_first_reply_retires() {
         use keld_ipc::link::{read_frame, write_frame};
@@ -6948,6 +7075,22 @@ mod tests {
         router.shutdown().expect("link retirement router shutdown");
     }
 
+    #[cfg(target_os = "macos")]
+    fn begin_pending_renderer_echo(
+        handle: &PrimaryRouterHandle,
+        client: &mut std::os::unix::net::UnixStream,
+    ) -> PrimaryEchoCall {
+        let pending = handle
+            .begin_echo_call(&[0x14, 0x02])
+            .expect("lease-loss pending renderer Echo");
+        let (outbound, _) =
+            keld_ipc::link::read_frame(client).expect("lease-loss renderer Echo frame");
+        assert_eq!(outbound.kind, FrameKind::Call);
+        assert_eq!(outbound.channel, ECHO_CHANNEL);
+        assert_eq!(outbound.corr, pending.correlation);
+        pending
+    }
+
     #[test]
     #[cfg(target_os = "macos")]
     fn cli_lease_loss_closes_link_before_reap_and_sends_no_quit_reply() {
@@ -7024,6 +7167,8 @@ mod tests {
             .send(Arc::clone(&router.handle.current))
             .expect("share router writer identity");
 
+        let pending = begin_pending_renderer_echo(&router.handle(), &mut client);
+
         assert!(shutdown.claim_cli_lease_lost());
         let mut byte = [0_u8; 1];
         assert_eq!(
@@ -7037,6 +7182,15 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("lease-loss UI Quit wake"),
             AppWindowCommand::Quit
+        );
+        let terminal = pending
+            .reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("lease loss must settle the pending renderer waiter")
+            .expect_err("lease loss cannot produce an application reply");
+        assert!(
+            terminal.to_string().contains("CLI lease loss"),
+            "unexpected lease-loss waiter result: {terminal}"
         );
 
         router.shutdown().expect("router shutdown");

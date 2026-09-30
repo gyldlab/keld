@@ -93,6 +93,7 @@ export class LifecycleLink {
   #writes: WriteQueue;
   #nextCorr = 1;
   #closed = false;
+  #loopFailed = false;
   #quitWaiter: { corr: number; resolve: () => void; reject: (e: Error) => void } | null = null;
   #quitPromise: Promise<void> | undefined;
   #loopStarted = false;
@@ -129,6 +130,26 @@ export class LifecycleLink {
     await handleEchoCall(frame, handlers.onApplicationCall, this.#writes);
   }
 
+  #failLoop(err: Error, handlers: LifecycleHandler): void {
+    if (this.#loopFailed) return;
+    this.#loopFailed = true;
+    const localClose = this.#closed;
+    try {
+      this.close();
+      if (!localClose) {
+        try {
+          handlers.onLinkDead(err);
+        } catch {
+          // Isolate: a throwing listener must not skip quit-waiter drain.
+        }
+      }
+    } finally {
+      const waiter = this.#quitWaiter;
+      this.#quitWaiter = null;
+      waiter?.reject(err);
+    }
+  }
+
   #startLoop(handlers: LifecycleHandler): void {
     if (this.#loopStarted) return;
     this.#loopStarted = true;
@@ -149,7 +170,10 @@ export class LifecycleLink {
           continue;
         }
         if (frame.header.kind === FrameKind.Call) {
-          await this.#replyToApplicationCall(frame, handlers);
+          validateReceivedHeader(RECEIVE_POLICIES.echoReceiver, frame.header);
+          void this.#replyToApplicationCall(frame, handlers).catch((err: Error) => {
+            this.#failLoop(err, handlers);
+          });
           continue;
         }
         if (frame.header.kind === FrameKind.Event) {
@@ -178,21 +202,7 @@ export class LifecycleLink {
       }
     };
     void run().catch((err: Error) => {
-      const localClose = this.#closed;
-      try {
-        this.close();
-        if (!localClose) {
-          try {
-            handlers.onLinkDead(err);
-          } catch {
-            // Isolate: a throwing listener must not skip quit-waiter drain.
-          }
-        }
-      } finally {
-        const waiter = this.#quitWaiter;
-        this.#quitWaiter = null;
-        waiter?.reject(err);
-      }
+      this.#failLoop(err, handlers);
     });
   }
 
