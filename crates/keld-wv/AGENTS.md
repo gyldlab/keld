@@ -2,7 +2,7 @@
 
 Spec: `docs/architecture/05-webview-and-native.md`; platform truth: `docs/research/library/host-platforms/06-webview-reality.md`; v0 trait: `src/engine.rs`.
 
-- Backend `unsafe` MUST deny `unsafe_op_in_unsafe_fn`; each block needs `// SAFETY:`. Windows KEL-135 FFI: folders/files/volumes/process/windows/ACL/WebView2. macOS `wkwebview/macos_profile.rs` only: WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata and parent ACL reads (`acl_get_fd_np`, `acl_get_entry`, `acl_get_tag_type`, `acl_free`), rejecting `ACL_EXTENDED_ALLOW` and read errors. Debug `profile-test-hooks` may read host camera/mic status and observe public sheets with owned blocks on UI thread. No macOS module-wide allow. Core SecCode FFI: `keld-core/AGENTS.md`.
+- Backend `unsafe` MUST deny `unsafe_op_in_unsafe_fn`; each block needs `// SAFETY:`. Windows FFI: folders/files/volumes/process/windows/ACL/WebView2. macOS `wkwebview/{macos_profile,macos_bridge}.rs` only (KEL-142 bridge): WK store/config, CFRunLoop, boot sysctl, self-PID proc info, Keld metadata and parent ACL reads (`acl_get_fd_np`, `acl_get_entry`, `acl_get_tag_type`, `acl_free`), rejecting `ACL_EXTENDED_ALLOW` and read errors. Debug `profile-test-hooks` may read host camera/mic status and observe public sheets with owned blocks on UI thread. No module-wide allow. Core SecCode FFI: `keld-core/AGENTS.md`.
 - Engine/window mutations MUST stay on tao UI thread (later core queue); platform handles MUST NOT be touched on I/O/pool threads.
 - `WebEngine` trait changes require design review; backends MUST use its API. No new method until a live backend implements it in the same PR (root YAGNI).
 - Platform quirks MUST cite OS, version, source; revert uncited workarounds.

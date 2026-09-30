@@ -42,6 +42,11 @@ pub enum WvError {
         /// Exact preparation or re-exec failure.
         detail: String,
     },
+    /// Renderer bridge input, isolation, document, or dispatch admission failed closed.
+    RendererBridge {
+        /// Sanitized rejection detail; never contains endpoint/token/authority material.
+        detail: String,
+    },
     /// Persistent profile identity, namespace, state, or ownership failed closed.
     ProfileSelection(ProfileError),
 }
@@ -98,6 +103,11 @@ impl fmt::Display for WvError {
                  Launch through Keld's process entry before creating a webview; \
                  do not mutate or export the process environment manually."
             ),
+            Self::RendererBridge { detail } => write!(
+                f,
+                "KELD-WV-011: renderer bridge request rejected — {detail}. \
+                 Reload the current main-frame document and invoke only the declared Keld renderer API."
+            ),
             Self::ProfileSelection(source) => source.fmt(f),
         }
     }
@@ -124,7 +134,7 @@ mod tests {
 
     #[test]
     fn display_messages_carry_error_codes_and_fix_guidance() {
-        let cases: [(WvError, &str, &str); 10] = [
+        let cases: [(WvError, &str, &str); 11] = [
             (
                 WvError::UnsupportedPlatform {
                     os: "freebsd",
@@ -176,6 +186,13 @@ mod tests {
                 },
                 "KELD-WV-010",
                 "process entry",
+            ),
+            (
+                WvError::RendererBridge {
+                    detail: String::from("boom"),
+                },
+                "KELD-WV-011",
+                "Reload the current main-frame document",
             ),
             (
                 WvError::from(ProfileError::missing_authenticated_identity()),
