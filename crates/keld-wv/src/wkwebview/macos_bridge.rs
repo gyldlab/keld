@@ -913,6 +913,29 @@ mod tests {
     }
 
     #[test]
+    fn wrong_webview_forged_nonce_and_destroyed_bridge_fail_closed() {
+        let mut state = BridgeState::new(WebviewId(9));
+        state.bind_webview(0x9000).expect("bind expected WebView");
+        assert!(!state.accepts_webview(0x9001));
+        assert!(matches!(
+            state.bind_webview(0x9001),
+            Err("renderer bridge WebView identity changed")
+        ));
+
+        let nonce = state.bind().expect("bind document");
+        assert!(matches!(
+            state.admit_invoke("forged-document", 1, ECHO_CHANNEL, vec![]),
+            Err("renderer document is stale or forged")
+        ));
+        state.destroy();
+        assert!(matches!(
+            state.admit_invoke(&nonce, 2, ECHO_CHANNEL, vec![]),
+            Err("renderer bridge was destroyed")
+        ));
+        assert!(matches!(state.bind(), Err("renderer bridge was destroyed")));
+    }
+
+    #[test]
     fn old_navigation_result_cannot_settle_reused_request_id() {
         let mut state = BridgeState::new(WebviewId(5));
         state.bind_webview(0x5000).expect("bind WebView");
@@ -955,6 +978,10 @@ mod tests {
         assert!(PAGE_FACADE_SCRIPT.contains("writable: false"));
         assert!(PAGE_FACADE_SCRIPT.contains("configurable: false"));
         assert!(PAGE_FACADE_SCRIPT.contains("pagehide"));
+        assert!(
+            !PAGE_FACADE_SCRIPT.contains(HANDLER_NAME),
+            "page-world facade must not reveal the native handler name"
+        );
         assert!(ISOLATED_BRIDGE_SCRIPT.contains("document: documentNonce"));
         assert!(ISOLATED_BRIDGE_SCRIPT.contains("__keld_wv_link_v1"));
     }

@@ -48,8 +48,12 @@ pub(crate) struct NativeWindowObserver {
 
 impl NativeWindowObserver {
     pub(crate) fn arm(executable: &Path) -> Self {
+        Self::arm_for_title(executable, TITLE)
+    }
+
+    pub(crate) fn arm_for_title(executable: &Path, title: &str) -> Self {
         let mut child = Command::new(executable)
-            .args(["observe", TITLE, "1", &EVENT_DEADLINE.as_secs().to_string()])
+            .args(["observe", title, "1", &EVENT_DEADLINE.as_secs().to_string()])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

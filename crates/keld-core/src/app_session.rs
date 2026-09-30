@@ -6571,6 +6571,65 @@ mod tests {
         );
     }
 
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn app_link_disconnect_terminalizes_pending_echo_and_fresh_session_still_works() {
+        use keld_ipc::link::{read_frame, write_frame};
+
+        let (router, handle, mut client, _owner_rx, window_rx) = primary_echo_test_router();
+        let call = handle.begin_echo_call(&[1, 2]).expect("pending host Echo");
+        let (outbound, _) = read_frame(&mut client).expect("pending Echo frame");
+        assert_eq!(outbound.corr, call.correlation);
+        drop(client);
+
+        let terminal = call
+            .reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("disconnect must settle the pending waiter")
+            .expect_err("disconnect cannot become a successful reply");
+        assert!(
+            terminal.to_string().contains("primary reader"),
+            "unexpected disconnect terminal outcome: {terminal}"
+        );
+        assert_eq!(
+            window_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("disconnect wakes the fatal UI path"),
+            AppWindowCommand::Fatal
+        );
+        assert!(
+            router.shutdown().is_err(),
+            "the failed reader remains a session failure"
+        );
+
+        let (fresh_router, fresh_handle, mut fresh_client, _owner_rx, _window_rx) =
+            primary_echo_test_router();
+        let fresh = fresh_handle
+            .begin_echo_call(&[7])
+            .expect("fresh non-recovery session Echo");
+        let (fresh_frame, _) = read_frame(&mut fresh_client).expect("fresh Echo frame");
+        assert_eq!(fresh_frame.corr, fresh.correlation);
+        write_frame(
+            &mut fresh_client,
+            FrameKind::Reply,
+            0,
+            ECHO_CHANNEL,
+            fresh.correlation,
+            &[8],
+        )
+        .expect("fresh Echo Reply");
+        match fresh
+            .reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("fresh Echo terminal outcome")
+            .expect("fresh Echo success")
+        {
+            PrimaryEchoReply::Reply(payload) => assert_eq!(payload, [8]),
+            PrimaryEchoReply::Err(error) => panic!("unexpected fresh Echo Err: {error}"),
+        }
+        fresh_router.shutdown().expect("fresh router shutdown");
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn initial_ready_router() -> (
         PrimaryRouterHandle,
