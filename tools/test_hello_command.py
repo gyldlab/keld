@@ -11,7 +11,7 @@ EXPECTED_COMMAND = "cargo run -p keld-host --bin keld-host -- --hello"
 
 
 def hello_recipe_command():
-    lines = (ROOT / "Justfile").read_text(encoding="utf-8").splitlines()
+    lines = (ROOT / "justfile").read_text(encoding="utf-8").splitlines()
     start = lines.index("hello:")
     commands = []
     for line in lines[start + 1:]:
