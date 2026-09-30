@@ -5,6 +5,7 @@
  * such as @keld/electron delegate to this object instead of opening another
  * socket or reader.
  */
+import { dispatchApplicationCall } from "./channels.ts";
 import { LifecycleLink } from "./link.ts";
 
 export type Unsubscribe = () => void;
@@ -83,6 +84,7 @@ function ensureLink(): Promise<LifecycleLink> {
   const pending = LifecycleLink.connect(envLink, {
     onReady: onHostReady,
     onLastWindowClosed,
+    onApplicationCall: dispatchApplicationCall,
     onLinkDead: (err: Error) => {
       if (linkSession !== session) return;
       try {

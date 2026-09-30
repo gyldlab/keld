@@ -13,6 +13,7 @@ import {
   APP_LINK_IO_DEADLINE_MS,
   decodeCallError,
   DrainSignal,
+  ECHO_CHANNEL,
   encodeHeader,
   errorFromErrFrame,
   FLAG_RAW,
@@ -697,6 +698,49 @@ describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix peer", 
     onLastWindowClosed(): void {},
     onLinkDead(): void {},
   };
+
+  test(
+    "host Echo Call returns one correlated Reply on the shared lifecycle session",
+    async () => {
+      const peer = bindPeer();
+      let session: LifecycleLink | undefined;
+      try {
+        let calls = 0;
+        const connectP = LifecycleLink.connect(peer.link, {
+          ...handlers,
+          async onApplicationCall(channel, payload) {
+            calls += 1;
+            expect(channel).toBe(ECHO_CHANNEL);
+            return Uint8Array.from([...payload, 0x7f]);
+          },
+        });
+        const socket = await peer.opened;
+        const hello = await peer.reader.readFrame();
+        expect(hello.header.kind).toBe(FrameKind.Hello);
+        writeAll(socket, encodeFrame(FrameKind.Hello, 0, 0, TOKEN));
+        session = await connectP;
+
+        writeAll(
+          socket,
+          encodeFrame(FrameKind.Call, ECHO_CHANNEL, 41, new Uint8Array([0x11, 0x22])),
+        );
+        const reply = await rejectWithin(
+          2_000,
+          peer.reader.readFrame(),
+          "shared app-link did not return the Echo Reply",
+        );
+        expect(reply.header.kind).toBe(FrameKind.Reply);
+        expect(reply.header.channel).toBe(ECHO_CHANNEL);
+        expect(reply.header.corr).toBe(41);
+        expect(Array.from(reply.payload)).toEqual([0x11, 0x22, 0x7f]);
+        expect(calls).toBe(1);
+      } finally {
+        session?.close();
+        peer.listener.stop(true);
+      }
+    },
+    5_000,
+  );
 
   test(
     "HELLO readFrame against a live silent peer is KELD-IPC-006",

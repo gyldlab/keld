@@ -14,6 +14,10 @@ const generatedPath = resolve(
   repositoryRoot,
   "crates/keld-cli/templates/hello/src/echo.generated.ts",
 );
+const apiGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/api/src/echo.generated.ts",
+);
 const adapterPath = resolve(repositoryRoot, "crates/keld-cli/templates/hello/src/kipc.ts");
 const bodyPath = resolve(repositoryRoot, "crates/keld-cli/templates/hello/src/main-body.ts");
 const transportPath = resolve(repositoryRoot, "packages/@keld/kipc/src/transport.ts");
@@ -93,7 +97,8 @@ function productionTypeScriptSources(root: string): TypeScriptSource[] {
         entry.isFile() &&
         entry.name.endsWith(".ts") &&
         !entry.name.endsWith(".test.ts") &&
-        path !== generatedPath
+        path !== generatedPath &&
+        path !== apiGeneratedPath
       ) {
         sources.push({ path: relative(repositoryRoot, path), source: readFileSync(path, "utf8") });
       }
@@ -139,7 +144,10 @@ describe("echo declaration generator", () => {
 
   test("committed bytes are fresh and stale or hand-edited bytes fail", () => {
     const committed = readFileSync(generatedPath);
+    const apiCommitted = readFileSync(apiGeneratedPath);
     expect(() => assertEchoArtifactFresh(echoSource, committed)).not.toThrow();
+    expect(() => assertEchoArtifactFresh(echoSource, apiCommitted)).not.toThrow();
+    expect(apiCommitted).toEqual(committed);
     expect(() => assertEchoArtifactFresh(echoSource, Buffer.concat([committed, Buffer.from("// edit\n")]))).toThrow(
       "stale",
     );
@@ -186,6 +194,7 @@ describe("echo declaration generator", () => {
 
   test("generated declarations are the sole payload owner and stay type-only", () => {
     const generated = readFileSync(generatedPath, "utf8");
+    const apiGenerated = readFileSync(apiGeneratedPath, "utf8");
     const adapter = readFileSync(adapterPath, "utf8");
 
     const assertOwnership = (candidate: string): void => {
@@ -204,6 +213,7 @@ describe("echo declaration generator", () => {
     assertOwnership(adapter);
     expect(generated.match(/export interface EchoRequest\b/g)).toHaveLength(1);
     expect(generated.match(/export interface EchoResponse\b/g)).toHaveLength(1);
+    expect(apiGenerated).toBe(generated);
     expect(generated).not.toContain("EchoClient");
     expect(generated).not.toMatch(/^export (?:const|class|function)\b/m);
 
