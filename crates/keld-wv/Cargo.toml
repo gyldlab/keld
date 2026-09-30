@@ -17,7 +17,7 @@ test = true
 media-acceptance = []
 # Internal deterministic fault fixtures for downstream KEL-135 test binaries.
 # Release packages never enable this feature.
-profile-test-hooks = ["dep:objc2-app-kit", "dep:block2", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
+profile-test-hooks = ["dep:objc2-app-kit", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
 
 [dependencies]
 # Media-capture default-deny (KEL-59): evaluate `web.camera` / `web.microphone`
@@ -42,9 +42,9 @@ tao = "0.35.3"
 objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
 objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID"] }
 objc2-app-kit = { workspace = true, optional = true, features = ["NSWindow"] }
-block2 = { workspace = true, optional = true }
+block2 = { workspace = true }
 objc2-core-foundation = { workspace = true, features = ["CFRunLoop", "CFDate"] }
-objc2-web-kit = { workspace = true, features = ["std", "objc2-core-foundation", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
+objc2-web-kit = { workspace = true, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
 nix = { workspace = true, features = ["user"] }
 getrandom = { workspace = true }
 # `devtools` keeps `open_devtools`/`close_devtools` compiled in release builds
