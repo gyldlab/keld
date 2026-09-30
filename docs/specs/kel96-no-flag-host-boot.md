@@ -220,9 +220,11 @@ block, so an independent reviewer can recompute it without a circular hash.
 
 **D4 applicability clarification (outside the frozen decision block):** the earlier
 exact-content-approved KEL-254 contract is the Windows direct-install successor for
-binding the current host and exact sidecar bytes/location/root relationship. Its current
-multi-mode expansion is still a draft pending exact-content approval. Neither contract
-changes T1a's owner-private dev layout or adds a caller-selected release mode. Windows
+binding the current host and exact sidecar bytes/location/root relationship. The
+multi-mode expansion is approved by exact-content approval recorded in Linear comment
+`e0b276f9-5ecc-42a9-ac8f-8a5e05f44245`; that approval leaves its implementation and
+native qualification gates open. Neither contract changes T1a's owner-private dev
+layout or adds a caller-selected release mode. Windows
 installed boot remains unavailable until KEL-53 supplies mode-aware authenticated active selection and its
 native install-mode proof, KEL-135 supplies the existing verified signer/app identity,
 and the KEL-96 consumer lands its own native boot evidence. Per-user direct and
