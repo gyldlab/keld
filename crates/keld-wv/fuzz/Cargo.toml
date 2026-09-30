@@ -25,3 +25,9 @@ bench = false
 
 [workspace]
 members = ["."]
+
+# This cargo-fuzz harness is its own workspace, so it does not inherit the root
+# KEL-201 crates.io patch. Mirror the exact reviewed GLib 0.18 backport used by
+# the product workspace; KEL-253 remains the owner for removing this override.
+[patch.crates-io]
+glib = { git = "https://github.com/gyldlab/glib-0.18-backport", rev = "43ce77627b5d8fc2c4d63e644d2a2b13291c610f" }
