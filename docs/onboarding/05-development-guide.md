@@ -106,7 +106,7 @@ CI's Ubuntu `deny` job evaluates the same macOS dependency set.
 
 | `just` target | Equivalent command |
 |---|---|
-| `just hello` | `cargo run -p keld-host -- --hello` |
+| `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` |
 | `just fmt` | `cargo fmt --all` |
 | `just fmt-check` | `cargo fmt --all --check` |
 | `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |

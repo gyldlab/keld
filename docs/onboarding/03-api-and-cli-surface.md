@@ -292,7 +292,7 @@ tool. Any other flag — including the planned `--permissions`, `--web-compat`, 
 
 Calls `keld_core::run_hello_window()`, which opens a 960×640 window titled "Keld"
 rendering `HELLO_HTML`, and blocks until you close it. Equivalent to
-`just hello` / `cargo run -p keld-host -- --hello`, which goes through the host binary
+`just hello` / `cargo run -p keld-host --bin keld-host -- --hello`, which goes through the host binary
 instead of the CLI. Extra arguments are `KELD-CLI-044` (exit 2) so a typo cannot
 open the tao event loop. `keld-host --hello` accepts optional `--title <name>` /
 `--title=<name>` and rejects anything else the same way.
