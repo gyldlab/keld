@@ -218,6 +218,20 @@ Normative task and test text below must carry the same decisions.
 checked-in Git text to LF with one final LF. The digest header is outside that
 block, so an independent reviewer can recompute it without a circular hash.
 
+**D4 applicability clarification (outside the frozen decision block):** the earlier
+exact-content-approved KEL-254 contract is the Windows direct-install successor for
+binding the current host and exact sidecar bytes/location/root relationship. Its current
+multi-mode expansion is still a draft pending exact-content approval. Neither contract
+changes T1a's owner-private dev layout or adds a caller-selected release mode. Windows
+installed boot remains unavailable until KEL-53 supplies mode-aware authenticated active selection and its
+native install-mode proof, KEL-135 supplies the existing verified signer/app identity,
+and the KEL-96 consumer lands its own native boot evidence. Per-user direct and
+machine-wide direct installs have separate access/authority acceptance cells;
+machine-seamless activation additionally remains behind KEL-270's lifecycle and
+authority proof gate. Managed/package-manager installs remain owned by their deployment
+mechanism. This note is applicability only: it does not change or reapprove any frozen
+KEL-96 decision row.
+
 ### 4.2 Boot format and ownership
 
 The v1 sidecar is generated from reviewed project configuration by tooling;
