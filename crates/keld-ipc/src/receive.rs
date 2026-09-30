@@ -244,6 +244,17 @@ impl ReceivePolicy {
         }
     }
 
+    /// Host-side waiter for one renderer-originated Echo call.
+    ///
+    /// The primary app link is bidirectional: while Bun may still initiate
+    /// Echo/lifecycle calls, the KEL-142 renderer bridge can have exactly one
+    /// host-originated Echo call pending. The trusted pending correlation
+    /// selects this policy; wire bytes never select their own waiter.
+    #[must_use]
+    pub const fn primary_echo_reply_waiter(corr: CorrelationId) -> Self {
+        Self::reply_waiter(crate::echo::ECHO_CHANNEL, corr)
+    }
+
     /// App-side lifecycle event receiver: uncorrelated `EVENT`s on the
     /// lifecycle channel (spec table row 6).
     #[must_use]
@@ -343,6 +354,30 @@ impl ValidatedFrameHeader {
     pub const fn is_empty(&self) -> bool {
         self.0.len == 0
     }
+}
+
+/// Validates one header received on the live primary app session.
+///
+/// Bun-originated Echo/lifecycle calls and liveness pings keep using
+/// [`ReceivePolicy::primary_app_receiver`]. A `Reply`/`Err` is admissible only
+/// when trusted host state reports the one outstanding renderer Echo
+/// correlation; the peer cannot satisfy a waiter by choosing its own id.
+///
+/// # Errors
+///
+/// Returns [`IpcError::Protocol`] when a reply has no trusted pending waiter or
+/// when any header field violates the selected KEL-133 receive policy.
+pub fn validate_primary_app_header(
+    pending_echo_reply: Option<CorrelationId>,
+    header: FrameHeader,
+) -> Result<ValidatedFrameHeader, IpcError> {
+    if matches!(header.kind, FrameKind::Reply | FrameKind::Err) {
+        let corr = pending_echo_reply.ok_or(IpcError::Protocol {
+            detail: "primary Echo reply has no pending host call",
+        })?;
+        return validate_received_header(&ReceivePolicy::primary_echo_reply_waiter(corr), header);
+    }
+    validate_received_header(&ReceivePolicy::primary_app_receiver(), header)
 }
 
 /// Validates a syntactically decoded header against the selected policy.
@@ -847,6 +882,56 @@ mod tests {
             detail_of(err),
             "frame kind is not declared by the session policy"
         );
+    }
+
+    #[test]
+    fn primary_app_header_admits_only_the_exact_pending_echo_reply() {
+        let pending = CorrelationId(17);
+        let reply = header(FrameKind::Reply, 0, 1, pending.0, 4);
+        let admitted =
+            validate_primary_app_header(Some(pending), reply).expect("exact pending reply admits");
+        assert_eq!(admitted.kind(), FrameKind::Reply);
+        assert_eq!(admitted.channel(), ECHO_CHANNEL);
+        assert_eq!(admitted.corr(), pending);
+
+        let err = validate_primary_app_header(
+            None,
+            header(FrameKind::Reply, 0, 1, pending.0, 4),
+        )
+        .expect_err("reply without a trusted waiter must reject");
+        assert_eq!(
+            detail_of(err),
+            "primary Echo reply has no pending host call"
+        );
+
+        let wrong = validate_primary_app_header(
+            Some(pending),
+            header(FrameKind::Reply, 0, 1, pending.0 + 1, 4),
+        )
+        .expect_err("wrong correlation cannot satisfy the pending host call");
+        assert_eq!(detail_of(wrong), "wrong correlation for the pending call");
+
+        validate_primary_app_header(
+            Some(pending),
+            header(FrameKind::Err, 0, 1, pending.0, 8),
+        )
+        .expect("correlated Err is a terminal waiter outcome");
+
+        validate_primary_app_header(
+            Some(pending),
+            header(FrameKind::Call, 0, 1, 91, 3),
+        )
+        .expect("Bun-originated Echo Call remains admissible while host waits");
+        validate_primary_app_header(
+            Some(pending),
+            header(FrameKind::Call, 0, 3, 92, 1),
+        )
+        .expect("lifecycle Call remains admissible while host waits");
+        validate_primary_app_header(
+            Some(pending),
+            header(FrameKind::Ping, 0, 99, 0, 0),
+        )
+        .expect("Ping remains admissible while host waits");
     }
 
     #[test]
