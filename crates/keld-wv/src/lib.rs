@@ -27,6 +27,8 @@ pub mod webkitgtk;
 pub mod webview2;
 #[cfg(target_os = "macos")]
 pub mod wkwebview;
+#[doc(hidden)]
+pub mod wv_link;
 
 pub use engine::{
     AppWindowCommand, AppWindowEvent, DevtoolsAction, LogicalSize, NavTarget, Rect, WebEngine,
