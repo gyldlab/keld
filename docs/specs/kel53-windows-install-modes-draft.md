@@ -1,13 +1,13 @@
-# Spec: KEL-53 Windows installation modes and activation authority (proposal)
-Status: draft
+# Historical proposal: KEL-53 Windows installation modes and activation authority
+Status: superseded by `docs/specs/kel53-full-package-activation.md` and Architecture 06
 Linear: KEL-270 · Owner: KEL-53 maintainers · Updated: 2026-09-29
 
-This is a proposed replacement/amendment to Windows T4b. It is not approved and is
-not an implementation contract. It records the product's three-mode direction, the
-shared updater boundary, the Windows evidence collected for a fixed task, and the
-remaining decisions that must be resolved before approval. The currently approved
-`docs/specs/kel53-full-package-activation.md` remains authoritative until its amended
-content and Architecture 06 are approved together.
+This file preserves the earlier proposal as review history. It is not an implementation
+contract and must not be used to infer current status. The approved
+`docs/specs/kel53-full-package-activation.md` and Architecture 06 are authoritative for
+the three-mode product direction, common updater state machine, and current lifecycle
+proof gate. The seamless machine-wide authority mechanism remains unselected until its
+authentication and lifecycle evidence passes.
 
 This multi-mode proposal supersedes the earlier task-only proposal
 `kel53-t4b-windows-task-amendment-draft.md`; that file remains historical evidence, not
@@ -163,9 +163,10 @@ state-machine owner remains `keld-update`; the installation-mode authority bound
 separate and may not be duplicated into three updaters. The code-level interface is not
 specified here; reuse existing package verifier, local-record codec, guard-owned
 Windows filesystem policy, `keld-ipc` transport owner and runtime candidate/job owner
-before adding a new abstraction. There is no T4b activation-journal implementation in
-`records.rs` yet; extend the owned strict local-record machinery only after the journal
-contract is approved.
+before adding a new abstraction. The current implementation status for provenance,
+activation-journal codecs, lifecycle ownership, and recovery classification is recorded
+in the approved activation spec; this historical proposal's earlier implementation
+inventory is stale.
 
 ### Mode matrix and recommendation
 

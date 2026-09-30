@@ -312,6 +312,13 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     before application execution, retaining only immutable selected-tree pins and its
     health endpoint through the 30-second window. Sharing conflict is a typed busy/refusal with no retry or
     sleep. Missing, wrong-kind, wrong-volume or wrong-profile lock state fails closed.
+    On Windows machine-wide profiles, ordinary-user read access to this lease also lets
+    a local native process hold a conflicting share-mode handle and deny update
+    availability until that handle closes. This is an availability-only residual: the
+    updater must fail closed before protected writes, and no integrity claim depends on
+    successful lease acquisition. The contract does not promise update availability
+    against hostile local native users. This follows from the documented
+    [CreateFile sharing rules](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew).
 
 ## 4. Design
 

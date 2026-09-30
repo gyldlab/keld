@@ -1946,7 +1946,14 @@ feed or package parser. The machine-seamless privileged trigger remains unselect
 its authentication and lifecycle contract passes. In the admitted profile,
 application roles and webviews cannot write this state. Administrators and arbitrary
 same-user native malware on an already compromised host account remain outside this
-boundary. Architecture 06
+boundary. On Windows machine-wide modes, ordinary-user read access to `activation.lock`
+allows a local native process to hold a conflicting share-mode handle and block a later
+exclusive writer open. The updater must treat that sharing conflict as busy/refusal
+before protected mutation; this is an availability-only residual, not a path to write
+protected state. Keld does not promise machine-wide update availability against hostile
+local native users. This behavior follows the documented
+[CreateFile sharing rules](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew).
+Architecture 06
 §4a owns exact ordering, recovery and package-cell admission.
 
 ## 6. What we deliberately do NOT promise (honesty ledger)

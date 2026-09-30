@@ -1565,7 +1565,10 @@ impl WindowsProcessJob {
     ///
     /// Returns an error if the delegated handle is incomplete, termination fails,
     /// or exact host/process-family exit cannot be observed before `timeout`.
-    pub fn terminate_and_wait_attached(self, timeout: Duration) -> Result<(), WindowsHostJobError> {
+    pub fn terminate_and_wait_attached(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), WindowsHostJobError> {
         if !self.host_assigned || self.host_process.is_none() {
             return Err(WindowsHostJobError::contract(
                 "cleanup observer attempt termination",
@@ -1583,7 +1586,7 @@ impl WindowsProcessJob {
     /// Returns an error if the host/family remains live or OS accounting cannot
     /// be read after both graceful and forced cleanup.
     pub fn gracefully_wait_and_reap_attached(
-        self,
+        &self,
         grace_timeout: Duration,
         terminate_timeout: Duration,
     ) -> Result<(), WindowsHostJobError> {
@@ -1879,7 +1882,7 @@ impl WindowsProcessJob {
         Ok(())
     }
 
-    fn terminate_and_wait_host_timed(self, timeout: Duration) -> Result<(), WindowsHostJobError> {
+    fn terminate_and_wait_host_timed(&self, timeout: Duration) -> Result<(), WindowsHostJobError> {
         let Some(host) = self
             .host_process
             .as_ref()

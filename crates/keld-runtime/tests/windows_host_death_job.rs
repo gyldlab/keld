@@ -2109,6 +2109,13 @@ fn run_cleanup_observer_helper() {
     observer
         .terminate_and_wait_attached(std::time::Duration::from_secs(10))
         .expect("reap exact Job through reduced rights");
+    assert_eq!(
+        observer
+            .active_processes()
+            .expect("query retained exact Job after family reap"),
+        0,
+        "the cleanup owner must retain its exact Job witness through the deletion boundary"
+    );
     println!("CLEANUP_OBSERVER_DONE {signal:?}");
     io::stdout().flush().expect("flush cleanup observer result");
 }
