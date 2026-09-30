@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use crate::receive::{
-    AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_received_header,
+    AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_primary_app_header,
+    validate_received_header,
 };
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
@@ -372,14 +373,54 @@ pub fn read_validated_frame_interruptible<S: Read>(
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
     mint_validated(
         policy,
-        read_frame_interruptible_with_limits(
+        read_validated_frame_interruptible_with_limits(
             stream,
             stop,
             None,
             APP_LINK_IO_DEADLINE,
-            Some(policy),
+            policy,
         )?,
     )
+}
+
+/// Reads the live primary app stream with the KEL-142 host waiter folded
+/// into the canonical KEL-133 receive decision.
+///
+/// The callback is trusted host state. It is sampled only after the fixed
+/// header has decoded and the envelope length passed its cap, but before the
+/// payload is allocated/read. Bun-originated Calls and Ping keep the ordinary
+/// primary-app policy; Reply/Err require the exact outstanding Echo
+/// correlation.
+///
+/// # Errors
+///
+/// As `read_validated_frame_interruptible`, including `KELD-IPC-005` for
+/// an unsolicited or wrong-correlation reply.
+pub fn read_primary_app_frame_interruptible<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    mut pending_echo_reply: impl FnMut() -> Option<CorrelationId>,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    let selected = std::cell::Cell::new(None);
+    let mut validate = |header: FrameHeader| {
+        let pending = pending_echo_reply();
+        selected.set(pending);
+        validate_primary_app_header(pending, header).map(|_| ())
+    };
+    let frame = read_frame_interruptible_with_limits(
+        stream,
+        stop,
+        None,
+        APP_LINK_IO_DEADLINE,
+        Some(&mut validate),
+    )?;
+    match frame {
+        None => Ok(None),
+        Some((header, payload)) => Ok(Some((
+            validate_primary_app_header(selected.get(), header)?,
+            payload,
+        ))),
+    }
 }
 
 /// [`read_validated_frame_interruptible`] additionally capped by an absolute
@@ -393,12 +434,12 @@ pub(crate) fn read_validated_frame_interruptible_until<S: Read>(
 ) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
     mint_validated(
         policy,
-        read_frame_interruptible_with_limits(
+        read_validated_frame_interruptible_with_limits(
             stream,
             stop,
             Some(deadline.instant()),
             APP_LINK_IO_DEADLINE,
-            Some(policy),
+            policy,
         )?,
     )
 }
@@ -417,12 +458,30 @@ fn mint_validated(
     }
 }
 
+fn read_validated_frame_interruptible_with_limits<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    deadline: Option<Instant>,
+    stall_limit: Duration,
+    policy: &ReceivePolicy,
+) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    let mut validate =
+        |header| validate_received_header(policy, header).map(|_| ());
+    read_frame_interruptible_with_limits(
+        stream,
+        stop,
+        deadline,
+        stall_limit,
+        Some(&mut validate),
+    )
+}
+
 fn read_frame_interruptible_with_limits<S: Read>(
     stream: &mut S,
     stop: &AtomicBool,
     deadline: Option<Instant>,
     stall_limit: Duration,
-    policy: Option<&ReceivePolicy>,
+    mut validate_header: Option<&mut dyn FnMut(FrameHeader) -> Result<(), IpcError>>,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
     let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];
@@ -439,9 +498,9 @@ fn read_frame_interruptible_with_limits<S: Read>(
     let header = FrameHeader::decode(&header_bytes)?;
     let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
     ensure_payload_len(len)?;
-    if let Some(policy) = policy {
+    if let Some(validate_header) = validate_header.as_mut() {
         // Semantic admission decision before payload allocation (kel133 AC1).
-        validate_received_header(policy, header)?;
+        validate_header(header)?;
     }
     let mut payload = vec![0u8; len];
     if !payload.is_empty()
@@ -1653,12 +1712,12 @@ mod deadline_contract_tests {
         let policy = ReceivePolicy::server_pre_auth_hello();
         let stall = Duration::from_millis(150);
         let started = Instant::now();
-        let err = read_frame_interruptible_with_limits(
+        let err = read_validated_frame_interruptible_with_limits(
             &mut reader,
             &stop,
             Some(started + Duration::from_secs(10)),
             stall,
-            Some(&policy),
+            &policy,
         )
         .expect_err("a stalled frame must expire at the stall limit");
         let elapsed = started.elapsed();
