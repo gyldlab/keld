@@ -36,7 +36,7 @@ fn main() {
         == Some(std::ffi::OsStr::new(WINDOWS_DEV_STAGE_CLEANUP_ARG))
     {
         if let Err(error) = run_windows_dev_stage_cleanup(&windows_args) {
-            eprintln!("{error}");
+            println!("{error}");
             process::exit(1);
         }
         return;
@@ -60,13 +60,11 @@ fn main() {
         }
         return;
     }
-    if (args.len() == 1 || args.iter().any(|arg| arg == "--hello"))
-        && let Err(error) = keld_core::prepare_webview_process()
-    {
-        eprintln!("{error}");
-        process::exit(1);
-    }
     if args.iter().any(|a| a == "--hello") {
+        if let Err(error) = keld_core::prepare_webview_process() {
+            eprintln!("{error}");
+            process::exit(1);
+        }
         if let Some(flag) = keld_core::host_hello_unknown_arg(&args) {
             eprintln!(
                 "KELD-CLI-044: unknown hello flag `{flag}`. \
@@ -90,7 +88,20 @@ fn main() {
     }
 
     #[cfg(windows)]
+    if keld_runtime::windows_job::launcher_start_gate_requested()
+        && let Err(error) = keld_runtime::windows_job::accept_host_start_v1()
+    {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+
+    #[cfg(windows)]
     if let Err(error) = keld_runtime::windows_job::install_host_death_job() {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+
+    if let Err(error) = keld_core::prepare_webview_process() {
         eprintln!("{error}");
         process::exit(1);
     }
@@ -193,6 +204,9 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
             "KELD-CORE-037: private Windows dev-stage cleanup PID is invalid: {source}. Relaunch through `keld dev`."
         )
     })?;
+    let attempt_job =
+        keld_runtime::windows_job::WindowsProcessJob::adopt_cleanup_observer_from_stderr(host_pid)
+            .map_err(|error| format!("KELD-CORE-037: cleanup Job admission failed: {error}."))?;
     let cleanup = keld_core::app_session::WindowsDevStageCleanup::prepare(&root, host_pid)
         .map_err(|error| error.to_string())?;
     println!("KELD_WINDOWS_DEV_STAGE_CLEANUP_READY");
@@ -201,7 +215,39 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
             "KELD-CORE-037: private Windows dev-stage cleanup readiness failed: {source}. Relaunch through `keld dev`."
         )
     })?;
-    cleanup.wait_and_delete().map_err(|error| error.to_string())
+    let signal = keld_runtime::windows_job::WindowsProcessJob::await_cleanup_release_v1();
+    let family_cleanup = if matches!(
+        &signal,
+        Ok(
+            keld_runtime::windows_job::WindowsCleanupReleaseSignal::Released
+                | keld_runtime::windows_job::WindowsCleanupReleaseSignal::LauncherLost,
+        )
+    ) {
+        attempt_job.gracefully_wait_and_reap_attached(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30),
+        )
+    } else {
+        attempt_job.terminate_and_wait_attached(std::time::Duration::from_secs(30))
+    };
+    family_cleanup.map_err(|error| {
+        format!("KELD-CORE-037: attempt process-family cleanup failed: {error}.")
+    })?;
+    cleanup
+        .wait_and_delete_after_family_exit()
+        .map_err(|error| error.to_string())?;
+    match signal {
+        Ok(
+            keld_runtime::windows_job::WindowsCleanupReleaseSignal::Released
+            | keld_runtime::windows_job::WindowsCleanupReleaseSignal::LauncherLost,
+        ) => Ok(()),
+        Ok(keld_runtime::windows_job::WindowsCleanupReleaseSignal::Malformed) => Err(String::from(
+            "KELD-CORE-037: malformed cleanup release was refused after safely reaping the exact attempt.",
+        )),
+        Err(error) => Err(format!(
+            "KELD-CORE-037: cleanup control pipe failed; exact attempt was safely reaped: {error}."
+        )),
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

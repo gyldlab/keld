@@ -6,30 +6,83 @@
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::PathBuf;
 use std::ptr;
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+    FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT,
+    NtCreateFile,
 };
 use windows_sys::Win32::Foundation::{
-    INVALID_HANDLE_VALUE, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError,
-    STATUS_SUCCESS, UNICODE_STRING,
+    DuplicateHandle, GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, RtlNtStatusToDosError, STATUS_SUCCESS, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_LIST_DIRECTORY,
-    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
-    GetDriveTypeW, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE, VOLUME_NAME_GUID,
+    FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, GetDriveTypeW, GetFinalPathNameByHandleW,
+    GetVolumeInformationByHandleW, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL, SYNCHRONIZE,
+    VOLUME_NAME_GUID, WRITE_DAC,
 };
 use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
 use windows_sys::Win32::System::SystemServices::{FILE_PERSISTENT_ACLS, FILE_READ_ONLY_VOLUME};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::WindowsProgramming::{DRIVE_FIXED, FILE_CREATED};
 
 const MAX_WINDOWS_PATH_UNITS: usize = 32_768;
 const VOLUME_GUID_ROOT_UNITS: usize = 49;
+
+/// Duplicates an exclusive activation-lock open into a non-writable keeper
+/// retention handle. The duplicate references the exact same OS file object and
+/// therefore preserves the original share-zero writer exclusion.
+pub(crate) fn duplicate_activation_lease_for_keeper(lease: &File) -> io::Result<OwnedHandle> {
+    let mut source_flags = 0_u32;
+    // SAFETY: `lease` owns a live file handle and `source_flags` is writable.
+    if unsafe { GetHandleInformation(lease.as_raw_handle().cast(), &raw mut source_flags) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if source_flags & HANDLE_FLAG_INHERIT != 0 {
+        return Err(unsupported(
+            "activation lock handle must be non-inheritable before keeper delegation",
+        ));
+    }
+    let mut duplicate = ptr::null_mut();
+    let rights = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    // SAFETY: source and target are the current process; `lease` owns the source
+    // handle, output is writable HANDLE storage, and only read-attributes plus
+    // synchronization rights are granted to the non-inheritable duplicate.
+    if unsafe {
+        DuplicateHandle(
+            GetCurrentProcess(),
+            lease.as_raw_handle().cast(),
+            GetCurrentProcess(),
+            &raw mut duplicate,
+            rights,
+            0,
+            0,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful DuplicateHandle returned one fresh owning handle.
+    let duplicate = unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) };
+    let mut duplicate_flags = 0_u32;
+    // SAFETY: duplicate is live and duplicate_flags is writable output storage.
+    if unsafe { GetHandleInformation(duplicate.as_raw_handle().cast(), &raw mut duplicate_flags) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if duplicate_flags & HANDLE_FLAG_INHERIT != 0 {
+        return Err(unsupported(
+            "keeper activation-lock duplicate is inheritable",
+        ));
+    }
+    Ok(duplicate)
+}
 
 /// Observes the retained object's fixed, writable NTFS volume with persistent ACLs.
 pub(crate) fn qualify_volume(directory: &File) -> io::Result<()> {
@@ -209,29 +262,29 @@ fn volume_guid_root(path: &[u16]) -> io::Result<[u16; VOLUME_GUID_ROOT_UNITS + 1
 
 /// Creates one protected child directory without resolving the parent's pathname.
 pub(crate) fn create_directory_relative(parent: &File, component: &str) -> io::Result<File> {
-    if component.is_empty() || component.contains('/') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected one directory component",
-        ));
-    }
-    keld_guard::validate_windows_package_paths(&[component])
-        .map_err(|detail| io::Error::new(io::ErrorKind::InvalidInput, detail))?;
-    let mut name = Vec::new();
-    name.try_reserve_exact(component.len())
-        .map_err(io::Error::other)?;
-    name.extend(component.encode_utf16());
-    let length = name
-        .len()
-        .checked_mul(size_of::<u16>())
-        .and_then(|bytes| u16::try_from(bytes).ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "directory name is too long"))?;
+    create_directory_relative_with_profile(
+        parent,
+        component,
+        keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+    )
+}
+
+/// Creates one child with the guard-owned install profile at object creation.
+pub(crate) fn create_directory_relative_with_profile(
+    parent: &File,
+    component: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<File> {
+    let (mut name, length) = validated_relative_name(component)?;
     let mut unicode_name = UNICODE_STRING {
         Length: length,
         MaximumLength: length,
         Buffer: name.as_mut_ptr(),
     };
-    let security = keld_guard::windows_owner_private_directory_security()?;
+    if profile == keld_guard::WindowsInstallProtectionProfile::MachineSystem {
+        keld_guard::require_windows_system_token()?;
+    }
+    let security = keld_guard::windows_install_directory_security(profile)?;
     let attributes = OBJECT_ATTRIBUTES {
         Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(io::Error::other)?,
         RootDirectory: parent.as_raw_handle().cast(),
@@ -293,8 +346,117 @@ pub(crate) fn create_directory_relative(parent: &File, component: &str) -> io::R
             "directory creation did not report a new directory",
         ));
     }
-    keld_guard::validate_windows_owner_private_directory(&directory)?;
+    keld_guard::validate_windows_install_directory(&directory, profile)?;
     Ok(directory)
+}
+
+/// Creates one protected regular file with its guard-owned profile before writes.
+pub(crate) fn create_file_relative_with_profile(
+    parent: &File,
+    component: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<File> {
+    create_file_relative_with_profile_sharing(parent, component, profile, FILE_SHARE_READ)
+}
+
+/// Creates a protected regular file whose returned handle shares with no opener.
+pub(crate) fn create_file_relative_exclusive_with_profile(
+    parent: &File,
+    component: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> io::Result<File> {
+    create_file_relative_with_profile_sharing(parent, component, profile, 0)
+}
+
+fn create_file_relative_with_profile_sharing(
+    parent: &File,
+    component: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+    share_mode: u32,
+) -> io::Result<File> {
+    let (mut name, length) = validated_relative_name(component)?;
+    let mut unicode_name = UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: name.as_mut_ptr(),
+    };
+    if profile == keld_guard::WindowsInstallProtectionProfile::MachineSystem {
+        keld_guard::require_windows_system_token()?;
+    }
+    let security = keld_guard::windows_install_file_security(profile)?;
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(size_of::<OBJECT_ATTRIBUTES>()).map_err(io::Error::other)?,
+        RootDirectory: parent.as_raw_handle().cast(),
+        ObjectName: &raw mut unicode_name,
+        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+        SecurityDescriptor: security.as_ptr().cast(),
+        SecurityQualityOfService: ptr::null_mut(),
+    };
+    let mut completion = IO_STATUS_BLOCK {
+        Anonymous: IO_STATUS_BLOCK_0 {
+            Status: STATUS_SUCCESS,
+        },
+        Information: 0,
+    };
+    let mut handle = ptr::null_mut();
+    let access = FILE_GENERIC_READ | FILE_GENERIC_WRITE | READ_CONTROL | SYNCHRONIZE | WRITE_DAC;
+    // SAFETY: parent, the validated single-component name, explicit guard-owned
+    // descriptor and output slots remain live for this synchronous relative create.
+    // The fixed FILE_CREATE/non-directory/no-reparse options prevent open/truncate,
+    // links and async I/O; a fixed internal sharing policy and exact profile are
+    // applied before writes. WRITE_DAC is retained only for installer sealing.
+    let status = unsafe {
+        NtCreateFile(
+            &raw mut handle,
+            access,
+            &raw const attributes,
+            &raw mut completion,
+            ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            share_mode,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        // SAFETY: this pure status conversion takes no pointers or ownership.
+        let error = unsafe { RtlNtStatusToDosError(status) };
+        return Err(io::Error::from_raw_os_error(error.cast_signed()));
+    }
+    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::other("file creation returned no owned handle"));
+    }
+    // SAFETY: successful NtCreateFile returned one new handle; transfer it exactly
+    // once to File so every later error closes it through RAII.
+    let file = unsafe { File::from_raw_handle(handle.cast()) };
+    if status != STATUS_SUCCESS || completion.Information != FILE_CREATED as usize {
+        return Err(io::Error::other("file creation did not report a new file"));
+    }
+    keld_guard::validate_windows_install_file(&file, profile)?;
+    Ok(file)
+}
+
+fn validated_relative_name(component: &str) -> io::Result<(Vec<u16>, u16)> {
+    if component.is_empty() || component.contains('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected one filesystem component",
+        ));
+    }
+    keld_guard::validate_windows_package_paths(&[component])
+        .map_err(|detail| io::Error::new(io::ErrorKind::InvalidInput, detail))?;
+    let mut name = Vec::new();
+    name.try_reserve_exact(component.len())
+        .map_err(io::Error::other)?;
+    name.extend(component.encode_utf16());
+    let length = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .and_then(|bytes| u16::try_from(bytes).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "component is too long"))?;
+    Ok((name, length))
 }
 
 fn unsupported(detail: &'static str) -> io::Error {
@@ -305,11 +467,12 @@ fn unsupported(detail: &'static str) -> io::Error {
 #[allow(clippy::expect_used)] // Test setup and independent literal/OS assertions.
 mod tests {
     use super::{
-        create_directory_relative, publish_new, require_volume_root_handle,
+        create_directory_relative, create_file_relative_exclusive_with_profile,
+        duplicate_activation_lease_for_keeper, publish_new, require_volume_root_handle,
         validate_volume_locator, volume_guid_root,
     };
     use std::fs::{File, OpenOptions};
-    use std::io::Write;
+    use std::io::Write as _;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
@@ -400,6 +563,28 @@ mod tests {
     }
 
     #[test]
+    fn exclusive_profiled_file_blocks_readers_until_its_handle_closes() {
+        let fixture = tempfile::tempdir().expect("exclusive file fixture");
+        let parent = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(fixture.path())
+            .expect("retain fixture parent");
+        let file = create_file_relative_exclusive_with_profile(
+            &parent,
+            "activation.lock",
+            keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+        )
+        .expect("create with exact profile and no sharing");
+        keld_guard::validate_windows_owner_private_file(&file).expect("exact file profile");
+        assert!(File::open(fixture.path().join("activation.lock")).is_err());
+        drop(file);
+        File::open(fixture.path().join("activation.lock"))
+            .expect("readers can open the persistent lease file after release");
+    }
+
+    #[test]
     fn sibling_publication_never_replaces_or_copies() {
         let fixture = tempfile::tempdir().expect("publication fixture");
         let parent = OpenOptions::new()
@@ -432,6 +617,45 @@ mod tests {
             b"verified bytes"
         );
         drop(parent);
+    }
+
+    #[test]
+    fn reduced_activation_lease_handle_retains_share_zero_without_write_access() {
+        let fixture = tempfile::tempdir().expect("lease fixture");
+        let path = fixture.path().join("activation.lock");
+        let lease = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("create exact share-zero lease");
+        let keeper_handle = duplicate_activation_lease_for_keeper(&lease)
+            .expect("duplicate read-attributes/synchronize rights");
+        drop(lease);
+
+        let mut keeper_file = File::from(keeper_handle);
+        assert_eq!(
+            keeper_file
+                .write_all(b"forbidden")
+                .expect_err("keeper handle has no write access")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(
+            OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&path)
+                .is_err(),
+            "reduced duplicate retains the original share-zero open"
+        );
+        drop(keeper_file);
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .expect("writer exclusion ends when the final duplicate closes");
     }
 
     #[test]

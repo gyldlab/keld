@@ -264,26 +264,38 @@ manifest decoder.
    v0 update contract selects one compiled-in ed25519 key; a TUF-style rotating root
    remains later target behavior and requires a wire/trust review.
 
-## 5. Update security (verification and staging implemented; activation specified)
+## 5. Update security (Windows baseline and staging implemented; activation in progress)
 
 Current code verifies signed manifests/full artifacts and the Windows canonical
-archive, and extracts to an observed owner-private fixed-NTFS incomplete stage.
-Logical provenance admission is not a protected installer-record loader. That loader,
-the activation journal, health owner, rollback engine and feed client remain absent;
-staging does not publish a runnable version. Architecture 06 and KEL-53 T3b own the
-exact current support cell. The following is the reviewed full-lifecycle contract.
+archive, and extracts to observed owner-private incomplete stages. KEL-266 adds an
+actual SYSTEM-only protected machine-baseline installer/loader and SYSTEM staging
+cell. The active KEL-270 work now records explicit mode metadata and a strict journal
+codec/recovery classifier, but it does not yet publish current/LKG, run an activation
+writer or provide candidate health/rollback. The following is the reviewed
+full-lifecycle contract; no mode is shipped from provenance or state-model code alone.
 V0 update manifests are signed with
 ed25519 and verified by the host's compiled-in public key. Every release has a bounded
 full package whose transport and canonical
 content have separate BLAKE3 checks; optional later deltas must reconstruct that same
 full-content digest. Protected installer provenance, rather than path heuristics,
-decides whether the direct updater owns the installation channel and records an
-admitted strict/distinct-OS-principal profile. Legacy same-user role mode refuses direct
-update. The host keeps the
+decides whether the direct updater owns the installation channel and records the explicit
+install mode plus its mode-specific OS protection profile. The default is per-user and
+user-owned; its owner and arbitrary native malware already running as that user are
+outside the threat claim, while hostile Keld roles remain denied write access. The
+Program Files UAC profile admits the trusted elevated writer (Administrators/SYSTEM) and
+ordinary-user/Keld-role read/execute. The opt-in seamless machine profile remains
+SYSTEM-protected with its privileged mechanism unselected. Managed/package-owned installs
+remain with their deployment owner. Legacy same-user role mode refuses direct update.
+The host keeps the
 semantic-version trust floor separate from `current`, an exact attempt journal and
 `last-known-good`; candidate health cannot advance LKG unless its private receipt
-matches the journaled attempt and artifact. The optional signed Windows helper consumes
-only protected journal/handle inputs after the host exits. In the admitted profile,
+matches the journaled attempt and artifact. The Machine-UAC authority adapter is a fixed
+signed helper invoked through explicit UAC; it authenticates its bootstrap from the
+admitted host and reuses the common verifier before obtaining the write lease or
+publishing the journal. Any optional post-exit locked-file helper is a separate, narrower
+component that consumes only an already-protected journal and sealed handles; it has no
+feed or package parser. The machine-seamless privileged trigger remains unselected until
+its authentication and lifecycle contract passes. In the admitted profile,
 application roles and webviews cannot write this state. Administrators and arbitrary
 same-user native malware on an already compromised host account remain outside this
 boundary. Architecture 06

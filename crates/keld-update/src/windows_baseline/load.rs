@@ -1,6 +1,8 @@
 //! Read-only provenance loader and separate initializer-only seed verification.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom};
 
 use cap_fs_ext::{DirExt as _, MetadataExt as _};
@@ -10,8 +12,12 @@ use super::{
     LoadedWindowsBaseline, Roots, VersionPins, WindowsBaselineTrust, ensure_directory, error,
     exact_entries, open_machine_file, open_roots, read_record,
 };
+use super::{WindowsActivationWriteSnapshot, WindowsRecoveryInspection};
+use crate::DirectInstallMode;
+use crate::UpdateVerifier;
+use crate::activation::{ProcessFamilyObservation, RecoverySnapshot, recovery_decision};
 use crate::records::{self, PointerKind};
-use crate::{ArchiveEntryKind, InstallOwner, ProvenanceObservation, UpdateError};
+use crate::{ArchiveEntryKind, ProvenanceObservation, UpdateError};
 
 /// Loads coherent protected initial-baseline metadata without a writable handle.
 ///
@@ -26,12 +32,16 @@ use crate::{ArchiveEntryKind, InstallOwner, ProvenanceObservation, UpdateError};
 pub fn load_windows_baseline(
     trust: &WindowsBaselineTrust,
 ) -> Result<LoadedWindowsBaseline, UpdateError> {
+    trust.require_direct_owner()?;
     let roots =
         open_roots(trust, false).map_err(|cause| error("committed scaffold admission", cause))?;
+    let activation_lease = super::open_activation_lease(&roots.update, roots.profile(), false)
+        .map_err(|cause| error("activation snapshot lease", cause))?;
     let install = roots
         .install()
         .map_err(|cause| error("install root", cause))?;
-    let (provenance_file, provenance_bytes) = read_record(install, "install-provenance")?;
+    let (provenance_file, provenance_bytes) =
+        read_record(install, "install-provenance", roots.profile())?;
     let record = records::decode_provenance(&provenance_bytes)?;
     crate::provenance::match_identity(&trust.installation, &record.provenance.identity)?;
     if record.publisher_scope != trust.publisher_scope || record.volume_guid != trust.volume_guid {
@@ -40,10 +50,11 @@ pub fn load_windows_baseline(
             "publisher or expected volume differs",
         ));
     }
-    if let InstallOwner::Managed { mechanism } = &record.provenance.owner {
-        return Err(UpdateError::ManagedInstall {
-            mechanism: mechanism.clone(),
-        });
+    if record.provenance.owner != trust.owner {
+        return Err(error(
+            "provenance owner binding",
+            "protected owner differs from trusted deployment owner",
+        ));
     }
     let metadata = read_initial_metadata(&roots)?;
     let floor = metadata.floor;
@@ -59,10 +70,515 @@ pub fn load_windows_baseline(
         floor,
         publisher_scope: record.publisher_scope,
         roots,
+        _activation_lease: activation_lease,
         _records: retained,
         _baseline_version: metadata.completion.version,
         _baseline_tree: metadata.completion.tree,
     })
+}
+
+/// Loads mutable activation state under the per-user installation's exclusive writer lease.
+///
+/// It validates protected provenance, floor, current/LKG/previous and every referenced
+/// complete version, then drops all mutable-record read handles while retaining only
+/// immutable version pins and the exclusive lease. Pending journals refuse because this
+/// entry point has no process-family recovery observation. Machine-seamless is gated.
+///
+/// # Errors
+/// Refuses mode/configuration mismatch, busy/missing lease, unknown local state, pending
+/// recovery, malformed state, invalid version relationships or a selected tree mismatch.
+pub fn load_windows_activation_write_snapshot(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+) -> Result<WindowsActivationWriteSnapshot, UpdateError> {
+    load_activation_write_snapshot_inner(trust, verifier, false)
+}
+
+/// Loads a protected pending activation's journal and pointer observations under the
+/// exclusive per-user writer lease without returning any recovery or mutation command.
+///
+/// The returned opaque owner retains the lease, protected ancestry and referenced version
+/// pins while a trusted host compares its QF1 retirement witness with the inspected journal.
+/// It is for evidence composition only; the existing writer loader continues to refuse every
+/// pending journal until the host explicitly integrates both authorities.
+///
+/// # Errors
+///
+/// Refuses managed or privileged modes, a busy/missing lease, provenance/profile mismatch,
+/// absent or malformed journal, unsupported state, inconsistent phase/pointer/floor facts,
+/// or any version tree that is missing, substituted or unreferenced.
+pub fn load_windows_recovery_inspection(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+) -> Result<WindowsRecoveryInspection, UpdateError> {
+    trust.require_direct_owner()?;
+    crate::provenance::match_identity(&trust.installation, &verifier.expected)?;
+    if trust.installation.install_mode != DirectInstallMode::PerUserDirect {
+        return Err(error(
+            "activation recovery inspection mode",
+            "only PerUserDirect has production recovery-inspection admission",
+        ));
+    }
+    let roots =
+        open_roots(trust, false).map_err(|cause| error("recovery root admission", cause))?;
+    let profile = roots.profile();
+    let lease = super::open_activation_lease(&roots.update, profile, true)
+        .map_err(|cause| error("exclusive recovery inspection lease", cause))?;
+    let provenance = read_writer_provenance(trust, &roots)?;
+    let lifecycle_installation_id = records::lifecycle_installation_id(
+        &provenance.provenance,
+        &provenance.publisher_scope,
+        &provenance.volume_guid,
+    )?;
+    let records = read_writer_records(&roots, true)?;
+    let journal = records
+        .journal
+        .ok_or_else(|| error("activation recovery inspection", "pending journal absent"))?;
+    let observation = ProvenanceObservation::Protected {
+        record: provenance.provenance,
+        version_floor: Some(records.version_floor.clone()),
+    };
+    let admitted = verifier.admit(&observation)?;
+    let floor = semver::Version::parse(&records.version_floor)
+        .map_err(|cause| error("recovery version floor", cause))?;
+    crate::activation::validate_protected_recovery_state(
+        &journal,
+        &records.current,
+        &records.version_floor,
+        &records.last_known_good,
+        records.previous_known_good.as_ref(),
+    )
+    .map_err(|refusal| error("activation recovery inspection", format!("{refusal:?}")))?;
+    validate_recovery_known_good_history(
+        &trust.installation.baseline,
+        &journal.prior_last_known_good,
+        journal.prior_previous_known_good.as_ref(),
+    )?;
+
+    let mut selected = vec![records.current.clone(), records.last_known_good.clone()];
+    if let Some(previous) = &records.previous_known_good
+        && !selected.contains(previous)
+    {
+        selected.push(previous.clone());
+    }
+    for artifact in [
+        &journal.candidate,
+        &journal.rollback_target,
+        &journal.prior_last_known_good,
+    ]
+    .into_iter()
+    .chain(journal.prior_previous_known_good.iter())
+    {
+        if !selected.contains(artifact) {
+            selected.push(artifact.clone());
+        }
+    }
+    for artifact in [&records.current, &records.last_known_good]
+        .into_iter()
+        .chain(records.previous_known_good.iter())
+    {
+        validate_selected_artifact(&trust.installation.baseline, artifact, &floor)?;
+    }
+    let prior_floor = semver::Version::parse(&journal.prior_floor)
+        .map_err(|cause| error("recovery prior floor", cause))?;
+    for artifact in [&journal.rollback_target, &journal.prior_last_known_good]
+        .into_iter()
+        .chain(journal.prior_previous_known_good.iter())
+    {
+        validate_selected_artifact(&trust.installation.baseline, artifact, &prior_floor)?;
+    }
+    validate_artifact_scope_and_baseline(&trust.installation.baseline, &journal.candidate)?;
+    let version_pins = pin_selected_versions(&roots, &selected)?;
+    Ok(WindowsRecoveryInspection {
+        _roots: roots,
+        lease,
+        admitted,
+        lifecycle_installation_id,
+        journal,
+        version_floor: records.version_floor,
+        current: records.current,
+        last_known_good: records.last_known_good,
+        previous_known_good: records.previous_known_good,
+        _version_pins: version_pins,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn load_windows_activation_write_snapshot_for_test(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+) -> Result<WindowsActivationWriteSnapshot, UpdateError> {
+    load_activation_write_snapshot_inner(trust, verifier, true)
+}
+
+fn load_activation_write_snapshot_inner(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+    allow_uac_fixture: bool,
+) -> Result<WindowsActivationWriteSnapshot, UpdateError> {
+    trust.require_direct_owner()?;
+    crate::provenance::match_identity(&trust.installation, &verifier.expected)?;
+    match trust.installation.install_mode {
+        DirectInstallMode::PerUserDirect => {}
+        DirectInstallMode::MachineUacDirect if allow_uac_fixture => {}
+        DirectInstallMode::MachineUacDirect => {
+            return Err(error(
+                "activation writer mechanism",
+                "MachineUacDirect remains gated on authenticated elevated-helper admission",
+            ));
+        }
+        DirectInstallMode::MachineSeamlessDirect => {
+            return Err(error(
+                "activation writer mechanism",
+                "MachineSeamlessDirect remains gated on its authenticated privileged mechanism",
+            ));
+        }
+    }
+    let roots = open_roots(trust, false).map_err(|cause| error("writer root admission", cause))?;
+    let profile = roots.profile();
+    let lease = super::open_activation_lease(&roots.update, profile, true)
+        .map_err(|cause| error("exclusive activation writer lease", cause))?;
+    let state = load_writer_state(trust, verifier, &roots)?;
+    let version_pins = pin_selected_versions(&roots, &state.selected)?;
+    Ok(WindowsActivationWriteSnapshot {
+        roots,
+        lease,
+        admitted: state.admitted,
+        version_floor: state.version_floor,
+        current: state.current,
+        last_known_good: state.last_known_good,
+        previous_known_good: state.previous_known_good,
+        _version_pins: version_pins,
+    })
+}
+
+struct WriterState {
+    admitted: crate::AdmittedInstallation,
+    version_floor: String,
+    current: crate::ArtifactIdentity,
+    last_known_good: crate::ArtifactIdentity,
+    previous_known_good: Option<crate::ArtifactIdentity>,
+    selected: Vec<crate::ArtifactIdentity>,
+}
+
+struct WriterRecords {
+    version_floor: String,
+    current: crate::ArtifactIdentity,
+    last_known_good: crate::ArtifactIdentity,
+    previous_known_good: Option<crate::ArtifactIdentity>,
+    journal: Option<records::ActivationJournal>,
+}
+
+fn load_writer_state(
+    trust: &WindowsBaselineTrust,
+    verifier: &UpdateVerifier,
+    roots: &Roots,
+) -> Result<WriterState, UpdateError> {
+    let provenance = read_writer_provenance(trust, roots)?;
+    let records = read_writer_records(roots, false)?;
+    let version_floor = records.version_floor;
+    let current = records.current;
+    let last_known_good = records.last_known_good;
+    let previous_known_good = records.previous_known_good;
+    let observation = ProvenanceObservation::Protected {
+        record: provenance.provenance,
+        version_floor: Some(version_floor.clone()),
+    };
+    let admitted = verifier.admit(&observation)?;
+    let floor =
+        semver::Version::parse(&version_floor).map_err(|cause| error("version floor", cause))?;
+    validate_writer_pointer_context(
+        &trust.installation.baseline,
+        &current,
+        &last_known_good,
+        previous_known_good.as_ref(),
+        &floor,
+    )?;
+    let mut selected = vec![current.clone(), last_known_good.clone()];
+    if let Some(previous) = &previous_known_good
+        && !selected.contains(previous)
+    {
+        selected.push(previous.clone());
+    }
+    Ok(WriterState {
+        admitted,
+        version_floor,
+        current,
+        last_known_good,
+        previous_known_good,
+        selected,
+    })
+}
+
+fn read_writer_provenance(
+    trust: &WindowsBaselineTrust,
+    roots: &Roots,
+) -> Result<records::ProvenanceRecord, UpdateError> {
+    let install = roots
+        .install()
+        .map_err(|cause| error("install root", cause))?;
+    let update_name = trust
+        .installation
+        .update_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| error("install topology", "update component absent"))?;
+    exact_entries(install, &[update_name, "install-provenance"])
+        .map_err(|cause| error("install contents", cause))?;
+    let (provenance_file, provenance_bytes) =
+        read_record(install, "install-provenance", roots.profile())?;
+    drop(provenance_file);
+    let provenance = records::decode_provenance(&provenance_bytes)?;
+    crate::provenance::match_identity(&trust.installation, &provenance.provenance.identity)?;
+    if provenance.publisher_scope != trust.publisher_scope
+        || provenance.volume_guid != trust.volume_guid
+    {
+        return Err(error(
+            "writer trust binding",
+            "publisher or expected volume differs",
+        ));
+    }
+    if provenance.provenance.owner != trust.owner {
+        return Err(error(
+            "writer owner binding",
+            "protected owner differs from trusted deployment owner",
+        ));
+    }
+    Ok(provenance)
+}
+
+fn read_writer_records(
+    roots: &Roots,
+    allow_pending_journal: bool,
+) -> Result<WriterRecords, UpdateError> {
+    let profile = roots.profile();
+    let (_, floor_bytes) = read_record(&roots.update, "version-floor", profile)?;
+    let version_floor = records::decode_floor(&floor_bytes)?;
+    let (_, current_bytes) = read_record(&roots.update, "current", profile)?;
+    let current = records::decode_pointer(PointerKind::Current, &current_bytes)?;
+    let (_, lkg_bytes) = read_record(&roots.update, "last-known-good", profile)?;
+    let last_known_good = records::decode_pointer(PointerKind::LastKnownGood, &lkg_bytes)?;
+    let entries = roots
+        .update
+        .entries()
+        .map_err(|cause| error("writer update contents", cause))?;
+    let names = entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|cause| error("writer update contents", cause))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    for name in &names {
+        match name.to_str() {
+            Some(
+                "versions"
+                | "activation.lock"
+                | "version-floor"
+                | "current"
+                | "last-known-good"
+                | "previous-known-good"
+                | "bootstrap.lock",
+            ) => {}
+            Some("activation-journal") if allow_pending_journal => {}
+            Some("activation-journal") => {
+                return Err(error(
+                    "activation recovery",
+                    "pending journal requires the process-family recovery owner",
+                ));
+            }
+            _ => return Err(error("writer update contents", "unknown state entry")),
+        }
+    }
+    if names.contains(std::ffi::OsStr::new("bootstrap.lock")) {
+        let (_, bytes) = read_record(&roots.update, "bootstrap.lock", profile)?;
+        if !bytes.is_empty() {
+            return Err(error("bootstrap marker", "bootstrap lock is not empty"));
+        }
+    }
+    let previous_known_good = if names.contains(std::ffi::OsStr::new("previous-known-good")) {
+        let (_, bytes) = read_record(&roots.update, "previous-known-good", profile)?;
+        Some(records::decode_pointer(
+            PointerKind::PreviousKnownGood,
+            &bytes,
+        )?)
+    } else {
+        None
+    };
+    let journal = if names.contains(std::ffi::OsStr::new("activation-journal")) {
+        let (_, bytes) = read_record(&roots.update, "activation-journal", profile)?;
+        Some(records::decode_activation_journal(&bytes)?)
+    } else {
+        None
+    };
+    Ok(WriterRecords {
+        version_floor,
+        current,
+        last_known_good,
+        previous_known_good,
+        journal,
+    })
+}
+
+fn validate_writer_pointer_context(
+    baseline: &crate::ArtifactIdentity,
+    current: &crate::ArtifactIdentity,
+    last_known_good: &crate::ArtifactIdentity,
+    previous_known_good: Option<&crate::ArtifactIdentity>,
+    floor: &semver::Version,
+) -> Result<(), UpdateError> {
+    if last_known_good != baseline && previous_known_good.is_none() {
+        return Err(error(
+            "previous-known-good pointer",
+            "a successful update must retain its prior known-good artifact",
+        ));
+    }
+    validate_selected_artifact(baseline, current, floor)?;
+    validate_selected_artifact(baseline, last_known_good, floor)?;
+    if current != last_known_good && previous_known_good.is_none_or(|previous| current != previous)
+    {
+        return Err(error(
+            "current pointer",
+            "current is not a known-good artifact",
+        ));
+    }
+    if let Some(previous) = previous_known_good {
+        validate_selected_artifact(baseline, previous, floor)?;
+        if previous == last_known_good
+            || semver::Version::parse(&previous.version)
+                .map_err(|cause| error("previous-known-good version", cause))?
+                .cmp_precedence(
+                    &semver::Version::parse(&last_known_good.version)
+                        .map_err(|cause| error("last-known-good version", cause))?,
+                )
+                != Ordering::Less
+        {
+            return Err(error(
+                "previous-known-good pointer",
+                "previous version is not strictly older than last-known-good",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_recovery_known_good_history(
+    baseline: &crate::ArtifactIdentity,
+    prior_last_known_good: &crate::ArtifactIdentity,
+    prior_previous_known_good: Option<&crate::ArtifactIdentity>,
+) -> Result<(), UpdateError> {
+    if prior_last_known_good != baseline && prior_previous_known_good.is_none() {
+        return Err(error(
+            "activation journal previous-known-good history",
+            "prior last-known-good differs from the installed baseline but has no prior previous-known-good",
+        ));
+    }
+    Ok(())
+}
+
+fn pin_selected_versions(
+    roots: &Roots,
+    selected: &[crate::ArtifactIdentity],
+) -> Result<Vec<VersionPins>, UpdateError> {
+    validate_activation_version_census(roots, selected)?;
+    selected
+        .iter()
+        .map(|artifact| {
+            let completion = read_version_completion(roots, artifact)?;
+            validate_version_contents(roots, completion)
+        })
+        .collect()
+}
+
+fn validate_selected_artifact(
+    baseline: &crate::ArtifactIdentity,
+    selected: &crate::ArtifactIdentity,
+    floor: &semver::Version,
+) -> Result<(), UpdateError> {
+    let version = validate_artifact_scope_and_baseline(baseline, selected)?;
+    if version.cmp_precedence(floor) == Ordering::Greater {
+        return Err(error(
+            "activation pointer version",
+            "selected version is above the protected floor",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_artifact_scope_and_baseline(
+    baseline: &crate::ArtifactIdentity,
+    selected: &crate::ArtifactIdentity,
+) -> Result<semver::Version, UpdateError> {
+    if selected.app_id != baseline.app_id
+        || selected.channel != baseline.channel
+        || selected.target != baseline.target
+    {
+        return Err(error(
+            "activation pointer scope",
+            "selected artifact differs from the trusted application/channel/target",
+        ));
+    }
+    let version = semver::Version::parse(&selected.version)
+        .map_err(|cause| error("activation pointer version", cause))?;
+    let baseline_version = semver::Version::parse(&baseline.version)
+        .map_err(|cause| error("baseline artifact version", cause))?;
+    match version.cmp_precedence(&baseline_version) {
+        Ordering::Less => {
+            return Err(error(
+                "activation pointer version",
+                "selected version is below the installed baseline",
+            ));
+        }
+        Ordering::Equal if selected != baseline => {
+            return Err(error(
+                "activation pointer identity",
+                "baseline precedence must retain the exact installed artifact identity",
+            ));
+        }
+        Ordering::Equal | Ordering::Greater => {}
+    }
+    Ok(version)
+}
+
+fn validate_activation_version_census(
+    roots: &Roots,
+    selected: &[crate::ArtifactIdentity],
+) -> Result<(), UpdateError> {
+    let selected_names = selected
+        .iter()
+        .map(|artifact| artifact.version.as_str())
+        .collect::<BTreeSet<_>>();
+    for entry in roots
+        .versions
+        .entries()
+        .map_err(|cause| error("activation versions", cause))?
+    {
+        let entry = entry.map_err(|cause| error("activation versions", cause))?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| error("activation versions", "non-UTF-8 entry"))?;
+        if selected_names.contains(name.as_str()) {
+            continue;
+        }
+        let diagnostic = name.strip_prefix("incomplete-").is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+        if !diagnostic {
+            return Err(error(
+                "activation versions",
+                format!("unreferenced version entry {name:?} requires recovery"),
+            ));
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|cause| error("activation diagnostic metadata", cause))?;
+        ensure_directory(&metadata).map_err(|cause| error("activation diagnostic kind", cause))?;
+    }
+    Ok(())
 }
 
 struct BaselineCompletion {
@@ -97,6 +613,8 @@ fn read_initial_metadata(roots: &Roots) -> Result<InitialMetadata, UpdateError> 
     )
     .map_err(|cause| error("initial install contents", cause))?;
     let mut lock_present = false;
+    let mut activation_journal_present = false;
+    let mut previous_known_good_present = false;
     for entry in roots
         .update
         .entries()
@@ -106,7 +624,19 @@ fn read_initial_metadata(roots: &Roots) -> Result<InitialMetadata, UpdateError> 
             .map_err(|cause| error("initial update contents", cause))?
             .file_name();
         match name.to_str() {
-            Some("versions" | "version-floor" | "current" | "last-known-good") => {}
+            Some(
+                "versions"
+                | "activation.lock"
+                | "version-floor"
+                | "current"
+                | "last-known-good"
+                | "previous-known-good",
+            ) => {
+                if name.to_str() == Some("previous-known-good") {
+                    previous_known_good_present = true;
+                }
+            }
+            Some("activation-journal") => activation_journal_present = true,
             Some("bootstrap.lock") => lock_present = true,
             _ => {
                 return Err(error(
@@ -116,16 +646,28 @@ fn read_initial_metadata(roots: &Roots) -> Result<InitialMetadata, UpdateError> 
             }
         }
     }
+    if activation_journal_present {
+        return Err(classify_activation_recovery(
+            roots,
+            previous_known_good_present,
+        ));
+    }
+    if previous_known_good_present {
+        return Err(error(
+            "initial previous-known-good",
+            "a previous-known-good record without an activation journal is not baseline state",
+        ));
+    }
     validate_version_census(roots)?;
     let mut retained = Vec::new();
     if lock_present {
-        let (lock, bytes) = read_record(&roots.update, "bootstrap.lock")?;
+        let (lock, bytes) = read_record(&roots.update, "bootstrap.lock", roots.profile())?;
         if !bytes.is_empty() {
             return Err(error("initial lock", "bootstrap marker is not empty"));
         }
         retained.push(lock);
     }
-    let (floor_file, bytes) = read_record(&roots.update, "version-floor")?;
+    let (floor_file, bytes) = read_record(&roots.update, "version-floor", roots.profile())?;
     let floor = records::decode_floor(&bytes)?;
     if floor != baseline.version {
         return Err(error("initial floor", "floor differs from exact baseline"));
@@ -135,7 +677,7 @@ fn read_initial_metadata(roots: &Roots) -> Result<InitialMetadata, UpdateError> 
         ("current", PointerKind::Current),
         ("last-known-good", PointerKind::LastKnownGood),
     ] {
-        let (file, bytes) = read_record(&roots.update, name)?;
+        let (file, bytes) = read_record(&roots.update, name, roots.profile())?;
         if records::decode_pointer(kind, &bytes)? != *baseline {
             return Err(error(
                 "initial pointer",
@@ -150,6 +692,55 @@ fn read_initial_metadata(roots: &Roots) -> Result<InitialMetadata, UpdateError> 
         completion: read_baseline_completion(roots)?,
         lock_present,
     })
+}
+
+fn classify_activation_recovery(roots: &Roots, previous_known_good_present: bool) -> UpdateError {
+    let decision = read_activation_recovery_decision(roots, previous_known_good_present);
+    let decision = match decision {
+        Ok(decision) => decision,
+        Err(error) => return error,
+    };
+    error(
+        "activation recovery handoff",
+        format!(
+            "the read-only baseline loader cannot apply this journal phase; common recovery decision {decision:?} requires the T4b writer and process-family owner"
+        ),
+    )
+}
+
+fn read_activation_recovery_decision(
+    roots: &Roots,
+    previous_known_good_present: bool,
+) -> Result<crate::activation::RecoveryDecision, UpdateError> {
+    let (_, journal_bytes) = read_record(&roots.update, "activation-journal", roots.profile())?;
+    let journal = records::decode_activation_journal(&journal_bytes)?;
+    let (_, floor_bytes) = read_record(&roots.update, "version-floor", roots.profile())?;
+    let version_floor = records::decode_floor(&floor_bytes)?;
+    let (_, current_bytes) = read_record(&roots.update, "current", roots.profile())?;
+    let current = records::decode_pointer(PointerKind::Current, &current_bytes)?;
+    let (_, last_known_good_bytes) =
+        read_record(&roots.update, "last-known-good", roots.profile())?;
+    let last_known_good =
+        records::decode_pointer(PointerKind::LastKnownGood, &last_known_good_bytes)?;
+    let previous_known_good = if previous_known_good_present {
+        let (_, bytes) = read_record(&roots.update, "previous-known-good", roots.profile())?;
+        Some(records::decode_pointer(
+            PointerKind::PreviousKnownGood,
+            &bytes,
+        )?)
+    } else {
+        None
+    };
+    let snapshot = RecoverySnapshot {
+        current,
+        version_floor,
+        last_known_good,
+        previous_known_good,
+        // This baseline reader owns no coordinator Job/process-family lease.
+        // Unknown therefore refuses before it returns any boot selection.
+        process_family: ProcessFamilyObservation::NotProvenDead,
+    };
+    Ok(recovery_decision(&journal, &snapshot))
 }
 
 fn validate_version_census(roots: &Roots) -> Result<(), UpdateError> {
@@ -213,19 +804,25 @@ pub(super) fn validate_initial_version(roots: &Roots) -> Result<VersionPins, Upd
 }
 
 fn read_baseline_completion(roots: &Roots) -> Result<BaselineCompletion, UpdateError> {
-    let baseline = &roots.trust.installation.baseline;
-    let version = open_directory(&roots.versions, &baseline.version)?;
+    read_version_completion(roots, &roots.trust.installation.baseline)
+}
+
+fn read_version_completion(
+    roots: &Roots,
+    expected: &crate::ArtifactIdentity,
+) -> Result<BaselineCompletion, UpdateError> {
+    let version = open_directory(&roots.versions, &expected.version, roots.profile())?;
     exact_entries(&version, &["content.tar", "tree", ".complete"])
         .map_err(|cause| error("version contents", cause))?;
-    let (complete, bytes) = read_record(&version, ".complete")?;
+    let (complete, bytes) = read_record(&version, ".complete", roots.profile())?;
     let complete_record = records::decode_complete(&bytes)?;
-    if complete_record.artifact != *baseline {
+    if complete_record.artifact != *expected {
         return Err(error(
             "completion marker",
-            "artifact differs from exact baseline",
+            "artifact differs from the expected selected record",
         ));
     }
-    let content = open_machine_file(&version, "content.tar")
+    let content = open_machine_file(&version, "content.tar", roots.profile())
         .map_err(|cause| error("retained archive", cause))?;
     if content
         .metadata()
@@ -238,7 +835,7 @@ fn read_baseline_completion(roots: &Roots) -> Result<BaselineCompletion, UpdateE
             "marker size differs from retained archive length",
         ));
     }
-    let tree = open_directory(&version, "tree")?;
+    let tree = open_directory(&version, "tree", roots.profile())?;
     Ok(BaselineCompletion {
         version,
         tree,
@@ -252,7 +849,6 @@ fn validate_version_contents(
     roots: &Roots,
     completion: BaselineCompletion,
 ) -> Result<VersionPins, UpdateError> {
-    let baseline = &roots.trust.installation.baseline;
     let BaselineCompletion {
         version,
         tree,
@@ -261,9 +857,9 @@ fn validate_version_contents(
         record: complete_record,
     } = completion;
     let expected = crate::full::ContentIdentity {
-        identity: baseline.clone(),
+        identity: complete_record.artifact.clone(),
         content_size: complete_record.content_size,
-        content_blake3: baseline.content_blake3,
+        content_blake3: complete_record.artifact.content_blake3,
     };
     let validated = crate::archive::parse_content_archive(
         &expected,
@@ -286,14 +882,14 @@ fn validate_version_contents(
         let parent = &directories[index];
         match entry.kind() {
             ArchiveEntryKind::Directory => {
-                let directory = open_directory(parent, leaf)?;
+                let directory = open_directory(parent, leaf, roots.profile())?;
                 parents.insert(entry.name().to_owned(), directories.len());
                 children.entry(entry.name().to_owned()).or_default();
                 directories.push(directory);
             }
             ArchiveEntryKind::File => {
-                let mut file =
-                    open_machine_file(parent, leaf).map_err(|cause| error("tree file", cause))?;
+                let mut file = open_machine_file(parent, leaf, roots.profile())
+                    .map_err(|cause| error("tree file", cause))?;
                 if file
                     .metadata()
                     .map_err(|cause| error("tree metadata", cause))?
@@ -345,7 +941,11 @@ fn validate_version_contents(
     })
 }
 
-fn open_directory(parent: &Dir, leaf: &str) -> Result<Dir, UpdateError> {
+fn open_directory(
+    parent: &Dir,
+    leaf: &str,
+    profile: keld_guard::WindowsInstallProtectionProfile,
+) -> Result<Dir, UpdateError> {
     let directory = parent
         .open_dir_nofollow(leaf)
         .map_err(|cause| error("protected directory open", cause))?;
@@ -366,12 +966,93 @@ fn open_directory(parent: &Dir, leaf: &str) -> Result<Dir, UpdateError> {
     {
         return Err(error("directory volume", "directory crosses parent volume"));
     }
-    keld_guard::validate_windows_machine_directory(
+    keld_guard::validate_windows_install_directory(
         &directory
             .try_clone()
             .map_err(|cause| error("directory handle", cause))?
             .into_std_file(),
+        profile,
     )
     .map_err(|cause| error("directory protection", cause))?;
     Ok(directory)
+}
+
+#[cfg(test)]
+mod writer_state_tests {
+    use super::{
+        validate_recovery_known_good_history, validate_selected_artifact,
+        validate_writer_pointer_context,
+    };
+
+    #[test]
+    fn previous_known_good_is_required_after_first_successful_update() {
+        let baseline = crate::tests::expected_identity().baseline;
+        let baseline_floor = semver::Version::parse(&baseline.version).expect("baseline version");
+        validate_selected_artifact(&baseline, &baseline, &baseline_floor)
+            .expect("exact baseline identity is the initial positive control");
+        validate_writer_pointer_context(&baseline, &baseline, &baseline, None, &baseline_floor)
+            .expect("initial baseline has no earlier known-good release");
+
+        let mut updated = baseline.clone();
+        updated.version = "2.0.0".to_owned();
+        updated.content_blake3 = [0x82; 32];
+        let updated_floor = semver::Version::parse(&updated.version).expect("updated version");
+        assert!(
+            validate_writer_pointer_context(&baseline, &updated, &updated, None, &updated_floor,)
+                .is_err()
+        );
+        validate_writer_pointer_context(
+            &baseline,
+            &updated,
+            &updated,
+            Some(&baseline),
+            &updated_floor,
+        )
+        .expect("successful update retains the exact prior known-good artifact");
+
+        let mut below_baseline = baseline.clone();
+        below_baseline.version = "0.5.0".to_owned();
+        assert!(
+            validate_writer_pointer_context(
+                &baseline,
+                &baseline,
+                &baseline,
+                Some(&below_baseline),
+                &baseline_floor,
+            )
+            .is_err()
+        );
+
+        let mut same_precedence_substitution = baseline.clone();
+        same_precedence_substitution.version = "1.0.0+substituted".to_owned();
+        assert!(
+            validate_selected_artifact(&baseline, &same_precedence_substitution, &baseline_floor,)
+                .is_err(),
+            "equal precedence cannot substitute the exact installed baseline identity"
+        );
+        assert!(
+            validate_writer_pointer_context(
+                &baseline,
+                &same_precedence_substitution,
+                &same_precedence_substitution,
+                None,
+                &baseline_floor,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn recovery_requires_historical_previous_slot_after_baseline_is_superseded() {
+        let baseline = crate::tests::expected_identity().baseline;
+        validate_recovery_known_good_history(&baseline, &baseline, None)
+            .expect("initial baseline has no earlier known-good release");
+
+        let mut updated = baseline.clone();
+        updated.version = "2.0.0".to_owned();
+        updated.content_blake3 = [0x82; 32];
+        assert!(validate_recovery_known_good_history(&baseline, &updated, None).is_err());
+        validate_recovery_known_good_history(&baseline, &updated, Some(&baseline))
+            .expect("superseded last-known-good retains its previous slot");
+    }
 }

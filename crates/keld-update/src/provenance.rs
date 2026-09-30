@@ -46,6 +46,53 @@ pub struct ArtifactIdentity {
     pub content_blake3: [u8; 32],
 }
 
+/// Explicit Windows direct-install mode recorded by the trusted installer.
+///
+/// This selects which OS writer profile may obtain an activation lease. It does not
+/// change package verification, the activation journal, candidate health or recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DirectInstallMode {
+    /// Default installation beneath the installing user's `LocalAppData` tree.
+    PerUserDirect,
+    /// Program Files installation whose updates request explicit UAC.
+    MachineUacDirect,
+    /// Opt-in Program Files mode with a still-separately-gated privileged writer.
+    MachineSeamlessDirect,
+}
+
+impl DirectInstallMode {
+    /// Stable local-record spelling; it is not a manifest field.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PerUserDirect => "per-user-direct",
+            Self::MachineUacDirect => "machine-uac-direct",
+            Self::MachineSeamlessDirect => "machine-seamless-direct",
+        }
+    }
+
+    pub(crate) const fn protection_profile(self) -> keld_guard::WindowsInstallProtectionProfile {
+        match self {
+            Self::PerUserDirect => keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
+            Self::MachineUacDirect => keld_guard::WindowsInstallProtectionProfile::MachineUac,
+            Self::MachineSeamlessDirect => {
+                keld_guard::WindowsInstallProtectionProfile::MachineSystem
+            }
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, UpdateError> {
+        match value {
+            "per-user-direct" => Ok(Self::PerUserDirect),
+            "machine-uac-direct" => Ok(Self::MachineUacDirect),
+            "machine-seamless-direct" => Ok(Self::MachineSeamlessDirect),
+            _ => Err(UpdateError::LocalRecordInvalid {
+                detail: "unsupported direct installation mode".to_owned(),
+            }),
+        }
+    }
+}
+
 /// Security-principal model recorded by the installer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrincipalModel {
@@ -70,6 +117,8 @@ impl PrincipalModel {
 /// Exact direct-install facts expected by the running host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectInstallationIdentity {
+    /// Explicit installer-selected Windows installation mode.
+    pub install_mode: DirectInstallMode,
     /// Canonical application id compiled into the host.
     pub app_id: String,
     /// Channel requested by this host.
@@ -341,6 +390,11 @@ pub(crate) fn match_identity(
     expected: &DirectInstallationIdentity,
     observed: &DirectInstallationIdentity,
 ) -> Result<(), UpdateError> {
+    compare(
+        ProvenanceField::InstallMode,
+        expected.install_mode.as_str(),
+        observed.install_mode.as_str(),
+    )?;
     compare(ProvenanceField::AppId, &expected.app_id, &observed.app_id)?;
     compare(
         ProvenanceField::Channel,

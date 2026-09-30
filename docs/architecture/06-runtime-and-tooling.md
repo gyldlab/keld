@@ -46,8 +46,14 @@
   ordered return, including CLI loss; an uncatchable host `SIGKILL` can retain
   that owner-private stage for a future bounded GC policy.
 - **Windows no-flag primary (KEL-96/T4 Windows slice):** `keld dev` creates a
-  fresh protected-current-user stage, launches `keld-host.exe` with no Keld
-  flag, forwards logs and retains only the host handle plus stdin-v1 writer.
+  fresh protected-current-user stage and an unnamed, non-inheritable,
+  kill-on-close outer attempt Job, then launches `keld-host.exe` with no Keld
+  flag, forwards logs and retains the host handle, stdin-v1 writer and sole
+  outer Job handle. Before application resources, the launcher assigns the
+  host to that exact Job, reads membership back, and releases a fixed startup
+  token on the private stdin pipe. Missing, extra or malformed token bytes,
+  pipe loss, or Job-assignment failure refuses startup. This outer Job is
+  process-family cleanup only; it grants no updater write authority.
   The host starts in a separate Windows process group with Ctrl+C disabled.
   Interactive terminal Ctrl+C retains the CLI's native interrupt exit while
   closing its lease, so the host can forward captured output and finish its
@@ -66,7 +72,7 @@
   termination. Accepted shutdown also closes successor
   admission without killing the current child before its correlated reply.
   The host clears inheritance and starts watching the stdin-v1 lease before the
-  first Bun spawn; a locked `PeekNamedPipe` preflight rejects already-observed
+  first app resource; a locked `PeekNamedPipe` preflight rejects already-observed
   EOF before listener/child or WebView startup. It preserves lease-read/tail
   errors through the window result, and gates listener/child and initial
   WebView2 creation under the common shutdown transition. A bounded existing
@@ -75,18 +81,28 @@
   `KELD-CORE-033` with its retained PID/status; crash-loop/runtime failures use
   the same outer code with their `KELD-RUNTIME-*` cause nested.
   Correlated Quit and CLI EOF use the shared
-  quiesce/link-close/supervisor-reap/UI-exit tail. Normal CLI-owned completion
-  removes the stage after the host exits. Windows staging atomically protects,
+  quiesce/link-close/supervisor-reap/UI-exit tail. Windows staging atomically protects,
   pins and validates `.keld`/`dev` before nonce creation and pins the nonce
   before the first staged file write, rejecting or preventing junctions without
   writing through them. The installed
   `keld.windows-dev-stage-cleanup/v1` role is the approved surviving
   post-CLI-death stage-deletion owner: it validates the exact stage and host
-  identity, waits for that host object, and removes the stage. Before the first
-  Bun spawn, the no-flag host also installs KEL-78/T3's unnamed,
-  non-breakaway, kill-on-close Job, so abnormal host death reaps Bun and its
-  enrolled descendants. KEL-101 separately owns the named-pipe/DACL boundary;
-  this KEL-96 slice makes no LPAC or privileged-dispatch claim.
+  identity, then waits for a one-shot cleanup release. The CLI sends that
+  release after the direct host exits. Its inherited Job handle has only query
+  and terminate rights and is bound to that exact host before helper readiness;
+  it cannot assign processes or change Job limits. If the CLI disappears, pipe EOF gives the host a
+  bounded graceful-shutdown interval; if it stalls, the helper terminates the
+  exact Job. In either case, the helper deletes the stage only after the direct
+  host exits and Job accounting reports zero active processes. Failed proof
+  leaves the stage for safe recovery. Before WebView/app startup, the no-flag host also
+  installs KEL-78/T3's separate unnamed, non-breakaway, kill-on-close inner
+  Job, so host-only death reaps Bun and its enrolled descendants even while the
+  launcher survives. The two Jobs have separate owners and separate host-death
+  falsifiers. The CLI keeps the full outer Job handle; only the reduced cleanup
+  duplicate reaches the sentinel, never the host or Bun. This `keld dev` proof does
+  not make it an installed updater launcher or select a MachineSeamless writer
+  mechanism. KEL-101 separately owns the named-pipe/DACL boundary; this KEL-96
+  slice makes no LPAC or privileged-dispatch claim.
 - **macOS host-death guardian (KEL-78/T2b):**
   `keld_runtime::macos_guardian` is the live shared cleanup owner.
   `GuardianBootstrap` mints an authenticated private registration link, owns
@@ -445,16 +461,28 @@ and updater state. This does not claim protection from the owning user or arbitr
 native malware already running as that user.
 
 An explicitly selected Program Files installation records one of two machine-wide
-modes. `MachineUacDirect` is the simple fallback: its trusted installer provisions an
-ACL that grants mutation to elevated Administrators and SYSTEM while ordinary users and
-Keld roles receive read/execute only. Each protected activation invokes a fixed signed
+modes. `MachineUacDirect` is the simple fallback: its trusted installer assigns BUILTIN
+Administrators as owner only when that SID is a valid owner group in the actual
+installer token, then provisions a protected DACL that grants full control to
+Administrators and SYSTEM while ordinary BUILTIN Users/Keld roles receive only
+read/execute (`0x1200A9`). If Administrators cannot be assigned as owner, installation
+fails without owner/ACL takeover. Each protected activation invokes a fixed signed
 updater helper through UAC. Cancellation performs no protected write. The helper owns
-that live attempt through commit/rollback and starts the exact candidate as the
+that live attempt through commit/rollback. The ordinary-user host may download and
+prevalidate into its owner-private cache, but the cache is only untrusted input. After
+authenticating the admitted-host request and obtaining the lease, the helper independently
+revalidates bounded source bytes under retained read handles, then materializes a fresh
+protected sibling through the shared extraction/copy/readback pipeline. Every destination
+directory and file receives the exact Administrators/SYSTEM/Users DACL at creation,
+before payload writes; it never promotes a user-owned stage by rename or seals an
+ordinary-user-writable stage afterward. The helper starts the exact candidate as the
 initiating ordinary user, including when a different administrator approves UAC. If
 the elevated owner exits or Windows restarts before resolution, recovery requires new
 consent or remains halted with the attempt unresolved. The application and Bun roles
 never run elevated or as SYSTEM. This ACL profile differs from KEL-266's SYSTEM-only
-machine-baseline profile; updates never take ownership or repair ACLs ad hoc.
+machine-baseline profile; updates never take ownership or repair ACLs ad hoc. The
+profile label and descriptor predicates are owned by `keld-guard`; a persisted profile
+id does not prove the live owner or DACL.
 
 `MachineSeamlessDirect` is an explicit opt-in for machine-wide installs. The product
 requires no repeated UAC and the same common updater guarantees, but its privileged
@@ -476,6 +504,63 @@ protection profiles but never selects current/LKG or mints an active selection. 
 `keld-core` consumes `ActivePackageSelection`, performs host boot admission and returns
 `ValidatedBootSelection` to the ordinary-user host. No boot/profile owner grants updater
 write authority or infers mode from a path.
+
+Each trusted direct install seeds one stable regular `activation.lock` in its protected
+`update_root`. It is never deleted, recreated or replaced, and its presence does not
+prove a process owns the transaction; KEL-266's `bootstrap.lock` remains a separate
+initializer marker. A writer opens the existing lease read/write with share mode zero;
+normal selection readers open it read-only with `FILE_SHARE_READ` only and retain that
+short lease for one coherent mutable-record snapshot. A sharing conflict returns busy
+or refusal without sleep, retry or PID takeover. The writer keeps the exclusive lease
+through the attempt and health window. The authenticated candidate boot is the one
+exception: the writer keeps journal/current stable while the exact candidate performs
+bounded bootstrap reads, closes mutable-record pins and acknowledges completion before
+app execution; it retains only immutable selected-tree pins and the health endpoint.
+Lease ownership never replaces OS-backed process-family death proof.
+
+The approved Windows lifecycle proof slice uses one bounded keeper per exact unnamed
+attempt Job. Its reduced handle is limited to query and termination; the keeper is not
+a transaction writer. A trusted install-scoped rendezvous lets a cold successor find
+the keeper before reading mutable journal state under the share-zero lease; the
+rendezvous is only a locator. A reduced `activation.lock` handle couples writer
+exclusion to the keeper's lifetime. After exact Job-family zero is independently
+queried by the authenticated successor and acknowledged on the fresh attempt-bound
+connection, the keeper releases its retention handle; only then does the successor
+acquire and revalidate the writer lease. A competing writer without that witness must
+refuse pending recovery. Coordinator/keeper loss before the proof is authenticated to a
+successor preserves the journal and pointers and halts recovery. Job-name absence, PID
+enumeration, reboot or hibernation does not establish retirement. The proof slice stays
+disconnected from production activation writes until its adversarial crash and replay
+controls pass; boot recovery after all owners are lost remains an evidence blocker.
+The lifecycle installation ID comes only from the updater's canonical protected
+provenance contract: `BLAKE3(UTF8("keld.installation-binding/provenance-v2/v1\0") ||
+u64_le(record_bytes.len()) || record_bytes)`, where `record_bytes` is the exact
+canonical `keld.install-provenance/v2` encoding. This binds install mode, owner,
+application scope, install/update roots, signing key, baseline, profile, principal
+model, publisher scope and volume. The host derives its expected ID from trusted
+installer configuration; recovery re-derives it from admitted protected provenance.
+This public identifier is context, not authentication. The v2 projection is frozen;
+future provenance schema changes preserve it or version the lifecycle-ID derivation.
+Lifecycle authentication uses its own named-pipe namespace and retained connected-pipe/
+process objects plus exact installed-role, image and token-profile validation; a bearer
+HELLO, DACL, PID or signer alone is insufficient. Fresh client/server nonces bind
+purpose, install, attempt and generation but provide freshness rather than identity.
+The listener consumes the one-shot before issuing its final accepted receipt. A cold
+successor revalidates keeper-supplied attempt/channel IDs against the protected journal
+after lease acquisition and before mutation. Pipe handles MUST remain
+non-inheritable and undistributed to app roles; server-side message authentication also
+checks the last writer's token using identification-level named-pipe impersonation and
+always reverts. If endpoint-handle isolation is not proved, peer PID observations cannot
+authorize capability transfer. Failure of `RevertToSelf` MUST terminate the process;
+the impersonating thread MUST NOT return to admission or retry work.
+
+The explicit-UAC Program Files profile has BUILTIN Administrators as owner only when
+the installer token's Administrators SID is a valid owner group (`SE_GROUP_OWNER` and
+not deny-only). Its protected DACL grants full control to BUILTIN Administrators and
+SYSTEM and read/execute (`0x1200A9`) to BUILTIN Users. The trusted installer creates
+and verifies this profile; updates never repair it. The per-user profile remains owned
+by the installing user while application roles lack updater-state mutation rights.
+Managed installs do not seed a direct-update lease or admit Keld as a writer.
 
 ### 4a. v0 manifest & feed wire contract (KEL-53 trigger)
 
@@ -784,14 +869,16 @@ the consumer checks its exact bytes before any extraction. macOS/Linux and any
 package requiring executable modes, links or other v0-excluded metadata remain blocked
 on an approved KEL-137 representation.
 
-The trusted installer creates provenance naming app id, channel, target, install root,
-update root, installed baseline artifact, compiled-in signing-key identity, install
-mode, installation owner and the admitted mode-specific OS protection profile.
+The trusted installer creates canonical `keld.install-provenance/v2` naming app id,
+channel, target, install root, update root, installed baseline artifact, compiled-in
+signing-key identity, install mode, installation owner and the admitted mode-specific OS
+protection profile.
 `PerUserDirect` is the default and records its LocalAppData user owner. `MachineUacDirect`
 records the Program Files profile writable by elevated Administrators/SYSTEM and
 read/execute for ordinary users/Keld roles. `MachineSeamlessDirect` is explicit opt-in
 and retains the SYSTEM-protected machine profile; its runtime authority remains a
-separate unselected gate. `Managed(mechanism)` records the package/deployment owner and
+separate unselected gate. Legacy mode-less provenance fails closed until a trusted
+migration records a mode. `Managed(mechanism)` records the package/deployment owner and
 refuses direct mutation before feed access. `Direct` admits the updater only when every
 recorded value matches the running host. Provenance changed by a principal outside its
 mode's admitted writer authority refuses before feed access or filesystem mutation;
@@ -892,6 +979,31 @@ hard error. The lock covers automated update, explicit rollback and startup reco
 An explicit rollback selects only `previous-known-good`, journals
 `rollback-pending`, publishes `current` to that package and keeps the trust
 floor plus both known-good slots unchanged.
+
+Each direct installation receives a persistent installer-created `activation.lock`
+regular file under `update_root`; never delete or replace it and never infer ownership
+from its presence. Writers open the existing file read/write with share mode zero.
+Snapshot readers open it read-only with `FILE_SHARE_READ` only and hold that short
+lease while they read the complete mutable-record set. Sharing conflicts return a
+typed busy/refusal without retry or sleep. The writer holds its lease through candidate
+health. Authenticated candidate startup briefly reads the attempt and current while the
+writer holds them stable, closes mutable-record pins and acknowledges bootstrap before
+app execution, retaining immutable selected-tree pins and the health endpoint. Recovery
+separately requires proof that the prior process family exited. `bootstrap.lock`
+remains KEL-266's initializer marker.
+
+Windows keeps absent-target version-directory publication separate from mutable-record
+replacement. A fixed typed adapter replaces only prevalidated journal/floor/current/
+known-good slots in the same parent with
+`MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`; it writes, flushes and reads
+back a protected sibling first, closes conflicting mutable-record pins, replaces under
+the stable lease, then reopens and verifies exact bytes and profile before advancing.
+It never truncates in place, copies across volumes, schedules work after reboot or
+accepts caller paths/flags. A failure after replacement is effect-aware and does not
+claim the old bytes stayed unchanged. The `keld-update` crate rule still keeps
+`publish_new` absent-target-only and now permits only a separate fixed-slot replacement
+under the stable lease. That native replacement adapter is not implemented yet; its
+exact diff requires independent unsafe/security review before it may be used.
 
 **Health identity.** A candidate receives a private host-owned channel minted for the
 journaled attempt. Its receipt repeats the attempt id and full artifact identity. The

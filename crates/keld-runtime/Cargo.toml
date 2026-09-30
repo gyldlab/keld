@@ -26,7 +26,7 @@ seccompiler = { workspace = true }
 landlock = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_System_Console", "Win32_System_IO", "Win32_System_SystemServices"] }
 
 # KEL-77 differential harness only (test-only; no shipped API).
 # - serde_json: parse fixture observation lines and emit evidence JSON.

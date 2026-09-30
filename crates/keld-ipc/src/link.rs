@@ -630,6 +630,83 @@ pub fn handshake_server<S: Read + Write>(
     write_hello(stream, token)
 }
 
+/// Performs the lifecycle-only two-nonce echo after the caller validates the
+/// actual connected pipe peer. The nonce echoes prove freshness/liveness only;
+/// `authenticate_peer` must validate the pinned OS process and permitted role.
+///
+/// The first client nonce is read before `authenticate_peer` runs, but the server
+/// does not echo it or transfer any capability until that callback succeeds.
+/// A fresh server nonce is then echoed back by the client as a one-shot ack.
+///
+/// # Errors
+///
+/// Returns a protocol error for malformed HELLO records, an I/O/deadline error,
+/// or the callback's authentication error.
+pub(crate) fn handshake_server_rendezvous<S, T>(
+    stream: &mut S,
+    authenticate_peer: impl FnOnce() -> Result<T, IpcError>,
+) -> Result<(SessionToken, SessionToken, T), IpcError>
+where
+    S: Read + Write,
+{
+    let client_nonce = read_rendezvous_hello(stream, &ReceivePolicy::server_pre_auth_hello())?;
+    let peer = authenticate_peer()?;
+    write_hello(stream, &client_nonce)?;
+    let server_nonce = SessionToken::random()?;
+    write_hello(stream, &server_nonce)?;
+    read_and_verify_hello(
+        stream,
+        &server_nonce,
+        &ReceivePolicy::server_pre_auth_hello(),
+    )?;
+    Ok((client_nonce, server_nonce, peer))
+}
+
+/// Performs the client side of the lifecycle-only two-nonce echo.
+///
+/// The client authenticates the connected server before it sends a nonce. Both
+/// process identities and the install/attempt/role binding come from the callback
+/// and authenticated application transcript, never the endpoint locator.
+///
+/// # Errors
+///
+/// Returns an I/O/deadline or protocol error, or the callback's server-authentication
+/// error.
+pub(crate) fn handshake_client_rendezvous<S, T>(
+    stream: &mut S,
+    authenticate_server: impl FnOnce() -> Result<T, IpcError>,
+) -> Result<(SessionToken, SessionToken, T), IpcError>
+where
+    S: Read + Write,
+{
+    let peer = authenticate_server()?;
+    let client_nonce = SessionToken::random()?;
+    write_hello(stream, &client_nonce)?;
+    read_and_verify_hello(stream, &client_nonce, &ReceivePolicy::client_await_hello())?;
+    let server_nonce = read_rendezvous_hello(stream, &ReceivePolicy::client_await_hello())?;
+    write_hello(stream, &server_nonce)?;
+    Ok((client_nonce, server_nonce, peer))
+}
+
+fn read_rendezvous_hello<S: Read>(
+    stream: &mut S,
+    policy: &ReceivePolicy,
+) -> Result<SessionToken, IpcError> {
+    let (header, payload) = read_validated_frame(stream, policy)?;
+    if header.kind() != FrameKind::Hello || payload.len() != crate::token::SESSION_TOKEN_LEN {
+        return Err(IpcError::Protocol {
+            detail: "lifecycle rendezvous HELLO is not the exact 32-byte shape",
+        });
+    }
+    let bytes = payload
+        .as_slice()
+        .try_into()
+        .map_err(|_| IpcError::Protocol {
+            detail: "lifecycle rendezvous nonce length changed after validation",
+        })?;
+    Ok(SessionToken::from_bytes(bytes))
+}
+
 pub(crate) fn handshake_server_interruptible_until<S: Read + Write>(
     stream: &mut S,
     token: &SessionToken,

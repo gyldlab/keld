@@ -19,6 +19,8 @@
 //! lifecycle contract remains in `docs/architecture/06-runtime-and-tooling.md` §4 and
 //! `docs/specs/kel53-full-package-activation.md`.
 
+#[cfg(any(windows, test))]
+mod activation;
 #[cfg(any(windows, test, feature = "fuzzing"))]
 mod archive;
 mod baseline;
@@ -50,13 +52,16 @@ pub use full::VerifiedFull;
 pub use full::fuzz_canonical_archive;
 pub use manifest::{ManifestDecision, SelectedFull};
 pub use provenance::{
-    AdmittedInstallation, ArtifactIdentity, DirectInstallationIdentity, InstallOwner,
-    InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId, UpdateVerifier,
+    AdmittedInstallation, ArtifactIdentity, DirectInstallMode, DirectInstallationIdentity,
+    InstallOwner, InstallProvenance, PrincipalModel, ProvenanceObservation, SigningKeyId,
+    UpdateVerifier,
 };
 #[cfg(windows)]
 pub use windows_baseline::{
-    LoadedWindowsBaseline, WindowsBaselineReceipt, WindowsBaselineTrust,
-    initialize_windows_baseline, load_windows_baseline,
+    LoadedWindowsBaseline, WindowsActivationWriteSnapshot, WindowsBaselineReceipt,
+    WindowsBaselineTrust, WindowsRecoveryInspection, initialize_windows_baseline,
+    load_windows_activation_write_snapshot, load_windows_baseline,
+    load_windows_recovery_inspection,
 };
 #[cfg(windows)]
 pub use windows_extraction::{ExtractedWindowsStage, WindowsExtractionRoot};

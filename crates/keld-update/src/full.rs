@@ -290,6 +290,7 @@ pub fn fuzz_canonical_archive(bytes: &[u8]) {
     let receipt = VerifiedFull {
         // The fuzz-only parser never exposes this synthetic receipt or extracts it.
         installation: crate::DirectInstallationIdentity {
+            install_mode: crate::DirectInstallMode::MachineSeamlessDirect,
             app_id: "fuzz.invalid".to_owned(),
             channel: crate::Channel::Stable,
             target: "windows-x64".to_owned(),

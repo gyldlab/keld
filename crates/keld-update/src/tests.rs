@@ -20,6 +20,7 @@ pub(crate) fn signing_key() -> SigningKey {
 pub(crate) fn expected_identity() -> DirectInstallationIdentity {
     let public_key = signing_key().verifying_key().to_bytes();
     DirectInstallationIdentity {
+        install_mode: DirectInstallMode::MachineSeamlessDirect,
         app_id: APP_ID.to_owned(),
         channel: Channel::Stable,
         target: TARGET.to_owned(),
@@ -247,7 +248,10 @@ fn provenance_refuses_missing_unprotected_and_managed_before_admission() {
 #[test]
 fn provenance_requires_exact_identity_distinct_principals_and_floor() {
     let verifier = verifier();
-    let substitutions: [IdentitySubstitution; 9] = [
+    let substitutions: [IdentitySubstitution; 10] = [
+        (ProvenanceField::InstallMode, |identity| {
+            identity.install_mode = DirectInstallMode::PerUserDirect;
+        }),
         (ProvenanceField::AppId, |identity| {
             identity.app_id.push_str(".other");
         }),

@@ -763,14 +763,15 @@ impl WindowsDevStageCleanup {
     }
 
     /// Waits for the exact staged host object and deletes only its validated
-    /// owner-private nonce directory.
+    /// owner-private nonce directory after the runtime owner proves the attempt
+    /// Job has zero active processes.
     ///
     /// # Errors
     ///
     /// Returns `KELD-CORE-037` if waiting, final ACL validation, or deletion
     /// fails. A concurrent orderly CLI deletion is accepted as idempotent.
     #[allow(unsafe_code)] // read-only wait on the owned staged-host process handle
-    pub fn wait_and_delete(self) -> Result<(), HostAppError> {
+    pub fn wait_and_delete_after_family_exit(self) -> Result<(), HostAppError> {
         use std::os::windows::io::AsRawHandle as _;
 
         // SAFETY: `host` is a live owning process handle. An infinite kernel
@@ -2440,7 +2441,8 @@ fn run_app_direct(
         .arg("run")
         .arg(root.join(&entry_path))
         .current_dir(&root)
-        .env_remove(DEV_LEASE_ENV);
+        .env_remove(DEV_LEASE_ENV)
+        .env_remove(keld_runtime::windows_job::WINDOWS_LAUNCH_GATE_ENV);
     #[cfg(all(debug_assertions, windows))]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
         == Some(std::ffi::OsStr::new("1"))
