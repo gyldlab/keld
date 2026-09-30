@@ -1,14 +1,21 @@
 # Spec: authenticated Windows installed-root boot
 Status: draft
-Linear: KEL-254 · Owner: GYLDLAB · Updated: 2026-09-25
+Linear: KEL-254 · Owner: GYLDLAB · Updated: 2026-09-30
+Prior exact draft approval: Linear comment `82b31e46-c970-4e92-89a6-7c7ec2484ee2` at
+head `0867931a5478adc71ecb69ec4982782d35a83f34`, file SHA-256
+`8bc3123e3f8cb8d568a87aea7b6b82d583e7bb7a7287c1bf1132571340d4f7d2`. That approval
+applies to the prior bytes only; this multi-mode revision remains draft.
 
 ## 1. Goal & non-goals
 
-Allow a standard Windows user to start a directly installed Keld app from a protected
-install root after the host proves that the executable, app identity, installer
-provenance, and boot files all belong to the installed package. Keep the current
-owner-private dev-stage path unchanged and fail closed before creating a listener,
-child, or window when any installed-package fact is absent or mismatched.
+Allow a standard Windows user to start a directly installed Keld app after the host
+proves that the executable, app identity, install-mode provenance, and boot files all
+belong to the selected package. The default is a per-user install with seamless updates
+and no UAC. Also support Program Files installs updated either through explicit UAC or,
+only after a separate proof gate, a narrowly privileged seamless mechanism. Keep one
+KEL-53 updater state machine and vary only the authority that obtains its write lease.
+Keep the current owner-private dev-stage path unchanged and fail closed before creating
+a listener, child, or window when any installed-package fact is absent or mismatched.
 
 Non-goals:
 
@@ -17,11 +24,13 @@ Non-goals:
   command-line data, a read-only bit, or a caller-supplied release flag;
 - no claim that Authenticode on `keld-host.exe` authenticates neighboring files;
 - no resistance claim against administrators or arbitrary same-user native malware;
-- no admission of package-manager/store-owned installs, macOS/Linux packages, or legacy
-  same-user role profiles;
-- no claim that an ordinary booting user can write or update a machine-protected install;
-  KEL-53 must supply a separately authorized updater writer, otherwise update requests
-  remain refused;
+- no direct writer or competing updater for MSIX, App Installer, Store, enterprise,
+  package-manager, or other deployment-owned installs; their owner remains authoritative;
+- no claim that a standard-user process can write a Program Files install;
+- no approval of a Task Scheduler task, service, or other seamless privileged mechanism
+  before the KEL-270 proof gate passes;
+- no claim that the same-user per-user install protects files from arbitrary native code
+  running as that same Windows user;
 - no KIPC, permissions-manifest, updater-feed wire, or WebView2 profile-format change.
 
 ## 2. Spec refs
@@ -35,9 +44,9 @@ Non-goals:
   descriptor, no caller-selected mode, and current dev-stage-only consumer. This spec
   is a proposed successor to D4 only for Windows direct-installed packages.
 - `docs/specs/kel53-full-package-activation.md` §§3, 4, 5, 7, 8: installer-owned
-  protected provenance, baseline/current/LKG package identity, candidate journal and
-  endpoint, update owner refusal, and real Windows evidence. This is an approved future
-  contract; the current repository still has only the `keld-update::Channel` skeleton.
+  provenance, baseline/current/LKG package identity, candidate journal and endpoint,
+  update-owner refusal, and real Windows evidence. Current implementation status is
+  recorded below and in Architecture 06; activation/recovery is still a predecessor.
 - `docs/specs/kel135-persistent-profile-identity.md` §§3, 4, 7: current Windows
   Authenticode identity, publisher/app separation, and identity-derived LocalAppData
   WebView2 profile.
@@ -45,8 +54,11 @@ Non-goals:
   exact bytes.
 
 This successor does not change the four-unique architecture or add a trust principal.
-The approved implementation PR MUST update architecture 03/06 and KEL-96 D4 in the
-same change so the documented release boundary matches the code.
+The product direction for Windows direct installs is approved; this revised spec remains
+draft until its exact content is signed off. Its implementation PR MUST update
+architecture 03/06 and clarify KEL-96 D4 outside the frozen decision block so the
+documented release boundary matches the contract without changing KEL-96's decision
+digest.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
@@ -57,18 +69,26 @@ same change so the documented release boundary matches the code.
 2. Given no valid dev lease, when the Windows host considers installed mode, then it
    obtains the KEL-135 `ValidatedAppIdentity` from the current executable's
    single-primary Authenticode verification and asks the KEL-53 owner to validate
-   OS-protected direct-install provenance. The repository has no landed KEL-53
-   provenance type or OS loader yet; the installed path remains unavailable until that
-   predecessor is implemented and qualified. Missing, managed, corrupt, unprotected,
+   OS-protected direct-install provenance. KEL-53 currently has a Windows
+   machine-baseline initializer and read-only loader, but no mode-aware active
+   selection; installed boot remains unavailable until the selection predecessor and
+   this consumer are implemented and qualified. Missing, managed, corrupt, unprotected,
    or mismatched provenance is a typed refusal; signature success alone never admits
    installed mode and it never falls through to dev-stage or source-config boot.
 3. Given a Windows x64 direct package, when the trusted installer installs it, then it
    verifies the signed canonical full artifact, installs that exact artifact as the
    baseline version, protects the immutable version tree, seeds the version floor,
    `current`, and `last-known-good` to that exact baseline, and writes the
-   OS-protected provenance commit record last. A failure before the final record leaves
-   no boot-admitting provenance. This is a KEL-53 predecessor; it is not an adapter
-   already present in `origin/main` and this spec adds no parallel store.
+   OS-protected provenance commit record last. It records one explicit mode:
+   `PerUserDirect`, `MachineUacDirect`, or `MachineSeamlessDirect`. Per-user installs
+   live under the installing user's application location and may be mutated by that
+   same user; the security claim excludes arbitrary same-user native malware while
+   retaining app-role and update-state isolation. Both machine modes install beneath a
+   protected machine root readable/executable, but not writable, by ordinary users.
+   The mode-specific ACL is read back before the provenance commit record. No record
+   admits a package-manager-owned install as direct. The current KEL-266 initializer
+   covers only the machine baseline; per-user and mode-aware installation provenance
+   remain unimplemented.
 4. Given admitted provenance and a normal startup without an activation journal, when
    KEL-53 resolves boot state, then it validates the version floor, `current`, both
    known-good slots, complete markers and package policy. A valid `current` must equal
@@ -99,16 +119,17 @@ same change so the documented release boundary matches the code.
    root and protected update root remain distinct; the initial baseline is not
    assumed to be the active version after update or rollback. No caller-selected
    descriptor path or arbitrary descendant tree is admitted.
-7. Given the real standard-user token, when access is checked, then the user can read
-   and execute the selected package but cannot create, write, delete, rename, change
-   owner, or change the DACL of the version tree, package files, provenance, floor,
-   journal, pointers, or helper inputs. Every root ancestor and component needed to
-   resolve these locations is checked for reparse/path substitution by the single
-   Windows install-path owner. The check uses effective object access for the actual
-   token; the KEL-53 producer owns and reads back the trusted install ACL profile. The
-   production check uses existing safe `windows_permissions` descriptor reads and
-   non-mutating safe handle-open access probes; this contract adds no production
-   `unsafe`.
+7. Given each direct install mode, when access is checked using its actual owner and
+   role tokens, then it satisfies its own cell: `PerUserDirect` grants the installing
+   user the expected package/update access but app roles cannot mutate updater state;
+   this does not claim isolation from arbitrary native code running as that user.
+   `MachineUacDirect` and `MachineSeamlessDirect` grant ordinary users read/execute on
+   the selected tree and deny them write/delete/rename/WRITE_DAC/WRITE_OWNER on machine
+   package and update state. Every mode checks root ancestors and components for
+   reparse/path substitution through the single Windows path owner. The check uses
+   effective access for actual tokens; KEL-53 owns and reads back each trusted ACL
+   profile. Use existing safe `windows_permissions` descriptor reads and non-mutating
+   safe handle-open access probes; this contract adds no production `unsafe`.
 8. Given each hostile Windows app-role and webview principal admitted by KEL-53, when
    it attempts to change provenance, install/update files, the floor, journal, `current`,
    either known-good pointer, or helper inputs, then OS access denies the operation.
@@ -143,18 +164,38 @@ same change so the documented release boundary matches the code.
     when direct installed-root boot/update admission is requested, then the owner is
     reported as unsupported and no direct mutation or unauthenticated boot fallback is
     attempted.
-14. Given a standard-user update request against the protected machine install before
-    KEL-53 supplies a separately authorized writer, when the update is attempted, then
-    it refuses with a typed owner/access error before modifying the package tree. Boot
-    admission does not grant update write authority.
-15. Given the real signed direct-install fixture on supported Windows x64, when launched
-    by a standard non-elevated user from its protected install root, then the real host
+14. Given an update request, when the install mode is resolved, then `PerUserDirect`
+    uses the same user's ordinary authority without UAC; `MachineUacDirect` verifies
+    and stages candidate bytes in a separate user-owned location, then obtains explicit
+    UAC only for protected activation. Its one-shot OS-authenticated handoff binds the
+    initiating user's SID, logon session and caller process and carries read-only source
+    handles, never caller paths. The elevated updater verifies its Authenticode signer
+    and image digest against the protected helper identity, pins the source objects
+    against write/delete substitution, revalidates the signed manifest/artifact from
+    those exact handles, creates the protected journal/attempt, copies to a protected
+    sibling stage and verifies/read-backs the copy before publication. It accepts no
+    authority from argv/environment/cwd, limits writes to that installation's package
+    and update roots, and launches the candidate using the exact initiating user's
+    ordinary token and logon session, even when UAC used alternate administrator
+    credentials. If that token cannot be securely reused, it refuses launch and leaves
+    journal-bound recovery. Forged, stale, replayed, wrong-host, cross-install,
+    replaced-source and wrong-session requests refuse before mutation. If the elevated
+    owner dies, recovery is journal-bound and fail-closed; retry may require a new UAC
+    grant. `MachineSeamlessDirect` may mutate only through a Windows-native authority
+    selected by a separately approved architecture/spec amendment after KEL-270's
+    lifecycle evidence and all remaining named proof gates pass. Until that
+    gate passes, it refuses activation before package mutation. In all cells the shared KEL-53
+    transaction owns verification, anti-downgrade, journal, health, commit/rollback,
+    and recovery; boot admission itself grants no update write authority.
+15. Given real signed direct-install fixtures on supported Windows x64, when launched
+    by a standard non-elevated user in each admitted direct mode, then the real host
     reaches its expected window and Bun entry for initial, updated, and rolled-back
     active versions; candidate boot reaches only the exact journaled candidate. The host
     reports verified app/profile identity and the actual WebView2 UDF under LocalAppData.
-    Evidence binds source head, package/archive digest, active artifact and journal state,
-    Authenticode publisher/app identity, root owner/DACL readback, standard-user and role
-    tokens, and resource counters.
+    Evidence binds source head, install mode, package/archive digest, active artifact and
+    journal state, Authenticode publisher/app identity, root owner/DACL readback,
+    standard-user and role tokens, and resource counters. Machine-UAC activation runs
+    only its updater component elevated; the app host and Bun remain ordinary-user.
 16. Given independent negative controls for absent/unprotected provenance, wrong
     publisher/app/root/baseline/current artifact, invalid floor/LKG/journal, stale
     candidate endpoint, orphan/incomplete tree, writable root or ancestor,
@@ -167,6 +208,26 @@ same change so the documented release boundary matches the code.
     invalid current plus invalid LKG must refuse. Controls that require administrator
     mutation are outside the promise and MUST be labelled as such rather than reported
     as standard-user or role-principal protection evidence.
+17. Given the install-mode provenance record, when the host boots or updater requests a
+    write lease, then mode cannot be selected by path shape, `%ProgramFiles%`,
+    environment, argv, cwd, caller booleans, or ACL observation alone. Independently
+    substitute the mode, owner SID, root, updater owner, package owner, and current
+    executable; every mismatch refuses before app resources or mutation.
+18. Given a package/deployment-owned install, when Keld startup or update admission is
+    requested, then Keld does not create direct provenance, select a competing active
+    version, or mutate its files. The owner is delegated to the corresponding package
+    mechanism; unsupported invocation fails closed with an actionable typed result.
+19. Given an explicit-UAC machine update, when the elevated updater receives a request,
+    then the native Windows acceptance independently exercises valid one-attempt
+    activation, forged request, stale/replayed attempt, wrong host/image, cross-install
+    request, source-handle replacement/reparse/write races, alternate UAC credentials,
+    wrong SID/logon/helper session, substituted or unavailable token/process handles,
+    invalid elevation/integrity level, token/process association mismatch, failed
+    impersonation/reversion, unavailable desktop/profile, path/argument
+    substitution and attempted writes outside the exact package/update roots. It kills
+    the coordinator/updater at every durable journal boundary and proves recovery follows
+    the journal or halts without changing pointers. The launched host and Bun tokens
+    match the initiating user/session and remain non-elevated.
 
 ## 4. Design
 
@@ -174,11 +235,14 @@ same change so the documented release boundary matches the code.
 
 | Atom / owner | Boundary and input → output | Failure mode | Independent observable |
 |---|---|---|---|
-| Mode selection / `keld-core` | current executable + validated dev lease or installed evidence → opaque `DevStage` or `InstalledPackage` selection | path/env/caller bool chooses trust mode | mutate cwd, environment, argv and executable location independently; mode does not change without its owning proof |
+| Mode selection / KEL-53 + `keld-core` | verified dev lease or authenticated install provenance → opaque `DevStage` or mode-tagged direct selection | path/env/caller bool or observed ACL chooses trust mode | independently mutate cwd, environment, argv, executable path, provenance mode, owner SID and root; only the authenticated record controls the cell |
 | App identity / KEL-135 | verified current Authenticode image → publisher scope + app id | untrusted, ambiguous or differently signed image is treated as Keld | real signed fixture and wrong-publisher/app negative controls |
-| Install provenance / KEL-53 | installer-created OS-protected record → direct owner, install/update roots and initial baseline identity or refusal | synthetic/caller-created/unprotected/mismatched record admits boot | real Windows record producer/readback plus independently changed record fields |
+| Install provenance / KEL-53 | trusted per-user or machine installer → mode, owner SID, install/update roots and initial baseline identity or refusal | missing/mismatched mode, synthetic record, or managed owner is treated as direct | real installer record/readback per mode plus independently changed record fields |
 | Active selection/lifecycle / KEL-53 | provenance + floor + `current` + journal/attempt endpoint → one exact active version tree and normal/candidate mode, with the specified current→LKG recovery | stale baseline, orphan tree, partial update or replayed candidate endpoint boots; valid LKG is skipped after a recoverable current failure | independently mutate current/LKG/previous-LKG/floor/journal/marker/path/endpoint; only a valid state or the exact approved LKG recovery reaches the boot parser |
-| Root containment / Windows install adapter | standard token + recorded root/ancestors → read/execute-only package tree or refusal | writable ancestor/reparse/replacement permits substitution | effective-token access probes plus owner/DACL/reparse readback |
+| Root containment / Windows install adapter | actual owner/role tokens + recorded mode/root/ancestors → that mode's documented access profile or refusal | owner-mode mismatch, writable machine ancestor, or reparse/replacement permits substitution | effective-token access probes plus owner/DACL/reparse readback for each independent mode cell |
+| Update authority / KEL-53 adapter | one common verified attempt + requested write lease + install mode → same-user lease, explicit-UAC lease, proof-gated narrow lease, or managed-owner refusal | a mode-specific authority duplicates transaction policy or silently obtains broader rights | run the same journal/health/rollback trace through each direct authority; compare identical artifact and state transitions; negative controls prove no authority cross-over |
+| UAC token/launch / KEL-53 Windows adapter + KEL-96/IPC | authenticated initiating process → exact ordinary-user candidate token/process or refusal | failed impersonation, wrong token, session mismatch, or privilege failure falls back to elevated launch | real Windows standard-user A / alternate-admin B test checks token SID, logon id, session, integrity, elevation, process image, profile and desktop; wrong-process/token/session and failed-impersonation controls refuse |
+| Lifecycle retirement / KEL-270 | exact attempt Job + keeper/coordinator state → authenticated process-family-zero proof before releasing the mutation boundary | missing owner, stale/replayed result, wrong Job/host, or ambiguous reboot releases writer/recovery | adversarial death, replay, competing-writer and ambiguous-reboot controls; absence-of-process inference never passes |
 | Role containment / KEL-53 security profile | each admitted app-role/webview token + protected state → denied mutation | role-specific ACE grants package/update authority | real role-token write/delete/ACL probes plus role-ACE mutation |
 | Boot files / `keld-core` | KEL-53-selected immutable version tree + exact sibling descriptor → validated entry/renderer/permissions handles | sidecar parse/path/digest failure is ignored or files change between validation and use | resource-free rejection and held-handle substitution controls |
 | Profile / KEL-135 + WebView2 owner | already verified identity → actual per-app LocalAppData UDF | profile path inferred from install path or identities alias | two real installed identities report distinct actual UDFs |
@@ -195,24 +259,38 @@ and profile-identity owner. KEL-53 remains the sole direct-install provenance, p
 baseline, channel-owner, active-version selection, recovery, candidate/journal and
 OS-protection owner. KEL-96 `keld-core` remains the sole no-flag descriptor parser, path
 resolver, boot-selection mint and startup-order owner. KEL-102 remains the single
-runtime permissions-byte reader/verifier. Existing Windows component/path and
-handle-opening primitives remain the path-resolution owner; their dev-only ACL
-assumptions must be extended in that owner for the installed tree.
+runtime permissions-byte reader/verifier. KEL-270 owns the isolated Windows lifecycle
+proof for a possible machine-seamless authority; it does not become a second updater or
+transaction writer. Existing Windows component/path and handle-opening primitives
+remain the path-resolution owner; their dev-only ACL assumptions must be extended in
+that owner for each installed mode.
 
-No `DirectInstallationIdentity`, `ProvenanceObservation`, protected-record loader,
-installer, or active-tree selection API has landed in `origin/main`; the workspace's
-`keld-update` crate currently implements only `Channel`. KEL-53 must first implement and
-qualify one OS-protected record/selection owner. Its admitted result must bind the
-KEL-135 publisher/app identity, direct install/update roots, update-signing identity and
-initial baseline. KEL-53 exposes the authenticated recorded publisher scope/app id for
-`keld-core` to compare with its KEL-135 verified value; `keld-update` does not depend on
-`keld-core`. Its active-selection result identifies exactly one current artifact/tree.
-The baseline is only the install-time floor; it MUST NOT stand in for the active
-artifact after update or rollback. The active resolver validates no-journal recovery
-state or the exact candidate journal/endpoint before it lends the selected version tree
-to KEL-96. A synthetic protected-observation enum is state-machine test evidence only,
-never proof of OS record protection, current-pointer authority, installer bytes, or
-role-token denial.
+Current `origin/main` has signed manifest/full-artifact verification, canonical Windows
+archive preflight and producer, owner-private incomplete extraction, logical provenance
+admission, and the KEL-266 SYSTEM machine-baseline initializer plus read-only loader.
+It does not have per-user or mode-aware install provenance, active current/LKG
+selection, journal recovery, candidate health/commit/rollback, a boot-consumable opaque
+active selection, or live feed orchestration. KEL-53 must own these remaining pieces.
+Its admitted result binds the KEL-135 publisher/app identity, explicit install mode and
+owner, direct install/update roots, update-signing identity, and initial baseline.
+KEL-53 exposes only the authenticated recorded publisher/app identity for `keld-core`
+to compare with KEL-135; `keld-update` does not depend on `keld-core`. Its active
+selection identifies exactly one current artifact/tree. The baseline is only the
+install-time floor; it MUST NOT stand in for the active artifact after update or
+rollback. The active resolver validates no-journal recovery state or the exact
+candidate journal/endpoint before lending the selected version tree to KEL-96. A
+synthetic protected-observation enum is state-machine test evidence only, never proof of
+OS record protection, current-pointer authority, installer bytes, or role-token denial.
+
+One KEL-53 transaction owns signed verification, anti-downgrade, staging, journal,
+exclusive activation ownership, exact candidate launch, health confirmation,
+commit/rollback and crash recovery. Only acquisition of its write lease varies by mode:
+same-user for `PerUserDirect`, explicit elevation for `MachineUacDirect`, and an
+independently proven narrow authority for `MachineSeamlessDirect`. The seamless mode is
+not enabled by selecting a mechanism name. Until KEL-270 proves all approved lifecycle
+gates and a separate exact review selects the smallest defensible authority, the
+seamless mode refuses activation. Managed/package-manager installs never enter this
+direct transaction; mutation remains with their deployment owner.
 
 The installer proves that the protected baseline tree came from its exact authenticated
 package before committing provenance. KEL-53 then proves protected active-version
@@ -234,11 +312,12 @@ the required predicate, stop and revise the approved contract plus owner instruc
 before implementation. Managed installs and absent provenance stay fail-closed.
 
 **Compatibility fallback:** preserve the current dev-stage behavior. Direct installed
-boot remains unavailable until the KEL-53 producer, active-tree resolver, and this
-KEL-96 consumer both land with native proof. Managed installs continue to use their own
-package owner and are not admitted by this contract. A booting standard user receives
-no update write authority; KEL-53 must prove a separate narrow writer or refuse the
-update request before mutation.
+boot remains unavailable until the KEL-53 mode-aware producer, active-tree resolver,
+and this KEL-96 consumer land with native proof. Per-user direct installs use the
+same-user update lease; machine-UAC installs use explicit elevation for activation;
+machine-seamless updates remain refused until the KEL-270 proof gate and authority
+selection pass. Managed installs continue through their package owner and are not
+admitted to Keld's direct updater.
 
 ### Internal selection shape
 
@@ -250,8 +329,15 @@ enum BootRootMode {
     DevStage,
     InstalledPackage {
         identity: ValidatedAppIdentity,       // KEL-135-owned verified identity
+        install_mode: DirectInstallMode,      // KEL-53-owned protected provenance
         active: ActivePackageSelection,       // KEL-53-owned opaque current/candidate tree
     },
+}
+
+enum DirectInstallMode {
+    PerUserDirect,
+    MachineUacDirect,
+    MachineSeamlessDirect,
 }
 
 struct ValidatedBootSelection {
@@ -272,6 +358,8 @@ pub struct DirectInstallationIdentity {
     app_id: String,
     channel: Channel,
     target: String,
+    install_mode: DirectInstallMode,
+    owner_sid: String,
     install_root: PathBuf,
     update_root: PathBuf,
     signing_key_id: SigningKeyId,
@@ -324,9 +412,13 @@ Wire/protocol changes: none; KEL-53 feed bytes remain unchanged. The KEL-53 prot
 installer record is OS-local state, not a renderer or KIPC wire contract.
 
 Platform notes: Windows x64 direct install is the only installed-root cell in this
-spec. Dev-stage behavior on all currently proved platforms remains governed by KEL-96.
-macOS app-container/signing and Linux package/root admission require their own approved
-successors and real OS qualification. Managed Windows installs remain refused here.
+spec. Its independently qualified cells are per-user direct, machine-wide with
+explicit-UAC activation, and machine-wide seamless activation only after the KEL-270
+authority proof gate. Dev-stage behavior on all currently proved platforms remains
+governed by KEL-96. macOS app-container/signing and Linux package/root admission require
+their own approved successors and real OS qualification. Managed Windows installs
+remain owned by their package/deployment mechanism and never receive a competing Keld
+writer.
 
 Runtime seam: `keld-host` remains thin and calls the existing `keld-core` boot-selection
 entrypoint. Within the host process, `keld-core` derives `current_exe`; KEL-135 verifies
@@ -355,13 +447,13 @@ Implement in:
 - `crates/keld-core/Cargo.toml` and `crates/keld-core/src/app_session.rs`: add only
   the internal `keld-update` dependency and consume its landed opaque active-selection
   API using KEL-135 identity and the Windows root-opening owner;
-- **KEL-53 predecessor deliverables (not landed):** implement its protected
-  provenance/installer/platform adapter in `crates/keld-update` and its Windows x64
-  artifact path in `crates/keld-pack`; these crates currently contain only the channel
-  and format skeletons. The KEL-53 issue owns the real producer/loader/current-state and
-  package-to-protected-tree proof;
-- the Windows native host acceptance harness: add the signed installed fixture and
-  standard-user/role-token evidence after the KEL-53 predecessor lands.
+- **KEL-53 predecessor deliverables:** extend the landed Windows machine-baseline
+  initializer/loader and package/extraction path with mode-aware installation
+  provenance, per-user initialization, active current/LKG selection and the common
+  journal/health/rollback/recovery state machine; keep the per-user, machine-UAC and
+  machine-seamless write-lease adapters distinct and managed-owner mutation delegated;
+- the Windows native host acceptance harness: add signed fixtures and per-mode
+  standard-user/owner/role-token evidence after the KEL-53 predecessor lands.
 
 Must not touch:
 
@@ -384,15 +476,16 @@ opaque outside their owner except for the documented read-only identity accessor
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 — approve this contract and synchronize architecture 03/06 plus KEL-96 D4 in
-  the same spec PR. Keep all KEL-96 dev-stage behavior unchanged.
-- [ ] T2 — in the KEL-53 owner issue, implement the Windows protected installation
-  record, baseline installer, active `current`/LKG resolver, journal/candidate
-  validation, immutable version-tree and ACL readback, and a typed opaque active-package
-  selection. Prove standard-user and each admitted hostile-role/webview token cannot
-  mutate package or update state. Define the narrow update writer; if none is available,
-  update calls against this machine install refuse before mutation. This is a strict
-  predecessor; KEL-254 does not copy KEL-53 recovery or pointer policy.
+- [ ] T1 — obtain exact-content approval for this revised contract and synchronize
+  architecture 03/06 plus the KEL-96 D4 applicability note in the same spec PR. Keep
+  all KEL-96 dev-stage behavior and the frozen KEL-96 decision digest unchanged.
+- [ ] T2 — in the KEL-53 owner issue, implement mode-aware provenance and active
+  selection, per-user initialization, shared baseline/current/LKG/journal/candidate
+  validation, immutable version-tree and mode-specific ACL readback, and a typed opaque
+  active-package selection. Prove each mode's owner/role access cell. Keep one shared
+  updater state machine; connect only the per-user and explicit-UAC lease adapters after
+  their own acceptance. Machine-seamless activation remains gated on KEL-270. This is a
+  strict predecessor; KEL-254 does not copy KEL-53 recovery or pointer policy.
 - [ ] T3 — in the KEL-96 consumer issue, consume the landed KEL-53 active selection and
   one KEL-135 identity value to add opaque Windows installed-root boot. Verify the
   executable is the exact selected version-tree host, preserve current strict parser and
@@ -408,13 +501,13 @@ opaque outside their owner except for the documented read-only identity accessor
 | Criteria | Proof and falsifier |
 |---|---|
 | 1 | Existing dev-stage regression on Windows; mutate release identity source to panic and prove valid dev lease still bypasses release identity. |
-| 2–3, 11 | State tests reject absent/managed/unprotected/corrupt/mismatched provenance; real installer crash cuts before/after final commit prove that wrong package digest, missing file, writable root, failed ACL readback or record replay leaves no admission. |
+| 2–3, 11, 17–18 | State tests reject absent/managed/unprotected/corrupt/mismatched provenance; real installer crash cuts before/after final commit prove that wrong package digest, missing file, wrong mode/owner, failed mode-specific ACL readback or record replay leaves no admission. |
 | 4, 6, 15–16 | Independently permute initial baseline, current, LKG, previous-LKG, floor, complete marker, current tree, and wrong app id; valid current must equal an allowed known-good artifact. Invalid current with valid LKG durably republishes/read-backs LKG, then boots that version; invalid LKG, orphan/incomplete/mixed versions halt. Inject crashes at each KEL-53 journal phase with and without a live candidate endpoint: recovery must prove the process family/lease, finish the exact phase or return no selection, and never let KEL-96 boot a stale tree. Valid updated and explicit rollback versions boot. |
 | 5, 15–16 | Candidate tests substitute endpoint, attempt id, journal phase, current artifact and executable path independently; only the exact live attempt selects candidate mode, without lock/recovery/self-commit. |
 | 6–10, 16 | Native Windows component/reparse/path tests plus strict descriptor mutations; under each admitted token, attempt descriptor/entry/renderer replacement and prove the protected namespace denies it; malformed bytes and escaping/missing targets fail pre-resource; KEL-102 proves one exact manifest read. |
-| 7–8, 16 | Real standard-user token attempts create/write/delete/rename/WRITE_DAC/WRITE_OWNER at root, ancestors, every version tree, provenance, journal, pointers and update state. Repeat under each admitted hostile role/webview token. Mutate owner, inherited ACE, explicit ACE, role-specific ACE, and reparse ancestor; every unauthorized grant is detected before boot. Positive control confirms read/execute. |
+| 7–8, 16–18 | Per-user owner, ordinary machine user, explicit-UAC activator and each admitted hostile role/webview token exercise distinct access cells. Machine standard-user probes attempt create/write/delete/rename/WRITE_DAC/WRITE_OWNER at roots, versions, provenance, journal, pointers and update state. Per-user tests verify owner write access while hostile roles cannot mutate updater state; they explicitly do not claim defense from same-user native malware. Mutate owner, inherited/explicit ACE, role ACE and reparse ancestor; every forbidden grant is detected before boot. |
 | 12, 15 | Signed Windows fixture for two distinct app identities; capture WebView2-reported UDFs and prove each is the exact LocalAppData profile path and they differ. |
-| 13–14 | Managed-owner and legacy same-user profile fixtures refuse direct admission; an ordinary user cannot update a machine root without the KEL-53 writer and the attempt leaves package state unchanged. |
+| 13–14, 18 | Managed-owner fixtures prove no direct provenance, competing selector or writer. Mode-matched tests prove per-user no-UAC update, explicit-UAC machine activation and pre-gate seamless-mode refusal without mutation. |
 
 Anti-flake: use named fixtures and fresh per-run install roots; no sleep-sync. Process,
 window, file-access, installer commit, and resource-order witnesses use explicit handles,
@@ -449,13 +542,16 @@ boot files it consumes.
 
 ## 10. Open questions
 
-Human approval required before implementation: approve KEL-53 as the single owner of
-protected provenance plus current-version/candidate selection, with KEL-135's existing
-publisher/app value bound to that record and passed through to KEL-96. This preserves one
-package source of truth and avoids a second current-pointer or journal parser.
+No unresolved product choice remains for the three direct modes or managed-owner
+delegation. This revised spec is still `draft` because its exact text and mode-specific
+acceptance matrix have not yet been signed off. Before implementation, obtain that
+content approval and the required independent exact-head review.
 
-Also approve the explicit scope boundary for machine installs: boot can be read/execute
-only for the standard user; update writes remain refused until KEL-53 proves a separate
-narrow updater writer. Recommendation: keep those authorities separate and do not grant
-the booting host package-write access. If either owner cannot prove its side of this
-contract, keep installed boot rejected and revise the spec before code.
+The machine-seamless authority is an explicit proof gate, not an open invitation to
+choose a convenient mechanism. KEL-270 must first prove exact attempt identity, fresh
+attempt binding, replay resistance, installation-wide writer exclusion, process-family
+lifecycle/death, ordinary-user candidate launch, exact health binding, crash/reboot
+recovery, and wrong-host/wrong-role/fake-endpoint negative controls. Ambiguous reboot
+or all-owners-lost recovery remains fail-closed. Only then may the smallest defensible
+Windows authority be selected; until that evidence exists, `MachineSeamlessDirect`
+refuses activation without mutating package state.
