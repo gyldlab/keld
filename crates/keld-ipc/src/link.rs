@@ -642,6 +642,7 @@ pub fn handshake_server<S: Read + Write>(
 ///
 /// Returns a protocol error for malformed HELLO records, an I/O/deadline error,
 /// or the callback's authentication error.
+#[cfg(windows)]
 pub(crate) fn handshake_server_rendezvous<S, T>(
     stream: &mut S,
     authenticate_peer: impl FnOnce() -> Result<T, IpcError>,
@@ -672,6 +673,7 @@ where
 ///
 /// Returns an I/O/deadline or protocol error, or the callback's server-authentication
 /// error.
+#[cfg(windows)]
 pub(crate) fn handshake_client_rendezvous<S, T>(
     stream: &mut S,
     authenticate_server: impl FnOnce() -> Result<T, IpcError>,
@@ -688,6 +690,7 @@ where
     Ok((client_nonce, server_nonce, peer))
 }
 
+#[cfg(windows)]
 fn read_rendezvous_hello<S: Read>(
     stream: &mut S,
     policy: &ReceivePolicy,

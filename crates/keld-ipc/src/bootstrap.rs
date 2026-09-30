@@ -35,10 +35,9 @@ use crate::{APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL};
 // before the taxonomy moved to `admission`, and a crate-root export does not
 // preserve that path. Moving the owner must not break the published one.
 pub use crate::admission::{BootstrapRejection, BootstrapRejectionObserver};
-use crate::link::{
-    AppLinkDeadlines, handshake_client_rendezvous, handshake_server_interruptible_until,
-    handshake_server_rendezvous,
-};
+use crate::link::{AppLinkDeadlines, handshake_server_interruptible_until};
+#[cfg(windows)]
+use crate::link::{handshake_client_rendezvous, handshake_server_rendezvous};
 use crate::receive::AbsoluteDeadline;
 use crate::token::{SessionToken, format_app_link};
 #[cfg(windows)]
@@ -1272,6 +1271,7 @@ impl WindowsLifecycleRendezvousListener {
     }
 }
 
+#[cfg(windows)]
 impl<P: WindowsLifecyclePeerPin> WindowsLifecycleRendezvousPeer<P> {
     /// Mutable stream for the attempt/install-bound lifecycle records.
     pub fn stream_mut(&mut self) -> &mut WindowsNamedPipeBootstrapStream {
@@ -1412,6 +1412,7 @@ pub fn connect_windows_lifecycle_rendezvous_until<P: WindowsLifecyclePeerPin>(
     })
 }
 
+#[cfg(windows)]
 impl<P: WindowsLifecyclePeerPin> WindowsLifecycleRendezvousClient<P> {
     /// Mutable stream for the attempt/install-bound lifecycle records.
     pub fn stream_mut(&mut self) -> &mut WindowsNamedPipeBootstrapStream {
