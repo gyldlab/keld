@@ -3234,15 +3234,31 @@ fn app_webview_error(phase: &'static str, source: &WvError) -> HostAppError {
 }
 
 #[cfg(target_os = "macos")]
+struct RendererDispatch {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<Result<(), HostAppError>>,
+}
+
+#[cfg(target_os = "macos")]
 fn start_renderer_dispatch(
     requests: Receiver<RendererBridgeRequest>,
     outcomes: Sender<RendererBridgeOutcome>,
     router: PrimaryRouterHandle,
-) -> Result<JoinHandle<Result<(), HostAppError>>, HostAppError> {
-    thread::Builder::new()
+) -> Result<RendererDispatch, HostAppError> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let handle = thread::Builder::new()
         .name("keld-core-renderer-dispatch".to_owned())
         .spawn(move || {
-            while let Ok(request) = requests.recv() {
+            loop {
+                let request = match requests.recv_timeout(APP_LINK_READER_POLL) {
+                    Ok(request) => request,
+                    Err(RecvTimeoutError::Timeout) if stop_for_thread.load(Ordering::Acquire) => {
+                        return Ok(());
+                    }
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                };
                 let webview = request.webview();
                 let navigation = request.navigation();
                 let local_request = request.request();
@@ -3312,16 +3328,16 @@ fn start_renderer_dispatch(
                     return Ok(());
                 }
             }
-            Ok(())
         })
-        .map_err(|source| app_io("renderer dispatch thread", &source))
+        .map_err(|source| app_io("renderer dispatch thread", &source))?;
+    Ok(RendererDispatch { stop, handle })
 }
 
 #[cfg(target_os = "macos")]
-fn join_renderer_dispatch(
-    dispatch: JoinHandle<Result<(), HostAppError>>,
-) -> Result<(), HostAppError> {
+fn join_renderer_dispatch(dispatch: RendererDispatch) -> Result<(), HostAppError> {
+    dispatch.stop.store(true, Ordering::Release);
     dispatch
+        .handle
         .join()
         .map_err(|_| app_detail("renderer dispatch thread", "thread panicked"))?
 }
@@ -3332,7 +3348,7 @@ fn cleanup_window_start_failure(
     guard_snapshot: Option<&GuardSnapshot>,
     window_events: Sender<AppWindowEvent>,
     event_coordinator: JoinHandle<Result<(), HostAppError>>,
-    renderer_dispatch: Option<JoinHandle<Result<(), HostAppError>>>,
+    renderer_dispatch: Option<RendererDispatch>,
     router: PrimaryRouter,
     guardian_owner: GuardianOwner,
 ) -> Result<(), HostAppError> {
@@ -6390,6 +6406,32 @@ mod tests {
         .expect("Echo primary router");
         let handle = router.handle();
         (router, handle, client, command_rx, window_rx)
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn renderer_dispatch_stop_does_not_depend_on_webview_sender_drop() {
+        let (router, handle, _client, _owner_rx, _window_rx) = primary_echo_test_router();
+        let (requests_tx, requests_rx) = mpsc::sync_channel(1);
+        let (outcomes_tx, _outcomes_rx) = mpsc::channel();
+        let dispatch =
+            start_renderer_dispatch(requests_rx, outcomes_tx, handle).expect("renderer dispatch");
+        let (done_tx, done_rx) = mpsc::channel();
+        let joiner = std::thread::spawn(move || {
+            let result = join_renderer_dispatch(dispatch);
+            let _ = done_tx.send(result);
+        });
+
+        let observed = done_rx.recv_timeout(Duration::from_secs(2));
+        drop(requests_tx);
+        joiner.join().expect("renderer dispatch join probe");
+        assert!(
+            observed
+                .expect("renderer dispatch ignored its explicit stop")
+                .is_ok(),
+            "renderer dispatch stop must not wait for WebKit to release its request sender"
+        );
+        router.shutdown().expect("renderer-stop router shutdown");
     }
 
     #[test]
