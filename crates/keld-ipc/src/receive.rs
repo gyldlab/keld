@@ -244,6 +244,24 @@ impl ReceivePolicy {
         }
     }
 
+    /// Host-side waiter for the one KEL-142 application Echo call carried on
+    /// the existing primary app link. Unlike the legacy standalone Echo
+    /// waiter, the application handler may return one structured `CallError` as
+    /// ERR, so this policy declares both terminal kinds.
+    #[must_use]
+    pub const fn primary_echo_reply_waiter(corr: CorrelationId) -> Self {
+        Self {
+            direction: Direction::FromClient,
+            phase: SessionPhase::Authenticated,
+            channel: crate::echo::ECHO_CHANNEL,
+            payload: PayloadMode::Codec,
+            expected_corr: ExpectedCorrelation::Exactly(corr),
+            kinds: AllowedKinds::only(FrameKind::Reply).with(FrameKind::Err),
+            allow_ping: false,
+            also_channel: None,
+        }
+    }
+
     /// App-side lifecycle event receiver: uncorrelated `EVENT`s on the
     /// lifecycle channel (spec table row 6).
     #[must_use]
@@ -296,6 +314,35 @@ impl ReceivePolicy {
             allow_ping: false,
             also_channel: None,
         }
+    }
+}
+
+/// Validates one frame arriving at the host-side primary app-link reader.
+///
+/// The existing primary receiver continues to own Bun-originated Echo/lifecycle
+/// Calls and PING. KEL-142 additionally permits exactly one host-originated
+/// Echo call to be outstanding, so only its exact correlated REPLY/ERR may
+/// enter the same reader. The caller supplies trusted pending state; wire bytes
+/// never select their own policy.
+///
+/// # Errors
+///
+/// Returns [`IpcError::Protocol`] when a reply has no trusted pending waiter or
+/// when any header field violates the selected KEL-133 receive policy.
+pub fn validate_primary_app_header(
+    pending_echo_reply: Option<CorrelationId>,
+    header: FrameHeader,
+) -> Result<ValidatedFrameHeader, IpcError> {
+    match header.kind {
+        FrameKind::Reply | FrameKind::Err => {
+            let Some(corr) = pending_echo_reply else {
+                return Err(IpcError::Protocol {
+                    detail: "frame kind is not declared by the session policy",
+                });
+            };
+            validate_received_header(&ReceivePolicy::primary_echo_reply_waiter(corr), header)
+        }
+        _ => validate_received_header(&ReceivePolicy::primary_app_receiver(), header),
     }
 }
 
@@ -847,6 +894,58 @@ mod tests {
             detail_of(err),
             "frame kind is not declared by the session policy"
         );
+    }
+
+    #[test]
+    fn primary_app_header_admits_only_the_exact_pending_echo_reply() {
+        let corr = CorrelationId(17);
+        for kind in [FrameKind::Reply, FrameKind::Err] {
+            validate_primary_app_header(
+                Some(corr),
+                header(kind, 0, crate::echo::ECHO_CHANNEL.0, corr.0, 4),
+            )
+            .expect("exact pending application reply admits");
+        }
+
+        let no_waiter = validate_primary_app_header(
+            None,
+            header(FrameKind::Reply, 0, crate::echo::ECHO_CHANNEL.0, corr.0, 4),
+        )
+        .expect_err("reply without a pending host call must fail closed");
+        assert_eq!(
+            detail_of(no_waiter),
+            "frame kind is not declared by the session policy"
+        );
+
+        let wrong_corr = validate_primary_app_header(
+            Some(corr),
+            header(
+                FrameKind::Reply,
+                0,
+                crate::echo::ECHO_CHANNEL.0,
+                corr.0 + 1,
+                4,
+            ),
+        )
+        .expect_err("wrong correlation cannot satisfy the pending host call");
+        assert_eq!(
+            detail_of(wrong_corr),
+            "correlation does not match the awaited call"
+        );
+
+        validate_primary_app_header(
+            Some(corr),
+            header(
+                FrameKind::Call,
+                0,
+                crate::lifecycle::LIFECYCLE_CHANNEL.0,
+                9,
+                1,
+            ),
+        )
+        .expect("a pending host call must not block declared Bun-originated calls");
+        validate_primary_app_header(Some(corr), header(FrameKind::Ping, 0, 99, 0, 0))
+            .expect("a pending host call must not block the declared liveness probe");
     }
 
     #[test]

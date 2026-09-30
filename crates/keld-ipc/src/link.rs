@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
 use crate::receive::{
-    AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_received_header,
+    AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader, validate_primary_app_header,
+    validate_received_header,
 };
 use crate::token::SessionToken;
 use crate::{APP_LINK_IO_DEADLINE, HEADER_LEN, IpcError, MAX_FRAME_LEN};
@@ -382,6 +383,27 @@ pub fn read_validated_frame_interruptible<S: Read>(
     )
 }
 
+/// Interruptible host-side primary app-link reader.
+///
+/// The shared KEL-133 owner validates Bun-originated CALL/PING traffic and,
+/// when `pending_echo_reply` reports one outstanding KEL-142 Echo call, admits
+/// only that exact correlated REPLY/ERR. The callback is sampled after the
+/// fixed header is decoded and before payload allocation so a waiter created
+/// while the reader was idle is visible to the admission decision.
+///
+/// # Errors
+///
+/// As `read_validated_frame_interruptible`.
+pub fn read_primary_app_frame_interruptible<S: Read>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    pending_echo_reply: impl Fn() -> Option<CorrelationId>,
+) -> Result<Option<(ValidatedFrameHeader, Vec<u8>)>, IpcError> {
+    read_frame_interruptible_validated_with(stream, stop, None, APP_LINK_IO_DEADLINE, |header| {
+        validate_primary_app_header(pending_echo_reply(), header)
+    })
+}
+
 /// [`read_validated_frame_interruptible`] additionally capped by an absolute
 /// admission/session deadline that byte trickle cannot renew (spec kel133 §4
 /// deadline model).
@@ -424,6 +446,22 @@ fn read_frame_interruptible_with_limits<S: Read>(
     stall_limit: Duration,
     policy: Option<&ReceivePolicy>,
 ) -> Result<Option<(FrameHeader, Vec<u8>)>, IpcError> {
+    read_frame_interruptible_validated_with(stream, stop, deadline, stall_limit, |header| {
+        if let Some(policy) = policy {
+            // Semantic admission decision before payload allocation (kel133 AC1).
+            validate_received_header(policy, header)?;
+        }
+        Ok(header)
+    })
+}
+
+fn read_frame_interruptible_validated_with<S: Read, T>(
+    stream: &mut S,
+    stop: &AtomicBool,
+    deadline: Option<Instant>,
+    stall_limit: Duration,
+    validate: impl Fn(FrameHeader) -> Result<T, IpcError>,
+) -> Result<Option<(T, Vec<u8>)>, IpcError> {
     let mut stall_deadline = None;
     let mut header_bytes = [0u8; HEADER_LEN];
     if !read_exact_interruptible(
@@ -439,10 +477,7 @@ fn read_frame_interruptible_with_limits<S: Read>(
     let header = FrameHeader::decode(&header_bytes)?;
     let len = usize::try_from(header.len).map_err(|_| IpcError::PayloadTooLarge)?;
     ensure_payload_len(len)?;
-    if let Some(policy) = policy {
-        // Semantic admission decision before payload allocation (kel133 AC1).
-        validate_received_header(policy, header)?;
-    }
+    let validated = validate(header)?;
     let mut payload = vec![0u8; len];
     if !payload.is_empty()
         && !read_exact_interruptible(
@@ -456,7 +491,7 @@ fn read_frame_interruptible_with_limits<S: Read>(
     {
         return Ok(None);
     }
-    Ok(Some((header, payload)))
+    Ok(Some((validated, payload)))
 }
 
 /// Fills `buf` from `stream`, retrying idle timeouts until `stop`.
