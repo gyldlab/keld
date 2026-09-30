@@ -15,6 +15,7 @@ const PROVENANCE_SCHEMA: &str = "keld.install-provenance/v2";
 const COMPLETE_SCHEMA: &str = "keld.complete/v1";
 const FLOOR_SCHEMA: &str = "keld.version-floor/v1";
 const ACTIVATION_JOURNAL_SCHEMA: &str = "keld.activation-journal/v1";
+#[cfg(windows)]
 const LIFECYCLE_INSTALLATION_BINDING_DOMAIN: &[u8] =
     b"keld.installation-binding/provenance-v2/v1\0";
 
@@ -229,6 +230,7 @@ pub(crate) fn encode_provenance(
 /// This contract is deliberately versioned independently from the record schema. Any future
 /// provenance version must preserve this v2 projection or introduce a separately versioned
 /// lifecycle-binding contract; callers must not substitute path hashing or caller-selected IDs.
+#[cfg(windows)]
 pub(crate) fn lifecycle_installation_id(
     provenance: &InstallProvenance,
     publisher_scope: &[u8; 32],

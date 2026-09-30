@@ -71,6 +71,7 @@ impl DirectInstallMode {
         }
     }
 
+    #[cfg(any(windows, test))]
     pub(crate) const fn protection_profile(self) -> keld_guard::WindowsInstallProtectionProfile {
         match self {
             Self::PerUserDirect => keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
@@ -81,6 +82,7 @@ impl DirectInstallMode {
         }
     }
 
+    #[cfg(any(windows, test))]
     pub(crate) fn parse(value: &str) -> Result<Self, UpdateError> {
         match value {
             "per-user-direct" => Ok(Self::PerUserDirect),
