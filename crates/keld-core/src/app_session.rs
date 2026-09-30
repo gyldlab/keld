@@ -6503,7 +6503,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     use GuardianOwnerCommand as TestPrimaryOwnerCommand;
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     fn primary_echo_test_router() -> (
         PrimaryRouter,
         PrimaryRouterHandle,
